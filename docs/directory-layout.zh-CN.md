@@ -11,8 +11,9 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── settings.json          # agent 设置（模型默认值、沙箱等）
 │   ├── models.json            # provider/模型目录：apiKey、baseUrl、models[]
 │   ├── auth.json              # 凭据，按模型 id 或 provider 键控
-│   ├── sessions/              # 扁平 JSONL 会话存储（每个会话一个文件）
-│   ├── run-events/            # 持久化的每会话 run 事件日志
+│   ├── agent.db               # 会话、运行和事件的 SQLite 权威存储
+│   ├── sessions/              # 保留的旧 JSONL 迁移来源
+│   ├── run-events/            # 保留的旧事件迁移来源
 │   ├── agent-instance.lock    # 每用户 Agent 单例锁
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
 │   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
@@ -53,9 +54,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
   `future auth login` 会自动同步此文件；也可以手工编辑。
 - `auth.json` — 凭据，先按模型 id、再按 provider、最后按默认条目键控：
   `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`。
-- `sessions/` — 扁平的 JSONL 会话文件目录（agent 的默认会话目录）。
-- `run-events/<session_id>/` — 用于回放的持久 run/会话事件日志；自定义会话目录改用
-  该目录下的 `.run-events/`。排队 prompt 在内存中，不在这里持久化。
+- `agent.db` — 会话、消息、运行及回放事件的 SQLite 权威存储。
+- `sessions/`、`run-events/<session_id>/` — 保留的旧 JSONL 迁移来源；自定义旧目录的事件来源为 `.run-events/`。迁移后不再更新这些文件。排队 prompt 仍只保存在内存中。
 - `agent-instance.lock` — 每用户单例锁。测试应隔离 HOME（Windows 同时隔离 USERPROFILE）；
   仅更换 TCP 端口无法绕过单例锁。
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是

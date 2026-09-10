@@ -94,6 +94,8 @@ pub struct RpcCommand {
     pub since_idx: i64,
     #[prost(string, tag = "141")]
     pub run_id: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "146")]
+    pub tool_call_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Page size for get_events_since (0 = unlimited, the legacy behavior).
     /// A run journal can far exceed the gRPC message-size cap, so clients
     /// reading a full run history page through it: re-request with
@@ -310,14 +312,8 @@ pub struct RpcResponse {
     #[prost(bool, tag = "4")]
     pub success: bool,
     /// JSON-serialised response payload.  Structure depends on the command.
-    /// TRANSITIONAL (typed-RPC migration): for commands that carry a typed
-    /// `payload`, this string is dual-written with identical semantics so
-    /// pre-migration clients keep working; new clients read `payload` and fall
-    /// back to `data` when it is absent. Commands without a ResponsePayload
-    /// member (trivial acks, get_messages, ...) are served through this field
-    /// only. The big read commands are documented by the "Response payload
-    /// contracts" section below: list_sessions / get_state /
-    /// get_session_entries / get_events_since.
+    /// Commands with a typed ResponsePayload use that carrier. Other commands
+    /// use this JSON carrier; both expose the same canonical field vocabulary.
     #[prost(string, tag = "5")]
     pub data: ::prost::alloc::string::String,
     /// Error message when success is false.
@@ -865,24 +861,9 @@ pub struct SessionState {
     /// context_tokens as a percentage of context_window (0.0–100.0).
     #[prost(double, tag = "21")]
     pub context_percent: f64,
-    /// Cumulative input tokens consumed in this session.
-    #[prost(int64, tag = "22")]
-    pub tokens_in: i64,
-    /// Cumulative output tokens produced in this session.
-    #[prost(int64, tag = "23")]
-    pub tokens_out: i64,
-    /// Cumulative cost in CNY (¥).
-    #[prost(double, tag = "24")]
-    pub total_cost: f64,
     /// Whether the current model supports image input (multimodal).
     #[prost(bool, tag = "25")]
     pub image_support: bool,
-    /// Cumulative cache-read tokens (prompt caching hits).
-    #[prost(int64, tag = "26")]
-    pub tokens_cache_r: i64,
-    /// Cumulative cache-write tokens (prompt caching writes).
-    #[prost(int64, tag = "27")]
-    pub tokens_cache_w: i64,
     /// Tool execution permission level: "all" (unrestricted), "workspace"
     /// (cwd only), or "none" (read-only tools).
     #[prost(string, tag = "28")]
@@ -926,7 +907,24 @@ pub struct SessionState {
     /// approval UI.
     #[prost(message, repeated, tag = "39")]
     pub pending_approvals: ::prost::alloc::vec::Vec<ApprovalRequestInfo>,
+    #[prost(message, optional, tag = "40")]
+    pub usage: ::core::option::Option<SessionUsage>,
 }
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct SessionUsage {
+    #[prost(int64, tag = "1")]
+    pub input_tokens: i64,
+    #[prost(int64, tag = "2")]
+    pub output_tokens: i64,
+    #[prost(int64, tag = "3")]
+    pub cache_read_tokens: i64,
+    #[prost(int64, tag = "4")]
+    pub cache_write_tokens: i64,
+    #[prost(double, tag = "5")]
+    pub cost_cny: f64,
+}
+/// ── get_state sub-objects ───────────────────────────────────────────────────
+/// These typed sub-messages map to the canonical camelCase JSON contract.
 /// A run's live state as surfaced by get_state (activeRun / interruptedRun).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunStateSnapshot {
@@ -967,22 +965,20 @@ pub struct QueuedRunState {
     #[prost(string, tag = "7")]
     pub display_text: ::prost::alloc::string::String,
 }
-/// Terminal journal content of one run (requestedRun). Keys mirror the
-/// on-disk run_terminal marker (snake_case).
+/// Canonical durable outcome of one requested run; independent of storage.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunTerminalInfo {
     #[prost(string, tag = "1")]
     pub run_id: ::prost::alloc::string::String,
     /// "completed" | "failed" | "cancelled" | ...
     #[prost(string, tag = "2")]
-    pub state: ::prost::alloc::string::String,
-    #[prost(int64, tag = "3")]
-    pub run_tokens: i64,
-    #[prost(int64, tag = "4")]
-    pub run_duration_ms: i64,
-    /// Present only on failure.
+    pub status: ::prost::alloc::string::String,
+    #[prost(int64, optional, tag = "4")]
+    pub duration_ms: ::core::option::Option<i64>,
     #[prost(string, optional, tag = "5")]
     pub error: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "6")]
+    pub usage: ::core::option::Option<MessageUsage>,
 }
 /// A recent terminal acknowledgement for a queued run whose terminal state the
 /// client may have missed (e.g. across an agent restart).
@@ -1056,11 +1052,10 @@ pub struct SessionSummary {
     pub model: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub cwd: ::prost::alloc::string::String,
-    /// "YYYY-MM-DD HH:MM:SS" (local time).
-    #[prost(string, tag = "5")]
-    pub updated_at: ::prost::alloc::string::String,
-    #[prost(string, tag = "6")]
-    pub parent_session_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "10")]
+    pub updated_at_ms: i64,
+    #[prost(string, optional, tag = "6")]
+    pub parent_session_id: ::core::option::Option<::prost::alloc::string::String>,
     /// First user message, for list display; unset when absent (JSON null).
     #[prost(string, optional, tag = "7")]
     pub first_message: ::core::option::Option<::prost::alloc::string::String>,
@@ -1070,90 +1065,73 @@ pub struct SessionSummary {
     #[prost(bool, tag = "9")]
     pub is_streaming: bool,
 }
-/// One displayable entry of a session (get_session_entries). Field names match
-/// the on-disk JSONL schema. Like all payload-contract messages this is
-/// documentation of JSON packed into a string, not a wire type — several fields
-/// below are declared `string` but carry *serialized JSON* (an object/array) as
-/// their value; consumers must JSON-parse them. This is called out per field
-/// rather than pretending the shape is a scalar string.
+/// One displayable entry. Content blocks preserve order; extensible metadata
+/// alone uses explicit JSON carrier fields.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionEntry {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    /// "user" | "assistant" | "tool" (the entry's message role).
     #[prost(string, tag = "2")]
     pub role: ::prost::alloc::string::String,
-    /// Display text for message entries; the RAW session_info JSON object
-    /// serialized to a string for the session_info entry — a `string` here that is
-    /// NOT plain text in that case (see content_is_object).
-    #[prost(string, tag = "3")]
-    pub content: ::prost::alloc::string::String,
-    #[prost(string, tag = "4")]
-    pub name: ::prost::alloc::string::String,
-    /// Tool call arguments, tool entries. Serialized JSON object (a JSON string).
-    #[prost(string, tag = "5")]
-    pub tool_args: ::prost::alloc::string::String,
-    /// RFC3339.
-    #[prost(string, tag = "6")]
-    pub timestamp: ::prost::alloc::string::String,
-    /// Reasoning text, assistant entries (absent when empty).
-    #[prost(string, optional, tag = "7")]
-    pub thinking: ::core::option::Option<::prost::alloc::string::String>,
-    /// Structured per-entry metadata (e.g. user attachments). Serialized JSON
-    /// object in a string, not a scalar; absent when the entry has none.
-    #[prost(string, optional, tag = "8")]
-    pub meta: ::core::option::Option<::prost::alloc::string::String>,
-    /// Pending tool calls, assistant entries. Serialized JSON array of ToolCall;
-    /// absent when the entry has none.
-    #[prost(string, optional, tag = "9")]
-    pub tool_calls: ::core::option::Option<::prost::alloc::string::String>,
-    /// Output tokens of the run this reply concluded (footer display).
-    #[prost(int64, optional, tag = "10")]
-    pub output_tokens: ::core::option::Option<i64>,
-    /// Wall-clock duration of that run in ms (footer display).
-    #[prost(int64, optional, tag = "11")]
-    pub duration_ms: ::core::option::Option<i64>,
-    /// Discriminator for `content`: true when the original JSON value was an
-    /// object (the session_info entry) and the string carries serialized JSON;
-    /// false when it is plain display text. Lets decoders re-inflate `content`
-    /// into the exact original JSON value.
-    #[prost(bool, tag = "12")]
-    pub content_is_object: bool,
-    /// Prompt (input) tokens of the run this reply concluded — the run's delta of
-    /// the session's cumulative tokens_in. Footer shows in+out so the total
-    /// matches the provider's billed usage; absent on legacy sessions.
-    #[prost(int64, optional, tag = "13")]
-    pub input_tokens: ::core::option::Option<i64>,
-    /// Cache-read tokens of that run (delta of cumulative tokens_cache_r) —
-    /// informational: on most providers these are a discounted subset of
-    /// input_tokens, not an addition to them.
-    #[prost(int64, optional, tag = "14")]
-    pub cache_read_tokens: ::core::option::Option<i64>,
-    /// Persisted journal discriminator. Added for non-message projections such as
-    /// durable context checkpoints; absent on responses from older agents.
-    #[prost(string, optional, tag = "15")]
-    pub entry_type: ::core::option::Option<::prost::alloc::string::String>,
-    /// Structured v2/legacy checkpoint payload serialized as JSON.
-    #[prost(string, optional, tag = "16")]
-    pub checkpoint: ::core::option::Option<::prost::alloc::string::String>,
-    /// Correlates a persisted tool result with its originating tool call.
-    #[prost(string, optional, tag = "17")]
+    #[prost(string, tag = "22")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(int64, tag = "23")]
+    pub created_at_ms: i64,
+    #[prost(string, optional, tag = "24")]
+    pub run_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "25")]
+    pub blocks: ::prost::alloc::vec::Vec<MessageBlock>,
+    #[prost(string, optional, tag = "26")]
+    pub metadata_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "27")]
+    pub usage: ::core::option::Option<MessageUsage>,
+    #[prost(message, optional, tag = "28")]
+    pub run: ::core::option::Option<MessageRun>,
+    #[prost(string, optional, tag = "29")]
+    pub session_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "30")]
+    pub checkpoint_json: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MessageBlock {
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "2")]
+    pub text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
     pub tool_call_id: ::core::option::Option<::prost::alloc::string::String>,
-    /// Authoritative tool-result status. Absent for legacy entries that did not
-    /// persist an explicit status.
-    #[prost(bool, optional, tag = "18")]
-    pub tool_result_is_error: ::core::option::Option<bool>,
-    /// Terminal state of the run identified by meta.run_id. Derived from the
-    /// Agent journal's run_terminal marker; absent while active and on old agents.
-    #[prost(string, optional, tag = "19")]
-    pub run_status: ::core::option::Option<::prost::alloc::string::String>,
-    /// Raw terminal error for a failed run. Kept separate from display copy so
-    /// each client can localize the user-facing explanation.
-    #[prost(string, optional, tag = "20")]
-    pub run_error: ::core::option::Option<::prost::alloc::string::String>,
-    /// Terminal run duration even when the run produced no assistant entry.
-    #[prost(int64, optional, tag = "21")]
-    pub run_duration_ms: ::core::option::Option<i64>,
+    #[prost(string, optional, tag = "4")]
+    pub name: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "5")]
+    pub arguments_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag = "6")]
+    pub is_error: ::core::option::Option<bool>,
+    #[prost(string, optional, tag = "7")]
+    pub image_url: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "8")]
+    pub provider_metadata_json: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "9")]
+    pub data_json: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct MessageUsage {
+    #[prost(int64, optional, tag = "1")]
+    pub input_tokens: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "2")]
+    pub output_tokens: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "3")]
+    pub cache_read_tokens: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "4")]
+    pub cache_write_tokens: ::core::option::Option<i64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MessageRun {
+    #[prost(string, optional, tag = "1")]
+    pub status: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub error: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(int64, optional, tag = "3")]
+    pub duration_ms: ::core::option::Option<i64>,
 }
 /// One event as replayed by get_events_since. Field names mirror the
 /// StreamEvent envelope.

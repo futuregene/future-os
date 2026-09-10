@@ -210,8 +210,10 @@ pub async fn fork_agent_session(
         .or_else(|| {
             entries.iter().position(|e| {
                 is_user(e)
-                    && e.get("content")
-                        .and_then(|c| c.as_str())
+                    && e.get("blocks")
+                        .and_then(|c| c.as_array())
+                        .and_then(|blocks| blocks.iter().find(|b| b["kind"] == "text"))
+                        .and_then(|b| b["text"].as_str())
                         .is_some_and(|c| c.trim() == user_message_content.trim())
             })
         })
@@ -271,8 +273,8 @@ pub async fn fork_agent_session(
         .iter()
         .find(|e| e.get("role").and_then(|r| r.as_str()) == Some("system"));
     let agent_session_name = session_info
-        .and_then(|e| e.get("content"))
-        .and_then(|c| c.get("session_name"))
+        .and_then(|e| e.get("session"))
+        .and_then(|c| c.get("sessionName"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty() && *s != "(fork)")
         .map(str::to_string);
@@ -336,11 +338,16 @@ pub async fn fork_agent_session(
     }
 
     let (provider, model_id) = split_model(&session_model);
-    let run_count = entry_groups.len().max(1);
+    let run_count = entry_groups.len();
     let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
-    for _ in 0..run_count {
+    for group in &entry_groups {
+        let canonical_id = group
+            .iter()
+            .filter_map(|index| fork_entries.get(*index))
+            .find_map(|entry| entry["runId"].as_str())
+            .ok_or_else(|| "Fork history has no canonical run identity".to_string())?;
         let run = store::create_run(store::CreateRunInput {
-            id: None,
+            id: Some(canonical_id.to_owned()),
             thread_id: new_thread.id.clone(),
             trigger_message_id: None,
             model_provider: provider.clone(),
@@ -365,9 +372,8 @@ pub async fn fork_agent_session(
 /// Write synthetic `tool_start` and `tool_end` run events from agent session
 /// entries for runs that have no live event stream (forked and imported
 /// sessions). The persistence pass extracts file artifacts and folds the
-/// events into the Runs-panel tool projection (the Agent journal has no
-/// forked history to serve it). Panel state is in-memory, so it lasts for
-/// this process lifetime.
+/// events only for local artifact extraction. Tool inspection queries the
+/// Agent directly; this transient correlation cache is not its data source.
 ///
 /// Entries are grouped by canonical `meta.run_id`, with a positional
 /// user-to-next-user fallback for legacy journals. Tool result entries are
@@ -381,10 +387,11 @@ pub(super) fn synthesize_run_events_from_entries(
         let tool_results: HashMap<&str, &serde_json::Value> = group
             .iter()
             .filter_map(|index| entries.get(*index))
-            .filter(|entry| entry.get("role").and_then(|role| role.as_str()) == Some("tool"))
-            .filter_map(|entry| {
-                let id = entry.get("tool_call_id").and_then(|value| value.as_str())?;
-                (!id.is_empty()).then_some((id, entry))
+            .flat_map(|entry| entry["blocks"].as_array().into_iter().flatten())
+            .filter(|block| block["kind"] == "tool_result")
+            .filter_map(|block| {
+                let id = block["toolCallId"].as_str()?;
+                (!id.is_empty()).then_some((id, block))
             })
             .collect();
         let mut seq: i64 = 0;
@@ -393,24 +400,21 @@ pub(super) fn synthesize_run_events_from_entries(
             if entry.get("role").and_then(|role| role.as_str()) != Some("assistant") {
                 continue;
             }
-            let Some(tool_calls) = entry.get("tool_calls").and_then(|value| value.as_array())
-            else {
+            let Some(tool_calls) = entry.get("blocks").and_then(|value| value.as_array()) else {
                 continue;
             };
 
-            for tc in tool_calls {
-                let tc_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            for tc in tool_calls
+                .iter()
+                .filter(|block| block["kind"] == "tool_call")
+            {
+                let tc_id = tc.get("toolCallId").and_then(|v| v.as_str()).unwrap_or("");
                 if tc_id.is_empty() {
                     continue;
                 }
-                let name = tc
-                    .get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = tc
-                    .get("function")
-                    .and_then(|f| f.get("arguments"))
+                    .get("arguments")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
 
@@ -432,11 +436,11 @@ pub(super) fn synthesize_run_events_from_entries(
 
                 // tool_end from the matching result entry, if one exists.
                 if let Some(result) = tool_results.get(tc_id) {
-                    let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let content = result.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     let is_error = result
-                        .get("tool_result_is_error")
+                        .get("isError")
                         .and_then(|value| value.as_bool())
-                        .unwrap_or_else(|| content.starts_with("Error:"));
+                        .unwrap_or(false);
                     let end_payload = if is_error {
                         serde_json::json!({
                             "tool_id": tc_id,
@@ -478,7 +482,7 @@ pub(super) fn group_session_entries(entries: &[serde_json::Value]) -> Vec<Vec<us
             continue;
         }
         if let Some(run_id) = entry
-            .pointer("/meta/run_id")
+            .get("runId")
             .and_then(|value| value.as_str())
             .filter(|value| !value.is_empty())
         {
@@ -819,40 +823,43 @@ mod tests {
 
     fn entries_payload(entries: serde_json::Value) -> serde_json::Value {
         let mut entries = entries.as_array().cloned().unwrap_or_default();
+        let mut current_run = "history-test".to_owned();
         for entry in &mut entries {
-            if let Some(object) = entry.as_object_mut() {
-                object
-                    .entry("name")
-                    .or_insert_with(|| serde_json::json!(""));
-                object
-                    .entry("tool_args")
-                    .or_insert_with(|| serde_json::json!(""));
-                object
-                    .entry("timestamp")
-                    .or_insert_with(|| serde_json::json!("2026-08-27T00:00:00Z"));
+            if entry["role"] == "user" {
+                current_run = format!("history-{}", entry["id"].as_str().unwrap());
             }
+            let object = entry.as_object_mut().unwrap();
+            object.entry("kind").or_insert(serde_json::Value::Null);
+            if object["kind"].is_null() {
+                object.insert("kind".into(), object["role"].clone());
+            }
+            object
+                .entry("createdAtMs")
+                .or_insert(serde_json::json!(1000));
+            object.entry("blocks").or_insert(serde_json::json!([]));
+            object
+                .entry("runId")
+                .or_insert(serde_json::json!(current_run));
         }
         serde_json::json!({"entries": entries})
     }
 
     fn conversation_entries() -> serde_json::Value {
         serde_json::json!([
-            {"id": "e1", "role": "user", "content": "first question"},
-            {"id": "e2", "role": "assistant", "content": "first answer"},
-            {"id": "e3", "role": "user", "content": "second question"},
-            {"id": "e4", "role": "assistant", "content": "second answer"},
-            {"id": "e5", "role": "user", "content": "third question"}
+            {"id":"e1","role":"user","blocks":[{"kind":"text","text":"first question"}]},
+            {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"first answer"}]},
+            {"id":"e3","role":"user","blocks":[{"kind":"text","text":"second question"}]},
+            {"id":"e4","role":"assistant","blocks":[{"kind":"text","text":"second answer"}]},
+            {"id":"e5","role":"user","blocks":[{"kind":"text","text":"third question"}]}
         ])
     }
 
     fn forked_entries() -> serde_json::Value {
         serde_json::json!([
-            {"id": "f0", "role": "system", "content": {"session_name": "Forked Chat"}, "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:00Z", "model": "future/k3"},
-            {"id": "f1", "role": "user", "content": "first question", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:01Z"},
-            {"id": "f2", "role": "assistant", "content": "first answer", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:02Z", "tool_calls": [
-                {"id": "tc-1", "function": {"name": "shell", "arguments": "{\"command\":\"ls\"}"}}
-            ]},
-            {"id": "f3", "role": "tool", "content": "file.txt", "name": "", "tool_args": "", "timestamp": "2026-08-27T00:00:03Z", "tool_call_id": "tc-1", "tool_result_is_error": false}
+            {"id":"f0","role":"system","kind":"session_info","session":{"sessionName":"Forked Chat","model":"future/k3"},"blocks":[]},
+            {"id":"f1","role":"user","blocks":[{"kind":"text","text":"first question"}]},
+            {"id":"f2","role":"assistant","blocks":[{"kind":"text","text":"first answer"},{"kind":"tool_call","toolCallId":"tc-1","name":"shell","arguments":{"command":"ls"}}]},
+            {"id":"f3","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"tc-1","text":"file.txt","isError":false}]}
         ])
     }
 
@@ -926,7 +933,7 @@ mod tests {
         mock.push_data(
             "get_session_entries",
             entries_payload(serde_json::json!([
-                {"id": "f1", "role": "user", "content": "first question"}
+                {"id": "f1", "role": "user", "blocks": [{"kind":"text","text":"first question"}]}
             ])),
         );
         mock.push("set_cwd", Reply::Data("{}".to_string()));
@@ -1105,7 +1112,7 @@ mod tests {
         mock.push_data(
             "get_session_entries",
             entries_payload(serde_json::json!([
-                {"id": "f0", "role": "system", "content": {"session_name": "(fork)"}}
+                {"id": "f0", "role": "system", "kind":"session_info", "session": {"sessionName": "(fork)"}}
             ])),
         );
         mock.push(
@@ -1230,18 +1237,18 @@ mod tests {
         let run_b = seed_run(&thread.id);
 
         let entries = serde_json::json!([
-            {"role": "assistant", "tool_calls": [
-                {"id": "tc-1", "function": {"name": "shell", "arguments": {"command": "ls"}}},
-                {"id": "", "function": {"name": "write", "arguments": "{}"}},
-                {"id": "tc-2"},
-                {"id": "tc-err", "function": {"name": "read", "arguments": "{}"}}
+            {"role":"assistant","blocks":[
+                {"kind":"tool_call","toolCallId":"tc-1","name":"shell","arguments":{"command":"ls"}},
+                {"kind":"tool_call","toolCallId":"","name":"write","arguments":{}},
+                {"kind":"tool_call","toolCallId":"tc-2"},
+                {"kind":"tool_call","toolCallId":"tc-err","name":"read","arguments":{}}
             ]},
-            {"role": "tool", "tool_call_id": "tc-1", "content": "ok"},
-            {"role": "tool", "tool_call_id": "tc-err", "content": "Error: missing file"},
-            {"role": "tool", "tool_call_id": "", "content": "no id"},
-            {"role": "assistant", "content": "no tool calls"},
-            {"role": "assistant", "tool_calls": []},
-            {"role": "user", "content": "not an assistant"}
+            {"role":"tool","blocks":[{"kind":"tool_result","toolCallId":"tc-1","text":"ok","isError":false}]},
+            {"role":"tool","blocks":[{"kind":"tool_result","toolCallId":"tc-err","text":"Error: missing file","isError":true}]},
+            {"role":"tool","blocks":[{"kind":"tool_result","toolCallId":"","text":"no id"}]},
+            {"role":"assistant","blocks":[{"kind":"text","text":"no tool calls"}]},
+            {"role":"assistant","blocks":[]},
+            {"role":"user","blocks":[{"kind":"text","text":"not an assistant"}]}
         ]);
         synthesize_run_events_from_entries(
             &entries.as_array().expect("array").to_vec(),
@@ -1270,12 +1277,12 @@ mod tests {
     fn groups_multiple_assistant_entries_into_their_canonical_run() {
         let entries = serde_json::json!([
             {"role": "system", "content": {}},
-            {"role": "user", "meta": {"run_id": "r1"}},
-            {"role": "assistant", "meta": {"run_id": "r1"}},
-            {"role": "assistant", "meta": {"run_id": "r1"}},
-            {"role": "tool", "meta": {"run_id": "r1"}},
-            {"role": "user", "meta": {"run_id": "r2"}},
-            {"role": "assistant", "meta": {"run_id": "r2"}}
+            {"role": "user", "runId": "r1"},
+            {"role": "assistant", "runId": "r1"},
+            {"role": "assistant", "runId": "r1"},
+            {"role": "tool", "runId": "r1"},
+            {"role": "user", "runId": "r2"},
+            {"role": "assistant", "runId": "r2"}
         ]);
         assert_eq!(
             group_session_entries(entries.as_array().expect("entries")),

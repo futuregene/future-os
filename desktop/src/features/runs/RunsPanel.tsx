@@ -266,9 +266,9 @@ function ToolRow({
     : relativizeWorkspacePath(rawPrimary, workspacePath);
   // Show the tool's own status, never the run's. A tool still marked "running"
   // after its run has ended was interrupted — we can't tell a user abort from a
-  // real failure, so treat it as failed rather than a perpetual "running".
+  // real failure, so preserve that uncertainty as interrupted.
   const status
-    = tool.status === "running" && !isActiveRun(run) ? "failed" : tool.status;
+    = tool.status === "running" && !isActiveRun(run) ? "interrupted" : tool.status;
   const running = status === "running";
   const meta = [toolLabel(tool), toolStatusLabel(status)]
     .filter(Boolean)

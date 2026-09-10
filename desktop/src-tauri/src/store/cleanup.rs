@@ -133,12 +133,12 @@ fn agent_terminal_settlement(
     Some(match agent_state {
         "completed" => ("completed", None, None),
         "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
-        "error" => (
+        "error" | "failed" => (
             "failed",
             Some("agent_error"),
             Some("Future Agent run failed."),
         ),
-        "incomplete" => (
+        "incomplete" | "interrupted" => (
             "failed",
             Some("stream_interrupted"),
             Some("Future Agent response ended before a clean terminal."),

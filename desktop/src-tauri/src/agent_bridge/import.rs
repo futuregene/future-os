@@ -92,7 +92,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
             cwd: summary.cwd,
             model: summary.model,
             first_message: summary.first_message,
-            parent_session_id: summary.parent_session_id,
+            parent_session_id: summary.parent_session_id.unwrap_or_default(),
             is_streaming: summary.is_streaming,
         })
         .collect()
@@ -201,10 +201,11 @@ fn session_title(summary: &AgentSessionSummary) -> String {
 fn create_historical_run(
     thread_id: &str,
     model: &str,
+    run_id: String,
 ) -> Result<store::RunRecord, crate::AppError> {
     let (provider, model_id) = super::session::split_model(model);
     let run = store::create_run(store::CreateRunInput {
-        id: None,
+        id: Some(run_id),
         thread_id: thread_id.to_string(),
         trigger_message_id: None,
         model_provider: provider,
@@ -452,11 +453,16 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 
     // Count real exchanges and synthesize run events from the fetched history.
     let entry_groups = super::session::group_session_entries(&entries);
-    let run_count = entry_groups.len().max(1);
+    let run_count = entry_groups.len();
 
     let mut run_ids: Vec<String> = Vec::with_capacity(run_count);
-    for _ in 0..run_count {
-        let run = create_historical_run(&thread.id, &summary.model)?;
+    for group in &entry_groups {
+        let canonical_id = group
+            .iter()
+            .filter_map(|index| entries.get(*index))
+            .find_map(|entry| entry["runId"].as_str())
+            .ok_or_else(|| "Imported history has no canonical run identity".to_string())?;
+        let run = create_historical_run(&thread.id, &summary.model, canonical_id.to_owned())?;
         run_ids.push(run.id);
     }
 
@@ -500,7 +506,6 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         // alias (audit item 1); prefer canonical, tolerate pre-item-1 agents.
         name: state
             .get("sessionName")
-            .or_else(|| state.get("session_name"))
             .and_then(|value| value.as_str())
             .map(str::to_string),
         cwd: state
@@ -710,8 +715,8 @@ mod tests {
                 "sessionName": "Typed history",
                 "model": "future/k3",
                 "cwd": "/ws/typed",
-                "updatedAt": "2026-08-27 10:00:00",
-                "parentSessionId": "",
+                "updatedAtMs": 20692000,
+                "parentSessionId": null,
                 "firstMessage": "hello",
                 "queryCount": 1,
                 "isStreaming": false
@@ -777,10 +782,7 @@ mod tests {
             serde_json::json!({"entries": [{
                 "id": "entry-1",
                 "role": "user",
-                "content": "hello",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-27T10:00:00Z"
+                "kind":"user","blocks":[{"kind":"text","text":"hello"}],"createdAtMs":1000,"runId":"history-typed-session"
             }]}),
         );
 
@@ -788,7 +790,7 @@ mod tests {
             .await
             .expect("entries");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["content"], "hello");
+        assert_eq!(entries[0]["blocks"][0]["text"], "hello");
     }
 
     // ── thread_mode / is_desktop_chat_cwd ──────────────────────────────
@@ -1076,7 +1078,7 @@ mod tests {
         );
         let s = summary("sess-cwd-fail", "");
         let runs = import_one(&s).await.expect("import");
-        assert_eq!(runs, 1);
+        assert_eq!(runs, 0);
         settle_spawns().await;
     }
 
@@ -1170,8 +1172,8 @@ mod tests {
         mock.push_typed_data(
             "get_session_entries",
             serde_json::json!({"entries": [
-                {"id": "a1", "role": "assistant", "content": "a1", "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:00Z"},
-                {"id": "a2", "role": "assistant", "content": "a2", "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"}
+                {"id":"a1","role":"assistant","kind":"assistant","runId":"history-sess-new","blocks":[{"kind":"text","text":"a1"}],"createdAtMs":1000},
+                {"id":"a2","role":"assistant","kind":"assistant","runId":"history-sess-new","blocks":[{"kind":"text","text":"a2"}],"createdAtMs":1000}
             ]}),
         );
         let s = summary("sess-new", "");
@@ -1194,7 +1196,7 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
         let s = summary("sess-ws", &cwd.display().to_string());
         let runs = import_one(&s).await.expect("import");
-        assert_eq!(runs, 1, "no assistant replies → one placeholder run");
+        assert_eq!(runs, 0, "empty history must not fabricate a run");
         settle_spawns().await;
         let thread = crate::store::find_thread_by_agent_session("sess-ws")
             .expect("find")
@@ -1305,16 +1307,15 @@ mod tests {
         mock.push_typed_data(
             "list_sessions",
             serde_json::json!({"sessions": [
-                {"id": "sess-m1", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAt": "2026-08-27 10:00:00", "parentSessionId": "", "firstMessage": "one", "queryCount": 1, "isStreaming": false},
-                {"id": "sess-m2", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAt": "2026-08-27 10:00:00", "parentSessionId": "", "firstMessage": "two", "queryCount": 1, "isStreaming": false}
+                {"id": "sess-m1", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAtMs": 20692000, "parentSessionId": null, "firstMessage": "one", "queryCount": 1, "isStreaming": false},
+                {"id": "sess-m2", "sessionName": null, "cwd": "", "model": "future/k3", "updatedAtMs": 20692000, "parentSessionId": null, "firstMessage": "two", "queryCount": 1, "isStreaming": false}
             ]}),
         );
         for index in 0..2 {
             mock.push_typed_data(
                 "get_session_entries",
                 serde_json::json!({"entries": [{
-                    "id": format!("reply-{index}"), "role": "assistant", "content": "ok",
-                    "name": "", "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"
+                    "id": format!("reply-{index}"), "role": "assistant", "kind":"assistant","runId":format!("history-sess-{index}"),"blocks":[{"kind":"text","text":"ok"}],"createdAtMs":1000
                 }]}),
             );
         }

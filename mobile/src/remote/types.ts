@@ -104,9 +104,9 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool" | string;
-  /** Omitted on the wire when null — e.g. tool-call-only assistant messages. */
-  content?: string | { type?: string; text?: string }[] | null;
-  run_id?: string;
+  blocks: import("@future-os/thread-projection").SessionEntry["blocks"];
+  metadata?: Record<string, unknown> | null;
+  runId?: string | null;
 }
 
 /** Attachment chip on a user entry — mirrors the desktop `meta.attachments`. */
@@ -153,54 +153,7 @@ export interface DownloadInfo {
  * carry attachments on `meta`, and assistant entries may carry the model's
  * thinking and the tool calls it introduced.
  */
-export interface HistoryEntry {
-  id?: string;
-  entry_type?: string;
-  role: string;
-  content?: string | null;
-  checkpoint?: {
-    schema_version?: number;
-    checkpoint_id?: string;
-    cutoff_entry_id?: string;
-    tokens_before?: number;
-    tokens_after?: number;
-    trigger?: string;
-    phase?: "pre_turn" | "mid_turn" | "standalone" | string;
-    algorithm_version?: string;
-    summary?: unknown;
-  } | null;
-  /** Model reasoning for an assistant entry — rendered as a thinking row. */
-  thinking?: string | null;
-  /** Tool calls an assistant entry introduced — rendered as activity rows. */
-  tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] | null;
-  /** Correlates a tool result with the originating assistant tool call. */
-  tool_call_id?: string | null;
-  /** Authoritative tool-result status when persisted by the agent. */
-  tool_result_is_error?: boolean | null;
-  meta?: {
-    /** Canonical Agent run identity (present on new entries). */
-    run_id?: string;
-    attachments?: HistoryAttachment[] | null;
-  } | null;
-  /** Output tokens for the reply — only the final assistant entry of a run. */
-  output_tokens?: number;
-  /** Reply wall-clock duration in ms — paired with `output_tokens`. */
-  duration_ms?: number;
-  /** Prompt tokens billed for this run. */
-  input_tokens?: number;
-  /** Cache-read subset of input tokens. */
-  cache_read_tokens?: number;
-  /** Terminal run outcome from the Agent journal (bridge fallback on old Agents). */
-  run_status?: "completed" | "failed" | "cancelled" | string;
-  /** Raw run error for `run_status: "failed"`. */
-  run_error?: string;
-  /** Terminal elapsed run time. This remains separate from `duration_ms`,
-   * which belongs to a persisted assistant entry and is absent when a run
-   * fails before producing one. */
-  run_duration_ms?: number;
-  /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
-  timestamp?: string;
-}
+export type HistoryEntry = import("@future-os/thread-projection").SessionEntry;
 
 export interface StreamEvent {
   type: string;

@@ -1,4 +1,8 @@
-import type { StoredThread, StoredWorkspace, ThreadCleanupSummary } from "./types";
+import type {
+  StoredThread,
+  StoredWorkspace,
+  ThreadCleanupSummary,
+} from "./types";
 import { invokeCommand } from "../tauri/invoke";
 
 // ─── Workspaces ──────────────────────────────────────────────────────────
@@ -20,7 +24,10 @@ export async function ensureWorkspaceGit(workspaceId: string) {
   return invokeCommand<boolean>("ensure_workspace_git", { workspaceId });
 }
 
-export async function renameWorkspace(input: { workspaceId: string; name: string }) {
+export async function renameWorkspace(input: {
+  workspaceId: string;
+  name: string;
+}) {
   return invokeCommand<StoredWorkspace>("rename_workspace", { input });
 }
 
@@ -63,7 +70,8 @@ export async function createDefaultChatThread(defaultTitle: string) {
 let recentOrDefaultThreadPromise: Promise<StoredThread> | null = null;
 
 export function getRecentOrCreateDefaultThread(defaultTitle: string) {
-  recentOrDefaultThreadPromise ??= (async () => (await getRecentThread()) ?? createDefaultChatThread(defaultTitle))()
+  recentOrDefaultThreadPromise ??= (async () =>
+    (await getRecentThread()) ?? createDefaultChatThread(defaultTitle))()
     .then((thread) => {
       recentOrDefaultThreadPromise = null;
       return thread;
@@ -116,16 +124,27 @@ export async function restoreThread(threadId: string) {
   return invokeCommand<StoredThread>("restore_thread", { threadId });
 }
 
-export async function deleteThread(input: { threadId: string; deleteFiles?: boolean }) {
+export async function deleteThread(input: {
+  threadId: string;
+  deleteFiles?: boolean;
+}) {
   return invokeCommand<StoredThread>("delete_thread", { input });
 }
 
-export async function batchDeleteThreads(input: { threadIds: string[]; deleteFiles?: boolean }) {
-  return invokeCommand<{ deletedCount: number; failed: string[] }>("batch_delete_threads", { input });
+export async function batchDeleteThreads(input: {
+  threadIds: string[];
+  deleteFiles?: boolean;
+}) {
+  return invokeCommand<{ deletedCount: number; failed: string[] }>(
+    "batch_delete_threads",
+    { input },
+  );
 }
 
 export async function getThreadCleanupSummary(threadId: string) {
-  return invokeCommand<ThreadCleanupSummary>("get_thread_cleanup_summary", { threadId });
+  return invokeCommand<ThreadCleanupSummary>("get_thread_cleanup_summary", {
+    threadId,
+  });
 }
 
 /**
@@ -133,11 +152,40 @@ export async function getThreadCleanupSummary(threadId: string) {
  * id. `userMessageIndex` is the 0-based ordinal of the message among user
  * messages — the authoritative fork point; content is a fallback.
  */
-export function forkThread(threadId: string, userMessageContent: string, userMessageIndex: number) {
-  return invokeCommand<string>("fork_thread", { threadId, userMessageContent, userMessageIndex });
+export function forkThread(
+  threadId: string,
+  userMessageContent: string,
+  userMessageIndex: number,
+) {
+  return invokeCommand<string>("fork_thread", {
+    threadId,
+    userMessageContent,
+    userMessageIndex,
+  });
 }
 
 /** Fetch session entries from the agent (primary message source). */
 export async function getSessionEntries(threadId: string) {
-  return invokeCommand<{ entries: Record<string, unknown>[] }>("get_session_entries", { threadId });
+  return invokeCommand<{ entries: Record<string, unknown>[] }>(
+    "get_session_entries",
+    { threadId },
+  );
+}
+
+export interface SessionHistoryPage {
+  entries: Record<string, unknown>[];
+  hasMore: boolean;
+  nextOffset: number;
+}
+
+export async function getSessionEntriesPage(
+  threadId: string,
+  before: number | null = null,
+  limit = 10,
+) {
+  return invokeCommand<SessionHistoryPage>("get_session_entries_page", {
+    threadId,
+    before,
+    limit,
+  });
 }

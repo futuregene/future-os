@@ -199,8 +199,8 @@ describe("runSendPipeline terminal-status handling", () => {
       .filter(m => m.role === "assistant")
       .pop();
     expect(assistant?.status).toBe("failed");
-    expect(assistant?.terminationTitle).toContain("Model response error");
-    expect(assistant?.terminationNotice).toContain("Switch models");
+    expect(assistant?.terminationTitle).toContain("cause is unconfirmed");
+    expect(assistant?.terminationNotice).toContain("Generated content has been kept");
   });
 
   it("keeps the cancelled early return: stopped bubble, no fall-through render", async () => {

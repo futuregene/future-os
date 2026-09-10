@@ -1,7 +1,7 @@
 //! In-memory healing of a loaded session so it stays API-valid on resume.
 //!
 //! These are pure functions over `Vec<SessionEntry>` — no file access — and are
-//! applied by `Manager::load_path` only in memory. The healed entries are
+//! applied by `Manager::load` only in memory. The healed entries are
 //! deliberately NOT written back there: persisting a placeholder for a dangling
 //! tool call while the owning agent is still mid-tool would corrupt the file
 //! when the real result later lands with the same `tool_call_id`.
@@ -123,7 +123,6 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
 
     // Collect (insertion_index, Vec<placeholder_entries>) pairs.
     // Process later so earlier insertions don't invalidate indices.
-    let now = chrono::Local::now();
     let mut repairs: Vec<(usize, Vec<SessionEntry>)> = Vec::new();
     let mut i = 0;
     while i < entries.len() {
@@ -161,12 +160,12 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
                         TOOL_LOST_PLACEHOLDER_PREFIX, tc.function.name,
                     );
                     SessionEntry {
-                        id: crate::utils::generate_id(),
+                        id: format!("missing-tool:{}:{}", entry.id, tc.id),
                         entry_type: ENTRY_TYPE_TOOL.to_string(),
                         role: "tool".to_string(),
                         content: Some(serde_json::Value::String(placeholder)),
                         tool_calls: vec![],
-                        timestamp: now,
+                        timestamp: entry.timestamp,
                         tool_call_id: tc.id.clone(),
                         name: tc.function.name.clone(),
                         tool_args: String::new(),

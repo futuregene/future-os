@@ -245,16 +245,19 @@ fn prune_run_events_validates_run_id() {
 #[test]
 fn prune_run_events_removes_journal_and_tolerates_missing_file() {
     let state = make_app_state();
-    let run_data = state.session_manager.run_data_path("default");
-    std::fs::create_dir_all(&run_data).unwrap();
-    std::fs::write(run_data.join("run-prune.jsonl"), "{}").unwrap();
+    state.session_manager.storage().unwrap().append_event("default", serde_json::json!({"run_id":"run-prune","epoch":1,"idx":0,"event_type":"agent_start","data":"{}"})).unwrap();
 
     let mut cmd = make_cmd("prune_run_events");
     cmd.run_id = "run-prune".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["pruned"], true);
-    assert!(!run_data.join("run-prune.jsonl").exists());
+    assert!(!state
+        .session_manager
+        .storage()
+        .unwrap()
+        .has_events("default", "run-prune")
+        .unwrap());
 
     // Already gone → still pruned (NotFound is success).
     let mut cmd = make_cmd("prune_run_events");
@@ -427,9 +430,7 @@ fn prompt_supersede_replaces_queued_run() {
 fn prompt_duplicate_run_id_maps_to_scheduler_error() {
     let state = make_app_state();
     // Plant a journal for run-dupe so the id is rejected as reused.
-    let run_data = state.session_manager.run_data_path("default");
-    std::fs::create_dir_all(&run_data).unwrap();
-    std::fs::write(run_data.join("run-dupe.jsonl"), "").unwrap();
+    state.session_manager.storage().unwrap().append_event("default", serde_json::json!({"run_id":"run-dupe","epoch":1,"idx":0,"event_type":"agent_start","data":"{}"})).unwrap();
 
     let mut cmd = make_cmd("prompt");
     cmd.message = "dupe".to_string();
@@ -468,7 +469,7 @@ fn prompt_reports_persistence_unavailable() {
     // configuration fail, which enqueue reports as persistence_unavailable.
     let dir = test_session_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(".run-events"), "not a dir").unwrap();
+    std::fs::write(dir.join("agent.db"), "not a database").unwrap();
     let state = make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
 
     let mut cmd = make_cmd("prompt");
@@ -597,15 +598,13 @@ fn prune_run_events_rejects_active_run() {
 fn prune_run_events_reports_io_error() {
     let state = make_app_state();
     // A directory where the journal file should be makes remove_file fail.
-    let run_data = state.session_manager.run_data_path("default");
-    std::fs::create_dir_all(run_data.join("run-dir.jsonl")).unwrap();
+    state.session_manager.test_execute("DROP TABLE run_events");
 
     let mut cmd = make_cmd("prune_run_events");
     cmd.run_id = "run-dir".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
     assert_eq!(resp["error_code"], "prune_failed");
-    let _ = std::fs::remove_dir_all(run_data.join("run-dir.jsonl"));
 }
 
 #[test]

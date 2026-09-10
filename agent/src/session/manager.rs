@@ -1,43 +1,39 @@
-//! JSONL persistence for sessions: append/save/load, atomic writes, advisory
-//! file locking, run recovery, and orphaned run-data reclamation.
+//! SQLite session persistence, ordered appends and transactional run recovery.
 //!
 //! Summary scanning and listing live in [`super::summary`].
 
-use super::entry::{
-    SessionEntry, ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_MODEL_CHANGE, ENTRY_TYPE_RUN_STARTED,
-    ENTRY_TYPE_RUN_TERMINAL, ENTRY_TYPE_SESSION_INFO, ENTRY_TYPE_SYSTEM, ENTRY_TYPE_TOOL,
-    ENTRY_TYPE_USER,
-};
+use super::entry::{SessionEntry, ENTRY_TYPE_MODEL_CHANGE, ENTRY_TYPE_SESSION_INFO};
+#[cfg(test)]
+use super::entry::{ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_SYSTEM, ENTRY_TYPE_TOOL};
 use super::model::Session;
 use super::projection::hydrate_entry_projections;
 use super::repair::{dedupe_tool_entries, repair_dangling_tool_calls, strip_empty_assistants};
 use super::run_journal::RUN_STATE_INTERRUPTED_BY_RESTART;
+use super::sqlite_store::SqliteStore;
 use crate::utils::default_session_dir;
 use anyhow::{anyhow, Context, Result};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 const DISPLAY_ENTRIES_CACHE_MAX: usize = 12;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct SessionFileVersion {
-    len: u64,
-    modified: Option<SystemTime>,
+pub(crate) struct SessionRevision {
+    revision: i64,
 }
 
 struct DisplayEntriesCacheEntry {
     session_id: String,
-    version: SessionFileVersion,
+    version: SessionRevision,
     entries: Arc<Vec<serde_json::Value>>,
 }
 
 pub struct Manager {
     pub dir: PathBuf,
+    store: OnceLock<SqliteStore>,
+    initialization: parking_lot::Mutex<()>,
     /// Bounded LRU of display projections. Pagination requests for one stable
-    /// JSONL version slice this shared projection instead of loading and
+    /// SQLite revision slice this shared projection instead of loading and
     /// projecting the complete journal again for every page.
     display_entries_cache: parking_lot::Mutex<Vec<DisplayEntriesCacheEntry>>,
     /// Test-only save-failure injection (number of saves left to fail).
@@ -49,6 +45,8 @@ impl Manager {
     pub fn new(dir: PathBuf) -> Self {
         Self {
             dir,
+            store: OnceLock::new(),
+            initialization: parking_lot::Mutex::new(()),
             display_entries_cache: parking_lot::Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
@@ -59,22 +57,89 @@ impl Manager {
         Self::new(default_session_dir(cwd))
     }
 
-    pub(crate) fn session_path(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{}.jsonl", id))
+    #[cfg(test)]
+    pub(crate) fn test_execute(&self, sql: &str) {
+        let sql = sql.to_owned();
+        self.storage()
+            .unwrap()
+            .db
+            .call(move |db| {
+                db.execute_batch(&sql)?;
+                Ok(())
+            })
+            .unwrap();
     }
 
-    pub(crate) fn session_file_version(&self, id: &str) -> Result<SessionFileVersion> {
-        let metadata = fs::metadata(self.session_path(id)).context("read session metadata")?;
-        Ok(SessionFileVersion {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
+    pub fn database_path(&self) -> PathBuf {
+        if self.dir.file_name().and_then(|s| s.to_str()) == Some("sessions") {
+            self.dir.parent().unwrap_or(&self.dir).join("agent.db")
+        } else {
+            self.dir.join("agent.db")
+        }
+    }
+
+    /// Called before serving RPC, while the Agent instance lock is held.
+    pub fn initialize(&self) -> Result<()> {
+        self.storage().map(|_| ())
+    }
+
+    pub(crate) fn storage(&self) -> Result<&SqliteStore> {
+        if let Some(store) = self.store.get() {
+            return Ok(store);
+        }
+        let _guard = self.initialization.lock();
+        if self.store.get().is_none() {
+            let store = SqliteStore::open(&self.database_path())?;
+            store.import_legacy(&self.dir, None)?;
+            let _ = self.store.set(store);
+        }
+        Ok(self.store.get().expect("initialized SQLite store"))
+    }
+
+    pub fn retry_legacy_import(&self, id: &str) -> Result<()> {
+        self.storage()?.import_legacy(&self.dir, Some(id))
+    }
+
+    pub fn import_records(&self) -> Result<Vec<super::ImportRecord>> {
+        self.storage()?.import_records()
+    }
+
+    pub fn contains(&self, id: &str) -> Result<bool> {
+        self.storage()?.contains(id)
+    }
+
+    pub(crate) fn history_page(
+        &self,
+        id: &str,
+        before: Option<i64>,
+        offset: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let id = id.to_owned();
+        let page = self.storage()?.db.call(move |db| {
+            let tx = db.transaction()?;
+            let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&id], |r| r.get(0))?;
+            if skipped { anyhow::bail!("session migration was skipped"); }
+            let page = super::history_index::read_page(&tx, &id, before, offset, limit)?;
+            tx.commit()?;
+            Ok(page)
+        })?;
+        super::history_index::materialize(page, before, offset)
+    }
+
+    pub(crate) fn session_revision(&self, id: &str) -> Result<SessionRevision> {
+        Ok(SessionRevision {
+            revision: self
+                .storage()?
+                .revision(id)?
+                .ok_or_else(|| anyhow!("session not found"))?,
         })
     }
 
     pub(crate) fn cached_display_entries(
         &self,
         id: &str,
-        version: &SessionFileVersion,
+        version: &SessionRevision,
     ) -> Option<Arc<Vec<serde_json::Value>>> {
         let mut cache = self.display_entries_cache.lock();
         let index = cache
@@ -89,7 +154,7 @@ impl Manager {
     pub(crate) fn cache_display_entries(
         &self,
         id: &str,
-        version: SessionFileVersion,
+        version: SessionRevision,
         entries: Arc<Vec<serde_json::Value>>,
     ) {
         let mut cache = self.display_entries_cache.lock();
@@ -110,278 +175,82 @@ impl Manager {
             .retain(|entry| entry.session_id != id);
     }
 
-    /// Agent-owned event data for a session. Queued prompts are intentionally
-    /// in-memory only and never written below this path.
-    fn run_data_root(&self) -> PathBuf {
-        let run_events_dir =
-            if self.dir.file_name().and_then(|name| name.to_str()) == Some("sessions") {
-                self.dir.parent().unwrap_or(&self.dir).join("run-events")
-            } else {
-                self.dir.join(".run-events")
-            };
-        run_events_dir
+    fn encoded(entries: &[SessionEntry]) -> Result<Vec<serde_json::Value>> {
+        entries
+            .iter()
+            .map(|entry| Ok(serde_json::from_str(&Self::serialize_entry(entry)?)?))
+            .collect()
     }
 
-    pub fn run_data_path(&self, id: &str) -> PathBuf {
-        self.run_data_root().join(id)
-    }
-
-    /// Reclaim Agent-owned run data whose transcript no longer exists. This is
-    /// safe at startup before sessions are hydrated; live deletion uses the
-    /// same transcript-as-commit-point rule.
-    pub fn gc_orphan_run_data(&self) -> Result<usize> {
-        let root = self.run_data_root();
-        let entries = match fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(error) => return Err(error.into()),
-        };
-        let mut removed = 0;
-        // The file_name/to_str `?`s inside the closure skip non-directories
-        // and non-UTF-8 names on the same lines, so those (Linux-only)
-        // defensive edges share regions with the common path.
-        for (path, session_id) in entries.flatten().filter_map(|entry| {
-            let path = entry.path();
-            let session_id = path.file_name()?.to_str()?.to_string();
-            path.is_dir().then_some((path, session_id))
-        }) {
-            if !self.session_path(&session_id).exists() {
-                fs::remove_dir_all(&path)?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
-    }
-
-    /// Append one or more entries to the session JSONL without rewriting
-    /// the file.  Each entry is written as a single `write_all` syscall
-    /// (JSON + newline pre-assembled) so a crash mid-write at most loses
-    /// the last entry rather than producing a partially-written line.
-    pub fn append_entries(&self, session_id: &str, entries: &[SessionEntry]) -> Result<()> {
-        self.with_session_write_lock(session_id, |path| {
-            Self::append_entries_locked(path, entries, false)
-        })
-    }
-
-    /// Append entries with an fsync durability boundary. Used by the run commit
-    /// path so a successful return guarantees the terminal marker and refreshed
-    /// session_info are on disk, not just in the page cache.
-    pub fn append_entries_synced(&self, session_id: &str, entries: &[SessionEntry]) -> Result<()> {
-        self.with_session_write_lock(session_id, |path| {
-            Self::append_entries_locked(path, entries, true)
-        })
-    }
-
-    /// Atomically recover any previously-open run and append the accepted user
-    /// message plus the new run's start marker under the same session write
-    /// lock. This prevents a failed recovery append followed by a successful
-    /// `run_started` from hiding the older open run forever.
-    ///
-    /// This is only for an existing JSONL. Brand-new sessions are created by the
-    /// full snapshot path, which has no previous lifecycle marker to recover.
-    pub fn append_run_start(
-        &self,
-        session_id: &str,
-        user_entry: SessionEntry,
-        run_started: SessionEntry,
-    ) -> Result<()> {
-        self.with_session_write_lock(session_id, |path| {
-            let file = File::open(path).context("open session file for run recovery")?;
-            let mut open: Option<String> = None;
-            for line in BufReader::new(file).lines() {
-                let line = line.context("read session line for run recovery")?;
-                match Self::cheap_entry_type(&line) {
-                    Some(ENTRY_TYPE_RUN_STARTED) | Some(ENTRY_TYPE_RUN_TERMINAL) => {}
-                    _ => continue,
-                }
-                let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) else {
-                    continue;
-                };
-                let Some(run_id) = entry
-                    .content
-                    .as_ref()
-                    .and_then(|content| content.get("run_id"))
-                    .and_then(|value| value.as_str())
-                else {
-                    continue;
-                };
-                match entry.entry_type.as_str() {
-                    ENTRY_TYPE_RUN_STARTED => open = Some(run_id.to_string()),
-                    ENTRY_TYPE_RUN_TERMINAL if open.as_deref() == Some(run_id) => open = None,
-                    _ => {}
-                }
-            }
-
-            let mut entries = Vec::with_capacity(if open.is_some() { 3 } else { 2 });
-            if let Some(interrupted_run_id) = open {
-                entries.push(SessionEntry::run_terminal(
-                    &interrupted_run_id,
-                    RUN_STATE_INTERRUPTED_BY_RESTART,
-                    0,
-                    0,
-                    None,
-                ));
-            }
-            entries.push(user_entry);
-            entries.push(run_started);
-            Self::append_entries_locked(path, &entries, true)
-        })
-    }
-
-    /// Cheaply scan the session file for an unterminated run — a `run_started`
-    /// marker with no matching `run_terminal` — parsing only the small marker
-    /// lines so large tool/assistant lines are never deserialized. Used by the
-    /// restart-recovery path to detect a run interrupted by crash/restart
-    /// without loading (and repairing) the whole conversation. Returns
-    /// `Ok(None)` when the file is absent or has no open run.
-    pub fn unterminated_run_id(&self, session_id: &str) -> Result<Option<String>> {
-        let path = self.session_path(session_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        // Shared lock so a concurrent full rewrite's temp->final rename can't
-        // race the scan (same lock load/save use).
-        let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(&lock_path)
-            .context("open session lock file")?;
-        let file_lock = fd_lock::RwLock::new(lock_file);
-        let _guard = file_lock.read().context("acquire session read lock")?;
-
-        let file = File::open(&path).context("open session file")?;
-        let mut open: Option<String> = None;
-        for line in BufReader::new(file).lines() {
-            let line = line.context("read session line")?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            // Only run marker lines need parsing; skip everything else via the
-            // cheap `"type"` prefix scan.
-            match Self::cheap_entry_type(&line) {
-                Some(ENTRY_TYPE_RUN_STARTED) | Some(ENTRY_TYPE_RUN_TERMINAL) => {}
-                _ => continue,
-            }
-            let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) else {
-                continue;
-            };
-            let Some(run_id) = entry
-                .content
-                .as_ref()
-                .and_then(|c| c.get("run_id"))
-                .and_then(|v| v.as_str())
-            else {
-                continue;
-            };
-            match entry.entry_type.as_str() {
-                ENTRY_TYPE_RUN_STARTED => open = Some(run_id.to_string()),
-                ENTRY_TYPE_RUN_TERMINAL if open.as_deref() == Some(run_id) => open = None,
-                _ => {}
-            }
-        }
-        Ok(open)
-    }
-
-    /// Run `f` while holding the session's advisory write lock (the same lock
-    /// save/append/load use), so a read-modify-append stays atomic with respect
-    /// to concurrent writers.
-    fn with_session_write_lock<T>(
-        &self,
-        session_id: &str,
-        f: impl FnOnce(&Path) -> Result<T>,
-    ) -> Result<T> {
-        let path = self.session_path(session_id);
-        if !path.exists() {
-            return Err(anyhow::anyhow!("session file does not exist yet"));
-        }
-        let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(&lock_path)
-            .context("open session lock file")?;
-        let mut file_lock = fd_lock::RwLock::new(lock_file);
-        let _guard = file_lock.write().context("acquire session write lock")?;
-        let result = f(&path);
-        if result.is_ok() {
-            self.invalidate_display_entries(session_id);
-        }
-        result
-    }
-
-    /// Append entries to a session file whose advisory write lock is already
-    /// held. When `sync` is true the file is fsync'd before returning,
-    /// providing an explicit durability boundary (the run commit point).
-    fn append_entries_locked(path: &Path, entries: &[SessionEntry], sync: bool) -> Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .with_context(|| format!("open session file for append: {}", path.display()))?;
-        for entry in entries {
-            let json = Self::serialize_entry(entry)?;
-            let mut line = json.into_bytes();
-            line.push(b'\n');
-            file.write_all(&line).context("write entry")?;
-        }
-        file.flush().context("flush")?;
-        if sync {
-            file.sync_all().context("fsync session file")?;
-        }
+    pub fn append_entries(&self, id: &str, entries: &[SessionEntry]) -> Result<()> {
+        self.storage()?.append(id, Self::encoded(entries)?)?;
+        self.invalidate_display_entries(id);
         Ok(())
     }
 
-    /// Update one field of the authoritative (last) `session_info` snapshot by
-    /// appending a fresh, complete `session_info` entry — no full-file rewrite.
-    ///
-    /// The append-only commit path relies on the last session_info being a full
-    /// snapshot, so a metadata update merges the new key over the latest content
-    /// and appends the result as the new authoritative entry. This is the safe
-    /// metadata path while a run is active: `load()` repairs dangling tool calls
-    /// in memory for LLM consumption, and persisting that repaired snapshot
-    /// before the real tool result arrives would create a duplicate tool entry.
-    pub fn update_session_info(
-        &self,
-        session_id: &str,
-        key: &str,
-        value: serde_json::Value,
-    ) -> Result<()> {
-        self.with_session_write_lock(session_id, |path| {
-            // Read only the authoritative (last) session_info content. Identify
-            // candidate lines cheaply first so large tool/assistant lines are
-            // never deserialized.
-            let file = File::open(path).context("open session file")?;
-            let mut latest_info: Option<serde_json::Value> = None;
-            for line in BufReader::new(file).lines() {
-                let line = line.context("read session line")?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if Self::cheap_entry_type(&line) != Some(ENTRY_TYPE_SESSION_INFO) {
-                    continue;
-                }
-                if let Ok(entry) = serde_json::from_str::<SessionEntry>(&line) {
-                    if let Some(content) = entry.content {
-                        latest_info = Some(content);
-                    }
-                }
-            }
-            let mut info = latest_info
-                .and_then(|v| v.as_object().cloned())
-                .ok_or_else(|| anyhow!("session {session_id} has no session_info object"))?;
-            info.insert(key.to_string(), value);
+    pub fn append_entries_synced(&self, id: &str, entries: &[SessionEntry]) -> Result<()> {
+        self.append_entries(id, entries)
+    }
 
+    pub fn append_run_start(
+        &self,
+        id: &str,
+        user: SessionEntry,
+        started: SessionEntry,
+    ) -> Result<()> {
+        let id = id.to_owned();
+        let values = Self::encoded(&[user, started])?;
+        self.storage()?.db.call(move |db| {
+            let tx = db.transaction()?;
+            let existing: Vec<SessionEntry> = super::sqlite_store::read_run_markers(&tx, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<_, _>>()?;
+            if let Some(run) = super::find_unterminated_run(&existing) {
+                let terminal =
+                    SessionEntry::run_terminal(&run, RUN_STATE_INTERRUPTED_BY_RESTART, 0, 0, None);
+                super::sqlite_store::insert_entries(&tx, &id, Self::encoded(&[terminal])?)?;
+            }
+            super::sqlite_store::insert_entries(&tx, &id, values)?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn unterminated_run_id(&self, id: &str) -> Result<Option<String>> {
+        if !self.contains(id)? {
+            return Ok(None);
+        }
+        let id = id.to_owned();
+        let entries: Vec<SessionEntry> = self
+            .storage()?
+            .db
+            .call(move |db| super::sqlite_store::read_run_markers(db, &id))?
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(super::find_unterminated_run(&entries))
+    }
+
+    pub fn update_session_info(&self, id: &str, key: &str, value: serde_json::Value) -> Result<()> {
+        let (id, key) = (id.to_owned(), key.to_owned());
+        self.storage()?.db.call(move |db| {
+            let tx = db.transaction()?;
+            let payload: String = tx.query_row("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type='session_info' ORDER BY position DESC LIMIT 1", [&id], |row| row.get(0))?;
+            let entry: serde_json::Value = serde_json::from_str(&payload)?;
+            let mut info = entry["content"].as_object().cloned()
+                .ok_or_else(|| anyhow!("session has no session_info object"))?;
+            info.insert(key, value);
             let entry = SessionEntry::session_info(
                 serde_json::Value::Object(info),
                 String::new(),
                 String::new(),
             );
-            Self::append_entries_locked(path, &[entry], false)
+            super::sqlite_store::insert_entries(&tx, &id, Self::encoded(&[entry])?)?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(())
         })
     }
 
@@ -396,222 +265,23 @@ impl Manager {
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             return Err(anyhow!("injected session save failure"));
         }
-        let path = self.session_path(&session.id);
-        fs::create_dir_all(&self.dir).context("create session dir")?;
-
-        // Acquire an advisory file lock so concurrent saves to the same
-        // session are serialised.  Without this, two prompts finishing at the
-        // same time race on the temp→final rename, causing "rename temp to
-        // final" errors and potentially lost entries.
-        let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(&lock_path)
-            .context("open session lock file")?;
-        let mut file_lock = fd_lock::RwLock::new(lock_file);
-        let _guard = file_lock.write().context("acquire session write lock")?;
-
-        Self::write_entries_atomically(&path, &session.entries)?;
+        self.storage()?
+            .replace(&session.id, Self::encoded(&session.entries)?)?;
         self.invalidate_display_entries(&session.id);
         Ok(())
     }
 
-    fn write_entries_atomically(path: &Path, entries: &[SessionEntry]) -> Result<()> {
-        // Write to a temp file and rename atomically so a mid-write crash
-        // never leaves a partially-written (corrupt) JSONL behind.
-        let tmp_path = path.with_extension("jsonl.tmp");
-        let file = File::create(&tmp_path).context("create temp session file")?;
-        let mut w = std::io::BufWriter::new(file);
-        for entry in entries {
-            let json = Self::serialize_entry(entry)?;
-            writeln!(w, "{}", json).context("write entry")?;
-        }
-        w.flush().context("flush")?;
-        // Force data to disk before rename so a crash cannot leave a
-        // renamed-but-empty file behind (OS may defer writes in page cache).
-        let file = w
-            .into_inner()
-            .map_err(|_| anyhow::anyhow!("flush failed"))?;
-        file.sync_all().context("fsync temp session file")?;
-
-        // On Windows an external locker (antivirus, Windows Search, OneDrive)
-        // can briefly hold the target after fsync, causing rename to fail with
-        // a sharing violation.  Exponential-backoff retry tolerates those
-        // transient holds while keeping the advisory write lock — no reader can
-        // enter until we release _guard, so the retry is bounded only by the
-        // external locker's hold time.
-        let mut rename_attempts = 0u32;
-        loop {
-            match fs::rename(&tmp_path, path) {
-                Ok(()) => break,
-                Err(e) if rename_attempts >= 5 => {
-                    return Err(e).context("rename temp to final after 5 attempts");
-                }
-                Err(e) => {
-                    rename_attempts += 1;
-                    let wait_ms = 50u64 << rename_attempts; // 50, 100, 200, 400, 800
-                    tracing::warn!(
-                        "rename attempt {rename_attempts} failed for {}: {e}; retrying in {wait_ms}ms",
-                        path.display(),
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(wait_ms));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn serialize_entry(entry: &SessionEntry) -> Result<String> {
-        let mut value = serde_json::to_value(entry).context("serialize entry")?;
-        if matches!(
-            entry.entry_type.as_str(),
-            ENTRY_TYPE_USER | ENTRY_TYPE_ASSISTANT | ENTRY_TYPE_TOOL | ENTRY_TYPE_SYSTEM
-        ) {
-            if let Some(object) = value.as_object_mut() {
-                let mut blocks: Vec<crate::types::ContentBlock> = match &entry.content {
-                    Some(serde_json::Value::Array(values)) => values
-                        .iter()
-                        .filter_map(|value| serde_json::from_value(value.clone()).ok())
-                        .collect(),
-                    Some(serde_json::Value::String(text)) => {
-                        vec![crate::types::ContentBlock::text(text)]
-                    }
-                    _ => Vec::new(),
-                };
-                if !entry.thinking.is_empty()
-                    && !blocks
-                        .iter()
-                        .any(|block| matches!(block, crate::types::ContentBlock::Reasoning { .. }))
-                {
-                    blocks.insert(
-                        0,
-                        crate::types::ContentBlock::reasoning(&entry.thinking, Default::default()),
-                    );
-                }
-                if !blocks
-                    .iter()
-                    .any(|block| matches!(block, crate::types::ContentBlock::ToolCall { .. }))
-                {
-                    blocks.extend(entry.tool_calls.iter().map(|call| {
-                        crate::types::ContentBlock::tool_call(
-                            &call.id,
-                            &call.function.name,
-                            call.function.arguments.clone(),
-                            Default::default(),
-                        )
-                    }));
-                }
-                if entry.entry_type == ENTRY_TYPE_TOOL
-                    && !blocks
-                        .iter()
-                        .any(|block| matches!(block, crate::types::ContentBlock::ToolResult { .. }))
-                {
-                    let text = blocks
-                        .iter()
-                        .filter_map(|block| match block {
-                            crate::types::ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    blocks
-                        .retain(|block| !matches!(block, crate::types::ContentBlock::Text { .. }));
-                    blocks.push(crate::types::ContentBlock::tool_result(
-                        &entry.tool_call_id,
-                        text,
-                        false,
-                    ));
-                }
-                if !blocks.is_empty() {
-                    object.insert("content".into(), serde_json::to_value(blocks)?);
-                }
-                object.remove("thinking");
-                object.remove("tool_calls");
-                object.remove("tool_call_id");
-                object.remove("name");
-                object.remove("tool_args");
-            }
-        }
-        serde_json::to_string(&value).context("serialize entry")
+    pub(crate) fn serialize_entry(entry: &SessionEntry) -> Result<String> {
+        let value = serde_json::to_value(entry).context("serialize entry")?;
+        serde_json::to_string(&super::records::canonical_entry(value)).context("serialize entry")
     }
 
     pub fn load(&self, id: &str) -> Result<Session> {
-        let path = self.session_path(id);
-        self.load_path(&path, id)
-    }
-
-    pub(crate) fn load_path(&self, path: &Path, id: &str) -> Result<Session> {
-        // Acquire a shared (read) advisory lock so a concurrent save() —
-        // which takes an exclusive (write) lock — cannot execute its
-        // temp → final rename while we are reading.  Without this, a read
-        // racing a rename on Windows can encounter a sharing violation or
-        // a partially-replaced file when an external locker (antivirus,
-        // Windows Search, OneDrive) briefly holds the target.
-        let lock_path = path.with_extension("jsonl.lock");
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(&lock_path)
-            .context("open session lock file")?;
-        let file_lock = fd_lock::RwLock::new(lock_file);
-        let _guard = file_lock.read().context("acquire session read lock")?;
-
-        let file = File::open(path).context("open session file")?;
-        let reader = BufReader::new(file);
-        let mut entries = vec![];
-        let mut raw_lines: Vec<String> = vec![];
-        for line in reader.lines() {
-            let line = line.context("read line")?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            raw_lines.push(line);
+        let mut entries: Vec<SessionEntry> = self.storage()?.typed_entries(id)?;
+        for entry in &mut entries {
+            hydrate_entry_projections(entry);
         }
-        if raw_lines.is_empty() {
-            return Err(anyhow!("session {} has no entries", id));
-        }
-        // Try each line; if the last line fails to parse (partial write from
-        // a crash during append), skip it instead of rejecting the whole session.
-        let len = raw_lines.len();
-        for (i, line) in raw_lines.into_iter().enumerate() {
-            match serde_json::from_str::<SessionEntry>(&line) {
-                Ok(mut entry) => {
-                    hydrate_entry_projections(&mut entry);
-                    entries.push(entry);
-                }
-                Err(e) if i == len - 1 => {
-                    tracing::warn!(
-                        "Dropping malformed last line of session {id} (possibly \
-                         from a crash during append): {e}"
-                    );
-                }
-                Err(e) => {
-                    return Err(anyhow!("parse entry at line {}: {}", i + 1, e));
-                }
-            }
-        }
-        if entries.is_empty() {
-            return Err(anyhow!("session {} has no entries", id));
-        }
-        // Heal common session corruptions IN MEMORY ONLY so the conversation
-        // is API-valid on resume: strip empty assistants, drop duplicate tool
-        // results, and patch dangling tool_calls with placeholders.
-        //
-        // The healed entries are deliberately NOT written back to the file
-        // here.  load_path is called from many read-only paths (session list,
-        // summaries, get_session_entries, fork/clone) that can run while the
-        // owning agent process is still mid-run.  Persisting a placeholder
-        // for a dangling tool_call at that moment corrupts the file: when the
-        // running tool finishes, its real result is appended with the same
-        // tool_call_id, producing duplicate tool messages that the LLM API
-        // rejects with HTTP 400.  The in-memory heal is idempotent and cheap,
-        // and the owning session's next save() persists the healed state.
+        // Runtime repair is a projection only; importing never calls this path.
         let stripped = strip_empty_assistants(&mut entries);
         let deduped = dedupe_tool_entries(&mut entries);
         let repaired = repair_dangling_tool_calls(&mut entries);
@@ -621,8 +291,57 @@ impl Manager {
                  deduped_tools={deduped}, repaired_dangling={repaired})"
             );
         }
-        let created_at = entries[0].timestamp;
-        let updated_at = entries.last().map(|e| e.timestamp).unwrap_or(created_at);
+        self.restore_session_times(Self::session_from_entries(id, entries)?)
+    }
+
+    /// Runtime metadata and identities only; never opens historical bodies.
+    pub(crate) fn load_metadata(&self, id: &str) -> Result<Session> {
+        let session_id = id.to_owned();
+        let rows = self.storage()?.db.call(move |db| {
+            let mut stmt = db.prepare(
+                "SELECT payload FROM history_shapes WHERE session_id=?1 ORDER BY position",
+            )?;
+            let rows = stmt
+                .query_map([session_id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })?;
+        let entries = rows
+            .into_iter()
+            .map(|row| serde_json::from_str(&row))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        self.restore_session_times(Self::session_from_entries(id, entries)?)
+    }
+
+    pub(super) fn restore_session_times(&self, mut session: Session) -> Result<Session> {
+        let id = session.id.clone();
+        let (created, updated): (Option<i64>, Option<i64>) =
+            self.storage()?.db.call(move |db| {
+                Ok(db.query_row(
+                    "SELECT created_at_ms,updated_at_ms FROM sessions WHERE id=?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })?;
+        if let Some(created) = created.and_then(chrono::DateTime::from_timestamp_millis) {
+            session.created_at = created.with_timezone(&chrono::Local);
+        }
+        if let Some(updated) = updated.and_then(chrono::DateTime::from_timestamp_millis) {
+            session.updated_at = updated.with_timezone(&chrono::Local);
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn session_from_entries(id: &str, entries: Vec<SessionEntry>) -> Result<Session> {
+        let created_at = entries
+            .first()
+            .ok_or_else(|| anyhow!("session has no display entries"))?
+            .timestamp;
+        let updated_at = entries
+            .iter()
+            .map(|e| e.timestamp)
+            .max()
+            .unwrap_or(created_at);
         let cwd = entries
             .iter()
             .rev()
@@ -640,31 +359,25 @@ impl Manager {
             .unwrap_or_default();
         let model = entries
             .iter()
-            .rev()
-            .find_map(|e| {
-                if e.entry_type == ENTRY_TYPE_MODEL_CHANGE {
-                    e.content
-                        .as_ref()
-                        .and_then(|c| c.get("model"))
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
+            .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .and_then(|e| e.content.as_ref())
+            .and_then(|c| c.get("model"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
             .or_else(|| {
-                // ASSISTANT entries never carry model (agent_message_to_entry
-                // always sets it to ""), so fall back to the session_info entry.
-                entries
-                    .iter()
-                    .rev()
-                    .find(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
-                    .and_then(|e| e.content.as_ref())
-                    .and_then(|c| c.get("model"))
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
+                entries.iter().rev().find_map(|e| {
+                    if e.entry_type == ENTRY_TYPE_MODEL_CHANGE {
+                        e.content
+                            .as_ref()
+                            .and_then(|c| c.get("model"))
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
             })
             .unwrap_or_default();
         let name = entries
@@ -707,45 +420,9 @@ impl Manager {
         Ok(session)
     }
 
-    /// Find a session by ID in the flat sessions directory
-    pub fn find(&self, id: &str) -> Option<PathBuf> {
-        let path = self.session_path(id);
-        if path.exists() {
-            Some(path)
-        } else {
-            None
-        }
-    }
-
-    /// Delete a session file
     pub fn delete(&self, id: &str) -> Result<()> {
+        self.storage()?.delete(id)?;
         self.invalidate_display_entries(id);
-        let path = self.session_path(id);
-        // Also remove the lock file if present — no session means no lock.
-        let lock_path = path.with_extension("jsonl.lock");
-        let _ = fs::remove_file(&lock_path);
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(anyhow!("failed to delete session: {}", error)),
-        }
-
-        // The session transcript is the deletion commit point. Once it is
-        // gone, reclaim every Agent-owned event derivative below this
-        // directory. The in-memory scheduler is fenced separately by the RPC
-        // deletion path. A missing directory is the normal legacy case.
-        let run_data_path = self.run_data_path(id);
-        match fs::remove_dir_all(&run_data_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(anyhow!(
-                    "session deleted but failed to reclaim run data at {}: {}",
-                    run_data_path.display(),
-                    error
-                ));
-            }
-        }
         Ok(())
     }
 }
@@ -756,9 +433,21 @@ mod tests {
     use crate::session::projection::{agent_message_to_entry, entries_to_agent_messages};
     use crate::session::repair::{entry_text_starts_with, TOOL_LOST_PLACEHOLDER_PREFIX};
     use crate::session::run_journal::RUN_STATE_COMPLETED;
+    use crate::session::{ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_RUN_TERMINAL};
     use crate::types::ToolCall;
     use crate::utils::generate_id;
     use chrono::Local;
+
+    fn raw_lines(manager: &Manager, id: &str) -> String {
+        manager
+            .storage()
+            .unwrap()
+            .entries(id)
+            .unwrap()
+            .into_iter()
+            .map(|v| format!("{v}\n"))
+            .collect()
+    }
 
     fn temp_manager(tag: &str) -> (std::path::PathBuf, Manager) {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
@@ -821,7 +510,7 @@ mod tests {
         session.entries.push(agent_message_to_entry(&message));
         manager.save(&session).unwrap();
 
-        let disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let disk = raw_lines(&manager, &session.id);
         let assistant: serde_json::Value = disk
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -911,7 +600,7 @@ mod tests {
         // The file on disk must NOT be rewritten by load: read-only callers
         // (session list, get_session_entries) can run while the owning agent
         // is mid-run, and persisting repairs is what created the duplicates.
-        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let on_disk = raw_lines(&manager, &session.id);
         assert_eq!(
             on_disk.lines().count(),
             4,
@@ -1016,7 +705,7 @@ mod tests {
         );
         assert_eq!(tool_entries[0].tool_call_id, "tc1");
 
-        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let on_disk = raw_lines(&manager, &session.id);
         assert_eq!(
             on_disk.lines().count(),
             2,
@@ -1063,7 +752,7 @@ mod tests {
             )
             .unwrap();
 
-        let on_disk = std::fs::read_to_string(manager.session_path(&session.id)).unwrap();
+        let on_disk = raw_lines(&manager, &session.id);
         let entries: Vec<SessionEntry> = on_disk
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -1101,33 +790,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn orphan_run_data_gc_preserves_sessions_with_transcripts() {
-        let (dir, manager) = temp_manager("orphan-run-data");
-        std::fs::create_dir_all(manager.run_data_path("orphan")).unwrap();
-        std::fs::create_dir_all(manager.run_data_path("live")).unwrap();
-        std::fs::write(
-            manager.run_data_path("orphan").join("run.jsonl"),
-            b"event\n",
-        )
-        .unwrap();
-
-        let session = Session::snapshot(
-            "live".to_string(),
-            "/tmp".to_string(),
-            "test-model".to_string(),
-            "live".to_string(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
-        );
-        manager.save(&session).unwrap();
-
-        assert_eq!(manager.gc_orphan_run_data().unwrap(), 1);
-        assert!(!manager.run_data_path("orphan").exists());
-        assert!(manager.run_data_path("live").exists());
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1203,7 +865,7 @@ mod tests {
             .iter()
             .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
             .count();
-        assert_eq!(info_count, 2);
+        assert_eq!(info_count, 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1412,24 +1074,18 @@ mod tests {
         let manager = Manager::new(dir.clone());
         let session = Session::new("/tmp/test", "model");
         manager.save(&session).unwrap();
-        let run_data_path = manager.run_data_path(&session.id);
-        std::fs::create_dir_all(&run_data_path).unwrap();
-        std::fs::write(run_data_path.join("run-event.jsonl"), b"event\n").unwrap();
-        assert!(manager.find(&session.id).is_some());
-        assert!(run_data_path.exists());
-
+        assert!(manager.contains(&session.id).unwrap());
         manager.delete(&session.id).unwrap();
-        assert!(manager.find(&session.id).is_none());
-        assert!(!run_data_path.exists());
+        assert!(!manager.contains(&session.id).unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn manager_find_nonexistent() {
-        let dir = std::env::temp_dir().join("future_test_find_none");
-        let manager = Manager::new(dir);
-        assert!(manager.find("nonexistent_id").is_none());
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().to_path_buf());
+        assert!(!manager.contains("nonexistent_id").unwrap());
     }
 
     #[test]
@@ -1480,7 +1136,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let manager = Manager::new(dir.clone());
         std::fs::write(
-            manager.session_path("legacy"),
+            manager.dir.join("legacy.jsonl"),
             concat!(
                 r#"{"id":"u","type":"user","role":"user","content":"plain user"}"#, "\n",
                 r#"{"id":"a","type":"assistant","role":"assistant","content":"plain answer","thinking":"legacy reasoning","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read","arguments":{"path":"/tmp/a"}}}]}"#, "\n",
@@ -1738,66 +1394,6 @@ mod tests {
     }
 
     #[test]
-    fn gc_orphan_run_data_handles_missing_root_and_stray_files() {
-        let (dir, manager) = temp_manager("gc-missing");
-        // No run-events root at all → Ok(0).
-        assert_eq!(manager.gc_orphan_run_data().unwrap(), 0);
-        // A stray FILE under the root is skipped (only dirs are reclaimed).
-        let root = manager.run_data_path("x").parent().unwrap().to_path_buf();
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("stray-file"), "x").unwrap();
-        assert_eq!(manager.gc_orphan_run_data().unwrap(), 0);
-        assert!(root.join("stray-file").exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn load_skips_corrupt_last_line_but_rejects_corrupt_middle_line() {
-        let (_dir, manager) = temp_manager("corrupt-tail");
-        let snapshot = Session::snapshot(
-            "s1".to_string(),
-            "/tmp".to_string(),
-            "mock".to_string(),
-            String::new(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("ok"))],
-        );
-        manager.save(&snapshot).unwrap();
-        let path = manager.find("s1").unwrap();
-        // Append a half-written (corrupt) line — a crash during append.
-        let mut content = std::fs::read_to_string(&path).unwrap();
-        content.push_str("{\"id\":\"partial\",\"timestamp\":\"2026");
-        std::fs::write(&path, content).unwrap();
-        let loaded = manager.load("s1").unwrap();
-        assert_eq!(loaded.entries.len(), 1, "corrupt tail skipped");
-
-        // A corrupt MIDDLE line is a hard error.
-        let valid =
-            serde_json::to_string(&SessionEntry::new_user("user", serde_json::json!("x"))).unwrap();
-        std::fs::write(&path, format!("{valid}\n{{corrupt\n{valid}\n")).unwrap();
-        let err = manager.load("s1").unwrap_err();
-        assert!(err.to_string().contains("parse entry at line 2"));
-    }
-
-    #[test]
-    fn delete_reclaims_run_data_directory() {
-        let (dir, manager) = temp_manager("delete-gc");
-        let snapshot = Session::snapshot(
-            "s1".to_string(),
-            "/tmp".to_string(),
-            "mock".to_string(),
-            String::new(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
-        );
-        manager.save(&snapshot).unwrap();
-        std::fs::create_dir_all(manager.run_data_path("s1")).unwrap();
-        manager.delete("s1").unwrap();
-        assert!(!manager.run_data_path("s1").exists());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn dedupe_tool_entries_drops_placeholder_when_real_result_arrives() {
         let (_dir, manager) = temp_manager("dedupe");
         let placeholder = SessionEntry::new_tool(
@@ -1867,29 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn load_skips_blank_lines_and_rejects_all_corrupt_files() {
-        let (_dir, manager) = temp_manager("load-blanks");
-        let snapshot = Session::snapshot(
-            "s1".to_string(),
-            "/tmp".to_string(),
-            "mock".to_string(),
-            String::new(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("x"))],
-        );
-        manager.save(&snapshot).unwrap();
-        let path = manager.find("s1").unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(&path, format!("\n\n{content}\n")).unwrap();
-        let loaded = manager.load("s1").unwrap();
-        assert_eq!(loaded.entries.len(), 1);
-
-        // A file whose only line is corrupt-but-last degrades to "no entries".
-        std::fs::write(&path, "{corrupt\n").unwrap();
-        assert!(manager.load("s1").is_err());
-    }
-
-    #[test]
     fn dedupe_placeholder_detects_array_content_form() {
         let (_dir, manager) = temp_manager("dedupe-array");
         let mut placeholder = SessionEntry::new_tool("call-1", "ignored");
@@ -1929,116 +1502,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn gc_orphan_run_data_reclaims_and_skips_mixed_entries() {
-        // A stray FILE among the orphan dirs exercises the is_dir filter.
-        let (_dir, manager) = temp_manager("gc-mixed");
-        let root = manager.run_data_root();
-        std::fs::create_dir_all(root.join("orphan")).unwrap();
-        std::fs::write(root.join("stray-file"), "x").unwrap();
-        manager.gc_orphan_run_data().unwrap();
-        assert!(!root.join("orphan").exists());
-        assert!(root.join("stray-file").exists());
-    }
-
-    /// Session file exercising every scan-skip arm: blank line, cheap-matched
-    /// but unparseable marker, marker without run_id, terminal for a
-    /// different run.
-    fn write_scan_edge_file(manager: &Manager, id: &str) {
-        std::fs::create_dir_all(&manager.dir).unwrap();
-        let path = manager.session_path(id);
-        let info = SessionEntry::session_info(
-            serde_json::json!({"cwd": "/x", "model": "m"}),
-            "m".to_string(),
-            "low".to_string(),
-        );
-        let mut lines = vec![serde_json::to_string(&info).unwrap()];
-        lines.push(String::new()); // blank line
-                                   // Parses, but content carries no run_id.
-        lines.push(
-            r#"{"id":"r0","type":"run_started","role":"system","content":{},"timestamp":"2024-01-02T03:04:05+08:00"}"#.to_string(),
-        );
-        // Terminal for a run that is not open.
-        lines.push(
-            r#"{"id":"r1","type":"run_terminal","role":"system","content":{"run_id":"other"},"timestamp":"2024-01-02T03:04:06+08:00"}"#.to_string(),
-        );
-        // Unparseable cheap-matched marker LAST: append validation only
-        // tolerates a trailing fragment.
-        lines.push(r#"{"type":"run_started",BROKEN"#.to_string());
-        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
-    }
-
-    #[test]
-    fn unterminated_run_id_skips_malformed_marker_lines() {
-        let (_dir, manager) = temp_manager("scan-edges");
-        write_scan_edge_file(&manager, "scan");
-        assert_eq!(manager.unterminated_run_id("scan").unwrap(), None);
-    }
-
-    #[test]
-    fn append_run_start_skips_malformed_marker_lines() {
-        let (_dir, manager) = temp_manager("append-scan-edges");
-        write_scan_edge_file(&manager, "scan");
-        let entry = SessionEntry::new_user("user", serde_json::json!("hi"));
-        let started = SessionEntry::run_started("run-new", 1);
-        manager.append_run_start("scan", entry, started).unwrap();
-        // Full load rejects the trailing fragment, so verify via raw bytes.
-        let raw = std::fs::read_to_string(manager.session_path("scan")).unwrap();
-        assert!(raw.contains("run-new"), "{raw}");
-    }
-
-    #[test]
-    fn update_session_info_skips_blank_and_broken_lines() {
-        let (_dir, manager) = temp_manager("update-info-edges");
-        std::fs::create_dir_all(&manager.dir).unwrap();
-        let info = SessionEntry::session_info(
-            serde_json::json!({"cwd": "/x", "model": "old"}),
-            "old".to_string(),
-            "low".to_string(),
-        );
-        let lines = [
-            serde_json::to_string(&info).unwrap(),
-            String::new(),
-            // Broken session_info LAST: append validation tolerates only a
-            // trailing fragment, and the scan's parse-fail arm sees it too.
-            r#"{"type":"session_info",BROKEN"#.to_string(),
-        ];
-        std::fs::write(manager.session_path("upd"), lines.join("\n") + "\n").unwrap();
-        manager
-            .update_session_info("upd", "model", serde_json::json!("new"))
-            .unwrap();
-        // The appended info entry sits after the trailing fragment, which a
-        // strict full load would reject — verify via raw bytes instead.
-        let raw = std::fs::read_to_string(manager.session_path("upd")).unwrap();
-        assert!(raw.contains("\"new\""), "{raw}");
-    }
-
-    #[test]
-    fn save_retries_rename_onto_directory_then_gives_up() {
-        let (_dir, manager) = temp_manager("rename-retry");
-        // <id>.jsonl as a DIRECTORY: every rename attempt fails with EISDIR
-        // (root-immune), exhausting the retry loop.
-        std::fs::create_dir_all(&manager.dir).unwrap();
-        std::fs::create_dir(manager.session_path("retry")).unwrap();
-        let session = Session::snapshot(
-            "retry".to_string(),
-            "/x".to_string(),
-            "m".to_string(),
-            "n".to_string(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
-        );
-        let error = manager.save(&session).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("rename temp to final"),
-            "{error:#}"
-        );
-    }
-
-    #[test]
     fn load_rejects_session_with_only_blank_lines() {
         let (_dir, manager) = temp_manager("blank-only");
         std::fs::create_dir_all(&manager.dir).unwrap();
-        std::fs::write(manager.session_path("blank"), "\n\n  \n").unwrap();
+        std::fs::write(manager.dir.join("blank.jsonl"), "\n\n  \n").unwrap();
         let error = manager.load("blank").unwrap_err();
         assert!(error.to_string().contains("has no entries"), "{error}");
     }
@@ -2056,44 +1523,7 @@ mod tests {
         );
         manager.save(&session).unwrap();
         manager.delete("del").unwrap();
-        assert!(!manager.session_path("del").exists());
-    }
-
-    #[test]
-    fn delete_reports_run_data_reclaim_failure() {
-        let (_dir, manager) = temp_manager("delete-reclaim-fail");
-        let session = Session::snapshot(
-            "del2".to_string(),
-            "/x".to_string(),
-            "m".to_string(),
-            "n".to_string(),
-            String::new(),
-            vec![SessionEntry::new_user("user", serde_json::json!("hi"))],
-        );
-        manager.save(&session).unwrap();
-        // Run-data path occupied by a regular FILE: remove_dir_all fails with
-        // a non-NotFound error (root-immune).
-        let run_data = manager.run_data_path("del2");
-        std::fs::create_dir_all(run_data.parent().unwrap()).unwrap();
-        std::fs::write(&run_data, "not a directory").unwrap();
-        let error = manager.delete("del2").unwrap_err();
-        assert!(
-            error.to_string().contains("failed to reclaim run data"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn gc_orphan_run_data_reports_non_notfound_read_dir_error() {
-        let (dir, manager) = temp_manager("gc-notdir");
-        // A regular FILE where the run-events root directory should be makes
-        // read_dir return a non-NotFound error (ENOTDIR), not Ok(0).
-        std::fs::create_dir_all(&dir).unwrap();
-        let root = manager.run_data_root();
-        std::fs::write(&root, "not a directory").unwrap();
-        let error = manager.gc_orphan_run_data().unwrap_err();
-        assert!(!error.to_string().is_empty());
-        let _ = std::fs::remove_dir_all(dir);
+        assert!(!manager.contains("del").unwrap());
     }
 
     #[test]

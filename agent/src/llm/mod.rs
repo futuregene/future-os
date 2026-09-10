@@ -311,7 +311,13 @@ impl crate::types::LLMProvider for Client {
             body_kb = body_bytes.len() / 1024,
             "LLM request"
         );
-        let resp = self.http.execute(req).await?;
+        let resp = self.http.execute(req).await.map_err(|error| {
+            if error.is_timeout() {
+                anyhow!("[RESPONSE_TIMEOUT] {error}")
+            } else {
+                anyhow!(error)
+            }
+        })?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -378,11 +384,14 @@ impl crate::types::LLMProvider for Client {
                             cause_chain = %causes,
                             "LLM response stream disconnected"
                         );
+                        let category = if error.is_timeout() {
+                            "[RESPONSE_TIMEOUT]"
+                        } else {
+                            UPSTREAM_DISCONNECTED
+                        };
                         let _ = tx
                             .send(schema::ModelStreamEvent::Error {
-                                message: format!(
-                                    "{UPSTREAM_DISCONNECTED} {error}; {progress}, causes={causes}"
-                                ),
+                                message: format!("{category} {error}; {progress}, causes={causes}"),
                             })
                             .await;
                         return;
@@ -432,6 +441,8 @@ impl crate::types::LLMProvider for Client {
                     // Chat Completions may still owe us a usage-only frame.
                     // Let the adapter decide when no more data is required.
                     if adapter.is_stream_complete(state.as_ref()) {
+                        tracing::debug!(protocol = %protocol, model = %model,
+                            frames_decoded, bytes_received, "LLM protocol stream terminator received");
                         return;
                     }
                 }
@@ -474,6 +485,8 @@ impl crate::types::LLMProvider for Client {
                     }
                 }
             }
+            tracing::debug!(protocol = %protocol, model = %model, protocol_terminal,
+                frames_decoded, bytes_received, "LLM transport reached EOF");
             if !protocol_terminal {
                 tracing::warn!(
                     protocol = %protocol,

@@ -18,6 +18,8 @@ describe("toolStatusLabel", () => {
     expect(toolStatusLabel("failed")).toBe("Failed");
     expect(toolStatusLabel("cancelled")).toBe("Cancelled");
     expect(toolStatusLabel("running")).toBe("Running");
+    expect(toolStatusLabel("interrupted")).toBe("Interrupted");
+    expect(toolStatusLabel("unknown")).toBe("Unknown");
     expect(toolStatusLabel("pending")).toBe("pending");
     expect(toolStatusLabel("")).toBe("Unknown");
   });

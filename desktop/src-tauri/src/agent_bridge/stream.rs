@@ -423,6 +423,18 @@ fn fold_response_event(
             }
         }
         "agent_end" => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                if matches!(
+                    value.get("state").and_then(|state| state.as_str()),
+                    Some("error" | "failed")
+                ) {
+                    return Err(value
+                        .get("error")
+                        .and_then(|error| error.as_str())
+                        .unwrap_or("[SOFTWARE_ERROR] Agent failed to finalize the response")
+                        .into());
+                }
+            }
             return Ok(FoldOutcome::Terminal {
                 clean: !agent_end_incomplete(data),
                 termination_kind: agent_end_termination_kind(data),
@@ -444,18 +456,19 @@ fn fold_response_event(
 pub(super) fn agent_end_incomplete(data: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(data)
         .ok()
-        .and_then(|value| {
-            value
-                .get("reason")
-                .and_then(|reason| reason.as_str())
-                .map(str::to_string)
+        .map(|value| {
+            value.get("reason").and_then(|reason| reason.as_str()) == Some("incomplete")
+                || matches!(
+                    value.get("state").and_then(|state| state.as_str()),
+                    Some("incomplete" | "interrupted" | "error" | "failed")
+                )
         })
-        .is_some_and(|reason| reason == "incomplete")
+        .unwrap_or(true)
 }
 
 fn agent_end_termination_kind(data: &str) -> Option<String> {
     let value = serde_json::from_str::<serde_json::Value>(data).ok()?;
-    if value.get("reason").and_then(|reason| reason.as_str()) != Some("incomplete") {
+    if !agent_end_incomplete(data) {
         return None;
     }
     let detected_by = value
@@ -464,10 +477,29 @@ fn agent_end_termination_kind(data: &str) -> Option<String> {
         .and_then(|reason| reason.as_str())
         .unwrap_or_default();
     let kind = match detected_by {
-        "upstream_disconnected" | "idle_timeout" | "eof_no_terminal" => "upstream_disconnected",
-        _ => "model_response_error",
+        "upstream_disconnected" => "upstream_disconnected",
+        "request_timeout" | "idle_timeout" => "response_timeout",
+        "finish_length" => "output_limit",
+        "finish_content_filter" => "model_content_filter",
+        "finish_error" | "model_response_error" => "model_response_error",
+        "model_paused" => "model_paused",
+        "provider_cancelled" => "provider_cancelled",
+        _ => "response_unconfirmed",
     };
     Some(kind.to_string())
+}
+
+pub(super) fn termination_error(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("upstream_disconnected") => "[UPSTREAM_DISCONNECTED] response interrupted",
+        Some("response_timeout") => "[RESPONSE_TIMEOUT] response timed out",
+        Some("output_limit") => "[OUTPUT_LIMIT] model output limit reached",
+        Some("model_content_filter") => "[MODEL_CONTENT_FILTER] provider restricted output",
+        Some("model_response_error") => "[MODEL_RESPONSE_ERROR] invalid model response",
+        Some("model_paused") => "[MODEL_PAUSED] provider paused generation",
+        Some("provider_cancelled") => "[PROVIDER_CANCELLED] provider cancelled generation",
+        _ => "[RESPONSE_UNCONFIRMED] response ended without confirmed completion",
+    }
 }
 
 fn event_text(data: &str) -> Option<String> {
@@ -498,6 +530,37 @@ mod tests {
     use super::{agent_end_incomplete, fold_response_event, reconnect_delay, FoldOutcome};
 
     #[test]
+    fn terminal_reason_categories_survive_live_and_snapshot_paths() {
+        for (reason, code) in [
+            ("eof_no_terminal", "RESPONSE_UNCONFIRMED"),
+            ("finish_incomplete", "RESPONSE_UNCONFIRMED"),
+            ("finish_unknown", "RESPONSE_UNCONFIRMED"),
+            ("upstream_disconnected", "UPSTREAM_DISCONNECTED"),
+            ("request_timeout", "RESPONSE_TIMEOUT"),
+            ("finish_length", "OUTPUT_LIMIT"),
+            ("finish_content_filter", "MODEL_CONTENT_FILTER"),
+            ("model_paused", "MODEL_PAUSED"),
+            ("provider_cancelled", "PROVIDER_CANCELLED"),
+        ] {
+            let data =
+                serde_json::json!({"state":"incomplete","truncation":{"detected_by":reason}})
+                    .to_string();
+            assert!(agent_end_incomplete(&data));
+            let kind = super::agent_end_termination_kind(&data);
+            assert!(super::termination_error(kind.as_deref()).starts_with(&format!("[{code}]")));
+        }
+        let mut content = "kept".to_string();
+        assert!(fold_response_event(
+            "agent_end",
+            r#"{"state":"error","error":"Session persistence failed"}"#,
+            &mut content,
+            &mut false
+        )
+        .is_err());
+        assert_eq!(content, "kept");
+    }
+
+    #[test]
     fn incomplete_reason_marks_truncated() {
         // Truncated stream: run loop emits agent_end reason "incomplete".
         assert!(agent_end_incomplete(r#"{"reason":"incomplete"}"#));
@@ -511,9 +574,10 @@ mod tests {
         assert!(!agent_end_incomplete(r#"{"reason":"complete"}"#));
         assert!(!agent_end_incomplete(r#"{"reason":"stop_condition"}"#));
         assert!(!agent_end_incomplete(r#"{"reason":"interrupted"}"#));
-        // Missing / malformed reason must default to clean, not truncated.
+        // Legacy valid terminal events can omit reason. Invalid JSON cannot
+        // establish successful completion.
         assert!(!agent_end_incomplete(r#"{"usage":{}}"#));
-        assert!(!agent_end_incomplete("not json"));
+        assert!(agent_end_incomplete("not json"));
     }
 
     #[test]

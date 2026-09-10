@@ -32,6 +32,13 @@ export function useStickyAutoScroll({
   onContentSettled,
 }: UseStickyAutoScrollInput) {
   const stickToBottomRef = useRef(true);
+  const anchorRef = useRef<Anchor | null>(null);
+  const writtenTopRef = useRef<number | null>(null);
+
+  const preserveViewport = useCallback(() => {
+    stickToBottomRef.current = false;
+    anchorRef.current = captureAnchor(scrollRef.current);
+  }, [scrollRef]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   // Keep the callbacks in refs so the effect/handlers always call the latest
   // without listing them as deps (which would re-run the follow effect on every
@@ -50,8 +57,22 @@ export function useStickyAutoScroll({
     onScrollRef.current?.();
     const scrollContainer = scrollRef.current;
     if (scrollContainer) {
-      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
-      stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
+      const distance
+        = scrollContainer.scrollHeight
+          - scrollContainer.clientHeight
+          - scrollContainer.scrollTop;
+      // Ignore our own anchor correction. All other movement (wheel, keyboard,
+      // scrollbar or search navigation) establishes a new reading position.
+      if (
+        writtenTopRef.current === null
+        || Math.abs(scrollContainer.scrollTop - writtenTopRef.current) > 0.5
+      ) {
+        stickToBottomRef.current = distance <= STICK_THRESHOLD_PX;
+        anchorRef.current = stickToBottomRef.current
+          ? null
+          : captureAnchor(scrollContainer);
+      }
+      writtenTopRef.current = null;
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
   }, [scrollRef]);
@@ -62,31 +83,84 @@ export function useStickyAutoScroll({
     if (!scrollContainer)
       return;
     stickToBottomRef.current = true;
+    anchorRef.current = null;
     setShowJumpToLatest(false);
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [scrollRef]);
 
-  // useLayoutEffect so the scroll-to-bottom happens before the browser paints,
-  // avoiding a visible "flash at top → jump to bottom" when switching threads.
-  useLayoutEffect(() => {
+  const settleViewport = useCallback(() => {
     if (!followEnabled)
       return;
-    const scrollContainer = scrollRef.current;
-    if (!scrollContainer)
+    const container = scrollRef.current;
+    if (!container)
       return;
-
-    // Only follow new/streamed content while pinned to the bottom; if the user
-    // scrolled up, leave their position but surface the jump button once the
-    // still-growing content pushes them far enough from the bottom.
+    const before = container.scrollTop;
     if (stickToBottomRef.current) {
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      container.scrollTop = container.scrollHeight;
     }
     else {
-      const distance = scrollContainer.scrollHeight - scrollContainer.clientHeight - scrollContainer.scrollTop;
-      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
+      const anchor = anchorRef.current;
+      const target
+        = anchor
+          && Array.from(
+            container.querySelectorAll<HTMLElement>("[data-message-id]"),
+          ).find(element => element.dataset.messageId === anchor.id);
+      if (target) {
+        const delta
+          = target.getBoundingClientRect().top
+            - container.getBoundingClientRect().top
+            - anchor!.offset;
+        if (Math.abs(delta) > 0.5)
+          container.scrollTop += delta;
+      }
+      else {
+        // A replaced transcript can lose the old ID. Keep the current position
+        // and adopt a surviving message; never jump unconditionally to zero.
+        anchorRef.current = captureAnchor(container);
+      }
     }
+    if (container.scrollTop !== before)
+      writtenTopRef.current = container.scrollTop;
+    const distance
+      = container.scrollHeight - container.clientHeight - container.scrollTop;
+    setShowJumpToLatest(
+      !stickToBottomRef.current && distance > JUMP_BUTTON_THRESHOLD_PX,
+    );
     onContentSettledRef.current?.();
-  }, [contentKey, followEnabled, scrollRef]);
+  }, [followEnabled, scrollRef]);
 
-  return { handleScroll, scrollToLatest, showJumpToLatest };
+  useLayoutEffect(settleViewport, [contentKey, settleViewport]);
+
+  // Keep the same anchor through deferred image/markdown layout, not merely
+  // the first React commit. Observe both viewport and content dimensions.
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container || typeof ResizeObserver === "undefined")
+      return;
+    const observer = new ResizeObserver(settleViewport);
+    observer.observe(container);
+    for (const child of container.children) observer.observe(child);
+    return () => observer.disconnect();
+  }, [contentKey, scrollRef, settleViewport]);
+
+  return { handleScroll, scrollToLatest, showJumpToLatest, preserveViewport };
+}
+
+interface Anchor {
+  id: string;
+  offset: number;
+}
+
+function captureAnchor(container: HTMLElement | null): Anchor | null {
+  if (!container)
+    return null;
+  const top = container.getBoundingClientRect().top;
+  for (const element of container.querySelectorAll<HTMLElement>(
+    "[data-message-id]",
+  )) {
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom > top)
+      return { id: element.dataset.messageId!, offset: rect.top - top };
+  }
+  return null;
 }

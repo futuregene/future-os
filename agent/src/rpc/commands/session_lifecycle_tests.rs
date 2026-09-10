@@ -140,15 +140,17 @@ fn create_session_rebinds_event_journal_to_live_broadcaster() {
         "text_chunk",
         serde_json::json!({"text": "hello"}),
     ));
+    live_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "agent_end",
+        serde_json::json!({}),
+    ));
 
-    let journal = state
+    assert!(state
         .session_manager
-        .run_data_path(&session_id)
-        .join("run-j.jsonl");
-    assert!(
-        journal.exists(),
-        "live broadcaster must write the durable event journal"
-    );
+        .storage()
+        .unwrap()
+        .has_events(&session_id, "run-j")
+        .unwrap());
 }
 
 #[test]
@@ -176,14 +178,7 @@ fn list_session_ids_reports_all_files_including_corrupt() {
     // Drop a corrupt JSONL next to it — must STILL be reported as a live
     // session id (orphan cleanup depends on filename-only enumeration).
     let corrupt_id = "corrupt-session";
-    std::fs::write(
-        state
-            .session_manager
-            .dir
-            .join(format!("{corrupt_id}.jsonl")),
-        "{ not json",
-    )
-    .unwrap();
+    state.session_manager.test_execute("INSERT INTO legacy_imports(session_id,status,fingerprint,error_kind) VALUES ('corrupt-session','skipped','synthetic','invalid_json');");
 
     let resp = parse_response(&handle_command_internal(
         &state,
@@ -233,7 +228,7 @@ fn list_sessions_emits_canonical_keys() {
     assert_eq!(entry["firstMessage"], "hello");
     for canonical in [
         "sessionName",
-        "updatedAt",
+        "updatedAtMs",
         "parentSessionId",
         "firstMessage",
         "queryCount",
@@ -333,15 +328,12 @@ fn delete_session_reports_unremovable_disk_file() {
         )],
     );
     // Replace the JSONL file with a directory so remove_file fails.
-    let path = state.session_manager.find("ghost").expect("saved session");
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir_all(&path).unwrap();
+    state.session_manager.test_execute("CREATE TRIGGER fail_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END;");
 
     let cmd = make_cmd_for("delete_session", "ghost");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
     assert_eq!(resp["error_code"], "delete_failed");
-    let _ = std::fs::remove_dir_all(&path);
 }
 
 // ── coverage batch 1: get_fork_messages ─────────────────────────────────
@@ -380,9 +372,9 @@ fn get_fork_messages_extracts_first_text_block_only() {
     assert_eq!(resp["success"], true);
     let messages = resp["data"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 2, "only user entries are fork points");
-    assert_eq!(messages[0]["content"], "plain");
-    assert_eq!(messages[1]["content"], "visible question");
-    assert!(messages[0]["timestamp"].is_string());
+    assert_eq!(messages[0]["blocks"][0]["text"], "plain");
+    assert_eq!(messages[1]["blocks"][0]["text"], "visible question");
+    assert!(messages[0]["createdAtMs"].is_i64());
 }
 
 #[test]
@@ -391,19 +383,14 @@ fn get_fork_messages_handles_legacy_bare_string_content() {
     // A pre-block-array journal stored user content as a bare string. The
     // save path canonicalizes string content to a block array, so this legacy
     // shape is written directly to disk to exercise the fallback branch.
-    std::fs::create_dir_all(&state.session_manager.dir).unwrap();
-    std::fs::write(
-        state.session_manager.dir.join("legacy-src.jsonl"),
-        r#"{"id":"legacy-user-1","type":"user","role":"user","content":"plain legacy text","timestamp":"2024-01-01T00:00:00Z"}"#,
-    )
-    .unwrap();
+    state.session_manager.storage().unwrap().replace("legacy-src", vec![serde_json::json!({"id":"legacy-user-1","type":"user","role":"user","content":"plain legacy text","timestamp":"2024-01-01T00:00:00Z"})]).unwrap();
 
     let cmd = make_cmd_for("get_fork_messages", "legacy-src");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     let messages = resp["data"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0]["content"], "plain legacy text");
+    assert_eq!(messages[0]["blocks"][0]["text"], "plain legacy text");
 }
 
 // ── coverage batch 1: new_session variants ──────────────────────────────
@@ -573,20 +560,20 @@ fn get_session_entries_renders_roles_and_run_stats() {
     // session_info (deduped to one), user, assistant, tool.
     assert_eq!(entries.len(), 4);
     let info = &entries[0];
-    assert_eq!(info["content"]["session_name"], "fresh");
+    assert_eq!(info["session"]["sessionName"], "fresh");
     let user_entry = &entries[1];
-    assert_eq!(user_entry["content"], "question");
-    assert_eq!(user_entry["run_status"], "completed");
-    assert_eq!(user_entry["run_duration_ms"], 1500);
+    assert_eq!(user_entry["blocks"][0]["text"], "question");
+    assert_eq!(user_entry["run"]["status"], "completed");
+    assert_eq!(user_entry["run"]["durationMs"], 1500);
     let assistant_entry = &entries[2];
-    assert_eq!(assistant_entry["content"], "answer");
-    assert_eq!(assistant_entry["thinking"], "deep thought");
-    assert_eq!(assistant_entry["output_tokens"], 42);
-    assert_eq!(assistant_entry["duration_ms"], 1500);
+    assert_eq!(assistant_entry["blocks"][1]["text"], "answer");
+    assert_eq!(assistant_entry["blocks"][0]["text"], "deep thought");
+    assert_eq!(assistant_entry["usage"]["outputTokens"], 42);
+    assert_eq!(assistant_entry["run"]["durationMs"], 1500);
     let tool_entry = &entries[3];
-    assert_eq!(tool_entry["content"], "tool output");
-    assert_eq!(tool_entry["tool_call_id"], "call-1");
-    assert_eq!(tool_entry["tool_result_is_error"], false);
+    assert_eq!(tool_entry["blocks"][0]["text"], "tool output");
+    assert_eq!(tool_entry["blocks"][0]["toolCallId"], "call-1");
+    assert_eq!(tool_entry["blocks"][0]["isError"], false);
 }
 
 #[test]
@@ -608,10 +595,10 @@ fn get_session_entries_projects_replyless_failure_onto_canonical_user_entry() {
         make_cmd("get_session_entries"),
     ));
     let entry = &resp["data"]["entries"][0];
-    assert_eq!(entry["meta"]["run_id"], "run-failed");
-    assert_eq!(entry["run_status"], "failed");
-    assert_eq!(entry["run_error"], "authentication failed");
-    assert_eq!(entry["run_duration_ms"], 25);
+    assert_eq!(entry["runId"], "run-failed");
+    assert_eq!(entry["run"]["status"], "failed");
+    assert_eq!(entry["run"]["error"], "authentication failed");
+    assert_eq!(entry["run"]["durationMs"], 25);
 }
 
 #[test]
@@ -626,10 +613,9 @@ fn get_session_entries_reports_a_corrupt_persisted_history() {
             serde_json::json!("question"),
         )],
     );
-    let path = state.session_manager.session_path("default");
-    let raw = std::fs::read_to_string(&path).expect("read session");
-    let first = raw.lines().next().expect("session row");
-    std::fs::write(&path, format!("{first}\n{{not-json}}\n{first}\n")).expect("corrupt middle row");
+    state
+        .session_manager
+        .test_execute("UPDATE entries SET metadata_json='{\"timestamp\":false}'; UPDATE sessions SET revision=revision+1;");
 
     let response = parse_response(&handle_command_internal(
         &state,
@@ -698,23 +684,20 @@ fn get_session_entries_covers_compaction_billed_deltas_and_empty_info() {
 
     // The assistant entry carries the billed-usage deltas (100 in / 50 cache)
     // derived from the session_info counters.
-    let assistant_entry = entries
-        .iter()
-        .find(|e| e["entry_type"] == "assistant")
-        .unwrap();
-    assert_eq!(assistant_entry["output_tokens"], 42);
-    assert_eq!(assistant_entry["duration_ms"], 1500);
-    assert_eq!(assistant_entry["input_tokens"], 100);
-    assert_eq!(assistant_entry["cache_read_tokens"], 50);
+    let assistant_entry = entries.iter().find(|e| e["kind"] == "assistant").unwrap();
+    assert_eq!(assistant_entry["usage"]["outputTokens"], 42);
+    assert_eq!(assistant_entry["run"]["durationMs"], 1500);
+    assert_eq!(assistant_entry["usage"]["inputTokens"], 100);
+    assert_eq!(assistant_entry["usage"]["cacheReadTokens"], 50);
 
     // The compaction entry keeps its raw checkpoint content and clears the
     // display text.
     let compaction_entry = entries
         .iter()
-        .find(|e| e["entry_type"] == crate::session::ENTRY_TYPE_COMPACTION)
+        .find(|e| e["kind"] == crate::session::ENTRY_TYPE_COMPACTION)
         .unwrap();
-    assert_eq!(compaction_entry["content"], "");
-    assert_eq!(compaction_entry["checkpoint"]["checkpoint_id"], "cp-1");
+    assert_eq!(compaction_entry["blocks"], serde_json::json!([]));
+    assert_eq!(compaction_entry["checkpoint"]["checkpointId"], "cp-1");
 }
 
 #[test]
@@ -734,12 +717,15 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     assert_eq!(first["data"]["nextOffset"], 2);
     let version = state
         .session_manager
-        .session_file_version("default")
+        .session_revision("default")
         .expect("session version");
-    let first_projection = state
-        .session_manager
-        .cached_display_entries("default", &version)
-        .expect("first page caches the stable projection");
+    assert!(
+        state
+            .session_manager
+            .cached_display_entries("default", &version)
+            .is_none(),
+        "paged reads must not populate the full-history cache"
+    );
 
     let mut second_cmd = make_cmd("get_session_entries");
     second_cmd.offset = Some(2);
@@ -747,11 +733,10 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     let second = parse_response(&handle_command_internal(&state, second_cmd));
     assert_eq!(second["data"]["entries"].as_array().unwrap().len(), 2);
     assert_eq!(second["data"]["nextOffset"], 4);
-    let second_projection = state
+    assert!(state
         .session_manager
         .cached_display_entries("default", &version)
-        .expect("second page reuses the stable projection");
-    assert!(Arc::ptr_eq(&first_projection, &second_projection));
+        .is_none());
 
     let legacy = parse_response(&handle_command_internal(
         &state,
@@ -776,6 +761,45 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
 }
 
 #[test]
+fn cold_history_and_state_do_not_restore_model_context() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "cold-indexed",
+        "mock",
+        vec![
+            crate::session::SessionEntry::new_user("user", serde_json::json!("older")),
+            crate::session::SessionEntry::new_assistant(
+                serde_json::json!("large synthetic body"),
+                Vec::new(),
+            ),
+            crate::session::SessionEntry::new_user("user", serde_json::json!("latest")),
+        ],
+    );
+    state.sessions.write().remove("cold-indexed");
+    state.session_manager.test_execute(
+        "UPDATE entries SET metadata_json='{\"timestamp\":false}' WHERE session_id='cold-indexed' AND position=1",
+    );
+    let mut cmd = make_cmd("get_session_entries");
+    cmd.session_id = "cold-indexed".into();
+    cmd.before = Some(i64::MAX);
+    cmd.limit = Some(1);
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true);
+    assert!(!state.sessions.read().contains_key("cold-indexed"));
+    let mut cmd = make_cmd("get_state");
+    cmd.session_id = "cold-indexed".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true);
+    let session = state.get_session("cold-indexed").unwrap();
+    assert!(!session.read().history_loaded);
+    // Context-dependent operations must fail truthfully on corruption, never
+    // continue with the empty vector from metadata-only initialization.
+    assert!(session.write().ensure_history_loaded().is_err());
+    assert!(!session.read().history_loaded);
+}
+
+#[test]
 fn get_session_entries_pages_backward_by_user_exchange() {
     let state = make_app_state();
     let mut entries = Vec::new();
@@ -797,8 +821,8 @@ fn get_session_entries_pages_backward_by_user_exchange() {
     let latest = parse_response(&handle_command_internal(&state, latest_cmd));
     let latest_entries = latest["data"]["entries"].as_array().unwrap();
     assert_eq!(latest_entries.len(), 4);
-    assert_eq!(latest_entries[0]["content"], "q3");
-    assert_eq!(latest_entries[3]["content"], "a4");
+    assert_eq!(latest_entries[0]["blocks"][0]["text"], "q3");
+    assert_eq!(latest_entries[3]["blocks"][0]["text"], "a4");
     assert_eq!(latest["data"]["hasMore"], true);
     assert_eq!(latest["data"]["nextOffset"], 6);
 
@@ -808,8 +832,8 @@ fn get_session_entries_pages_backward_by_user_exchange() {
     let older = parse_response(&handle_command_internal(&state, older_cmd));
     let older_entries = older["data"]["entries"].as_array().unwrap();
     assert_eq!(older_entries.len(), 4);
-    assert_eq!(older_entries[0]["content"], "q1");
-    assert_eq!(older_entries[3]["content"], "a2");
+    assert_eq!(older_entries[0]["blocks"][0]["text"], "q1");
+    assert_eq!(older_entries[3]["blocks"][0]["text"], "a2");
     assert_eq!(older["data"]["nextOffset"], 2);
 }
 
@@ -1020,8 +1044,11 @@ fn clone_rejects_disk_session_with_idless_last_entry() {
     // A disk session whose last entry carries no id -> the clone leaf id
     // resolves empty and hits the "no messages found" arm.
     let mut entry = crate::session::SessionEntry::new_user("user", serde_json::json!("legacy"));
-    entry.id = String::new();
+    entry.id = "valid-before-corruption".into();
     save_via(&state, "default", "mock", vec![entry]);
+    state
+        .session_manager
+        .test_execute("UPDATE entries SET entry_id=''");
     let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
     assert_eq!(resp["success"], false);
     assert!(resp["error"]
@@ -1188,9 +1215,13 @@ fn get_session_entries_handles_empty_tool_and_rich_meta() {
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
-    assert!(entries[0]["tool_calls"].is_array());
-    assert!(entries[0]["meta"].is_object());
-    assert_eq!(entries[1]["content"], "");
+    assert!(entries[0]["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["kind"] == "tool_call"));
+    assert!(entries[0]["metadata"].is_object());
+    assert_eq!(entries[1]["blocks"][0]["text"], "");
 }
 
 #[test]
@@ -1241,11 +1272,7 @@ fn fork_and_clone_report_save_errors() {
     }
     // Read-only session dir → the forked/clone save fails. (Windows ignores
     // the readonly bit on directories, hence cfg(unix).)
-    let dir = state.session_manager.run_data_path("default");
-    let sess_dir = dir.parent().unwrap().parent().unwrap().to_path_buf();
-    let mut perms = std::fs::metadata(&sess_dir).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&sess_dir, perms.clone()).unwrap();
+    state.session_manager.test_execute("CREATE TRIGGER fail_new_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;");
 
     let mut cmd = make_cmd("fork");
     cmd.entry_id = entry_id;
@@ -1262,11 +1289,6 @@ fn fork_and_clone_report_save_errors() {
         .as_str()
         .unwrap()
         .contains("failed to save cloned"));
-
-    let mut perms = std::fs::metadata(&sess_dir).unwrap().permissions();
-    #[allow(clippy::permissions_set_readonly_false)]
-    perms.set_readonly(false);
-    std::fs::set_permissions(&sess_dir, perms).unwrap();
 }
 
 #[test]

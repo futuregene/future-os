@@ -428,15 +428,6 @@ impl RunFixture {
     fn workspace(&self) -> &PathBuf {
         &self.workspace
     }
-
-    /// The on-disk transcript path for session "s1" (may not exist yet).
-    fn transcript_file(&self) -> PathBuf {
-        self.workspace
-            .parent()
-            .unwrap()
-            .join("sessions")
-            .join("s1.jsonl")
-    }
 }
 
 async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
@@ -474,17 +465,15 @@ async fn prompt_text_run_completes_and_persists() {
     assert_eq!(messages[1].text(), "the answer");
 
     // On-disk journal for this run exists and ends with a terminal event.
-    let journal = session
-        .session_manager
-        .run_data_path("s1")
-        .join(format!("{}.jsonl", lease.run_id));
-    for _ in 0..100 {
-        if journal.exists() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    let journal_text = std::fs::read_to_string(&journal).unwrap();
+    let journal_text = serde_json::to_string(
+        &session
+            .session_manager
+            .storage()
+            .unwrap()
+            .events("s1", &lease.run_id)
+            .unwrap(),
+    )
+    .unwrap();
     assert!(journal_text.contains("\"agent_start\""), "{journal_text}");
     assert!(journal_text.contains("\"agent_end\""), "{journal_text}");
     assert!(journal_text.contains("completed"), "{journal_text}");
@@ -640,6 +629,57 @@ async fn prompt_projects_typed_model_and_tool_events_end_to_end() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn incomplete_reason_is_identical_in_live_event_and_sqlite_history() {
+    for (index, reason) in [
+        FinishReason::Length,
+        FinishReason::Incomplete,
+        FinishReason::Paused,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let fixture = run_fixture(
+            ScriptedProvider::new(vec![Script::Events(vec![
+                text_event("synthetic partial"),
+                ModelStreamEvent::Finish {
+                    reason,
+                    usage: None,
+                },
+            ])]),
+            &format!("terminal-reason-{index}"),
+        );
+        let mut session = fixture.session;
+        let mut events = session.broadcaster.subscribe();
+        session
+            .prompt("synthetic request", &[], &[], None, None)
+            .unwrap();
+        let live = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if event.event_type == "agent_end" {
+                break serde_json::from_str::<serde_json::Value>(&event.data).unwrap();
+            }
+        };
+        let stored = session.session_manager.load("s1").unwrap();
+        let terminal = stored
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL)
+            .unwrap()
+            .content
+            .as_ref()
+            .unwrap();
+        assert_eq!(live["state"], "incomplete");
+        assert_eq!(terminal["state"], live["state"]);
+        assert_eq!(terminal["error"], live["error"]);
+        assert!(terminal["error"].as_str().unwrap().starts_with('['));
+        assert_eq!(terminal["truncation"], live["truncation"]);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_permission_none_denies_tool_calls() {
     let write_args = serde_json::json!({"path": "nope.txt", "content": "x"});
     let provider = ScriptedProvider::new(vec![
@@ -708,7 +748,7 @@ async fn prompt_ephemeral_session_skips_persistence() {
     wait_for_run_end(&session).await;
     assert_eq!(session.messages.read().len(), 2);
     assert!(
-        session.session_manager.find("s1").is_none(),
+        !session.session_manager.contains("s1").unwrap(),
         "ephemeral sessions never touch the transcript"
     );
 }
@@ -1075,9 +1115,7 @@ async fn scheduled_run_with_broken_transcript_reports_error() {
         ScriptedProvider::new(vec![text_turn("unused")]),
         "sched-fail",
     );
-    let transcript = fixture.transcript_file();
-    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::create_dir_all(&transcript).unwrap(); // dir where the file belongs
+    fixture.session.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
     let mut session = fixture.session;
     let result = session.enqueue_prompt(
         "hi",
@@ -1088,7 +1126,6 @@ async fn scheduled_run_with_broken_transcript_reports_error() {
         crate::runtime::BusyPolicy::EnqueueIfBusy,
     );
     assert!(result.is_err());
-    let _ = std::fs::remove_dir_all(&transcript);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1293,14 +1330,11 @@ async fn prompt_persist_failure_aborts_run_with_error() {
         "persist-fail",
     );
     // A directory where the transcript file should be breaks persistence.
-    let transcript = fixture.transcript_file();
     let mut session = fixture.session;
-    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::create_dir_all(&transcript).unwrap();
+    session.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
 
     let result = session.prompt("hi", &[], &[], None, None);
     assert!(result.is_err());
-    let _ = std::fs::remove_dir_all(&transcript);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1423,25 +1457,10 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
         vec![text_event("doomed reply"), finish_event()],
     )]);
     let fixture = run_fixture(provider, "journal-loss");
-    let run_events = fixture
-        .workspace()
-        .parent()
-        .unwrap()
-        .join("run-events")
-        .join("s1");
     let mut session = fixture.session;
     session.prompt("hi", &[], &[], None, None).unwrap();
 
-    // Wait for the run's journal to appear, then replace the run-events dir
-    // with a plain file so the next journal append fails.
-    for _ in 0..200 {
-        if run_events.exists() && run_events.read_dir().unwrap().next().is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    std::fs::remove_dir_all(&run_events).unwrap();
-    std::fs::write(&run_events, "not a dir").unwrap();
+    session.broadcaster.fail_next_append();
 
     gate.notify_one();
     let mut degraded = false;
@@ -1457,7 +1476,6 @@ async fn prompt_journal_loss_marks_run_persistence_degraded() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(degraded, "journal loss marked the run persistence_degraded");
-    let _ = std::fs::remove_file(&run_events);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1468,19 +1486,20 @@ async fn prompt_mid_run_append_failure_heals_via_full_rewrite() {
         vec![text_event("late answer"), finish_event()],
     )]);
     let fixture = run_fixture(provider, "heal");
-    let transcript = fixture.transcript_file();
     let mut session = fixture.session;
     session.prompt("hi", &[], &[], None, None).unwrap();
 
     // Wait for the user message to hit disk, then remove the transcript so
     // the mid-run assistant append fails (open-for-append on a missing file).
     for _ in 0..200 {
-        if transcript.exists() {
+        if session.session_manager.contains("s1").unwrap() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    std::fs::remove_file(&transcript).unwrap();
+    session
+        .session_manager
+        .test_execute("UPDATE sessions SET revision=-1 WHERE id='s1'");
 
     gate.notify_one();
     wait_for_run_end(&session).await;

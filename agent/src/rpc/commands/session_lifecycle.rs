@@ -63,26 +63,24 @@ pub(crate) fn cmd_list_sessions(state: &AppState, cmd: &RpcCommand, id: &str) ->
             .collect()
     };
 
-    // Typed payload (audit item 1): canonical camelCase keys, with snake_case
-    // legacy aliases alongside so pre-migration clients keep working.
+    // One canonical contract shared by every client.
     let sessions: Vec<serde_json::Value> = summaries
         .into_iter()
         .filter(|s| cwd_filter.is_empty() || s.cwd == cwd_filter)
         .map(|s| {
             let is_streaming = active_flags.get(&s.id).copied().unwrap_or(false);
-            let value = serde_json::to_value(crate::rpc::payloads::SessionSummaryPayload {
+            serde_json::to_value(crate::rpc::payloads::SessionSummaryPayload {
                 id: s.id,
                 session_name: s.name,
                 model: s.model,
                 cwd: s.cwd,
-                updated_at: s.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                parent_session_id: s.parent_session_id,
+                updated_at_ms: s.updated_at.timestamp_millis(),
+                parent_session_id: (!s.parent_session_id.is_empty()).then_some(s.parent_session_id),
                 first_message: s.first_message,
                 query_count: s.query_count,
                 is_streaming,
             })
-            .unwrap_or_default();
-            value
+            .expect("serializable session summary")
         })
         .collect();
     RpcResponse::ok(
@@ -284,8 +282,9 @@ pub(crate) fn cmd_get_fork_messages(state: &AppState, cmd: &RpcCommand, id: &str
                     serde_json::json!({
                         "id": e.id,
                         "role": e.role,
-                        "content": content_text,
-                        "timestamp": e.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        "kind":"user",
+                        "blocks": [{"kind":"text","text":content_text}],
+                        "createdAtMs": e.timestamp.timestamp_millis(),
                     })
                 })
                 .collect()
@@ -493,33 +492,39 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     RpcResponse::ok(id, "new_session", serde_json::json!({"sessionId": new_id}))
 }
 
-pub(crate) fn cmd_get_session_entries(
-    session: &Arc<parking_lot::RwLock<ServerSession>>,
+pub(crate) fn cmd_read_session_entries(
+    session_manager: &crate::session::Manager,
+    session_id: &str,
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    // Return displayable entries from a session plus the session_info
-    // metadata entry (model, thinking_level, session_name, cwd).
-    let (session_manager, session_id) = {
-        let sess = session.read();
-        (sess.session_manager.clone(), sess.session_id.clone())
-    };
-    let session_path = session_manager.session_path(&session_id);
-    if !session_path.exists() {
+    if cmd.before.is_some() || cmd.offset.is_some() {
+        return match session_manager.history_page(session_id, cmd.before, cmd.offset, cmd.limit) {
+            Ok(page) => RpcResponse::ok(id, "get_session_entries", page),
+            Err(error) => RpcResponse::build_fail_code(
+                id,
+                "get_session_entries",
+                "session_history_unreadable",
+                &format!("Unable to load session history: {error}"),
+                serde_json::json!({"sessionId":session_id}),
+            ),
+        };
+    }
+    if matches!(session_manager.contains(session_id), Ok(false)) {
         return RpcResponse::ok(
             id,
             "get_session_entries",
             serde_json::json!({"entries": []}),
         );
     }
-    let version_before = session_manager.session_file_version(&session_id).ok();
+    let version_before = session_manager.session_revision(session_id).ok();
     let cached = version_before
         .as_ref()
-        .and_then(|version| session_manager.cached_display_entries(&session_id, version));
+        .and_then(|version| session_manager.cached_display_entries(session_id, version));
     let entries = if let Some(entries) = cached {
         entries
     } else {
-        let loaded = match session_manager.load(&session_id) {
+        let loaded = match session_manager.load(session_id) {
             Ok(session) => session,
             Err(error) => {
                 return RpcResponse::build_fail_code(
@@ -531,364 +536,16 @@ pub(crate) fn cmd_get_session_entries(
                 );
             }
         };
-        let projected: Vec<serde_json::Value> = {
-            let s = loaded;
-            // The authoritative metadata is the last session_info snapshot
-            // (the append-only commit path appends a fresh one per run). Surface
-            // it in the first session_info slot — where clients (CLI info, fork)
-            // look — and drop the stale earlier ones so callers see exactly one.
-            let authoritative_info = s
-                .entries
-                .iter()
-                .rev()
-                .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
-                .and_then(|e| e.content.clone());
-            let mut emitted_session_info = false;
-            // Per-run output tokens + wall-clock duration live only in the
-            // `run_terminal` marker's content JSON (the assistant entry's content
-            // is a block array, so it can't carry them). Bind each marker to the
-            // assistant entry that precedes it — the run's final reply — so the
-            // GUI/mobile footer ("time · N tokens") survives a reload. Positional
-            // binding (not run_id) because the on-disk assistant entry's meta may
-            // lack run_id on the append-only fast path. Clearing the pointer after
-            // a marker keeps a terminal of a reply-less run (cancel/error before
-            // any assistant entry) from overwriting the previous run's stats.
-            let mut last_assistant_id: Option<String> = None;
-            let mut run_stats: std::collections::HashMap<String, (i64, i64, i64, i64)> =
-                std::collections::HashMap::new();
-            // Canonical terminal outcomes keyed by the run id persisted on the
-            // originating user entry. Unlike the assistant-only stats binding,
-            // this survives failures before the first assistant entry exists.
-            let mut run_outcomes: std::collections::HashMap<String, (String, Option<String>, i64)> =
-                std::collections::HashMap::new();
-            // Per-run usage deltas from the cumulative session_info snapshots
-            // (tokens_in / tokens_cache_r): the snapshot written just before a
-            // run_terminal marker is the post-run state, and the one captured at
-            // the previous run_terminal (or session start) is the pre-run state,
-            // so consecutive-snapshot deltas are exactly this run's billed usage.
-            let mut prev_snapshot: (i64, i64) = (0, 0);
-            let mut current_snapshot: (i64, i64) = (0, 0);
-            for marker in &s.entries {
-                if marker.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
-                    last_assistant_id = Some(marker.id.clone());
-                } else if marker.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                    if let Some(content) = marker.content.as_ref() {
-                        current_snapshot = (
-                            content
-                                .get("tokens_in")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(current_snapshot.0),
-                            content
-                                .get("tokens_cache_r")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(current_snapshot.1),
-                        );
-                    }
-                } else if marker.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL {
-                    if let Some(content) = marker.content.as_ref() {
-                        if let Some(run_id) = content.get("run_id").and_then(|v| v.as_str()) {
-                            let state = match content.get("state").and_then(|v| v.as_str()) {
-                                Some(
-                                    crate::session::RUN_STATE_ERROR
-                                    | crate::session::RUN_STATE_INCOMPLETE,
-                                ) => "failed",
-                                Some(state) => state,
-                                None => "failed",
-                            };
-                            let error = content
-                                .get("error")
-                                .and_then(|v| v.as_str())
-                                .filter(|value| !value.trim().is_empty())
-                                .map(str::to_owned);
-                            let duration = content
-                                .get("run_duration_ms")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0);
-                            run_outcomes
-                                .insert(run_id.to_string(), (state.to_string(), error, duration));
-                        }
-                    }
-                    if let (Some(aid), Some(content)) =
-                        (last_assistant_id.as_deref(), marker.content.as_ref())
-                    {
-                        let tokens = content
-                            .get("run_tokens")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let duration = content
-                            .get("run_duration_ms")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let delta_in = (current_snapshot.0 - prev_snapshot.0).max(0);
-                        let delta_cache = (current_snapshot.1 - prev_snapshot.1).max(0);
-                        run_stats
-                            .insert(aid.to_string(), (tokens, duration, delta_in, delta_cache));
-                    }
-                    last_assistant_id = None;
-                    prev_snapshot = current_snapshot;
-                }
-            }
-            s.entries
-                .iter()
-                .filter(|e| {
-                    if !matches!(
-                        e.entry_type.as_str(),
-                        "user" | "assistant" | "tool" | "session_info" | "compaction"
-                    ) {
-                        return false;
-                    }
-                    // Keep only the first session_info slot; its content is
-                    // replaced with the authoritative (last) snapshot below, and
-                    // the stale later snapshots are dropped.
-                    if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                        if emitted_session_info {
-                            return false;
-                        }
-                        emitted_session_info = true;
-                    }
-                    true
-                })
-                .map(|e| {
-                    let content_text = e
-                        .content
-                        .as_ref()
-                        .map(|c| {
-                            if let Some(arr) = c.as_array() {
-                                let texts = arr.iter().filter_map(|block| {
-                                    (block.get("type").and_then(|value| value.as_str())
-                                        == Some("text"))
-                                    .then(|| block.get("text").and_then(|text| text.as_str()))
-                                    .flatten()
-                                });
-                                if e.role == "user" {
-                                    // A user entry's visible text is only their typed
-                                    // message (the first text block). Any later text
-                                    // block is agent-injected attachment context
-                                    // (file paths), which must not leak into the bubble.
-                                    texts.take(1).collect::<Vec<_>>().join(" ")
-                                } else {
-                                    texts.collect::<Vec<_>>().join(" ")
-                                }
-                            } else {
-                                c.as_str().unwrap_or("").to_string()
-                            }
-                        })
-                        .unwrap_or_default();
-                    // Build the display content for this entry. Only include the
-                    // actual visible text — no thinking or tool formatting.
-                    // The forked session's messages should look identical to
-                    // original GUI messages (which store thinking/tools in
-                    // run events, not in the message content).
-                    let full_content = if e.entry_type == "tool" {
-                        // Tool entries: show the result text, or a placeholder.
-                        e.content
-                            .as_ref()
-                            .and_then(serde_json::Value::as_array)
-                            .and_then(|blocks| {
-                                blocks.iter().find_map(|block| {
-                                    (block.get("type").and_then(serde_json::Value::as_str)
-                                        == Some("tool_result"))
-                                    .then(|| {
-                                        block.get("content").and_then(serde_json::Value::as_str)
-                                    })
-                                    .flatten()
-                                })
-                            })
-                            .map(str::to_owned)
-                            .unwrap_or(content_text)
-                    } else {
-                        // User and assistant entries: just the text content.
-                        content_text
-                    };
-
-                    // Typed payload (audit item 1): SessionEntryPayload mirrors
-                    // the on-disk entry schema (snake_case keys).
-                    let mut payload = crate::rpc::payloads::SessionEntryPayload {
-                        id: e.id.clone(),
-                        entry_type: Some(e.entry_type.clone()),
-                        role: e.role.clone(),
-                        content: serde_json::Value::String(full_content),
-                        name: e.name.clone(),
-                        tool_args: e.tool_args.clone(),
-                        timestamp: e.timestamp.to_rfc3339(),
-                        thinking: None,
-                        meta: None,
-                        tool_calls: None,
-                        output_tokens: None,
-                        duration_ms: None,
-                        input_tokens: None,
-                        cache_read_tokens: None,
-                        checkpoint: None,
-                        tool_call_id: None,
-                        tool_result_is_error: None,
-                        run_status: None,
-                        run_error: None,
-                        run_duration_ms: None,
-                    };
-                    if e.entry_type == crate::session::ENTRY_TYPE_COMPACTION {
-                        payload.content = serde_json::Value::String(String::new());
-                        payload.checkpoint = e.content.clone();
-                    }
-                    // Include thinking and tool_calls for the new agent-based
-                    // message display (entryProjection.ts).
-                    if !e.thinking.is_empty() {
-                        payload.thinking = Some(e.thinking.clone());
-                    }
-                    // Structured per-entry metadata (e.g. user attachments with
-                    // their cached thumbnails) so the GUI can rebuild attachment
-                    // chips after reload — the JSONL is the only message source.
-                    if let Some(ref meta) = e.meta {
-                        payload.meta = Some(meta.clone());
-                        if let Some((status, error, duration)) = meta
-                            .get("run_id")
-                            .and_then(|value| value.as_str())
-                            .and_then(|run_id| run_outcomes.get(run_id))
-                        {
-                            payload.run_status = Some(status.clone());
-                            payload.run_error = error.clone();
-                            if *duration > 0 {
-                                payload.run_duration_ms = Some(*duration);
-                            }
-                        }
-                    }
-                    if !e.tool_calls.is_empty() {
-                        payload.tool_calls = serde_json::to_value(&e.tool_calls).ok();
-                    }
-                    if !e.tool_call_id.is_empty() {
-                        payload.tool_call_id = Some(e.tool_call_id.clone());
-                    }
-                    if e.entry_type == crate::session::ENTRY_TYPE_TOOL {
-                        payload.tool_result_is_error = e
-                            .content
-                            .as_ref()
-                            .and_then(serde_json::Value::as_array)
-                            .and_then(|blocks| {
-                                blocks.iter().find(|block| {
-                                    block.get("type").and_then(serde_json::Value::as_str)
-                                        == Some("tool_result")
-                                })
-                            })
-                            .map(|block| {
-                                block
-                                    .get("is_error")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false)
-                            });
-                    }
-                    // Surface this reply's output tokens + duration on the final
-                    // assistant entry of each run (bound from the run_terminal
-                    // marker above) so the footer can show "time · N tokens" after
-                    // a reload — entriesToMessages / the mobile reducer read these
-                    // top-level fields.
-                    if e.entry_type == crate::session::ENTRY_TYPE_ASSISTANT {
-                        if let Some((tokens, duration, delta_in, delta_cache)) =
-                            run_stats.get(&e.id)
-                        {
-                            if *tokens > 0 {
-                                payload.output_tokens = Some(*tokens);
-                            }
-                            if *duration > 0 {
-                                payload.duration_ms = Some(*duration);
-                            }
-                            if *delta_in > 0 {
-                                payload.input_tokens = Some(*delta_in);
-                            }
-                            if *delta_cache > 0 {
-                                payload.cache_read_tokens = Some(*delta_cache);
-                            }
-                        }
-                    }
-                    // For session_info entries, include the original content
-                    // JSON (session_name, cwd, parent_session_id, …) so callers can
-                    // read fork metadata without a second RPC.
-                    if e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO {
-                        // Use the authoritative (last) snapshot's content so the
-                        // single emitted session_info reflects current metadata,
-                        // not the stale values from session creation.
-                        if let Some(ref content) = authoritative_info {
-                            payload.content = content.clone();
-                        }
-                    }
-                    serde_json::to_value(&payload).unwrap_or_default()
-                })
-                .collect()
-        };
+        let projected = crate::session::display::project_entries(&loaded.entries);
         let projected = std::sync::Arc::new(projected);
-        let version_after = session_manager.session_file_version(&session_id).ok();
+        let version_after = session_manager.session_revision(session_id).ok();
         if let (Some(before), Some(after)) = (version_before.as_ref(), version_after) {
             if *before == after {
-                session_manager.cache_display_entries(&session_id, after, projected.clone());
+                session_manager.cache_display_entries(session_id, after, projected.clone());
             }
         }
         projected
     };
-    if let Some(raw_before) = cmd.before {
-        // Mobile history walks backward from the tail so the first response is
-        // immediately renderable at the newest message. Count user entries,
-        // not raw journal rows: one page therefore matches the desktop UI's
-        // "N user exchanges" contract and never splits a question from the
-        // assistant/tool activity that follows it. The returned rows remain in
-        // chronological order; nextOffset is the exclusive cursor for the next
-        // older request.
-        let end = (raw_before.max(0) as usize).min(entries.len());
-        let exchange_limit = cmd.limit.unwrap_or(10).clamp(1, 100) as usize;
-        let mut start = end;
-        let mut user_entries = 0usize;
-        while start > 0 {
-            start -= 1;
-            let is_user =
-                entries[start].get("role").and_then(|value| value.as_str()) == Some("user");
-            if is_user {
-                user_entries += 1;
-                if user_entries >= exchange_limit {
-                    break;
-                }
-            }
-        }
-        let page = entries
-            .get(start..end)
-            .map(<[serde_json::Value]>::to_vec)
-            .unwrap_or_default();
-        return RpcResponse::ok(
-            id,
-            "get_session_entries",
-            serde_json::json!({
-                "entries": page,
-                "hasMore": start > 0,
-                "nextOffset": start,
-            }),
-        );
-    }
-    if let Some(raw_offset) = cmd.offset {
-        const PAGE_BYTES: usize = 8 * 1024 * 1024;
-        let offset = raw_offset.max(0) as usize;
-        let limit = cmd.limit.unwrap_or(250).clamp(1, 1_000) as usize;
-        let start = offset.min(entries.len());
-        let mut end = start;
-        let mut bytes = 0usize;
-        for entry in entries.iter().skip(start).take(limit) {
-            let entry_bytes = serde_json::to_vec(entry).map_or(0, |value| value.len());
-            if end > start && bytes.saturating_add(entry_bytes) > PAGE_BYTES {
-                break;
-            }
-            bytes = bytes.saturating_add(entry_bytes);
-            end += 1;
-        }
-        let page = entries
-            .get(start..end)
-            .map(<[serde_json::Value]>::to_vec)
-            .unwrap_or_default();
-        let has_more = end < entries.len();
-        return RpcResponse::ok(
-            id,
-            "get_session_entries",
-            serde_json::json!({
-                "entries": page,
-                "hasMore": has_more,
-                "nextOffset": end,
-            }),
-        );
-    }
     RpcResponse::ok(
         id,
         "get_session_entries",

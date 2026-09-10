@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@future-os/thread-projection";
 import { classifyAgentError } from "@future-os/thread-projection";
 import i18n from "../../i18n";
 import { updateRunStatus } from "../../integrations/storage/threadStore";
@@ -26,6 +27,36 @@ export function buildAgentFailureTitle(message: string) {
 /** Explain an explicit user stop without presenting it as a failure. */
 export function userStoppedNotice(): string {
   return i18n.t("agent:failure.userStopped");
+}
+
+export function responseTerminationError(kind?: string | null): string {
+  const codes: Record<string, string> = {
+    upstream_disconnected: "UPSTREAM_DISCONNECTED",
+    response_timeout: "RESPONSE_TIMEOUT",
+    output_limit: "OUTPUT_LIMIT",
+    model_content_filter: "MODEL_CONTENT_FILTER",
+    model_response_error: "MODEL_RESPONSE_ERROR",
+    model_paused: "MODEL_PAUSED",
+    provider_cancelled: "PROVIDER_CANCELLED",
+  };
+  return `[${codes[kind ?? ""] ?? "RESPONSE_UNCONFIRMED"}] response did not complete`;
+}
+
+/** Empty text is a presentation outcome, not proof of a protocol failure. */
+export function isCompletedWithoutReply(message: AgentMessage): boolean {
+  return message.role === "assistant"
+    && message.status === "complete"
+    && !message.stopped
+    && !message.terminationNotice
+    && !message.content.trim()
+    && !message.segments?.some(segment => segment.kind === "activity"
+      || (segment.kind === "text" && segment.text.trim()))
+    && !message.activityItems?.some(item => item.kind !== "thinking");
+}
+
+export function canContinueResponse(message: AgentMessage): boolean {
+  const { key } = classifyAgentError(message.runError ?? "");
+  return !["agent:failure.modelPaused", "agent:failure.contentFilter", "agent:failure.softwareError"].includes(key);
 }
 
 export async function updateRunStatusSafe(

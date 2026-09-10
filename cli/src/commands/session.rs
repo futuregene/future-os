@@ -4,6 +4,7 @@
 
 use crate::output::Output;
 use crate::rpc::{grpc_addr, RunClient};
+#[cfg(test)]
 use chrono::TimeZone;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,7 +19,7 @@ Usage:
   future session rename <id> <name>                  Give a session a readable name
   future session delete <id>                         Delete a session
 
-Session data is stored at ~/.future/agent/sessions/";
+Session data is stored in ~/.future/agent/agent.db";
 
 fn help(out: &Output) {
     out.log(SESSION_HELP);
@@ -47,8 +48,13 @@ fn human_tokens(n: i64) -> String {
 }
 
 /// `ago(iso)` — relative time from `now_ms` (injected for testability).
+#[cfg(test)]
 fn ago(iso: &str, now_ms: i64) -> String {
-    let ms = now_ms - parse_timestamp_ms(iso);
+    relative_age(parse_timestamp_ms(iso), now_ms)
+}
+
+fn relative_age(updated_ms: i64, now_ms: i64) -> String {
+    let ms = now_ms - updated_ms;
     let mins = ms / 60_000;
     if mins < 1 {
         "just now".to_string()
@@ -66,6 +72,7 @@ fn ago(iso: &str, now_ms: i64) -> String {
 
 /// `new Date(iso).getTime()` — RFC3339, or local "YYYY-MM-DD HH:MM:SS"
 /// (the `updated_at` format), else 0 (JS gives NaN).
+#[cfg(test)]
 fn parse_timestamp_ms(iso: &str) -> i64 {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(iso) {
         return dt.timestamp_millis();
@@ -114,21 +121,8 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
         return Ok(());
     }
 
-    // `sessions.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())`
     let mut sessions = sessions;
-    sessions.sort_by(|a, b| {
-        let a_ms = a
-            .get("updated_at")
-            .and_then(Value::as_str)
-            .map(parse_timestamp_ms)
-            .unwrap_or(0);
-        let b_ms = b
-            .get("updated_at")
-            .and_then(Value::as_str)
-            .map(parse_timestamp_ms)
-            .unwrap_or(0);
-        b_ms.cmp(&a_ms)
-    });
+    sessions.sort_by_key(|s| std::cmp::Reverse(s["updatedAtMs"].as_i64().unwrap_or(0)));
 
     // Header.
     out.log(&format!(
@@ -147,8 +141,8 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
     ));
 
     for s in &sessions {
-        let session_name = s.get("session_name").and_then(Value::as_str).unwrap_or("");
-        let first_message = s.get("first_message").and_then(Value::as_str).unwrap_or("");
+        let session_name = s.get("sessionName").and_then(Value::as_str).unwrap_or("");
+        let first_message = s.get("firstMessage").and_then(Value::as_str).unwrap_or("");
         // `s.session_name || s.first_message ? truncate(...) : "(untitled)"`
         let title = if !session_name.is_empty() || !first_message.is_empty() {
             truncate(
@@ -172,17 +166,17 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
             model_raw.to_string()
         };
         // `s.query_count ? \`${s.query_count}\` : "—"`
-        let q = match s.get("query_count").and_then(Value::as_i64) {
+        let q = match s.get("queryCount").and_then(Value::as_i64) {
             Some(n) if n != 0 => n.to_string(),
             _ => "—".to_string(),
         };
         let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-        let updated = s.get("updated_at").and_then(Value::as_str).unwrap_or("");
+        let updated = s["updatedAtMs"].as_i64().unwrap_or(0);
         out.log(&format!(
             "  {} {} {} {} {}",
             pad_end(id, 24),
             pad_end(&title, 38),
-            pad_end(&ago(updated, now_ms()), 10),
+            pad_end(&relative_age(updated, now_ms()), 10),
             pad_end(&model, 28),
             q
         ));
@@ -218,56 +212,26 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
         return Err(crate::HANDLED_EXIT.to_string());
     }
 
-    // `data.entries.find(e => e.role === "system")` — the session_info entry.
-    let info_entry = entries
+    let content = entries
         .iter()
-        .find(|e| e.get("role").and_then(Value::as_str) == Some("system"));
-    // `(infoEntry?.content ?? {})` — session_info content is the raw JSON object.
-    let content = info_entry
-        .and_then(|e| e.get("content"))
+        .find(|e| e["kind"] == "session_info")
+        .and_then(|e| e.get("session"))
         .cloned()
-        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-
-    // `(infoEntry?.model as string) || (content?.model as string) || "?"`
-    let model = info_entry
-        .and_then(|e| e.get("model").and_then(Value::as_str))
-        .or_else(|| content.get("model").and_then(Value::as_str))
-        .unwrap_or("?")
-        .to_string();
-    let thinking_level = info_entry
-        .and_then(|e| e.get("thinking_level").and_then(Value::as_str))
-        .or_else(|| content.get("thinking_level").and_then(Value::as_str))
-        .unwrap_or("?")
-        .to_string();
-    let session_name = content
-        .get("session_name")
-        .and_then(Value::as_str)
-        .unwrap_or("(untitled)")
-        .to_string();
-    let cwd = content
-        .get("cwd")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-
-    // Count entries by role/type.
+        .unwrap_or_default();
+    let model = content["model"].as_str().unwrap_or("?");
+    let thinking_level = content["thinkingLevel"].as_str().unwrap_or("?");
+    let session_name = content["sessionName"].as_str().unwrap_or("(untitled)");
+    let cwd = content["cwd"].as_str().unwrap_or("");
     let mut roles: HashMap<String, i64> = HashMap::new();
     let mut tool_calls = 0i64;
-    for e in &entries {
-        // `(e.type as string) || (e.role as string) || "?"`
-        let t = e
-            .get("type")
-            .and_then(Value::as_str)
-            .or_else(|| e.get("role").and_then(Value::as_str))
-            .unwrap_or("?")
-            .to_string();
-        *roles.entry(t).or_insert(0) += 1;
-        // `if (e.tool_calls && Array.isArray(e.tool_calls)) toolCalls += e.tool_calls.length`
-        if let Some(tc) = e.get("tool_calls") {
-            if let Some(arr) = tc.as_array() {
-                tool_calls += arr.len() as i64;
-            }
-        }
+    for entry in &entries {
+        *roles
+            .entry(entry["kind"].as_str().unwrap_or("?").to_owned())
+            .or_insert(0) += 1;
+        tool_calls += entry["blocks"]
+            .as_array()
+            .map(|blocks| blocks.iter().filter(|b| b["kind"] == "tool_call").count() as i64)
+            .unwrap_or(0);
     }
     let users = roles.get("user").copied().unwrap_or(0);
     let assistants = roles.get("assistant").copied().unwrap_or(0);
@@ -289,24 +253,24 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
     }
 
     // `Number(content?.tokens_in ?? 0)` etc.
-    let tokens_in = content
-        .get("tokens_in")
+    let tokens_in = content["usage"]
+        .get("inputTokens")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let tokens_out = content
-        .get("tokens_out")
+    let tokens_out = content["usage"]
+        .get("outputTokens")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let tokens_cache_r = content
-        .get("tokens_cache_r")
+    let tokens_cache_r = content["usage"]
+        .get("cacheReadTokens")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let tokens_cache_w = content
-        .get("tokens_cache_w")
+    let tokens_cache_w = content["usage"]
+        .get("cacheWriteTokens")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let total_cost = content
-        .get("total_cost")
+    let total_cost = content["usage"]
+        .get("costCny")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
 
@@ -342,7 +306,7 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
             ));
         }
         if total_cost > 0.0 {
-            out.log(&format!("  Cost:        ${total_cost:.6}"));
+            out.log(&format!("  Cost:        ¥{total_cost:.6}"));
         }
     }
     Ok(())
@@ -605,7 +569,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond(
             "list_sessions",
-            "{\"sessions\":[{\"id\":\"s1\",\"session_name\":\"one\"}]}",
+            "{\"sessions\":[{\"id\":\"s1\",\"sessionName\":\"one\"}]}",
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
@@ -623,9 +587,9 @@ mod tests {
         let long_model = "a".repeat(30);
         let body = format!(
             "{{\"sessions\":[\
-                {{\"id\":\"untitled-old\",\"updated_at\":\"2020-01-01T00:00:00Z\"}},\
-                {{\"id\":\"named\",\"session_name\":\"My Session\",\"model\":\"k3\",\"query_count\":3,\"updated_at\":\"2099-01-01T00:00:00Z\"}},\
-                {{\"id\":\"first-msg\",\"first_message\":\"hello world this is the first message of the session\",\"model\":\"{long_model}\",\"query_count\":0,\"updated_at\":\"2098-01-01T00:00:00Z\"}}\
+                {{\"id\":\"untitled-old\",\"updatedAtMs\":1000}},\
+                {{\"id\":\"named\",\"sessionName\":\"My Session\",\"model\":\"k3\",\"queryCount\":3,\"updatedAtMs\":3000}},\
+                {{\"id\":\"first-msg\",\"firstMessage\":\"hello world this is the first message of the session\",\"model\":\"{long_model}\",\"queryCount\":0,\"updatedAtMs\":2000}}\
             ]}}"
         );
         let agent = crate::test_server::MockAgent::respond("list_sessions", &body);
@@ -672,15 +636,7 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let agent = crate::test_server::MockAgent::respond(
             "get_session_entries",
-            "{\"entries\":[\
-                {\"role\":\"system\",\"content\":{\"session_name\":\"Named\",\"cwd\":\"/work\",\"tokens_in\":2500000,\"tokens_out\":128000,\"tokens_cache_r\":5000,\"tokens_cache_w\":1500,\"total_cost\":0.012345}},\
-                {\"role\":\"user\"},\
-                {\"role\":\"assistant\",\"tool_calls\":[{},{}]},\
-                {\"role\":\"assistant\"},\
-                {\"role\":\"tool\"},\
-                {\"type\":\"compaction\"},\
-                {}\
-            ]}",
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Named","cwd":"/work","usage":{"inputTokens":2500000,"outputTokens":128000,"cacheReadTokens":5000,"cacheWriteTokens":1500,"costCny":0.012345}}},{"kind":"user","role":"user"},{"kind":"assistant","role":"assistant","blocks":[{"kind":"tool_call"},{"kind":"tool_call"}]},{"kind":"assistant","role":"assistant"},{"kind":"tool","role":"tool"},{"kind":"compaction"},{}]}"#,
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();
@@ -710,7 +666,7 @@ mod tests {
             "stdout: {stdout}"
         );
         assert!(
-            stdout.contains("Cost:        $0.012345"),
+            stdout.contains("Cost:        ¥0.012345"),
             "stdout: {stdout}"
         );
     }
@@ -721,7 +677,7 @@ mod tests {
         // Model from the entry itself, thinking from content; no cwd/tokens.
         let agent = crate::test_server::MockAgent::respond(
             "get_session_entries",
-            "{\"entries\":[{\"role\":\"system\",\"model\":\"m-entry\",\"content\":{\"thinking_level\":\"high\"}}]}",
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"model":"m-entry","thinkingLevel":"high"}}]}"#,
         );
         let (_agent, _env) = mock_env(agent).await;
         let (out, cap) = Output::memory();

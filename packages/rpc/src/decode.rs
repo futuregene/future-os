@@ -300,11 +300,17 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
         context_window: state.context_window,
         context_tokens: state.context_tokens,
         context_percent: state.context_percent,
-        tokens_in: state.tokens_in,
-        tokens_out: state.tokens_out,
-        tokens_cache_r: state.tokens_cache_r,
-        tokens_cache_w: state.tokens_cache_w,
-        total_cost: state.total_cost,
+        usage: state
+            .usage
+            .as_ref()
+            .map(|usage| crate::message::SessionUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+                cost_cny: usage.cost_cny,
+            })
+            .unwrap_or_default(),
         permission_level: state.permission_level.clone(),
         parent_session_id: state.parent_session_id.clone(),
         created_by: state.created_by.clone(),
@@ -378,18 +384,18 @@ fn terminal_ack_from_proto(ack: &proto::TerminalAck) -> crate::payloads::Termina
     }
 }
 
-/// RunTerminalInfo → run_terminal marker content (snake_case JSON object).
+/// RunTerminalInfo → canonical durable outcome.
 fn run_terminal_from_proto(info: &proto::RunTerminalInfo) -> Value {
-    let mut content = json!({
-        "run_id": info.run_id,
-        "state": info.state,
-        "run_tokens": info.run_tokens,
-        "run_duration_ms": info.run_duration_ms,
-    });
-    if let Some(error) = &info.error {
-        content["error"] = Value::String(error.clone());
-    }
-    content
+    let usage = info
+        .usage
+        .as_ref()
+        .map(|usage| crate::message::MessageUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+        });
+    json!({"runId":info.run_id,"status":info.status,"durationMs":info.duration_ms,"error":info.error,"usage":usage})
 }
 
 /// ApprovalRequestInfo → the full approval card object. Modelled fields come
@@ -453,7 +459,7 @@ pub(crate) fn session_summary_from_proto(row: &proto::SessionSummary) -> Session
         session_name: row.session_name.clone(),
         model: row.model.clone(),
         cwd: row.cwd.clone(),
-        updated_at: row.updated_at.clone(),
+        updated_at_ms: row.updated_at_ms,
         parent_session_id: row.parent_session_id.clone(),
         first_message: row.first_message.clone(),
         query_count: row.query_count.max(0) as usize,
@@ -462,31 +468,42 @@ pub(crate) fn session_summary_from_proto(row: &proto::SessionSummary) -> Session
 }
 
 pub(crate) fn session_entry_from_proto(entry: &proto::SessionEntry) -> SessionEntryPayload {
+    let json = |value: &Option<String>| value.as_ref().map(|v| inflate_json_value(v));
     SessionEntryPayload {
         id: entry.id.clone(),
-        entry_type: entry.entry_type.clone(),
         role: entry.role.clone(),
-        content: if entry.content_is_object {
-            inflate_json_value(&entry.content)
-        } else {
-            Value::String(entry.content.clone())
-        },
-        name: entry.name.clone(),
-        tool_args: entry.tool_args.clone(),
-        timestamp: entry.timestamp.clone(),
-        thinking: entry.thinking.clone(),
-        meta: entry.meta.as_ref().map(|raw| inflate_json_value(raw)),
-        tool_calls: entry.tool_calls.as_ref().map(|raw| inflate_json_value(raw)),
-        output_tokens: entry.output_tokens,
-        duration_ms: entry.duration_ms,
-        input_tokens: entry.input_tokens,
-        cache_read_tokens: entry.cache_read_tokens,
-        checkpoint: entry.checkpoint.as_ref().map(|raw| inflate_json_value(raw)),
-        tool_call_id: entry.tool_call_id.clone(),
-        tool_result_is_error: entry.tool_result_is_error,
-        run_status: entry.run_status.clone(),
-        run_error: entry.run_error.clone(),
-        run_duration_ms: entry.run_duration_ms,
+        kind: entry.kind.clone(),
+        created_at_ms: entry.created_at_ms,
+        run_id: entry.run_id.clone(),
+        metadata: json(&entry.metadata_json),
+        session: json(&entry.session_json),
+        checkpoint: json(&entry.checkpoint_json),
+        blocks: entry
+            .blocks
+            .iter()
+            .map(|b| crate::message::MessageBlock {
+                kind: b.kind.clone(),
+                text: b.text.clone(),
+                tool_call_id: b.tool_call_id.clone(),
+                name: b.name.clone(),
+                arguments: json(&b.arguments_json),
+                is_error: b.is_error,
+                image_url: b.image_url.clone(),
+                provider_metadata: json(&b.provider_metadata_json),
+                data: json(&b.data_json),
+            })
+            .collect(),
+        usage: entry.usage.as_ref().map(|u| crate::message::MessageUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cache_read_tokens: u.cache_read_tokens,
+            cache_write_tokens: u.cache_write_tokens,
+        }),
+        run: entry.run.as_ref().map(|r| crate::message::MessageRun {
+            status: r.status.clone(),
+            error: r.error.clone(),
+            duration_ms: r.duration_ms,
+        }),
     }
 }
 
@@ -979,9 +996,12 @@ mod tests {
             }],
             requested_run: Some(proto::RunTerminalInfo {
                 run_id: "r9".to_string(),
-                state: "failed".to_string(),
-                run_tokens: 10,
-                run_duration_ms: 20,
+                status: "failed".to_string(),
+                usage: Some(proto::MessageUsage {
+                    output_tokens: Some(10),
+                    ..Default::default()
+                }),
+                duration_ms: Some(20),
                 error: Some("boom".to_string()),
             }),
             ..Default::default()
@@ -1012,9 +1032,7 @@ mod tests {
                 "explicitSession": true, "autoCompactionEnabled": true,
                 "queryCount": 2, "version": "1", "cwd": "/w",
                 "skills": [], "contextFiles": [], "contextWindow": 1000,
-                "contextTokens": 10, "contextPercent": 1.0, "tokensIn": 1,
-                "tokensOut": 2, "tokensCacheR": 0, "tokensCacheW": 0,
-                "totalCost": 0.0, "permissionLevel": "all", "createdBy": "tui",
+                "contextTokens": 10, "contextPercent": 1.0, "usage":{"inputTokens":1,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0,"costCny":0.0}, "permissionLevel": "all", "createdBy": "tui",
                 "sourceMeta": null, "queuedRuns": [], "queuedCount": 0,
                 "pendingApprovals": [],
                 "sessionName": "Demo",
@@ -1033,44 +1051,50 @@ mod tests {
     }
 
     #[test]
-    fn decode_session_entries_typed_fallback_and_missing() {
-        let resp = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
-            entries: vec![proto::SessionEntry {
-                id: "e1".to_string(),
-                role: "session_info".to_string(),
-                content: r#"{"schema":1}"#.to_string(),
-                content_is_object: true,
-                meta: Some(r#"{"m":2}"#.to_string()),
-                tool_calls: Some("[]".to_string()),
-                output_tokens: Some(9),
-                duration_ms: Some(11),
-                tool_call_id: Some("call-1".to_string()),
-                tool_result_is_error: Some(true),
+    fn decode_session_entries_typed_and_json_use_the_same_contract() {
+        let entry = SessionEntryPayload {
+            id: "e1".into(),
+            kind: "assistant".into(),
+            role: "assistant".into(),
+            created_at_ms: 123,
+            blocks: vec![crate::message::MessageBlock {
+                kind: "tool_result".into(),
+                tool_call_id: Some("call-1".into()),
+                text: Some("synthetic".into()),
+                is_error: Some(true),
                 ..Default::default()
             }],
+            metadata: Some(json!({"m":2})),
+            usage: Some(crate::message::MessageUsage {
+                output_tokens: Some(9),
+                ..Default::default()
+            }),
+            run: Some(crate::message::MessageRun {
+                duration_ms: Some(11),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let expected = serde_json::to_value(&entry).unwrap();
+        let resp = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            entries: vec![crate::encode::session_entry_to_proto(&entry)],
             has_more: true,
             next_offset: 7,
         }));
         let page = decode_session_entries_page(&resp).unwrap();
         assert!(page.has_more);
         assert_eq!(page.next_offset, 7);
-        let entries = decode_session_entries(&resp).unwrap();
-        assert_eq!(entries[0].content, json!({"schema": 1}));
-        assert_eq!(entries[0].meta, Some(json!({"m": 2})));
-        assert_eq!(entries[0].tool_call_id.as_deref(), Some("call-1"));
-        assert_eq!(entries[0].tool_result_is_error, Some(true));
-        assert_eq!(entries[0].output_tokens, Some(9));
-        assert_eq!(entries[0].duration_ms, Some(11));
-
-        let resp = resp_with_data(
-            r#"{"entries":[{"id":"e2","role":"user","content":"hi","name":"","tool_args":"","timestamp":"t"}]}"#,
+        assert_eq!(serde_json::to_value(&page.entries[0]).unwrap(), expected);
+        let resp = resp_with_data(&json!({"entries":[expected]}).to_string());
+        assert_eq!(
+            serde_json::to_value(&decode_session_entries(&resp).unwrap()[0]).unwrap(),
+            expected
         );
-        let entries = decode_session_entries(&resp).unwrap();
-        assert_eq!(entries[0].content, Value::String("hi".to_string()));
-
-        // `entries` absent / no data at all → None.
         assert!(decode_session_entries(&resp_with_data("{}")).is_none());
-        assert!(decode_session_entries(&proto::RpcResponse::default()).is_none());
+        assert!(decode_session_entries(&resp_with_data(
+            r#"{"entries":[{"id":"old","role":"user","content":"old"}]}"#
+        ))
+        .is_none());
     }
 
     #[test]
@@ -1177,17 +1201,20 @@ mod tests {
     fn run_terminal_includes_error_only_on_failure() {
         let info = proto::RunTerminalInfo {
             run_id: "r1".to_string(),
-            state: "failed".to_string(),
-            run_tokens: 12,
-            run_duration_ms: 34,
+            status: "failed".to_string(),
+            usage: Some(proto::MessageUsage {
+                output_tokens: Some(12),
+                ..Default::default()
+            }),
+            duration_ms: Some(34),
             error: Some("boom".to_string()),
         };
         let content = run_terminal_from_proto(&info);
         assert_eq!(content["error"], json!("boom"));
-        assert_eq!(content["run_tokens"], json!(12));
+        assert_eq!(content["usage"]["outputTokens"], json!(12));
 
         let ok = proto::RunTerminalInfo::default();
-        assert!(run_terminal_from_proto(&ok).get("error").is_none());
+        assert!(run_terminal_from_proto(&ok)["error"].is_null());
     }
 
     #[test]

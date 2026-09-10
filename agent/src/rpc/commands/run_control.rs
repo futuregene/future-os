@@ -170,15 +170,12 @@ pub(crate) fn handle_prune_run_events(
             serde_json::json!({"run_id": cmd.run_id}),
         );
     }
-    let path = session
+    match session
         .session_manager
-        .run_data_path(&cmd.session_id)
-        .join(format!("{}.jsonl", cmd.run_id));
-    match std::fs::remove_file(&path) {
+        .storage()
+        .and_then(|store| store.prune_events(&cmd.session_id, &cmd.run_id))
+    {
         Ok(()) => RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true})),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            RpcResponse::ok(id, "prune_run_events", serde_json::json!({"pruned": true}))
-        }
         Err(error) => RpcResponse::build_fail_code(
             id,
             "prune_run_events",

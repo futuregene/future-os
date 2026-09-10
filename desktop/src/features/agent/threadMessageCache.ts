@@ -6,11 +6,15 @@ const MAX_CACHED_THREADS = 12;
 interface ThreadMessageSnapshot {
   agentSessionId: string | null;
   messages: AgentMessage[];
+  cursor?: { before: number; hasMore: boolean };
 }
 
 const snapshots = new Map<string, ThreadMessageSnapshot>();
 
-export function getThreadMessageSnapshot(threadId: string, agentSessionId: string | null): AgentMessage[] | null {
+export function getThreadMessageSnapshot(
+  threadId: string,
+  agentSessionId: string | null,
+): AgentMessage[] | null {
   const snapshot = snapshots.get(threadId);
   if (!snapshot || snapshot.agentSessionId !== agentSessionId)
     return null;
@@ -20,9 +24,24 @@ export function getThreadMessageSnapshot(threadId: string, agentSessionId: strin
   return snapshot.messages;
 }
 
-export function setThreadMessageSnapshot(threadId: string, agentSessionId: string | null, messages: AgentMessage[]) {
+export function getThreadHistoryCursor(
+  threadId: string,
+  agentSessionId: string | null,
+) {
+  const snapshot = snapshots.get(threadId);
+  return snapshot?.agentSessionId === agentSessionId
+    ? (snapshot.cursor ?? null)
+    : null;
+}
+
+export function setThreadMessageSnapshot(
+  threadId: string,
+  agentSessionId: string | null,
+  messages: AgentMessage[],
+  cursor?: { before: number; hasMore: boolean },
+) {
   snapshots.delete(threadId);
-  snapshots.set(threadId, { agentSessionId, messages });
+  snapshots.set(threadId, { agentSessionId, messages, cursor });
   while (snapshots.size > MAX_CACHED_THREADS) {
     const oldest = snapshots.keys().next().value;
     if (oldest === undefined)

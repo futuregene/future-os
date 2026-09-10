@@ -96,15 +96,7 @@ pub struct RpcSessionState {
     #[serde(default)]
     pub context_percent: Option<f64>,
     #[serde(default)]
-    pub tokens_in: Option<i64>,
-    #[serde(default)]
-    pub tokens_out: Option<i64>,
-    #[serde(default)]
-    pub tokens_cache_r: Option<i64>,
-    #[serde(default)]
-    pub tokens_cache_w: Option<i64>,
-    #[serde(default)]
-    pub total_cost: Option<f64>,
+    pub usage: future_rpc::message::SessionUsage,
     #[serde(default)]
     pub active_run: Option<ActiveRunState>,
     #[serde(default, deserialize_with = "de_null_default")]
@@ -168,16 +160,14 @@ pub struct ActiveRunState {
     pub last_event_idx: i64,
 }
 
-/// `RunTerminalState` — wire keys are snake_case.
+/// Canonical durable run outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunTerminalState {
     pub run_id: String,
-    /// "completed" | "error" | "cancelled" | "incomplete" |
-    /// "interrupted_by_restart".
-    pub state: String,
-    pub run_tokens: i64,
-    pub run_duration_ms: i64,
-    #[serde(default)]
+    pub status: String,
+    pub usage: future_rpc::message::MessageUsage,
+    pub duration_ms: Option<i64>,
     pub error: Option<String>,
 }
 
@@ -193,7 +183,7 @@ pub struct SessionSummary {
     #[serde(default, deserialize_with = "de_null_default")]
     pub cwd: String,
     #[serde(default, deserialize_with = "de_null_default")]
-    pub updated_at: String,
+    pub updated_at_ms: i64,
     #[serde(default, deserialize_with = "de_null_default")]
     pub model: String,
     #[serde(default)]
@@ -401,11 +391,13 @@ mod tests {
             context_window: 1_000_000,
             context_tokens: 42_000,
             context_percent: 4.2,
-            tokens_in: 123_456,
-            tokens_out: 789,
-            tokens_cache_r: 100_000,
-            tokens_cache_w: 0,
-            total_cost: 0.1234,
+            usage: future_rpc::message::SessionUsage {
+                input_tokens: 123_456,
+                output_tokens: 789,
+                cache_read_tokens: 100_000,
+                cache_write_tokens: 0,
+                cost_cny: 0.1234,
+            },
             permission_level: "all".into(),
             parent_session_id: None,
             created_by: "tui".into(),
@@ -442,8 +434,8 @@ mod tests {
         let wire = serde_json::to_value(&payload).expect("serialize decoder output");
         let state: RpcSessionState =
             serde_json::from_value(wire).expect("TUI must parse the decoder's get_state output");
-        assert_eq!(state.total_cost, Some(0.1234));
-        assert_eq!(state.tokens_in, Some(123_456));
+        assert_eq!(state.usage.cost_cny, 0.1234);
+        assert_eq!(state.usage.input_tokens, 123_456);
         assert_eq!(state.recent_terminal_acks.len(), 1);
         assert_eq!(state.recent_terminal_acks[0].run_id, "run_0");
         assert_eq!(state.recent_terminal_acks[0].run_sequence, 1);
@@ -484,8 +476,8 @@ mod tests {
             session_name: Some("hi".into()),
             model: "future/deepseek-v4-flash".into(),
             cwd: "/tmp".into(),
-            updated_at: "2026-08-07T00:00:00Z".into(),
-            parent_session_id: String::new(),
+            updated_at_ms: 1786060800000,
+            parent_session_id: None,
             first_message: None,
             query_count: 3,
             is_streaming: true,
@@ -506,7 +498,7 @@ mod tests {
         assert_eq!(state.query_count, 0);
         assert!(state.queued_runs.is_empty());
         assert!(state.active_run.is_none());
-        assert_eq!(state.total_cost, None);
+        assert_eq!(state.usage.cost_cny, 0.0);
     }
 
     fn agent_event_with_data(data: serde_json::Value) -> AgentEvent {

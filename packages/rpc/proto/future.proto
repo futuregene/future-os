@@ -163,6 +163,7 @@ message RpcCommand {
   // (a mismatch means the run rolled over and the caller must realign).
   int64 since_idx = 140;
   string run_id = 141;
+  optional string tool_call_id = 146;
 
   // Page size for get_events_since (0 = unlimited, the legacy behavior).
   // A run journal can far exceed the gRPC message-size cap, so clients
@@ -390,14 +391,8 @@ message RpcResponse {
   bool success = 4;
 
   // JSON-serialised response payload.  Structure depends on the command.
-  // TRANSITIONAL (typed-RPC migration): for commands that carry a typed
-  // `payload`, this string is dual-written with identical semantics so
-  // pre-migration clients keep working; new clients read `payload` and fall
-  // back to `data` when it is absent. Commands without a ResponsePayload
-  // member (trivial acks, get_messages, ...) are served through this field
-  // only. The big read commands are documented by the "Response payload
-  // contracts" section below: list_sessions / get_state /
-  // get_session_entries / get_events_since.
+  // Commands with a typed ResponsePayload use that carrier. Other commands
+  // use this JSON carrier; both expose the same canonical field vocabulary.
   string data = 5;
 
   // Error message when success is false.
@@ -805,22 +800,22 @@ message SessionState {
   double context_percent = 21;
 
   // Cumulative input tokens consumed in this session.
-  int64 tokens_in = 22;
+  reserved 22;
 
   // Cumulative output tokens produced in this session.
-  int64 tokens_out = 23;
+  reserved 23;
 
   // Cumulative cost in CNY (¥).
-  double total_cost = 24;
+  reserved 24;
 
   // Whether the current model supports image input (multimodal).
   bool image_support = 25;
 
   // Cumulative cache-read tokens (prompt caching hits).
-  int64 tokens_cache_r = 26;
+  reserved 26;
 
   // Cumulative cache-write tokens (prompt caching writes).
-  int64 tokens_cache_w = 27;
+  reserved 27;
 
   // Tool execution permission level: "all" (unrestricted), "workspace"
   // (cwd only), or "none" (read-only tools).
@@ -872,16 +867,19 @@ message SessionState {
   // ApprovalRequestInfo shape) so a reconnecting client can rebuild its
   // approval UI.
   repeated ApprovalRequestInfo pending_approvals = 39;
+  SessionUsage usage = 40;
+}
+
+message SessionUsage {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 cache_read_tokens = 3;
+  int64 cache_write_tokens = 4;
+  double cost_cny = 5;
 }
 
 // ── get_state sub-objects ───────────────────────────────────────────────────
-// Wire note: these travel both as typed sub-messages of SessionState
-// (ResponsePayload.get_state) and, during the migration window, inside the
-// dual-written camelCase JSON `data`. The agent ALSO emits the legacy
-// spellings (`session_name`, snake_case TerminalAck keys) alongside the
-// canonical ones in the JSON; new clients read canonical, pre-migration
-// clients keep reading legacy.
-
+// These typed sub-messages map to the canonical camelCase JSON contract.
 // A run's live state as surfaced by get_state (activeRun / interruptedRun).
 message RunStateSnapshot {
   string run_id = 1;
@@ -910,16 +908,15 @@ message QueuedRunState {
   string display_text = 7;
 }
 
-// Terminal journal content of one run (requestedRun). Keys mirror the
-// on-disk run_terminal marker (snake_case).
+// Canonical durable outcome of one requested run; independent of storage.
 message RunTerminalInfo {
   string run_id = 1;
   // "completed" | "failed" | "cancelled" | ...
-  string state = 2;
-  int64 run_tokens = 3;
-  int64 run_duration_ms = 4;
-  // Present only on failure.
+  string status = 2;
+  reserved 3;
+  optional int64 duration_ms = 4;
   optional string error = 5;
+  MessageUsage usage = 6;
 }
 
 // A recent terminal acknowledgement for a queued run whose terminal state the
@@ -976,17 +973,8 @@ message ApprovalRequestInfo {
 // get_session_entries -> SessionEntriesResponse{entries: SessionEntry[]},
 // get_events_since -> EventsSince.
 //
-// During the migration window the agent dual-writes both the typed payload and
-// the JSON `data`; new clients read the typed payload and fall back to `data`
-// when it is absent (old agent). Fields marked `optional` preserve the
-// null-vs-absent semantics of the JSON shape.
-//
-// Wire casing: list_sessions / get_state / get_events_since are camelCase
-// JSON; get_session_entries mirrors the on-disk entry schema (snake_case).
-// For one migration window the agent additionally emits legacy aliases for
-// the keys that changed spelling (list_sessions snake_case keys; get_state
-// `session_name` and snake_case TerminalAck keys) so pre-migration clients
-// keep working — new clients read the canonical keys only.
+// JSON carriers use canonical camelCase, including existing history methods.
+// Storage/import field names and old aliases are not part of this contract.
 
 // One row of the list_sessions response.
 message SessionSummary {
@@ -995,9 +983,9 @@ message SessionSummary {
   optional string session_name = 2;
   string model = 3;
   string cwd = 4;
-  // "YYYY-MM-DD HH:MM:SS" (local time).
-  string updated_at = 5;
-  string parent_session_id = 6;
+  reserved 5;
+  int64 updated_at_ms = 10;
+  optional string parent_session_id = 6;
   // First user message, for list display; unset when absent (JSON null).
   optional string first_message = 7;
   int32 query_count = 8;
@@ -1005,68 +993,46 @@ message SessionSummary {
   bool is_streaming = 9;
 }
 
-// One displayable entry of a session (get_session_entries). Field names match
-// the on-disk JSONL schema. Like all payload-contract messages this is
-// documentation of JSON packed into a string, not a wire type — several fields
-// below are declared `string` but carry *serialized JSON* (an object/array) as
-// their value; consumers must JSON-parse them. This is called out per field
-// rather than pretending the shape is a scalar string.
+// One displayable entry. Content blocks preserve order; extensible metadata
+// alone uses explicit JSON carrier fields.
 message SessionEntry {
   string id = 1;
-  // "user" | "assistant" | "tool" (the entry's message role).
   string role = 2;
-  // Display text for message entries; the RAW session_info JSON object
-  // serialized to a string for the session_info entry — a `string` here that is
-  // NOT plain text in that case (see content_is_object).
-  string content = 3;
-  string name = 4;
-  // Tool call arguments, tool entries. Serialized JSON object (a JSON string).
-  string tool_args = 5;
-  // RFC3339.
-  string timestamp = 6;
-  // Reasoning text, assistant entries (absent when empty).
-  optional string thinking = 7;
-  // Structured per-entry metadata (e.g. user attachments). Serialized JSON
-  // object in a string, not a scalar; absent when the entry has none.
-  optional string meta = 8;
-  // Pending tool calls, assistant entries. Serialized JSON array of ToolCall;
-  // absent when the entry has none.
-  optional string tool_calls = 9;
-  // Output tokens of the run this reply concluded (footer display).
-  optional int64 output_tokens = 10;
-  // Wall-clock duration of that run in ms (footer display).
-  optional int64 duration_ms = 11;
-  // Discriminator for `content`: true when the original JSON value was an
-  // object (the session_info entry) and the string carries serialized JSON;
-  // false when it is plain display text. Lets decoders re-inflate `content`
-  // into the exact original JSON value.
-  bool content_is_object = 12;
-  // Prompt (input) tokens of the run this reply concluded — the run's delta of
-  // the session's cumulative tokens_in. Footer shows in+out so the total
-  // matches the provider's billed usage; absent on legacy sessions.
-  optional int64 input_tokens = 13;
-  // Cache-read tokens of that run (delta of cumulative tokens_cache_r) —
-  // informational: on most providers these are a discounted subset of
-  // input_tokens, not an addition to them.
-  optional int64 cache_read_tokens = 14;
-  // Persisted journal discriminator. Added for non-message projections such as
-  // durable context checkpoints; absent on responses from older agents.
-  optional string entry_type = 15;
-  // Structured v2/legacy checkpoint payload serialized as JSON.
-  optional string checkpoint = 16;
-  // Correlates a persisted tool result with its originating tool call.
-  optional string tool_call_id = 17;
-  // Authoritative tool-result status. Absent for legacy entries that did not
-  // persist an explicit status.
-  optional bool tool_result_is_error = 18;
-  // Terminal state of the run identified by meta.run_id. Derived from the
-  // Agent journal's run_terminal marker; absent while active and on old agents.
-  optional string run_status = 19;
-  // Raw terminal error for a failed run. Kept separate from display copy so
-  // each client can localize the user-facing explanation.
-  optional string run_error = 20;
-  // Terminal run duration even when the run produced no assistant entry.
-  optional int64 run_duration_ms = 21;
+  reserved 3 to 21;
+  string kind = 22;
+  int64 created_at_ms = 23;
+  optional string run_id = 24;
+  repeated MessageBlock blocks = 25;
+  optional string metadata_json = 26;
+  MessageUsage usage = 27;
+  MessageRun run = 28;
+  optional string session_json = 29;
+  optional string checkpoint_json = 30;
+}
+
+message MessageBlock {
+  string kind = 1;
+  optional string text = 2;
+  optional string tool_call_id = 3;
+  optional string name = 4;
+  optional string arguments_json = 5;
+  optional bool is_error = 6;
+  optional string image_url = 7;
+  optional string provider_metadata_json = 8;
+  optional string data_json = 9;
+}
+
+message MessageUsage {
+  optional int64 input_tokens = 1;
+  optional int64 output_tokens = 2;
+  optional int64 cache_read_tokens = 3;
+  optional int64 cache_write_tokens = 4;
+}
+
+message MessageRun {
+  optional string status = 1;
+  optional string error = 2;
+  optional int64 duration_ms = 3;
 }
 
 // One event as replayed by get_events_since. Field names mirror the

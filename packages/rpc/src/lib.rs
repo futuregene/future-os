@@ -24,6 +24,7 @@ pub mod proto {
 }
 
 pub mod event_payloads;
+pub mod message;
 pub mod payloads;
 pub mod payloads_ext;
 

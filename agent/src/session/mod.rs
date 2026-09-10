@@ -7,23 +7,31 @@
 //! - [`projection`]: entries ↔ LLM-message mappings and `truncate_visible`
 //! - [`repair`]: in-memory healing of corrupted/legacy session histories
 //! - [`fork`]: `fork_session` and its entry-walk helper
-//! - [`manager`]: JSONL persistence, atomic writes, run recovery
-//! - [`summary`]: cheap JSONL summary scanning and session listing
+//! - [`manager`]: SQLite session persistence and run recovery
+//! - [`summary`]: session listing from SQLite
 //! - [`persistence`]: the async `SessionPersistence` write pipeline
 //!
 //! Every public item is re-exported here so callers keep using
 //! `crate::session::…` unchanged.
 
 mod checkpoint;
+mod database;
+pub(crate) mod display;
+mod history_index;
+mod legacy_import;
+pub use legacy_import::ImportRecord;
 mod entry;
 mod fork;
 mod manager;
 mod model;
 mod persistence;
 mod projection;
+mod records;
 mod repair;
 mod run_journal;
+pub mod sqlite_store;
 mod summary;
+mod tools;
 
 pub use checkpoint::{checkpoint_to_entry, entry_to_checkpoint, latest_context_checkpoint};
 pub use entry::{

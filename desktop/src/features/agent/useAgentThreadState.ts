@@ -1,5 +1,8 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
-import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
+import type {
+  StoredRun,
+  StoredThread,
+} from "../../integrations/storage/threadStore";
 import { matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef } from "react";
 import { abortRun, getLatestRun } from "../../integrations/storage/threadStore";
@@ -14,7 +17,12 @@ interface UseAgentThreadStateInput {
   loadingStore: boolean;
   modelId: string;
   thinkingLevel: string;
-  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
+  pendingPrompt: {
+    attachments?: MessageAttachment[];
+    id: string;
+    content: string;
+    targetThreadId: string;
+  } | null;
   onPromptConsumed: (id: string) => void;
   onThreadActivity: () => void;
 }
@@ -47,6 +55,10 @@ export function useAgentThreadState({
   const {
     loadingThread,
     loadingIndicator,
+    hasOlderHistory,
+    loadOlderHistory,
+    historyError,
+    sessionChanged,
     messages,
     recentRun,
     renderWorkspace,
@@ -55,7 +67,12 @@ export function useAgentThreadState({
     setMessages,
     setRecentRun,
     messagesGenRef,
-  } = useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId: thread?.agentSessionId });
+  } = useThreadMessages({
+    threadId,
+    workspaceId,
+    workspacePath,
+    agentSessionId: thread?.agentSessionId,
+  });
 
   // Mirror the message list so handleAbort can read the latest streaming
   // bubble without depending on `messages` — the array changes identity on
@@ -74,7 +91,9 @@ export function useAgentThreadState({
   // Epoch-ms anchor for the live elapsed timer of a re-attached run. Stable while
   // the run stays active (derived from persisted run times), so it doesn't churn
   // the resume effect the way the `recentRun` object identity would.
-  const activeRunStartedAt = activeRunId ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null) : null;
+  const activeRunStartedAt = activeRunId
+    ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null)
+    : null;
 
   const { handleSend, abandonSend } = useSendMessage({
     thread,
@@ -87,6 +106,15 @@ export function useAgentThreadState({
     refreshRecentRun,
     onThreadActivity,
   });
+
+  // A new owner invalidates the old send pipeline; first binding keeps its owner.
+  const writerRef = useRef(setMessages);
+  useEffect(() => {
+    if (writerRef.current !== setMessages) {
+      writerRef.current = setMessages;
+      abandonSend();
+    }
+  }, [setMessages, abandonSend]);
 
   useRunReattach({
     threadId,
@@ -120,6 +148,7 @@ export function useAgentThreadState({
     // while the read was in flight.
     if (
       !latest
+      || writerRef.current !== setMessages
       || latest.threadId !== threadId
       || !sendingRef.current
       || !matchesSettledRun(latest.status)
@@ -129,14 +158,18 @@ export function useAgentThreadState({
     abandonSend();
     setRecentRun(latest);
     void reloadMessagesQuiet(threadId, true);
-  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun, threadId]);
+  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun, setMessages, threadId]);
 
-  usePolling(() => {
-    void reconcileHungSend();
-  }, 15_000, {
-    enabled: Boolean(threadId),
-    deps: [reconcileHungSend],
-  });
+  usePolling(
+    () => {
+      void reconcileHungSend();
+    },
+    15_000,
+    {
+      enabled: Boolean(threadId),
+      deps: [reconcileHungSend],
+    },
+  );
 
   useEffect(() => {
     const onVisible = () => {
@@ -161,7 +194,11 @@ export function useAgentThreadState({
       return;
     const runId
       = activeRunIdOf(recentRun)
-        ?? messagesRef.current.find(message => message.role === "assistant" && message.status === "streaming")?.runId ?? null;
+        ?? messagesRef.current.find(
+          message =>
+            message.role === "assistant" && message.status === "streaming",
+        )?.runId
+        ?? null;
     if (!runId)
       return;
     try {
@@ -189,14 +226,29 @@ export function useAgentThreadState({
 
     consumedPromptRef.current = pendingPrompt.id;
     onPromptConsumed(pendingPrompt.id);
-    void handleSend({ attachments: pendingPrompt.attachments ?? [], content: pendingPrompt.content });
-  }, [handleSend, loadingStore, loadingThread, onPromptConsumed, pendingPrompt, thread]);
+    void handleSend({
+      attachments: pendingPrompt.attachments ?? [],
+      content: pendingPrompt.content,
+    });
+  }, [
+    handleSend,
+    loadingStore,
+    loadingThread,
+    onPromptConsumed,
+    pendingPrompt,
+    thread,
+  ]);
 
   return {
     handleAbort,
     handleSend,
     loadingThread,
     loadingIndicator,
+    hasOlderHistory,
+    loadOlderHistory,
+    historyError,
+    sessionChanged,
+    retryHistory: () => threadId && reloadMessagesQuiet(threadId, true),
     messages,
     recentRun,
     renderWorkspace,

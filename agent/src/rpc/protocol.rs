@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use tokio::sync::broadcast;
 
 // ─── RPC Command (stdin) ────────────────────────────────────────────────────
@@ -64,6 +63,8 @@ pub struct RpcCommand {
     pub session_id: String,
     #[serde(default)]
     pub entry_id: String,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
     /// Optional forward cursor for get_session_entries. Absent preserves the
     /// released all-at-once response; remote clients already send offset=0 and
     /// therefore opt into bounded pages.
@@ -223,6 +224,11 @@ const MAX_RUN_EVENTS: usize = 2_000;
 /// as a `DataLoss` "event stream gap".
 pub const BROADCAST_RING_CAPACITY: usize = 4_096;
 
+const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
+const EVENT_BATCH_MAX_EVENTS: usize = 128;
+const EVENT_BATCH_MAX_BYTES: usize = 64 * 1024;
+const EVENT_BATCH_QUEUE_CAPACITY: usize = BROADCAST_RING_CAPACITY;
+
 struct RunState {
     run_id: String,
     epoch: i64,
@@ -236,12 +242,331 @@ struct RunState {
 struct EventJournalState {
     session_id: String,
     session_idx: i64,
-    directory: Option<std::path::PathBuf>,
+    store: Option<crate::session::sqlite_store::SqliteStore>,
+    writer: Option<EventBatchWriter>,
     closed: bool,
-    last_error: Option<String>,
-    interrupt_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(test)]
     fail_at: Option<JournalFailPoint>,
+}
+
+#[derive(Default)]
+struct EventJournalHealth {
+    last_error: parking_lot::Mutex<Option<String>>,
+    interrupt_flag: parking_lot::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+}
+
+impl EventJournalHealth {
+    fn error(&self) -> Option<String> {
+        self.last_error.lock().clone()
+    }
+
+    fn clear(&self) {
+        *self.last_error.lock() = None;
+    }
+
+    fn fail(&self, message: String) {
+        *self.last_error.lock() = Some(message);
+        if let Some(flag) = self.interrupt_flag.lock().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn set_interrupt(&self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        if self.error().is_some() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        *self.interrupt_flag.lock() = Some(flag);
+    }
+
+    fn clear_interrupt(&self) {
+        *self.interrupt_flag.lock() = None;
+    }
+}
+
+enum EventWriteCommand {
+    Append {
+        event: serde_json::Value,
+        reply: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+    },
+    Flush(std::sync::mpsc::SyncSender<Result<(), String>>),
+    Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
+}
+
+struct PendingEvent {
+    event: serde_json::Value,
+    reply: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+}
+
+struct EventBatchWriter {
+    sender: std::sync::mpsc::SyncSender<EventWriteCommand>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    health: std::sync::Arc<EventJournalHealth>,
+    #[cfg(test)]
+    commits: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl EventBatchWriter {
+    fn new(
+        store: crate::session::sqlite_store::SqliteStore,
+        session_id: String,
+        health: std::sync::Arc<EventJournalHealth>,
+    ) -> anyhow::Result<Self> {
+        let (sender, receiver) =
+            std::sync::mpsc::sync_channel::<EventWriteCommand>(EVENT_BATCH_QUEUE_CAPACITY);
+        #[cfg(test)]
+        let commits = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        #[cfg(test)]
+        let worker_commits = commits.clone();
+        let worker_health = health.clone();
+        let thread = std::thread::Builder::new()
+            .name("agent-event-batch".into())
+            .spawn(move || {
+                run_event_batch_writer(
+                    receiver,
+                    store,
+                    session_id,
+                    worker_health,
+                    #[cfg(test)]
+                    worker_commits,
+                );
+            })?;
+        Ok(Self {
+            sender,
+            thread: Some(thread),
+            health,
+            #[cfg(test)]
+            commits,
+        })
+    }
+
+    fn append(&self, event: serde_json::Value, durable: bool) -> anyhow::Result<()> {
+        if let Some(error) = self.health.error() {
+            anyhow::bail!(error);
+        }
+        let (reply, receiver) = if durable {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        self.sender
+            .try_send(EventWriteCommand::Append { event, reply })
+            .map_err(|error| {
+                let message = match error {
+                    std::sync::mpsc::TrySendError::Full(_) => {
+                        "event persistence queue is full".to_string()
+                    }
+                    std::sync::mpsc::TrySendError::Disconnected(_) => {
+                        "event persistence worker is unavailable".to_string()
+                    }
+                };
+                self.health.fail(message.clone());
+                anyhow::anyhow!(message)
+            })?;
+        if let Some(receiver) = receiver {
+            receiver
+                .recv()
+                .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
+                .map_err(anyhow::Error::msg)?;
+        }
+        Ok(())
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        self.sender
+            .send(EventWriteCommand::Flush(reply))
+            .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?;
+        receiver
+            .recv()
+            .map_err(|_| anyhow::anyhow!("event persistence worker is unavailable"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    #[cfg(test)]
+    fn commit_count(&self) -> u64 {
+        self.commits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for EventBatchWriter {
+    fn drop(&mut self) {
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        if self.sender.send(EventWriteCommand::Shutdown(reply)).is_ok() {
+            let _ = receiver.recv();
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run_event_batch_writer(
+    receiver: std::sync::mpsc::Receiver<EventWriteCommand>,
+    store: crate::session::sqlite_store::SqliteStore,
+    session_id: String,
+    health: std::sync::Arc<EventJournalHealth>,
+    #[cfg(test)] commits: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    let mut pending = Vec::<PendingEvent>::new();
+    let mut pending_bytes = 0usize;
+    let mut deadline = None::<std::time::Instant>;
+    let mut failed = false;
+    loop {
+        let command = if pending.is_empty() || failed {
+            match receiver.recv() {
+                Ok(command) => command,
+                Err(_) => break,
+            }
+        } else {
+            let remaining = deadline
+                .unwrap_or_else(std::time::Instant::now)
+                .saturating_duration_since(std::time::Instant::now());
+            match receiver.recv_timeout(remaining) {
+                Ok(command) => command,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    failed = !flush_event_batch(
+                        &store,
+                        &session_id,
+                        &health,
+                        &mut pending,
+                        #[cfg(test)]
+                        &commits,
+                    );
+                    pending_bytes = pending
+                        .iter()
+                        .map(|item| item.event.to_string().len())
+                        .sum();
+                    deadline = (!pending.is_empty() && !failed)
+                        .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
+
+        match command {
+            EventWriteCommand::Append { event, reply } => {
+                if failed && reply.is_some() {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(health
+                            .error()
+                            .unwrap_or_else(|| "event persistence is unavailable".to_string())));
+                    }
+                    continue;
+                }
+                pending_bytes = pending_bytes.saturating_add(event.to_string().len());
+                let durable = reply.is_some();
+                pending.push(PendingEvent { event, reply });
+                deadline.get_or_insert_with(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                if durable
+                    || pending.len() >= EVENT_BATCH_MAX_EVENTS
+                    || pending_bytes >= EVENT_BATCH_MAX_BYTES
+                {
+                    failed = !flush_event_batch(
+                        &store,
+                        &session_id,
+                        &health,
+                        &mut pending,
+                        #[cfg(test)]
+                        &commits,
+                    );
+                    pending_bytes = pending
+                        .iter()
+                        .map(|item| item.event.to_string().len())
+                        .sum();
+                    deadline = (!pending.is_empty() && !failed)
+                        .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                }
+            }
+            EventWriteCommand::Flush(reply) => {
+                let ok = flush_event_batch(
+                    &store,
+                    &session_id,
+                    &health,
+                    &mut pending,
+                    #[cfg(test)]
+                    &commits,
+                );
+                failed = !ok;
+                pending_bytes = pending
+                    .iter()
+                    .map(|item| item.event.to_string().len())
+                    .sum();
+                deadline = (!pending.is_empty() && !failed)
+                    .then(|| std::time::Instant::now() + EVENT_BATCH_WINDOW);
+                let result = if ok {
+                    Ok(())
+                } else {
+                    Err(health
+                        .error()
+                        .unwrap_or_else(|| "event persistence is unavailable".to_string()))
+                };
+                let _ = reply.send(result);
+            }
+            EventWriteCommand::Shutdown(reply) => {
+                let ok = flush_event_batch(
+                    &store,
+                    &session_id,
+                    &health,
+                    &mut pending,
+                    #[cfg(test)]
+                    &commits,
+                );
+                let result = if ok {
+                    Ok(())
+                } else {
+                    Err(health
+                        .error()
+                        .unwrap_or_else(|| "event persistence is unavailable".to_string()))
+                };
+                let _ = reply.send(result);
+                break;
+            }
+        }
+    }
+}
+
+fn flush_event_batch(
+    store: &crate::session::sqlite_store::SqliteStore,
+    session_id: &str,
+    health: &EventJournalHealth,
+    pending: &mut Vec<PendingEvent>,
+    #[cfg(test)] commits: &std::sync::atomic::AtomicU64,
+) -> bool {
+    if pending.is_empty() {
+        return true;
+    }
+    let events = pending
+        .iter()
+        .map(|item| item.event.clone())
+        .collect::<Vec<_>>();
+    match store.append_events(session_id, events) {
+        Ok(()) => {
+            #[cfg(test)]
+            commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            for item in pending.drain(..) {
+                if let Some(reply) = item.reply {
+                    let _ = reply.send(Ok(()));
+                }
+            }
+            true
+        }
+        Err(error) => {
+            let message = format!("event batch commit failed: {error:#}");
+            health.fail(message.clone());
+            let mut retry = Vec::new();
+            for item in pending.drain(..) {
+                if let Some(reply) = item.reply {
+                    let _ = reply.send(Err(message.clone()));
+                } else {
+                    retry.push(item);
+                }
+            }
+            *pending = retry;
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +611,7 @@ pub struct SseBroadcaster {
     /// means a client couldn't keep up with the event rate.
     lag_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
     journal: std::sync::Arc<parking_lot::Mutex<EventJournalState>>,
+    journal_health: std::sync::Arc<EventJournalHealth>,
 }
 
 impl SseBroadcaster {
@@ -305,92 +631,93 @@ impl SseBroadcaster {
             truncation_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             journal: std::sync::Arc::new(parking_lot::Mutex::new(EventJournalState::default())),
+            journal_health: std::sync::Arc::new(EventJournalHealth::default()),
         }
     }
 
-    /// Bind this session's broadcaster to its Agent-owned event directory.
+    /// Bind this session's broadcaster to the Agent-owned SQLite writer.
     /// Tests and short-lived utility broadcasters may intentionally remain
     /// memory-only by never calling this method.
     pub fn configure_journal(
         &self,
         session_id: impl Into<String>,
-        directory: std::path::PathBuf,
+        manager: &crate::session::Manager,
     ) -> anyhow::Result<()> {
         let session_id = session_id.into();
-        if let Err(error) = std::fs::create_dir_all(&directory) {
-            let mut journal = self.journal.lock();
-            journal.session_id = session_id;
-            journal.directory = Some(directory);
-            journal.last_error = Some(format!("event journal directory unavailable: {error}"));
-            return Err(error.into());
-        }
+        let result = (|| {
+            let store = manager.storage()?.clone();
+            store.bind_events(&session_id)?;
+            let (session_idx, loose_idx) = store.event_cursors(&session_id)?;
+            let writer = EventBatchWriter::new(
+                store.clone(),
+                session_id.clone(),
+                self.journal_health.clone(),
+            )?;
+            Ok::<_, anyhow::Error>((store, writer, session_idx, loose_idx))
+        })();
+        let mut run = self.run.lock();
         let mut journal = self.journal.lock();
         journal.session_id = session_id;
-        // Session-scoped events have their own durable sequence. Resume after
-        // an Agent restart so their event ids cannot collide with prior
-        // model/name/cwd events for this session.
-        journal.session_idx = std::fs::read_to_string(directory.join("_session.jsonl"))
-            .ok()
-            .map(|contents| {
-                contents
-                    .lines()
-                    .filter_map(|line| serde_json::from_str::<SseEvent>(line).ok())
-                    .filter_map(|event| (event.session_idx >= 0).then_some(event.session_idx))
-                    .max()
-                    .map_or(0, |idx| idx.saturating_add(1))
-            })
-            .unwrap_or(0);
-        journal.directory = Some(directory);
-        journal.closed = false;
-        journal.last_error = None;
-        Ok(())
+        match result {
+            Ok((store, writer, session_idx, loose_idx)) => {
+                if run.run_id.is_empty() {
+                    run.idx = loose_idx;
+                }
+                journal.writer = Some(writer);
+                journal.store = Some(store);
+                journal.session_idx = session_idx;
+                journal.closed = false;
+                self.journal_health.clear();
+                Ok(())
+            }
+            Err(error) => {
+                self.journal_health
+                    .fail(format!("event storage unavailable: {error}"));
+                Err(error)
+            }
+        }
     }
 
     pub fn set_persistence_interrupt(
         &self,
         interrupt_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) {
-        let mut journal = self.journal.lock();
-        if journal.last_error.is_some() {
-            interrupt_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        journal.interrupt_flag = Some(interrupt_flag);
+        self.journal_health.set_interrupt(interrupt_flag);
     }
 
     pub fn persistence_error(&self) -> Option<String> {
-        self.journal.lock().last_error.clone()
+        self.journal_health.error()
     }
 
     /// Fence the event journal before session deletion. The journal mutex is
-    /// also held by append for the complete file operation, so when this
-    /// returns no append can still own a path or recreate the deleted tree.
+    /// also held by append for the complete transaction, so when this
+    /// returns no append can recreate rows for the deleted session.
     pub fn close_journal(&self) {
         let mut journal = self.journal.lock();
         journal.closed = true;
-        journal.directory = None;
-        journal.interrupt_flag = None;
+        journal.writer.take();
+        journal.store = None;
+        self.journal_health.clear_interrupt();
     }
 
     pub fn recover_storage(&self) -> anyhow::Result<()> {
-        let directory = self
-            .journal
-            .lock()
-            .directory
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("event journal is not configured"))?;
-        std::fs::create_dir_all(&directory)?;
-        let probe = directory.join(".health-probe.tmp");
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&probe)?;
-            file.write_all(b"ok")?;
-            file.sync_data()?;
-        }
-        std::fs::remove_file(probe)?;
-        self.journal.lock().last_error = None;
+        let journal = self.journal.lock();
+        let store = journal
+            .store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("event storage is not configured"))?;
+        store.db.call(|db| {
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO storage_meta(key,value) VALUES ('health','ok') ON CONFLICT(key) DO UPDATE SET value='ok'", [])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        journal
+            .writer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
+            .flush()?;
+        self.journal_health.clear();
         Ok(())
     }
 
@@ -402,6 +729,15 @@ impl SseBroadcaster {
     #[cfg(test)]
     fn fail_at(&self, point: JournalFailPoint) {
         self.journal.lock().fail_at = Some(point);
+    }
+
+    #[cfg(test)]
+    fn journal_commit_count(&self) -> u64 {
+        self.journal
+            .lock()
+            .writer
+            .as_ref()
+            .map_or(0, EventBatchWriter::commit_count)
     }
 
     /// Subscribe to SSE events
@@ -456,7 +792,7 @@ impl SseBroadcaster {
                 .truncation_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            if self.journal.lock().directory.is_some() {
+            if self.journal.lock().store.is_some() {
                 // With a durable journal the client still gets the full history
                 // (disk replay), so this is a benign resync, not a data gap.
                 tracing::debug!(
@@ -476,7 +812,7 @@ impl SseBroadcaster {
                 );
             }
         }
-        let disk_events = if truncated && self.journal.lock().directory.is_some() {
+        let disk_events = if truncated && self.journal.lock().store.is_some() {
             Some(
                 self.read_journal(run_id)?
                     .into_iter()
@@ -494,7 +830,7 @@ impl SseBroadcaster {
                 .collect()
         });
         let projection =
-            (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
+            (truncated && self.journal.lock().store.is_none()).then(|| RunProjectionSnapshot {
                 run_id: run.run_id.clone(),
                 epoch: run.epoch,
                 run_sequence: run.run_sequence,
@@ -545,10 +881,7 @@ impl SseBroadcaster {
         };
         if let Err(error) = Self::append_journal(&mut journal, &event) {
             let message = format!("event journal append failed: {error:#}");
-            journal.last_error = Some(message.clone());
-            if let Some(flag) = &journal.interrupt_flag {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
+            self.journal_health.fail(message.clone());
             tracing::error!(run_id = %event.run_id, idx = event.idx, "{message}");
             return;
         }
@@ -582,8 +915,8 @@ impl SseBroadcaster {
         let (recovered, recovery_failed) = match self.read_journal(&run_id) {
             Ok(events) => (events, false),
             Err(error) => {
-                self.journal.lock().last_error =
-                    Some(format!("event journal recovery failed: {error:#}"));
+                self.journal_health
+                    .fail(format!("event journal recovery failed: {error:#}"));
                 (Vec::new(), true)
             }
         };
@@ -607,11 +940,10 @@ impl SseBroadcaster {
         for event in &recovered {
             apply_to_projection(&mut run.projection_events, event);
         }
-        let mut journal = self.journal.lock();
         if !recovery_failed {
-            journal.last_error = None;
+            self.journal_health.clear();
         }
-        journal.interrupt_flag = None;
+        self.journal_health.clear_interrupt();
     }
 
     /// Current-run events with `idx > since_idx`, plus the earliest idx still in
@@ -626,23 +958,27 @@ impl SseBroadcaster {
         run_id: &str,
         since_idx: i64,
     ) -> anyhow::Result<(String, Vec<SseEvent>, i64, Option<RunProjectionSnapshot>)> {
+        self.events_page(run_id, since_idx, None)
+    }
+
+    /// Fetch at most `limit` events at the source, including disk backfill.
+    /// Callers request one lookahead row to determine whether a page follows.
+    pub fn events_page(
+        &self,
+        run_id: &str,
+        since_idx: i64,
+        limit: Option<usize>,
+    ) -> anyhow::Result<(String, Vec<SseEvent>, i64, Option<RunProjectionSnapshot>)> {
         let run = self.run.lock();
         if run.run_id != run_id {
             // A completed run is no longer in the live ring, but its durable
             // journal remains the canonical history.  GUI/TUI inspectors and
             // reconnect backfill must not lose that history merely because a
             // later run became active.
-            let path = self
-                .journal_path(run_id)
-                .ok_or_else(|| anyhow::anyhow!("event journal is not configured"))?;
-            if !path.exists() {
+            let (known, events) = self.read_journal_page(run_id, since_idx, false, limit)?;
+            if !known {
                 anyhow::bail!("run `{run_id}` is not known by this session");
             }
-            let events = self
-                .read_journal(run_id)?
-                .into_iter()
-                .filter(|event| event.idx > since_idx)
-                .collect::<Vec<_>>();
             let min_idx = events.first().map(|event| event.idx).unwrap_or(0);
             return Ok((run_id.to_string(), events, min_idx, None));
         }
@@ -653,7 +989,7 @@ impl SseBroadcaster {
                 .truncation_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
-            if self.journal.lock().directory.is_some() {
+            if self.journal.lock().store.is_some() {
                 // With a durable journal the client still gets the full history
                 // (disk replay), so this is a benign resync, not a data gap.
                 tracing::debug!(
@@ -673,13 +1009,8 @@ impl SseBroadcaster {
                 );
             }
         }
-        let disk_events = if truncated && self.journal.lock().directory.is_some() {
-            Some(
-                self.read_journal(run_id)?
-                    .into_iter()
-                    .filter(|event| event.idx > since_idx)
-                    .collect(),
-            )
+        let disk_events = if truncated && self.journal.lock().store.is_some() {
+            Some(self.read_journal_page(run_id, since_idx, false, limit)?.1)
         } else {
             None
         };
@@ -687,11 +1018,12 @@ impl SseBroadcaster {
             run.events
                 .iter()
                 .filter(|event| !truncated && event.idx > since_idx)
+                .take(limit.unwrap_or(usize::MAX))
                 .cloned()
                 .collect()
         });
         let projection =
-            (truncated && self.journal.lock().directory.is_none()).then(|| RunProjectionSnapshot {
+            (truncated && self.journal.lock().store.is_none()).then(|| RunProjectionSnapshot {
                 run_id: run.run_id.clone(),
                 epoch: run.epoch,
                 run_sequence: run.run_sequence,
@@ -702,106 +1034,71 @@ impl SseBroadcaster {
     }
 
     pub fn session_events_since(&self, since_idx: i64) -> anyhow::Result<Vec<SseEvent>> {
-        self.read_journal("").map(|events| {
-            events
-                .into_iter()
-                .filter(|event| event.session_idx > since_idx)
-                .collect()
-        })
-    }
-
-    fn journal_path(&self, run_id: &str) -> Option<std::path::PathBuf> {
-        self.journal.lock().directory.as_ref().map(|directory| {
-            if run_id.is_empty() {
-                directory.join("_session.jsonl")
-            } else {
-                directory.join(format!("{run_id}.jsonl"))
-            }
-        })
+        Ok(self.read_journal_since("", since_idx, true)?.1)
     }
 
     fn append_journal(journal: &mut EventJournalState, event: &SseEvent) -> anyhow::Result<()> {
         #[cfg(test)]
-        {
-            if matches!(journal.fail_at, Some(JournalFailPoint::Append)) {
-                journal.fail_at = None;
-                anyhow::bail!("injected append failure");
-            }
+        if journal.fail_at.take().is_some() {
+            anyhow::bail!("injected event persistence failure");
         }
-        // The only caller (broadcast) holds the journal lock across its own
-        // closed check, so a closed journal can never reach this point.
         debug_assert!(!journal.closed);
-        let Some(directory) = journal.directory.as_ref() else {
+        let Some(writer) = journal.writer.as_ref() else {
             return Ok(());
         };
-        let path = if event.run_id.is_empty() {
-            directory.join("_session.jsonl")
-        } else {
-            directory.join(format!("{}.jsonl", event.run_id))
-        };
-        let mut bytes = serde_json::to_vec(event)?;
-        bytes.push(b'\n');
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        file.write_all(&bytes)?;
-        #[cfg(test)]
-        {
-            if matches!(journal.fail_at, Some(JournalFailPoint::Flush)) {
-                journal.fail_at = None;
-                anyhow::bail!("injected flush failure");
-            }
-        }
-        file.flush()?;
-        #[cfg(test)]
-        {
-            if matches!(journal.fail_at, Some(JournalFailPoint::Sync)) {
-                journal.fail_at = None;
-                anyhow::bail!("injected sync failure");
-            }
-        }
-        file.sync_data()?;
-        Ok(())
+        writer.append(
+            serde_json::to_value(event)?,
+            !is_buffered_delta(&event.event_type),
+        )
     }
 
-    /// Read only complete JSONL records. A process crash can leave one partial
-    /// tail record; it is ignored and truncated before the next append.
+    fn read_journal_since(
+        &self,
+        run_id: &str,
+        since_idx: i64,
+        session_scope: bool,
+    ) -> anyhow::Result<(bool, Vec<SseEvent>)> {
+        self.read_journal_page(run_id, since_idx, session_scope, None)
+    }
+
+    fn read_journal_page(
+        &self,
+        run_id: &str,
+        since_idx: i64,
+        session_scope: bool,
+        limit: Option<usize>,
+    ) -> anyhow::Result<(bool, Vec<SseEvent>)> {
+        let journal = self.journal.lock();
+        let Some(store) = journal.store.as_ref() else {
+            return Ok((false, Vec::new()));
+        };
+        journal
+            .writer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
+            .flush()?;
+        store.typed_events_page(&journal.session_id, run_id, since_idx, session_scope, limit)
+    }
+
     fn read_journal(&self, run_id: &str) -> anyhow::Result<Vec<SseEvent>> {
-        let Some(path) = self.journal_path(run_id) else {
+        let journal = self.journal.lock();
+        let Some(store) = journal.store.as_ref() else {
             return Ok(Vec::new());
         };
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut events = Vec::new();
-        let mut valid_bytes = 0_u64;
-        let ends_with_newline = bytes.ends_with(b"\n");
-        let parts = bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
-        for (index, line) in parts.iter().enumerate() {
-            if line.is_empty() {
-                continue;
-            }
-            match serde_json::from_slice::<SseEvent>(line) {
-                Ok(event) => {
-                    valid_bytes += line.len() as u64 + 1;
-                    events.push(event);
-                }
-                Err(_error) if index + 1 == parts.len() && !ends_with_newline => {
-                    let writable = std::fs::OpenOptions::new().write(true).open(&path)?;
-                    writable.set_len(valid_bytes)?;
-                    break;
-                }
-                Err(error) => anyhow::bail!(
-                    "event journal corruption at byte {valid_bytes} in {}: {error}",
-                    path.display()
-                ),
-            }
-        }
-        Ok(events)
+        journal
+            .writer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
+            .flush()?;
+        store.typed_events(&journal.session_id, run_id)
     }
+}
+
+fn is_buffered_delta(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "thinking_delta" | "tool_delta" | "toolcall_delta" | "text_chunk" | "text_delta"
+    )
 }
 
 /// Fold a run event into the durable-in-memory semantic projection.
@@ -1241,8 +1538,11 @@ mod tests {
     fn session_scoped_events_have_independent_durable_identity() {
         let directory = tempfile::tempdir().unwrap();
         let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
+        b.configure_journal(
+            "session-1",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
         b.start_run("run-1".to_string(), 1);
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
         b.broadcast(SseEvent::new(
@@ -1253,11 +1553,7 @@ mod tests {
             "cwd_changed",
             serde_json::json!({"cwd":"/tmp"}),
         ));
-        let contents = std::fs::read_to_string(directory.path().join("_session.jsonl")).unwrap();
-        let events: Vec<SseEvent> = contents
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let events = b.read_journal("").unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].run_id, "");
         assert_eq!(events[0].idx, -1);
@@ -1469,11 +1765,14 @@ mod tests {
     }
 
     #[test]
-    fn journal_is_committed_before_broadcast_and_failure_interrupts() {
+    fn journal_reads_flush_buffered_deltas_and_enqueue_failure_interrupts() {
         let directory = tempfile::tempdir().unwrap();
         let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
+        b.configure_journal(
+            "session-1",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
         b.start_run("run-1".to_string(), 3);
         let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         b.set_persistence_interrupt(interrupt.clone());
@@ -1497,7 +1796,7 @@ mod tests {
         ));
         assert!(
             receiver.try_recv().is_err(),
-            "uncommitted event must not be visible"
+            "rejected event must not be visible"
         );
         assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
         assert!(b.persistence_error().is_some());
@@ -1505,11 +1804,91 @@ mod tests {
     }
 
     #[test]
+    fn delta_burst_commits_as_one_batch_at_a_durable_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal(
+            "session-batch",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
+        b.start_run("run-batch".to_string(), 1);
+
+        for index in 0..32 {
+            b.broadcast(SseEvent::new(
+                "text_chunk",
+                serde_json::json!({"text": index.to_string()}),
+            ));
+        }
+        b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+
+        assert_eq!(b.journal_commit_count(), 1);
+        assert_eq!(b.read_journal("run-batch").unwrap().len(), 33);
+    }
+
+    #[test]
+    fn lone_delta_is_flushed_after_the_batch_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-timer", &manager).unwrap();
+        b.start_run("run-timer".to_string(), 1);
+        b.broadcast(SseEvent::new(
+            "thinking_delta",
+            serde_json::json!({"text":"safe"}),
+        ));
+
+        std::thread::sleep(EVENT_BATCH_WINDOW + std::time::Duration::from_millis(100));
+        let count = manager
+            .storage()
+            .unwrap()
+            .db
+            .call(|db| {
+                Ok(db.query_row("SELECT count(*) FROM run_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })?)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(b.journal_commit_count(), 1);
+    }
+
+    #[test]
+    fn asynchronous_delta_failure_interrupts_the_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-failure", &manager).unwrap();
+        b.start_run("run-failure".to_string(), 1);
+        let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        b.set_persistence_interrupt(interrupt.clone());
+        let mut receiver = b.subscribe();
+        manager.test_execute("DROP TABLE run_events");
+
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"visible-before-flush"}),
+        ));
+        assert!(receiver.try_recv().is_ok());
+        for _ in 0..50 {
+            if b.persistence_error().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(b.persistence_error().is_some());
+        assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
     fn closed_journal_rejects_late_broadcast_without_recreating_files() {
         let directory = tempfile::tempdir().unwrap();
         let b = SseBroadcaster::new();
-        b.configure_journal("session-delete", directory.path().to_path_buf())
-            .unwrap();
+        b.configure_journal(
+            "session-delete",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
         b.start_run("run-delete".to_string(), 1);
         let mut receiver = b.subscribe();
 
@@ -1525,6 +1904,28 @@ mod tests {
     }
 
     #[test]
+    fn closing_journal_flushes_pending_deltas() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-close", &manager).unwrap();
+        b.start_run("run-close".to_string(), 1);
+        b.broadcast(SseEvent::new(
+            "text_chunk",
+            serde_json::json!({"text":"pending"}),
+        ));
+
+        b.close_journal();
+
+        let events = manager
+            .storage()
+            .unwrap()
+            .events("session-close", "run-close")
+            .unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
     fn journal_failpoints_cover_append_flush_and_sync_boundaries() {
         for point in [
             JournalFailPoint::Append,
@@ -1533,8 +1934,11 @@ mod tests {
         ] {
             let directory = tempfile::tempdir().unwrap();
             let b = SseBroadcaster::new();
-            b.configure_journal("session-1", directory.path().to_path_buf())
-                .unwrap();
+            b.configure_journal(
+                "session-1",
+                &crate::session::Manager::new(directory.path().to_path_buf()),
+            )
+            .unwrap();
             b.start_run("run-1".to_string(), 1);
             let mut receiver = b.subscribe();
             b.fail_at(point);
@@ -1546,52 +1950,14 @@ mod tests {
     }
 
     #[test]
-    fn journal_recovery_truncates_a_partial_tail() {
-        let directory = tempfile::tempdir().unwrap();
-        let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
-        b.start_run("run-1".to_string(), 1);
-        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
-        let path = directory.path().join("run-1.jsonl");
-        let valid_len = std::fs::metadata(&path).unwrap().len();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(br#"{"event_type":"partial""#).unwrap();
-        file.sync_all().unwrap();
-
-        let recovered = b.read_journal("run-1").unwrap();
-        assert_eq!(recovered.len(), 1);
-        assert_eq!(std::fs::metadata(path).unwrap().len(), valid_len);
-    }
-
-    #[test]
-    fn journal_recovery_refuses_middle_corruption_without_truncating() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("run-1.jsonl");
-        let first = serde_json::to_vec(&SseEvent::new("ok", serde_json::json!({}))).unwrap();
-        let later = serde_json::to_vec(&SseEvent::new("later", serde_json::json!({}))).unwrap();
-        let mut bytes = first;
-        bytes.extend_from_slice(b"\nnot-json\n");
-        bytes.extend_from_slice(&later);
-        bytes.push(b'\n');
-        std::fs::write(&path, bytes).unwrap();
-        let original = std::fs::read(&path).unwrap();
-        let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
-        assert!(b.read_journal("run-1").is_err());
-        assert_eq!(std::fs::read(path).unwrap(), original);
-    }
-
-    #[test]
     fn envelope_carries_run_sequence_and_session_replay_has_own_cursor() {
         let directory = tempfile::tempdir().unwrap();
         let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
+        b.configure_journal(
+            "session-1",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
         b.start_run_with_sequence("run-1".to_string(), 3, Some(17));
         b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
         let (_, events, _, _) = b.events_since("run-1", -1).unwrap();
@@ -1609,8 +1975,10 @@ mod tests {
     #[test]
     fn atomic_attach_replays_disk_when_memory_ring_is_truncated() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("run-1.jsonl");
-        let mut file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let store = manager.storage().unwrap();
+        store.bind_events("session-1").unwrap();
+        let mut events = Vec::new();
         for idx in 0..(MAX_RUN_EVENTS as i64 + 5) {
             let event = SseEvent {
                 event_type: "usage".to_string(),
@@ -1624,14 +1992,26 @@ mod tests {
                 session_idx: -1,
                 run_sequence: 9,
             };
-            serde_json::to_writer(&mut file, &event).unwrap();
-            file.write_all(b"\n").unwrap();
+            events.push(serde_json::to_value(event).unwrap());
         }
-        file.flush().unwrap();
+        store
+            .db
+            .call(move |db| {
+                let tx = db.transaction()?;
+                for event in events {
+                    crate::session::sqlite_store::insert_event(&tx, "session-1", event)?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
 
         let b = SseBroadcaster::new();
-        b.configure_journal("session-1", directory.path().to_path_buf())
-            .unwrap();
+        b.configure_journal(
+            "session-1",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
         b.start_run("run-1".to_string(), 2);
         let attachment = b.attach("run-1", -1).unwrap();
         assert!(attachment.truncated);
@@ -1649,7 +2029,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let broadcaster = SseBroadcaster::new();
         broadcaster
-            .configure_journal("session-1", directory.path().to_path_buf())
+            .configure_journal(
+                "session-1",
+                &crate::session::Manager::new(directory.path().to_path_buf()),
+            )
             .unwrap();
         broadcaster.start_run("run-a".to_string(), 1);
         broadcaster.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
@@ -1660,6 +2043,12 @@ mod tests {
         assert_eq!(run_id, "run-a");
         assert_eq!(events.len(), 2);
         assert!(projection.is_none());
+        let (_, tail, _, _) = broadcaster.events_since("run-a", 0).unwrap();
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].idx, 1);
+        let (_, exhausted, _, _) = broadcaster.events_since("run-a", 1).unwrap();
+        assert!(exhausted.is_empty());
+        assert!(broadcaster.events_since("unknown", -1).is_err());
     }
 
     // ─── coverage batch: journal resume/recovery/projection arms ───────────
@@ -1670,19 +2059,48 @@ mod tests {
         // Pre-existing session journal with events at session_idx 0 and 1.
         let first = SseBroadcaster::new();
         first
-            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .configure_journal(
+                "s1".to_string(),
+                &crate::session::Manager::new(dir.path().to_path_buf()),
+            )
             .unwrap();
         first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 1})));
         first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 2})));
 
         let second = SseBroadcaster::new();
         second
-            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .configure_journal(
+                "s1".to_string(),
+                &crate::session::Manager::new(dir.path().to_path_buf()),
+            )
             .unwrap();
         second.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 3})));
         let events = second.session_events_since(-1).unwrap();
         let idxs: Vec<i64> = events.iter().map(|e| e.session_idx).collect();
         assert_eq!(idxs, vec![0, 1, 2], "resumed after the on-disk sequence");
+    }
+
+    #[test]
+    fn pre_run_compaction_events_do_not_collide_with_session_events_on_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let first = SseBroadcaster::new();
+        first.configure_journal("s", &manager).unwrap();
+        first.broadcast(SseEvent::new("model_changed", serde_json::json!({})));
+        first.broadcast(SseEvent::new("compaction_started", serde_json::json!({})));
+        assert!(first.persistence_error().is_none());
+        let second = SseBroadcaster::new();
+        second.configure_journal("s", &manager).unwrap();
+        second.broadcast(SseEvent::new("compaction_committed", serde_json::json!({})));
+        assert!(second.persistence_error().is_none());
+        let events = second.read_journal("").unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].session_idx, 0);
+        assert_eq!(events[1].idx, 0);
+        assert_eq!(events[2].idx, 1);
+        assert_eq!(second.session_events_since(-1).unwrap().len(), 1);
+        assert!(second.session_events_since(0).unwrap().is_empty());
+        assert_eq!(second.session_events_since(-2).unwrap().len(), 3);
     }
 
     #[test]
@@ -1693,7 +2111,10 @@ mod tests {
         std::fs::write(&blocker, "x").unwrap();
         let broadcaster = SseBroadcaster::new();
         assert!(broadcaster
-            .configure_journal("s1".to_string(), blocker.join("sub"))
+            .configure_journal(
+                "s1".to_string(),
+                &crate::session::Manager::new(blocker.join("sub"))
+            )
             .is_err());
         assert!(broadcaster.persistence_error().is_some());
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1704,11 +2125,12 @@ mod tests {
     #[test]
     fn start_run_recovers_from_corrupt_journal() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("run-x.jsonl"), "{corrupt\n{also corrupt\n").unwrap();
+        let manager = crate::session::Manager::new(dir.path().to_path_buf());
         let broadcaster = SseBroadcaster::new();
         broadcaster
-            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .configure_journal("s1".to_string(), &manager)
             .unwrap();
+        manager.test_execute("DROP TABLE run_events");
         broadcaster.start_run("run-x".to_string(), 1);
         assert!(broadcaster.persistence_error().is_some());
     }
@@ -1731,7 +2153,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let broadcaster = SseBroadcaster::new();
         broadcaster
-            .configure_journal("s1".to_string(), dir.path().to_path_buf())
+            .configure_journal(
+                "s1".to_string(),
+                &crate::session::Manager::new(dir.path().to_path_buf()),
+            )
             .unwrap();
         broadcaster.start_run("run-long".to_string(), 1);
         for i in 0..2100 {

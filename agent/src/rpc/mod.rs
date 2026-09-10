@@ -175,7 +175,9 @@ impl AppState {
                 return Some(sess);
             }
         }
-        self.session_manager.find(session_id)?;
+        if !self.session_manager.contains(session_id).ok()? {
+            return None;
+        }
 
         // Load session from disk OUTSIDE any lock — switch_session parses
         // the JSONL file and can be slow for large histories.
@@ -197,7 +199,7 @@ impl AppState {
             self.model_registry.clone(),
             self.queue_budget.clone(),
         );
-        if new_sess.switch_session(session_id).is_err() {
+        if new_sess.switch_session_metadata(session_id).is_err() {
             return None;
         }
         // Cold history is reconciled on hydration as well as during a live
@@ -282,7 +284,7 @@ impl AppState {
         session.broadcaster = Arc::new(SseBroadcaster::new());
         if let Err(error) = session
             .broadcaster
-            .configure_journal(id.clone(), session.session_manager.run_data_path(&id))
+            .configure_journal(id.clone(), &session.session_manager)
         {
             tracing::error!(session_id = %id, "failed to configure event journal: {error:#}");
         }
@@ -471,19 +473,25 @@ fn get_state_internal(
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
     // Query count: number of user messages (prompts and follow-ups).
     // Excludes internal tool/assistant messages.
-    let query_count = sess
-        .messages
-        .read()
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
+    let loaded = sess.session_manager.load_metadata(&session_id).ok();
+    let query_count = if sess.history_loaded {
+        sess.messages
+            .read()
+            .iter()
+            .filter(|m| m.role == "user")
+            .count()
+    } else {
+        loaded
+            .as_ref()
+            .map(|s| s.entries.iter().filter(|e| e.role == "user").count())
+            .unwrap_or(0)
+    };
     let context_percent = if context_window > 0 {
         (context_tokens as f64 / context_window as f64) * 100.0
     } else {
         0.0
     };
 
-    let loaded = sess.session_manager.load(&session_id).ok();
     let parent_session_id = loaded
         .as_ref()
         .map(|s| s.parent_session_id.clone())
@@ -558,6 +566,7 @@ fn get_state_internal(
             loaded
                 .as_ref()
                 .and_then(|session| crate::session::find_run_terminal(&session.entries, run_id))
+                .map(|terminal| future_rpc::message::run_terminal(&terminal))
         });
     // Approvals this session is parked on, with the full card payload. A client
     // that (re)connects after a crash uses this to rebuild approval UI it
@@ -578,7 +587,7 @@ fn get_state_internal(
             .load(std::sync::atomic::Ordering::Relaxed),
         // Always non-empty here: get_session returns None for an empty id,
         // and only map-stored (hydrated or created) sessions reach this point.
-        session_file: Some(String::new()),
+        session_file: None,
         session_id: Some(session_id.clone()),
         session_name: if sess.session_name.is_empty() {
             None
@@ -596,11 +605,13 @@ fn get_state_internal(
         context_window,
         context_tokens,
         context_percent,
-        tokens_in,
-        tokens_out,
-        tokens_cache_r: cache_r,
-        tokens_cache_w: cache_w,
-        total_cost,
+        usage: future_rpc::message::SessionUsage {
+            input_tokens: tokens_in,
+            output_tokens: tokens_out,
+            cache_read_tokens: cache_r,
+            cache_write_tokens: cache_w,
+            cost_cny: total_cost,
+        },
         permission_level: sess.permission_level.clone(),
         parent_session_id: if parent_session_id.is_empty() {
             None
@@ -1102,9 +1113,7 @@ mod tests {
         );
         let (_dir, state) = bare_app_state();
         // A FILE where the run-data directory must be created.
-        let run_data = state.session_manager.run_data_path("journal-fail");
-        std::fs::create_dir_all(run_data.parent().unwrap()).unwrap();
-        std::fs::write(&run_data, "not a directory").unwrap();
+        state.session_manager.test_execute("DROP TABLE run_events");
         let session = crate::rpc::ServerSession::new_with_queue_budget(
             "journal-fail".to_string(),
             std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
@@ -1387,10 +1396,10 @@ mod tests {
 
         let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
         assert_eq!(value["activeRun"]["runId"], "run-live");
-        assert_eq!(value["requestedRun"]["run_id"], "run-done");
+        assert_eq!(value["requestedRun"]["runId"], "run-done");
         // deepseek-chat is in the catalog with a non-zero price, so the
         // estimate replaces the (zero) API cost.
-        assert!(value["totalCost"].as_f64().unwrap() > 0.0);
+        assert!(value["usage"]["costCny"].as_f64().unwrap() > 0.0);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -9,14 +9,16 @@ type Options = Parameters<typeof useTimelineController>[0];
 type Result = ReturnType<typeof useTimelineController>;
 
 function userEntry(id: string, text: string): HistoryEntry {
-  return { id, role: "user", content: text };
+  return { id, kind: "user", role: "user", createdAtMs: 0, blocks: [{ kind: "text", text }] };
 }
 function assistantEntry(id: string, text: string, runId?: string): HistoryEntry {
   return {
     id,
     role: "assistant",
-    content: text,
-    ...(runId ? { meta: { run_id: runId } } : {}),
+    kind: "assistant",
+    createdAtMs: 0,
+    blocks: [{ kind: "text", text }],
+    runId,
   };
 }
 function evt(type: string, data: string, runId?: string, idx?: number): StreamEvent {

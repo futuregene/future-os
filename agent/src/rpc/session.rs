@@ -47,6 +47,7 @@ pub struct ServerSession {
     pub agent_loop: Arc<tokio::sync::RwLock<crate::agent::Loop>>,
     /// Full message history as persisted to/loaded from the session JSONL.
     pub messages: Arc<parking_lot::RwLock<Vec<crate::types::AgentMessage>>>,
+    pub(crate) history_loaded: bool,
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
@@ -176,9 +177,7 @@ impl ServerSession {
         model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
         queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
     ) -> Self {
-        if let Err(error) =
-            broadcaster.configure_journal(session_id.clone(), manager.run_data_path(&session_id))
-        {
+        if let Err(error) = broadcaster.configure_journal(session_id.clone(), &manager) {
             tracing::error!(session_id, "failed to configure event journal: {error:#}");
         }
         // Clone token counter Arcs and queue senders from the agent loop for lock-free access
@@ -218,6 +217,7 @@ impl ServerSession {
             session_id: session_id.clone(),
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
+            history_loaded: true,
             model: String::new(),
             thinking_level: "xhigh".to_string(), // Match default
             auto_compaction: true,               // Match default
@@ -465,7 +465,7 @@ impl ServerSession {
         // Persist through the same ordered queue as run appends/finalization.
         // Brand-new sessions have no JSONL yet; their first accepted prompt
         // creates it with the selected model.
-        if self.session_manager.find(&self.session_id).is_some() {
+        if self.session_manager.contains(&self.session_id)? {
             self.persistence
                 .update_info("model", serde_json::Value::String(self.model.clone()))?;
         }
@@ -510,7 +510,7 @@ impl ServerSession {
         // Keep metadata writes ordered with active-run persistence. This setter
         // predates fallible RPC setters, so report a durable error without
         // changing its public signature.
-        if self.session_manager.find(&self.session_id).is_some() {
+        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
             if let Err(error) = self.persistence.update_info(
                 "thinking_level",
                 serde_json::Value::String(self.thinking_level.clone()),
@@ -754,7 +754,7 @@ impl ServerSession {
 
     pub fn set_auto_compaction(&mut self, enabled: bool) {
         self.auto_compaction = enabled;
-        if self.session_manager.find(&self.session_id).is_some() {
+        if !matches!(self.session_manager.contains(&self.session_id), Ok(false)) {
             if let Err(error) = self
                 .persistence
                 .update_info("auto_compaction", serde_json::Value::Bool(enabled))
@@ -957,8 +957,34 @@ impl ServerSession {
     }
 
     pub fn switch_session(&mut self, id: &str) -> Result<()> {
-        if let Some(path) = self.session_manager.find(id) {
-            let session = self.session_manager.load_path(&path, id)?;
+        self.restore_session(id, true)
+    }
+
+    pub(crate) fn switch_session_metadata(&mut self, id: &str) -> Result<()> {
+        self.restore_session(id, false)
+    }
+
+    pub(crate) fn ensure_history_loaded(&mut self) -> Result<()> {
+        if !self.history_loaded {
+            let session = self.session_manager.load(&self.session_id)?;
+            let supports_images = self
+                .model_registry
+                .read()
+                .request_model_accepts_images(&self.model);
+            *self.messages.write() =
+                crate::session::entries_to_agent_messages(&session.entries, supports_images);
+            self.history_loaded = true;
+        }
+        Ok(())
+    }
+
+    fn restore_session(&mut self, id: &str, load_history: bool) -> Result<()> {
+        if self.session_manager.contains(id)? {
+            let session = if load_history {
+                self.session_manager.load(id)?
+            } else {
+                self.session_manager.load_metadata(id)?
+            };
             let effective_model = if session.model.is_empty() {
                 self.model.clone()
             } else {
@@ -968,7 +994,11 @@ impl ServerSession {
                 .model_registry
                 .read()
                 .request_model_accepts_images(&effective_model);
-            let msgs = crate::session::entries_to_agent_messages(&session.entries, supports_images);
+            let msgs = if load_history {
+                crate::session::entries_to_agent_messages(&session.entries, supports_images)
+            } else {
+                Vec::new()
+            };
             if !session.model.is_empty() {
                 self.model = session.model.clone();
                 tracing::info!(
@@ -1034,6 +1064,7 @@ impl ServerSession {
                 }
             }
             *self.messages.write() = msgs;
+            self.history_loaded = load_history;
             self.session_id = id.to_string();
             self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(
                 id,
@@ -1608,13 +1639,9 @@ mod tests {
         let mut session = make_persistent_test_session("think-persist-fail");
         // The session path exists (find succeeds) but is a DIRECTORY, so the
         // metadata update fails and the error is logged, not propagated.
-        let dir_file = std::path::Path::new(&session.cwd)
-            .join("sessions")
-            .join("think-persist-fail.jsonl");
-        std::fs::create_dir_all(&dir_file).unwrap();
+        session.session_manager.test_execute("UPDATE sessions SET revision=0; CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
         session.set_thinking_level("high");
         assert_eq!(session.thinking_level, "high");
-        let _ = std::fs::remove_dir_all(&dir_file);
     }
 
     #[test]
@@ -2742,10 +2769,7 @@ mod tests {
         std::fs::create_dir_all(&session.cwd).unwrap();
         session
             .broadcaster
-            .configure_journal(
-                session.session_id.clone(),
-                session.session_manager.run_data_path(&session.session_id),
-            )
+            .configure_journal(session.session_id.clone(), &session.session_manager)
             .unwrap();
         // A session file on disk so the recovery append has somewhere to
         // land (recover_with_entries refuses a not-yet-created transcript).

@@ -831,6 +831,9 @@ impl Loop {
                         self.process_usage_event(&usage, &mut total_usage);
                     }
                     ModelStreamEvent::Finish { reason, usage } => {
+                        tracing::debug!(model = %self.model, turn, finish_reason = reason.as_str(),
+                            text_bytes = assistant_text.len(), reasoning_blocks = reasoning_blocks.len(),
+                            tool_calls = agent_tool_calls.len(), "LLM generation ended");
                         saw_terminal_event = true;
                         if matches!(
                             &reason,
@@ -838,12 +841,18 @@ impl Loop {
                                 | FinishReason::Length
                                 | FinishReason::ContentFilter
                                 | FinishReason::Error
+                                | FinishReason::Cancelled
+                                | FinishReason::Paused
+                                | FinishReason::Unknown(_)
                         ) {
                             stream_truncated = true;
                             truncation_detected_by.get_or_insert(match &reason {
                                 FinishReason::Length => "finish_length",
                                 FinishReason::ContentFilter => "finish_content_filter",
                                 FinishReason::Error => "finish_error",
+                                FinishReason::Cancelled => "provider_cancelled",
+                                FinishReason::Paused => "model_paused",
+                                FinishReason::Unknown(_) => "finish_unknown",
                                 _ => "finish_incomplete",
                             });
                         }
@@ -877,7 +886,9 @@ impl Loop {
                         // without matching reqwest/provider wording.
                         stream_truncated = true;
                         truncation_detected_by.get_or_insert(
-                            if message.contains("[UPSTREAM_DISCONNECTED]") {
+                            if message.contains("[RESPONSE_TIMEOUT]") {
+                                "request_timeout"
+                            } else if message.contains("[UPSTREAM_DISCONNECTED]") {
                                 "upstream_disconnected"
                             } else {
                                 "model_response_error"
@@ -2260,6 +2271,91 @@ mod tests {
         assert_eq!(trunc.detected_by, "finish_incomplete");
         assert_eq!(trunc.tool_calls_so_far, 0);
         assert_eq!(trunc.output_len, "cut off".len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_reasons_preserve_partial_content_and_diagnostic_category() {
+        for (reason, expected) in [
+            (FinishReason::Stop, None),
+            (FinishReason::Refusal, None),
+            (FinishReason::Length, Some("[OUTPUT_LIMIT]")),
+            (FinishReason::ContentFilter, Some("[MODEL_CONTENT_FILTER]")),
+            (FinishReason::Cancelled, Some("[PROVIDER_CANCELLED]")),
+            (FinishReason::Paused, Some("[MODEL_PAUSED]")),
+            (FinishReason::Incomplete, Some("[RESPONSE_UNCONFIRMED]")),
+            (
+                FinishReason::Unknown("new_reason".into()),
+                Some("[RESPONSE_UNCONFIRMED]"),
+            ),
+        ] {
+            let provider = ScriptedProvider::new(vec![Script::Events(vec![
+                ev_text("synthetic partial"),
+                ModelStreamEvent::Finish {
+                    reason,
+                    usage: None,
+                },
+            ])]);
+            let loop_ = Loop::new(provider, "mock");
+            let (_, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    noop_on_event,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(messages.last().unwrap().text(), "synthetic partial");
+            assert_eq!(
+                loop_
+                    .stream_incomplete
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                expected.is_some()
+            );
+            if let Some(code) = expected {
+                assert!(loop_
+                    .stream_truncation
+                    .lock()
+                    .as_ref()
+                    .unwrap()
+                    .error_message()
+                    .starts_with(code));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_reasoning_only_and_empty_replies_are_not_transport_errors() {
+        for reasoning in [false, true] {
+            let mut events = Vec::new();
+            if reasoning {
+                events.push(ModelStreamEvent::ReasoningDelta {
+                    id: "r".into(),
+                    text: "synthetic draft".into(),
+                });
+            }
+            events.push(ev_stop());
+            let loop_ = Loop::new(ScriptedProvider::new(vec![Script::Events(events)]), "mock");
+            let (text, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    noop_on_text,
+                    noop_on_event,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(text.is_empty());
+            assert!(!loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+            assert!(loop_.stream_truncation.lock().is_none());
+            if reasoning {
+                assert_eq!(messages.last().unwrap().reasoning_text(), "synthetic draft");
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,14 +1,42 @@
 import type { AgentMessage } from "@future-os/thread-projection";
+import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun } from "../../integrations/storage/threadStore";
-import { entriesToMessages, matchesSettledRun } from "@future-os/thread-projection";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  entriesToTurns,
+  matchesSettledRun,
+  turnsToMessages,
+} from "@future-os/thread-projection";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import i18n from "../../i18n";
-import { getLatestRun, getRun, getSessionEntries, listRuns } from "../../integrations/storage/threadStore";
+import {
+  getLatestRun,
+  getRun,
+  getSessionEntriesPage,
+  listRuns,
+} from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { getThreadMessageSnapshot, setThreadMessageSnapshot } from "./threadMessageCache";
-import { applyJournalRunOutcomes, applyRunMetadata, buildStreamingPreview, mergeStreamingPreview, recoverAbortedTurns, recoverFailedRuns } from "./threadRunProjection";
+import { reconcileThreadHistory } from "./reconcileThreadHistory";
+import {
+  getThreadHistoryCursor,
+  getThreadMessageSnapshot,
+  setThreadMessageSnapshot,
+} from "./threadMessageCache";
+import {
+  applyJournalRunOutcomes,
+  applyRunMetadata,
+  buildStreamingPreview,
+  mergeStreamingPreview,
+  recoverAbortedTurns,
+  recoverFailedRuns,
+} from "./threadRunProjection";
 
 interface UseThreadMessagesInput {
   threadId: string | null;
@@ -18,9 +46,14 @@ interface UseThreadMessagesInput {
 }
 
 type AgentLoadResult
-  = | { status: "loaded"; messages: AgentMessage[] }
-    | { status: "empty" }
-    | { status: "failed"; error: string };
+  = | {
+    status: "loaded";
+    messages: AgentMessage[];
+    hasMore: boolean;
+    nextOffset: number;
+  }
+  | { status: "empty" }
+  | { status: "failed"; error: string };
 
 // Flash-free loading indicator (mirrors the right-context panel, useContextData):
 // a thread load usually resolves in tens of ms, so hold off showing the "loading"
@@ -39,23 +72,54 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * their instance — no cross-thread guarding is needed. The races left are
  * within this one thread (see `messagesGenRef`).
  */
-export function useThreadMessages({ threadId, workspaceId, workspacePath, agentSessionId }: UseThreadMessagesInput) {
+export function useThreadMessages({
+  threadId,
+  workspaceId,
+  workspacePath,
+  agentSessionId,
+}: UseThreadMessagesInput) {
   const normalizedAgentSessionId = agentSessionId?.trim() || null;
+  const messagesGenRef = useRef(0);
+  const recentRunGenRef = useRef(0);
+  const activeRunRef = useRef<{ runId: string | null; startedAt: number | null }>({ runId: null, startedAt: null });
   // AgentThread is keyed by thread id and therefore remounts on every switch.
   // Seed the new instance from a small process-local LRU, then revalidate from
   // the authoritative Agent journal in the background. This preserves the
   // isolation benefit of keyed instances without flashing a loading placeholder
   // every time the user revisits a conversation.
-  const [initialSnapshot] = useState(() => (
-    threadId ? getThreadMessageSnapshot(threadId, normalizedAgentSessionId) : null
-  ));
+  const [initialSnapshot] = useState(() =>
+    threadId
+      ? getThreadMessageSnapshot(threadId, normalizedAgentSessionId)
+      : null,
+  );
+  const [initialCursor] = useState(() =>
+    threadId
+      ? getThreadHistoryCursor(threadId, normalizedAgentSessionId)
+      : null,
+  );
   const hasWarmSnapshotRef = useRef(initialSnapshot !== null);
   const cacheEligibleRef = useRef(initialSnapshot !== null);
-  const [messages, setMessages] = useState<AgentMessage[]>(initialSnapshot ?? []);
-  // Truthful data-loading state: gates pendingPrompt delivery (useAgentThreadState)
-  // and must flip the instant a load starts/ends. The UI reads the debounced
-  // `loadingIndicator` below instead, so this can stay honest without flashing.
-  const [loadingThread, setLoadingThread] = useState(true);
+  // A source revision cancels reads. A new owner also cancels writers; first
+  // binding preserves ownership so the original send pipeline can finish.
+  // Derive this during render so effects never see a new source with old ownership.
+  const [source, setSource] = useState({ id: normalizedAgentSessionId, version: 0, owner: 0 });
+  if (source.id !== normalizedAgentSessionId) {
+    setSource({ id: normalizedAgentSessionId, version: source.version + 1, owner: source.owner + (source.id === null ? 0 : 1) });
+  }
+  const sourceRef = useRef(source);
+  const aliveRef = useRef(true);
+  const replacingRef = useRef(false);
+  const tailRequestRef = useRef(0);
+  const [sessionChanged, setSessionChanged] = useState(false);
+  const [messagesState, setMessagesState] = useState<AgentMessage[]>(
+    initialSnapshot ?? [],
+  );
+  const messages = messagesState;
+  // Only cold loads and real source replacements block interaction. Background
+  // revalidation (including first binding) does not change composer availability.
+  const [blockingLoad, setBlockingLoad] = useState(initialSnapshot === null);
+  const ownerChanged = source.owner !== sourceRef.current.owner;
+  const loadingThread = blockingLoad || ownerChanged;
   const loadingRef = useRef(loadingThread);
   loadingRef.current = loadingThread;
   // Debounced projection of `loadingThread` for the "loading" indicator: only
@@ -63,110 +127,170 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   // fast switch-back can't flash it. Purely presentational.
   const [loadingIndicator, setLoadingIndicator] = useState(false);
   const indicatorShownAtRef = useRef<number | null>(null);
-  const [recentRun, setRecentRun] = useState<StoredRun | null>(null);
+  const [recentRunState, setRecentRunState] = useState<StoredRun | null>(null);
+  const recentRun = ownerChanged ? null : recentRunState;
+  const setRecentRun: Dispatch<SetStateAction<StoredRun | null>> = useCallback((value) => {
+    if (aliveRef.current && sourceRef.current.owner === source.owner)
+      setRecentRunState(value);
+  }, [source.owner]);
+  const [hasOlderHistory, setHasOlderHistory] = useState(
+    initialCursor?.hasMore ?? false,
+  );
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyCursorRef = useRef<number | null>(initialCursor?.before ?? null);
+  const olderInFlightRef = useRef<object | null>(null);
+  const historyEpochRef = useRef(0);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const setMessages: Dispatch<SetStateAction<AgentMessage[]>> = useCallback((value) => {
+    if (!aliveRef.current || sourceRef.current.owner !== source.owner)
+      return;
+    messagesGenRef.current += 1;
+    const next = typeof value === "function" ? value(messagesRef.current) : value;
+    messagesRef.current = next;
+    setMessagesState(next);
+  }, [source.owner]);
+  useLayoutEffect(() => {
+    if (sourceRef.current.version === source.version)
+      return;
+    const replacing = sourceRef.current.owner !== source.owner;
+    sourceRef.current = source;
+    replacingRef.current = replacingRef.current || replacing;
+    tailRequestRef.current += 1;
+    recentRunGenRef.current += 1;
+    historyEpochRef.current += 1;
+    olderInFlightRef.current = null;
+    historyCursorRef.current = null;
+    cacheEligibleRef.current = false;
+    setHasOlderHistory(false);
+    setHistoryError(null);
+    if (replacing) {
+      setSessionChanged(true);
+      setBlockingLoad(true);
+      setRecentRunState(null);
+      activeRunRef.current = { runId: null, startedAt: null };
+    }
+  }, [source]);
+  useLayoutEffect(
+    () => {
+      aliveRef.current = true;
+      return () => {
+        aliveRef.current = false;
+        tailRequestRef.current += 1;
+        recentRunGenRef.current += 1;
+        historyEpochRef.current += 1;
+      };
+    },
+    [],
+  );
 
   // Keep the latest committed immutable message array warm for a future keyed
   // remount. Failed cold loads are deliberately not cached as conversation data.
   useLayoutEffect(() => {
-    if (threadId && cacheEligibleRef.current)
-      setThreadMessageSnapshot(threadId, normalizedAgentSessionId, messages);
-  }, [messages, normalizedAgentSessionId, threadId]);
+    if (threadId && cacheEligibleRef.current) {
+      setThreadMessageSnapshot(
+        threadId,
+        normalizedAgentSessionId,
+        messages,
+        historyCursorRef.current === null
+          ? undefined
+          : { before: historyCursorRef.current, hasMore: hasOlderHistory },
+      );
+    }
+  }, [messages, normalizedAgentSessionId, threadId, hasOlderHistory]);
 
-  // ── Generation counter for message writes ────────────────────────────
-  // Within this one thread, a quiet reload (direct replacement) can be in
-  // flight while a real-time user message appends: the reload snapshots this
-  // counter before its async work and discards its write if the counter
-  // moved, so the live append wins. Append writers bump it after writing.
-  const messagesGenRef = useRef<number>(0);
-
-  // The thread's in-flight run, mirrored alongside `recentRun` so the load
-  // path can fold the live streaming bubble into the history array it returns
-  // (one setMessages — no history-then-bubble frame gap).
-  const activeRunRef = useRef<{ runId: string | null; startedAt: number | null }>({
-    runId: null,
-    startedAt: null,
-  });
-
-  // Guard against overlapping refreshes (poll tick, send, reattach) where a
-  // slow response lands after a newer one and writes stale run state. Newest
-  // call wins.
-  const recentRunGenRef = useRef(0);
-  const refreshRecentRun = useCallback(async (targetThreadId: string, _targetWorkspaceId?: string | null) => {
-    const generation = ++recentRunGenRef.current;
-    try {
-      // One row, not the thread's whole run history. Invoked on push events
-      // (thread-runtime-updated terminal / remote-activity) and loads — there is
-      // no longer a periodic timer driving it.
-      const latestRun = await getLatestRun(targetThreadId);
-      if (generation !== recentRunGenRef.current) {
+  const refreshRecentRun = useCallback(
+    async (targetThreadId: string, _targetWorkspaceId?: string | null) => {
+      if (!aliveRef.current || sourceRef.current.version !== source.version)
         return;
+      const generation = ++recentRunGenRef.current;
+      try {
+        // One row, not the thread's whole run history. Invoked on push events
+        // (thread-runtime-updated terminal / remote-activity) and loads — there is
+        // no longer a periodic timer driving it.
+        const latestRun = await getLatestRun(targetThreadId);
+        if (!aliveRef.current || sourceRef.current.version !== source.version || generation !== recentRunGenRef.current) {
+          return;
+        }
+        // Mirror the in-flight run for the load path (see activeRunRef).
+        activeRunRef.current = {
+          runId:
+            latestRun && !matchesSettledRun(latestRun.status)
+              ? latestRun.id
+              : null,
+          startedAt: latestRun?.startedAt ?? latestRun?.createdAt ?? null,
+        };
+        setRecentRun(latestRun);
       }
-      // Mirror the in-flight run for the load path (see activeRunRef).
-      activeRunRef.current = {
-        runId: latestRun && !matchesSettledRun(latestRun.status) ? latestRun.id : null,
-        startedAt: latestRun?.startedAt ?? latestRun?.createdAt ?? null,
-      };
-      setRecentRun(latestRun);
-    }
-    catch {
-      // Run-status refresh is best-effort.
-    }
-  }, []);
+      catch {
+        // Run-status refresh is best-effort.
+      }
+    },
+    [source.version, setRecentRun],
+  );
 
-  // Reload the thread's messages from the agent session (the sole source of
-  // truth) without flipping the full-screen loading state — used to swap a
-  // synthetic streaming bubble for the persisted assistant message once a
-  // background run settles. Keeps the current messages if the agent has
-  // nothing (never blanks).
-  //
-  // `force` (default false) skips the generation-counter guard.  Callers that
-  // are the authoritative settle writer (useRunReattach settle effect) pass
-  // `true` because at that point the streaming interval has already stopped and
-  // no further ticks will repair a discarded write.
-  const reloadMessagesQuiet = useCallback(async (targetThreadId: string, force = false) => {
-    const gen = force ? undefined : messagesGenRef.current;
-    const result = await loadFromAgent(targetThreadId, undefined, activeRunRef.current.runId, activeRunRef.current.startedAt);
-    if (result.status !== "loaded")
-      return;
-    // If a real-time user message bumped the counter while we were in-flight,
-    // our snapshot-based array would overwrite that append — discard it
-    // instead; the live path is authoritative.
-    if (gen !== undefined && messagesGenRef.current !== gen)
-      return;
-    setMessages(result.messages);
-    // loadFromAgent is a hoisted inner function; this reload fires only on
-    // explicit call, so it's intentionally excluded from the deps.
-    // eslint-disable-next-line react/exhaustive-deps
-  }, []);
-
-  // Reconstruct the thread's messages from the agent session JSONL
-  // (get_session_entries) — the only message store (the SQLite messages table
-  // was removed). Empty and failed loads stay distinct so a transient Agent
+  // Reconstruct the thread's messages from the agent Agent transcript
+  // (get_session_entries). Empty and failed loads stay distinct so a transient Agent
   // error never masquerades as an empty conversation.
-  async function loadFromAgent(
+  const loadFromAgent = useCallback(async (
     tid: string,
-    wid?: string | null,
+    _wid?: string | null,
     activeRunId?: string | null,
     activeRunStartedAt?: number | null,
-  ): Promise<AgentLoadResult> {
+    before: number | null = null,
+  ): Promise<AgentLoadResult> => {
     try {
-      const result = await getSessionEntries(tid);
+      const result = await getSessionEntriesPage(tid, before);
       const entries = result?.entries ?? [];
-      if (!entries.length)
-        return { status: "empty" };
-      const messages = applyJournalRunOutcomes(entriesToMessages(entries as unknown as import("@future-os/thread-projection").SessionEntry[]));
-      if (!messages.length)
-        return { status: "empty" };
-      // Agent JSONL doesn't record a run's GUI-side outcome (failed/cancelled/
+      if (!entries.length) {
+        return {
+          status: "loaded",
+          messages: [],
+          hasMore: result.hasMore,
+          nextOffset: result.nextOffset,
+        };
+      }
+      const turns = entriesToTurns(entries as unknown as import("@future-os/thread-projection").SessionEntry[]);
+      // The shared projection intentionally leaves run identity off user
+      // bubbles. Desktop reconciliation needs both halves of an exchange;
+      // take identity from the canonical turn (never guess by text/time).
+      const userRuns = new Map(turns.flatMap(node =>
+        node.kind === "turn" && node.turn.runId
+          ? [[node.turn.user.id, node.turn.runId] as const]
+          : [],
+      ));
+      const messages = applyJournalRunOutcomes(turnsToMessages(turns));
+      if (!messages.length) {
+        return {
+          status: "loaded",
+          messages: [],
+          hasMore: result.hasMore,
+          nextOffset: result.nextOffset,
+        };
+      }
+      // Agent transcript doesn't record a run's GUI-side outcome (failed/cancelled/
       // model) — backfill it from the SQLite `runs` table so a reload keeps the
       // Retry/Continue button, the "stopped" marker, and the model badge.
-      const runs = await listRuns(tid).catch(() => [] as StoredRun[]);
+      const allRuns = await listRuns(tid).catch(() => [] as StoredRun[]);
+      // Do not recover failures or events from unloaded history into this page.
+      const firstTime = Date.parse(messages[0]!.createdAt);
+      const lastTime
+        = before === null
+          ? Infinity
+          : Date.parse(messages[messages.length - 1]!.createdAt);
+      const runs = allRuns.filter((run) => {
+        const time = run.startedAt ?? run.createdAt;
+        return (
+          (!result.hasMore || (run.endedAt ?? run.updatedAt) >= firstTime)
+          && time <= lastTime
+        );
+      });
       const withRunMeta = applyRunMetadata(messages, runs);
-      // An aborted exchange has no reply in the session JSONL — recover the partial
+      // An aborted exchange has no reply in the Agent transcript — recover the partial
       // text the model streamed (persisted as run events) so it isn't lost.
       const recovered = await recoverAbortedTurns(withRunMeta);
       // A run that failed before any assistant entry was saved (e.g. the model
-      // API rejected the first call) leaves no trace in the session JSONL —
+      // API rejected the first call) leaves no trace in the Agent transcript —
       // rebuild its failure bubble from the run record so the error survives a
       // thread switch instead of silently disappearing.
       const withFailures = recoverFailedRuns(recovered, runs);
@@ -189,71 +313,140 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       const finalMessages = liveBubble
         ? mergeStreamingPreview(withFailures, liveBubble)
         : withFailures;
-      await refreshRecentRun(tid, wid).catch(() => {});
-      return { status: "loaded", messages: finalMessages };
+      return {
+        status: "loaded",
+        messages: finalMessages.map(message =>
+          message.role === "user" && userRuns.has(message.id)
+            ? { ...message, runId: userRuns.get(message.id) }
+            : message,
+        ),
+        hasMore: result.hasMore,
+        nextOffset: result.nextOffset,
+      };
     }
     catch (error) {
       return { status: "failed", error: errorMessage(error) };
     }
-  }
+  }, []);
+
+  // All tail reads share one request order. Settling may replace a streaming
+  // snapshot, but never bypasses source ownership or overwrites newer writes.
+  const reloadMessagesQuiet = useCallback(
+    async (targetThreadId: string, settle = false) => {
+      if (!aliveRef.current || sourceRef.current.version !== source.version)
+        return;
+      const request = ++tailRequestRef.current;
+      const baseline = messagesRef.current;
+      await refreshRecentRun(targetThreadId);
+      if (!aliveRef.current || request !== tailRequestRef.current || sourceRef.current.version !== source.version)
+        return;
+      const result = await loadFromAgent(
+        targetThreadId,
+        undefined,
+        activeRunRef.current.runId,
+        activeRunRef.current.startedAt,
+      );
+      if (!aliveRef.current || request !== tailRequestRef.current || sourceRef.current.version !== source.version)
+        return;
+      if (result.status !== "loaded") {
+        setHistoryError(result.status === "failed" ? result.error : i18n.t("agent:thread.messagesLoadFailed"));
+        if (!replacingRef.current)
+          setBlockingLoad(false);
+        return;
+      }
+      const merged = replacingRef.current
+        ? { messages: result.messages, keptOlder: false }
+        : reconcileThreadHistory(messagesRef.current, result.messages, baseline, historyCursorRef.current !== null, settle);
+      historyEpochRef.current += 1;
+      olderInFlightRef.current = null;
+      if (!merged.keptOlder || historyCursorRef.current === null) {
+        historyCursorRef.current = result.nextOffset;
+        setHasOlderHistory(result.hasMore);
+      }
+      replacingRef.current = false;
+      cacheEligibleRef.current = true;
+      hasWarmSnapshotRef.current = true;
+      messagesRef.current = merged.messages;
+      setMessagesState(merged.messages);
+      setHistoryError(null);
+      setBlockingLoad(false);
+    },
+    [loadFromAgent, refreshRecentRun, source.version],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadThreadMessages() {
-      if (!threadId) {
-        setMessages([]);
-        setLoadingThread(false);
-        return;
-      }
-      setLoadingThread(true);
-      // Pre-warm the in-flight-run mirror so loadFromAgent folds the live
-      // streaming bubble into the returned history (one render — no
-      // history-then-bubble frame gap when the thread is running).
-      await refreshRecentRun(threadId, workspaceId).catch(() => {});
-      const result = await loadFromAgent(threadId, workspaceId, activeRunRef.current.runId, activeRunRef.current.startedAt);
-      if (cancelled)
-        return;
-      if (result.status === "failed") {
-        // A warm snapshot is more useful than replacing the conversation with
-        // a transient refresh error. Cold loads still surface the error.
-        if (!hasWarmSnapshotRef.current) {
-          setMessages([
-            {
-              id: "store_error",
-              role: "assistant",
-              authorKey: "author.system",
-              content: i18n.t("agent:thread.messagesLoadFailed", { message: result.error }),
-              createdAt: new Date().toISOString(),
-            },
-          ]);
-        }
-      }
-      else {
-        hasWarmSnapshotRef.current = true;
-        cacheEligibleRef.current = true;
-        setMessages(result.status === "loaded" ? result.messages : []);
-      }
-      setLoadingThread(false);
+    if (!threadId) {
+      setBlockingLoad(false);
+      return;
     }
+    void reloadMessagesQuiet(threadId);
+  }, [reloadMessagesQuiet, threadId, workspaceId]);
 
-    void loadThreadMessages();
-
-    return () => {
-      cancelled = true;
-    };
-    // loadFromAgent is an unstable inner function; the load must fire on
-    // thread/workspace change only, not on every render, so it's excluded.
-    // eslint-disable-next-line react/exhaustive-deps
-  }, [refreshRecentRun, workspaceId, threadId]);
+  const loadOlderHistory = useCallback(
+    async (beforeCommit?: (messages: AgentMessage[]) => void) => {
+      if (
+        !threadId
+        || !aliveRef.current
+        || sourceRef.current.version !== source.version
+        || olderInFlightRef.current
+        || historyCursorRef.current === null
+        || historyCursorRef.current <= 0
+      ) {
+        return;
+      }
+      const request = {};
+      olderInFlightRef.current = request;
+      const epoch = historyEpochRef.current;
+      const before = historyCursorRef.current;
+      try {
+        const result = await loadFromAgent(
+          threadId,
+          undefined,
+          null,
+          null,
+          before,
+        );
+        if (epoch !== historyEpochRef.current)
+          return;
+        if (result.status === "failed")
+          throw new Error(result.error);
+        if (result.status === "empty") {
+          throw new Error(
+            "History page returned no entries before its cursor.",
+          );
+        }
+        if (result.nextOffset >= before)
+          throw new Error("History cursor did not advance.");
+        beforeCommit?.(result.messages);
+        historyCursorRef.current = result.nextOffset;
+        setHasOlderHistory(result.hasMore);
+        setHistoryError(null);
+        setMessages((current) => {
+          const ids = new Set(current.map(message => message.id));
+          return [
+            ...result.messages.filter(message => !ids.has(message.id)),
+            ...current,
+          ];
+        });
+      }
+      catch (error) {
+        if (epoch === historyEpochRef.current)
+          setHistoryError(errorMessage(error));
+      }
+      finally {
+        if (olderInFlightRef.current === request)
+          olderInFlightRef.current = null;
+      }
+    },
+    [threadId, loadFromAgent, setMessages, source.version],
+  );
 
   // Derive the flash-free indicator from the truthful `loadingThread`: show it
   // only if loading outlasts LOADING_INDICATOR_DELAY_MS, and once shown hold it
   // for at least LOADING_INDICATOR_MIN_MS so it can't flash off immediately.
   useEffect(() => {
     if (loadingThread) {
-      // A cached conversation stays visible while its authoritative journal is
-      // revalidated; the truthful loadingThread flag still gates sending.
+      // Keep the old display visible during an atomic source replacement.
       if (hasWarmSnapshotRef.current) {
         indicatorShownAtRef.current = null;
         setLoadingIndicator(false);
@@ -273,7 +466,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       return;
     }
     // It's showing — hold it for the remainder of its minimum visible duration.
-    const remaining = LOADING_INDICATOR_MIN_MS - (performance.now() - indicatorShownAtRef.current);
+    const remaining
+      = LOADING_INDICATOR_MIN_MS
+        - (performance.now() - indicatorShownAtRef.current);
     if (remaining <= 0) {
       indicatorShownAtRef.current = null;
       setLoadingIndicator(false);
@@ -286,7 +481,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     return () => clearTimeout(hideTimer);
   }, [loadingThread]);
 
-  const isRunActive = Boolean(recentRun && !matchesSettledRun(recentRun.status));
+  const isRunActive = Boolean(
+    recentRun && !matchesSettledRun(recentRun.status),
+  );
 
   // Remote runs are discovered from the already-open session event stream.
   // This replaces the old per-thread 2s get_state poll.
@@ -301,16 +498,23 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     if (!threadId || !normalizedAgentSessionId)
       return;
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as {
-        threadId: string;
-        sessionId: string;
-        eventType: string;
-        payload: Record<string, unknown>;
-      } | undefined;
+      const detail = (ev as CustomEvent).detail as
+        | {
+          threadId: string;
+          sessionId: string;
+          eventType: string;
+          payload: Record<string, unknown>;
+        }
+        | undefined;
       // Only this conversation's events apply to this instance — other
       // conversations live on their own keyed AgentThread instances.
-      if (!detail || detail.threadId !== threadId || detail.sessionId !== normalizedAgentSessionId)
+      if (
+        !detail
+        || detail.threadId !== threadId
+        || detail.sessionId !== normalizedAgentSessionId
+      ) {
         return;
+      }
       if (detail.eventType === "agent_end") {
         attachedRef.current = false;
         emitFutureEvent("agent_end", undefined);
@@ -320,7 +524,9 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         if (isRunActive || attachedRef.current)
           return;
         attachedRef.current = true;
-        void invokeCommand<{ runId?: string }>("attach_remote_stream", { threadId })
+        void invokeCommand<{ runId?: string }>("attach_remote_stream", {
+          threadId,
+        })
           .then(async (result) => {
             if (!result?.runId)
               return;
@@ -342,37 +548,47 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         // compaction, which has no active run bubble to host its status.
         if (isRunActive || attachedRef.current)
           return;
-        const operationId = typeof detail.payload.operation_id === "string"
-          ? detail.payload.operation_id
-          : `session_${Date.now()}`;
+        const operationId
+          = typeof detail.payload.operation_id === "string"
+            ? detail.payload.operation_id
+            : `session_${Date.now()}`;
         const messageId = `compaction_${operationId}`;
-        const checkpointId = typeof detail.payload.checkpoint_id === "string"
-          ? detail.payload.checkpoint_id
-          : operationId;
-        const tokensBefore = typeof detail.payload.tokens_before === "number"
-          ? detail.payload.tokens_before
-          : undefined;
-        const error = typeof detail.payload.error === "string"
-          ? detail.payload.error
-          : undefined;
-        const trigger = typeof detail.payload.trigger === "string"
-          ? detail.payload.trigger
-          : undefined;
-        const status = detail.eventType === "compaction_started"
-          ? "running" as const
-          : detail.eventType === "compaction_failed"
-            ? "failed" as const
-            : "completed" as const;
+        const checkpointId
+          = typeof detail.payload.checkpoint_id === "string"
+            ? detail.payload.checkpoint_id
+            : operationId;
+        const tokensBefore
+          = typeof detail.payload.tokens_before === "number"
+            ? detail.payload.tokens_before
+            : undefined;
+        const error
+          = typeof detail.payload.error === "string"
+            ? detail.payload.error
+            : undefined;
+        const trigger
+          = typeof detail.payload.trigger === "string"
+            ? detail.payload.trigger
+            : undefined;
+        const status
+          = detail.eventType === "compaction_started"
+            ? ("running" as const)
+            : detail.eventType === "compaction_failed"
+              ? ("failed" as const)
+              : ("completed" as const);
         setMessages((prev) => {
           const segment = {
             id: checkpointId,
             kind: "compaction" as const,
-            ...(tokensBefore != null && tokensBefore > 0 ? { tokensBefore } : {}),
+            ...(tokensBefore != null && tokensBefore > 0
+              ? { tokensBefore }
+              : {}),
             ...(trigger ? { trigger } : {}),
             ...(status !== "completed" ? { status } : {}),
             ...(error ? { error } : {}),
           };
-          const existing = prev.findIndex(message => message.id === messageId);
+          const existing = prev.findIndex(
+            message => message.id === messageId,
+          );
           const message: AgentMessage = {
             id: messageId,
             role: "assistant",
@@ -400,7 +616,8 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
       if (loadingRef.current)
         return;
 
-      const text = typeof detail.payload.text === "string" ? detail.payload.text : "";
+      const text
+        = typeof detail.payload.text === "string" ? detail.payload.text : "";
       if (!text)
         return;
       setMessages((prev) => {
@@ -411,14 +628,17 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
         const lastUser = userMsgs[userMsgs.length - 1];
         if (lastUser && lastUser.content === text)
           return prev;
-        return [...prev, {
-          id: `user_${Date.now()}`,
-          role: "user",
-          authorKey: "author.you",
-          content: text,
-          status: "complete",
-          createdAt: new Date().toISOString(),
-        } satisfies AgentMessage];
+        return [
+          ...prev,
+          {
+            id: `user_${Date.now()}`,
+            role: "user",
+            authorKey: "author.you",
+            content: text,
+            status: "complete",
+            createdAt: new Date().toISOString(),
+          } satisfies AgentMessage,
+        ];
       });
       // Bump the generation counter so an in-flight quiet reload sees that
       // state moved under it and discards its replacement instead of
@@ -432,6 +652,7 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
     isRunActive,
     refreshRecentRun,
     reloadMessagesQuiet,
+    setMessages,
     threadId,
     workspaceId,
   ]);
@@ -447,6 +668,10 @@ export function useThreadMessages({ threadId, workspaceId, workspacePath, agentS
   return {
     loadingThread,
     loadingIndicator,
+    hasOlderHistory,
+    loadOlderHistory,
+    historyError,
+    sessionChanged,
     messages,
     recentRun,
     renderWorkspace,

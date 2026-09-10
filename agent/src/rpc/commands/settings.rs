@@ -418,7 +418,7 @@ pub(crate) fn handle_set_cwd(
         )
     };
     // Persist to session JSONL so the cwd survives restarts.
-    if session_manager.find(&session_id).is_some() {
+    if !matches!(session_manager.contains(&session_id), Ok(false)) {
         if let Err(error) = persistence.update_info("cwd", serde_json::Value::String(cwd.clone())) {
             tracing::error!("Failed to persist cwd: {error:#}");
         }
@@ -536,7 +536,7 @@ pub(crate) fn handle_set_session_name(
         )
     };
     // Update session_info in the same order as run persistence.
-    if session_manager.find(&session_id).is_some() {
+    if !matches!(session_manager.contains(&session_id), Ok(false)) {
         if let Err(error) =
             persistence.update_info("session_name", serde_json::Value::String(cmd.name.clone()))
         {

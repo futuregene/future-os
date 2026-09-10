@@ -25,6 +25,25 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         let old_id = std::mem::replace(&mut e.id, generate_entry_id());
         id_map.insert(old_id, e.id.clone());
     }
+    // Copied history belongs to the child. Keep grouping, but never expose a
+    // parent's run identity as a run of the fork.
+    let mut run_ids = std::collections::HashMap::new();
+    for entry in &mut entries {
+        if let Some(meta) = entry
+            .meta
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if let Some(old) = meta
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+            {
+                let new = run_ids.entry(old).or_insert_with(generate_id);
+                meta.insert("run_id".into(), serde_json::Value::String(new.clone()));
+            }
+        }
+    }
     // V2 checkpoints reference message-entry ids. Forks deliberately re-id
     // their copied entries, so rewrite both ends through the same complete map
     // before the child is saved. A checkpoint whose range is not wholly inside

@@ -462,9 +462,10 @@ fn agent_prefers_future_model_when_future_is_configured() {
 }
 
 #[test]
-fn agent_reclaims_orphan_run_data_at_startup() {
+fn agent_preserves_orphan_run_data_at_startup() {
     let home = isolated_home();
-    // An orphan run-events directory (no matching transcript) is reclaimed.
+    // Legacy sources are never deleted, even when no matching transcript is
+    // available to make an orphan run-events directory importable.
     let orphan = home.path().join(".future/agent/run-events/orphan-session");
     std::fs::create_dir_all(&orphan).unwrap();
     std::fs::write(orphan.join("run-1.jsonl"), "{}").unwrap();
@@ -479,7 +480,11 @@ fn agent_reclaims_orphan_run_data_at_startup() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!orphan.exists(), "orphan run data reclaimed at startup");
+    assert_eq!(
+        std::fs::read_to_string(orphan.join("run-1.jsonl")).unwrap(),
+        "{}",
+        "orphan legacy run data must remain byte-for-byte intact"
+    );
 }
 
 #[test]
@@ -673,11 +678,10 @@ fn agent_skips_unreadable_project_context_file() {
 
 #[cfg(unix)]
 #[test]
-fn agent_warns_when_orphan_run_data_root_is_unreadable() {
+fn agent_preserves_unreadable_legacy_orphan_root() {
     use std::os::unix::fs::PermissionsExt;
     let home = isolated_home();
-    // run-events exists but is unreadable → gc_orphan_run_data errors and the
-    // agent logs a warning instead of failing startup.
+    // Orphan legacy files are preserved, not reclaimed by SQLite startup.
     let run_events = home.path().join(".future/agent/run-events");
     std::fs::create_dir_all(&run_events).unwrap();
     std::fs::set_permissions(&run_events, std::fs::Permissions::from_mode(0o000)).unwrap();
