@@ -2814,7 +2814,7 @@ mod bridge_tests {
         std::fs::write(&file, b"take me").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": file.to_string_lossy()}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": file.to_string_lossy()}]}}]}),
         );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "download_prepare", "sessionId": session, "filePath": file.to_string_lossy() }))

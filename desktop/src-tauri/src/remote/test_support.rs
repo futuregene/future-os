@@ -196,16 +196,9 @@ impl MockAgent {
             object
                 .entry("createdAtMs")
                 .or_insert_with(|| Value::Number(1_777_257_600_000_i64.into()));
-            if !object.contains_key("blocks") {
-                let text = object
-                    .remove("content")
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_default();
-                object.insert("blocks".to_string(), json!([{"kind":"text", "text":text}]));
-            }
-            if let Some(metadata) = object.remove("meta") {
-                object.entry("metadata").or_insert(metadata);
-            }
+            object
+                .entry("blocks")
+                .or_insert_with(|| Value::Array(Vec::new()));
         }
         self.state
             .lock()
