@@ -64,6 +64,7 @@ interface UseMessagePagingResult {
   canLoadOlder: boolean;
   /** True when the user is pinned to the top and more history exists. */
   showLoadOlderHint: boolean;
+  coolingDown: boolean;
   handleScroll: () => void;
   loadOlder: () => void;
   scrollToLatest: () => void;
@@ -73,7 +74,7 @@ interface UseMessagePagingResult {
 /** Distance from the top that counts as "at the top" for the load hint. */
 const TOP_THRESHOLD_PX = 8;
 /** Block upward momentum after reaching the top or restoring a history page. */
-const WHEEL_COOLDOWN_MS = 500;
+const WHEEL_COOLDOWN_MS = 750;
 /**
  * How long the user must rest at the top before the load button appears. This
  * is the visual confirm gate; the separate wheel protection window blocks
@@ -112,11 +113,71 @@ export function useMessagePaging({
   const wheelBlockedUntilRef = useRef(0);
   const wheelProtectionRef = useRef(false);
   const wasAtTopRef = useRef(false);
+  const [coolingDown, setCoolingDown] = useState(false);
+  const [viewportRevision, setViewportRevision] = useState(0);
+  const dataPendingRef = useRef(false);
+  const renderPendingRef = useRef(false);
+  const cooldownTimerRef = useRef<number | null>(null);
+  const renderFrameRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+
+  const finishCooldown = useCallback(() => {
+    if (dataPendingRef.current || renderPendingRef.current)
+      return;
+    const remaining = wheelBlockedUntilRef.current - performance.now();
+    if (remaining > 0) {
+      if (cooldownTimerRef.current !== null)
+        window.clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = window.setTimeout(finishCooldown, remaining);
+      return;
+    }
+    wheelProtectionRef.current = false;
+    setCoolingDown(false);
+  }, []);
+
+  // A React commit alone is not a painted, stable viewport. Wait for two
+  // animation frames with unchanged geometry after anchor correction. Resizes
+  // restart this check; eager images still loading keep it pending.
+  const settleRenderedViewport = useCallback(() => {
+    if (!wheelProtectionRef.current)
+      return;
+    renderPendingRef.current = true;
+    if (renderFrameRef.current !== null)
+      window.cancelAnimationFrame(renderFrameRef.current);
+    if (dataPendingRef.current)
+      return;
+    let previousGeometry = "";
+    let stableFrames = 0;
+    const checkFrame = () => {
+      const container = scrollRef.current;
+      const geometry = container
+        ? `${container.scrollHeight}:${container.clientHeight}:${container.scrollTop}`
+        : "detached";
+      const imagesPending = container && Array.from(container.querySelectorAll("img"))
+        .some(img => img.loading !== "lazy" && !img.complete);
+      stableFrames = geometry === previousGeometry && !imagesPending ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
+      if (stableFrames < 2) {
+        renderFrameRef.current = window.requestAnimationFrame(checkFrame);
+        return;
+      }
+      renderFrameRef.current = null;
+      renderPendingRef.current = false;
+      finishCooldown();
+    };
+    renderFrameRef.current = window.requestAnimationFrame(checkFrame);
+  }, [finishCooldown, scrollRef]);
 
   const protectViewport = useCallback(() => {
     wheelProtectionRef.current = true;
     wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
-  }, []);
+    renderPendingRef.current = true;
+    setCoolingDown(true);
+    setViewportRevision(revision => revision + 1);
+    if (cooldownTimerRef.current !== null)
+      window.clearTimeout(cooldownTimerRef.current);
+    cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
+  }, [finishCooldown]);
 
   // Once rendered, the leading message stays in the window even when new
   // exchanges arrive. Counting backwards from the tail would evict that row.
@@ -142,15 +203,25 @@ export function useMessagePaging({
     contentKey: visibleMessages,
     followEnabled,
     onScroll,
-    onContentSettled,
+    onContentSettled: () => {
+      // Anchor restoration can leave the top before its scroll event arrives.
+      // Re-arm top-entry detection synchronously for the next collision.
+      if (scrollRef.current && scrollRef.current.scrollTop > TOP_THRESHOLD_PX) {
+        wasAtTopRef.current = false;
+        setAtTop(false);
+        setTopSettled(false);
+      }
+      settleRenderedViewport();
+      onContentSettled?.();
+    },
   });
   useLayoutEffect(() => {
     setWindowStartId(visibleMessages[0]?.id ?? null);
   }, [visibleMessages]);
   const canLoadOlder = effectivePageStart > 0 || hasOlderHistory;
-  // The button only appears after the user has rested at the top for the settle
-  // window — arriving at the top must not, by itself, ever trigger a load.
-  const showLoadOlderHint = canLoadOlder && atTop && topSettled;
+  // Keep the hint visible throughout protection, including after the anchor
+  // moves away from the top or the final history page has been loaded.
+  const showLoadOlderHint = coolingDown || (canLoadOlder && atTop && topSettled);
 
   const loadOlder = useCallback(() => {
     if (
@@ -160,6 +231,7 @@ export function useMessagePaging({
       return;
     }
     loadingOlderRef.current = true;
+    wasAtTopRef.current = (scrollRef.current?.scrollTop ?? 0) <= TOP_THRESHOLD_PX;
     protectViewport();
     if (topSettleTimerRef.current !== null) {
       window.clearTimeout(topSettleTimerRef.current);
@@ -169,14 +241,18 @@ export function useMessagePaging({
     if (effectivePageStart <= 0 && loadOlderHistory) {
       // The callback runs only for a valid page, immediately before its state
       // update. Capture the CURRENT viewport, not the one at request start.
+      dataPendingRef.current = true;
       void loadOlderHistory((page) => {
-        protectViewport();
         preserveViewport();
         if (page.length > 0)
           setWindowStartId(page[0]!.id);
       }).finally(() => {
-        wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
+        if (!mountedRef.current)
+          return;
+        dataPendingRef.current = false;
         loadingOlderRef.current = false;
+        // Force a commit even for an empty/failed page before checking layout.
+        setViewportRevision(revision => revision + 1);
       });
     }
     else {
@@ -194,12 +270,15 @@ export function useMessagePaging({
     messages,
     preserveViewport,
     protectViewport,
+    scrollRef,
     userExchangeCount,
   ]);
 
   useLayoutEffect(() => {
-    loadingOlderRef.current = false;
-  }, [windowStartId]);
+    if (!dataPendingRef.current)
+      loadingOlderRef.current = false;
+    settleRenderedViewport();
+  }, [visibleMessages, coolingDown, viewportRevision, settleRenderedViewport]);
 
   // Compose the caller's scroll handling with top detection. `scrollTop === 0`
   // means the user is at the very top; resting there for the settle window turns
@@ -233,11 +312,11 @@ export function useMessagePaging({
 
   // Keep the non-passive listener mounted across loading and anchor restoration.
   // Otherwise the momentum tail can scroll the newly prepended content even
-  // though the load hint has disappeared. Reversing direction releases the gate.
-  const wheelStateRef = useRef({ canLoadOlder, atTop, topSettled, loadOlder });
+  // while the load hint stays visible. Downward scrolling remains available.
+  const wheelStateRef = useRef({ canLoadOlder, atTop, topSettled, loadOlder, handleScroll });
   useLayoutEffect(() => {
-    wheelStateRef.current = { canLoadOlder, atTop, topSettled, loadOlder };
-  }, [atTop, canLoadOlder, loadOlder, topSettled]);
+    wheelStateRef.current = { canLoadOlder, atTop, topSettled, loadOlder, handleScroll };
+  }, [atTop, canLoadOlder, handleScroll, loadOlder, topSettled]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -248,19 +327,19 @@ export function useMessagePaging({
         return;
       if (event.ctrlKey || event.deltaY === 0)
         return;
-      if (event.deltaY > 0) {
-        wheelProtectionRef.current = false;
+      if (event.deltaY > 0)
         return;
-      }
+      const state = wheelStateRef.current;
+      if (state.canLoadOlder && !wasAtTopRef.current && container.scrollTop <= TOP_THRESHOLD_PX)
+        state.handleScroll();
       if (
         wheelProtectionRef.current
-        && (loadingOlderRef.current || performance.now() < wheelBlockedUntilRef.current)
+        && (dataPendingRef.current || renderPendingRef.current || performance.now() < wheelBlockedUntilRef.current)
       ) {
         if (event.cancelable)
           event.preventDefault();
         return;
       }
-      const state = wheelStateRef.current;
       if (!state.canLoadOlder || !state.atTop || !state.topSettled)
         return;
       if (event.cancelable)
@@ -273,11 +352,19 @@ export function useMessagePaging({
 
   // Don't leave a pending settle timer firing setState after unmount.
   useEffect(
-    () => () => {
-      if (topSettleTimerRef.current !== null) {
-        window.clearTimeout(topSettleTimerRef.current);
-        topSettleTimerRef.current = null;
-      }
+    () => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+        if (cooldownTimerRef.current !== null)
+          window.clearTimeout(cooldownTimerRef.current);
+        if (renderFrameRef.current !== null)
+          window.cancelAnimationFrame(renderFrameRef.current);
+        if (topSettleTimerRef.current !== null) {
+          window.clearTimeout(topSettleTimerRef.current);
+          topSettleTimerRef.current = null;
+        }
+      };
     },
     [],
   );
@@ -286,6 +373,7 @@ export function useMessagePaging({
     visibleMessages,
     canLoadOlder,
     showLoadOlderHint,
+    coolingDown,
     handleScroll,
     loadOlder,
     scrollToLatest,

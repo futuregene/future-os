@@ -51,7 +51,7 @@ function setup(messages: AgentMessage[] = MESSAGES, userExchangeCount = 2) {
 
 async function settle() {
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(550);
+    await vi.advanceTimersByTimeAsync(800);
   });
 }
 
@@ -102,7 +102,8 @@ describe("useMessagePaging", () => {
     act(() => {
       h.current.handleScroll();
     });
-    expect(h.current.showLoadOlderHint).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    expect(h.current.coolingDown).toBe(true);
     // A second scroll while the settle timer is pending is a no-op.
     act(() => {
       h.current.handleScroll();
@@ -233,7 +234,7 @@ describe("useMessagePaging", () => {
     await settle();
     expect(wheel(-40)).toBe(true);
     expect(h.current.visibleMessages[0]?.id).toBe("u3");
-    // The hint is gone and the viewport moved away from the top, but the
+    // The hint persists after the viewport moved away from the top, and the
     // momentum must still be cancelled by the mounted listener.
     container.scrollTop = 200;
     act(() => {
@@ -245,7 +246,7 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("immediately releases protection when the user scrolls down", () => {
+  it("allows downward scrolling without shortening upward protection", () => {
     const { container, h } = setup();
     act(() => {
       h.current.loadOlder();
@@ -257,7 +258,131 @@ describe("useMessagePaging", () => {
       container.dispatchEvent(up);
     });
     expect(down.defaultPrevented).toBe(false);
-    expect(up.defaultPrevented).toBe(false);
+    expect(up.defaultPrevented).toBe(true);
+    h.unmount();
+  });
+
+  it("re-arms a full 750ms cooldown on the second top collision", async () => {
+    const { container, h } = setup();
+    act(() => {
+      h.current.handleScroll();
+    });
+    await settle();
+    act(() => {
+      h.current.loadOlder();
+    });
+    container.scrollTop = 200;
+    act(() => {
+      h.current.handleScroll();
+    });
+    await settle();
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+
+    container.scrollTop = 0;
+    // Even before the browser delivers scroll, wheel must detect re-entry.
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => {
+      container.dispatchEvent(up);
+    });
+    expect(up.defaultPrevented).toBe(true);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(749);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+    h.unmount();
+  });
+
+  it("keeps the hint for 750ms even when the last local page renders quickly", async () => {
+    const { container, h } = setup(MESSAGES.slice(4), 2);
+    act(() => {
+      h.current.loadOlder();
+    });
+    container.scrollTop = 200;
+    act(() => {
+      h.current.handleScroll();
+    });
+    expect(h.current.canLoadOlder).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(749);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("waits for slow data and subsequent layout without adding another 750ms", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    let completeLoad!: () => void;
+    const loadOlderHistory = vi.fn(() => new Promise<void>((resolve) => {
+      completeLoad = resolve;
+    }));
+    const scrollRef = { current: container };
+    const messages = MESSAGES.slice(8);
+    const h = renderHook(() => useMessagePaging({
+      messages,
+      scrollRef,
+      userExchangeCount: 2,
+      hasOlderHistory: true,
+      loadOlderHistory,
+    }));
+    act(() => {
+      h.current.loadOlder();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => {
+      container.dispatchEvent(up);
+    });
+    expect(up.defaultPrevented).toBe(true);
+    await act(async () => {
+      completeLoad();
+    });
+    expect(h.current.coolingDown).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(64);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+    container.remove();
+  });
+
+  it("waits past 750ms for pending images and stable geometry", async () => {
+    const { container, h } = setup();
+    const img = document.createElement("img");
+    let complete = false;
+    Object.defineProperty(img, "complete", { get: () => complete });
+    container.append(img);
+    act(() => {
+      h.current.loadOlder();
+    });
+    await settle();
+    expect(h.current.coolingDown).toBe(true);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    complete = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(64);
+    });
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
   });
 
