@@ -62,10 +62,10 @@ fn color_name(status: Status, text: &str) -> String {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 fn agent_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".future")
-        .join("agent")
+    // Same resolution as the agent: `dirs::home_dir()` reads the Windows token
+    // profile and ignores a redirected `HOME`, which both splits the CLI from
+    // the agent's `~/.future/agent` and leaks test writes into the real profile.
+    future_agent::utils::default_config_dir()
 }
 fn auth_file_path() -> PathBuf {
     agent_dir().join("auth.json")

@@ -761,11 +761,9 @@ fn format_parse_doc(sc: &Value) -> String {
 
 /// `IMAGE_OUTPUT_DIR` — `~/.future/agent/images`.
 fn image_output_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".future")
-        .join("agent")
-        .join("images")
+    // The agent's home policy (`HOME`, then `USERPROFILE`), not raw
+    // `dirs::home_dir()` — which ignores a redirected `HOME` on Windows.
+    future_agent::utils::default_config_dir().join("images")
 }
 
 /// `formatImageResult(toolName, sc, outputPath)`.

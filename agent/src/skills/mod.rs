@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +29,7 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
     let mut skills = vec![];
     let mut seen = std::collections::HashSet::new();
     for dir in dirs {
-        let expanded = shellexpand::tilde(dir);
-        let path = Path::new(&*expanded);
+        let path = expand_tilde(dir);
         if !path.exists() {
             continue;
         }
@@ -66,6 +65,26 @@ pub fn discover_skills(dirs: &[String]) -> Result<Vec<Skill>> {
 /// `discover_skills_cached` cache key stable across call sites.
 pub fn global_skill_dirs() -> Vec<String> {
     vec![APP_SKILLS_DIR.to_string(), AGENTS_SKILLS_DIR.to_string()]
+}
+
+/// Expand a leading `~` to the user's home directory.
+///
+/// Resolved through [`crate::utils::home_dir`] (`HOME`, then `USERPROFILE`)
+/// rather than the `shellexpand` crate's `tilde()`, which uses `dirs::home_dir()`: on
+/// Windows that reads the token profile and ignores a redirected `HOME`, so
+/// skills were discovered in a different home than sessions/config use — and
+/// than the CLI installs them into.
+fn expand_tilde(dir: &str) -> PathBuf {
+    let Some(rest) = dir.strip_prefix('~') else {
+        return PathBuf::from(dir);
+    };
+    let rest = rest.trim_start_matches(['/', '\\']);
+    let home = crate::utils::home_dir();
+    if rest.is_empty() {
+        home
+    } else {
+        home.join(rest)
+    }
 }
 
 // ─── Cached skills discovery ──────────────────────────────────────────────
@@ -185,9 +204,14 @@ fn extract_name(content: &str, path: &Path) -> Result<String> {
     if let Some(name) = extract_frontmatter_field(content, "name") {
         return Ok(name);
     }
-    // Fallback to filename
+    // Fallback to the skill directory — the skill's install id. The entry file
+    // is always `SKILL.md`, so falling back to the file name names *every*
+    // unnamed skill "SKILL": discovery then collapses them into a single entry
+    // (duplicates by name are skipped), and the desktop's installed list — which
+    // deletes by name — can never remove the directory it actually comes from.
     Ok(path
-        .file_stem()
+        .parent()
+        .and_then(Path::file_name)
         .unwrap_or_default()
         .to_string_lossy()
         .to_string())
@@ -410,10 +434,33 @@ version: "1.0.0"
     }
 
     #[test]
-    fn extract_name_falls_back_to_filename() {
+    fn extract_name_falls_back_to_the_skill_directory() {
         let content = "---\nother: value\n---\n# Body";
         let path = std::path::Path::new("/path/to/my-skill/SKILL.md");
-        assert_eq!(extract_name(content, path).unwrap(), "SKILL");
+        assert_eq!(extract_name(content, path).unwrap(), "my-skill");
+    }
+
+    #[test]
+    fn unnamed_skills_keep_distinct_names() {
+        // Distinct directories must not collapse into one "SKILL" entry.
+        let content = "---\nversion: 0.9\n---\n";
+        let a = std::env::temp_dir().join("future-unnamed-a/SKILL.md");
+        let b = std::env::temp_dir().join("future-unnamed-b/SKILL.md");
+        assert_eq!(extract_name(content, &a).unwrap(), "future-unnamed-a");
+        assert_eq!(extract_name(content, &b).unwrap(), "future-unnamed-b");
+    }
+
+    #[test]
+    fn expand_tilde_follows_the_redirected_home() {
+        let home = crate::test_support::TestHome::new();
+        assert_eq!(
+            expand_tilde("~/.future/agent/skills/"),
+            home.path().join(".future/agent/skills/")
+        );
+        assert_eq!(expand_tilde("~"), home.path());
+        // Absolute (and relative) paths are passed through untouched.
+        assert_eq!(expand_tilde("/tmp/skills"), PathBuf::from("/tmp/skills"));
+        assert_eq!(expand_tilde("skills"), PathBuf::from("skills"));
     }
 
     #[test]

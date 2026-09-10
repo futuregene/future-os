@@ -19,10 +19,11 @@ pub const DEFAULT_CHANNEL_SYSTEMD_UNIT: &str = "future-channel.service";
 pub const DEFAULT_CHANNEL_WINDOWS_SERVICE: &str = "FutureChannel";
 
 /// `~/.future/agent/auth.json`
+///
+/// Resolved through the agent's `~/.future/agent` root rather than raw
+/// `dirs::home_dir()`: on Windows the latter reads the token profile and ignores
+/// a redirected `HOME`, so the CLI wrote to a different home than the agent
+/// reads (and isolated test runs wrote the developer's real auth.json).
 pub fn auth_file() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".future")
-        .join("agent")
-        .join("auth.json")
+    future_agent::utils::default_config_dir().join("auth.json")
 }

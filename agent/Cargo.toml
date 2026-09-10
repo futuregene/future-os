@@ -63,7 +63,6 @@ fd-lock = "4"
 rusqlite = { version = "0.40", features = ["bundled"] }
 signal-hook = "0.3"
 
-shellexpand = "3"
 async-trait.workspace = true
 # gRPC
 tonic.workspace = true
