@@ -57,15 +57,26 @@ function setupAnchoredPaging() {
   document.body.append(container);
   let rowTop = 0;
   Object.defineProperty(container, "clientHeight", { value: 200 });
-  Object.defineProperty(container, "scrollHeight", { get: () => rowTop + 1200 });
-  vi.spyOn(container, "getBoundingClientRect").mockImplementation(() => ({ top: 0, bottom: 200 }) as DOMRect);
-  vi.spyOn(row, "getBoundingClientRect").mockImplementation(() => ({
-    top: rowTop - container.scrollTop,
-    bottom: rowTop + 200 - container.scrollTop,
-  }) as DOMRect);
+  Object.defineProperty(container, "scrollHeight", {
+    get: () => rowTop + 1200,
+  });
+  vi.spyOn(container, "getBoundingClientRect").mockImplementation(
+    () => ({ top: 0, bottom: 200 }) as DOMRect,
+  );
+  vi.spyOn(row, "getBoundingClientRect").mockImplementation(
+    () =>
+      ({
+        top: rowTop - container.scrollTop,
+        bottom: rowTop + 200 - container.scrollTop,
+      }) as DOMRect,
+  );
   const scrollRef = { current: container };
   const h = renderHook(() => {
-    const paging = useMessagePaging({ messages: MESSAGES, scrollRef, userExchangeCount: 2 });
+    const paging = useMessagePaging({
+      messages: MESSAGES,
+      scrollRef,
+      userExchangeCount: 2,
+    });
     // Model the DOM prepend before React's layout effects restore the anchor.
     rowTop = paging.visibleMessages[0]?.id === "u5" ? 0 : 600;
     return paging;
@@ -302,18 +313,23 @@ describe("useMessagePaging", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     let completeLoad!: () => void;
-    const loadOlderHistory = vi.fn(() => new Promise<void>((resolve) => {
-      completeLoad = resolve;
-    }));
+    const loadOlderHistory = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
     const scrollRef = { current: container };
     const messages = MESSAGES.slice(8);
-    const h = renderHook(() => useMessagePaging({
-      messages,
-      scrollRef,
-      userExchangeCount: 2,
-      hasOlderHistory: true,
-      loadOlderHistory,
-    }));
+    const h = renderHook(() =>
+      useMessagePaging({
+        messages,
+        scrollRef,
+        userExchangeCount: 2,
+        hasOlderHistory: true,
+        loadOlderHistory,
+      }),
+    );
     act(() => {
       h.current.loadOlder();
     });

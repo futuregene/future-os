@@ -121,10 +121,16 @@ export function useMessagePaging({
     const lock = nativeScrollLockRef.current;
     if (!lock)
       return;
-    if (lock.overflowY)
-      lock.container.style.setProperty("overflow-y", lock.overflowY, lock.priority);
-    else
+    if (lock.overflowY) {
+      lock.container.style.setProperty(
+        "overflow-y",
+        lock.overflowY,
+        lock.priority,
+      );
+    }
+    else {
       lock.container.style.removeProperty("overflow-y");
+    }
     nativeScrollLockRef.current = null;
   }, []);
 
@@ -194,7 +200,10 @@ export function useMessagePaging({
     setViewportRevision(revision => revision + 1);
     if (cooldownTimerRef.current !== null)
       window.clearTimeout(cooldownTimerRef.current);
-    cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
+    cooldownTimerRef.current = window.setTimeout(
+      finishCooldown,
+      WHEEL_COOLDOWN_MS,
+    );
   }, [finishCooldown, scrollRef]);
 
   // Once rendered, the leading message stays in the window even when new
@@ -220,7 +229,8 @@ export function useMessagePaging({
     scrollRef,
     contentKey: visibleMessages,
     followEnabled,
-    isReadingAnchorLocked: () => wheelProtectionRef.current && !acceptingManualScrollRef.current,
+    isReadingAnchorLocked: () =>
+      wheelProtectionRef.current && !acceptingManualScrollRef.current,
     onScroll,
     onContentSettled: () => {
       // Anchor restoration can leave the top before its scroll event arrives.
@@ -248,7 +258,8 @@ export function useMessagePaging({
       return;
     }
     loadingOlderRef.current = true;
-    wasAtTopRef.current = (scrollRef.current?.scrollTop ?? 0) <= TOP_THRESHOLD_PX;
+    wasAtTopRef.current
+      = (scrollRef.current?.scrollTop ?? 0) <= TOP_THRESHOLD_PX;
     preserveViewport();
     protectViewport();
     if (effectivePageStart <= 0 && loadOlderHistory) {
@@ -319,7 +330,11 @@ export function useMessagePaging({
 
   // Keep this listener attached during the entire transaction. A wheel also
   // detects a top collision when scrollTop is clamped and no scroll event fires.
-  const wheelStateRef = useRef({ canLoadOlder, loadOlder, acceptManualViewport });
+  const wheelStateRef = useRef({
+    canLoadOlder,
+    loadOlder,
+    acceptManualViewport,
+  });
   useLayoutEffect(() => {
     wheelStateRef.current = { canLoadOlder, loadOlder, acceptManualViewport };
   }, [acceptManualViewport, canLoadOlder, loadOlder]);
@@ -339,8 +354,14 @@ export function useMessagePaging({
         if (event.deltaY > 0) {
           // Native vertical scrolling is locked, but an explicit downward
           // wheel still establishes a new reading position immediately.
-          const lineHeight = Number.parseFloat(getComputedStyle(container).lineHeight) || 16;
-          const unit = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? container.clientHeight : 1;
+          const lineHeight
+            = Number.parseFloat(getComputedStyle(container).lineHeight) || 16;
+          const unit
+            = event.deltaMode === 1
+              ? lineHeight
+              : event.deltaMode === 2
+                ? container.clientHeight
+                : 1;
           container.scrollTop += event.deltaY * unit;
           wheelStateRef.current.acceptManualViewport();
         }
@@ -360,20 +381,17 @@ export function useMessagePaging({
   }, [scrollRef]);
 
   // Cancel timer and layout work when switching conversations.
-  useEffect(
-    () => {
-      mountedRef.current = true;
-      return () => {
-        mountedRef.current = false;
-        releaseNativeScrollLock();
-        if (cooldownTimerRef.current !== null)
-          window.clearTimeout(cooldownTimerRef.current);
-        if (renderFrameRef.current !== null)
-          window.cancelAnimationFrame(renderFrameRef.current);
-      };
-    },
-    [releaseNativeScrollLock],
-  );
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      releaseNativeScrollLock();
+      if (cooldownTimerRef.current !== null)
+        window.clearTimeout(cooldownTimerRef.current);
+      if (renderFrameRef.current !== null)
+        window.cancelAnimationFrame(renderFrameRef.current);
+    };
+  }, [releaseNativeScrollLock]);
 
   return {
     visibleMessages,

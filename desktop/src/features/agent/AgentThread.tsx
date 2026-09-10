@@ -459,7 +459,13 @@ export function AgentThread({
         {historyError && (
           <div role="alert" className="text-danger px-4 py-2 text-sm">
             {historyError}
-            <button type="button" className="ml-2 underline" onClick={() => void retryHistory()}>{t("common:retry")}</button>
+            <button
+              type="button"
+              className="ml-2 underline"
+              onClick={() => void retryHistory()}
+            >
+              {t("common:retry")}
+            </button>
           </div>
         )}
         {showLoadOlderHint
