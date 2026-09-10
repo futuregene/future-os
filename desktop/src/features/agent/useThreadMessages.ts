@@ -5,6 +5,8 @@ import {
   entriesToTurns,
   matchesSettledRun,
   turnsToMessages,
+  upsertUserMessage,
+  userMessageFromEvent,
 } from "@future-os/thread-projection";
 import {
   useCallback,
@@ -651,37 +653,18 @@ export function useThreadMessages({
 
       // A user_message that lands while this thread's load is still in flight
       // would append onto the not-yet-committed base — dropping it is
-      // lossless, the projected JSONL load carries the entry.
+      // lossless, the Agent history load carries the persisted entry.
       if (loadingRef.current)
         return;
 
-      const text
-        = typeof detail.payload.text === "string" ? detail.payload.text : "";
-      if (!text)
+      const user = userMessageFromEvent(detail.payload);
+      if (!user) {
+        // An identity-less event can only invalidate history; text is not a key.
+        void reloadMessagesQuiet(threadId);
         return;
-      setMessages((prev) => {
-        // Dedup: skip if the last user message has identical text.
-        // Checking only the last message avoids suppressing legitimate
-        // repeated prompts (e.g. sending "continue" twice).
-        const userMsgs = prev.filter(m => m.role === "user");
-        const lastUser = userMsgs[userMsgs.length - 1];
-        if (lastUser && lastUser.content === text)
-          return prev;
-        return [
-          ...prev,
-          {
-            id: `user_${Date.now()}`,
-            role: "user",
-            authorKey: "author.you",
-            content: text,
-            status: "complete",
-            createdAt: new Date().toISOString(),
-          } satisfies AgentMessage,
-        ];
-      });
-      // Bump the generation counter so an in-flight quiet reload sees that
-      // state moved under it and discards its replacement instead of
-      // clobbering this append.
+      }
+      setMessages(prev => upsertUserMessage(prev, user));
+      // Record this live write for callers that fence asynchronous updates.
       messagesGenRef.current += 1;
     };
     window.addEventListener("future:agent-event", handler);

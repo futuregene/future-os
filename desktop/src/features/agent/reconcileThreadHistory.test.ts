@@ -40,3 +40,12 @@ describe("history reconciliation", () => {
     expect(reconcileThreadHistory(current, [{ ...current[0]! }], current, true, false).messages).toBe(current);
   });
 });
+
+it("live mobile user arriving during history refresh keeps canonical position", () => {
+  const previous = message("previous");
+  const liveUser = message("user_123", { role: "user", runId: "remote-run", content: "from phone", status: "complete" });
+  const storedUser = message("m_persisted", { role: "user", runId: "remote-run", content: "from phone", status: "complete" });
+  const reply = message("m_reply", { runId: "remote-run", content: "reply", status: "complete" });
+  const result = reconcileThreadHistory([previous, liveUser], [previous, storedUser, reply], [previous], false, true);
+  expect(result.messages.map(m => m.content)).toEqual(["previous", "from phone", "reply"]);
+});

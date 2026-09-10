@@ -56,7 +56,7 @@ jest.mock("../client", () => {
     credentials: unknown;
     callbacks: Record<string, (...args: never[]) => unknown>;
     close = jest.fn(async () => {});
-    pauseForBackground = jest.fn();
+    setAppActive = jest.fn();
     setNetworkAvailable = jest.fn();
     open = jest.fn(async () => {});
     recoverNow = jest.fn(async () => {});
@@ -116,7 +116,7 @@ interface MockClient {
   credentials: RemoteCredentials;
   callbacks: MockClientCallbacks;
   close: jest.Mock;
-  pauseForBackground: jest.Mock;
+  setAppActive: jest.Mock;
   setNetworkAvailable: jest.Mock;
   open: jest.Mock;
   recoverNow: jest.Mock;
@@ -427,7 +427,7 @@ describe("useRemoteConnection", () => {
     test("background transition pauses the client", async () => {
       await mountConnected();
       act(() => appStateListeners()[0]!("background"));
-      expect(client().pauseForBackground).toHaveBeenCalled();
+      expect(client().setAppActive).toHaveBeenCalled();
     });
 
     test("foreground recovery refreshes network and recovers the client", async () => {
@@ -450,6 +450,7 @@ describe("useRemoteConnection", () => {
         await flush();
       });
       expect(client().recoverNow).not.toHaveBeenCalled();
+      expect(client().setAppActive).toHaveBeenLastCalledWith(true);
     });
 
     test("network restore triggers a recovery", async () => {
@@ -623,7 +624,7 @@ describe("useRemoteConnection", () => {
       cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
       render();
       await flush();
-      expect(client().pauseForBackground).toHaveBeenCalled();
+      expect(client().setAppActive).toHaveBeenCalled();
     });
 
     test("disables the network when offline at connect time", async () => {

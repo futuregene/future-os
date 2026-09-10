@@ -529,7 +529,12 @@ export class SyncEngine {
   }
 
   private isFullReplay(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
-    if (request.reason === "prefix" || request.reason === "resend") return true;
+    if (
+      request.reason === "prefix" ||
+      request.reason === "resend" ||
+      request.reason === "reconnect"
+    )
+      return true;
     // A lane with no committed timeline has no live baseline to top up — the
     // only way to build it is from durable history (idle sessions have no
     // active run for a tail reconcile to target).
@@ -558,18 +563,26 @@ export class SyncEngine {
 function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
   const historyIds = new Set(history.items.map(item => item.id));
-  const historyUserTexts = new Set(
+  const historyUserRuns = new Set(
     history.items
       .filter(item => item.kind === "message" && item.role === "user")
-      .map(item => (item.kind === "message" ? item.text : "")),
+      .map(item => item.runId)
+      .filter(Boolean),
   );
-  // Keep everything durable history doesn't carry: optimistic bubbles, notices,
+  // Keep only transient items the durable history does not carry: optimistic bubbles, notices,
   // approval cards, and live user mirrors of prompts not yet durable. The
   // active run's *assistant* items are dropped by fullReconcile's stripRunItems
-  // (the replay rebuilds them); user bubbles always survive.
+  // (the replay rebuilds them). Cached durable rows outside the new window
+  // remain reachable through paging and must not be appended after its tail.
   const folded = live.items.filter(item => {
+    if (live.durableItemIds?.has(item.id)) return false;
     if (historyIds.has(item.id)) return false;
-    if (item.kind === "message" && item.role === "user" && historyUserTexts.has(item.text)) {
+    if (
+      item.kind === "message" &&
+      item.role === "user" &&
+      !!item.runId &&
+      historyUserRuns.has(item.runId)
+    ) {
       return false;
     }
     return true;
