@@ -74,7 +74,7 @@ interface UseMessagePagingResult {
 /** Distance from the top that counts as "at the top" for the load hint. */
 const TOP_THRESHOLD_PX = 8;
 /** Block upward momentum after reaching the top or restoring a history page. */
-const WHEEL_COOLDOWN_MS = 750;
+const WHEEL_COOLDOWN_MS = 1500;
 /**
  * How long the user must rest at the top before the load button appears. This
  * is the visual confirm gate; the separate wheel protection window blocks
@@ -119,10 +119,13 @@ export function useMessagePaging({
   const renderPendingRef = useRef(false);
   const cooldownTimerRef = useRef<number | null>(null);
   const renderFrameRef = useRef<number | null>(null);
+  const hintPaintFrameRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
 
   const finishCooldown = useCallback(() => {
     if (dataPendingRef.current || renderPendingRef.current)
+      return;
+    if (!Number.isFinite(wheelBlockedUntilRef.current))
       return;
     const remaining = wheelBlockedUntilRef.current - performance.now();
     if (remaining > 0) {
@@ -170,14 +173,36 @@ export function useMessagePaging({
 
   const protectViewport = useCallback(() => {
     wheelProtectionRef.current = true;
-    wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
+    // Start the minimum visible duration only after the hint has had a paint.
+    wheelBlockedUntilRef.current = Number.POSITIVE_INFINITY;
     renderPendingRef.current = true;
     setCoolingDown(true);
     setViewportRevision(revision => revision + 1);
     if (cooldownTimerRef.current !== null)
       window.clearTimeout(cooldownTimerRef.current);
-    cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
-  }, [finishCooldown]);
+    cooldownTimerRef.current = null;
+    if (hintPaintFrameRef.current !== null)
+      window.cancelAnimationFrame(hintPaintFrameRef.current);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!coolingDown || Number.isFinite(wheelBlockedUntilRef.current))
+      return;
+    // rAF runs before paint. The second frame gives the committed
+    // hint a paint opportunity before starting its full 1500ms visible window.
+    hintPaintFrameRef.current = window.requestAnimationFrame(() => {
+      hintPaintFrameRef.current = window.requestAnimationFrame(() => {
+        hintPaintFrameRef.current = null;
+        wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
+        cooldownTimerRef.current = window.setTimeout(finishCooldown, WHEEL_COOLDOWN_MS);
+      });
+    });
+    return () => {
+      if (hintPaintFrameRef.current !== null)
+        window.cancelAnimationFrame(hintPaintFrameRef.current);
+      hintPaintFrameRef.current = null;
+    };
+  }, [coolingDown, viewportRevision, finishCooldown]);
 
   // Once rendered, the leading message stays in the window even when new
   // exchanges arrive. Counting backwards from the tail would evict that row.

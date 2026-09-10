@@ -51,7 +51,7 @@ function setup(messages: AgentMessage[] = MESSAGES, userExchangeCount = 2) {
 
 async function settle() {
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(1600);
   });
 }
 
@@ -262,7 +262,7 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("re-arms a full 750ms cooldown on the second top collision", async () => {
+  it("re-arms a full 1500ms cooldown on the second top collision", async () => {
     const { container, h } = setup();
     act(() => {
       h.current.handleScroll();
@@ -287,8 +287,13 @@ describe("useMessagePaging", () => {
     });
     expect(up.defaultPrevented).toBe(true);
     expect(h.current.showLoadOlderHint).toBe(true);
+    // Allow the committed hint its first paint before counting visible time.
+    act(() => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(749);
+      await vi.advanceTimersByTimeAsync(1499);
     });
     expect(h.current.coolingDown).toBe(true);
     await act(async () => {
@@ -299,7 +304,7 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("keeps the hint for 750ms even when the last local page renders quickly", async () => {
+  it("keeps the hint for 1500ms even when the last local page renders quickly", async () => {
     const { container, h } = setup(MESSAGES.slice(4), 2);
     act(() => {
       h.current.loadOlder();
@@ -310,8 +315,13 @@ describe("useMessagePaging", () => {
     });
     expect(h.current.canLoadOlder).toBe(false);
     expect(h.current.showLoadOlderHint).toBe(true);
+    // Allow the committed hint its first paint before counting visible time.
+    act(() => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(749);
+      await vi.advanceTimersByTimeAsync(1499);
     });
     expect(h.current.coolingDown).toBe(true);
     expect(h.current.showLoadOlderHint).toBe(true);
@@ -323,7 +333,25 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("waits for slow data and subsequent layout without adding another 750ms", async () => {
+  it("does not spend the hint's visible cooldown before React commits", async () => {
+    const { h } = setup();
+    act(() => {
+      h.current.loadOlder();
+      // Simulate expensive synchronous rendering before the hint can commit.
+      vi.advanceTimersByTime(1800);
+    });
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(h.current.coolingDown).toBe(true);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    await settle();
+    expect(h.current.coolingDown).toBe(false);
+    h.unmount();
+  });
+
+  it("waits for slow data and subsequent layout without adding another 1500ms", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     let completeLoad!: () => void;
@@ -343,7 +371,7 @@ describe("useMessagePaging", () => {
       h.current.loadOlder();
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(900);
+      await vi.advanceTimersByTimeAsync(1800);
     });
     expect(h.current.coolingDown).toBe(true);
     expect(h.current.showLoadOlderHint).toBe(true);
@@ -365,7 +393,7 @@ describe("useMessagePaging", () => {
     container.remove();
   });
 
-  it("waits past 750ms for pending images and stable geometry", async () => {
+  it("waits past 1500ms for pending images and stable geometry", async () => {
     const { container, h } = setup();
     const img = document.createElement("img");
     let complete = false;
