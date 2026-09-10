@@ -165,6 +165,13 @@ Then launch the terminal UI from the same `future` command:
 future tui       # terminal UI
 ```
 
+Published builds check for updates once in the background after TUI startup.
+A newer version is shown as a local notice with the official installer link;
+nothing is installed automatically. Release builds check the release channel,
+and test/nightly builds check nightly. Local/source builds skip the check.
+Network failures are silent; `future tui --offline` disables the check, and
+non-interactive commands never perform it.
+
 > **Remote / development mode:** pass `--grpc-addr 127.0.0.1:50051` to
 > `future agent` to serve plain TCP instead, and point clients at it with
 > `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`. TCP is opt-in — never expose it

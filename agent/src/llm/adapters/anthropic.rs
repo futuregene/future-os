@@ -419,11 +419,17 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
                     }
                 }
                 ContentBlock::ToolCall { id, name, args, .. } => {
+                    let input = parse_json_arguments(&args);
+                    // Interrupted calls can retain a partial JSON string or
+                    // null in history. Anthropic requires an object even for
+                    // calls paired with a skipped result. Normalize only the
+                    // wire projection; keep the original arguments for display.
+                    let input = if input.is_object() { input } else { json!({}) };
                     assistant.push(json!({
                         "type": "tool_use",
                         "id": id,
                         "name": name,
-                        "input": parse_json_arguments(&args),
+                        "input": input,
                     }));
                 }
                 ContentBlock::ToolResult {
@@ -686,6 +692,41 @@ mod tests {
         assert_eq!(messages[0]["content"][1]["type"], "tool_use");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn tool_input_projection_requires_objects_without_mutating_history() {
+        for (args, expected) in [
+            (Value::Null, json!({})),
+            (json!("{\"command\":"), json!({})),
+            (json!(""), json!({})),
+            (json!([]), json!({})),
+            (json!("null"), json!({})),
+            (json!("{\"q\":\"rust\"}"), json!({"q": "rust"})),
+            (json!({"q": "rust"}), json!({"q": "rust"})),
+        ] {
+            let request = ModelRequest {
+                model: "claude".into(),
+                system_prompt: String::new(),
+                messages: vec![crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![ContentBlock::tool_call(
+                        "tool_1",
+                        "lookup",
+                        args.clone(),
+                        ProviderMetadata::new(),
+                    )],
+                    ..Default::default()
+                }],
+                tools: Vec::new(),
+            };
+            let messages = lower_messages(&request).unwrap();
+            assert_eq!(messages[0]["content"][0]["input"], expected);
+            assert!(matches!(
+                &request.messages[0].content[0],
+                ContentBlock::ToolCall { args: preserved, .. } if preserved == &args
+            ));
+        }
     }
 
     #[test]

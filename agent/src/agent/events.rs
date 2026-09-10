@@ -9,6 +9,12 @@ pub enum RunEvent {
         started_at_ms: u64,
     },
     Model(ModelStreamEvent),
+    StreamRetry {
+        attempt: usize,
+        max_retries: usize,
+        delay_ms: u64,
+    },
+    StreamResumed,
     CompactionStarted {
         operation_id: String,
         trigger: crate::compaction::CompactionTrigger,

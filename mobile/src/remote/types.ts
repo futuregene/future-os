@@ -34,6 +34,8 @@ export interface RemoteSession {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  /** Agent lineage, omitted by older desktops. */
+  parentSessionId?: string | null;
   /** Pinned to the top of the session list (desktop `threads.pinned`). */
   pinned?: boolean;
   streaming: boolean;
@@ -53,6 +55,7 @@ export interface PresenceSession {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  parentSessionId?: string | null;
   /** Desktop `threads.pinned` — hoisted to the top of the session list. */
   pinned?: boolean;
   streaming: boolean;

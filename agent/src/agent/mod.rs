@@ -880,7 +880,7 @@ mod tests {
             .load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn provider_eof_without_stop_marks_run_incomplete() {
         let loop_ = make_loop();
         let result = loop_.run_streaming("test prompt".to_string(), |_| {}).await;

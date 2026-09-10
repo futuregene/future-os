@@ -269,7 +269,14 @@ function MessageBlockImpl({
         </div>
         <div className={cn("flex items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3")}>
           {streaming
-            ? <StreamingIndicator label={t("message.generating")} />
+            ? (
+                <StreamingIndicator
+                  label={message.reconnecting
+                    ? t("message.reconnecting", { attempt: message.reconnecting.attempt, maxRetries: message.reconnecting.maxRetries })
+                    : t("message.generating")}
+                  showLabel={Boolean(message.reconnecting)}
+                />
+              )
             : copyableText
               ? (
                   <CopyButton
@@ -406,15 +413,16 @@ function CompactionDivider({
 /**
  * Live "generating" marker shown in place of the copy button while a reply
  * streams: a small amber dot with a pulsing ping halo (no brain icon — the
- * motion is the signal). `label` is exposed to assistive tech only.
+ * motion is the signal). Reconnect status also gets a visible label.
  */
-function StreamingIndicator({ label }: { label: string }) {
+function StreamingIndicator({ label, showLabel }: { label: string; showLabel: boolean }) {
   return (
-    <div aria-label={label} className="flex items-center px-1 py-1.5" role="status">
+    <div aria-label={label} className="flex items-center gap-2 px-1 py-1.5" role="status">
       <span className="relative flex size-2">
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-generating opacity-75" />
         <span className="relative inline-flex size-2 rounded-full bg-generating" />
       </span>
+      {showLabel ? <span className="text-xs text-ink-muted">{label}</span> : null}
     </div>
   );
 }

@@ -256,6 +256,7 @@
     "retry": "重试",
     "continue": "继续",
     "generating": "生成中",
+    "reconnecting": "正在重连 {{attempt}}/{{maxRetries}}",
     "justNow": "刚刚",
     "thinking": "正在思考中…",
     "stopped": "已停止",

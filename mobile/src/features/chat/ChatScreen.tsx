@@ -421,7 +421,7 @@ const styles = StyleSheet.create({
   keyboard: { flex: 1, backgroundColor: colors.surface },
   chatContent: { flex: 1 },
   timelineList: { flex: 1 },
-  timeline: { padding: spacing.lg },
+  timeline: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   emptyTimeline: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.inkMuted, fontSize: 14 },
   loadingState: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.xl },

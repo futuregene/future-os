@@ -255,6 +255,7 @@
     "retry": "Retry",
     "continue": "Continue",
     "generating": "Generating",
+    "reconnecting": "Reconnecting {{attempt}}/{{maxRetries}}",
     "justNow": "just now",
     "thinking": "Thinking…",
     "stopped": "Stopped",
