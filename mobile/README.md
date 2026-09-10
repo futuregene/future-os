@@ -62,7 +62,6 @@ debug APK。
 ```bash
 npm run typecheck
 npm run lint
-npm run format:check
 npm test
 npm run check
 ```
@@ -72,7 +71,6 @@ npm run check
 ```bash
 make lint-mobile
 make test-mobile
-make fmt-mobile
 make check-mobile
 ```
 
