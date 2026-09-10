@@ -282,17 +282,59 @@ pub async fn install_skill(id: String, version: String) -> Result<(), AppError> 
 
 /// Remove skill `id` from every scope it's installed in. Returns whether any
 /// directory was removed.
+///
+/// The GUI lists installed skills by the name the *agent* reports, which for a
+/// side-loaded skill need not match its directory (and, before the agent's
+/// discovery fell back to the directory name instead of the always-`SKILL.md`
+/// file name, never did for unnamed ones). Deleting only `<scope>/<id>` left
+/// those entries in the list with a delete button that silently did nothing.
 pub fn uninstall_skill(id: &str) -> Result<bool, AppError> {
     ensure_skill_id_ok(id)?;
     let mut removed = false;
     for scope in SCOPES {
-        let dest = skill_dir_in_scope(scope, id)?;
-        if dest.is_dir() {
-            std::fs::remove_dir_all(&dest)?;
-            removed = true;
+        for dir in skill_dirs_for(scope, id)? {
+            if dir.is_dir() {
+                std::fs::remove_dir_all(&dir)?;
+                removed = true;
+            }
         }
     }
     Ok(removed)
+}
+
+/// Every directory in `scope` that the agent lists as skill `id`: the directory
+/// named `id`, plus any directory whose `SKILL.md` resolves to that name.
+fn skill_dirs_for(scope: SkillScope, id: &str) -> Result<Vec<PathBuf>, AppError> {
+    let mut dirs = vec![skill_dir_in_scope(scope, id)?];
+    let Ok(root) = scope.dir() else {
+        return Ok(dirs);
+    };
+    // Discovery walks each scope two levels deep (agent `WalkDir::max_depth(2)`),
+    // so a skill directory can also sit one level below the scope root.
+    collect_named_skill_dirs(&root, id, 0, &mut dirs);
+    dirs.sort();
+    dirs.dedup();
+    Ok(dirs)
+}
+
+fn collect_named_skill_dirs(dir: &Path, id: &str, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth >= 2 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skill_md = path.join("SKILL.md");
+        if skill_md.is_file() && skill_name(&path, &skill_md) == id {
+            out.push(path.clone());
+        }
+        collect_named_skill_dirs(&path, id, depth + 1, out);
+    }
 }
 
 fn extract_skill_zip(bytes: &[u8], dest: &Path) -> Result<(), AppError> {
@@ -390,22 +432,45 @@ fn flatten_single_subdir(dir: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Extract the `version:` field from a SKILL.md YAML frontmatter block, if any.
-fn read_skill_md_version(path: &Path) -> Option<String> {
+/// The YAML frontmatter block of a `SKILL.md`, without the `---` fences.
+fn frontmatter(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let after = text.trim_start().strip_prefix("---")?;
     let end = after.find("\n---")?;
-    for line in after[..end].lines() {
+    Some(after[..end].to_string())
+}
+
+/// The unquoted value of a frontmatter `key:` line, if present.
+fn frontmatter_value(path: &Path, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    for line in frontmatter(path)?.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(value) = line.strip_prefix("version:") {
+        if let Some(value) = line.strip_prefix(&prefix) {
             let value = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
             return (!value.is_empty()).then(|| value.to_string());
         }
     }
     None
+}
+
+/// Extract the `version:` field from a SKILL.md YAML frontmatter block, if any.
+fn read_skill_md_version(path: &Path) -> Option<String> {
+    frontmatter_value(path, "version")
+}
+
+/// The name the agent's skill discovery reports for a skill directory:
+/// frontmatter `name`, else the directory name (see the agent's
+/// `skills::extract_name`). This is the name the GUI lists the skill under.
+fn skill_name(dir: &Path, skill_md: &Path) -> String {
+    frontmatter_value(skill_md, "name").unwrap_or_else(|| {
+        dir.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -506,6 +571,64 @@ mod tests {
         assert!(!app.join("foo").exists());
         assert!(!uninstall_skill("foo").unwrap()); // not there anymore
         assert!(uninstall_skill("../evil").is_err());
+    }
+
+    #[test]
+    fn uninstall_removes_nameless_skills_by_directory_name() {
+        // The agent names a skill without frontmatter after its directory, so
+        // `SKILL.md`-only fixtures (the "SKILL" entries the GUI could not
+        // delete) are removed by that name.
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-uninstall-nameless");
+        let app = SkillScope::App.dir().unwrap();
+        write_skill(&app, "fixture-skill", "---\nversion: 0.9\n---\n");
+
+        assert!(uninstall_skill("fixture-skill").unwrap());
+        assert!(!app.join("fixture-skill").exists());
+    }
+
+    #[test]
+    fn uninstall_removes_skills_whose_name_differs_from_their_directory() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-uninstall-renamed");
+        let app = SkillScope::App.dir().unwrap();
+        let global = SkillScope::Global.dir().unwrap();
+        // Side-loaded directory -> a different frontmatter name.
+        write_skill(
+            &app,
+            "side-loaded",
+            "---\nname: \"renamed-skill\"\n---\n# body\n",
+        );
+        // A skill one level deeper: discovery walks two levels down.
+        write_skill(&app, "group/nested", "---\nname: nested-skill\n---\n");
+        // The same name installed in the other scope is the same GUI entry.
+        write_skill(&global, "elsewhere", "---\nname: renamed-skill\n---\n");
+        // Unrelated skills survive.
+        write_skill(&app, "keep-me", "---\nname: keep-me\n---\n");
+
+        assert!(uninstall_skill("renamed-skill").unwrap());
+        assert!(!app.join("side-loaded").exists());
+        assert!(!global.join("elsewhere").exists());
+        assert!(app.join("keep-me").exists(), "unrelated skill removed");
+        assert!(!uninstall_skill("renamed-skill").unwrap(), "already gone");
+
+        assert!(uninstall_skill("nested-skill").unwrap());
+        assert!(!app.join("group").join("nested").exists());
+    }
+
+    #[test]
+    fn skill_name_falls_back_to_the_directory() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-name");
+        let app = SkillScope::App.dir().unwrap();
+        write_skill(&app, "unnamed", "# no frontmatter\n");
+        write_skill(&app, "named", "---\nname: display-name\n---\n");
+
+        assert_eq!(
+            skill_name(&app.join("unnamed"), &app.join("unnamed/SKILL.md")),
+            "unnamed"
+        );
+        assert_eq!(
+            skill_name(&app.join("named"), &app.join("named/SKILL.md")),
+            "display-name"
+        );
     }
 
     fn make_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
