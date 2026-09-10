@@ -15,6 +15,13 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 # Skip PDB generation at link time. Release ships stripped anyway, so the debug
 # info is pure waste — and every PDB write is also scanned by Defender, so this
 # saves both link time and disk I/O on the slowest runner.
-rustflags = ["-C", "link-arg=/DEBUG:NONE"]
+#
+# `linker_messages` is allowed because MSVC's link.exe prints its (localized)
+# "Creating library <x>.lib and object <x>.exp" line to stdout every time it
+# emits an import library, and rustc 1.97+ reports any linker stdout as a
+# `linker_messages` warning. It is benign — `/NOLOGO` does not suppress that
+# line — so without this every cdylib and bin link (so every `cargo build`,
+# `cargo test` and `make install`) on Windows prints a spurious warning.
+rustflags = ["-C", "link-arg=/DEBUG:NONE", "-A", "linker_messages"]
 
 # macOS: the default linker (ld-prime on current Xcode) is already fast — no swap.
