@@ -36,6 +36,7 @@ export function useSessionCatalog(
   const lastStatusRef = useRef<Record<string, string | undefined>>({});
   const titleOverridesRef = useRef<Record<string, string>>({});
   const modelsRef = useRef<RemoteModel[]>([]);
+  const sessionsRef = useRef<RemoteSession[]>([]);
   const modelRecoveryRef = useRef<{
     generation: number;
     timer: ReturnType<typeof setTimeout> | null;
@@ -48,6 +49,10 @@ export function useSessionCatalog(
   useEffect(() => {
     modelsRef.current = models;
   }, [models]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   useEffect(
     () => () => {
@@ -214,6 +219,46 @@ export function useSessionCatalog(
     [clientRef, selectedRef, setSessions],
   );
 
+  /**
+   * Delete a whole workspace on the desktop. The desktop cascade removes the
+   * workspace's threads too, so the local catalogue drops both. Returns true
+   * when the selected session lived in that workspace, so the caller can close
+   * the conversation it was showing.
+   */
+  const deleteWorkspace = useCallback(
+    async (workspaceId: string): Promise<boolean> => {
+      const client = clientRef.current;
+      if (!client || !workspaceId) throw new Error("Workspace unavailable");
+      const removed = sessionsRef.current.filter(
+        session => (session.workspaceId ?? "") === workspaceId,
+      );
+      await client.request({ type: "delete_workspace", workspaceId }, "list");
+      setWorkspaces(current => current.filter(workspace => workspace.id !== workspaceId));
+      setSessions(current =>
+        current.filter(session => (session.workspaceId ?? "") !== workspaceId),
+      );
+      if (removed.length > 0) {
+        const removedIds = new Set(removed.map(session => session.sessionId));
+        // Unread markers and title overrides for gone sessions would otherwise
+        // leak into a re-used id or linger in memory for the session's life.
+        setUnreadSessions(current => {
+          if (![...removedIds].some(id => current.has(id))) return current;
+          const next = new Set(current);
+          for (const id of removedIds) next.delete(id);
+          return next;
+        });
+        setTitleOverrides(current => {
+          if (![...removedIds].some(id => id in current)) return current;
+          const next = { ...current };
+          for (const id of removedIds) delete next[id];
+          return next;
+        });
+      }
+      return removed.some(session => session.sessionId === selectedRef.current);
+    },
+    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions, setWorkspaces],
+  );
+
   const setSessionPinned = useCallback(
     async (sessionId: string, threadId: string, pinned: boolean) => {
       const client = clientRef.current;
@@ -252,6 +297,7 @@ export function useSessionCatalog(
     refreshWorkspaces,
     rename,
     deleteSession,
+    deleteWorkspace,
     setSessionPinned,
     reset,
   };

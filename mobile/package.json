@@ -29,6 +29,7 @@
     "fflate": "^0.8.3",
     "future-file-handler": "file:modules/future-file-handler",
     "future-native-ui": "file:modules/future-native-ui",
+    "future-share-intent": "file:modules/future-share-intent",
     "i18next": "^26.4.1",
     "lucide-react-native": "^1.40.0",
     "nkeys.js": "^1.1.0",

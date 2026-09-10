@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import { Platform } from "react-native";
 import type { TFunction } from "i18next";
 import { useRemote } from "../../remote/RemoteContext";
-import { loadSessionDraft, saveSessionDraft } from "../../remote/draftStorage";
+import { loadSessionDraft, NEW_CONVERSATION_DRAFT_KEY, saveSessionDraft } from "../../remote/draftStorage";
 import { recoverPendingImagePickerAttachments } from "../../remote/files";
 import type { MobileAttachment } from "../../remote/types";
 import { showToast } from "./utils";
@@ -22,7 +22,7 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
   // Per-session composer draft: the unsent text/attachments survive leaving the
   // screen and coming back (G6). The draft conversation (no session yet) uses a
   // fixed key so a re-created new-conversation draft restores what was started.
-  const draftKey = remote.selectedSessionId || "draft:new";
+  const draftKey = remote.selectedSessionId || NEW_CONVERSATION_DRAFT_KEY;
   const restoringDraftRef = useRef(false);
   const activeDraftKeyRef = useRef(draftKey);
 
