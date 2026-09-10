@@ -372,7 +372,7 @@ mod tests {
         };
         let payload = GetStatePayload {
             agent_instance_id: "agent_x".into(),
-            model: "future/deepseek-v4-flash".into(),
+            model: "future/deepseek-flash".into(),
             image_support: false,
             thinking_level: "high".into(),
             is_streaming: true,
@@ -474,7 +474,7 @@ mod tests {
         let wire = serde_json::to_value(SessionSummaryPayload {
             id: "s1".into(),
             session_name: Some("hi".into()),
-            model: "future/deepseek-v4-flash".into(),
+            model: "future/deepseek-flash".into(),
             cwd: "/tmp".into(),
             updated_at_ms: 1786060800000,
             parent_session_id: None,

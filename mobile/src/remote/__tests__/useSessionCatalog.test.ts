@@ -321,6 +321,90 @@ describe("useSessionCatalog", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  test("deleteWorkspace rejects a dropped connection and retains the catalogue for retry", async () => {
+    render();
+    act(() => result.current.applySessionSnapshot([session("s1")]));
+    clientRef.current = null;
+    await expect(result.current.deleteWorkspace("w1")).rejects.toThrow("Workspace unavailable");
+    expect(result.current.sessions).toHaveLength(1);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("deleteWorkspace rejects an empty id rather than reporting a successful deletion", async () => {
+    render();
+    await expect(result.current.deleteWorkspace("")).rejects.toThrow("Workspace unavailable");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("deleteWorkspace drops the workspace, its sessions and their unread markers", async () => {
+    render();
+    selectedRef.current = "";
+    request.mockResolvedValueOnce({
+      data: { workspaces: [{ id: "w1", name: "W", path: "/w" }] },
+    });
+    await act(async () => {
+      await result.current.refreshWorkspaces();
+    });
+    const inWorkspace = (id: string, workspaceId: string): RemoteSession => ({
+      ...session(id, "running"),
+      mode: "workspace",
+      workspaceId,
+    });
+    act(() => result.current.applySessionSnapshot([inWorkspace("s1", "w1"), inWorkspace("s2", "w2")]));
+    // Both finish while nothing is selected, so both are flagged unread.
+    act(() =>
+      result.current.applySessionSnapshot([
+        { ...inWorkspace("s1", "w1"), status: "completed" },
+        { ...inWorkspace("s2", "w2"), status: "completed" },
+      ]),
+    );
+    expect(result.current.unreadSessions).toEqual(new Set(["s1", "s2"]));
+
+    request.mockResolvedValueOnce({ data: {} });
+    let selected = false;
+    await act(async () => {
+      selected = await result.current.deleteWorkspace("w1");
+    });
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "delete_workspace", workspaceId: "w1" },
+      "list",
+    );
+    expect(result.current.workspaces).toEqual([]);
+    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["s2"]);
+    expect(result.current.unreadSessions).toEqual(new Set(["s2"]));
+    // The selected session (none) was not inside the deleted workspace.
+    expect(selected).toBe(false);
+  });
+
+  test("deleteWorkspace reports a deleted selected session so the caller closes it", async () => {
+    render();
+    const inWorkspace = (id: string): RemoteSession => ({
+      ...session(id),
+      mode: "workspace",
+      workspaceId: "w1",
+    });
+    act(() => result.current.applySessionSnapshot([inWorkspace("s1")]));
+    request.mockResolvedValueOnce({ data: {} });
+    let selected = false;
+    await act(async () => {
+      selected = await result.current.deleteWorkspace("w1");
+    });
+    expect(selected).toBe(true);
+    expect(result.current.sessions).toEqual([]);
+  });
+
+  test("deleteWorkspace keeps the local catalogue when the desktop refuses", async () => {
+    render();
+    act(() =>
+      result.current.applySessionSnapshot([
+        { ...session("s1"), mode: "workspace", workspaceId: "w1" },
+      ]),
+    );
+    request.mockRejectedValueOnce(new Error("workspace not found"));
+    await expect(result.current.deleteWorkspace("w1")).rejects.toThrow("workspace not found");
+    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["s1"]);
+  });
+
   test("setSessionPinned reorders pinned sessions to the top", async () => {
     render();
     act(() =>

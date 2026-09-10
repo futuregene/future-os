@@ -35,6 +35,7 @@ interface ConversationControllerOptions {
   ensureDraftTimeline(): void;
   recordError(error: unknown): void;
   removeSession(sessionId: string, threadId: string): Promise<boolean>;
+  removeWorkspace(workspaceId: string): Promise<boolean>;
   closeConversation(): void;
 }
 
@@ -54,6 +55,7 @@ export function useConversationController({
   ensureDraftTimeline,
   recordError,
   removeSession,
+  removeWorkspace,
   closeConversation,
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
@@ -236,6 +238,15 @@ export function useConversationController({
     [closeConversation, removeSession],
   );
 
+  const deleteWorkspace = useCallback(
+    async (workspaceId: string) => {
+      // Deleting the workspace removes every thread inside it, so a
+      // conversation the user is reading may be gone with it.
+      if (await removeWorkspace(workspaceId)) closeConversation();
+    },
+    [closeConversation, removeWorkspace],
+  );
+
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
       const client = clientRef.current;
@@ -266,6 +277,7 @@ export function useConversationController({
     setThinkingLevel,
     setApprovalTier,
     deleteSession,
+    deleteWorkspace,
     decideApproval,
   };
 }
