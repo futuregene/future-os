@@ -12,8 +12,9 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── settings.json          # agent settings (model defaults, sandbox, …)
 │   ├── models.json            # provider/model catalog: apiKey, baseUrl, models[]
 │   ├── auth.json              # credentials, keyed by model id or provider
-│   ├── sessions/              # flat JSONL session store (one file per session)
-│   ├── run-events/            # durable per-session run event journals
+│   ├── agent.db               # authoritative SQLite session/run/event store
+│   ├── sessions/              # retained legacy JSONL migration sources
+│   ├── run-events/            # retained legacy event migration sources
 │   ├── agent-instance.lock    # per-user agent singleton lock
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
@@ -55,10 +56,10 @@ vars:
   `future auth login` syncs this automatically; it can also be hand-edited.
 - `auth.json` — credentials, keyed by model id first, then provider, then a
   default entry: `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`.
-- `sessions/` — flat directory of JSONL session files (the agent's default
-  session dir).
-- `run-events/<session_id>/` — durable run and session event journals used for
-  replay. Custom session directories use their own `.run-events/` child instead.
+- `agent.db` — authoritative SQLite sessions, entries, runs and replay events.
+- `sessions/` — retained legacy JSONL migration sources.
+- `run-events/<session_id>/` — retained legacy event sources; custom legacy
+  directories use `.run-events/`. New events are stored only in SQLite.
   Queued prompts are in memory, not durable here.
 - `agent-instance.lock` — per-user singleton lock. Tests must isolate HOME (and
   USERPROFILE on Windows); changing only the TCP port does not bypass the lock.

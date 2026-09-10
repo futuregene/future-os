@@ -54,6 +54,7 @@
     "queued": "queued"
   },
   "toolStatus": {
+    "interrupted": "Interrupted",
     "completed": "Completed",
     "failed": "Failed",
     "cancelled": "Cancelled",

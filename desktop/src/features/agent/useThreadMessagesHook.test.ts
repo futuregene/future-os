@@ -9,7 +9,7 @@ import { useThreadMessages } from "./useThreadMessages";
 const storageMocks = vi.hoisted(() => ({
   getLatestRun: vi.fn(),
   getRun: vi.fn(),
-  getSessionEntries: vi.fn(),
+  getSessionEntriesPage: vi.fn(),
   listRuns: vi.fn(),
 }));
 
@@ -21,7 +21,7 @@ beforeEach(() => {
   storageMocks.getLatestRun.mockResolvedValue(null);
   storageMocks.getRun.mockResolvedValue(null);
   storageMocks.listRuns.mockResolvedValue([]);
-  storageMocks.getSessionEntries.mockReturnValue(new Promise(() => {}));
+  storageMocks.getSessionEntriesPage.mockReturnValue(new Promise(() => {}));
 });
 
 afterEach(() => {
@@ -40,7 +40,7 @@ describe("useThreadMessages warm snapshots", () => {
     }));
 
     expect(hook.current.messages).toBe(cached);
-    expect(hook.current.loadingThread).toBe(true);
+    expect(hook.current.loadingThread).toBe(false);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(500);
     });

@@ -905,14 +905,14 @@ mod tests {
             .iter()
             .any(|entry| entry_text_starts_with(entry, "before close")));
 
-        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+        manager.delete("session-1").unwrap();
         assert!(persistence
             .append(vec![SessionEntry::new_assistant(
                 serde_json::json!("after close"),
                 vec![],
             )])
             .is_err());
-        assert!(!manager.session_path("session-1").exists());
+        assert!(!manager.contains("session-1").unwrap());
     }
 
     #[test]
@@ -923,7 +923,7 @@ mod tests {
             "session-1".to_string(),
             Duration::from_secs(1),
         );
-        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+        manager.delete("session-1").unwrap();
 
         persistence
             .append(vec![SessionEntry::new_assistant(
@@ -1018,7 +1018,7 @@ mod tests {
         );
         // Force the next append to fail by removing the file; the queued append
         // records the error, which barrier surfaces.
-        std::fs::remove_file(manager.session_path("session-1")).unwrap();
+        manager.delete("session-1").unwrap();
         persistence
             .append(vec![SessionEntry::new_assistant(
                 serde_json::json!("lost"),

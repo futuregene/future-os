@@ -6,7 +6,12 @@ import { renderHook } from "../../test/renderHook";
 import { computePageStart, useMessagePaging } from "./useMessagePaging";
 
 function msg(id: string, role: "user" | "assistant"): AgentMessage {
-  return { id, role, content: id, status: "complete" } as unknown as AgentMessage;
+  return {
+    id,
+    role,
+    content: id,
+    status: "complete",
+  } as unknown as AgentMessage;
 }
 
 /** 6 exchanges: u1 a1 … u6 a6. */
@@ -38,7 +43,9 @@ function setup(messages: AgentMessage[] = MESSAGES, userExchangeCount = 2) {
   document.body.appendChild(container);
   const scrollRef = { current: container as HTMLElement | null };
   const onScroll = vi.fn();
-  const h = renderHook(() => useMessagePaging({ messages, scrollRef, userExchangeCount, onScroll }));
+  const h = renderHook(() =>
+    useMessagePaging({ messages, scrollRef, userExchangeCount, onScroll }),
+  );
   return { container, scrollRef, onScroll, h };
 }
 
@@ -59,7 +66,12 @@ describe("computePageStart (hook fixtures)", () => {
 describe("useMessagePaging", () => {
   it("shows the last page of exchanges and reports more history", () => {
     const { h } = setup();
-    expect(h.current.visibleMessages.map(m => m.id)).toEqual(["u5", "a5", "u6", "a6"]);
+    expect(h.current.visibleMessages.map(m => m.id)).toEqual([
+      "u5",
+      "a5",
+      "u6",
+      "a6",
+    ]);
     expect(h.current.canLoadOlder).toBe(true);
     expect(h.current.showLoadOlderHint).toBe(false);
     h.unmount();
@@ -68,7 +80,14 @@ describe("useMessagePaging", () => {
   it("handleScroll without a container only forwards to onScroll", () => {
     const scrollRef = { current: null as HTMLElement | null };
     const onScroll = vi.fn();
-    const h = renderHook(() => useMessagePaging({ messages: MESSAGES, scrollRef, userExchangeCount: 2, onScroll }));
+    const h = renderHook(() =>
+      useMessagePaging({
+        messages: MESSAGES,
+        scrollRef,
+        userExchangeCount: 2,
+        onScroll,
+      }),
+    );
     act(() => {
       h.current.handleScroll();
     });
@@ -206,9 +225,18 @@ describe("useMessagePaging", () => {
     const a3 = document.createElement("div");
     a3.setAttribute("data-message-id", "a3");
     container.append(u3, a3);
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
-    vi.spyOn(u3, "getBoundingClientRect").mockReturnValue({ top: 90, bottom: 110 } as DOMRect);
-    vi.spyOn(a3, "getBoundingClientRect").mockReturnValue({ top: 120, bottom: 200 } as DOMRect);
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 500,
+    } as DOMRect);
+    vi.spyOn(u3, "getBoundingClientRect").mockReturnValue({
+      top: 90,
+      bottom: 110,
+    } as DOMRect);
+    vi.spyOn(a3, "getBoundingClientRect").mockReturnValue({
+      top: 120,
+      bottom: 200,
+    } as DOMRect);
     container.scrollTop = 50;
 
     act(() => {
@@ -221,20 +249,26 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
-  it("pins the top when the anchor element is gone after the load", () => {
+  it("keeps the position when the anchor element is gone after the load", () => {
     const { container, h } = setup();
     const ghost = document.createElement("div");
     ghost.setAttribute("data-message-id", "ghost");
     container.append(ghost);
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 500 } as DOMRect);
-    vi.spyOn(ghost, "getBoundingClientRect").mockReturnValue({ top: 10, bottom: 60 } as DOMRect);
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 500,
+    } as DOMRect);
+    vi.spyOn(ghost, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      bottom: 60,
+    } as DOMRect);
     container.scrollTop = 42;
     act(() => {
       h.current.loadOlder();
       // The anchor id no longer exists in the container at restore time.
       ghost.remove();
     });
-    expect(container.scrollTop).toBe(0);
+    expect(container.scrollTop).toBe(42);
     h.unmount();
   });
 
@@ -267,10 +301,19 @@ describe("useMessagePaging", () => {
     const visible = document.createElement("div");
     visible.setAttribute("data-message-id", "u5");
     container.append(above, visible);
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({ top: 100, bottom: 500 } as DOMRect);
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 500,
+    } as DOMRect);
     // Fully above the viewport top → not a candidate.
-    vi.spyOn(above, "getBoundingClientRect").mockReturnValue({ top: 40, bottom: 90 } as DOMRect);
-    vi.spyOn(visible, "getBoundingClientRect").mockReturnValue({ top: 110, bottom: 160 } as DOMRect);
+    vi.spyOn(above, "getBoundingClientRect").mockReturnValue({
+      top: 40,
+      bottom: 90,
+    } as DOMRect);
+    vi.spyOn(visible, "getBoundingClientRect").mockReturnValue({
+      top: 110,
+      bottom: 160,
+    } as DOMRect);
     container.scrollTop = 20;
     act(() => {
       h.current.loadOlder();
@@ -304,7 +347,7 @@ describe("useMessagePaging", () => {
     act(() => {
       h.current.loadOlder();
     });
-    expect(container.scrollTop).toBe(0);
+    expect(container.scrollTop).toBe(30);
     h.unmount();
   });
 });

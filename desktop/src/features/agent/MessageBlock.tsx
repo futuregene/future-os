@@ -16,6 +16,7 @@ import { previewKindForPath } from "../filepreview/previewKind";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { SafeLink } from "../markdown/renderers/SafeLink";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
+import { canContinueResponse, isCompletedWithoutReply } from "./agentMessageFormatters";
 import { splitExternalLinkSegments } from "./externalLinks";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
@@ -72,6 +73,7 @@ function MessageBlockImpl({
   // While the reply streams, the footer is pinned open and shows a live activity
   // indicator instead of the copy button; the copy button returns once it settles.
   const streaming = !isUser && message.status === "streaming";
+  const noFinalReply = isCompletedWithoutReply(message);
   // Retry/Continue only make sense on the latest exchange — once a newer round has
   // started, recovering an earlier failed exchange would fork the conversation.
   // Also suppress for interrupted runs (the agent may still be processing the
@@ -217,17 +219,17 @@ function MessageBlockImpl({
             : !isUser && !segments
                 ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
                 : null}
-          {!isUser && message.terminationNotice
+          {!isUser && (message.terminationNotice || noFinalReply)
             ? (
                 <div className="mt-4">
                   <StatusDivider
-                    label={message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
-                    warning={!message.stopped}
+                    label={noFinalReply ? t("thread.noFinalReply") : message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
+                    warning={!message.stopped && !noFinalReply}
                   />
                   {isLast === true && !message.stopped
                     ? (
                         <p className={cn("mt-2 text-sm leading-6", message.stopped ? "text-ink-muted" : "text-ink-soft")}>
-                          {message.terminationNotice}
+                          {noFinalReply ? t("thread.noFinalReplyDetail") : message.terminationNotice}
                         </p>
                       )
                     : null}
@@ -249,7 +251,7 @@ function MessageBlockImpl({
                         </button>
                       )
                     : null}
-                  {onContinue
+                  {onContinue && canContinueResponse(message)
                     ? (
                         <button
                           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"

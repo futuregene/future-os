@@ -1,4 +1,4 @@
-# FutureOS 对象与关联设计草案
+# FutureOS 对象与存储关系
 
 ## 1. 设计目标
 
@@ -43,7 +43,7 @@ erDiagram
 ```
 
 > Message / Run Event / Tool Call / Tool Output 已不是 GUI SQLite 对象：它们由
-> Agent 持久化（会话 JSONL 与 run-events journal，唯一真源），GUI 经 gRPC
+> Agent SQLite 持久化（`~/.future/agent/agent.db`，唯一真源），GUI 经 gRPC
 > 读取后投影展示。见 §4.3、§4.5–4.7。Data Source / Skill 相关对象已废弃，
 > 见 §4.14–4.17。
 
@@ -114,7 +114,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `status` | `active`、`archived`、`deleted` |
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
-| `agent_session_id` | GUI Thread ↔ Agent 会话映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；解析 Agent 侧 sessions JSONL、远程控制查会话时用（`store/schema.rs`） |
+| `agent_session_id` | GUI Thread ↔ Agent SQLite session 映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；通过 RPC 查询，不跨数据库建立外键（`store/schema.rs`） |
 | `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。 |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
@@ -142,28 +142,28 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 标题默认生成，用户可以修改。
 - 归档对话默认隐藏、只读，但允许搜索命中。
 - 用户在归档对话中点击输入框时，产品自动引导恢复后继续。
-- 分叉（fork）：从某条 assistant 回复对应的用户消息处，复制出新 Thread 与独立 Agent session（`fork_thread` → `fork_agent_session`）；沿用父 Thread 的 `mode` 与（workspace 模式下的）workspace，标题默认「父标题 (fork)」，并合成分叉历史对应的已完成 Run 与工具事件，使 Runs 面板立即可见。消息由新 session 的 JSONL 提供，不迁移 `messages` 表；分叉点按用户消息在会话内的序号定位，内容仅作兜底。
+- 分叉（fork）：从选定用户轮次复制出新 Thread 与独立 Agent session（`fork_thread` → `fork_agent_session`）；沿用父 Thread 的 `mode` 与 workspace 模式下的 workspace，标题默认「父标题 (fork)」。Agent 重映射运行身份并保存独立 SQLite 历史，Desktop 同步其运行投影，不根据助手消息数量制造 Run；工具详情从新会话的消息块读取。
 - 模型与思考等级**不再是 Thread 列**（`model_provider` / `model_id` / `thinking_level` 已经 `DROPPED_COLUMNS` 从旧库删除）：权威状态在 Agent session，GUI 经 `get_thread_agent_state` 读取，切换经 `set_model` / `set_thinking_level` 下发，只影响该会话之后的 run，不打断进行中的 run。
 
 ### 4.3 Message
 
 Message 表示对话中的一条消息。
 
-**存储：`messages` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 消息由 Agent 会话
-JSONL（`~/.future/agent/sessions/<session-id>.jsonl`）单一持久化，是唯一真源；
+**GUI 存储：`messages` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 消息由 Agent
+SQLite 的 `entries` 与 `message_blocks` 持久化，是唯一真源；
 GUI 通过 `get_session_entries` gRPC 命令读取并投影为界面消息，不再落 GUI
 SQLite，也没有第二份副本需要合并仲裁。
 
 关系：
 
 - 一个 Message 逻辑上属于一个 Thread（经 Thread 的 `agent_session_id` 映射到 Agent session）。
-- 一个 Message 可以关联一个 Run（JSONL 条目 `meta` 携带 `run_id`）。
+- 一个 Message 可以关联一个 Run（Agent 表 `entries.run_id`，RPC 字段 `runId`）。
 - 一个 Message 可以包含多个 Object Reference。
 
 说明：
 
-- 流式输出由 Agent 事件流驱动（见 §4.5），GUI 实时投影；run 结束后消息以 JSONL 为准。
-- 附件元数据（`path` / `kind` / `name` / `thumbnail`）存于用户消息条目的 `meta.attachments`，无独立附件表。
+- 流式输出由 Agent 事件流驱动（见 §4.5），GUI 实时投影；run 结束后以 SQLite 历史校准。RPC 采用有序 `blocks`，不再并列返回旧 `content/thinking/tool_calls` 字段。
+- 附件元数据（`path` / `kind` / `name` / `thumbnail`）通过 `metadata.attachments` 返回，存于 entry 扩展元数据；附件本体仍是文件，无独立附件表。
 
 ### 4.4 Run
 
@@ -203,17 +203,16 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 - 运行中 Run 可以被用户终止；终止后状态进入 `cancelled`，并同步取消该 Run 下仍然 pending 的 Approval Request。
 - 失败 / 已取消的 Run 支持恢复：『重试』用 `trigger_message_id` 对应的用户消息（含附件）重新发起；『继续』以「继续上一个任务」+ 失败消息摘要（Runs 面板触发时另附已执行内容摘要）发起。两者仅针对最新一轮且未中断的 Run，更早轮次或中断恢复改走 Thread 分叉（见 §4.2）。
 - 长任务恢复时，Thread 可以通过最近 Run 恢复上下文展示。
-- 「归档已结束的程序」只为 Runs 面板隐藏已结束 Run，不删除 SQLite Run 记录、Review 数据或 Agent 的 run-events journal；中间信息流可继续通过 `run_id` 打开命令详情。
+- 「归档已结束的程序」只为 Runs 面板隐藏已结束 Run，不删除 SQLite Run 记录、Review 数据或 Agent 事件；中间信息流可继续通过 `run_id` 打开命令详情。
 
 ### 4.5 Run Event
 
 Run Event 表示 Run 过程中的结构化事件。
 
-**存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 事件由 Agent 的
-run-events journal（`~/.future/agent/run-events/<session-id>/<run-id>.jsonl`，
-逐事件落盘 + fsync）持久化，是唯一真源；GUI 经 `get_events_since` gRPC 命令
-按游标增量读取，不写第二份。旧版 GUI JSONL（`~/.future/app/run_events/`）仅作为
-Agent 不可达时的兼容读取源，生产不再写入。
+**GUI 存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** Agent SQLite
+仍有自己的 `run_events` 表，为事件恢复真源；GUI 经 `get_events_since` 按游标读取。
+高频 delta 使用 100 ms / 128 条 / 64 KiB 微批，语义事件、读取和关闭先刷盘。
+没有 GUI JSONL 兼容读取或运行时回退；未提交 delta 的异常退出边界见 §7。
 
 事件标识与顺序：每个事件带 run 内单调 `idx`、session 级 `session_idx`、跨 run 的
 `run_sequence` 与 `event_id`；GUI 观察者先按游标校验再扇出（重放去重、跳号触发
@@ -233,19 +232,17 @@ Agent 不可达时的兼容读取源，生产不再写入。
 
 说明：
 
-- GUI 根据 Run Event 渲染流式预览、工具活动时间线和 Runs 面板（工具列表 / 输出也是事件投影，见 §4.6、§4.7）。
+- GUI 根据 Run Event 渲染流式预览与工具活动；持久化工具列表和详情直接查询消息块，不通过重放整轮事件重建（见 §4.6、§4.7）。
 - 右侧 Runs 面板不直接展示完整 Run Event 原文；长输出与调试细节由 Run 检查器承载。
 
 ### 4.6 Tool Call
 
 Tool Call 表示 Agent 调用某个工具的记录。
 
-**存储：`tool_calls` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 工具调用由 Run
-Event 投影重建：`tool_start` / `tool_end` 事件携带稳定的 `tool_id`，按 id 配对
-（并行工具调用不会错配）。Runs 面板经 `list_tool_calls` / `list_tool_calls_bulk`
-命令从 Agent journal 拉取事件投影（GUI 侧带增量投影缓存，Agent 不可达时回退旧
-GUI JSONL）。`tool_start` 的结构化输入另存内存索引（`store::remember_tool_input`），
-供 `tool_end` 落库时的工件路径提取（`persist.rs`）。
+**存储：GUI `tool_calls` 表已删除。** Agent `message_blocks` 的 `tool_call` 块保存
+调用身份、名称和原生 JSON 参数。Desktop 的 `list_tool_calls` / `list_tool_calls_bulk`
+经 Agent 的分页工具查询读取，按 `sessionId + runId + toolCallId` 隔离，不回退 JSONL。
+实时事件仍服务流式 UI；`tool_start` 的内存输入索引继续服务工件提取，不是历史真源。
 
 字段（投影结构 `ToolCallRecord`）：
 
@@ -271,9 +268,10 @@ GUI JSONL）。`tool_start` 的结构化输入另存内存索引（`store::remem
 
 Tool Output 表示工具调用产生的输出。
 
-**存储：`tool_outputs` 表已删除（`DROPPED_TABLES` 在旧库清除）。** 输出由
-`tool_end` 事件投影（`list_tool_outputs` 命令，数据源同 §4.6）：`text` / `error`
-包装为 JSON 供检查器的 stdout / stderr 面板解析。
+**存储：GUI `tool_outputs` 表已删除。** Agent `message_blocks` 的 `tool_result`
+块保存 `text` 与 `is_error`；`get_tool_output` 按会话、运行、调用身份查询。
+Desktop `list_tool_outputs` 将结果映射为检查器记录，不再重放事件。以下是 Desktop
+内部 `ToolOutputRecord`，不是 Agent RPC 字段定义。
 
 字段（投影结构 `ToolOutputRecord`）：
 
@@ -288,7 +286,7 @@ Tool Output 表示工具调用产生的输出。
 说明：
 
 - Shell 非零退出以 `[exit: N]` 尾部标记判定失败（裸 grep/diff/test 退出 1 属正常信号的豁免除外）。
-- 大输出不经 GUI 落库——事件投影按需读取 Agent journal。
+- 大输出不经 GUI 落库——详情按需读取 Agent SQLite 消息块。
 
 ### 4.8 Approval Request
 
@@ -491,7 +489,7 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact。
 - 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
-- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent session JSONL 的 `SessionEntry.meta.attachments` 中，GUI SQLite `messages` 已不作为消息来源，**无独立附件表**。
+- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
 - **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12–4.13 Research Collection / Research Resource（已移除，未建表）
@@ -602,7 +600,7 @@ Object Reference 表示某个对象引用了另一个对象。
 - `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 
-> `messages`、`run_events`、`tool_calls`、`tool_outputs` 曾在此清单，随「Agent JSONL 为唯一真源」改造从 schema 删除（`DROPPED_TABLES` 在旧库清除；消息与事件改由 Agent 持久化，详见 §4.3、§4.5–4.7）。
+> `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
 >
 > `research_collections`、`research_resources` 曾在此清单，因 Research 已于第一版发布前移除而从 schema 删除（详见 §4.12–4.13）。
 >
@@ -696,3 +694,63 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 - **agent-app 优先级（已知限制）**：agent 读 auth 时 `~/.future/agent-app/auth.json` 优先于 `~/.future/agent/auth.json`（取第一个存在的，不合并）；GUI 只写后者，若存在前者会被忽略——与 CLI 同款行为，本期不处理。
 - **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
 - **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。
+
+## 7. Agent SQLite 存储
+
+### 7.1 所有权与事务边界
+
+`~/.future/agent/agent.db` 是会话、历史正文、运行结果和恢复事件的权威库；`~/.future/app/app.db` 独立保存 Desktop 工作区、Thread、Run UI 状态、审批、Review 等对象，不合库、不跨库外键。Desktop Run 是交互状态与执行结果的投影，不是第二份对话正文。每个 OS 用户只有一个 Agent，客户端只能通过 RPC 访问它。
+
+```mermaid
+erDiagram
+    AGENT_SESSION ||--o{ ENTRY : owns
+    AGENT_SESSION ||--o{ AGENT_RUN : executes
+    AGENT_SESSION ||--o{ RUN_EVENT : journals
+    ENTRY ||--o{ MESSAGE_BLOCK : contains
+    ENTRY ||--o| HISTORY_SHAPE : projects
+    AGENT_SESSION ||--o{ HISTORY_DISPLAY : indexes
+```
+
+图中是物理所有权。Entry/事件的 run 关联是逻辑关系：旧导入可缺运行标记，会话级事件没有 Run，不能用强制 Run 外键丢弃这类合法数据。父 session 同样允许缺失。`legacy_imports` 刻意没有 session 外键，以保留删除墓碑。
+
+### 7.2 表、字段与索引
+
+实现真源：`agent/src/session/database.rs`；存储重建视图：`records.rs`。业务 ID 为 TEXT，顺序/UTC 毫秒/计数为 INTEGER，未知可选值用 SQL NULL。内部事件 epoch/idx 仍遵循已有恢复坐标，不等同于公开历史 RPC 的可选字段。
+
+| 表 | 主键及主要字段 | 职责与约束 |
+| --- | --- | --- |
+| `sessions` | PK `id`；`revision`、`created_at_ms`、`updated_at_ms`、`current_metadata_json` | 当前会话设置只有一份；JSON 有效性检查。`title/cwd/model/thinking_level/parent_session_id` 为虚拟生成列，不维护重复真值。revision 非负表示可恢复会话，-1 是先绑定事件流时的内部占位，不出现在普通会话列表 |
+| `entries` | PK `(session_id,position)`；`entry_id/entry_type/role/run_id/timestamp_ms/metadata_json/content_json` | `session_id` 外键级联；`(session_id,entry_id)` 唯一。`entries_kind` 支持种类/顺序查询，`entries_run` 支持运行范围查询；position 与业务 ID 分离 |
+| `message_blocks` | PK `(session_id,entry_position,ordinal)`；`kind/text/tool_call_id/tool_name/arguments_json/is_error/metadata_json` | 复合外键级联到 entry；ordinal 非负、is_error 为 NULL/0/1。`message_blocks_tool(session_id,tool_call_id,kind)` 服务工具结果检索；run 隔离经 entries 联接实现 |
+| `runs` | PK `(session_id,run_id)`；`status/run_sequence/epoch/started_at_ms/completed_at_ms/error` | 外键级联到 session；`runs_status(session_id,status,run_sequence)` 服务状态查询。输入/输出/cache token、duration 及 input/cache baseline 均为独立列，baseline 只用于累计用量转每轮用量 |
+| `run_events` | INTEGER PK `sequence`；`session_id/run_id/epoch/idx/event_id/payload` | 外键级联到 session；唯一 `(session_id,run_id,idx,epoch)` 防坐标冲突；非空自定义 event_id 使用 `(session_id,event_id)` 部分唯一索引。sequence 是物理写入顺序，不是客户端游标 |
+| `history_shapes` | PK `(session_id,position)`；`payload` | 外键级联到 entry；不含正文的派生结构，用于配对、去重、占位与运行注解 |
+| `history_display` | PK `(session_id,ordinal)`；`source_position/is_user/payload` | 外键级联到 session；`history_users(session_id,is_user,ordinal)` 支持倒序整轮分页。source_position 可空，表示合成占位；不是第二份正文 |
+| `legacy_imports` | PK `session_id`；`status/fingerprint/error_file/error_line/error_kind/warnings` | status 限 imported/skipped/deleted；每会话导入结果及防复活墓碑，无正文 |
+| `storage_meta` | PK `key`；`value` | 库级控制标记，例如一次性导入完成状态 |
+
+JSON 的保留边界：
+
+- 消息正文、推理、工具调用和结果按有序块存储；已拆列数据不再重复写进块 metadata。工具参数本来就是任意 JSON，保留 JSON 值包括显式 null。
+- Entry 的非块内容（如 checkpoint、运行标记）保留 `content_json`；块数组使用 `[]` 标记，重建时从块表读取，不重复保存正文。`session_info` 内容只从 sessions 当前设置重建。
+- Entry metadata 保留扩展、附件引用及精确来源时间字面值，后者用于重复身份核验；查询和公开消息时间使用毫秒。供应商签名、未知块不能当作“无用字段”丢弃。
+- `entry_records` / `block_records` 是普通 SQL VIEW，不占第二份正文存储。它们重建 Agent 内部记录，不是对外 JSONL 兼容接口。
+- 事件 payload 是归一化事件，不是供应商原始网络字节；session/run 身份从列恢复，确定性 event_id 不重复存储。事件与完成正文存在有意的内容重叠，用于断线恢复；本期不清理事件、不改变过期游标协议。
+
+### 7.3 写入、分页与性能边界
+
+一个有界专用数据库工作线程排序所有数据库操作，连接使用 WAL、FULL 同步、外键、5 秒 busy timeout。短事务提交是关键写入成功边界。Entry、块、运行结果及历史索引在同一事务维护，失败整体回滚；同身份不同内容报冲突，不静默忽略。
+
+Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读取、切换和关闭构成提交屏障。异常退出可能损失尚在队列中的 delta，100 ms 不是硬性丢失上限；已提交的完成正文不依赖 UI 内存。Prompt 队列仅在内存，不承诺重启恢复。
+
+首次历史查询只选择最近用户轮次的正文，旧页按需取数，不初始化完整模型上下文。索引维护仍遍历轻量结构，但不读取全部正文；这是线性写入成本，不应宣称常数复杂度。未来可以独立增量化索引算法，不必改变消息块或 RPC 数据模型。倒序页保持完整轮次，单轮特别大时仍可能产生大页；前向页额外有 8 MiB 目标预算，单条超过预算时仍允许返回以推进游标。
+
+工具列表分页读取块表，输出详情按需读取；不为显示右面板重放整轮事件。正文、事件的读取范围下推 SQLite；不创建没有实际查询需求的全文、时间或大 JSON 索引，避免增加事件写放大。
+
+### 7.4 对外契约与发布
+
+Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
+
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=2` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+
+旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../docs/sqlite-migration.zh-CN.md)。

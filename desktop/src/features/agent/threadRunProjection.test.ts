@@ -652,6 +652,49 @@ describe("applyRecoveredEvents", () => {
 });
 
 describe("deriveRenderFields", () => {
+  const thinkingEvents = () => events([
+    ["thinking_start", {}],
+    ["thinking_delta", { text: "Synthetic planning.\n" }],
+    ["thinking_delta", { text: "Synthetic draft." }],
+    ["thinking_end", {}],
+    ["agent_end", {}],
+  ]);
+
+  it("retains streamed reasoning when completion contains no answer text", () => {
+    const result = deriveRenderFields(thinkingEvents(), "");
+    expect(result.content).toBe("");
+    expect(result.segments).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Synthetic planning.\nSynthetic draft." }),
+    ]);
+  });
+
+  it("keeps reasoning alongside the empty-answer notice at completion", () => {
+    const result = deriveRenderFields(thinkingEvents(), "No final answer.");
+    expect(result.segments).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Synthetic planning.\nSynthetic draft." }),
+      expect.objectContaining({ kind: "text", text: "No final answer." }),
+    ]);
+  });
+
+  it("renders RPC-only answer text after the existing reasoning", () => {
+    const result = deriveRenderFields(thinkingEvents(), "RPC answer");
+    expect(result.content).toBe("RPC answer");
+    expect(result.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    expect(result.segments?.[1]).toMatchObject({ text: "RPC answer" });
+  });
+
+  it("keeps reasoning and streamed text without appending a duplicate RPC answer", () => {
+    const result = deriveRenderFields(events([
+      ["thinking_delta", { text: "Synthetic planning." }],
+      ["thinking_end", {}],
+      ["text_chunk", { text: "Answer" }],
+      ["agent_end", {}],
+    ]), "Answer");
+    expect(result.content).toBe("Answer");
+    expect(result.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    expect(result.segments?.filter(segment => segment.kind === "text")).toHaveLength(1);
+  });
+
   it("prefers event-derived content and segments when the events carried text", () => {
     const result = deriveRenderFields(events([["text_chunk", { text: "Hello" }]]), "fallback");
     expect(result.content).toBe("Hello");
@@ -666,6 +709,10 @@ describe("deriveRenderFields", () => {
 });
 
 describe("streamingBubbleBase", () => {
+  it("does not treat a user run identity as a persisted assistant reply", () => {
+    const current = [message("user", { role: "user", runId: "active" })];
+    expect(streamingBubbleBase(current, "active", "stream_active", "live")).toEqual(current);
+  });
   const RUN = "r1";
   const BUBBLE = `stream_${RUN}`;
 

@@ -6,10 +6,8 @@
 //! Deserialize). Because both directions land in the same types, the JSON
 //! fallback and the typed proto path stay in parity by construction.
 //!
-//! Wire casing: camelCase for get_state / list_sessions / get_events_since
-//! (via `rename_all = "camelCase"`); get_session_entries mirrors the on-disk
-//! entry schema and stays snake_case. The legacy casing migration window is
-//! retired — canonical camelCase keys only.
+//! Existing history, state and list methods use canonical camelCase fields.
+//! The storage/import representation is internal and never a client contract.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,11 +41,7 @@ pub struct GetStatePayload {
     pub context_window: i64,
     pub context_tokens: i64,
     pub context_percent: f64,
-    pub tokens_in: i64,
-    pub tokens_out: i64,
-    pub tokens_cache_r: i64,
-    pub tokens_cache_w: i64,
-    pub total_cost: f64,
+    pub usage: crate::message::SessionUsage,
     pub permission_level: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
@@ -63,8 +57,7 @@ pub struct GetStatePayload {
     pub queued_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interrupted_run: Option<RunStateSnapshot>,
-    /// Terminal journal content of the requested run (run_terminal shape:
-    /// run_id, state, run_tokens, run_duration_ms, error?).
+    /// Canonical durable outcome: runId, status, usage, durationMs and error.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_run: Option<Value>,
     /// Approval-request card payloads the session is parked on.
@@ -121,62 +114,22 @@ pub struct SessionSummaryPayload {
     pub session_name: Option<String>,
     pub model: String,
     pub cwd: String,
-    pub updated_at: String,
-    pub parent_session_id: String,
+    pub updated_at_ms: i64,
+    pub parent_session_id: Option<String>,
     pub first_message: Option<String>,
     pub query_count: usize,
     pub is_streaming: bool,
 }
 
-/// One displayable session entry (get_session_entries; proto `SessionEntry`).
-/// Field names match the on-disk JSONL schema (snake_case) — `content` is the
-/// display text for message entries and the raw session_info JSON object for
-/// the session_info entry.
-#[derive(Serialize, Deserialize)]
-pub struct SessionEntryPayload {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry_type: Option<String>,
-    pub role: String,
-    pub content: Value,
-    pub name: String,
-    pub tool_args: String,
-    pub timestamp: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub meta: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_result_is_error: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub run_duration_ms: Option<i64>,
-}
+pub use crate::message::SessionEntryPayload;
 
 /// One page returned by `get_session_entries`.
 #[derive(Serialize, Deserialize)]
 pub struct SessionEntriesPage {
     pub entries: Vec<SessionEntryPayload>,
-    #[serde(default, rename = "hasMore", alias = "has_more")]
+    #[serde(default, rename = "hasMore")]
     pub has_more: bool,
-    #[serde(default, rename = "nextOffset", alias = "next_offset")]
+    #[serde(default, rename = "nextOffset")]
     pub next_offset: i64,
 }
 
@@ -271,11 +224,13 @@ mod tests {
             context_window: 200_000,
             context_tokens: 10,
             context_percent: 0.5,
-            tokens_in: 1,
-            tokens_out: 2,
-            tokens_cache_r: 3,
-            tokens_cache_w: 4,
-            total_cost: 0.1,
+            usage: crate::message::SessionUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_tokens: 3,
+                cache_write_tokens: 4,
+                cost_cny: 0.1,
+            },
             permission_level: "workspace".to_string(),
             parent_session_id: None,
             created_by: "desktop".to_string(),
@@ -292,7 +247,7 @@ mod tests {
 
         assert_eq!(value["agentInstanceId"], json!("agent-1"));
         assert_eq!(value["autoCompactionEnabled"], json!(true));
-        assert_eq!(value["tokensCacheR"], json!(3));
+        assert_eq!(value["usage"]["cacheReadTokens"], json!(3));
         assert!(value.get("sessionName").is_none(), "empty name is omitted");
         assert!(value.get("session_name").is_none(), "no legacy alias");
         assert!(value.get("extensions").is_none());
@@ -305,8 +260,8 @@ mod tests {
             session_name: Some("My session".to_string()),
             model: "m".to_string(),
             cwd: "/w".to_string(),
-            updated_at: "2026-08-05 12:00:00".to_string(),
-            parent_session_id: String::new(),
+            updated_at_ms: 1785931200000,
+            parent_session_id: None,
             first_message: Some("hello".to_string()),
             query_count: 1,
             is_streaming: true,
@@ -316,48 +271,34 @@ mod tests {
         assert!(value.get("session_name").is_none(), "no legacy alias");
         assert_eq!(value["isStreaming"], json!(true));
         assert!(value.get("is_streaming").is_none());
-        assert_eq!(value["updatedAt"], json!("2026-08-05 12:00:00"));
+        assert_eq!(value["updatedAtMs"], json!(1785931200000_i64));
         assert!(value.get("updated_at").is_none());
     }
 
     #[test]
     fn session_entry_payload_skips_absent_optionals() {
         let payload = SessionEntryPayload {
-            id: "e1".to_string(),
-            entry_type: None,
-            role: "user".to_string(),
-            content: Value::String("hi".to_string()),
-            name: String::new(),
-            tool_args: String::new(),
-            timestamp: "2026-08-05T12:00:00+08:00".to_string(),
-            thinking: None,
-            meta: None,
-            tool_calls: None,
-            output_tokens: None,
-            duration_ms: None,
-            input_tokens: None,
-            cache_read_tokens: None,
-            checkpoint: None,
-            tool_call_id: None,
-            tool_result_is_error: None,
-            run_status: None,
-            run_error: None,
-            run_duration_ms: None,
+            id: "e1".into(),
+            kind: "user".into(),
+            role: "user".into(),
+            blocks: vec![crate::message::MessageBlock {
+                kind: "text".into(),
+                text: Some("hi".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
         };
         let value = serde_json::to_value(&payload).unwrap();
-        assert_eq!(value["content"], json!("hi"));
+        assert_eq!(value["blocks"][0]["text"], json!("hi"));
         for key in [
+            "content",
             "thinking",
-            "meta",
             "tool_calls",
-            "output_tokens",
-            "duration_ms",
-            "input_tokens",
-            "cache_read_tokens",
-            "tool_call_id",
-            "tool_result_is_error",
+            "tool_args",
+            "timestamp",
+            "entry_type",
         ] {
-            assert!(value.get(key).is_none(), "{key} must be omitted");
+            assert!(value.get(key).is_none(), "{key} must not exist");
         }
     }
 
@@ -401,11 +342,13 @@ mod tests {
             context_window: 200_000,
             context_tokens: 10,
             context_percent: 0.5,
-            tokens_in: 1,
-            tokens_out: 2,
-            tokens_cache_r: 3,
-            tokens_cache_w: 4,
-            total_cost: 0.1,
+            usage: crate::message::SessionUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_tokens: 3,
+                cache_write_tokens: 4,
+                cost_cny: 0.1,
+            },
             permission_level: "workspace".to_string(),
             parent_session_id: None,
             created_by: "desktop".to_string(),

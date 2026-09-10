@@ -83,6 +83,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_session_stats",
     "get_state",
     "list_models",
+    "list_tool_calls",
+    "get_tool_output",
     "list_providers",
     "list_session_ids",
     "list_sessions",
@@ -156,6 +158,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::ManagedProcess,
         ),
         "get_events_since"
+        | "list_tool_calls"
+        | "get_tool_output"
         | "get_fork_messages"
         | "get_messages"
         | "get_session_entries"

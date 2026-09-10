@@ -1,5 +1,37 @@
 import { classifyAgentError } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
+import { canContinueResponse, isCompletedWithoutReply, responseTerminationError } from "./agentMessageFormatters";
+
+describe("response outcomes", () => {
+  it.each([
+    ["response_unconfirmed", "responseUnconfirmed"],
+    ["output_limit", "outputLimit"],
+    ["response_timeout", "responseTimeout"],
+    ["model_paused", "modelPaused"],
+    ["provider_cancelled", "providerCancelled"],
+    ["model_content_filter", "contentFilter"],
+    ["upstream_disconnected", "upstreamDisconnected"],
+  ])("preserves %s in the user-facing reason", (kind, key) => {
+    expect(classifyAgentError(responseTerminationError(kind)).key).toBe(`agent:failure.${key}`);
+  });
+
+  it("does not infer a network failure from EOF", () => {
+    expect(classifyAgentError("unexpected eof").key).toBe("agent:failure.responseUnconfirmed");
+    expect(classifyAgentError("Session persistence failed").key).toBe("agent:failure.softwareError");
+  });
+
+  it("shows a neutral empty-reply notice only after completion without useful output", () => {
+    const message = { id: "synthetic", role: "assistant" as const, status: "complete" as const, content: "", authorKey: "author.researchCopilot", createdAt: "2026-01-01", segments: [{ id: "thinking", kind: "thinking" as const, text: "synthetic draft" }] };
+    expect(isCompletedWithoutReply(message)).toBe(true);
+    expect(canContinueResponse({ ...message, runError: "[MODEL_PAUSED]" })).toBe(false);
+    expect(canContinueResponse({ ...message, runError: "[OUTPUT_LIMIT]" })).toBe(true);
+    expect(isCompletedWithoutReply({ ...message, content: "answer" })).toBe(false);
+    expect(isCompletedWithoutReply({ ...message, status: "streaming" })).toBe(false);
+    expect(isCompletedWithoutReply({ ...message, status: "failed" })).toBe(false);
+    expect(isCompletedWithoutReply({ ...message, stopped: true })).toBe(false);
+    expect(isCompletedWithoutReply({ ...message, activityItems: [{ id: "tool", kind: "write", status: "completed" }] })).toBe(false);
+  });
+});
 
 describe("classifyAgentError", () => {
   it("maps an HTTP 402 insufficient-credit rejection to the balance guidance", () => {

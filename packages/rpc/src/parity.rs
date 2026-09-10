@@ -57,11 +57,7 @@ fn get_state_fixture() -> Value {
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
-            "tokensIn": 100,
-            "tokensOut": 50,
-            "tokensCacheR": 10,
-            "tokensCacheW": 5,
-            "totalCost": 0.01,
+            "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5,"costCny":0.01},
             "permissionLevel": "workspace",
             "createdBy": "desktop",
             "sourceMeta": {"threadId": "t1"},
@@ -95,10 +91,11 @@ fn get_state_fixture() -> Value {
                 "state": "interrupted_by_restart"
             },
             "requestedRun": {
-                "run_id": "r0",
-                "state": "completed",
-                "run_tokens": 123,
-                "run_duration_ms": 4567
+                "runId": "r0",
+                "status": "completed",
+                "usage": {"inputTokens":null,"outputTokens":123,"cacheReadTokens":null,"cacheWriteTokens":null},
+                "durationMs": 4567,
+                "error":null
             },
             "pendingApprovals": [{
                 "type": "approval_request",
@@ -133,7 +130,7 @@ fn list_sessions_fixture() -> Value {
                 "sessionName": "My session",
                 "model": "future/future-model",
                 "cwd": "/w",
-                "updatedAt": "2026-08-05 12:00:00",
+                "updatedAtMs": 20670000,
                 "parentSessionId": "p1",
                 "firstMessage": "hello",
                 "queryCount": 3,
@@ -145,7 +142,7 @@ fn list_sessions_fixture() -> Value {
                 "sessionName": null,
                 "model": "m",
                 "cwd": "/w2",
-                "updatedAt": "2026-08-06 09:00:00",
+                "updatedAtMs": 20671000,
                 "parentSessionId": "",
                 "firstMessage": null,
                 "queryCount": 0,
@@ -156,60 +153,76 @@ fn list_sessions_fixture() -> Value {
 }
 
 fn get_session_entries_fixture() -> Value {
-    json!({
-        "entries": [
-            {
-                "id": "e1",
-                "role": "user",
-                "content": "hello world",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-06T10:00:00+08:00"
-            },
-            {
-                // session_info entry: content is a JSON OBJECT, not text.
-                "id": "e2",
-                "role": "system",
-                "content": {
-                    "model": "future/future-model",
-                    "thinking_level": "medium",
-                    "session_name": "Demo",
-                    "cwd": "/w",
-                    "tokens_in": 100,
-                    "tokens_out": 50,
-                    "total_cost": 0.01
+    use crate::message::{MessageBlock, MessageRun, MessageUsage, SessionEntryPayload};
+    let entries = vec![
+        SessionEntryPayload {
+            id: "e1".into(),
+            kind: "user".into(),
+            role: "user".into(),
+            created_at_ms: 100,
+            blocks: vec![MessageBlock {
+                kind: "text".into(),
+                text: Some("synthetic prompt".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        SessionEntryPayload {
+            id: "e2".into(),
+            kind: "assistant".into(),
+            role: "assistant".into(),
+            created_at_ms: 200,
+            run_id: Some("r1".into()),
+            blocks: vec![
+                MessageBlock {
+                    kind: "reasoning".into(),
+                    text: Some("synthetic thought".into()),
+                    provider_metadata: Some(json!({"vendor":{"signature":"opaque"}})),
+                    ..Default::default()
                 },
-                "name": "session_info",
-                "tool_args": "",
-                "timestamp": "2026-08-06T10:00:00+08:00"
-            },
-            {
-                "id": "e3",
-                "role": "assistant",
-                "content": "I'll take a look.",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-06T10:00:05+08:00",
-                "thinking": "Let me check the file.",
-                "meta": {"attachments": [{"path": "/tmp/a.txt", "kind": "file"}]},
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "read", "arguments": "{\"path\":\"a.txt\"}"}
-                }],
-                "output_tokens": 42,
-                "duration_ms": 1234
-            },
-            {
-                "id": "e4",
-                "role": "tool",
-                "content": "file contents",
-                "name": "read",
-                "tool_args": "{\"path\":\"a.txt\"}",
-                "timestamp": "2026-08-06T10:00:06+08:00"
-            }
-        ]
-    })
+                MessageBlock {
+                    kind: "tool_call".into(),
+                    tool_call_id: Some("tc1".into()),
+                    name: Some("read".into()),
+                    arguments: Some(json!({"path":"synthetic.txt"})),
+                    ..Default::default()
+                },
+                MessageBlock {
+                    kind: "text".into(),
+                    text: Some("after tool".into()),
+                    ..Default::default()
+                },
+            ],
+            usage: Some(MessageUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(4),
+                cache_read_tokens: Some(2),
+                cache_write_tokens: Some(0),
+            }),
+            run: Some(MessageRun {
+                status: Some("completed".into()),
+                error: None,
+                duration_ms: Some(100),
+            }),
+            ..Default::default()
+        },
+        SessionEntryPayload {
+            id: "e3".into(),
+            kind: "tool".into(),
+            role: "tool".into(),
+            created_at_ms: 300,
+            run_id: Some("r1".into()),
+            blocks: vec![MessageBlock {
+                kind: "tool_result".into(),
+                tool_call_id: Some("tc1".into()),
+                text: Some("result".into()),
+                is_error: Some(false),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    ];
+    json!({"entries":entries})
 }
 
 fn get_events_since_fixture() -> Value {

@@ -5,7 +5,6 @@ import {
   type AgentMessage,
   type MessageSegment,
   type RunProjector,
-  type SessionEntry,
 } from "@future-os/thread-projection";
 import type {
   ApprovalPayload,
@@ -126,79 +125,25 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
   return [item];
 }
 
-/** History entries (mobile wire shape) → the shared session-entry shape. */
-function toSessionEntries(entries: HistoryEntry[]): SessionEntry[] {
-  return entries.map((entry, index) => {
-    const role =
-      entry.role === "assistant" || entry.role === "tool" || entry.role === "system"
-        ? entry.role
-        : "user";
-    const toolCalls = (entry.tool_calls ?? [])
-      .filter(call => !!call && typeof call?.function?.name === "string")
-      .map(call => ({
-        id: call.id ?? `call_${index}`,
-        function: {
-          name: call.function!.name as string,
-          arguments: call.function!.arguments,
-        },
-      }));
-    return {
-      id: entry.id ?? `entry_${index}`,
-      ...(entry.entry_type ? { entry_type: entry.entry_type } : {}),
-      role,
-      content: typeof entry.content === "string" ? entry.content : "",
-      ...(entry.checkpoint ? { checkpoint: entry.checkpoint } : {}),
-      ...(entry.thinking != null ? { thinking: entry.thinking } : {}),
-      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-      ...(entry.tool_call_id != null ? { tool_call_id: entry.tool_call_id } : {}),
-      ...(entry.tool_result_is_error != null
-        ? { tool_result_is_error: entry.tool_result_is_error }
-        : {}),
-      ...(entry.meta
-        ? {
-            meta: {
-              ...(typeof entry.meta.run_id === "string" ? { run_id: entry.meta.run_id } : {}),
-              ...(entry.meta.attachments?.length
-                ? {
-                    attachments: entry.meta.attachments
-                      .filter(a => !!a && typeof a.path === "string" && a.path.length > 0)
-                      .map(a => ({ path: a.path, name: a.name, kind: a.kind ?? "file" })),
-                  }
-                : {}),
-            },
-          }
-        : {}),
-      ...(entry.timestamp ? { timestamp: entry.timestamp } : {}),
-      ...(entry.output_tokens != null ? { output_tokens: entry.output_tokens } : {}),
-      ...(entry.duration_ms != null ? { duration_ms: entry.duration_ms } : {}),
-      ...(entry.input_tokens != null ? { input_tokens: entry.input_tokens } : {}),
-      ...(entry.cache_read_tokens != null ? { cache_read_tokens: entry.cache_read_tokens } : {}),
-      ...(entry.run_status != null ? { run_status: entry.run_status } : {}),
-      ...(entry.run_error != null ? { run_error: entry.run_error } : {}),
-      ...(entry.run_duration_ms != null ? { run_duration_ms: entry.run_duration_ms } : {}),
-    };
-  });
-}
-
 /** Display entries from `get_session_entries` — projection delegated to the
  * shared package (`entriesToMessages`), then mapped to the render contract. */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
-  const messages = entriesToMessages(toSessionEntries(entries));
+  const messages = entriesToMessages(entries);
   return { ...emptyTimeline(), items: messages.flatMap(messageToItems) };
 }
 
-/** Message-shaped history fallback (old desktops without get_session_entries). */
+/** Render the model-context messages returned by get_messages. */
 export function timelineFromHistory(messages: HistoryMessage[]): TimelineState {
   const items: TimelineItem[] = [];
   messages.forEach((message, index) => {
-    const text = messageText(message.content);
+    const text = messageText(message.blocks);
     if (!text.trim() || (message.role !== "user" && message.role !== "assistant")) return;
     items.push({
       id: `history:${index}`,
       kind: "message",
       role: message.role,
       text,
-      runId: message.run_id,
+      runId: message.runId ?? undefined,
     });
   });
   return { ...emptyTimeline(), items };

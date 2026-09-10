@@ -319,6 +319,33 @@ pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value
     Ok(serde_json::json!({ "entries": entries }))
 }
 
+pub(crate) async fn query_tools(
+    session_id: String,
+    run_id: String,
+    tool_call_id: Option<String>,
+    offset: i64,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let command = if tool_call_id.is_some() {
+        "get_tool_output"
+    } else {
+        "list_tool_calls"
+    };
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            run_id,
+            tool_call_id,
+            offset: Some(offset),
+            limit: Some(100),
+            ..base_command(command, session_id)
+        })
+        .await
+        .map_err(|error| format!("tool query failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("tool query rejected")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 /// Fetch one backward, user-exchange-bounded history page from the Agent. This
 /// keeps remote mobile paging end-to-end: the desktop no longer downloads the
 /// complete Agent history again for every NATS page and then slices it locally.
@@ -691,12 +718,7 @@ pub async fn agent_prompt_with_model_context(
             mark_run_completed_if_active(request.run_id.as_deref());
         }
         Ok(response) => {
-            let error = match response.termination_kind.as_deref() {
-                Some("upstream_disconnected") => {
-                    "[UPSTREAM_DISCONNECTED] model response stream ended before completion"
-                }
-                _ => "[MODEL_RESPONSE_ERROR] response ended before a clean terminal",
-            };
+            let error = stream::termination_error(response.termination_kind.as_deref());
             mark_run_failed_if_active(request.run_id.as_deref(), error);
         }
         Err(error) => mark_run_failed_if_active(request.run_id.as_deref(), &error.to_string()),
@@ -1095,7 +1117,7 @@ async fn check_and_reanimate_run(
         eprintln!("FutureOS startup reconcile: run {run_id} confirmed interrupted by restart; leaving cancelled");
     } else if let Some(terminal) = requested_terminal {
         let state = terminal
-            .get("state")
+            .get("status")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "requestedRun omitted terminal state".to_string())?;
         let error = terminal.get("error").and_then(|value| value.as_str());
@@ -1163,7 +1185,7 @@ async fn reconcile_run_gone(
         .filter(|value| value.is_object())
     {
         let agent_state = terminal
-            .get("state")
+            .get("status")
             .and_then(|value| value.as_str())
             .unwrap_or("");
         let error = terminal.get("error").and_then(|value| value.as_str());
@@ -1210,7 +1232,7 @@ fn settle_from_agent_terminal(
     let (status, error_type, default_message) = match agent_state {
         "completed" => ("completed", None, None),
         "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
-        "error" => (
+        "error" | "failed" => (
             "failed",
             Some("agent_error"),
             Some("Future Agent run failed."),
@@ -1293,7 +1315,7 @@ fn plan_active_run_reconciliation(
     if let Some(terminal) = state.get("requestedRun").filter(|value| value.is_object()) {
         return ActiveRunAction::SettleTerminal {
             agent_state: terminal
-                .get("state")
+                .get("status")
                 .and_then(|value| value.as_str())
                 .unwrap_or("")
                 .to_string(),
@@ -1601,7 +1623,7 @@ mod watchdog_tests {
     #[test]
     fn mirrors_durable_completed_marker() {
         let action = plan_active_run_reconciliation(
-            &state(r#"{"requestedRun": {"state": "completed"}}"#),
+            &state(r#"{"requestedRun": {"status": "completed"}}"#),
             "run-1",
             120,
         );
@@ -1617,7 +1639,7 @@ mod watchdog_tests {
     #[test]
     fn mirrors_error_marker_with_its_message() {
         let action = plan_active_run_reconciliation(
-            &state(r#"{"requestedRun": {"state": "error", "error": "boom"}}"#),
+            &state(r#"{"requestedRun": {"status": "error", "error": "boom"}}"#),
             "run-1",
             120,
         );
@@ -1820,8 +1842,7 @@ mod bridge_tests {
         mock.push_typed_data(
             "get_session_entries",
             serde_json::json!({"entries": [{
-                "id": "e1", "role": "assistant", "content": "world", "name": "",
-                "tool_args": "", "timestamp": "2026-08-27T10:00:01Z"
+                "id":"e1","kind":"assistant","role":"assistant","createdAtMs":1000,"blocks":[{"kind":"text","text":"world"}]
             }]}),
         );
         let value = get_session_entries("sess-1".to_string())
@@ -1833,8 +1854,7 @@ mod bridge_tests {
             "get_session_entries",
             serde_json::json!({
                 "entries": [{
-                    "id": "e2", "role": "user", "content": "next", "name": "",
-                    "tool_args": "", "timestamp": "2026-08-27T10:00:02Z"
+                    "id":"e2","kind":"user","role":"user","createdAtMs":1000,"blocks":[{"kind":"text","text":"next"}]
                 }],
                 "hasMore": true,
                 "nextOffset": 1
@@ -1843,8 +1863,7 @@ mod bridge_tests {
         mock.push_typed_data(
             "get_session_entries",
             serde_json::json!({"entries": [{
-                "id": "e3", "role": "assistant", "content": "done", "name": "",
-                "tool_args": "", "timestamp": "2026-08-27T10:00:03Z"
+                "id":"e3","kind":"assistant","role":"assistant","createdAtMs":1000,"blocks":[{"kind":"text","text":"done"}]
             }]}),
         );
         let value = get_session_entries("sess-1".to_string())
@@ -2539,7 +2558,7 @@ mod bridge_tests {
         // Durable terminal marker → mirrored onto the row.
         mock.push_run_state(
             &run.id,
-            serde_json::json!({"requestedRun": {"state": "completed"}}),
+            serde_json::json!({"requestedRun": {"status": "completed"}}),
         );
         reconcile_active_run_once(&active, &run.id, 120)
             .await
@@ -3034,7 +3053,7 @@ mod pipeline_tests {
         // The journal holds a durable completed marker for the run.
         fixture.mock.push_run_state(
             &run_id,
-            serde_json::json!({"requestedRun": {"state": "completed"}}),
+            serde_json::json!({"requestedRun": {"status": "completed"}}),
         );
         let error = agent_prompt(
             message,
@@ -3468,7 +3487,7 @@ mod pipeline_tests {
         mark_interrupted(&run4.id);
         mock.push_run_state(
             &run4.id,
-            serde_json::json!({"requestedRun": {"state": "error", "error": "boom"}}),
+            serde_json::json!({"requestedRun": {"status": "error", "error": "boom"}}),
         );
         check_and_reanimate_run("sess-cv", &run4.id, &thread.id)
             .await

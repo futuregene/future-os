@@ -458,8 +458,8 @@ fn session_attachment_name(entries: &Value, requested: &str) -> Option<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|entry| entry.get("meta"))
-        .filter_map(|meta| meta.get("attachments"))
+        .filter_map(|entry| entry.get("metadata"))
+        .filter_map(|metadata| metadata.get("attachments"))
         .filter_map(Value::as_array)
         .flatten()
         .find(|attachment| attachment.get("path").and_then(Value::as_str) == Some(requested))
@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn finds_only_session_attachment_paths() {
-        let entries = json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/a.md"}]}}]});
+        let entries = json!({"entries":[{"metadata":{"attachments":[{"path":"/tmp/a.md"}]}}]});
         assert!(attachment_is_in_session(&entries, "/tmp/a.md"));
         assert!(!attachment_is_in_session(&entries, "/tmp/secret"));
     }
@@ -1759,13 +1759,13 @@ mod flow_tests {
 
     #[test]
     fn session_attachment_name_falls_back_to_the_path_file_name() {
-        let entries = json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/no-name.md"}]}}]});
+        let entries =
+            json!({"entries":[{"metadata":{"attachments":[{"path":"/tmp/no-name.md"}]}}]});
         assert_eq!(
             session_attachment_name(&entries, "/tmp/no-name.md"),
             Some("no-name.md".to_string())
         );
-        let named =
-            json!({"entries":[{"meta":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
+        let named = json!({"entries":[{"metadata":{"attachments":[{"path":"/tmp/x","name":"Pretty.txt"}]}}]});
         assert_eq!(
             session_attachment_name(&named, "/tmp/x"),
             Some("Pretty.txt".to_string())
@@ -1793,7 +1793,7 @@ mod flow_tests {
         let gone = dir.join("gone.txt");
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": gone.to_string_lossy(),"name":"gone.txt"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": gone.to_string_lossy(),"name":"gone.txt"}]}}]}),
         );
         assert!(prepare_download(&session, &gone.to_string_lossy())
             .await
@@ -1802,7 +1802,7 @@ mod flow_tests {
         // An attachment path that still exists but is a directory, not a file.
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": dir.to_string_lossy(),"name":"adir"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": dir.to_string_lossy(),"name":"adir"}]}}]}),
         );
         let error = prepare_download(&session, &dir.to_string_lossy())
             .await
@@ -1817,7 +1817,7 @@ mod flow_tests {
         std::fs::write(&credential, b"{\"api_key\":\"secret\"}").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": credential.to_string_lossy(),"name":"auth.json"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": credential.to_string_lossy(),"name":"auth.json"}]}}]}),
         );
         let error = prepare_download(&session, &credential.to_string_lossy())
             .await
@@ -1829,7 +1829,7 @@ mod flow_tests {
         std::fs::write(&notes, b"hello download").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
         );
         let info = prepare_download(&session, &notes.to_string_lossy())
             .await
@@ -1852,7 +1852,7 @@ mod flow_tests {
         std::fs::write(&document, document_bytes).unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": document.to_string_lossy(),"name":"report.doc"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": document.to_string_lossy(),"name":"report.doc"}]}}]}),
         );
         let info = prepare_download(&session, &document.to_string_lossy())
             .await
@@ -1874,7 +1874,7 @@ mod flow_tests {
         // An explicit original request never returns a text preview.
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
         );
         let original = prepare_download_variant(&session, &notes.to_string_lossy(), "original")
             .await
@@ -2333,7 +2333,7 @@ mod flow_tests {
         std::fs::write(&weird, b"data").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": weird.to_string_lossy(),"name":"archive.zzz"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": weird.to_string_lossy(),"name":"archive.zzz"}]}}]}),
         );
         let error = prepare_download_variant(&session, &weird.to_string_lossy(), "preview")
             .await
@@ -2345,7 +2345,7 @@ mod flow_tests {
         std::fs::write(&notes, b"hi").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
         );
         let error = prepare_download_variant(&session, &notes.to_string_lossy(), "weird")
             .await

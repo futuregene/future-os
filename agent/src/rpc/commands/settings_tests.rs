@@ -538,15 +538,12 @@ fn set_session_name_survives_persist_error() {
         )],
     );
     // Break the on-disk file so update_info fails (logged, still ok).
-    let path = state.session_manager.find("default").unwrap();
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir_all(&path).unwrap();
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
 
     let mut cmd = make_cmd("set_session_name");
     cmd.name = "still works".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
-    let _ = std::fs::remove_dir_all(&path);
 }
 
 #[test]
@@ -562,16 +559,13 @@ fn set_cwd_survives_persist_error() {
             "low".to_string(),
         )],
     );
-    let path = state.session_manager.find("default").unwrap();
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir_all(&path).unwrap();
+    state.session_manager.test_execute("CREATE TRIGGER fail_entries BEFORE INSERT ON entries BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;");
 
     let mut cmd = make_cmd("set_cwd");
     cmd.cwd = "/tmp/new-cwd".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["cwd"], "/tmp/new-cwd");
-    let _ = std::fs::remove_dir_all(&path);
 }
 
 #[test]

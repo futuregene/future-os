@@ -15,61 +15,56 @@ export interface RunEvent {
   createdAt: number;
 }
 
-/** Raw entry from agent get_session_entries RPC. */
+/** Ordered blocks returned by the existing history RPC. */
+export interface MessageBlock {
+  kind: string;
+  text?: string;
+  toolCallId?: string;
+  name?: string;
+  arguments?: unknown;
+  isError?: boolean;
+  imageUrl?: string;
+  providerMetadata?: unknown;
+  data?: unknown;
+}
+
 export interface SessionEntry {
   id: string;
-  entry_type?: string;
+  kind: string;
   role: "user" | "assistant" | "tool" | "system";
-  content: string;
-  name?: string;
-  tool_args?: string;
-  /** ID of the originating call for a persisted tool-result entry. */
-  tool_call_id?: string;
-  /** Explicit tool-result status; absent in legacy histories. */
-  tool_result_is_error?: boolean;
-  thinking?: string;
-  tool_calls?: Array<{
-    id: string;
-    function: { name: string; arguments: unknown };
-  }>;
-  /** RFC3339 entry time; preserved across re-saves so history keeps real times. */
-  timestamp?: string;
-  /** Output tokens for the reply — only the final assistant entry of a run. */
-  output_tokens?: number;
-  /** Run wall-clock duration in ms — paired with `output_tokens`. */
-  duration_ms?: number;
-  /** Prompt (input) tokens of the run — the session's cumulative tokens_in
-   * delta for this run. Absent on legacy sessions. */
-  input_tokens?: number;
-  /** Cache-read tokens of the run (informational subset of input_tokens). */
-  cache_read_tokens?: number;
-  /** Structured per-entry metadata; user entries carry attached files here. */
-  meta?: {
-    /** Canonical Agent run identity (new entries; absent in legacy JSONL). */
-    run_id?: string;
+  createdAtMs: number;
+  runId?: string | null;
+  blocks: MessageBlock[];
+  metadata?: {
     attachments?: Array<{
       path: string;
-      kind?: "image" | "file" | null;
       name: string;
+      kind?: "image" | "file" | null;
       thumbnail?: string | null;
     }>;
-  };
-  /** Durable context-checkpoint payload for entry_type=compaction. */
+    [key: string]: unknown;
+  } | null;
+  usage?: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheReadTokens?: number | null;
+    cacheWriteTokens?: number | null;
+  } | null;
+  run?: {
+    status?: string | null;
+    error?: string | null;
+    durationMs?: number | null;
+  } | null;
+  session?: Record<string, unknown> | null;
   checkpoint?: {
-    schema_version?: number;
-    checkpoint_id?: string;
-    cutoff_entry_id?: string;
-    tokens_before?: number;
-    tokens_after?: number;
+    schemaVersion?: number;
+    checkpointId?: string;
+    cutoffEntryId?: string;
+    tokensBefore?: number;
+    tokensAfter?: number;
     trigger?: string;
     phase?: string;
-    algorithm_version?: string;
+    algorithmVersion?: string;
     summary?: unknown;
-  };
-  /** Terminal outcome of meta.run_id, derived from the Agent run journal. */
-  run_status?: "completed" | "failed" | "cancelled" | "incomplete" | string;
-  /** Raw failure diagnostic; clients own localized display copy. */
-  run_error?: string;
-  /** Terminal duration, including reply-less runs. */
-  run_duration_ms?: number;
+  } | null;
 }

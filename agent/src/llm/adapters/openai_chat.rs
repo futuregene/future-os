@@ -128,6 +128,8 @@ impl ProtocolAdapter for OpenAiChatAdapter {
         if let Some(text) = delta
             .get("content")
             .or_else(|| delta.get("text"))
+            .filter(|value| value.is_string() && value.as_str() != Some(""))
+            .or_else(|| delta.get("refusal"))
             .and_then(Value::as_str)
             .filter(|text| !text.is_empty())
         {
@@ -421,6 +423,7 @@ fn map_finish_reason(reason: &str) -> FinishReason {
         "tool_calls" | "function_call" => FinishReason::ToolCalls,
         "length" | "max_tokens" => FinishReason::Length,
         "content_filter" => FinishReason::ContentFilter,
+        "refusal" => FinishReason::Refusal,
         other => FinishReason::Unknown(other.to_string()),
     }
 }
@@ -670,6 +673,23 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn refusal_text_with_null_content_is_preserved_as_normal_output() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter.decode_frame(&frame(json!({
+            "choices": [{"delta": {"content": null, "refusal": "Synthetic refusal"}, "finish_reason": "stop"}]
+        })), state.as_mut()).unwrap();
+        assert!(events.iter().any(|event| matches!(event, ModelStreamEvent::TextDelta {text, ..} if text == "Synthetic refusal")));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                ..
+            }
+        )));
     }
 
     #[test]

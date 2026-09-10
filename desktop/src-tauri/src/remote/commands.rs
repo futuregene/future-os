@@ -535,7 +535,7 @@ async fn handle_command(
             }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
                 Ok(data) => {
-                    let entries = entries_with_run_status(&cmd.session_id, entries_vec(data));
+                    let entries = entries_vec(data);
                     reply(
                         client,
                         &msg,
@@ -1441,62 +1441,6 @@ fn entries_vec(data: Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// Add the GUI store's run outcome to history rows returned by older Agents.
-/// New Agents derive these fields from the authoritative run journal; when
-/// present, those values win. The store remains an additive compatibility
-/// source so mixed-version desktop/mobile deployments keep recovery parity.
-fn entries_with_run_status(session_id: &str, mut entries: Vec<Value>) -> Vec<Value> {
-    let outcomes: HashMap<String, (String, Option<String>, Option<i64>)> =
-        crate::store::find_thread_by_agent_session(session_id)
-            .ok()
-            .flatten()
-            .and_then(|thread| crate::store::list_runs(&thread.id).ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|run| {
-                let duration_ms = match (run.started_at, run.ended_at) {
-                    (Some(started_at), Some(ended_at)) if ended_at >= started_at => {
-                        Some(ended_at - started_at)
-                    }
-                    _ => None,
-                };
-                (run.id, (run.status, run.error_message, duration_ms))
-            })
-            .collect();
-    if outcomes.is_empty() {
-        return entries;
-    }
-    for entry in &mut entries {
-        let outcome = entry
-            .pointer("/meta/run_id")
-            .and_then(Value::as_str)
-            .and_then(|run_id| outcomes.get(run_id));
-        if let (Some((status, error_message, duration_ms)), Some(object)) =
-            (outcome, entry.as_object_mut())
-        {
-            // New agents project the journal's run_terminal outcome directly.
-            // The GUI store is only a compatibility source for older agents;
-            // never overwrite journal authority when both are available.
-            object
-                .entry("run_status".to_string())
-                .or_insert_with(|| Value::String(status.clone()));
-            if let Some(duration_ms) = duration_ms {
-                object
-                    .entry("run_duration_ms".to_string())
-                    .or_insert_with(|| Value::from(*duration_ms));
-            }
-            if status == "failed" {
-                if let Some(message) = error_message.as_ref().filter(|m| !m.trim().is_empty()) {
-                    object
-                        .entry("run_error".to_string())
-                        .or_insert_with(|| Value::String(message.clone()));
-                }
-            }
-        }
-    }
-    entries
-}
-
 fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value {
     paginate_items(messages, offset, limit, "messages")
 }
@@ -1505,8 +1449,8 @@ fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value
 /// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
 /// complete oldest exchanges until the page fits and advance the returned
 /// cursor past those omitted rows; they remain reachable on the next pull.
-fn prepare_backward_entries_page(session_id: &str, data: Value) -> Value {
-    let mut entries = entries_with_run_status(session_id, entries_vec(data.clone()));
+fn prepare_backward_entries_page(_session_id: &str, data: Value) -> Value {
+    let mut entries = entries_vec(data.clone());
     for entry in &mut entries {
         cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
     }
@@ -1609,143 +1553,80 @@ fn paginate_events(mut data: Value, offset: usize, limit: usize) -> Value {
     page
 }
 
-/// Cap the serialized size of a single message by truncating its `content`
-/// (a string or an array of `{type:"text", text}` blocks). Non-text blocks
-/// (tool_use etc.) are left intact so the shape stays renderable.
+/// Bound presentation payloads without changing the stored record.
 fn truncate_message_content(message: &mut Value, cap: usize) {
-    let oversized = serde_json::to_vec(message)
-        .map(|bytes| bytes.len() > cap)
-        .unwrap_or(false);
-    if !oversized {
-        // Other fields may still be oversized; the caller's final item cap
-        // handles those after this content-specific pass.
+    if serialized_len(message) <= cap {
         return;
     }
-    // Replay events carry their payload in `data` (a JSON string), not
-    // `content` — a single oversized event (e.g. a multi-MB tool result kept
-    // verbatim in the journal) would otherwise page out whole and be silently
-    // dropped by the relay, failing every reconcile on that session (H2
-    // residual). Mirror the live path (`cap_event_data`): swap the oversized
-    // `data` for a `_truncated` placeholder the client reducer consumes.
-    if message.get("content").is_none() {
-        if let Some(Value::String(data)) = message.get_mut("data") {
-            if data.len() > cap {
-                *data = format!(
-                    r#"{{"_truncated":true,"bytes":{},"note":"event exceeded the relay payload limit and was truncated; full content is available via get_messages"}}"#,
-                    data.len()
-                );
+    if let Some(blocks) = message.get_mut("blocks").and_then(Value::as_array_mut) {
+        let mut remaining = cap;
+        for block in blocks {
+            if let Some(Value::String(text)) = block.get_mut("text") {
+                let (end, truncated) = byte_cut(text, remaining);
+                if truncated {
+                    let mut cut = text[..end].to_owned();
+                    cut.push('…');
+                    *text = cut;
+                }
+                remaining = remaining.saturating_sub(text.len());
             }
         }
-        return;
-    }
-    let content = message
-        .get_mut("content")
-        .expect("content presence checked above");
-    match content {
-        Value::String(text) => {
-            let (end, truncated) = byte_cut(text, cap);
-            if truncated {
-                let mut cut = text[..end].to_string();
-                cut.push_str("\n\n[…内容过长，远程端已截断，完整内容见本机会话…]");
-                *text = cut;
-            }
+    } else if let Some(Value::String(data)) = message.get_mut("data") {
+        if data.len() > cap {
+            *data = json!({"_truncated":true,"bytes":data.len()}).to_string();
         }
-        Value::Array(blocks) => {
-            let mut remaining = cap;
-            for block in blocks.iter_mut() {
-                if remaining == 0 {
-                    break;
-                }
-                let is_text = block.get("type").and_then(Value::as_str) == Some("text");
-                if !is_text {
-                    continue;
-                }
-                if let Some(Value::String(text)) = block.get_mut("text") {
-                    let (end, truncated) = byte_cut(text, remaining);
-                    if truncated {
-                        let mut cut = text[..end].to_string();
-                        cut.push('…');
-                        *text = cut;
-                        remaining = 0;
-                    } else {
-                        remaining = remaining.saturating_sub(text.len());
-                    }
-                }
-            }
-        }
-        _ => {}
     }
 }
 
-/// Bound the complete serialized item, including structured tool arguments and
-/// metadata that are outside `content`.
 fn cap_remote_item(item: &mut Value, cap: usize) {
     truncate_message_content(item, cap.saturating_sub(16 * 1024));
     if serialized_len(item) <= cap {
         return;
     }
-
-    if let Some(tool_calls) = item.get_mut("tool_calls").and_then(Value::as_array_mut) {
-        for call in tool_calls {
-            let Some(arguments) = call.pointer_mut("/function/arguments") else {
-                continue;
-            };
-            let bytes = serialized_len(arguments);
-            if bytes > 8 * 1024 {
-                *arguments = json!({
-                    "_truncated": true,
-                    "bytes": bytes,
-                    "note": "tool arguments exceeded the relay item limit",
-                });
+    if let Some(blocks) = item.get_mut("blocks").and_then(Value::as_array_mut) {
+        for block in blocks {
+            if let Some(arguments) = block.get_mut("arguments") {
+                let bytes = serialized_len(arguments);
+                if bytes > 8 * 1024 {
+                    *arguments = json!({"truncated":true,"bytes":bytes});
+                }
             }
         }
     }
     if serialized_len(item) <= cap {
         return;
     }
-
-    if let Some(object) = item.as_object_mut() {
-        if let Some(meta) = object.get("meta") {
-            let run_id = meta.get("run_id").cloned();
-            let original_bytes = serialized_len(meta);
-            object.insert(
-                "meta".to_string(),
-                json!({
-                    "run_id": run_id,
-                    "_truncated": true,
-                    "bytes": original_bytes,
-                }),
-            );
-        }
-    }
-    if serialized_len(item) <= cap {
-        return;
-    }
-
     let original_bytes = serialized_len(item);
-    let mut replacement = serde_json::Map::new();
-    if let Some(object) = item.as_object() {
-        for key in [
-            "id",
-            "role",
-            "entry_type",
-            "type",
-            "run_id",
-            "idx",
-            "timestamp",
-        ] {
-            if let Some(value) = object.get(key) {
-                replacement.insert(key.to_string(), value.clone());
+    if item.get("blocks").is_some() {
+        let mut replacement = serde_json::Map::new();
+        for key in ["id", "role", "kind", "runId", "createdAtMs", "usage", "run"] {
+            if let Some(value) = item.get(key) {
+                replacement.insert(key.into(), value.clone());
             }
         }
+        if let Some(checkpoint) = item.get("checkpoint").and_then(Value::as_object) {
+            let minimal: serde_json::Map<String, Value> =
+                ["checkpointId", "tokensBefore", "tokensAfter", "trigger"]
+                    .into_iter()
+                    .filter_map(|key| checkpoint.get(key).map(|value| (key.into(), value.clone())))
+                    .collect();
+            replacement.insert("checkpoint".into(), Value::Object(minimal));
+        }
+        replacement.insert(
+            "metadata".into(),
+            json!({"remoteTruncated":true,"originalBytes":original_bytes}),
+        );
+        replacement.insert(
+            "blocks".into(),
+            json!([{"kind":"text","text":"[…远程条目过大，已截断；完整内容见本机会话…]"}]),
+        );
+        *item = Value::Object(replacement);
+    } else if let Some(object) = item.as_object_mut() {
+        object.insert(
+            "data".into(),
+            Value::String(json!({"_truncated":true,"bytes":original_bytes}).to_string()),
+        );
     }
-    replacement.insert("_truncated".to_string(), Value::Bool(true));
-    replacement.insert("originalBytes".to_string(), Value::from(original_bytes));
-    replacement.insert(
-        "content".to_string(),
-        Value::String("[…远程条目过大，已截断；完整内容见本机会话…]".to_string()),
-    );
-    *item = Value::Object(replacement);
 }
 
 fn serialized_len(value: &Value) -> usize {
@@ -1928,7 +1809,7 @@ mod tests {
     }
 
     fn text_message(text: &str) -> Value {
-        json!({ "role": "assistant", "content": text })
+        json!({ "role": "assistant", "blocks": [{"kind":"text","text":text}] })
     }
 
     #[test]
@@ -1981,12 +1862,12 @@ mod tests {
             entries.push(json!({
                 "id": format!("u{index}"),
                 "role": "user",
-                "content": format!("q{index}")
+                "blocks":[{"kind":"text","text":format!("q{index}")}]
             }));
             entries.push(json!({
                 "id": format!("a{index}"),
                 "role": "assistant",
-                "content": big.clone()
+                "blocks":[{"kind":"text","text":big.clone()}]
             }));
         }
         let page = prepare_backward_entries_page(
@@ -2010,7 +1891,7 @@ mod tests {
         let arr = page["messages"].as_array().unwrap();
         assert!(!arr.is_empty());
         // The oversized message's content was truncated to the cap.
-        let content = arr[0]["content"].as_str().unwrap();
+        let content = arr[0]["blocks"][0]["text"].as_str().unwrap();
         assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
         let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
         assert!(size < 1024 * 1024, "page too large: {size}");
@@ -2019,50 +1900,38 @@ mod tests {
     #[test]
     fn paginate_caps_structured_tool_arguments_and_metadata() {
         let entries = vec![json!({
-            "id": "a1",
-            "role": "assistant",
-            "content": "done",
-            "tool_calls": [{
-                "id": "tc-1",
-                "function": {
-                    "name": "write",
-                    "arguments": {"path": "/tmp/x", "content": "x".repeat(700_000)},
-                }
-            }],
-            "meta": {"run_id": "r1", "blob": "y".repeat(700_000)},
+            "id":"a1","kind":"assistant","role":"assistant","runId":"r1","createdAtMs":1000,
+            "blocks":[{"kind":"text","text":"done"},{"kind":"tool_call","toolCallId":"tc-1","name":"write","arguments":{"path":"/tmp/x","content":"x".repeat(700_000)}}],
+            "metadata":{"blob":"y".repeat(700_000)}
         })];
         let page = paginate_items(entries, 0, 100, "entries");
-        let size = serde_json::to_vec(&page).expect("serialize page").len();
-        assert!(size < 1024 * 1024, "page too large: {size}");
-        assert_eq!(
-            page.pointer("/entries/0/tool_calls/0/function/arguments/_truncated"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(page.pointer("/entries/0/meta/run_id"), Some(&json!("r1")));
+        assert!(serde_json::to_vec(&page).unwrap().len() < 1024 * 1024);
+        assert_eq!(page["entries"][0]["runId"], "r1");
+        assert_eq!(page["entries"][0]["metadata"]["remoteTruncated"], true);
     }
 
     #[test]
     fn truncate_caps_string_content() {
         let mut message = text_message(&"z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2));
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let content = message["content"].as_str().unwrap();
+        let content = message["blocks"][0]["text"].as_str().unwrap();
         assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
-        assert!(content.contains("截断"));
+        assert!(content.ends_with('…'));
     }
 
     #[test]
     fn truncate_caps_text_blocks_and_keeps_others() {
         let mut message = json!({
             "role": "assistant",
-            "content": [
-                { "type": "text", "text": "a".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
-                { "type": "tool_use", "id": "t1", "name": "shell" },
+            "blocks": [
+                { "kind": "text", "text": "a".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+                { "kind": "tool_use", "id": "t1", "name": "shell" },
             ]
         });
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["content"].as_array().unwrap();
+        let blocks = message["blocks"].as_array().unwrap();
         // Tool block untouched.
-        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["kind"], "tool_use");
         assert_eq!(blocks[1]["name"], "shell");
         // Text block truncated.
         let text = blocks[0]["text"].as_str().unwrap();
@@ -2073,7 +1942,7 @@ mod tests {
     fn truncate_leaves_small_messages_alone() {
         let mut message = text_message("small");
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert_eq!(message["content"], "small");
+        assert_eq!(message["blocks"][0]["text"], "small");
     }
 
     #[test]
@@ -2084,7 +1953,7 @@ mod tests {
             "tool_use": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
         });
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert!(message.get("content").is_none());
+        assert!(message.get("blocks").is_none());
     }
 
     #[test]
@@ -2093,14 +1962,14 @@ mod tests {
         // (the remaining-subtract path), then an oversized one.
         let mut message = json!({
             "role": "assistant",
-            "content": [
-                { "type": "tool_use", "id": "t0", "name": "shell" },
-                { "type": "text", "text": "small" },
-                { "type": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+            "blocks": [
+                { "kind": "tool_use", "id": "t0", "name": "shell" },
+                { "kind": "text", "text": "small" },
+                { "kind": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
             ]
         });
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["content"].as_array().unwrap();
+        let blocks = message["blocks"].as_array().unwrap();
         assert_eq!(blocks[0]["name"], "shell"); // untouched
         assert_eq!(blocks[1]["text"], "small"); // fits, untouched
         let text = blocks[2]["text"].as_str().unwrap();
@@ -2112,11 +1981,11 @@ mod tests {
         // Oversized but content is a scalar → the `_ => {}` arm.
         let mut message = json!({
             "role": "assistant",
-            "content": 42,
+            "blocks": 42,
             "pad": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
         });
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert_eq!(message["content"], 42);
+        assert_eq!(message["blocks"], 42);
     }
 
     #[test]
@@ -2125,13 +1994,13 @@ mod tests {
         // left intact (the text-block match's `_ => {}` arm).
         let mut message = json!({
             "role": "assistant",
-            "content": [
-                { "type": "text", "text": 42 },
-                { "type": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
+            "blocks": [
+                { "kind": "text", "text": 42 },
+                { "kind": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
             ]
         });
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["content"].as_array().unwrap();
+        let blocks = message["blocks"].as_array().unwrap();
         assert_eq!(blocks[0]["text"], 42); // untouched
         let text = blocks[1]["text"].as_str().unwrap();
         assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
@@ -2794,13 +2663,10 @@ mod bridge_tests {
             &session,
             json!({ "entries": [{
                 "id": "persisted-assistant",
-                "entry_type": "assistant",
+                "kind": "assistant",
                 "role": "assistant",
-                "content": "partial",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-27T10:00:00Z",
-                "meta": { "run_id": history_run.id }
+                "blocks":[{"kind":"text","text":"partial"}],
+                "createdAtMs":1000,"runId":history_run.id,"run":{"status":"failed","durationMs":1000,"error":"synthetic failure"}
             }] }),
         );
         let reply = bridge
@@ -2810,8 +2676,11 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(reply["data"]["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(reply["data"]["entries"][0]["run_status"], json!("failed"));
-        assert!(reply["data"]["entries"][0]["run_duration_ms"].is_number());
+        assert_eq!(
+            reply["data"]["entries"][0]["run"]["status"],
+            json!("failed")
+        );
+        assert!(reply["data"]["entries"][0]["run"]["durationMs"].is_number());
 
         // Mobile's tail request is forwarded as an Agent backward cursor; the
         // desktop must not expand it back into a full-history forward loop.
@@ -2842,10 +2711,7 @@ mod bridge_tests {
             json!({"entries": [{
                 "id": "typed-mobile-entry",
                 "role": "assistant",
-                "content": "typed mobile history",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-27T10:00:00Z"
+                "kind":"assistant","createdAtMs":1000,"blocks":[{"kind":"text","text":"typed mobile history"}]
             }]}),
         );
         let reply = bridge
@@ -2855,7 +2721,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         assert_eq!(
-            reply["data"]["entries"][0]["content"],
+            reply["data"]["entries"][0]["blocks"][0]["text"],
             json!("typed mobile history")
         );
 
@@ -2948,7 +2814,7 @@ mod bridge_tests {
         std::fs::write(&file, b"take me").unwrap();
         agent.set_session_entries(
             &session,
-            json!({"entries":[{"meta":{"attachments":[{"path": file.to_string_lossy()}]}}]}),
+            json!({"entries":[{"metadata":{"attachments":[{"path": file.to_string_lossy()}]}}]}),
         );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "download_prepare", "sessionId": session, "filePath": file.to_string_lossy() }))
@@ -3816,76 +3682,12 @@ mod bridge_tests {
     }
 
     #[test]
-    fn entries_with_run_status_covers_empty_and_error_outcomes() {
-        let _home = HomeGuard::new("cmd-run-status");
-        init_store();
-
-        // A session with no runs → outcomes empty → entries returned unchanged.
-        let unchanged = entries_with_run_status("sess-empty", vec![json!({ "a": 1 })]);
-        assert_eq!(unchanged.len(), 1);
-        assert!(unchanged[0].get("run_status").is_none());
-
-        let session = unique("sess-status");
-        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
-            mode: "chat".to_string(),
-            title: None,
-            workspace_id: None,
-            workspace_path: None,
-            workspace_name: None,
-            agent_session_id: Some(session.clone()),
-        })
-        .unwrap();
-        // A still-running run (ended_at NULL) → duration `_ => None` arm.
-        let running = crate::store::create_run(crate::store::CreateRunInput {
-            id: Some(unique("run-running")),
-            thread_id: thread.id.clone(),
-            trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
-        })
-        .unwrap();
-        // A failed run with an error message → run_error inserted.
-        let failed = crate::store::create_run(crate::store::CreateRunInput {
-            id: Some(unique("run-failed")),
-            thread_id: thread.id,
-            trigger_message_id: None,
-            model_provider: None,
-            model_id: None,
-        })
-        .unwrap();
-        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
-            run_id: failed.id.clone(),
-            status: "failed".to_string(),
-            error_message: Some("boom".to_string()),
-            error_type: None,
-        })
-        .unwrap();
-
-        let entries = entries_with_run_status(
-            &session,
-            vec![
-                json!({ "entryType": "assistant", "meta": { "run_id": running.id } }),
-                json!({
-                    "entryType": "assistant",
-                    "meta": { "run_id": failed.id },
-                    "run_status": "completed",
-                    "run_error": "journal truth",
-                    "run_duration_ms": 7
-                }),
-                // An entry referencing a run with no persisted outcome takes
-                // the `outcome.is_none()` (else) arm of the match.
-                json!({ "entryType": "assistant", "meta": { "run_id": "ghost-run" } }),
-            ],
+    fn history_keeps_agent_outcome_without_desktop_inference() {
+        let entry = json!({"id":"m","kind":"assistant","role":"assistant","runId":"run","createdAtMs":1000,"blocks":[],"run":{"status":"failed","error":"synthetic","durationMs":7}});
+        let page = prepare_backward_entries_page(
+            "unmirrored",
+            json!({"entries":[entry.clone()],"hasMore":false,"nextOffset":0}),
         );
-        // The running run has no duration (ended_at NULL) and keeps its status.
-        assert_eq!(entries[0]["run_status"], json!("running"));
-        assert!(entries[0].get("run_duration_ms").is_none());
-        // Agent journal fields are authoritative when present; the GUI store
-        // only fills missing fields for old agents.
-        assert_eq!(entries[1]["run_status"], json!("completed"));
-        assert_eq!(entries[1]["run_duration_ms"], json!(7));
-        assert_eq!(entries[1]["run_error"], json!("journal truth"));
-        // The ghost entry is left untouched.
-        assert!(entries[2].get("run_status").is_none());
+        assert_eq!(page["entries"][0], entry);
     }
 }

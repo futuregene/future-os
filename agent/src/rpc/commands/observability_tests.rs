@@ -160,9 +160,9 @@ fn get_state_omits_interrupted_run_once_terminal_present() {
     assert_eq!(resp["success"], true);
     assert!(resp["data"]["activeRun"].is_null());
     assert!(resp["data"]["interruptedRun"].is_null());
-    assert_eq!(resp["data"]["requestedRun"]["run_id"], "run-done");
+    assert_eq!(resp["data"]["requestedRun"]["runId"], "run-done");
     assert_eq!(
-        resp["data"]["requestedRun"]["state"],
+        resp["data"]["requestedRun"]["status"],
         crate::session::RUN_STATE_COMPLETED
     );
     let _ = state.session_manager.delete(session_id);
@@ -457,18 +457,12 @@ fn get_session_events_since_returns_events_then_journal_error() {
     assert_eq!(events[0]["type"], "model_changed");
 
     // A directory where the journal file should be breaks reads.
-    let journal = state
-        .session_manager
-        .run_data_path("default")
-        .join("_session.jsonl");
-    std::fs::remove_file(&journal).unwrap();
-    std::fs::create_dir_all(&journal).unwrap();
+    state.session_manager.test_execute("DROP TABLE run_events");
     let resp = parse_response(&handle_command_internal(
         &state,
         make_cmd("get_session_events_since"),
     ));
     assert_eq!(resp["success"], false);
-    let _ = std::fs::remove_dir_all(&journal);
 }
 
 #[test]

@@ -114,7 +114,7 @@ export function streamingBubbleBase(
 ): AgentMessage[] | null {
   // A persisted assistant message already carries this run — the run settled
   // and the thread was reloaded; don't resurrect a synthetic bubble.
-  if (current.some(message => message.runId === runId && message.id !== bubbleId))
+  if (current.some(message => message.role === "assistant" && message.runId === runId && message.id !== bubbleId))
     return null;
 
   const lastAssistantIdx = lastIndexOfRole(current, "assistant");
@@ -346,10 +346,9 @@ export async function updatePendingMessageFromRunEvents(
 }
 
 /**
- * Derive the renderable content + ordered segments from a run's events. Segments
- * are only trusted when the events actually carried the assistant text — the
- * stored reply (from the gRPC return) is otherwise authoritative, so legacy data
- * and text-only-via-gRPC exchanges fall back to flat content + activity list.
+ * Preserve event segments even when no answer text arrived. The RPC reply is
+ * authoritative for missing text, but must not replace reasoning/tool output
+ * that was already visible during streaming.
  */
 export function deriveRenderFields(
   events: StoredRunEvent[],
@@ -360,6 +359,15 @@ export function deriveRenderFields(
     return {
       content: projection.content,
       segments: projection.segments,
+      outputTokens: projection.outputTokens,
+    };
+  }
+  if (projection.segments.length > 0) {
+    return {
+      content: fallbackContent,
+      segments: fallbackContent.trim()
+        ? [...projection.segments, { id: "rpc_fallback_text", kind: "text", text: fallbackContent }]
+        : projection.segments,
       outputTokens: projection.outputTokens,
     };
   }
@@ -533,6 +541,7 @@ function applyRunToMessage(message: AgentMessage, run: StoredRun): AgentMessage 
     stopped,
     terminationNotice,
     terminationTitle,
+    runError: run.errorMessage ?? message.runError,
     status: run.status === "failed" ? "failed" : (message.status ?? "complete"),
     durationMs: message.durationMs ?? runDurationMs(run),
     createdAt: stopTime ?? message.createdAt,
@@ -706,7 +715,7 @@ export function recoverFailedRuns(messages: AgentMessage[], runs: StoredRun[]): 
     return messages;
   const orphans = runs.filter(run =>
     run.status === "failed"
-    && !messages.some(message => message.runId === run.id)
+    && !messages.some(message => message.role === "assistant" && message.runId === run.id)
     && isOrphanRun(run, timestamps));
   if (orphans.length === 0)
     return messages;

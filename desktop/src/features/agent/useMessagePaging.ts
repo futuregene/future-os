@@ -1,6 +1,15 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { RefObject } from "react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 /**
  * One rendered page of conversation history: a run of exchanges starting at a
@@ -10,7 +19,10 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
  * question" rule. The tail beyond the window (streaming bubbles, replies whose
  * user message landed inside the window) is always included.
  */
-export function computePageStart(messages: AgentMessage[], userExchangeCount: number): number {
+export function computePageStart(
+  messages: AgentMessage[],
+  userExchangeCount: number,
+): number {
   if (userExchangeCount <= 0 || messages.length === 0)
     return 0;
   // Walk backwards from the tail, counting user messages until the window is
@@ -29,7 +41,7 @@ export function computePageStart(messages: AgentMessage[], userExchangeCount: nu
 interface UseMessagePagingInput {
   messages: AgentMessage[];
   /**
-   * Scroll container. The paging hook reads/writes its `scrollTop` to preserve
+   * Scroll container. The shared viewport controller manages `scrollTop` to preserve
    * the user's viewport across a page load. `scrollTop` stays `0` while the
    * user is stuck at the top, so top-gesture detection must listen to `wheel`
    * (see `handleScroll`).
@@ -39,6 +51,12 @@ interface UseMessagePagingInput {
   userExchangeCount: number;
   /** Caller's scroll handler — composed in front of the paging handler. */
   onScroll?: () => void;
+  hasOlderHistory?: boolean;
+  loadOlderHistory?: (
+    beforeCommit?: (messages: AgentMessage[]) => void,
+  ) => Promise<void>;
+  followEnabled?: boolean;
+  onContentSettled?: () => void;
 }
 
 interface UseMessagePagingResult {
@@ -48,6 +66,8 @@ interface UseMessagePagingResult {
   showLoadOlderHint: boolean;
   handleScroll: () => void;
   loadOlder: () => void;
+  scrollToLatest: () => void;
+  showJumpToLatest: boolean;
 }
 
 /** Distance from the top that counts as "at the top" for the load hint. */
@@ -63,28 +83,27 @@ const WHEEL_COOLDOWN_MS = 300;
 const TOP_SETTLE_MS = 350;
 
 /**
- * Windowed rendering for long threads. `messages` stays fully loaded in memory
- * (the agent session JSONL is projected once, cheaply); this hook only controls
- * which slice renders. Pages are counted in user exchanges, so loading an older
+ * Windowed rendering over the loaded history. Once the local window reaches
+ * its oldest entry, ask the storage hook for another page. Pages are counted in user exchanges, so loading an older
  * page never splits a user question from its reply.
  *
- * Scroll anchoring across a page load follows the same idea opencode uses: when
- * a page is prepended, record the first visible message and its offset from the
- * viewport top, then restore that exact offset in a layout effect (before the
- * browser paints) — the viewport never visibly jumps.
+ * A stable leading message defines the window. The viewport controller owns
+ * both bottom-follow and persistent reading anchors, including late resizes.
  */
 export function useMessagePaging({
   messages,
   scrollRef,
   userExchangeCount,
   onScroll,
+  hasOlderHistory = false,
+  loadOlderHistory,
+  followEnabled,
+  onContentSettled,
 }: UseMessagePagingInput): UseMessagePagingResult {
-  const [loadedPages, setLoadedPages] = useState(1);
+  const [windowStartId, setWindowStartId] = useState<string | null>(null);
   const [atTop, setAtTop] = useState(false);
   const [topSettled, setTopSettled] = useState(false);
   const topSettleTimerRef = useRef<number | null>(null);
-  const onScrollRef = useRef(onScroll);
-  onScrollRef.current = onScroll;
 
   // Synchronous re-entrancy guard. This ref is read in the same tick a wheel
   // event fires (a state flag would only flip after React commits), so a single
@@ -93,71 +112,91 @@ export function useMessagePaging({
   const loadingOlderRef = useRef(false);
   const lastWheelAtRef = useRef(0);
 
-  // computePageStart always returns a valid index (or 0 for an empty/short
-  // list), so no clamping is needed here.
-  const effectivePageStart = computePageStart(messages, loadedPages * userExchangeCount);
-  const visibleMessages = messages.slice(effectivePageStart);
-  const canLoadOlder = effectivePageStart > 0;
+  // Once rendered, the leading message stays in the window even when new
+  // exchanges arrive. Counting backwards from the tail would evict that row.
+  const pinnedStart
+    = windowStartId === null
+      ? -1
+      : messages.findIndex(message => message.id === windowStartId);
+  const effectivePageStart
+    = pinnedStart >= 0
+      ? pinnedStart
+      : computePageStart(messages, userExchangeCount);
+  const visibleMessages = useMemo(
+    () => messages.slice(effectivePageStart),
+    [messages, effectivePageStart],
+  );
+  const {
+    handleScroll: handleViewportScroll,
+    preserveViewport,
+    scrollToLatest,
+    showJumpToLatest,
+  } = useStickyAutoScroll({
+    scrollRef,
+    contentKey: visibleMessages,
+    followEnabled,
+    onScroll,
+    onContentSettled,
+  });
+  useLayoutEffect(() => {
+    setWindowStartId(visibleMessages[0]?.id ?? null);
+  }, [visibleMessages]);
+  const canLoadOlder = effectivePageStart > 0 || hasOlderHistory;
   // The button only appears after the user has rested at the top for the settle
   // window — arriving at the top must not, by itself, ever trigger a load.
   const showLoadOlderHint = canLoadOlder && atTop && topSettled;
 
-  // Pending scroll restore for the in-flight page load. Written synchronously in
-  // `loadOlder`, consumed (and cleared) by the layout effect after commit.
-  const restoreRef = useRef<{ anchor: Anchor | null } | null>(null);
-
   const loadOlder = useCallback(() => {
-    // The synchronous ref guard is the real re-entrancy fence: it blocks every
-    // wheel event of the gesture until the restore effect clears it.
-    if (loadingOlderRef.current)
+    if (
+      loadingOlderRef.current
+      || (effectivePageStart <= 0 && !hasOlderHistory)
+    ) {
       return;
-    if (effectivePageStart <= 0)
-      return;
+    }
     loadingOlderRef.current = true;
     if (topSettleTimerRef.current !== null) {
       window.clearTimeout(topSettleTimerRef.current);
       topSettleTimerRef.current = null;
     }
-    restoreRef.current = {
-      anchor: captureAnchor(scrollRef.current, "data-message-id"),
-    };
-    setLoadedPages(pages => pages + 1);
-  }, [effectivePageStart, scrollRef]);
-
-  // Restore the viewport after the new page renders, before paint. The anchor
-  // was captured relative to the container's viewport top; move the scroll
-  // offset by the anchor's new position so the user's reading position doesn't
-  // move. A lost anchor (ids regenerated on a reload) falls back to pinning the
-  // top of the freshly loaded page — the user was at the top when they asked.
-  useLayoutEffect(() => {
-    const pending = restoreRef.current;
-    if (!pending)
-      return;
-    restoreRef.current = null;
-    loadingOlderRef.current = false;
     setTopSettled(false);
-    const container = scrollRef.current;
-    if (!container)
-      return;
-    if (pending.anchor) {
-      const target = container.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(pending.anchor.id)}"]`);
-      if (target) {
-        const containerRect = container.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        const delta = (targetRect.top - containerRect.top) - pending.anchor.offset;
-        container.scrollTop += delta;
-        return;
-      }
+    if (effectivePageStart <= 0 && loadOlderHistory) {
+      // The callback runs only for a valid page, immediately before its state
+      // update. Capture the CURRENT viewport, not the one at request start.
+      void loadOlderHistory((page) => {
+        preserveViewport();
+        if (page.length > 0)
+          setWindowStartId(page[0]!.id);
+      }).finally(() => {
+        loadingOlderRef.current = false;
+      });
     }
-    container.scrollTop = 0;
-  }, [loadedPages, scrollRef]);
+    else {
+      preserveViewport();
+      const start = computePageStart(
+        messages.slice(0, effectivePageStart),
+        userExchangeCount,
+      );
+      setWindowStartId(messages[start]?.id ?? null);
+    }
+  }, [
+    effectivePageStart,
+    hasOlderHistory,
+    loadOlderHistory,
+    messages,
+    preserveViewport,
+    userExchangeCount,
+  ]);
+
+  useLayoutEffect(() => {
+    loadingOlderRef.current = false;
+  }, [windowStartId]);
 
   // Compose the caller's scroll handling with top detection. `scrollTop === 0`
   // means the user is at the very top; resting there for the settle window turns
   // the load button on. Any scroll away (or a load starting) cancels it — the
   // button must re-settle before the next pull counts.
   const handleScroll = useCallback(() => {
-    onScrollRef.current?.();
+    handleViewportScroll();
     const container = scrollRef.current;
     if (!container)
       return;
@@ -177,7 +216,7 @@ export function useMessagePaging({
       topSettleTimerRef.current = null;
       setTopSettled(true);
     }, TOP_SETTLE_MS);
-  }, [scrollRef]);
+  }, [handleViewportScroll, scrollRef]);
 
   // Second channel for the load gesture: a wheel-scroll up while the load button
   // is visible fires the load, alongside clicking it. The listener only mounts
@@ -197,20 +236,24 @@ export function useMessagePaging({
       // Swallow the tail of the same gesture so it can't queue a second page.
       if (now - lastWheelAtRef.current < WHEEL_COOLDOWN_MS)
         return;
+      event.preventDefault();
       lastWheelAtRef.current = now;
       loadOlder();
     };
-    container.addEventListener("wheel", onWheel, { passive: true });
+    container.addEventListener("wheel", onWheel, { passive: false });
     return () => container.removeEventListener("wheel", onWheel);
   }, [atTop, canLoadOlder, loadOlder, scrollRef, topSettled]);
 
   // Don't leave a pending settle timer firing setState after unmount.
-  useEffect(() => () => {
-    if (topSettleTimerRef.current !== null) {
-      window.clearTimeout(topSettleTimerRef.current);
-      topSettleTimerRef.current = null;
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (topSettleTimerRef.current !== null) {
+        window.clearTimeout(topSettleTimerRef.current);
+        topSettleTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   return {
     visibleMessages,
@@ -218,35 +261,7 @@ export function useMessagePaging({
     showLoadOlderHint,
     handleScroll,
     loadOlder,
+    scrollToLatest,
+    showJumpToLatest,
   };
-}
-
-/** The first visible message's id + its offset from the viewport top. */
-interface Anchor {
-  id: string;
-  offset: number;
-}
-
-function captureAnchor(container: HTMLElement | null, attribute: string): Anchor | null {
-  if (!container)
-    return null;
-  const viewTop = container.getBoundingClientRect().top;
-  let best: Anchor | null = null;
-  let bestTop = Number.POSITIVE_INFINITY;
-  for (const element of container.querySelectorAll<HTMLElement>(`[${attribute}]`)) {
-    const rect = element.getBoundingClientRect();
-    // Only elements actually crossing the viewport top are candidates — the one
-    // with the smallest top (highest on screen) anchors the view.
-    if (rect.bottom <= viewTop)
-      continue;
-    const id = element.getAttribute(attribute);
-    /* v8 ignore next 2 -- the selector only matches elements carrying the attribute */
-    if (!id)
-      continue;
-    if (rect.top < bestTop) {
-      bestTop = rect.top;
-      best = { id, offset: rect.top - viewTop };
-    }
-  }
-  return best;
 }

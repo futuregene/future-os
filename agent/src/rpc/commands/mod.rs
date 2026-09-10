@@ -117,6 +117,59 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 
     // ── Session-scoped commands: resolve the target session or fail.
+    if matches!(cmd_type.as_str(), "list_tool_calls" | "get_tool_output") {
+        if cmd.session_id.is_empty()
+            || cmd.run_id.is_empty()
+            || (cmd_type == "get_tool_output"
+                && cmd.tool_call_id.as_deref().is_none_or(str::is_empty))
+        {
+            return RpcResponse::build_fail(
+                id,
+                cmd_type,
+                "sessionId, runId and (for output) toolCallId are required",
+            );
+        }
+        let result = if cmd_type == "list_tool_calls" {
+            state.session_manager.tool_page(
+                &cmd.session_id,
+                &cmd.run_id,
+                cmd.offset.unwrap_or(0),
+                cmd.limit.unwrap_or(100),
+            )
+        } else {
+            state.session_manager.tool_output(
+                &cmd.session_id,
+                &cmd.run_id,
+                cmd.tool_call_id.as_deref().unwrap_or(""),
+            )
+        };
+        return match result {
+            Ok(data) => RpcResponse::ok(id, cmd_type, data),
+            Err(error) => RpcResponse::build_fail(id, cmd_type, &error.to_string()),
+        };
+    }
+    // Browsing does not instantiate a model runtime or restore LLM context.
+    if cmd_type == "get_session_entries" {
+        let known = !cmd.session_id.is_empty()
+            && (state.sessions.read().contains_key(&cmd.session_id)
+                || state
+                    .session_manager
+                    .contains(&cmd.session_id)
+                    .unwrap_or(false));
+        if !known {
+            return RpcResponse::build_fail(
+                id,
+                cmd_type,
+                "session not found — pass a valid session_id (new_session creates one)",
+            );
+        }
+        return session_lifecycle::cmd_read_session_entries(
+            &state.session_manager,
+            &cmd.session_id,
+            &cmd,
+            id,
+        );
+    }
     // No default-session fallback: an empty or unknown session_id is an
     // explicit error, never a silent redirect into another conversation.
     let Some(session) = state.get_session(&cmd.session_id) else {
@@ -177,6 +230,28 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         );
     }
 
+    // Metadata and event observers must not pull LLM context into memory.
+    // All other commands retain their existing fully hydrated semantics.
+    if !matches!(
+        cmd_type.as_str(),
+        "get_state"
+            | "get_events_since"
+            | "get_session_events_since"
+            | "get_runtime_metrics"
+            | "abort"
+            | "abort_session"
+            | "cancel_queued_run"
+            | "approval_decision"
+            | "prune_run_events"
+    ) {
+        if let Err(error) = session.write().ensure_history_loaded() {
+            return RpcResponse::build_fail(
+                id,
+                cmd_type,
+                &format!("Unable to restore session context: {error}"),
+            );
+        }
+    }
     match cmd_type.as_str() {
         "prompt" => run_control::handle_prompt(state, &session, &cmd, id),
         "cancel_queued_run" => run_control::handle_cancel_queued_run(&session, &cmd, id),
@@ -206,7 +281,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_session_stats" => observability::handle_get_session_stats(&session, id),
         "get_runtime_metrics" => observability::handle_get_runtime_metrics(&session, id),
         "fork" => session_lifecycle::cmd_fork(state, &session, &cmd, id),
-        "get_session_entries" => session_lifecycle::cmd_get_session_entries(&session, &cmd, id),
         "get_last_assistant_text" => observability::handle_get_last_assistant_text(&session, id),
         "set_session_name" => settings::handle_set_session_name(&session, &cmd, id),
         "abort_retry" => run_control::handle_abort_retry(&session, id),

@@ -70,9 +70,9 @@ describe("history text", () => {
   test("joins text blocks and ignores tool blocks", () => {
     expect(
       messageText([
-        { type: "text", text: "one" },
-        { type: "tool_use" },
-        { type: "text", text: "two" },
+        { kind: "text", text: "one" },
+        { kind: "tool_call" },
+        { kind: "text", text: "two" },
       ]),
     ).toBe("onetwo");
   });

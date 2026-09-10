@@ -39,8 +39,9 @@ it.each(["en", "zh"])("shows reconnect attempts visibly in %s and clears on resu
     expect(container.querySelector("[role=\"status\"]")?.getAttribute("aria-label")).toBe(i18n.t("agent:message.generating"));
     for (const status of ["complete", "failed"] as const) {
       await render({ status, reconnecting: { attempt: 5, maxRetries: 5, delayMs: 32000 } });
-      expect(container.querySelector("[role=\"status\"]")).toBeNull();
-      expect(container.textContent).not.toContain("5/5");
+      const reconnectLabel = language === "zh" ? "正在重连 5/5" : "Reconnecting 5/5";
+      expect(container.textContent).not.toContain(reconnectLabel);
+      expect(container.querySelector(`[aria-label="${reconnectLabel}"]`)).toBeNull();
     }
   }
   finally {

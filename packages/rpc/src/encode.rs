@@ -73,12 +73,14 @@ pub(crate) fn get_state_to_proto(p: &GetStatePayload) -> proto::SessionState {
         context_tokens: p.context_tokens,
         context_window: p.context_window,
         context_percent: p.context_percent,
-        tokens_in: p.tokens_in,
-        tokens_out: p.tokens_out,
-        total_cost: p.total_cost,
         image_support: p.image_support,
-        tokens_cache_r: p.tokens_cache_r,
-        tokens_cache_w: p.tokens_cache_w,
+        usage: Some(proto::SessionUsage {
+            input_tokens: p.usage.input_tokens,
+            output_tokens: p.usage.output_tokens,
+            cache_read_tokens: p.usage.cache_read_tokens,
+            cache_write_tokens: p.usage.cache_write_tokens,
+            cost_cny: p.usage.cost_cny,
+        }),
         permission_level: p.permission_level.clone(),
         agent_instance_id: p.agent_instance_id.clone(),
         parent_session_id: p.parent_session_id.clone(),
@@ -138,17 +140,24 @@ fn terminal_ack_to_proto(ack: &crate::payloads::TerminalAck) -> proto::TerminalA
     }
 }
 
-/// run_terminal marker content (snake_case JSON object) → RunTerminalInfo.
+/// Canonical durable outcome → RunTerminalInfo.
 fn run_terminal_to_proto(value: &Value) -> Option<proto::RunTerminalInfo> {
+    let usage: crate::message::MessageUsage =
+        serde_json::from_value(value.get("usage")?.clone()).ok()?;
     Some(proto::RunTerminalInfo {
-        run_id: value.get("run_id")?.as_str()?.to_string(),
-        state: value.get("state")?.as_str()?.to_string(),
-        run_tokens: value.get("run_tokens")?.as_i64()?,
-        run_duration_ms: value.get("run_duration_ms")?.as_i64()?,
+        run_id: value.get("runId")?.as_str()?.to_owned(),
+        status: value.get("status")?.as_str()?.to_owned(),
+        duration_ms: value.get("durationMs").and_then(Value::as_i64),
         error: value
             .get("error")
             .and_then(Value::as_str)
-            .map(str::to_string),
+            .map(str::to_owned),
+        usage: Some(proto::MessageUsage {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+        }),
     })
 }
 
@@ -233,7 +242,7 @@ pub(crate) fn session_summary_to_proto(row: &SessionSummaryPayload) -> proto::Se
         session_name: row.session_name.clone(),
         model: row.model.clone(),
         cwd: row.cwd.clone(),
-        updated_at: row.updated_at.clone(),
+        updated_at_ms: row.updated_at_ms,
         parent_session_id: row.parent_session_id.clone(),
         first_message: row.first_message.clone(),
         query_count: row.query_count as i32,
@@ -254,56 +263,52 @@ fn get_session_entries(data: &Value) -> Option<proto::SessionEntriesResponse> {
         entries,
         has_more: data
             .get("hasMore")
-            .or_else(|| data.get("has_more"))
             .and_then(Value::as_bool)
             .unwrap_or(false),
         next_offset: data
             .get("nextOffset")
-            .or_else(|| data.get("next_offset"))
             .and_then(Value::as_i64)
             .unwrap_or_default(),
     })
 }
 
 pub(crate) fn session_entry_to_proto(entry: &SessionEntryPayload) -> proto::SessionEntry {
-    // `content` is display text for message entries and the raw session_info
-    // JSON object for the session_info entry; the discriminator lets decoders
-    // re-inflate the exact original value.
-    let (content, content_is_object) = match &entry.content {
-        Value::String(text) => (text.clone(), false),
-        other => (serde_json::to_string(other).unwrap_or_default(), true),
-    };
+    let json = |value: &Option<Value>| value.as_ref().map(Value::to_string);
     proto::SessionEntry {
         id: entry.id.clone(),
-        entry_type: entry.entry_type.clone(),
         role: entry.role.clone(),
-        content,
-        content_is_object,
-        name: entry.name.clone(),
-        tool_args: entry.tool_args.clone(),
-        timestamp: entry.timestamp.clone(),
-        thinking: entry.thinking.clone(),
-        meta: entry
-            .meta
-            .as_ref()
-            .map(|value| serde_json::to_string(value).unwrap_or_default()),
-        tool_calls: entry
-            .tool_calls
-            .as_ref()
-            .map(|value| serde_json::to_string(value).unwrap_or_default()),
-        output_tokens: entry.output_tokens,
-        duration_ms: entry.duration_ms,
-        input_tokens: entry.input_tokens,
-        cache_read_tokens: entry.cache_read_tokens,
-        checkpoint: entry
-            .checkpoint
-            .as_ref()
-            .map(|value| serde_json::to_string(value).unwrap_or_default()),
-        tool_call_id: entry.tool_call_id.clone(),
-        tool_result_is_error: entry.tool_result_is_error,
-        run_status: entry.run_status.clone(),
-        run_error: entry.run_error.clone(),
-        run_duration_ms: entry.run_duration_ms,
+        kind: entry.kind.clone(),
+        created_at_ms: entry.created_at_ms,
+        run_id: entry.run_id.clone(),
+        metadata_json: json(&entry.metadata),
+        session_json: json(&entry.session),
+        checkpoint_json: json(&entry.checkpoint),
+        blocks: entry
+            .blocks
+            .iter()
+            .map(|b| proto::MessageBlock {
+                kind: b.kind.clone(),
+                text: b.text.clone(),
+                tool_call_id: b.tool_call_id.clone(),
+                name: b.name.clone(),
+                arguments_json: json(&b.arguments),
+                is_error: b.is_error,
+                image_url: b.image_url.clone(),
+                provider_metadata_json: json(&b.provider_metadata),
+                data_json: json(&b.data),
+            })
+            .collect(),
+        usage: entry.usage.as_ref().map(|u| proto::MessageUsage {
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            cache_read_tokens: u.cache_read_tokens,
+            cache_write_tokens: u.cache_write_tokens,
+        }),
+        run: entry.run.as_ref().map(|r| proto::MessageRun {
+            status: r.status.clone(),
+            error: r.error.clone(),
+            duration_ms: r.duration_ms,
+        }),
     }
 }
 

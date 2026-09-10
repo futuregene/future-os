@@ -100,11 +100,10 @@ export function jwtExpiry(jwt: string): number | null {
   return typeof exp === "number" && Number.isFinite(exp) && exp > 0 ? exp : null;
 }
 
-export function messageText(content: HistoryMessage["content"]): string {
-  if (typeof content === "string") return content;
+export function messageText(content: HistoryMessage["blocks"] | undefined | null): string {
   if (!Array.isArray(content)) return "";
   return content
-    .filter(block => block?.type === "text")
+    .filter(block => block?.kind === "text")
     .map(block => block.text ?? "")
     .join("");
 }

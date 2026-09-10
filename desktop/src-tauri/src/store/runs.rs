@@ -403,6 +403,7 @@ pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppEr
 /// live reads go through the Agent journal (see `commands::runs`), which
 /// falls back here only while the Agent is unreachable. `since_sequence < 0`
 /// returns the full log (same as [`list_run_events`]).
+#[cfg(test)]
 pub fn list_run_events_since(
     run_id: &str,
     since_sequence: i64,
@@ -696,6 +697,7 @@ const TOOL_PROJECTION_CACHE_MAX: usize = 64;
 /// The highest event sequence already folded into the run's cached tool
 /// projection, or -1 when nothing is cached. Callers fetch the journal tail
 /// after this cursor so [`advance_tool_projection`] only sees new events.
+#[cfg(test)]
 pub fn tool_projection_cursor(run_id: &str) -> i64 {
     TOOL_PROJECTION_CACHE
         .lock()
@@ -1112,6 +1114,7 @@ pub fn get_tool_call_input(
 /// error (agent/mod.rs broadcasts `text`/`error`). The caller supplies the
 /// run's event log (Agent journal, canonical); the inspector's stdout/stderr
 /// panes thus survive an app restart.
+#[cfg(test)]
 pub fn project_tool_outputs(
     events: &[RunEventRecord],
     tool_call_id: &str,

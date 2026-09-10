@@ -107,7 +107,33 @@ pub(crate) fn handle_get_messages(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
-    let msgs = session.read().get_messages();
+    let session = session.read();
+    let messages = session.messages.read();
+    let msgs: Vec<_> = messages
+        .iter()
+        .map(|message| future_rpc::message::ContextMessage {
+            role: message.role.clone(),
+            run_id: message
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("run_id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            blocks: message
+                .content
+                .iter()
+                .map(|block| {
+                    future_rpc::message::MessageBlock::from_model(
+                        &serde_json::to_value(block).expect("model block"),
+                    )
+                })
+                .collect(),
+            metadata: message.metadata.clone().and_then(|mut meta| {
+                meta.remove("run_id");
+                (!meta.is_empty()).then_some(serde_json::Value::Object(meta))
+            }),
+        })
+        .collect();
     RpcResponse::ok(id, "get_messages", serde_json::json!({"messages": msgs}))
 }
 
@@ -119,7 +145,13 @@ pub(crate) fn handle_get_events_since(
     // P1: backfill current-run events with idx > since_idx (Bridge reconnect).
     let replay = {
         let sess = session.read();
-        sess.broadcaster.events_since(&cmd.run_id, cmd.since_idx)
+        let limit = (cmd.max_events > 0).then(|| {
+            usize::try_from(cmd.max_events)
+                .unwrap_or(usize::MAX)
+                .saturating_add(1)
+        });
+        sess.broadcaster
+            .events_page(&cmd.run_id, cmd.since_idx, limit)
     };
     let (run_id, events, _min_idx, projection) = match replay {
         Ok(replay) => replay,

@@ -13,6 +13,7 @@ import {
   buildAgentFailureContent,
   buildAgentFailureTitle,
   matchesSettledRun,
+  responseTerminationError,
   updateRunStatusSafe,
   userStoppedNotice,
 } from "./agentMessageFormatters";
@@ -114,7 +115,7 @@ export async function runSendPipeline(
 
     run = await createRun({
       threadId: thread.id,
-      // Agent JSONL is the message source of truth. A client-local optimistic
+      // Agent history is the message source of truth. A client-local optimistic
       // id must not be stored as though it were an Agent entry id.
       triggerMessageId: null,
       modelId,
@@ -125,6 +126,7 @@ export async function runSendPipeline(
 
     if (isCurrentSend()) {
       setRecentRun(run);
+      patchMessage(setMessages, optimisticUserId, { runId: run.id });
       patchMessage(setMessages, pendingId, { runId: run?.id ?? null });
     }
 
@@ -260,9 +262,7 @@ export async function runSendPipeline(
     // lost) but finalize the run and bubble as failed rather than silently
     // presenting a cut-off reply as complete.
     if (!reply.complete) {
-      const interruptedMessage = reply.terminationKind === "upstream_disconnected"
-        ? "[UPSTREAM_DISCONNECTED] model response stream ended before completion"
-        : "[MODEL_RESPONSE_ERROR] response ended before a clean terminal";
+      const interruptedMessage = responseTerminationError(reply.terminationKind);
       const interruptedNotice = buildAgentFailureContent(interruptedMessage);
       const interruptedTitle = buildAgentFailureTitle(interruptedMessage);
       if (!settledElsewhere) {
@@ -291,6 +291,7 @@ export async function runSendPipeline(
           outputTokens: partialRender.outputTokens,
           terminationNotice: interruptedNotice,
           terminationTitle: interruptedTitle,
+          runError: interruptedMessage,
         });
         onThreadActivity();
       }
@@ -304,7 +305,7 @@ export async function runSendPipeline(
     }
     const storedAssistantMessage = clientMessageRecord(
       run.id,
-      reply.content.trim() || i18n.t("agent:thread.agentDoneNoText"),
+      reply.content,
       "complete",
     );
 
@@ -355,6 +356,7 @@ export async function runSendPipeline(
         content: previous.content,
         terminationNotice: failureContent,
         terminationTitle: failureTitle,
+        runError: message,
         status: storedAssistantMessage?.status ?? "failed",
         createdAt: storedAssistantMessage
           ? storedTimeToIso(storedAssistantMessage.createdAt)

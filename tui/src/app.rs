@@ -523,6 +523,7 @@ fn split_ws_js(s: &str) -> Vec<&str> {
 
 /// `new Date(b.updated_at).getTime()` — comparable timestamp for session
 /// sorting (RFC3339, or `"YYYY-MM-DD HH:MM:SS"`).
+#[cfg(test)]
 fn parse_updated_at(s: &str) -> i64 {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return dt.timestamp_millis();
@@ -1547,9 +1548,7 @@ impl<T: TerminalIo> App<T> {
                 Ok(sessions) => {
                     if !sessions.is_empty() {
                         let mut sessions = sessions;
-                        sessions.sort_by(|a, b| {
-                            parse_updated_at(&b.updated_at).cmp(&parse_updated_at(&a.updated_at))
-                        });
+                        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
                         match self.client.switch_session(&sessions[0].id).await {
                             Ok(_) => {
                                 self.refresh_direct().await;
@@ -2897,7 +2896,7 @@ impl<T: TerminalIo> App<T> {
     ) {
         // The TS passes a filtered copy (children of the parent); sort by
         // updated_at desc in place.
-        list.sort_by_key(|a| std::cmp::Reverse(parse_updated_at(&a.updated_at)));
+        list.sort_by_key(|a| std::cmp::Reverse(a.updated_at_ms));
         let list_len = list.len();
         for (i, s) in list.iter().enumerate() {
             let is_last = i == list_len - 1;
@@ -2962,11 +2961,17 @@ impl<T: TerminalIo> App<T> {
                 label: format!(
                     "#{}  {}",
                     i + 1,
-                    m.get("timestamp").and_then(Value::as_str).unwrap_or("")
+                    m.get("createdAtMs")
+                        .and_then(Value::as_i64)
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                        .map(|time| time.to_rfc3339())
+                        .unwrap_or_default()
                 ),
                 description: Some(
-                    m.get("content")
-                        .and_then(Value::as_str)
+                    m.get("blocks")
+                        .and_then(Value::as_array)
+                        .and_then(|blocks| blocks.iter().find(|b| b["kind"] == "text"))
+                        .and_then(|b| b["text"].as_str())
                         .unwrap_or("")
                         .chars()
                         .take(70)
@@ -3098,10 +3103,9 @@ impl<T: TerminalIo> App<T> {
             ),
             format!(
                 "**Tokens:** {} in / {} out",
-                s.tokens_in.unwrap_or(0),
-                s.tokens_out.unwrap_or(0)
+                s.usage.input_tokens, s.usage.output_tokens
             ),
-            format!("**Cost:** ¥{:.4}", s.total_cost.unwrap_or(0.0)),
+            format!("**Cost:** ¥{:.4}", s.usage.cost_cny),
         ];
         self.add_system_message(lines.join("\n"));
     }
@@ -3209,26 +3213,24 @@ impl<T: TerminalIo> App<T> {
                 continue;
             }
 
-            let mut content = String::new();
-            match obj.get("content") {
-                Some(Value::String(s)) => content = s.clone(),
-                Some(Value::Array(blocks)) => {
-                    for block in blocks {
-                        if let Some(t) = block.get("text").and_then(Value::as_str) {
-                            content.push_str(t);
-                        } else if let Some(c) = block.get("content").and_then(Value::as_str) {
-                            content.push_str(c);
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            let tool_calls = obj.get("tool_calls").and_then(Value::as_array);
-            if content.is_empty() && tool_calls.is_none_or(|t| t.is_empty()) {
+            let blocks = obj
+                .get("blocks")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let content = blocks
+                .iter()
+                .filter(|b| matches!(b["kind"].as_str(), Some("text" | "tool_result")))
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("");
+            if content.is_empty()
+                && !blocks
+                    .iter()
+                    .any(|b| matches!(b["kind"].as_str(), Some("tool_call" | "reasoning")))
+            {
                 continue;
             }
-
             // (Pre-filtered above to user/assistant/tool.)
             let role_enum = match role {
                 "user" => ChatRole::User,
@@ -3242,26 +3244,29 @@ impl<T: TerminalIo> App<T> {
                 id.to_string()
             };
             let mut cm = ChatMessage::new(id, role_enum, &content);
-            cm.name = obj.get("name").and_then(Value::as_str).map(String::from);
-            cm.tool = obj
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                .map(String::from);
-            cm.tool_args = obj
-                .get("tool_args")
-                .and_then(Value::as_str)
-                .map(String::from);
-            cm.thinking = obj
-                .get("reasoning_content")
-                .and_then(Value::as_str)
-                .map(String::from);
-            // Historical tool messages: check content for error prefix.
+            let tool = blocks
+                .iter()
+                .find(|b| matches!(b["kind"].as_str(), Some("tool_call" | "tool_result")));
+            cm.name = tool.and_then(|b| b["name"].as_str()).map(str::to_owned);
+            cm.tool = tool
+                .and_then(|b| b["toolCallId"].as_str())
+                .map(str::to_owned);
+            cm.tool_args = tool.and_then(|b| b.get("arguments")).map(Value::to_string);
+            let thinking = blocks
+                .iter()
+                .filter(|b| b["kind"] == "reasoning")
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("");
+            cm.thinking = (!thinking.is_empty()).then_some(thinking);
             if role == "tool" {
-                cm.tool_status = Some(if content.starts_with("Error:") {
-                    ToolStatus::Error
-                } else {
-                    ToolStatus::Complete
-                });
+                cm.tool_status = Some(
+                    if tool.and_then(|b| b["isError"].as_bool()).unwrap_or(false) {
+                        ToolStatus::Error
+                    } else {
+                        ToolStatus::Complete
+                    },
+                );
             }
             self.chat.add_message(cm);
         }
@@ -3409,11 +3414,11 @@ impl<T: TerminalIo> App<T> {
         self.state.context_tokens = s.context_tokens.unwrap_or(0);
         self.state.context_window = s.context_window.unwrap_or(0);
         self.state.context_percent = s.context_percent.unwrap_or(0.0);
-        self.state.tokens_in = s.tokens_in.unwrap_or(0);
-        self.state.tokens_out = s.tokens_out.unwrap_or(0);
-        self.state.tokens_cache_r = s.tokens_cache_r.unwrap_or(0);
-        self.state.tokens_cache_w = s.tokens_cache_w.unwrap_or(0);
-        self.state.total_cost = s.total_cost.unwrap_or(0.0);
+        self.state.tokens_in = s.usage.input_tokens;
+        self.state.tokens_out = s.usage.output_tokens;
+        self.state.tokens_cache_r = s.usage.cache_read_tokens;
+        self.state.tokens_cache_w = s.usage.cache_write_tokens;
+        self.state.total_cost = s.usage.cost_cny;
         self.state.explicit_session = s.explicit_session;
         self.state.auto_compaction_enabled = s.auto_compaction_enabled;
 
@@ -4901,7 +4906,7 @@ mod tests {
 
     fn sample_state() -> RpcSessionState {
         serde_json::from_value(json_parse(
-            r#"{"model":"deepseek-v4-pro","thinkingLevel":"high","isStreaming":true,"sessionId":"s1","cwd":"/tmp","queryCount":2,"skills":["b","a"],"contextTokens":100,"contextWindow":128000,"contextPercent":0.1,"tokensIn":10,"tokensOut":20,"tokensCacheR":1,"tokensCacheW":2,"totalCost":0.01,"autoCompactionEnabled":true,"explicitSession":false}"#,
+            r#"{"model":"deepseek-v4-pro","thinkingLevel":"high","isStreaming":true,"sessionId":"s1","cwd":"/tmp","queryCount":2,"skills":["b","a"],"contextTokens":100,"contextWindow":128000,"contextPercent":0.1,"usage":{"inputTokens":10,"outputTokens":20,"cacheReadTokens":1,"cacheWriteTokens":2,"costCny":0.01},"autoCompactionEnabled":true,"explicitSession":false}"#,
         ))
         .expect("state")
     }
@@ -5661,11 +5666,11 @@ mod tests {
     fn sample_sessions() -> Vec<SessionSummary> {
         vec![
             serde_json::from_value(json_parse(
-                r#"{"id":"s1","cwd":"/tmp/a","updatedAt":"2026-01-02T00:00:00Z","model":"m1","sessionName":"first"}"#,
+                r#"{"id":"s1","cwd":"/tmp/a","updatedAtMs": 20455000,"model":"m1","sessionName":"first"}"#,
             ))
             .expect("session"),
             serde_json::from_value(json_parse(
-                r#"{"id":"s2","cwd":"/tmp/a","updatedAt":"2026-01-01T00:00:00Z","model":"m1","parentSessionId":"s1"}"#,
+                r#"{"id":"s2","cwd":"/tmp/a","updatedAtMs": 20454000,"model":"m1","parentSessionId":"s1"}"#,
             ))
             .expect("session"),
         ]
@@ -6757,13 +6762,13 @@ mod tests {
         // apply_messages reconstructs user/assistant/tool + skips the rest.
         app.apply_messages(Ok(json_parse(
             r#"{"messages":[
-              {"id":"m1","role":"user","content":"q"},
-              {"id":"m2","role":"assistant","content":[{"text":"a1"},{"content":"a2"}]},
-              {"id":"m3","role":"tool","content":"tool out","name":"read"},
-              {"id":"m4","role":"system","content":"skipped"},
+              {"id":"m1","role":"user","blocks":[{"kind":"text","text":"q"}]},
+              {"id":"m2","role":"assistant","blocks":[{"kind":"text","text":"a1"},{"kind":"text","text":"a2"}]},
+              {"id":"m3","role":"tool","blocks":[{"kind":"tool_result","text":"tool out","toolCallId":"call","isError":false}]},
+              {"id":"m4","role":"system","blocks":[{"kind":"text","text":"skipped"}]},
               {"id":"m5","role":"assistant"},
-              {"role":"user","content":"no id"},
-              {"id":"m6","role":"user","content":"","tool_calls":[]}
+              {"role":"user","blocks":[{"kind":"text","text":"no id"}]},
+              {"id":"m6","role":"user","blocks":[]}
             ]}"#,
         )));
         let texts: Vec<String> = app
@@ -6966,7 +6971,7 @@ mod tests {
                     r#"{"models":[{"id":"gpt-4o","label":"GPT-4o","provider":"openai"},{"id":"claude-sonnet-4","label":"Claude","provider":"anthropic"}]}"#
                 }
                 "list_sessions" => {
-                    r#"{"sessions":[{"id":"s1","cwd":"/tmp","updatedAt":"2026-01-01T00:00:00Z","model":"m","sessionName":"main"},{"id":"s0","cwd":"/tmp","updatedAt":"2025-12-31T00:00:00Z","model":"m","sessionName":"older"}]}"#
+                    r#"{"sessions":[{"id":"s1","cwd":"/tmp","updatedAtMs": 20454000,"model":"m","sessionName":"main"},{"id":"s0","cwd":"/tmp","updatedAtMs": 20453000,"model":"m","sessionName":"older"}]}"#
                 }
                 "new_session" => r#"{"sessionId":"s-new"}"#,
                 "switch_session" | "fork" => r#"{"cancelled":false}"#,
@@ -7920,7 +7925,7 @@ mod tests {
 
         // apply_messages: tool message with an Error prefix.
         app.apply_messages(Ok(json_parse(
-            r#"{"messages":[{"id":"t1","role":"tool","content":"Error: failed","name":"shell"}]}"#,
+            r#"{"messages":[{"id":"t1","role":"tool","blocks":[{"kind":"tool_result","text":"Error: failed","toolCallId":"call","isError":true}]}]}"#,
         )));
         let last = app.chat.plain_messages().last().unwrap().clone();
         assert!(last.1.contains("Error: failed"));

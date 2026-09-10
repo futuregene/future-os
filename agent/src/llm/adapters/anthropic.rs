@@ -526,7 +526,7 @@ fn map_finish_reason(reason: &str) -> FinishReason {
         // FutureOS does not currently send Anthropic server tools, so it
         // cannot replay their opaque pause payload unchanged. Never surface a
         // paused server-tool turn as a completed assistant response.
-        "pause_turn" => FinishReason::Incomplete,
+        "pause_turn" => FinishReason::Paused,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Unknown(other.to_string()),
     }
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn anthropic_stop_reasons_preserve_truncation() {
-        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Incomplete);
+        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Paused);
         assert_eq!(
             map_finish_reason("model_context_window_exceeded"),
             FinishReason::Length
@@ -1345,7 +1345,7 @@ mod tests {
         assert_eq!(map_finish_reason("stop_sequence"), FinishReason::Stop);
         assert_eq!(map_finish_reason("tool_use"), FinishReason::ToolCalls);
         assert_eq!(map_finish_reason("max_tokens"), FinishReason::Length);
-        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Incomplete);
+        assert_eq!(map_finish_reason("pause_turn"), FinishReason::Paused);
         assert_eq!(map_finish_reason("refusal"), FinishReason::Refusal);
         assert_eq!(
             map_finish_reason("weird"),

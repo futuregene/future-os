@@ -170,9 +170,8 @@ impl ServerSession {
             if let Some(run_id) = requested_run_id.filter(|run_id| !run_id.is_empty()) {
                 let journal_exists = self
                     .session_manager
-                    .run_data_path(&self.session_id)
-                    .join(format!("{run_id}.jsonl"))
-                    .exists();
+                    .storage()?
+                    .has_events(&self.session_id, run_id)?;
                 let transcript_exists = self
                     .session_manager
                     .load(&self.session_id)
@@ -657,6 +656,9 @@ impl ServerSession {
         let tokens_out = self.tokens_out.clone();
         let tokens_cache_r = self.tokens_cache_r.clone();
         let tokens_cache_w = self.tokens_cache_w.clone();
+        let run_input_baseline = tokens_in.load(std::sync::atomic::Ordering::Relaxed);
+        let run_cache_read_baseline = tokens_cache_r.load(std::sync::atomic::Ordering::Relaxed);
+        let run_cache_write_baseline = tokens_cache_w.load(std::sync::atomic::Ordering::Relaxed);
         let cumulative_cost = self.cumulative_cost.clone();
         let last_prompt = self.last_prompt_tokens.clone();
         let session_name = self.session_name.clone();
@@ -926,7 +928,11 @@ impl ServerSession {
             // Clones for the blocking commit task: run_error and task_lease are
             // still needed after the task completes (terminal event dispatch).
             let commit_run_id = task_lease.run_id.clone();
-            let commit_run_error = run_error.clone();
+            let commit_run_error = run_error.clone().or_else(|| {
+                stream_truncation
+                    .as_ref()
+                    .map(|value| value.error_message())
+            });
             let commit_truncation = stream_truncation.clone();
             let persistence_task = tokio::task::spawn_blocking(move || {
                 if is_ephemeral {
@@ -989,7 +995,7 @@ impl ServerSession {
                     task_lease.epoch,
                     task_lease.run_sequence,
                 );
-                let terminal = crate::session::SessionEntry::run_terminal_with_truncation(
+                let mut terminal = crate::session::SessionEntry::run_terminal_with_truncation(
                     &commit_run_id,
                     terminal_state,
                     run_output_tokens,
@@ -997,6 +1003,34 @@ impl ServerSession {
                     commit_run_error.as_deref(),
                     commit_truncation.as_ref(),
                 );
+
+                if let Some(content) = terminal
+                    .content
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    content.insert(
+                        "input_tokens".into(),
+                        tokens_in
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(run_input_baseline)
+                            .into(),
+                    );
+                    content.insert(
+                        "cache_read_tokens".into(),
+                        tokens_cache_r
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(run_cache_read_baseline)
+                            .into(),
+                    );
+                    content.insert(
+                        "cache_write_tokens".into(),
+                        tokens_cache_w
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(run_cache_write_baseline)
+                            .into(),
+                    );
+                }
 
                 // Append-only fast path: terminal marker + refreshed session_info,
                 // committed at a durable (fsync) boundary. commit_run is ordered
@@ -1078,6 +1112,9 @@ impl ServerSession {
                     });
                     if stream_incomplete {
                         data["reason"] = serde_json::Value::String("incomplete".to_string());
+                        if let Some(t) = &stream_truncation {
+                            data["error"] = serde_json::Value::String(t.error_message());
+                        }
                     }
                     if let Some(t) = &stream_truncation {
                         data["truncation"] = serde_json::json!({
@@ -1257,11 +1294,10 @@ impl ServerSession {
     }
 
     /// Persist the just-pushed user message so the GUI sees it mid-stream.
-    /// Uses append-only when the session file already exists (avoids a full
-    /// rewrite); falls back to full save for a brand-new session that has no
-    /// JSONL yet.  The session_info line (token counts, model, name) stays
+    /// Appends transactionally to existing sessions; creates the initial
+    /// snapshot for a new session. The session_info (token counts, model, name) stays
     /// at its last-completed-run values — the final save at run end refreshes
-    /// it. A failure rejects StartRun so memory and JSONL cannot diverge before
+    /// it. A failure rejects StartRun so memory and SQLite cannot diverge before
     /// the model begins producing side effects.
     fn persist_user_message(&self, run_lease: &crate::runtime::RunLease) -> Result<()> {
         // Use in-memory parent_session_id — avoids reading the entire session
@@ -1283,7 +1319,7 @@ impl ServerSession {
         // run_started through would hide the older open marker.
         if let Some(last_msg) = msgs.last() {
             let entry = crate::session::agent_message_to_entry(last_msg);
-            if self.session_manager.find(&self.session_id).is_some() {
+            if self.session_manager.contains(&self.session_id)? {
                 self.session_manager.append_run_start(
                     &self.session_id,
                     entry,

@@ -397,6 +397,36 @@ pub async fn get_session_entries(thread_id: String) -> Result<serde_json::Value,
     result
 }
 
+/// One UI history page. Full-history callers keep using get_session_entries.
+#[tauri::command]
+pub async fn get_session_entries_page(
+    thread_id: String,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
+    let Some(session_id) = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}));
+    };
+    let result = crate::agent_bridge::get_session_entries_before(
+        session_id.to_owned(),
+        before.unwrap_or(i64::MAX),
+        limit.clamp(1, 100),
+    )
+    .await;
+    match result {
+        Err(error) if error.to_string().contains("session not found") => {
+            Ok(serde_json::json!({"entries":[],"hasMore":false,"nextOffset":0}))
+        }
+        result => result,
+    }
+}
+
 #[tauri::command]
 pub fn archive_finished_runs(thread_id: String) -> Result<usize, crate::AppError> {
     store::archive_finished_runs(&thread_id)
@@ -1026,6 +1056,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_entries_page_returns_one_page_and_cursor() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_page");
+        let thread = make_thread(&home, Some("sess_page"));
+        script_mock_agent(MockScript::default());
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        agent.script_typed_for(
+            "get_session_entries",
+            "sess_page",
+            serde_json::json!({
+                "entries":[{
+                    "id":"synthetic",
+                    "kind":"user",
+                    "role":"user",
+                    "createdAtMs":1767225600000_i64,
+                    "blocks":[{"kind":"text","text":"page"}]
+                }],
+                "hasMore":true,"nextOffset":20,
+            }),
+        );
+        // A fetch-all loop would request the same non-advancing cursor and
+        // error here. The UI command must return immediately after one page.
+        let page = get_session_entries_page(thread.id, None, 10).await.unwrap();
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["hasMore"], true);
+        assert_eq!(page["nextOffset"], 20);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
     async fn get_session_entries_reads_typed_only_agent_history() {
         let _lock = mock_agent_lock();
         let _home = init("cmd_entries_typed");
@@ -1037,18 +1097,17 @@ mod tests {
             "sess_entries_typed",
             serde_json::json!({"entries": [{
                 "id": "entry-typed",
+                "kind": "user",
                 "role": "user",
-                "content": "still here",
-                "name": "",
-                "tool_args": "",
-                "timestamp": "2026-08-27T10:00:00Z"
+                "createdAtMs": 1787824800000_i64,
+                "blocks": [{"kind": "text", "text": "still here"}]
             }]}),
         );
 
         let value = get_session_entries(thread.id.clone())
             .await
             .expect("typed entries");
-        assert_eq!(value["entries"][0]["content"], "still here");
+        assert_eq!(value["entries"][0]["blocks"][0]["text"], "still here");
         script_mock_agent(MockScript::default());
     }
 

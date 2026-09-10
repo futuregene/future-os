@@ -481,6 +481,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         shell_timeout_ms: 0,
         session_id,
         entry_id: String::new(),
+        tool_call_id: None,
         name: String::new(),
         cwd: String::new(),
         system_prompt: String::new(),

@@ -208,6 +208,7 @@ pub enum FinishReason {
     ContentFilter,
     Refusal,
     Cancelled,
+    Paused,
     Incomplete,
     Error,
     Unknown(String),
@@ -222,6 +223,7 @@ impl FinishReason {
             Self::ContentFilter => "content_filter",
             Self::Refusal => "refusal",
             Self::Cancelled => "cancelled",
+            Self::Paused => "pause_turn",
             // Existing UI/RPC consumers use `truncated` for a stream that
             // ended without a complete model response.
             Self::Incomplete => "truncated",

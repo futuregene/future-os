@@ -54,6 +54,7 @@
     "queued": "排队中"
   },
   "toolStatus": {
+    "interrupted": "已中断",
     "completed": "已完成",
     "failed": "失败",
     "cancelled": "已取消",

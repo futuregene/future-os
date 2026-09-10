@@ -61,19 +61,7 @@ pub async fn abort_run(
 pub async fn list_run_events(
     run_id: String,
 ) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    // The Agent journal is canonical for every run, including settled ones.
-    // These are display readers: any Agent-side failure (unreachable, or no
-    // durable history for the run) degrades to the legacy GUI JSONL instead
-    // of blanking the panel with an error.
-    match agent_events(&run_id, -1).await {
-        Ok(events) => Ok(events),
-        Err(error) => {
-            if !agent_unavailable(&error) {
-                eprintln!("FutureOS: agent event read failed for {run_id}, falling back to legacy log: {error}");
-            }
-            store::list_run_events(&run_id)
-        }
-    }
+    agent_events(&run_id, -1).await
 }
 
 /// Incremental variant of [`list_run_events`] for pushed live-preview updates:
@@ -88,15 +76,7 @@ pub async fn list_run_events_since(
     if since_sequence < 0 {
         return list_run_events(run_id).await;
     }
-    match agent_events(&run_id, since_sequence).await {
-        Ok(events) => Ok(events),
-        Err(error) => {
-            if !agent_unavailable(&error) {
-                eprintln!("FutureOS: agent event read failed for {run_id}, falling back to legacy log: {error}");
-            }
-            store::list_run_events_since(&run_id, since_sequence)
-        }
-    }
+    agent_events(&run_id, since_sequence).await
 }
 
 /// Pull canonical events from the Agent journal. `since_sequence` is passed
@@ -138,10 +118,6 @@ async fn agent_events(
     Ok(records)
 }
 
-fn agent_unavailable(error: &crate::AppError) -> bool {
-    matches!(error, crate::AppError::AgentUnavailable(_))
-}
-
 #[tauri::command]
 pub async fn list_run_events_bulk(
     run_ids: Vec<String>,
@@ -156,27 +132,11 @@ pub async fn list_run_events_bulk(
     Ok(result)
 }
 
-/// Fetch a run's event tail for tool projection: Agent journal first (the
-/// canonical source), legacy GUI JSONL only when the Agent is unreachable
-/// (pre-journal compatibility).
-async fn tool_events_since(
-    run_id: &str,
-    since_sequence: i64,
-) -> Result<Vec<store::RunEventRecord>, crate::AppError> {
-    match agent_events(run_id, since_sequence).await {
-        Ok(events) => Ok(events),
-        Err(error) if agent_unavailable(&error) => {
-            store::list_run_events_since(run_id, since_sequence)
-        }
-        Err(error) => Err(error),
-    }
-}
-
 #[tauri::command]
 pub async fn list_tool_calls(
     run_id: String,
 ) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
-    advance_tool_projection(&run_id).await
+    fetch_agent_tools(&run_id).await
 }
 
 /// Batch variant: the context panel's poll needs tool calls for every run of
@@ -189,20 +149,75 @@ pub async fn list_tool_calls_bulk(
 ) -> Result<Vec<(String, Vec<store::ToolCallRecord>)>, crate::AppError> {
     let mut result = Vec::with_capacity(run_ids.len());
     for run_id in run_ids {
-        let tools = advance_tool_projection(&run_id).await?;
+        let tools = fetch_agent_tools(&run_id).await?;
         result.push((run_id, tools));
     }
     Ok(result)
 }
 
-/// Advance the run's cached tool projection over the events appended since
-/// the last read, keeping the poll at O(new events) instead of O(full log).
-async fn advance_tool_projection(
-    run_id: &str,
-) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
-    let cursor = store::tool_projection_cursor(run_id);
-    let events = tool_events_since(run_id, cursor).await?;
-    Ok(store::advance_tool_projection(run_id, &events))
+async fn tool_session(run_id: &str) -> Result<String, crate::AppError> {
+    let run = store::get_run(run_id)?.ok_or_else(|| format!("Unknown run {run_id}"))?;
+    let thread = store::get_thread(&run.thread_id)?.ok_or_else(|| "Missing thread".to_string())?;
+    thread
+        .agent_session_id
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "Thread has no Agent session".into())
+}
+
+/// Presentation mapping only: tool identity, arguments and result come from
+/// Agent records. No Desktop event projection or journal scan is involved.
+async fn fetch_agent_tools(run_id: &str) -> Result<Vec<store::ToolCallRecord>, crate::AppError> {
+    let session_id = tool_session(run_id).await?;
+    let mut tools = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page =
+            agent_bridge::query_tools(session_id.clone(), run_id.to_owned(), None, offset).await?;
+        let rows = page["tools"]
+            .as_array()
+            .ok_or_else(|| "Invalid tool page".to_string())?;
+        for tool in rows {
+            let id = tool["toolCallId"]
+                .as_str()
+                .ok_or_else(|| "Missing tool identity".to_string())?
+                .to_owned();
+            let name = tool["name"]
+                .as_str()
+                .ok_or_else(|| "Missing tool name".to_string())?
+                .to_owned();
+            tools.push(store::ToolCallRecord {
+                id,
+                run_id: run_id.to_owned(),
+                kind: name.clone(),
+                name,
+                input: tool
+                    .get("arguments")
+                    .filter(|value| !value.is_null())
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string())
+                    }),
+                status: tool["status"]
+                    .as_str()
+                    .ok_or_else(|| "Missing tool status".to_string())?
+                    .to_owned(),
+                started_at: tool["startedAtMs"].as_i64(),
+                ended_at: tool["completedAtMs"].as_i64(),
+                created_at: tool["startedAtMs"].as_i64().unwrap_or(0),
+            });
+        }
+        if page["hasMore"].as_bool() != Some(true) {
+            break;
+        }
+        let next = page["nextOffset"]
+            .as_i64()
+            .filter(|next| *next > offset)
+            .ok_or_else(|| "Tool cursor did not advance".to_string())?;
+        offset = next;
+    }
+    Ok(tools)
 }
 
 #[tauri::command]
@@ -210,14 +225,27 @@ pub async fn list_tool_outputs(
     run_id: String,
     tool_call_id: String,
 ) -> Result<Vec<store::ToolOutputRecord>, crate::AppError> {
-    let events = tool_events_since(&run_id, -1).await?;
-    Ok(store::project_tool_outputs(&events, &tool_call_id))
+    let session_id = tool_session(&run_id).await?;
+    let payload =
+        agent_bridge::query_tools(session_id, run_id, Some(tool_call_id.clone()), 0).await?;
+    let Some(output) = payload.get("output").filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let error = output["isError"].as_bool().unwrap_or(false);
+    Ok(vec![store::ToolOutputRecord {
+        id: format!("{tool_call_id}:result"),
+        tool_call_id,
+        kind: if error { "error" } else { "text" }.into(),
+        content: Some(
+            serde_json::json!({if error {"error"}else{"text"}:output["text"]}).to_string(),
+        ),
+        created_at: output["createdAtMs"].as_i64().unwrap_or(0),
+    }])
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::await_holding_lock)]
-    use super::agent_unavailable;
     use super::*;
 
     use crate::auth_store::test_support::HomeGuard;
@@ -242,7 +270,7 @@ mod tests {
             workspace_id: Some(ws.id.clone()),
             workspace_path: None,
             workspace_name: None,
-            agent_session_id: None,
+            agent_session_id: Some("synthetic-session".into()),
         })
         .expect("create thread");
         (home, thread)
@@ -345,16 +373,6 @@ mod tests {
         .is_err());
     }
 
-    #[test]
-    fn legacy_fallback_requires_the_typed_transport_error() {
-        assert!(agent_unavailable(&crate::AppError::AgentUnavailable(
-            "connection refused".to_string()
-        )));
-        assert!(!agent_unavailable(&crate::AppError::Message(
-            "model response says service unavailable".to_string()
-        )));
-    }
-
     #[tokio::test]
     async fn list_run_events_reads_the_agent_journal() {
         use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
@@ -427,7 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_run_events_falls_back_when_the_agent_is_down() {
+    async fn list_run_events_reports_agent_unavailable() {
         use crate::commands::agent_mock::{mock_agent_lock, with_broken_endpoint};
 
         let _lock = mock_agent_lock();
@@ -436,8 +454,8 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         let events = with_broken_endpoint(|| list_run_events("run_down".into()))
             .await
-            .expect("fallback");
-        assert!(events.is_empty());
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
     }
 
     #[tokio::test]
@@ -450,8 +468,8 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         let events = with_broken_endpoint(|| list_run_events_since("run_since".into(), -1))
             .await
-            .expect("delegated fallback");
-        assert!(events.is_empty());
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
     }
 
     #[tokio::test]
@@ -478,7 +496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_run_events_since_logs_and_falls_back_on_non_transport_error() {
+    async fn list_run_events_since_propagates_rejection() {
         use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
         use std::collections::HashMap;
 
@@ -492,13 +510,13 @@ mod tests {
         });
         let events = list_run_events_since("run_since_rej".into(), 0)
             .await
-            .expect("fallback");
-        assert!(events.is_empty());
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
         script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]
-    async fn list_run_events_since_incremental_falls_back_when_down() {
+    async fn list_run_events_since_incremental_reports_unavailable() {
         use crate::commands::agent_mock::{mock_agent_lock, with_broken_endpoint};
 
         let _lock = mock_agent_lock();
@@ -507,8 +525,8 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         let events = with_broken_endpoint(|| list_run_events_since("run_since_inc".into(), 3))
             .await
-            .expect("incremental fallback");
-        assert!(events.is_empty());
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
     }
 
     #[tokio::test]
@@ -567,8 +585,8 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
             data: HashMap::from([(
-                "get_events_since".to_string(),
-                "{\"events\":[]}".to_string(),
+                "list_tool_calls".to_string(),
+                "{\"tools\":[],\"hasMore\":false,\"nextOffset\":0}".to_string(),
             )]),
             ..Default::default()
         });
@@ -590,12 +608,12 @@ mod tests {
         let bulk =
             with_broken_endpoint(|| list_run_events_bulk(vec!["run_bulk".into(), "ghost".into()]))
                 .await
-                .expect("bulk");
-        assert!(bulk.is_empty());
+                .expect_err("Agent failure must propagate");
+        assert!(!bulk.to_string().is_empty());
     }
 
     #[tokio::test]
-    async fn tool_projection_readers_degrade_to_legacy_when_down() {
+    async fn tool_readers_report_agent_unavailable() {
         use crate::commands::agent_mock::{mock_agent_lock, with_broken_endpoint};
 
         let _lock = mock_agent_lock();
@@ -603,22 +621,19 @@ mod tests {
         create_run(run_input(&thread.id, "run_tools")).expect("create run");
         crate::commands::agent_mock::ensure_mock_agent();
 
-        let calls = with_broken_endpoint(|| list_tool_calls("run_tools".into()))
+        assert!(with_broken_endpoint(|| list_tool_calls("run_tools".into()))
             .await
-            .expect("tool calls");
-        assert!(calls.is_empty());
-
-        let bulk = with_broken_endpoint(|| list_tool_calls_bulk(vec!["run_tools".into()]))
-            .await
-            .expect("tool calls bulk");
-        assert_eq!(bulk.len(), 1);
-        assert!(bulk[0].1.is_empty());
-
-        let outputs =
+            .is_err());
+        assert!(
+            with_broken_endpoint(|| list_tool_calls_bulk(vec!["run_tools".into()]))
+                .await
+                .is_err()
+        );
+        assert!(
             with_broken_endpoint(|| list_tool_outputs("run_tools".into(), "tool_1".into()))
                 .await
-                .expect("tool outputs");
-        assert!(outputs.is_empty());
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -29,6 +29,10 @@ export function toolStatusLabel(status: string) {
       return i18n.t("runs:toolStatus.cancelled");
     case "running":
       return i18n.t("runs:toolStatus.running");
+    case "interrupted":
+      return i18n.t("runs:toolStatus.interrupted");
+    case "unknown":
+      return i18n.t("runs:toolStatus.unknown");
     default:
       return status || i18n.t("runs:toolStatus.unknown");
   }

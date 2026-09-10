@@ -27,11 +27,11 @@ describe("history reducer", () => {
 
   test("skips tool-call-only messages whose content is omitted on the wire", () => {
     const timeline = timelineFromHistory([
-      { role: "user", content: "hi" },
+      { role: "user", blocks: [{ kind: "text", text: "hi" }] },
       // Assistant tool-call messages serialize without a content field.
-      { role: "assistant" },
-      { role: "tool", content: null },
-      { role: "assistant", content: "done" },
+      { role: "assistant", blocks: [] },
+      { role: "tool", blocks: [] },
+      { role: "assistant", blocks: [{ kind: "text", text: "done" }] },
     ]);
     expect(timeline.items).toEqual([
       expect.objectContaining({ kind: "message", role: "user", text: "hi" }),
@@ -46,9 +46,11 @@ describe("entry reducer", () => {
     const durable = timelineFromEntries([
       {
         id: "e1",
+        kind: "user",
         role: "user",
-        content: "check this",
-        meta: { attachments: [{ path: "/tmp/a.png", name: "a.png", kind: "image" }] },
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "check this" }],
+        metadata: { attachments: [{ path: "/tmp/a.png", name: "a.png", kind: "image" }] },
       },
     ]);
 
@@ -62,15 +64,19 @@ describe("entry reducer", () => {
     const durable = timelineFromEntries([
       {
         id: "old",
+        kind: "user",
         role: "user",
-        content: "same prompt",
-        meta: { attachments: [{ path: "/tmp/old.png", name: "old.png", kind: "image" }] },
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "same prompt" }],
+        metadata: { attachments: [{ path: "/tmp/old.png", name: "old.png", kind: "image" }] },
       },
       {
         id: "new",
+        kind: "user",
         role: "user",
-        content: "same prompt",
-        meta: { attachments: [{ path: "/tmp/new.png", name: "new.png", kind: "image" }] },
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "same prompt" }],
+        metadata: { attachments: [{ path: "/tmp/new.png", name: "new.png", kind: "image" }] },
       },
     ]);
 
@@ -83,17 +89,33 @@ describe("entry reducer", () => {
     const timeline = timelineFromEntries([
       {
         id: "e1",
+        kind: "user",
         role: "user",
-        content: "check this",
-        meta: {
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "check this" }],
+        metadata: {
           attachments: [
             { path: "/tmp/a.png", name: "a.png", kind: "image" },
             { path: "/tmp/b.pdf", name: "b.pdf", kind: "file" },
           ],
         },
       },
-      { id: "e2", role: "assistant", content: "looks good" },
-      { id: "e3", role: "tool", content: "tool output" },
+      {
+        id: "e2",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "looks good" }],
+      },
+      {
+        id: "e3",
+        kind: "tool",
+        role: "tool",
+        createdAtMs: 0,
+        blocks: [
+          { kind: "tool_result", toolCallId: "unmatched", text: "tool output", isError: false },
+        ],
+      },
     ]);
     expect(timeline.items).toEqual([
       expect.objectContaining({
@@ -111,13 +133,22 @@ describe("entry reducer", () => {
 
   test("projects authoritative run outcomes from remote history", () => {
     const timeline = timelineFromEntries([
-      { id: "u1", role: "user", content: "try", meta: { run_id: "run-failed" } },
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "try" }],
+        runId: "run-failed",
+      },
       {
         id: "a1",
+        kind: "assistant",
         role: "assistant",
-        content: "partial",
-        meta: { run_id: "run-failed" },
-        run_status: "failed",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "partial" }],
+        runId: "run-failed",
+        run: { status: "failed" },
       },
     ]);
     expect(timeline.items[1]).toMatchObject({
@@ -132,14 +163,15 @@ describe("entry reducer", () => {
     const state = timelineFromEntries([
       {
         id: "checkpoint-entry",
-        entry_type: "compaction",
+        kind: "compaction",
         role: "system",
-        content: "",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "" }],
         checkpoint: {
-          schema_version: 2,
-          checkpoint_id: "cp-history",
-          tokens_before: 190_000,
-          tokens_after: 20_000,
+          schemaVersion: 2,
+          checkpointId: "cp-history",
+          tokensBefore: 190_000,
+          tokensAfter: 20_000,
           trigger: "manual",
         },
       },
@@ -166,13 +198,21 @@ describe("entry reducer", () => {
     const timeline = timelineFromEntries([
       {
         id: "e1",
+        kind: "user",
         role: "user",
-        content: "",
-        meta: {
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "" }],
+        metadata: {
           attachments: [{ path: "/tmp/a.png", name: "a.png" }, { name: "no-path" } as never],
         },
       },
-      { id: "e2", role: "user", content: "" },
+      {
+        id: "e2",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "" }],
+      },
     ]);
     expect(timeline.items).toHaveLength(1);
     expect(timeline.items[0]).toMatchObject({
@@ -185,26 +225,55 @@ describe("entry reducer", () => {
     // parity): the run's thinking/tool rows and streamed text render inline
     // inside the reply bubble, in stream order.
     const timeline = timelineFromEntries([
-      { id: "u1", role: "user", content: "check this" },
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "check this" }],
+      },
       {
         id: "a1",
+        kind: "assistant",
         role: "assistant",
-        content: "interim analysis",
-        thinking: "reasoning…",
-        tool_calls: [{ id: "call_0", function: { name: "read", arguments: { path: "/tmp/x" } } }],
+        createdAtMs: 0,
+        blocks: [
+          { kind: "reasoning", text: "reasoning…" },
+          { kind: "text", text: "interim analysis" },
+          ...[{ id: "call_0", function: { name: "read", arguments: { path: "/tmp/x" } } }].map(
+            call => ({
+              kind: "tool_call",
+              toolCallId: call.id,
+              name: call.function.name,
+              arguments: call.function.arguments,
+            }),
+          ),
+        ],
       },
-      { id: "t1", role: "tool", content: "ok" },
+      {
+        id: "t1",
+        kind: "tool",
+        role: "tool",
+        createdAtMs: 0,
+        blocks: [{ kind: "tool_result", toolCallId: "call_0", text: "ok", isError: false }],
+      },
       {
         id: "a2",
+        kind: "assistant",
         role: "assistant",
-        content: "done",
-        meta: { run_id: "run-9" },
-        output_tokens: 12,
-        duration_ms: 3400,
-        input_tokens: 34,
-        cache_read_tokens: 21,
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "done" }],
+        runId: "run-9",
+        usage: { inputTokens: 34, outputTokens: 12, cacheReadTokens: 21 },
+        run: { durationMs: 3400 },
       },
-      { id: "u2", role: "user", content: "thanks" },
+      {
+        id: "u2",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "thanks" }],
+      },
     ]);
     expect(timeline.items.map(item => item.kind)).toEqual(["message", "message", "message"]);
     const reply = timeline.items[1];
@@ -230,8 +299,20 @@ describe("entry reducer", () => {
     ]);
     // A reply-less run (empty assistant entry) renders nothing extra.
     const divider = timelineFromEntries([
-      { id: "u3", role: "user", content: "next" },
-      { id: "a3", role: "assistant", content: "" },
+      {
+        id: "u3",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "next" }],
+      },
+      {
+        id: "a3",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "" }],
+      },
     ]);
     expect(divider.items.map(item => item.kind)).toEqual(["message"]);
   });
@@ -331,29 +412,51 @@ describe("user message mirror", () => {
 
   test("pairs persisted tool results by id and trusts explicit error status", () => {
     const timeline = timelineFromEntries([
-      { id: "u1", role: "user", content: "run tools" },
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "run tools" }],
+      },
       {
         id: "a1",
+        kind: "assistant",
         role: "assistant",
-        content: "done",
-        tool_calls: [
-          { id: "call-read", function: { name: "read", arguments: { path: "/tmp/x" } } },
-          { id: "call-shell", function: { name: "shell", arguments: { command: "true" } } },
+        createdAtMs: 0,
+        blocks: [
+          { kind: "text", text: "done" },
+          ...[
+            { id: "call-read", function: { name: "read", arguments: { path: "/tmp/x" } } },
+            { id: "call-shell", function: { name: "shell", arguments: { command: "true" } } },
+          ].map(call => ({
+            kind: "tool_call",
+            toolCallId: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+          })),
         ],
       },
       {
         id: "t2",
+        kind: "tool",
         role: "tool",
-        content: "ok",
-        tool_call_id: "call-shell",
-        tool_result_is_error: true,
+        createdAtMs: 0,
+        blocks: [{ kind: "tool_result", toolCallId: "call-shell", text: "ok", isError: true }],
       },
       {
         id: "t1",
+        kind: "tool",
         role: "tool",
-        content: "Error: legacy-looking text",
-        tool_call_id: "call-read",
-        tool_result_is_error: false,
+        createdAtMs: 0,
+        blocks: [
+          {
+            kind: "tool_result",
+            toolCallId: "call-read",
+            text: "Error: legacy-looking text",
+            isError: false,
+          },
+        ],
       },
     ]);
     const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
@@ -1200,12 +1303,16 @@ describe("run failure parity with the desktop", () => {
     const timeline = timelineFromEntries([
       {
         id: "e1",
+        kind: "user",
         role: "user",
-        content: "poem.txt 里面内容是什么",
-        meta: { run_id: "run-1" },
-        run_status: "failed",
-        run_error: "Authentication failed (401). Check your API key.",
-        run_duration_ms: 15_000,
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "poem.txt 里面内容是什么" }],
+        runId: "run-1",
+        run: {
+          status: "failed",
+          error: "Authentication failed (401). Check your API key.",
+          durationMs: 15_000,
+        },
       },
     ]);
     expect(timeline.items).toEqual([
@@ -1225,7 +1332,15 @@ describe("run failure parity with the desktop", () => {
     // A failed run whose user entry carries no text and no attachments leaves
     // no user item to anchor behind, so its failure bubble is appended unanchored.
     const timeline = timelineFromEntries([
-      { id: "e1", role: "user", content: "", meta: { run_id: "run-1" }, run_status: "failed" },
+      {
+        id: "e1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "" }],
+        runId: "run-1",
+        run: { status: "failed" },
+      },
     ]);
     expect(timeline.items).toEqual([
       expect.objectContaining({
@@ -1253,14 +1368,23 @@ describe("run failure parity with the desktop", () => {
 
   test("history reload keeps a partial assistant reply instead of a synthesized bubble", () => {
     const timeline = timelineFromEntries([
-      { id: "e1", role: "user", content: "hi", meta: { run_id: "run-1" }, run_status: "failed" },
+      {
+        id: "e1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "hi" }],
+        runId: "run-1",
+        run: { status: "failed" },
+      },
       {
         id: "e2",
+        kind: "assistant",
         role: "assistant",
-        content: "partial",
-        meta: { run_id: "run-1" },
-        run_status: "failed",
-        run_error: "error decoding response body",
+        createdAtMs: 0,
+        blocks: [{ kind: "text", text: "partial" }],
+        runId: "run-1",
+        run: { status: "failed", error: "error decoding response body" },
       },
     ]);
     const assistants = timeline.items.filter(

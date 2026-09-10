@@ -42,6 +42,23 @@ pub struct StreamTruncation {
     pub detected_by: String,
 }
 
+impl StreamTruncation {
+    /// Stable diagnostic category shared by persisted history and live clients.
+    pub fn error_message(&self) -> String {
+        let code = match self.detected_by.as_str() {
+            "upstream_disconnected" => "UPSTREAM_DISCONNECTED",
+            "request_timeout" | "idle_timeout" => "RESPONSE_TIMEOUT",
+            "finish_length" => "OUTPUT_LIMIT",
+            "finish_content_filter" => "MODEL_CONTENT_FILTER",
+            "finish_error" | "model_response_error" => "MODEL_RESPONSE_ERROR",
+            "model_paused" => "MODEL_PAUSED",
+            "provider_cancelled" => "PROVIDER_CANCELLED",
+            _ => "RESPONSE_UNCONFIRMED",
+        };
+        format!("[{code}] {}", self.detected_by)
+    }
+}
+
 /// Per-session state passed into `run_streaming_with_messages`.  Callbacks
 /// are session-specific (they capture session_id, messages_arc, broadcaster)
 /// and must NOT be stored on the shared Loop — otherwise concurrent sessions

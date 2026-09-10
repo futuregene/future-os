@@ -6,7 +6,6 @@ import type {
 } from "./model";
 import type { ToolKind } from "./group";
 import type { SessionEntry } from "./events";
-import { isSoftExit, nonZeroExitCode } from "./liveApply";
 import {
   asToolKind,
   COLLAPSIBLE_KINDS,
@@ -20,14 +19,22 @@ import {
 function attachmentsFromMeta(
   entry: SessionEntry,
 ): MessageAttachment[] | undefined {
-  const items = entry.meta?.attachments;
+  const items = entry.metadata?.attachments;
   if (!Array.isArray(items) || items.length === 0) return undefined;
-  return items.map((item) => ({
-    path: item.path,
-    name: item.name,
-    kind: item.kind ?? "file",
-    thumbnail: item.thumbnail ?? null,
-  }));
+  return items
+    .filter(
+      (item) =>
+        item &&
+        typeof item.path === "string" &&
+        item.path.length > 0 &&
+        typeof item.name === "string",
+    )
+    .map((item) => ({
+      path: item.path,
+      name: item.name,
+      kind: item.kind ?? "file",
+      thumbnail: item.thumbnail ?? null,
+    }));
 }
 
 interface ExchangeAcc {
@@ -74,22 +81,6 @@ export interface SessionTurn {
 export type SessionProjectionNode =
   | { kind: "turn"; turn: SessionTurn }
   | { kind: "standalone"; message: AgentMessage };
-
-/**
- * Whether a tool result's content marks a failure: the agent prefixes a tool
- * error with "Error: ", and a shell non-zero exit puts an "[exit: N]" footer at the end of the
- * output (with the bare grep/diff/test exit-1 soft-fail exemption).
- */
-function toolResultFailed(
-  content: string,
-  command: string | undefined,
-): boolean {
-  if (!content) return false;
-  if (content.startsWith("Error:")) return true;
-  const code = nonZeroExitCode(content);
-  if (code === null) return false;
-  return !isSoftExit(code, command);
-}
 
 /**
  * Collapse an uninterrupted burst of same-kind, completed tool activities into
@@ -161,18 +152,19 @@ function entryKey(entry: SessionEntry): string {
  */
 function isCompactionDivider(entry: SessionEntry): boolean {
   return (
-    entry.entry_type === "compaction" ||
-    (entry.role === "user" && entry.content.startsWith("[Context compaction:"))
+    entry.kind === "compaction" ||
+    (entry.role === "user" &&
+      entryText(entry).startsWith("[Context compaction:"))
   );
 }
 
 /** Render a compaction marker as a divider, not as a user bubble / new exchange. */
 function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
-  const key = entry.checkpoint?.checkpoint_id || entryKey(entry);
+  const key = entry.checkpoint?.checkpointId || entryKey(entry);
   const tokensBefore =
-    typeof entry.checkpoint?.tokens_before === "number" &&
-    entry.checkpoint.tokens_before > 0
-      ? entry.checkpoint.tokens_before
+    typeof entry.checkpoint?.tokensBefore === "number" &&
+    entry.checkpoint.tokensBefore > 0
+      ? entry.checkpoint.tokensBefore
       : undefined;
   return {
     id: `m_${key}`,
@@ -180,7 +172,7 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
     authorKey: "author.researchCopilot",
     content: "",
     status: "complete",
-    createdAt: entry.timestamp ?? now,
+    createdAt: entryTime(entry) ?? now,
     segments: [
       {
         id: `seg_${key}_compaction`,
@@ -203,9 +195,9 @@ function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
     id: `m_${entryKey(entry)}`,
     role: "user",
     authorKey: "author.you",
-    content: entry.content,
+    content: entryText(entry),
     status: "complete",
-    createdAt: entry.timestamp ?? now,
+    createdAt: entryTime(entry) ?? now,
     attachments: attachmentsFromMeta(entry),
     // Run identity stays off the user bubble on purpose: runId-on-assistant is
     // the convention applyRunMetadata / streamingBubbleBase use to tell
@@ -215,101 +207,79 @@ function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
 }
 
 function foldRunOutcome(acc: ExchangeAcc, entry: SessionEntry) {
-  const runId = entry.meta?.run_id;
-  if (!runId || !entry.run_status) return;
+  const runId = entry.runId;
+  if (!runId || !entry.run?.status) return;
   if (acc.userRunId && runId !== acc.userRunId) return;
   acc.outcome = {
-    status: entry.run_status,
-    ...(entry.run_error?.trim() ? { error: entry.run_error } : {}),
-    ...(typeof entry.run_duration_ms === "number" && entry.run_duration_ms >= 0
-      ? { durationMs: entry.run_duration_ms }
+    status: entry.run?.status,
+    ...(entry.run?.error?.trim() ? { error: entry.run?.error } : {}),
+    ...(typeof entry.run?.durationMs === "number" && entry.run?.durationMs >= 0
+      ? { durationMs: entry.run?.durationMs }
       : {}),
   };
 }
 
-/** Fold one assistant entry into an exchange's accumulator. */
+function entryText(entry: SessionEntry): string {
+  return entry.blocks
+    .filter((b) => b.kind === "text")
+    .slice(0, entry.role === "user" ? 1 : undefined)
+    .map((b) => b.text ?? "")
+    .join("");
+}
+
+function entryTime(entry: SessionEntry): string | undefined {
+  return Number.isFinite(entry.createdAtMs)
+    ? new Date(entry.createdAtMs).toISOString()
+    : undefined;
+}
+
+/** Preserve the actual reasoning/text/tool interleaving, including text after tools. */
 function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
   const key = entryKey(entry);
-  // Last assistant entry of the exchange carries the reply's time + usage,
-  // and seeds the assistant message's stable id.
   acc.assistantEntryId = key;
-  if (entry.timestamp) acc.assistantCreatedAt = entry.timestamp;
-  if (typeof entry.output_tokens === "number")
-    acc.outputTokens = entry.output_tokens;
-  if (typeof entry.input_tokens === "number")
-    acc.inputTokens = entry.input_tokens;
-  if (typeof entry.cache_read_tokens === "number")
-    acc.cacheReadTokens = entry.cache_read_tokens;
-  if (typeof entry.duration_ms === "number") acc.durationMs = entry.duration_ms;
-  if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
-    acc.runId = entry.meta.run_id;
-  if (entry.thinking) {
-    acc.segments.push({
-      id: `seg_${key}_thinking`,
-      kind: "thinking",
-      text: entry.thinking,
-    });
-  }
-  // Text (any preamble) comes before the tool calls it introduces — that's
-  // the order the model emits within a message, and the order the live path
-  // shows. Pushing tools first put "Read config.toml" above "Let me check
-  // the config".
-  if (entry.content?.trim()) {
-    acc.segments.push({
-      id: `seg_${key}_text`,
-      kind: "text",
-      text: entry.content,
-    });
-    acc.finalText = entry.content;
-  }
-  if (entry.tool_calls) {
-    for (const [index, tc] of entry.tool_calls.entries()) {
-      const kind = asToolKind(tc.function.name);
-      const target = targetFromArgs(kind, normalizeArgs(tc.function.arguments));
+  acc.assistantCreatedAt = entryTime(entry);
+  if (entry.usage?.outputTokens != null)
+    acc.outputTokens = entry.usage.outputTokens;
+  if (entry.usage?.inputTokens != null)
+    acc.inputTokens = entry.usage.inputTokens;
+  if (entry.usage?.cacheReadTokens != null)
+    acc.cacheReadTokens = entry.usage.cacheReadTokens;
+  if (entry.run?.durationMs != null) acc.durationMs = entry.run.durationMs;
+  if (entry.runId) acc.runId = entry.runId;
+  for (const [index, block] of entry.blocks.entries()) {
+    const id = `seg_${key}_${index}`;
+    if (block.kind === "reasoning" && block.text) {
+      acc.segments.push({ id, kind: "thinking", text: block.text });
+    } else if (block.kind === "text" && block.text?.trim()) {
+      acc.segments.push({ id, kind: "text", text: block.text });
+      acc.finalText = block.text;
+    } else if (block.kind === "tool_call") {
+      const kind = asToolKind(block.name ?? "");
+      const target = targetFromArgs(kind, normalizeArgs(block.arguments));
       const item: AgentActivityItem = {
-        // Use the LLM's tool call id (call_00_xxx) so it matches the
-        // stored tool call records in the runs panel.
-        id: tc.id || segId(),
+        id: block.toolCallId || id,
         kind,
         status: "completed",
         target,
-        // The path/command, not the raw args blob — matches the live path and
-        // keeps a write's hover from being its entire file content.
         detail: target,
       };
-      acc.segments.push({
-        id: `seg_${key}_${tc.id || index}`,
-        kind: "activity",
-        item,
-      });
+      acc.segments.push({ id, kind: "activity", item });
       acc.pendingTools.push(item);
     }
   }
 }
 
-/**
- * A `tool` result entry doesn't get its own row (the assistant's
- * `tool_calls` already produced one — rendering it too duplicated the row
- * as a blank activity). Use it only to mark that call failed, matching the
- * tool_calls in order (the agent executes and appends results in order).
- */
+/** Results match by identity, never by whichever call happens to be first. */
 function foldToolEntry(acc: ExchangeAcc | null, entry: SessionEntry) {
   if (!acc) return;
-  const matchingIndex = entry.tool_call_id
-    ? acc.pendingTools.findIndex((item) => item.id === entry.tool_call_id)
-    : -1;
-  const item =
-    matchingIndex >= 0
-      ? acc.pendingTools.splice(matchingIndex, 1)[0]
-      : acc.pendingTools.shift();
-  if (item) {
-    const command = item.kind === "shell" ? item.target : undefined;
-    if (
-      entry.tool_result_is_error === true ||
-      (entry.tool_result_is_error === undefined &&
-        toolResultFailed(entry.content, command))
-    )
-      item.status = "failed";
+  for (const block of entry.blocks) {
+    if (block.kind !== "tool_result" || !block.toolCallId) continue;
+    const index = acc.pendingTools.findIndex(
+      (item) => item.id === block.toolCallId,
+    );
+    if (index < 0) continue;
+    const [item] = acc.pendingTools.splice(index, 1);
+    if (block.isError && item) item.status = "failed";
   }
 }
 
@@ -329,10 +299,16 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
   // yet (the agent is still streaming). An empty completed bubble would steal
   // the runId in applyRunMetadata and block upsertStreamingPreview from
   // inserting the live preview when the user returns to this thread.
-  const canonicalConflict = !!acc.userRunId && !!acc.runId && acc.userRunId !== acc.runId;
-  const turnRunId = canonicalConflict ? undefined : (acc.userRunId ?? acc.runId);
+  const canonicalConflict =
+    !!acc.userRunId && !!acc.runId && acc.userRunId !== acc.runId;
+  const turnRunId = canonicalConflict
+    ? undefined
+    : (acc.userRunId ?? acc.runId);
   const outcome = canonicalConflict ? undefined : acc.outcome;
-  const terminalWithoutReply = outcome?.status === "failed" || outcome?.status === "cancelled";
+  const terminalWithoutReply =
+    outcome?.status === "failed" ||
+    outcome?.status === "interrupted" ||
+    outcome?.status === "cancelled";
   const hasContent =
     acc.finalText ||
     textSegments.length > 0 ||
@@ -343,7 +319,8 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
   let assistant: AgentMessage | undefined;
   if (hasContent) {
     const stopped = outcome?.status === "cancelled";
-    const failed = outcome?.status === "failed";
+    const failed =
+      outcome?.status === "failed" || outcome?.status === "interrupted";
     assistant = {
       id: acc.assistantEntryId
         ? `m_${acc.assistantEntryId}`
@@ -365,11 +342,9 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
       durationMs: acc.durationMs ?? outcome?.durationMs,
       runId: canonicalConflict
         ? undefined
-        : acc.runId ?? (outcome ? turnRunId : undefined),
+        : (acc.runId ?? (outcome ? turnRunId : undefined)),
       ...(stopped ? { stopped: true } : {}),
-      ...(outcome?.error
-        ? { runError: outcome.error }
-        : {}),
+      ...(outcome?.error ? { runError: outcome.error } : {}),
     };
   }
   return {
@@ -394,7 +369,9 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
  * Grouping is positional: a user entry always opens a new exchange (each run
  * has exactly one user message, so journal order is conversation order).
  */
-export function entriesToTurns(entries: SessionEntry[]): SessionProjectionNode[] {
+export function entriesToTurns(
+  entries: SessionEntry[],
+): SessionProjectionNode[] {
   const nodes: SessionProjectionNode[] = [];
   const now = new Date().toISOString();
 
@@ -420,8 +397,8 @@ export function entriesToTurns(entries: SessionEntry[]): SessionProjectionNode[]
       }
       acc = newExchangeAcc();
       acc.userMessage = userMessageFromEntry(entry, now);
-      if (typeof entry.meta?.run_id === "string" && entry.meta.run_id)
-        acc.userRunId = entry.meta.run_id;
+      if (typeof entry.runId === "string" && entry.runId)
+        acc.userRunId = entry.runId;
       foldRunOutcome(acc, entry);
     } else if (entry.role === "assistant") {
       if (!acc) acc = newExchangeAcc();
@@ -436,8 +413,10 @@ export function entriesToTurns(entries: SessionEntry[]): SessionProjectionNode[]
   return nodes;
 }
 
-export function turnsToMessages(nodes: SessionProjectionNode[]): AgentMessage[] {
-  return nodes.flatMap(node =>
+export function turnsToMessages(
+  nodes: SessionProjectionNode[],
+): AgentMessage[] {
+  return nodes.flatMap((node) =>
     node.kind === "standalone"
       ? [node.message]
       : [node.turn.user, ...(node.turn.assistant ? [node.turn.assistant] : [])],

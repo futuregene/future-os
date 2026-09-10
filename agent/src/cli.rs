@@ -5,7 +5,7 @@
 //! always `future-agent`, so help/error text matches the standalone binary.
 
 use crate::{Engine, EngineConfig, Manager, ModelRegistry};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
 use clap::Parser;
 use std::fs::{File, OpenOptions};
@@ -105,6 +105,16 @@ fn abort_all_sessions(sessions: &SessionsMap) {
 #[command(name = "future-agent")]
 #[command(version = crate::utils::VERSION)]
 pub struct Cli {
+    /// Import legacy sessions and print a content-free report, then exit.
+    #[arg(long)]
+    migrate_sessions: bool,
+    /// Explicitly retry one skipped legacy session while the Agent is stopped.
+    #[arg(long, value_name = "SESSION_ID")]
+    retry_session_import: Option<String>,
+    /// Session directory for isolated migration verification (maintenance only).
+    #[arg(long, value_name = "DIRECTORY")]
+    migration_source: Option<std::path::PathBuf>,
+
     /// Internal Linux sandbox helper request. This is intentionally hidden and
     /// dispatched before singleton/config/runtime initialization.
     #[arg(long, hide = true, value_name = "REQUEST")]
@@ -230,7 +240,33 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     // Maintenance commands above are deliberately sessionless and must remain
     // usable while the server is running. Only the long-lived server owns the
     // user-scoped singleton lock.
+    if cli.migration_source.is_some() && !cli.migrate_sessions && cli.retry_session_import.is_none()
+    {
+        anyhow::bail!("--migration-source requires --migrate-sessions or --retry-session-import");
+    }
     let _instance_guard = acquire_agent_instance_lock()?;
+    if cli.migrate_sessions || cli.retry_session_import.is_some() {
+        let manager = Manager::new(
+            cli.migration_source
+                .clone()
+                .unwrap_or_else(|| crate::utils::default_session_dir("")),
+        );
+        manager.initialize()?;
+        if let Some(id) = cli.retry_session_import.as_deref() {
+            manager.retry_legacy_import(id)?;
+        }
+        let report = manager.import_records()?;
+        println!("{}", serde_json::to_string(&report)?);
+        if let Some(id) = cli.retry_session_import.as_deref() {
+            if !report
+                .iter()
+                .any(|record| record.session_id == id && record.status == "imported")
+            {
+                anyhow::bail!("session import is still skipped; see the migration report");
+            }
+        }
+        return Ok(());
+    }
     run_agent_lifecycle(
         cleanup_windows_sandbox_on_startup,
         || run(cli),
@@ -670,12 +706,19 @@ async fn async_main(
     engine.agent_loop.config.system_prompt = system_prompt;
 
     let manager = Arc::new(Manager::default_for(&cwd));
-    match manager.gc_orphan_run_data() {
-        Ok(count) if count > 0 => {
-            tracing::info!(count, "reclaimed orphan Agent run-data directories")
-        }
-        Ok(_) => {}
-        Err(error) => tracing::warn!("failed to reclaim orphan Agent run data: {error:#}"),
+    manager
+        .initialize()
+        .context("initialize Agent SQLite storage")?;
+    let imports = manager.import_records()?;
+    let skipped = imports
+        .iter()
+        .filter(|record| record.status == "skipped")
+        .count();
+    if skipped > 0 {
+        tracing::warn!(
+            skipped,
+            "legacy sessions skipped; use --migrate-sessions for the migration report"
+        );
     }
     let approval_gate = crate::rpc::ApprovalGate::default();
     // Template for minting per-session agent loops.  Sessions no longer

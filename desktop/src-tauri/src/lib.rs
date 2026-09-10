@@ -829,6 +829,7 @@ pub fn run() {
             batch_delete_threads,
             fork_thread,
             get_session_entries,
+            get_session_entries_page,
             get_thread_agent_state,
             compact_thread_context,
             list_streaming_thread_ids,

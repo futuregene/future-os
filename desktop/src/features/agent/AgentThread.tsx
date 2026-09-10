@@ -1,8 +1,14 @@
-import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
+import type {
+  AgentMessage,
+  MessageAttachment,
+} from "@future-os/thread-projection";
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { StoredApprovalRequest, StoredThread } from "../../integrations/storage/threadStore";
+import type {
+  StoredApprovalRequest,
+  StoredThread,
+} from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
@@ -10,20 +16,26 @@ import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { compactThreadContext } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
-import { forkThread } from "../../integrations/storage/threadStore";
+import {
+  forkThread,
+  getSessionEntries,
+} from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { ApprovalPrompt } from "./ApprovalPrompt";
-import { buildContinuePrompt, loadRunResumeSummary, previousUserForRun } from "./buildContinuePrompt";
+import {
+  buildContinuePrompt,
+  loadRunResumeSummary,
+  previousUserForRun,
+} from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
 import { useMessagePaging } from "./useMessagePaging";
-import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
@@ -43,9 +55,17 @@ interface AgentThreadProps {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   showThinking: boolean;
-  pendingPrompt: { attachments?: MessageAttachment[]; id: string; content: string; targetThreadId: string } | null;
+  pendingPrompt: {
+    attachments?: MessageAttachment[];
+    id: string;
+    content: string;
+    targetThreadId: string;
+  } | null;
   activeApproval?: StoredApprovalRequest | null;
-  onApprovalDecision: (approval: StoredApprovalRequest, status: "approved" | "rejected") => Promise<void>;
+  onApprovalDecision: (
+    approval: StoredApprovalRequest,
+    status: "approved" | "rejected",
+  ) => Promise<void>;
   onPromptConsumed: (id: string) => void;
   onRetryAgentConnection: () => void;
   onOpenAccount: () => void;
@@ -89,6 +109,11 @@ export function AgentThread({
     handleSend,
     loadingThread,
     loadingIndicator,
+    hasOlderHistory,
+    loadOlderHistory,
+    historyError,
+    sessionChanged,
+    retryHistory,
     messages,
     renderWorkspace,
   } = useAgentThreadState({
@@ -129,24 +154,10 @@ export function AgentThread({
   // bottom; follows the growing message list while pinned. The view is keyed
   // by thread id, so each conversation starts on a fresh instance pinned to
   // the latest message.
-  const { handleScroll, scrollToLatest, showJumpToLatest } = useStickyAutoScroll({
-    scrollRef,
-    contentKey: messages,
-    // The delayed loading placeholder temporarily unmounts MessageList. Wait
-    // until the real content is mounted, then the layout effect lands at the
-    // actual bottom before paint.
-    followEnabled: !loadingIndicator,
-    onScroll: handleScrollbarVisibility,
-    onContentSettled: () => updateFloatingScrollbar(false),
-  });
-
-  // Windowed rendering for long threads: only the last PAGE_USER_EXCHANGES
-  // exchanges render; loading an older page is a sync window change (the full
-  // list stays in memory) with scroll anchoring so the viewport never jumps.
-  // The paging hook composes the sticky auto-scroll handler via `onScroll`, so
-  // one scroll event reaches both.
   const {
     visibleMessages,
+    scrollToLatest,
+    showJumpToLatest,
     canLoadOlder,
     showLoadOlderHint,
     handleScroll: handlePagingScroll,
@@ -155,7 +166,11 @@ export function AgentThread({
     messages,
     scrollRef,
     userExchangeCount: PAGE_USER_EXCHANGES,
-    onScroll: handleScroll,
+    hasOlderHistory,
+    loadOlderHistory,
+    onScroll: handleScrollbarVisibility,
+    followEnabled: !loadingIndicator,
+    onContentSettled: () => updateFloatingScrollbar(false),
   });
 
   // A run is in flight while its assistant bubble is still streaming; the agent
@@ -174,85 +189,117 @@ export function AgentThread({
     }
   }
 
-  const handleRetryMessage = useCallback((_message: AgentMessage, source: AgentMessage) => {
-    void handleSend({
-      attachments: source.attachments ?? [],
-      content: source.content,
-    });
-  }, [handleSend]);
+  const handleRetryMessage = useCallback(
+    (_message: AgentMessage, source: AgentMessage) => {
+      void handleSend({
+        attachments: source.attachments ?? [],
+        content: source.content,
+      });
+    },
+    [handleSend],
+  );
 
-  const handleContinueMessage = useCallback((message: AgentMessage) => {
-    void handleSend({
-      attachments: [],
-      content: buildContinuePrompt({ message }),
-    });
-  }, [handleSend]);
+  const handleContinueMessage = useCallback(
+    (message: AgentMessage) => {
+      void handleSend({
+        attachments: [],
+        content: buildContinuePrompt({ message }),
+      });
+    },
+    [handleSend],
+  );
 
-  const handleContinueRun = useCallback(async (runId: string) => {
-    const summary = await loadRunResumeSummary(runId);
-    void handleSend({
-      attachments: [],
-      content: buildContinuePrompt({ runId, summary }),
-    });
-  }, [handleSend]);
+  const handleContinueRun = useCallback(
+    async (runId: string) => {
+      const summary = await loadRunResumeSummary(runId);
+      void handleSend({
+        attachments: [],
+        content: buildContinuePrompt({ runId, summary }),
+      });
+    },
+    [handleSend],
+  );
 
   // Reads messages through messagesRef so this callback stays stable across
   // streaming pushes — it's a dep of the recover-run subscription below, and
   // depending on `messages` re-subscribed the listener on every push (M6).
-  const handleRetryRun = useCallback((runId: string, triggerMessageId?: string | null) => {
-    const current = messagesRef.current;
-    const source = triggerMessageId
-      ? current.find(message => message.id === triggerMessageId && message.role === "user")
-      : previousUserForRun(current, runId);
-    if (!source)
-      return;
+  const handleRetryRun = useCallback(
+    (runId: string, triggerMessageId?: string | null) => {
+      const current = messagesRef.current;
+      const source = triggerMessageId
+        ? current.find(
+            message =>
+              message.id === triggerMessageId && message.role === "user",
+          )
+        : previousUserForRun(current, runId);
+      if (!source)
+        return;
 
-    void handleSend({
-      attachments: source.attachments ?? [],
-      content: source.content,
-    });
-  }, [handleSend]);
+      void handleSend({
+        attachments: source.attachments ?? [],
+        content: source.content,
+      });
+    },
+    [handleSend],
+  );
 
-  useEffect(() => onFutureEvent("recover-run", (detail) => {
-    if (detail.action === "retry") {
-      handleRetryRun(detail.runId, detail.triggerMessageId);
-      return;
-    }
-    void handleContinueRun(detail.runId);
-  }), [handleContinueRun, handleRetryRun]);
+  useEffect(
+    () =>
+      onFutureEvent("recover-run", (detail) => {
+        if (detail.action === "retry") {
+          handleRetryRun(detail.runId, detail.triggerMessageId);
+          return;
+        }
+        void handleContinueRun(detail.runId);
+      }),
+    [handleContinueRun, handleRetryRun],
+  );
 
   // Reads messages through messagesRef (not a dep): `messages` changes
   // identity on every streaming push, and this callback is passed to every
   // MessageBlock — recreating it each push defeated the list's only memo
   // boundary and re-rendered every visible finalized row (H1).
-  const handleFork = useCallback(async (aiMessage: AgentMessage) => {
-    const current = messagesRef.current;
-    if (!thread || !current.length)
-      return;
-    // Find the user message that triggered this AI response.
-    const aiIndex = current.indexOf(aiMessage);
-    let userMessage: AgentMessage | undefined;
-    for (let i = aiIndex - 1; i >= 0; i--) {
-      if (current[i]!.role === "user") {
-        userMessage = current[i]!;
-        break;
+  const handleFork = useCallback(
+    async (aiMessage: AgentMessage) => {
+      const current = messagesRef.current;
+      if (!thread || !current.length)
+        return;
+      // Find the user message that triggered this AI response.
+      const aiIndex = current.indexOf(aiMessage);
+      let userMessage: AgentMessage | undefined;
+      for (let i = aiIndex - 1; i >= 0; i--) {
+        if (current[i]!.role === "user") {
+          userMessage = current[i]!;
+          break;
+        }
       }
-    }
-    if (!userMessage)
-      return;
-    // 0-based ordinal among user messages — the fork point, robust to two
-    // identical prompts (content is only a fallback on the backend).
-    const userMessageIndex = current
-      .filter(message => message.role === "user")
-      .indexOf(userMessage);
-    try {
-      const newThreadId = await forkThread(thread.id, userMessage.content, userMessageIndex);
-      onForked(newThreadId);
-    }
-    catch (error) {
-      emitFutureEvent("toast", { message: t("message.forkFailed", { message: errorMessage(error) }), tone: "error" });
-    }
-  }, [thread, onForked, t]);
+      if (!userMessage)
+        return;
+      try {
+        // Fork explicitly needs the full history. Never pass a page-local ordinal
+        // as the global fork point (repeated prompts make text matching unsafe).
+        const allEntries = await getSessionEntries(thread.id);
+        const userMessageIndex = allEntries.entries
+          .filter(entry => entry.role === "user")
+          .findIndex(entry => `m_${entry.id}` === userMessage.id);
+        if (userMessageIndex < 0)
+          throw new Error("The selected message is not yet persisted.");
+        const newThreadId = await forkThread(
+          thread.id,
+          userMessage.content,
+          userMessageIndex,
+        );
+        onForked(newThreadId);
+      }
+      catch (error) {
+        emitFutureEvent("toast", {
+          message: t("message.forkFailed", { message: errorMessage(error) }),
+          tone: "error",
+        });
+      }
+    },
+    [thread, onForked, t],
+  );
 
   // Stable wrappers for the memoized Composer: inline arrows here would be
   // fresh on every render (and AgentThread renders on every streaming push),
@@ -260,31 +307,39 @@ export function AgentThread({
   const handleComposerAbort = useCallback(() => {
     void handleAbort();
   }, [handleAbort]);
-  const handleComposerSend = useCallback((payload: ComposerSendPayload) => {
-    void handleSend(payload);
-  }, [handleSend]);
+  const handleComposerSend = useCallback(
+    (payload: ComposerSendPayload) => {
+      void handleSend(payload);
+    },
+    [handleSend],
+  );
   const handleCompactContext = useCallback(async () => {
     if (!thread)
       return;
     interface TerminalCompactionEvent {
-      eventType: "compaction_committed" | "compaction_failed" | "compaction_unchanged";
+      eventType:
+        "compaction_committed" | "compaction_failed" | "compaction_unchanged";
       payload: Record<string, unknown>;
     }
     let expectedOperationId: string | undefined;
     let bufferedTerminal: TerminalCompactionEvent | undefined;
     let resolveTerminal: ((event: TerminalCompactionEvent) => void) | undefined;
     let rejectTerminal: ((error: Error) => void) | undefined;
-    const terminalPromise = new Promise<TerminalCompactionEvent>((resolve, reject) => {
-      resolveTerminal = resolve;
-      rejectTerminal = reject;
-    });
+    const terminalPromise = new Promise<TerminalCompactionEvent>(
+      (resolve, reject) => {
+        resolveTerminal = resolve;
+        rejectTerminal = reject;
+      },
+    );
     const handleAgentEvent = (event: Event) => {
-      const detail = (event as CustomEvent).detail as {
-        threadId?: string;
-        sessionId?: string;
-        eventType?: string;
-        payload?: Record<string, unknown>;
-      } | undefined;
+      const detail = (event as CustomEvent).detail as
+        | {
+          threadId?: string;
+          sessionId?: string;
+          eventType?: string;
+          payload?: Record<string, unknown>;
+        }
+        | undefined;
       if (
         !detail
         || detail.threadId !== thread.id
@@ -298,9 +353,10 @@ export function AgentThread({
       ) {
         return;
       }
-      const operationId = typeof detail.payload.operation_id === "string"
-        ? detail.payload.operation_id
-        : undefined;
+      const operationId
+        = typeof detail.payload.operation_id === "string"
+          ? detail.payload.operation_id
+          : undefined;
       const terminal = detail as TerminalCompactionEvent;
       if (!expectedOperationId) {
         bufferedTerminal = terminal;
@@ -330,9 +386,10 @@ export function AgentThread({
     try {
       const result = await compactThreadContext(thread.id);
       expectedOperationId = result.operationId;
-      const bufferedOperationId = typeof bufferedTerminal?.payload.operation_id === "string"
-        ? bufferedTerminal.payload.operation_id
-        : undefined;
+      const bufferedOperationId
+        = typeof bufferedTerminal?.payload.operation_id === "string"
+          ? bufferedTerminal.payload.operation_id
+          : undefined;
       if (bufferedTerminal && bufferedOperationId === expectedOperationId)
         resolveTerminal?.(bufferedTerminal);
       const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -343,16 +400,19 @@ export function AgentThread({
       });
       const terminal = await Promise.race([terminalPromise, timeoutPromise]);
       if (terminal.eventType === "compaction_failed") {
-        const message = typeof terminal.payload.error === "string"
-          ? terminal.payload.error
-          : t("failure.unknown");
+        const message
+          = typeof terminal.payload.error === "string"
+            ? terminal.payload.error
+            : t("failure.unknown");
         throw new Error(message);
       }
       if (terminal.eventType === "compaction_unchanged") {
         emitFutureEvent("toast", {
-          message: t(terminal.payload.already_compacted
-            ? "composer.compactionNoNewContent"
-            : "composer.compactionNotNeeded"),
+          message: t(
+            terminal.payload.already_compacted
+              ? "composer.compactionNoNewContent"
+              : "composer.compactionNotNeeded",
+          ),
           tone: "info",
         });
       }
@@ -361,7 +421,9 @@ export function AgentThread({
       if (error instanceof Error && error.name === "AbortError")
         return;
       emitFutureEvent("toast", {
-        message: t("composer.compactionRequestFailed", { message: errorMessage(error) }),
+        message: t("composer.compactionRequestFailed", {
+          message: errorMessage(error),
+        }),
         tone: "error",
       });
     }
@@ -388,6 +450,17 @@ export function AgentThread({
               />
             )
           : null}
+        {sessionChanged && (
+          <div role="status" className="text-ink-soft px-4 py-2 text-sm">
+            {t("thread.sessionChanged")}
+          </div>
+        )}
+        {historyError && (
+          <div role="alert" className="text-danger px-4 py-2 text-sm">
+            {historyError}
+            <button type="button" className="ml-2 underline" onClick={() => void retryHistory()}>{t("common:retry")}</button>
+          </div>
+        )}
         {showLoadOlderHint
           ? (
               <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
@@ -411,16 +484,21 @@ export function AgentThread({
             activeApproval ? "pb-112" : "pb-48",
           )}
           data-chat-scroll="true"
+          style={{ overflowAnchor: "none" }}
           onScroll={handlePagingScroll}
         >
           <div ref={searchRootRef} className="mx-auto w-full max-w-4xl">
             {loadingIndicator
               ? (
-                  <div className="py-8 text-sm text-ink-soft">{t("thread.loading")}</div>
+                  <div className="py-8 text-sm text-ink-soft">
+                    {t("thread.loading")}
+                  </div>
                 )
               : !thread && !loadingStore
                   ? (
-                      <div className="py-8 text-sm text-ink-soft">{t("thread.noActiveThread")}</div>
+                      <div className="py-8 text-sm text-ink-soft">
+                        {t("thread.noActiveThread")}
+                      </div>
                     )
                   : (
                       <MessageList
@@ -435,7 +513,10 @@ export function AgentThread({
                     )}
           </div>
         </div>
-        <FloatingScrollbar scrollbar={scrollbar} onPointerDown={handleThumbPointerDown} />
+        <FloatingScrollbar
+          scrollbar={scrollbar}
+          onPointerDown={handleThumbPointerDown}
+        />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
@@ -479,7 +560,11 @@ export function AgentThread({
               disabled={!thread || loadingThread || loadingStore}
               modelId={modelId}
               modelOptions={modelOptions}
-              modelsEmptyReason={agentConnection.readiness === "all_disabled" ? "all_disabled" : "no_models"}
+              modelsEmptyReason={
+                agentConnection.readiness === "all_disabled"
+                  ? "all_disabled"
+                  : "no_models"
+              }
               onModelChange={onModelChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
@@ -487,7 +572,9 @@ export function AgentThread({
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={handleComposerAbort}
-              onCompactContext={thread?.agentSessionId ? handleCompactContext : undefined}
+              onCompactContext={
+                thread?.agentSessionId ? handleCompactContext : undefined
+              }
               compactionInProgress={agentState?.isCompacting ?? false}
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
@@ -501,10 +588,12 @@ export function AgentThread({
 }
 
 function shouldShowAgentNotice(connection: AgentConnectionState) {
-  return connection.status === "disconnected"
+  return (
+    connection.status === "disconnected"
     || connection.readiness === "needs_login"
     || connection.readiness === "no_models"
-    || connection.readiness === "all_disabled";
+    || connection.readiness === "all_disabled"
+  );
 }
 
 interface AgentNotice {
@@ -527,7 +616,11 @@ function AgentConnectionNotice({
   onOpenProviders: () => void;
 }) {
   const { t } = useTranslation("agent");
-  const notice = agentNotice(connection, { onOpenModels, onOpenAccount, onOpenProviders, onRetry }, t);
+  const notice = agentNotice(
+    connection,
+    { onOpenModels, onOpenAccount, onOpenProviders, onRetry },
+    t,
+  );
   return (
     <div className="pointer-events-auto mx-auto w-full max-w-3xl rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs leading-5 text-warning shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -547,7 +640,12 @@ function AgentConnectionNotice({
 
 function agentNotice(
   connection: AgentConnectionState,
-  actions: { onRetry: () => void; onOpenAccount: () => void; onOpenModels: () => void; onOpenProviders: () => void },
+  actions: {
+    onRetry: () => void;
+    onOpenAccount: () => void;
+    onOpenModels: () => void;
+    onOpenProviders: () => void;
+  },
   t: (key: string) => string,
 ): AgentNotice {
   const retry = { label: t("notice.retry"), onClick: actions.onRetry };
@@ -580,7 +678,10 @@ function agentNotice(
     return {
       title: t("notice.needsLogin.title"),
       detail: t("notice.needsLogin.detail"),
-      action: { label: t("notice.needsLogin.action"), onClick: actions.onOpenProviders },
+      action: {
+        label: t("notice.needsLogin.action"),
+        onClick: actions.onOpenProviders,
+      },
     };
   }
   // Models loaded, but the user disabled every one — guide them to re-enable.
@@ -588,12 +689,18 @@ function agentNotice(
     return {
       title: t("notice.allModelsDisabled.title"),
       detail: t("notice.allModelsDisabled.detail"),
-      action: { label: t("notice.allModelsDisabled.action"), onClick: actions.onOpenModels },
+      action: {
+        label: t("notice.allModelsDisabled.action"),
+        onClick: actions.onOpenModels,
+      },
     };
   }
   return {
     title: t("notice.noModels.title"),
     detail: t("notice.noModels.detail"),
-    action: { label: t("notice.noModels.action"), onClick: actions.onOpenModels },
+    action: {
+      label: t("notice.noModels.action"),
+      onClick: actions.onOpenModels,
+    },
   };
 }
