@@ -107,7 +107,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 | `/new` | 新建会话 |
 | `/status` | 查看当前会话状态（模型、token、费用） |
 | `/stop` | 中断当前生成 |
-| `/model <provider/model>` | 切换模型（如 `deepseek-v4-flash` 或 `openai/gpt-4o`） |
+| `/model <provider/model>` | 切换模型（如 `deepseek-flash` 或 `openai/gpt-4o`） |
 | `/models` | 列出可用模型 |
 | `/effort <level>` | 设置思考级别：`off`、`minimal`、`low`、`medium`、`high`、`xhigh` |
 | `/compact` | 压缩对话上下文 |
