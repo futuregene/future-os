@@ -603,12 +603,12 @@ mod tests {
     fn environment_reports_model_and_thinking_level() {
         let prompt = build_prompt(&PromptOptions {
             session_id: "sess-123".to_string(),
-            model: "future/deepseek-v4-flash".to_string(),
+            model: "future/deepseek-flash".to_string(),
             thinking_level: "high".to_string(),
             ..Default::default()
         });
         assert!(prompt.contains("Current session ID: sess-123"));
-        assert!(prompt.contains("Current model: future/deepseek-v4-flash"));
+        assert!(prompt.contains("Current model: future/deepseek-flash"));
         assert!(prompt.contains("Thinking level: high"));
     }
 

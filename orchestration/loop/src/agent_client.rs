@@ -232,7 +232,7 @@ impl AgentClient {
         Ok(())
     }
 
-    /// Select the model for this session (e.g. "future/deepseek-v4-flash").
+    /// Select the model for this session (e.g. "future/deepseek-flash").
     pub async fn set_model(&mut self, session_id: &str, model: &str) -> Result<()> {
         self.call(
             "set_model",

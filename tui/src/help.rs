@@ -44,7 +44,7 @@ Examples:
   node dist/index.js
 
   # With specific model
-  node dist/index.js --model deepseek-v4-flash
+  node dist/index.js --model deepseek-flash
 
   # Model with thinking level (model:thinking format)
   node dist/index.js --model sonnet:high

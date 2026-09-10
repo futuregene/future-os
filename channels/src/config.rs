@@ -20,7 +20,7 @@ pub struct AgentConfig {
     pub grpc_addr: String,
     #[serde(default = "default_cwd")]
     pub cwd: String,
-    /// Default model for channel sessions (e.g. "deepseek-v4-flash").
+    /// Default model for channel sessions (e.g. "deepseek-flash").
     /// If empty, the agent's boot-time default is used.
     #[serde(default = "default_model")]
     pub model: String,
