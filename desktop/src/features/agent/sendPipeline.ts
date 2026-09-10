@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { ThreadRuntimeUpdateBatch } from "../../integrations/agent/runtimeEvents";
 import type { StoredRun, StoredThread } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
+import type { LiveTick } from "./liveStreamTick";
 import { listen } from "@tauri-apps/api/event";
 import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
@@ -18,6 +19,7 @@ import {
   userStoppedNotice,
 } from "./agentMessageFormatters";
 import { buildReferenceContext } from "./buildReferencePrompt";
+import { createLiveTick } from "./liveStreamTick";
 import { attachmentInputs } from "./messageContent";
 import { finalizeTemporaryAttachmentSources, persistImageAttachments } from "./threadAttachments";
 import {
@@ -64,12 +66,12 @@ export async function runSendPipeline(
   const importedAttachments = preparedAttachments.attachments;
 
   let stopStreamUpdates: (() => void) | null = null;
-  let streamUpdateRunning = false;
-  let streamUpdateQueued = false;
+  let liveTick: LiveTick | null = null;
   const clearStreamUpdates = () => {
     stopStreamUpdates?.();
     stopStreamUpdates = null;
-    streamUpdateQueued = false;
+    liveTick?.stop();
+    liveTick = null;
   };
   const optimisticUserId = clientId("pending_user");
   const pendingId = clientId("pending");
@@ -133,32 +135,19 @@ export async function runSendPipeline(
     clearStreamUpdates();
     if (isCurrentSend()) {
       const streamingRun = run;
-      const queueStreamUpdate = () => {
-        streamUpdateQueued = true;
-        if (streamUpdateRunning)
-          return;
-        streamUpdateRunning = true;
-        void (async () => {
-          while (streamUpdateQueued && isCurrentSend()) {
-            streamUpdateQueued = false;
-            await updatePendingMessageFromRunEvents(streamingRun.id, pendingId, setMessages, isCurrentSend);
-          }
-        })().finally(() => {
-          streamUpdateRunning = false;
-          // An event can land after the loop condition but before `finally`.
-          if (streamUpdateQueued && isCurrentSend())
-            queueStreamUpdate();
-        });
-      };
+      // Coalesced and rate-limited (see liveStreamTick): the Agent-journal read
+      // stays at most one in flight so frame-rate notifications cannot build an
+      // IPC backlog, and each read still carries the journal's newest tail.
+      liveTick = createLiveTick({
+        isActive: isCurrentSend,
+        project: () => updatePendingMessageFromRunEvents(streamingRun.id, pendingId, setMessages, isCurrentSend),
+      });
       stopStreamUpdates = await listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
         const update = event.payload.updates.find(candidate => candidate.runId === streamingRun.id);
         if (update && isCurrentSend()) {
           if (update.resetProjection)
             resetRunProjection(streamingRun.id);
-          // Keep at most one Agent-journal read in flight. Bursts collapse into
-          // one trailing read, so 60 FPS notifications cannot build an IPC
-          // backlog while the visible stream still receives the newest tail.
-          queueStreamUpdate();
+          liveTick?.request();
         }
       });
     }

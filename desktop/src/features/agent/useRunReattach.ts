@@ -3,6 +3,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ThreadRuntimeUpdateBatch } from "../../integrations/agent/runtimeEvents";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import { createLiveTick } from "./liveStreamTick";
 import { resetRunProjection, upsertStreamingPreview } from "./threadRunProjection";
 
 interface UseRunReattachInput {
@@ -70,32 +71,22 @@ export function useRunReattach({
     const startedAt = activeRunStartedAt;
     let cancelled = false;
     const isLive = () => !cancelled;
-    let tickRunning = false;
-    let tickQueued = false;
-    const tick = () => {
-      if (!isLive())
-        return;
-      tickQueued = true;
-      if (tickRunning)
-        return;
-      tickRunning = true;
-      void (async () => {
-        while (tickQueued && isLive()) {
-          tickQueued = false;
-          await upsertStreamingPreview(runId, startedAt, setMessages, isLive);
-          // Bump the generation counter after every streaming upsert so an
-          // in-flight quiet reload sees that state changed under it and
-          // discards its write instead of clobbering the live bubble.
-          if (isLive())
-            messagesGenRef.current += 1;
-        }
-      })().finally(() => {
-        tickRunning = false;
-        if (tickQueued && isLive())
-          tick();
-      });
-    };
-    tick();
+    // Coalesced and rate-limited (see liveStreamTick): a frame-rate push stream
+    // would otherwise re-project — and therefore re-lay-out the whole message —
+    // on every notification, which is what wedged the UI on long reasoning
+    // replies.
+    const liveTick = createLiveTick({
+      isActive: isLive,
+      project: () => upsertStreamingPreview(runId, startedAt, setMessages, isLive),
+      // Bump the generation counter after every streaming upsert so an in-flight
+      // quiet reload sees that state changed under it and discards its write
+      // instead of clobbering the live bubble.
+      afterProject: () => {
+        if (isLive())
+          messagesGenRef.current += 1;
+      },
+    });
+    liveTick.request();
     const unlisten = listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
       const update = event.payload.updates.find(candidate => candidate.threadId === threadId && candidate.runId === runId);
       if (!isLive() || !update)
@@ -107,7 +98,7 @@ export function useRunReattach({
         void reloadMessagesQuiet(threadId, true);
         return;
       }
-      tick();
+      liveTick.request();
     });
     // A terminal push can be lost (coalesce drop, backend restart). Without a
     // driver the live bubble would then freeze forever and the composer keep
@@ -123,12 +114,12 @@ export function useRunReattach({
     // read and `listen` resolving would otherwise be missed until the next push.
     void unlisten.then(() => {
       if (!cancelled)
-        tick();
+        liveTick.request();
     });
 
     return () => {
       cancelled = true;
-      tickQueued = false;
+      liveTick.stop();
       clearInterval(selfHeal);
       void unlisten.then(stop => stop());
     };

@@ -41,7 +41,20 @@ function MarkdownContentImpl({ content, workspaceId, basePath, live }: MarkdownC
 
   const body = (
     <LiveMarkdownProvider value={Boolean(live)}>
-      <div className="space-y-3">{document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}</div>
+      {/*
+        `data-streamed-block` is present only while this content is the growing
+        tail of a streaming reply (`live`). MessageBlock scopes CSS layout
+        containment to it: the browser then re-lays-out only this block on each
+        streaming delta, instead of re-walking the whole accumulated message —
+        the difference between a chat that keeps up and one that freezes on a
+        long reasoning reply.
+      */}
+      <div
+        {...(live ? { "data-streamed-block": "" } : {})}
+        className="space-y-3"
+      >
+        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`))}
+      </div>
     </LiveMarkdownProvider>
   );
   if (basePath)
