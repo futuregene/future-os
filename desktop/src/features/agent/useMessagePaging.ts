@@ -102,6 +102,7 @@ export function useMessagePaging({
   const loadingOlderRef = useRef(false);
   const wheelBlockedUntilRef = useRef(0);
   const wheelProtectionRef = useRef(false);
+  const restoreNativeMomentumRef = useRef(false);
   const acceptingManualScrollRef = useRef(false);
   const wasAtTopRef = useRef(false);
   const [coolingDown, setCoolingDown] = useState(false);
@@ -183,6 +184,7 @@ export function useMessagePaging({
 
   const protectViewport = useCallback(() => {
     wheelProtectionRef.current = true;
+    restoreNativeMomentumRef.current = false;
     const container = scrollRef.current;
     if (container && !nativeScrollLockRef.current) {
       nativeScrollLockRef.current = {
@@ -229,8 +231,12 @@ export function useMessagePaging({
     scrollRef,
     contentKey: visibleMessages,
     followEnabled,
-    isReadingAnchorLocked: () =>
-      wheelProtectionRef.current && !acceptingManualScrollRef.current,
+    shouldRestoreReadingAnchor: () => {
+      const shouldRestore
+        = wheelProtectionRef.current && restoreNativeMomentumRef.current;
+      restoreNativeMomentumRef.current = false;
+      return shouldRestore;
+    },
     onScroll,
     onContentSettled: () => {
       // Anchor restoration can leave the top before its scroll event arrives.
@@ -322,6 +328,9 @@ export function useMessagePaging({
     try {
       // Adopt both the new anchor and normal bottom-follow semantics.
       handleViewportScroll();
+      // The wheel has established the new reading position. Its follow-on
+      // native scroll must be restored to this replacement anchor.
+      restoreNativeMomentumRef.current = true;
     }
     finally {
       acceptingManualScrollRef.current = false;
@@ -364,6 +373,11 @@ export function useMessagePaging({
                 : 1;
           container.scrollTop += event.deltaY * unit;
           wheelStateRef.current.acceptManualViewport();
+        }
+        else if (!event.cancelable) {
+          // A noncancelable upward wheel is a WebKit momentum tail. Its
+          // matching scroll event must not replace the protected anchor.
+          restoreNativeMomentumRef.current = true;
         }
         return;
       }

@@ -12,8 +12,8 @@ interface UseStickyAutoScrollInput {
   contentKey: unknown;
   /** False while the real message content is temporarily not mounted. */
   followEnabled?: boolean;
-  /** Reject native scroll drift while a paging transaction owns the anchor. */
-  isReadingAnchorLocked?: () => boolean;
+  /** Consume a WebKit momentum scroll that must restore the reading anchor. */
+  shouldRestoreReadingAnchor?: () => boolean;
   /** Extra work to run on every scroll event (e.g. floating-scrollbar visibility). */
   onScroll?: () => void;
   /** Run after a content-driven follow settles (e.g. update floating scrollbar). */
@@ -30,7 +30,7 @@ export function useStickyAutoScroll({
   scrollRef,
   contentKey,
   followEnabled = true,
-  isReadingAnchorLocked,
+  shouldRestoreReadingAnchor,
   onScroll,
   onContentSettled,
 }: UseStickyAutoScrollInput) {
@@ -46,8 +46,8 @@ export function useStickyAutoScroll({
   // Keep the callbacks in refs so the effect/handlers always call the latest
   // without listing them as deps (which would re-run the follow effect on every
   // render when the parent passes inline closures).
-  const anchorLockedRef = useRef(isReadingAnchorLocked);
-  anchorLockedRef.current = isReadingAnchorLocked;
+  const shouldRestoreAnchorRef = useRef(shouldRestoreReadingAnchor);
+  shouldRestoreAnchorRef.current = shouldRestoreReadingAnchor;
   const onScrollRef = useRef(onScroll);
   const onContentSettledRef = useRef(onContentSettled);
   onScrollRef.current = onScroll;
@@ -113,7 +113,7 @@ export function useStickyAutoScroll({
   const handleScroll = useCallback(() => {
     // WebKit can deliver scrolling from an already-latched, noncancelable
     // gesture. Correct it before it can replace the preserved reading anchor.
-    if (anchorLockedRef.current?.() && anchorRef.current) {
+    if (shouldRestoreAnchorRef.current?.() && anchorRef.current) {
       settleViewport();
       onScrollRef.current?.();
       return;
