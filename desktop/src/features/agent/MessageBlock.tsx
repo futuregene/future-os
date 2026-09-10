@@ -13,6 +13,7 @@ import { emitFutureEvent } from "../../lib/futureEvents";
 import { useNow } from "../../lib/useNow";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
 import { previewKindForPath } from "../filepreview/previewKind";
+import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { SafeLink } from "../markdown/renderers/SafeLink";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
@@ -149,6 +150,17 @@ function MessageBlockImpl({
             isUser
               ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-left"
               : "w-full",
+            // See LiveMarkdownContext for the full mechanism. While the reply
+            // streams, every pushed delta mutates the growing tail and the
+            // browser re-computes preferred widths and re-lays-out the message
+            // from scratch — visible in WebContent samples as the dominant
+            // frame-time cost (`RenderBlock::layout`, `computePreferredLogical
+            // Widths`, `paintObject`, `performFlexLayout`). `contain` on the
+            // live (still-growing) segment keeps that work inside the tail
+            // instead of re-walking every settled text/thinking/code block —
+            // the difference between a chat that keeps up and one that freezes
+            // on a long reasoning reply.
+            streaming ? `**:data-[streamed-block]:${STREAMED_BLOCK_CONTAINMENT}` : "",
           )}
         >
           {segments

@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { cn } from "../../lib/cn";
+import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 
 /**
@@ -29,6 +30,11 @@ export const ThinkingBlock = memo(({
         // a filled content box (which is now reserved for code blocks).
         "border-l-2 border-line-soft pl-3 text-ink-muted",
         "**:text-ink-muted",
+        // Same containment as the streamed text block (see LiveMarkdownContext):
+        // a reasoning block is a tall column of text, and while it is the
+        // growing tail its per-delta relayout would otherwise walk the whole
+        // message's layout.
+        live ? STREAMED_BLOCK_CONTAINMENT : "",
       )}
     >
       <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />
