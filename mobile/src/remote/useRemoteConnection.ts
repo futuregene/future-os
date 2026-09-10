@@ -5,6 +5,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import { RemoteClient } from "./client";
 import type { ConnectionState } from "./connectionState";
 import { classifyError } from "./connectionState";
+import { NATIVE_PRESENTATION_GRACE_MS, nativePresentationInFlight } from "./nativePresentation";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
 import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";
@@ -280,16 +281,36 @@ export function useRemoteConnection({
 
   useEffect(() => {
     let previous: AppStateStatus = AppState.currentState;
+    let presentationTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearPresentationTimer = () => {
+      if (presentationTimer) clearTimeout(presentationTimer);
+      presentationTimer = null;
+    };
     const subscription = AppState.addEventListener("change", next => {
       const returnedToForeground = next === "active" && previous !== "active";
       const enteredBackground = next === "background" && previous !== "background";
       previous = next;
-      if (enteredBackground || returnedToForeground) {
+      if (enteredBackground && nativePresentationInFlight()) {
+        // A native picker paused the activity — not a real background. Keep the
+        // socket, but bound the grace: a flow the user never comes back from
+        // must not hold a live connection open indefinitely.
+        clearPresentationTimer();
+        presentationTimer = setTimeout(() => {
+          presentationTimer = null;
+          if (AppState.currentState !== "active" && nativePresentationInFlight()) {
+            clientRef.current?.setAppActive(false);
+          }
+        }, NATIVE_PRESENTATION_GRACE_MS);
+      } else if (enteredBackground || returnedToForeground) {
+        clearPresentationTimer();
         clientRef.current?.setAppActive(next === "active");
       }
       if (returnedToForeground) void recoverLifecycle("foreground");
     });
-    return () => subscription.remove();
+    return () => {
+      clearPresentationTimer();
+      subscription.remove();
+    };
   }, [clientRef, recoverLifecycle]);
 
   useEffect(() => {
