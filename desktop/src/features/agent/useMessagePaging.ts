@@ -72,13 +72,12 @@ interface UseMessagePagingResult {
 
 /** Distance from the top that counts as "at the top" for the load hint. */
 const TOP_THRESHOLD_PX = 8;
-/** Wheel events within this window after a load are ignored — one page per gesture. */
-const WHEEL_COOLDOWN_MS = 300;
+/** Block upward momentum after reaching the top or restoring a history page. */
+const WHEEL_COOLDOWN_MS = 500;
 /**
  * How long the user must rest at the top before the load button appears. This
- * is the "confirm gate": the gesture that brought the user to the top ends
- * while the timer runs, so its trailing wheel events can never auto-load — the
- * button must be visibly settled before a pull counts.
+ * is the visual confirm gate; the separate wheel protection window blocks
+ * upward momentum while the hint appears and history is restored.
  */
 const TOP_SETTLE_MS = 350;
 
@@ -108,9 +107,16 @@ export function useMessagePaging({
   // Synchronous re-entrancy guard. This ref is read in the same tick a wheel
   // event fires (a state flag would only flip after React commits), so a single
   // scroll gesture can't queue a dozen page loads — and a trailing wheel event
-  // after the commit is swallowed by the cooldown stamp.
+  // after the commit is blocked by the viewport protection window.
   const loadingOlderRef = useRef(false);
-  const lastWheelAtRef = useRef(0);
+  const wheelBlockedUntilRef = useRef(0);
+  const wheelProtectionRef = useRef(false);
+  const wasAtTopRef = useRef(false);
+
+  const protectViewport = useCallback(() => {
+    wheelProtectionRef.current = true;
+    wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
+  }, []);
 
   // Once rendered, the leading message stays in the window even when new
   // exchanges arrive. Counting backwards from the tail would evict that row.
@@ -154,6 +160,7 @@ export function useMessagePaging({
       return;
     }
     loadingOlderRef.current = true;
+    protectViewport();
     if (topSettleTimerRef.current !== null) {
       window.clearTimeout(topSettleTimerRef.current);
       topSettleTimerRef.current = null;
@@ -163,10 +170,12 @@ export function useMessagePaging({
       // The callback runs only for a valid page, immediately before its state
       // update. Capture the CURRENT viewport, not the one at request start.
       void loadOlderHistory((page) => {
+        protectViewport();
         preserveViewport();
         if (page.length > 0)
           setWindowStartId(page[0]!.id);
       }).finally(() => {
+        wheelBlockedUntilRef.current = performance.now() + WHEEL_COOLDOWN_MS;
         loadingOlderRef.current = false;
       });
     }
@@ -184,6 +193,7 @@ export function useMessagePaging({
     loadOlderHistory,
     messages,
     preserveViewport,
+    protectViewport,
     userExchangeCount,
   ]);
 
@@ -201,6 +211,9 @@ export function useMessagePaging({
     if (!container)
       return;
     const isAtTop = container.scrollTop <= TOP_THRESHOLD_PX;
+    if (isAtTop && !wasAtTopRef.current && canLoadOlder)
+      protectViewport();
+    wasAtTopRef.current = isAtTop;
     setAtTop(isAtTop);
     if (!isAtTop) {
       if (topSettleTimerRef.current !== null) {
@@ -216,33 +229,47 @@ export function useMessagePaging({
       topSettleTimerRef.current = null;
       setTopSettled(true);
     }, TOP_SETTLE_MS);
-  }, [handleViewportScroll, scrollRef]);
+  }, [canLoadOlder, handleViewportScroll, protectViewport, scrollRef]);
 
-  // Second channel for the load gesture: a wheel-scroll up while the load button
-  // is visible fires the load, alongside clicking it. The listener only mounts
-  // once the button has settled (`topSettled`), so the gesture that arrived at
-  // the top can never auto-load — the pull must happen after the button shows.
-  // The sync ref guard + cooldown stamp keep one gesture to one page load.
+  // Keep the non-passive listener mounted across loading and anchor restoration.
+  // Otherwise the momentum tail can scroll the newly prepended content even
+  // though the load hint has disappeared. Reversing direction releases the gate.
+  const wheelStateRef = useRef({ canLoadOlder, atTop, topSettled, loadOlder });
+  useLayoutEffect(() => {
+    wheelStateRef.current = { canLoadOlder, atTop, topSettled, loadOlder };
+  }, [atTop, canLoadOlder, loadOlder, topSettled]);
+
   useEffect(() => {
-    if (!canLoadOlder || !atTop || !topSettled)
-      return;
     const container = scrollRef.current;
     if (!container)
       return;
     const onWheel = (event: WheelEvent) => {
-      if (event.deltaY >= 0)
+      if (scrollRef.current !== container)
         return;
-      const now = performance.now();
-      // Swallow the tail of the same gesture so it can't queue a second page.
-      if (now - lastWheelAtRef.current < WHEEL_COOLDOWN_MS)
+      if (event.ctrlKey || event.deltaY === 0)
         return;
-      event.preventDefault();
-      lastWheelAtRef.current = now;
-      loadOlder();
+      if (event.deltaY > 0) {
+        wheelProtectionRef.current = false;
+        return;
+      }
+      if (
+        wheelProtectionRef.current
+        && (loadingOlderRef.current || performance.now() < wheelBlockedUntilRef.current)
+      ) {
+        if (event.cancelable)
+          event.preventDefault();
+        return;
+      }
+      const state = wheelStateRef.current;
+      if (!state.canLoadOlder || !state.atTop || !state.topSettled)
+        return;
+      if (event.cancelable)
+        event.preventDefault();
+      state.loadOlder();
     };
     container.addEventListener("wheel", onWheel, { passive: false });
     return () => container.removeEventListener("wheel", onWheel);
-  }, [atTop, canLoadOlder, loadOlder, scrollRef, topSettled]);
+  }, [scrollRef]);
 
   // Don't leave a pending settle timer firing setState after unmount.
   useEffect(

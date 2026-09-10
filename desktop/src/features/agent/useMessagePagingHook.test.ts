@@ -51,7 +51,7 @@ function setup(messages: AgentMessage[] = MESSAGES, userExchangeCount = 2) {
 
 async function settle() {
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(550);
   });
 }
 
@@ -202,8 +202,7 @@ describe("useMessagePaging", () => {
     });
     expect(h.current.visibleMessages[0]?.id).toBe("u3");
 
-    // …but the restore dropped the hint; re-settle, then the cooldown swallows
-    // the trailing wheel of the same gesture.
+    // Once the hint and cooldown settle again, another gesture loads one page.
     container.scrollTop = 0;
     act(() => {
       h.current.handleScroll();
@@ -214,6 +213,51 @@ describe("useMessagePaging", () => {
       container.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
     });
     expect(h.current.visibleMessages[0]?.id).toBe("u1");
+    h.unmount();
+  });
+
+  it("cancels upward momentum after hitting the top and after loading", async () => {
+    const { container, h } = setup();
+    const wheel = (deltaY: number) => {
+      const event = new WheelEvent("wheel", { deltaY, cancelable: true });
+      act(() => {
+        container.dispatchEvent(event);
+      });
+      return event.defaultPrevented;
+    };
+    act(() => {
+      h.current.handleScroll();
+    });
+    expect(wheel(-40)).toBe(true);
+    expect(h.current.visibleMessages[0]?.id).toBe("u5");
+    await settle();
+    expect(wheel(-40)).toBe(true);
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+    // The hint is gone and the viewport moved away from the top, but the
+    // momentum must still be cancelled by the mounted listener.
+    container.scrollTop = 200;
+    act(() => {
+      h.current.handleScroll();
+    });
+    expect(wheel(-40)).toBe(true);
+    await settle();
+    expect(wheel(-40)).toBe(false);
+    h.unmount();
+  });
+
+  it("immediately releases protection when the user scrolls down", () => {
+    const { container, h } = setup();
+    act(() => {
+      h.current.loadOlder();
+    });
+    const down = new WheelEvent("wheel", { deltaY: 40, cancelable: true });
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => {
+      container.dispatchEvent(down);
+      container.dispatchEvent(up);
+    });
+    expect(down.defaultPrevented).toBe(false);
+    expect(up.defaultPrevented).toBe(false);
     h.unmount();
   });
 
