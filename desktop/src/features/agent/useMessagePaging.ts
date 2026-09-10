@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 
+import { mayContainThreadSearch } from "./threadSearchCache";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
 /**
@@ -39,6 +40,7 @@ export function computePageStart(
 }
 
 interface UseMessagePagingInput {
+  loadAllHistoryForSearch?: (signal: AbortSignal) => Promise<AgentMessage[]>;
   messages: AgentMessage[];
   /**
    * Scroll container. The shared viewport controller manages `scrollTop` to preserve
@@ -67,6 +69,8 @@ interface UseMessagePagingResult {
   coolingDown: boolean;
   handleScroll: () => void;
   loadOlder: () => void;
+  prepareSearch: (query: string, signal: AbortSignal) => Promise<void>;
+  revealSearchMatch: (range: Range) => void;
   scrollToLatest: () => void;
   showJumpToLatest: boolean;
 }
@@ -90,6 +94,7 @@ export function useMessagePaging({
   onScroll,
   hasOlderHistory = false,
   loadOlderHistory,
+  loadAllHistoryForSearch,
   followEnabled,
   onContentSettled,
 }: UseMessagePagingInput): UseMessagePagingResult {
@@ -252,6 +257,44 @@ export function useMessagePaging({
     setWindowStartId(visibleMessages[0]?.id ?? null);
   }, [visibleMessages]);
   const canLoadOlder = effectivePageStart > 0 || hasOlderHistory;
+  const searchStateRef = useRef({ messages, visibleMessages });
+  searchStateRef.current = { messages, visibleMessages };
+  const prepareSearch = useCallback(async (query: string, signal: AbortSignal) => {
+    const all = loadAllHistoryForSearch
+      ? await loadAllHistoryForSearch(signal)
+      : searchStateRef.current.messages;
+    if (signal.aborted || !mountedRef.current)
+      throw new DOMException("Search cancelled", "AbortError");
+    const visibleIds = new Set(searchStateRef.current.visibleMessages.map(message => message.id));
+    const outside = all.filter(message => !visibleIds.has(message.id));
+    for (let index = 0; index < outside.length; index++) {
+      if (index > 0 && index % 20 === 0) {
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+        if (signal.aborted || !mountedRef.current)
+          throw new DOMException("Search cancelled", "AbortError");
+      }
+      if (mayContainThreadSearch(outside[index]!, query)) {
+        preserveViewport();
+        setWindowStartId(all[0]?.id ?? null);
+        break;
+      }
+    }
+  }, [loadAllHistoryForSearch, preserveViewport]);
+
+  const revealSearchMatch = useCallback((range: Range) => {
+    const container = scrollRef.current;
+    if (!container || !container.contains(range.startContainer))
+      return;
+    const rect = range.getBoundingClientRect();
+    const viewport = container.getBoundingClientRect();
+    container.scrollTop += rect.top - viewport.top - (container.clientHeight - rect.height) / 2;
+    restoreNativeMomentumRef.current = false;
+    // Synchronize before a pending resize or native scroll event can restore
+    // the previous reading position. Search navigation is explicit intent.
+    handleViewportScroll();
+    preserveViewport();
+    wasAtTopRef.current = container.scrollTop <= TOP_THRESHOLD_PX;
+  }, [handleViewportScroll, preserveViewport, scrollRef]);
   // Keep the hint visible throughout protection, including after the anchor
   // moves away from the top or the final history page has been loaded.
   const showLoadOlderHint = coolingDown;
@@ -416,5 +459,7 @@ export function useMessagePaging({
     loadOlder,
     scrollToLatest,
     showJumpToLatest,
+    prepareSearch,
+    revealSearchMatch,
   };
 }

@@ -1,13 +1,61 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThreadSearch } from "./ThreadSearch";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
 describe("thread search", () => {
-  it("keeps the previous count visible until the next query finishes", () => {
+  it.each([true, false])("prepares full history before locating results, or reports failure (%s)", async (progressed) => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.set(++id, callback);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (frame: number) => frames.delete(frame));
+    const container = document.createElement("div");
+    const thread = document.createElement("div");
+    thread.textContent = "recent content";
+    document.body.append(container, thread);
+    const reveal = vi.fn();
+    const load = vi.fn(async () => {
+      if (progressed)
+        thread.textContent = "older needle";
+      else
+        throw new Error("read failed");
+    });
+    const root = createRoot(container);
+    act(() => root.render(<ThreadSearch contentKey={null} onPrepareSearch={load} onRevealMatch={reveal} rootRef={{ current: thread }} />));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true, key: "f" })));
+    const input = container.querySelector("input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "needle");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    for (let i = 0; i < 12; i++) {
+      await act(async () => {
+        const callbacks = [...frames.values()];
+        frames.clear();
+        callbacks.forEach(callback => callback(0));
+      });
+    }
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(reveal).toHaveBeenCalledTimes(progressed ? 1 : 0);
+    if (progressed)
+      expect(reveal.mock.calls[0]![0].toString()).toBe("needle");
+    act(() => root.unmount());
+    container.remove();
+    thread.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the previous count visible until the next query finishes", async () => {
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
@@ -33,15 +81,14 @@ describe("thread search", () => {
 
     const container = document.createElement("div");
     const thread = document.createElement("div");
-    thread.textContent = "alpha beta";
+    thread.textContent = "alpha alphabet alpha";
     document.body.append(container, thread);
     const root = createRoot(container);
     act(() => {
       root.render(
         <ThreadSearch
-          canLoadOlder={false}
           contentKey={null}
-          onLoadOlder={vi.fn()}
+
           rootRef={{ current: thread }}
         />,
       );
@@ -62,22 +109,24 @@ describe("thread search", () => {
       frames.clear();
       act(() => callbacks.forEach(callback => callback(0)));
     };
-    act(() => {
-      setNativeValue.call(input, "a");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    flushFrame();
-    flushFrame();
-    expect(container.textContent).toContain("1 / 3");
-
-    act(() => {
+    await act(async () => {
       setNativeValue.call(input, "al");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    flushFrame();
+    flushFrame();
+    expect(container.textContent).toContain("1 / 3");
+
+    await act(async () => {
+      setNativeValue.call(input, "alphabet");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
 
     expect(container.textContent).toContain("1 / 3");
-    expect([...container.querySelectorAll("button")].slice(0, 2).every(button => !button.disabled)).toBe(true);
+    expect(container.querySelectorAll("button")[1]?.disabled).toBe(true);
 
+    await act(async () => vi.advanceTimersByTimeAsync(300));
     flushFrame();
     flushFrame();
     expect(container.textContent).toContain("1 / 1");
@@ -89,7 +138,7 @@ describe("thread search", () => {
     vi.unstubAllGlobals();
   });
 
-  it("clears stale highlights synchronously when the query changes", () => {
+  it("clears stale highlights synchronously when the query changes", async () => {
     const clearHighlight = vi.fn();
     const deleteHighlight = vi.fn();
     vi.stubGlobal("CSS", {
@@ -105,9 +154,8 @@ describe("thread search", () => {
     act(() => {
       root.render(
         <ThreadSearch
-          canLoadOlder={false}
           contentKey={null}
-          onLoadOlder={vi.fn()}
+
           rootRef={{ current: null }}
         />,
       );
@@ -123,13 +171,13 @@ describe("thread search", () => {
       HTMLInputElement.prototype,
       "value",
     )!.set!;
-    act(() => {
+    await act(async () => {
       setNativeValue.call(input, "s");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     clearHighlight.mockClear();
     deleteHighlight.mockClear();
-    act(() => {
+    await act(async () => {
       setNativeValue.call(input, "");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -156,9 +204,8 @@ describe("thread search", () => {
     act(() => {
       root.render(
         <ThreadSearch
-          canLoadOlder={false}
           contentKey={null}
-          onLoadOlder={vi.fn()}
+
           rootRef={{ current: null }}
         />,
       );
