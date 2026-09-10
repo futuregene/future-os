@@ -28,6 +28,7 @@ import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import { canShowLeftPanel, canShowRightPanel, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
 import { useApprovals } from "./hooks/useApprovals";
@@ -35,7 +36,7 @@ import { useAppSettings } from "./hooks/useAppSettings";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useFutureAccount } from "./hooks/useFutureAccount";
 import { useHasProviders } from "./hooks/useHasProviders";
-import { MIN_LEFT_PANEL_WIDTH, useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
+import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
@@ -44,6 +45,7 @@ import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
+import { useWindowWidth } from "./hooks/useWindowWidth";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { OnboardingGate } from "./OnboardingGate";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
@@ -85,7 +87,14 @@ export function AppShell() {
   // the early returns further down stay after every hook call (rules of hooks).
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders();
 
-  const leftPanel = useLeftPanelWidth(rightExpanded);
+  const windowWidth = useWindowWidth();
+  // Side panels yield to the conversation: when the window is too narrow to
+  // keep the center at its floor alongside a panel, the panel folds instead of
+  // squeezing (or overflowing) the center. The user's own collapsed/expanded
+  // choice is kept, so the panel comes back on its own when the window grows.
+  const rightPanelAvailable = canShowRightPanel(windowWidth);
+  const showLeftPanel = leftExpanded && canShowLeftPanel(windowWidth);
+  const leftPanel = useLeftPanelWidth(rightExpanded && rightPanelAvailable);
   const centerRef = useRef<HTMLElement>(null);
   const {
     width: rightPanelWidth,
@@ -99,7 +108,7 @@ export function AppShell() {
   // can shrink the space available to the center — re-clamp the right panel.
   useEffect(() => {
     reclampRightPanel();
-  }, [leftExpanded, leftPanel.width, reclampRightPanel]);
+  }, [showLeftPanel, leftPanel.width, reclampRightPanel]);
 
   // Install the Tauri event listener for real-time agent state updates
   // (settings changes from other clients).  Only runs once.
@@ -296,7 +305,11 @@ export function AppShell() {
     () => workspaces.filter(workspace => workspace.kind === "user"),
     [workspaces],
   );
-  const hideRightPanel = centerMode === "new-chat" || section === "skill" || section === "remote";
+  const hideRightPanel
+    = centerMode === "new-chat"
+      || section === "skill"
+      || section === "remote"
+      || !rightPanelAvailable;
 
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
@@ -438,6 +451,11 @@ export function AppShell() {
   }
 
   function handleToggleLeftPanel() {
+    // Below the two-column floor the rail has nowhere to open into, so the
+    // toggle must not commit "collapsed" as the user's preference — the rail
+    // would then stay hidden after the window grows back.
+    if (!canShowLeftPanel(windowWidth))
+      return;
     setLeftExpanded((expanded) => {
       const nextExpanded = !expanded;
       setLeftOverlayOpen(false);
@@ -446,7 +464,7 @@ export function AppShell() {
   }
 
   function handlePreviewLeftPanel(open: boolean) {
-    if (leftExpanded)
+    if (showLeftPanel)
       return;
     setLeftOverlayOpen(open);
   }
@@ -498,7 +516,7 @@ export function AppShell() {
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">
-      {leftExpanded
+      {showLeftPanel
         ? (
             <div className="relative h-full shrink-0" style={{ width: leftPanel.width }}>
               <ActivityRail expanded {...activityRailProps} />
@@ -523,7 +541,7 @@ export function AppShell() {
           )
         : null}
       {leftPanel.resizing ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" /> : null}
-      {!leftExpanded
+      {!showLeftPanel
         ? (
             <div
               aria-hidden="true"
@@ -532,7 +550,7 @@ export function AppShell() {
             />
           )
         : null}
-      {!leftExpanded && leftOverlayOpen
+      {!showLeftPanel && leftOverlayOpen
         ? (
             <div
               className="absolute left-0 top-0 z-40 h-full"
@@ -552,7 +570,7 @@ export function AppShell() {
                 initialWorkspaceForm={newWorkspaceForm}
                 initialMode={newConversationMode}
                 initialWorkspaceId={newChatWorkspaceId}
-                leftPanelExpanded={leftExpanded}
+                leftPanelExpanded={showLeftPanel}
                 modelId={selectedModelId}
                 modelOptions={visibleModelOptions}
                 modelsEmptyReason={modelsEmptyReason}
@@ -571,11 +589,11 @@ export function AppShell() {
             )
           : section === "skill"
             ? (
-                <SkillsView leftPanelExpanded={leftExpanded} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
+                <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
               )
             : section === "remote"
               ? (
-                  <RemoteView appSettings={appSettings} leftPanelExpanded={leftExpanded} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
+                  <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
                 )
               : storeError
                 ? (
@@ -605,7 +623,7 @@ export function AppShell() {
                       thread={activeThread}
                       workspacePath={activeWorkspace?.path ?? null}
                       onApprovalDecision={handleApprovalDecision}
-                      leftPanelExpanded={leftExpanded}
+                      leftPanelExpanded={showLeftPanel}
                       onRetryAgentConnection={() => void refreshAgentModels()}
                       onOpenAccount={handleOpenAccount}
                       onOpenModels={handleOpenModels}

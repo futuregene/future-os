@@ -97,8 +97,12 @@ body,
   margin: 0;
 }
 
+/* No minimum-width floor: a window narrower than the three-column minimum must
+   reflow, not lay the shell out wider than the viewport. A wider-than-viewport
+   layout is clipped (overflow stays hidden below), which cuts the conversation
+   area's right edge off-screen. The shell instead folds its side panels as the
+   window narrows — see `canShow*Panel` in components/layout/hooks/panelGeometry.ts. */
 body {
-  min-width: 1024px;
   overflow: hidden;
   background: theme(colors.canvas);
 }
