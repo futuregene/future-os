@@ -48,7 +48,6 @@
     "eslint": "^10.9.1",
     "eslint-config-expo": "^57.0.2",
     "jest-expo": "^57.0.5",
-    "prettier": "^3.9.6",
     "react-test-renderer": "19.2.3",
     "typescript": "~6.0.3"
   },
@@ -64,10 +63,8 @@
     "prebuild:ios": "npm run gen-version && expo prebuild --platform ios",
     "typecheck": "npm run gen-version && tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
     "test": "jest --runInBand",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "check": "npm run typecheck && npm run lint && npm test"
   },
   "private": true
 }

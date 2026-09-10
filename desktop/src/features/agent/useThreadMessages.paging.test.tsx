@@ -58,6 +58,47 @@ beforeEach(() => {
 });
 
 describe("on-demand history", () => {
+  it("fills the entire history cache for search and reuses it on the next query", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    page.mockResolvedValueOnce(history(["u2"], 10));
+    page.mockResolvedValueOnce(history(["u1"], 0, false));
+    await act(async () => {
+      const messages = await current.loadAllHistoryForSearch(new AbortController().signal);
+      expect(messages.map(message => message.content)).toEqual(["u1", "u2", "u3"]);
+    });
+    expect(current.hasOlderHistory).toBe(false);
+    const requests = page.mock.calls.length;
+    await act(async () => current.loadAllHistoryForSearch(new AbortController().signal));
+    expect(page).toHaveBeenCalledTimes(requests);
+    act(() => root.unmount());
+  });
+
+  it("stops a full-history search on a failed page instead of returning partial results", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    page.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await expect(current.loadAllHistoryForSearch(new AbortController().signal)).rejects.toThrow("cursor");
+    });
+    expect(page).toHaveBeenCalledTimes(2);
+    expect(current.hasOlderHistory).toBe(true);
+    act(() => root.unmount());
+  });
+
+  it("does not read additional pages for a cancelled search", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    const controller = new AbortController();
+    controller.abort();
+    await expect(current.loadAllHistoryForSearch(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(page).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
   it("reconciles a persisted first user entry with its optimistic run identity", async () => {
     page.mockResolvedValueOnce(history([], 0, false));
     const root = createRoot(document.createElement("div"));
@@ -321,4 +362,15 @@ describe("on-demand history", () => {
       root.unmount();
     });
   });
+});
+
+it("a repeated mobile prompt stays after the previous reply", async () => {
+  page.mockResolvedValueOnce(history(["same prompt"], 0, false));
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<Harness />));
+  await act(async () => current.setMessages(prev => [...prev, { id: "previous-reply", role: "assistant", authorKey: "author.researchCopilot", content: "previous reply", status: "complete", createdAt: "2026-01-01T00:00:01Z" }]));
+  await act(async () => window.dispatchEvent(new CustomEvent("future:agent-event", { detail: { threadId: "synthetic", sessionId: "synthetic-session", eventType: "user_message", payload: { text: "same prompt", entry_id: "second-user", run_id: "second-run" } } })));
+  const contents = current.messages.map(m => m.content);
+  await act(async () => root.unmount());
+  expect(contents).toEqual(["same prompt", "previous reply", "same prompt"]);
 });

@@ -11,7 +11,7 @@ import {
   timelineFromEntries,
   type TimelineState,
 } from "./timeline";
-import type { EntriesData, HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
+import type { EntriesData, RemoteSessionState, StreamEvent } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
 const HISTORY_PAGE_USER_EXCHANGES = 10;
@@ -20,23 +20,22 @@ const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 interface HistoryPagingState {
   nextBefore: number;
   hasMore: boolean;
-  loadedExchanges: number;
   loading: boolean;
-}
-
-function historyUserExchanges(entries: HistoryEntry[]): number {
-  return entries.reduce((count, entry) => count + (entry.role === "user" ? 1 : 0), 0);
 }
 
 function prependHistoryPage(live: TimelineState, older: TimelineState): TimelineState {
   const liveIds = new Set(live.items.map(item => item.id));
   const olderItems = older.items.filter(item => !liveIds.has(item.id));
-  return olderItems.length === 0 ? live : { ...live, items: [...olderItems, ...live.items] };
+  return {
+    ...live,
+    items: [...olderItems, ...live.items],
+    durableItemIds: new Set([...(live.durableItemIds ?? []), ...(older.durableItemIds ?? [])]),
+  };
 }
 
 /** Replace the already-loaded tail with a fresh durable page while retaining
  * the older prefix the user explicitly paged in. Entry ids are stable across
- * journal reads, so the first overlap is the exact splice point. */
+ * history reads, so the first overlap is the exact splice point. */
 function retainOlderHistoryPrefix(
   existing: TimelineState | null,
   latest: TimelineState,
@@ -45,10 +44,22 @@ function retainOlderHistoryPrefix(
   const latestIds = new Set(latest.items.map(item => item.id));
   const overlap = existing.items.findIndex(item => latestIds.has(item.id));
   if (overlap <= 0) return latest;
-  return { ...latest, items: [...existing.items.slice(0, overlap), ...latest.items] };
+  const prefix = existing.items.slice(0, overlap);
+  return {
+    ...latest,
+    items: [...prefix, ...latest.items],
+    durableItemIds: new Set([
+      ...(latest.durableItemIds ?? []),
+      ...prefix.filter(item => existing.durableItemIds?.has(item.id)).map(item => item.id),
+    ]),
+  };
 }
 
-function diagnosticError(error: unknown): { name?: string; message: string; code?: unknown } {
+function diagnosticError(error: unknown): {
+  name?: string;
+  message: string;
+  code?: unknown;
+} {
   if (error instanceof Error) {
     return {
       name: error.name,
@@ -182,15 +193,12 @@ export function useTimelineController({
         syncEngineRef.current?.timelineFor(sessionId) ?? null,
         latest,
       );
-      const retainedOlderPages =
-        retained && retained.loadedExchanges > historyUserExchanges(entries) ? retained : null;
+      // Only retain the cursor when the old prefix actually joined this page.
+      // Otherwise the latest page starts a new contiguous history window.
+      const retainedOlderPages = history !== latest ? retained : null;
       const page: HistoryPagingState = {
         nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
         hasMore: retainedOlderPages?.hasMore ?? (response.data.hasMore === true && nextBefore > 0),
-        loadedExchanges: history.items.reduce(
-          (count, item) => count + (item.kind === "message" && item.role === "user" ? 1 : 0),
-          0,
-        ),
         loading: false,
       };
       historyPagingRef.current[sessionId] = page;
@@ -227,7 +235,6 @@ export function useTimelineController({
       const next: HistoryPagingState = {
         nextBefore,
         hasMore: response.data.hasMore === true && nextBefore > 0,
-        loadedExchanges: current.loadedExchanges + historyUserExchanges(entries),
         loading: false,
       };
       historyPagingRef.current[sessionId] = next;

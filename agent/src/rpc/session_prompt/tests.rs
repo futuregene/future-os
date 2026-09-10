@@ -601,6 +601,18 @@ async fn prompt_projects_typed_model_and_tool_events_end_to_end() {
             .await
             .expect("run event timeout")
             .expect("run event");
+        if event.event_type == "user_message" {
+            let payload: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+            let messages = session.messages.read();
+            let user = messages
+                .iter()
+                .find(|message| message.role == "user")
+                .unwrap();
+            assert_eq!(payload["entry_id"].as_str(), user.journal_entry_id());
+            assert_eq!(payload["run_id"], user.metadata.as_ref().unwrap()["run_id"]);
+            assert_eq!(payload["text"], "write typed");
+            assert!(payload["created_at_ms"].as_i64().unwrap() > 0);
+        }
         event_types.push(event.event_type.clone());
         if event.event_type == "agent_end" {
             break;

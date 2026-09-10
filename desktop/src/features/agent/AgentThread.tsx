@@ -111,6 +111,7 @@ export function AgentThread({
     loadingIndicator,
     hasOlderHistory,
     loadOlderHistory,
+    loadAllHistoryForSearch,
     historyError,
     sessionChanged,
     retryHistory,
@@ -158,16 +159,19 @@ export function AgentThread({
     visibleMessages,
     scrollToLatest,
     showJumpToLatest,
-    canLoadOlder,
     showLoadOlderHint,
+    coolingDown,
     handleScroll: handlePagingScroll,
     loadOlder,
+    prepareSearch,
+    revealSearchMatch,
   } = useMessagePaging({
     messages,
     scrollRef,
     userExchangeCount: PAGE_USER_EXCHANGES,
     hasOlderHistory,
     loadOlderHistory,
+    loadAllHistoryForSearch,
     onScroll: handleScrollbarVisibility,
     followEnabled: !loadingIndicator,
     onContentSettled: () => updateFloatingScrollbar(false),
@@ -443,9 +447,9 @@ export function AgentThread({
         {thread
           ? (
               <ThreadSearch
-                canLoadOlder={canLoadOlder}
                 contentKey={visibleMessages}
-                onLoadOlder={loadOlder}
+                onPrepareSearch={prepareSearch}
+                onRevealMatch={revealSearchMatch}
                 rootRef={searchRootRef}
               />
             )
@@ -458,7 +462,13 @@ export function AgentThread({
         {historyError && (
           <div role="alert" className="text-danger px-4 py-2 text-sm">
             {historyError}
-            <button type="button" className="ml-2 underline" onClick={() => void retryHistory()}>{t("common:retry")}</button>
+            <button
+              type="button"
+              className="ml-2 underline"
+              onClick={() => void retryHistory()}
+            >
+              {t("common:retry")}
+            </button>
           </div>
         )}
         {showLoadOlderHint
@@ -467,6 +477,8 @@ export function AgentThread({
                 <button
                   type="button"
                   onClick={loadOlder}
+                  disabled={coolingDown}
+                  aria-busy={coolingDown}
                   aria-label={t("thread.loadOlder")}
                   title={t("thread.loadOlder")}
                   className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"

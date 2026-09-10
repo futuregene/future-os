@@ -5,6 +5,8 @@ import {
   entriesToTurns,
   matchesSettledRun,
   turnsToMessages,
+  upsertUserMessage,
+  userMessageFromEvent,
 } from "@future-os/thread-projection";
 import {
   useCallback,
@@ -138,6 +140,8 @@ export function useThreadMessages({
   );
   const [historyError, setHistoryError] = useState<string | null>(null);
   const historyCursorRef = useRef<number | null>(initialCursor?.before ?? null);
+  const hasOlderHistoryRef = useRef(hasOlderHistory);
+  hasOlderHistoryRef.current = hasOlderHistory;
   const olderInFlightRef = useRef<object | null>(null);
   const historyEpochRef = useRef(0);
   const messagesRef = useRef(messages);
@@ -361,6 +365,7 @@ export function useThreadMessages({
       olderInFlightRef.current = null;
       if (!merged.keptOlder || historyCursorRef.current === null) {
         historyCursorRef.current = result.nextOffset;
+        hasOlderHistoryRef.current = result.hasMore;
         setHasOlderHistory(result.hasMore);
       }
       replacingRef.current = false;
@@ -419,6 +424,7 @@ export function useThreadMessages({
           throw new Error("History cursor did not advance.");
         beforeCommit?.(result.messages);
         historyCursorRef.current = result.nextOffset;
+        hasOlderHistoryRef.current = result.hasMore;
         setHasOlderHistory(result.hasMore);
         setHistoryError(null);
         setMessages((current) => {
@@ -440,6 +446,41 @@ export function useThreadMessages({
     },
     [threadId, loadFromAgent, setMessages, source.version],
   );
+
+  // Search fills the message cache without expanding the rendered window.
+  // Reuse the normal page reader and its source/epoch ownership checks.
+  const loadAllHistoryForSearch = useCallback(async (signal: AbortSignal) => {
+    const assertCurrent = () => {
+      if (signal.aborted || !aliveRef.current
+        || sourceRef.current.version !== source.version) {
+        throw new DOMException("Search cancelled", "AbortError");
+      }
+    };
+    assertCurrent();
+    while (loadingRef.current) {
+      await new Promise(resolve => window.setTimeout(resolve, 32));
+      assertCurrent();
+    }
+    if (!cacheEligibleRef.current)
+      throw new Error("Thread history is unavailable for search.");
+    let restarts = 0;
+    while (hasOlderHistoryRef.current) {
+      assertCurrent();
+      if (olderInFlightRef.current) {
+        await new Promise(resolve => window.setTimeout(resolve, 32));
+        continue;
+      }
+      const epoch = historyEpochRef.current;
+      const before = historyCursorRef.current;
+      await loadOlderHistory();
+      assertCurrent();
+      if (epoch !== historyEpochRef.current && restarts++ < 3)
+        continue;
+      if (historyCursorRef.current === before)
+        throw new Error("History search could not advance its cursor.");
+    }
+    return messagesRef.current;
+  }, [loadOlderHistory, source.version]);
 
   // Derive the flash-free indicator from the truthful `loadingThread`: show it
   // only if loading outlasts LOADING_INDICATOR_DELAY_MS, and once shown hold it
@@ -612,37 +653,18 @@ export function useThreadMessages({
 
       // A user_message that lands while this thread's load is still in flight
       // would append onto the not-yet-committed base — dropping it is
-      // lossless, the projected JSONL load carries the entry.
+      // lossless, the Agent history load carries the persisted entry.
       if (loadingRef.current)
         return;
 
-      const text
-        = typeof detail.payload.text === "string" ? detail.payload.text : "";
-      if (!text)
+      const user = userMessageFromEvent(detail.payload);
+      if (!user) {
+        // An identity-less event can only invalidate history; text is not a key.
+        void reloadMessagesQuiet(threadId);
         return;
-      setMessages((prev) => {
-        // Dedup: skip if the last user message has identical text.
-        // Checking only the last message avoids suppressing legitimate
-        // repeated prompts (e.g. sending "continue" twice).
-        const userMsgs = prev.filter(m => m.role === "user");
-        const lastUser = userMsgs[userMsgs.length - 1];
-        if (lastUser && lastUser.content === text)
-          return prev;
-        return [
-          ...prev,
-          {
-            id: `user_${Date.now()}`,
-            role: "user",
-            authorKey: "author.you",
-            content: text,
-            status: "complete",
-            createdAt: new Date().toISOString(),
-          } satisfies AgentMessage,
-        ];
-      });
-      // Bump the generation counter so an in-flight quiet reload sees that
-      // state moved under it and discards its replacement instead of
-      // clobbering this append.
+      }
+      setMessages(prev => upsertUserMessage(prev, user));
+      // Record this live write for callers that fence asynchronous updates.
       messagesGenRef.current += 1;
     };
     window.addEventListener("future:agent-event", handler);
@@ -670,6 +692,7 @@ export function useThreadMessages({
     loadingIndicator,
     hasOlderHistory,
     loadOlderHistory,
+    loadAllHistoryForSearch,
     historyError,
     sessionChanged,
     messages,

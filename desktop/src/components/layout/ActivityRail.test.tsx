@@ -19,6 +19,10 @@ function thread(id: string, parentSessionId?: string): StoredThread {
   return { id, parentSessionId, agentSessionId: id, title: id, mode: "chat", workspaceId: id, status: "active", pinned: false, readonly: false, createdAt: 0, updatedAt: 0 };
 }
 
+function workspaceThread(id: string, workspaceId: string): StoredThread {
+  return { ...thread(id), mode: "workspace", workspaceId };
+}
+
 function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
   return {
     active: "chat",
@@ -49,6 +53,34 @@ function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
 }
 
 describe("activity rail conversation hierarchy", () => {
+  it("restores collapsed workspace groups persisted by the previous session", async () => {
+    localStorage.setItem("future.collapsedWorkspaces", JSON.stringify(["ws-a"]));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([workspaceThread("ws-thread", "ws-a")]),
+      workspaces: [{ id: "ws-a", name: "Alpha", kind: "user", path: "/tmp/alpha", cleanupStatus: "active", createdAt: 0, updatedAt: 0 }],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    const byTitle = (title: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`);
+    try {
+      // Restored collapsed: the group chevron offers to expand and its chats stay hidden.
+      expect(byTitle("Expand workspace")).not.toBeNull();
+      expect(byTitle("ws-thread")).toBeNull();
+      act(() => byTitle("Expand workspace")!.click());
+      expect(byTitle("Collapse workspace")).not.toBeNull();
+      expect(byTitle("ws-thread")).not.toBeNull();
+      expect(JSON.parse(localStorage.getItem("future.collapsedWorkspaces")!)).toEqual([]);
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+      localStorage.clear();
+    }
+  });
+
   it("expands independently from selection, starts collapsed, and retains state on status updates", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);

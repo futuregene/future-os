@@ -3,12 +3,12 @@ import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
+import { isThreadSearchQuery } from "./threadSearchQuery";
 import { findThreadTextRanges } from "./threadSearchRanges";
 
 const MATCH_HIGHLIGHT = "thread-search-match";
 const CURRENT_HIGHLIGHT = "thread-search-current";
-/** Bound result objects and painted ranges for low-specificity queries in very long threads. */
-const MAX_MATCHES = 300;
+/** Bound highlight painting without truncating the searchable result list. */
 const MAX_PAINTED_MATCHES = 80;
 interface HighlightRegistryLike {
   delete: (name: string) => boolean;
@@ -17,9 +17,9 @@ interface HighlightRegistryLike {
 }
 
 interface ThreadSearchProps {
-  canLoadOlder: boolean;
   contentKey: unknown;
-  onLoadOlder: () => void;
+  onPrepareSearch?: (query: string, signal: AbortSignal) => Promise<void>;
+  onRevealMatch?: (range: Range) => void;
   rootRef: RefObject<HTMLElement | null>;
 }
 
@@ -28,7 +28,7 @@ interface DeferredWork {
   secondFrame: number | null;
 }
 
-export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }: ThreadSearchProps) {
+export function ThreadSearch({ contentKey, onPrepareSearch, onRevealMatch, rootRef }: ThreadSearchProps) {
   const { t } = useTranslation("agent");
   const currentIndexRef = useRef(-1);
   const deferredWorkRef = useRef<DeferredWork | null>(null);
@@ -37,9 +37,53 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
   const rangesRef = useRef<Range[]>([]);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [composing, setComposing] = useState(false);
+  const eligible = !composing && isThreadSearchQuery(query);
   const [currentIndex, setCurrentIndex] = useState(-1);
-  const [hasMoreMatches, setHasMoreMatches] = useState(false);
   const [matchCount, setMatchCount] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [searchFailed, setSearchFailed] = useState(false);
+  const [preparedQuery, setPreparedQuery] = useState<string | null>(null);
+  const pendingRevealRef = useRef(false);
+
+  useEffect(() => {
+    if (!open || !eligible) {
+      setSearching(false);
+      setPreparedQuery(null);
+      setSearchFailed(false);
+      rangesRef.current = [];
+      currentIndexRef.current = -1;
+      setCurrentIndex(-1);
+      setMatchCount(0);
+      return;
+    }
+    const controller = new AbortController();
+    setSearching(true);
+    setPreparedQuery(null);
+    setSearchFailed(false);
+    pendingRevealRef.current = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await onPrepareSearch?.(query, controller.signal);
+          if (!controller.signal.aborted)
+            setPreparedQuery(query);
+        }
+        catch {
+          if (!controller.signal.aborted)
+            setSearchFailed(true);
+        }
+        finally {
+          if (!controller.signal.aborted)
+            setSearching(false);
+        }
+      })();
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [eligible, onPrepareSearch, open, query]);
 
   const clearHighlights = useCallback(() => {
     const registry = getHighlightRegistry();
@@ -98,22 +142,32 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
     currentIndexRef.current = normalized;
     setCurrentIndex(normalized);
     if (scroll) {
-      const target = current.startContainer.parentElement;
-      target?.scrollIntoView({ block: "center", inline: "nearest" });
+      if (onRevealMatch)
+        onRevealMatch(current);
+      else
+        current.startContainer.parentElement?.scrollIntoView({ block: "center", inline: "nearest" });
     }
-  }, [clearHighlights]);
+  }, [clearHighlights, onRevealMatch]);
 
   const recompute = useCallback(() => {
+    if (!eligible) {
+      clearHighlights();
+      return;
+    }
+    if (query && (searching || preparedQuery !== query))
+      return;
     const root = rootRef.current;
     const previousRange = rangesRef.current[currentIndexRef.current];
     const result = root && query
-      ? findThreadTextRanges(root, query, MAX_MATCHES)
+      ? findThreadTextRanges(root, query)
       : { hasMore: false, ranges: [] };
-    const { hasMore, ranges } = result;
+    const { ranges } = result;
     rangesRef.current = ranges;
-    setHasMoreMatches(hasMore);
     setMatchCount(ranges.length);
     const queryChanged = previousQueryRef.current !== query;
+    if (queryChanged) {
+      pendingRevealRef.current = true;
+    }
     previousQueryRef.current = query;
     const preservedIndex = previousRange
       ? ranges.findIndex(range => range.startContainer === previousRange.startContainer
@@ -126,10 +180,10 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
       : preservedIndex >= 0
         ? preservedIndex
         : Math.min(Math.max(currentIndexRef.current, 0), ranges.length - 1);
-    showMatch(nextIndex, queryChanged && ranges.length > 0);
-    if (query && !hasMore && canLoadOlder)
-      onLoadOlder();
-  }, [canLoadOlder, onLoadOlder, query, rootRef, showMatch]);
+    showMatch(nextIndex, pendingRevealRef.current && ranges.length > 0);
+    if (ranges.length > 0)
+      pendingRevealRef.current = false;
+  }, [clearHighlights, eligible, preparedQuery, query, rootRef, searching, showMatch]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -165,9 +219,11 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
     return cancelDeferredWork;
   }, [cancelDeferredWork, clearHighlights, contentKey, deferUntilAfterPaint, open, recompute]);
 
-  useEffect(() => () => {
-    cancelDeferredWork();
-    clearHighlights();
+  useEffect(() => {
+    return () => {
+      cancelDeferredWork();
+      clearHighlights();
+    };
   }, [cancelDeferredWork, clearHighlights]);
 
   useEffect(() => {
@@ -186,9 +242,9 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
   }, [deferUntilAfterPaint, open, recompute, rootRef]);
 
   const move = useCallback((delta: number) => {
-    if (rangesRef.current.length > 0)
+    if (eligible && !searching && !searchFailed && rangesRef.current.length > 0)
       showMatch(currentIndexRef.current + delta);
-  }, [showMatch]);
+  }, [eligible, searchFailed, searching, showMatch]);
 
   return (
     <>
@@ -206,6 +262,11 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
                   autoCapitalize="none"
                   autoComplete="off"
                   autoCorrect="off"
+                  onCompositionStart={() => {
+                    setComposing(true);
+                    clearHighlights();
+                  }}
+                  onCompositionEnd={() => setComposing(false)}
                   className="min-w-0 flex-1 bg-transparent text-base text-ink outline-none placeholder:text-ink-muted"
                   onChange={(event) => {
                     // The expensive DOM scan is deferred, but results from the old
@@ -221,7 +282,7 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
                     clearHighlights();
                   }}
                   onKeyDown={(event) => {
-                    if (event.key !== "Enter")
+                    if (event.key !== "Enter" || event.nativeEvent.isComposing)
                       return;
                     event.preventDefault();
                     move(event.shiftKey ? -1 : 1);
@@ -243,7 +304,7 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
               <div className="flex h-12 items-center border-t border-line-soft px-3">
                 <IconButton
                   className="size-8 disabled:cursor-default disabled:opacity-35"
-                  disabled={matchCount === 0}
+                  disabled={!eligible || matchCount === 0 || searching || searchFailed}
                   icon={<ArrowUp className="size-5" />}
                   label={t("thread.searchPrevious")}
                   onClick={() => move(-1)}
@@ -251,19 +312,24 @@ export function ThreadSearch({ canLoadOlder, contentKey, onLoadOlder, rootRef }:
                 />
                 <IconButton
                   className="size-8 disabled:cursor-default disabled:opacity-35"
-                  disabled={matchCount === 0}
+                  disabled={!eligible || matchCount === 0 || searching || searchFailed}
                   icon={<ArrowDown className="size-5" />}
                   label={t("thread.searchNext")}
                   onClick={() => move(1)}
                   type="button"
                 />
                 <span className="ml-auto pr-2 text-sm tabular-nums text-ink-muted">
-                  {t(hasMoreMatches ? "thread.searchResultsMore" : "thread.searchResults", {
+                  {t("thread.searchResults", {
                     current: currentIndex + 1,
                     total: matchCount,
                   })}
                 </span>
               </div>
+              {(searching || searchFailed) && (
+                <div role="status" className="border-t border-line-soft px-3 py-2 text-sm text-ink-muted">
+                  {t(searchFailed ? "thread.searchFailed" : "thread.searching")}
+                </div>
+              )}
             </div>
           )
         : null}

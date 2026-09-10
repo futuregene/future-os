@@ -192,7 +192,7 @@ export function useRemoteConnection({
         onError: recordError,
       });
       clientRef.current = client;
-      if (AppState.currentState === "background") client.pauseForBackground();
+      client.setAppActive(AppState.currentState !== "background");
       if (networkAvailableRef.current === false) client.setNetworkAvailable(false);
       await client.open();
       await Promise.allSettled([
@@ -284,7 +284,9 @@ export function useRemoteConnection({
       const returnedToForeground = next === "active" && previous !== "active";
       const enteredBackground = next === "background" && previous !== "background";
       previous = next;
-      if (enteredBackground) clientRef.current?.pauseForBackground();
+      if (enteredBackground || returnedToForeground) {
+        clientRef.current?.setAppActive(next === "active");
+      }
       if (returnedToForeground) void recoverLifecycle("foreground");
     });
     return () => subscription.remove();

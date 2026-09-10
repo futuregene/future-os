@@ -2,7 +2,7 @@
 	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
-	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt fmt-mobile \
+	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -248,16 +248,10 @@ check-desktop: lint-desktop stylelint-desktop desktop-sidecar-placeholder
 	cd desktop/src-tauri && cargo check
 
 check-mobile: lint-mobile test-mobile
-	cd mobile && npm run format:check
 
 fmt:
 	cargo fmt --all
 	cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
-	$(MAKE) fmt-mobile
-
-fmt-mobile:
-	$(call npm-install-if-needed,mobile)
-	cd mobile && npm run format
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 # Kept as `cd <crate> && cargo run` on purpose: the process cwd is user-visible
@@ -392,7 +386,7 @@ help:
 	@echo "  test-cli-diff / -tui-diff / -tui-tmux  [manual] TS→Rust migration gates"
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
-	@echo "  fmt / fmt-mobile                    Format code"
+	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -loop   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
 	@echo "  profile-agent / profile-quick / profile-heap  CPU/heap profiling (PROFILE_SECS=30)"

@@ -256,8 +256,8 @@ describe("SyncEngine", () => {
     await h.settle();
     expect(h.timelineOf("s1").streaming).toBe(false);
 
-    // A reconnect re-reconciles; the prefix is now complete so it re-checks
-    // the tail only, but the full text must be stable.
+    // A reconnect refreshes durable history and replays the run even when its
+    // previously observed prefix was complete.
     h.engine.reconcileAll("reconnect");
     await h.settle();
     expect(h.textOf("s1")).toBe("first half + second half");
@@ -438,7 +438,7 @@ describe("SyncEngine", () => {
     h.history = {
       ...emptyTimeline(),
       items: [
-        { id: "h1", kind: "message", role: "user", text: "Hello" },
+        { id: "h1", kind: "message", role: "user", text: "Hello", runId: "r1" },
         { id: "h2", kind: "message", role: "assistant", text: "Hi there" },
       ],
     };
@@ -572,7 +572,7 @@ describe("SyncEngine", () => {
     h.history = {
       ...emptyTimeline(),
       items: [
-        { id: "h1", kind: "message", role: "user", text: "Hello" },
+        { id: "h1", kind: "message", role: "user", text: "Hello", runId: "r1" },
         { id: "h2", kind: "message", role: "assistant", text: "Hi" },
       ],
     };
@@ -584,7 +584,7 @@ describe("SyncEngine", () => {
       ...tl,
       items: [
         ...tl.items,
-        { id: "local-dup", kind: "message", role: "user", text: "Hello" },
+        { id: "local-dup", kind: "message", role: "user", text: "Hello", runId: "r1" },
         { id: "notice-1", kind: "notice", tone: "neutral", text: "kept" },
       ],
     }));

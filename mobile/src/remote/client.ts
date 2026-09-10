@@ -264,6 +264,7 @@ export class RemoteClient {
     this.networkAvailable = available;
     if (available) return;
     this.generation += 1;
+    this.recoveryPromise = null;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
     this.disposeConnection("network_unavailable");
@@ -273,10 +274,13 @@ export class RemoteClient {
    * Ordinary WebSockets are not a background execution mechanism on either
    * mobile OS. Close deliberately before JavaScript is suspended so foreground
    * recovery starts from a known state instead of inheriting a half-open WSS.
+   * AppState owns this flag independently of network probes or recovery requests.
    */
-  pauseForBackground(): void {
-    if (this.stopped || !this.appActive) return;
-    this.appActive = false;
+  setAppActive(active: boolean): void {
+    if (this.stopped || active === this.appActive) return;
+    this.appActive = active;
+    if (active) return;
+    this.recoveryPromise = null;
     this.generation += 1;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
@@ -286,9 +290,7 @@ export class RemoteClient {
   /** Validate after foregrounding, or immediately rebuild after a path change. */
   recoverNow(reason: RecoveryReason): Promise<void> {
     if (this.stopped || this.isTerminal()) return Promise.resolve();
-    if (reason === "foreground") this.appActive = true;
     if (!this.appActive) return Promise.resolve();
-    if (reason !== "foreground") this.networkAvailable = true;
     if (!this.networkAvailable) return Promise.resolve();
     if (this.recoveryPromise) return this.recoveryPromise;
     const recovery = this.runRecovery(reason).finally(() => {
@@ -327,7 +329,8 @@ export class RemoteClient {
         // Rebuild below without waiting for NATS's ping budget to expire.
       }
     }
-    if (this.stopped || !this.appActive || !this.networkAvailable) return;
+    if (this.stopped || !this.appActive || !this.networkAvailable || generation !== this.generation)
+      return;
     // Keep the old generation as the serving fallback while the replacement
     // completes its handshake, subscriptions, and flush. `connectSocket()`
     // atomically publishes the new connection and only then closes this one.

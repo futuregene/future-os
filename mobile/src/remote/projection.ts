@@ -1,6 +1,8 @@
 import {
   createRunProjector,
   entriesToMessages,
+  userMessageFromEvent,
+  upsertUserMessage,
   type AgentActivityItem,
   type AgentMessage,
   type MessageSegment,
@@ -20,6 +22,8 @@ import { messageText } from "./codec";
 
 export interface TimelineState {
   items: TimelineItem[];
+  /** Persisted rows must not be re-appended as live messages after a page reset. */
+  durableItemIds?: Set<string>;
   seenEvents: Set<string>;
   currentRunId: string | null;
   streaming: boolean;
@@ -129,7 +133,21 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
  * shared package (`entriesToMessages`), then mapped to the render contract. */
 export function timelineFromEntries(entries: HistoryEntry[]): TimelineState {
   const messages = entriesToMessages(entries);
-  return { ...emptyTimeline(), items: messages.flatMap(messageToItems) };
+  const userRuns = new Map(
+    entries.filter(entry => entry.role === "user").map(entry => [`m_${entry.id}`, entry.runId]),
+  );
+  const items = messages
+    .flatMap(messageToItems)
+    .map(item =>
+      item.kind === "message" && item.role === "user" && userRuns.get(item.id)
+        ? { ...item, runId: userRuns.get(item.id)! }
+        : item,
+    );
+  return {
+    ...emptyTimeline(),
+    items,
+    durableItemIds: new Set(items.map(item => item.id)),
+  };
 }
 
 /** Render the model-context messages returned by get_messages. */
@@ -298,33 +316,20 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
 
   switch (event.type) {
     case "user_message": {
-      // The desktop observer mirrors prompts sent from ANY client (desktop,
-      // TUI, another phone), so every device renders the user bubble live.
-      // Dedup mirrors the desktop rule (useThreadMessages): skip when the
-      // last user bubble has identical text — that is this device's own
-      // optimistic send re-delivered through the mirror.
-      const text = textValue(data.text);
-      if (!text.trim()) break;
-      let lastUser: TimelineItem | undefined;
-      for (let i = items.length - 1; i >= 0; i -= 1) {
-        const item = items[i];
-        if (!item) continue;
-        if (item.kind === "message" && item.role === "user") {
-          lastUser = item;
-          break;
-        }
-      }
-      if (lastUser && lastUser.kind === "message" && lastUser.text.trim() === text.trim()) break;
-      items = [
-        ...items,
-        {
-          id: `user:${Date.now()}:${items.length}`,
-          kind: "message",
-          role: "user",
-          text,
-          runId,
-        },
-      ];
+      const canonical = userMessageFromEvent(data);
+      const text = canonical?.content ?? textValue(data.text);
+      if (!text.trim() && !canonical?.attachments?.length) break;
+      const user: Extract<TimelineItem, { kind: "message" }> = {
+        id: canonical?.id ?? `user:${event.runId || `${Date.now()}:${items.length}`}`,
+        kind: "message",
+        role: "user",
+        text,
+        runId: canonical?.runId ?? (event.runId || undefined),
+        ...(canonical?.attachments?.length
+          ? { attachments: canonical.attachments.map(toHistoryAttachment) }
+          : {}),
+      };
+      items = upsertUserMessage<TimelineItem>(items, user);
       break;
     }
     case "approval_request": {
@@ -401,6 +406,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
   }
 
   return {
+    ...state,
     items,
     seenEvents,
     currentRunId: event.runId ?? state.currentRunId,
