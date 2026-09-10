@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
-import { emptyTimeline } from "../timeline";
+import { applyStreamEvent, emptyTimeline } from "../timeline";
 import type { HistoryEntry, StreamEvent } from "../types";
 import { useTimelineController } from "../useTimelineController";
 
@@ -90,6 +90,72 @@ describe("useTimelineController", () => {
     });
     await flush();
   }
+
+  test.each(["restart", "resend"])(
+    "%s refreshes an idle session and keeps disjoint history reachable",
+    async mode => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      const exchanges = (start: number, end: number) =>
+        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(n => [
+          userEntry(`u${n}`, `user ${n}`),
+          assistantEntry(`a${n}`, `answer ${n}`),
+        ]);
+      request
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: exchanges(1, 10), hasMore: false, nextOffset: 0 },
+        })
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: exchanges(31, 40), hasMore: true, nextOffset: 60 },
+        });
+      render();
+      await establish();
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      await flush();
+      act(() => {
+        result.current.syncEngineRef.current!.mutate("s1", live =>
+          applyStreamEvent(live, evt("user_message", JSON.stringify({ text: "pending" }))),
+        );
+      });
+      await flush();
+      act(() => {
+        if (mode === "restart") result.current.syncEngineRef.current!.restartAll("reconnect");
+        else result.current.reconcileSession("s1", "resend");
+      });
+      await flush();
+      const users = result.current.timeline.items
+        .filter(i => i.kind === "message" && i.role === "user")
+        .map(i => (i.kind === "message" ? i.text : ""));
+      expect(users).toEqual([...Array.from({ length: 10 }, (_, i) => `user ${31 + i}`), "pending"]);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      request.mockResolvedValueOnce({
+        success: true,
+        data: { entries: exchanges(21, 30), hasMore: true, nextOffset: 40 },
+      });
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      await flush();
+      expect(request.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({ before: 60, limit: 10 }),
+      );
+      expect(
+        result.current.timeline.items
+          .filter(i => i.kind === "message" && i.role === "user")
+          .map(i => (i.kind === "message" ? i.text : "")),
+      ).toEqual([...Array.from({ length: 20 }, (_, i) => `user ${21 + i}`), "pending"]);
+    },
+  );
 
   describe("surface", () => {
     test("returns an empty timeline when no session is selected", () => {

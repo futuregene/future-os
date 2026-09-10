@@ -513,25 +513,30 @@ describe("user message mirror", () => {
     expect(state.items[0]).toMatchObject({ kind: "message", role: "user", text: "check this" });
   });
 
-  test("a repeat of the last user bubble's text is deduped (own optimistic send)", () => {
-    const first = applyStreamEvent(emptyTimeline(), {
+  test("events deduplicate by identity while identical prompts remain separate", () => {
+    const event = {
       type: "user_message",
-      data: JSON.stringify({ text: "check this" }),
-    });
-    const repeat = applyStreamEvent(first, {
-      type: "user_message",
-      data: JSON.stringify({ text: "check this" }),
-    });
+      data: JSON.stringify({ text: "check this", entry_id: "u1", run_id: "r1" }),
+    };
+    const first = applyStreamEvent(emptyTimeline(), event);
+    const repeat = applyStreamEvent(first, event);
     expect(repeat.items).toHaveLength(1);
-    // A genuinely new prompt still lands.
     const next = applyStreamEvent(repeat, {
       type: "user_message",
-      data: JSON.stringify({ text: "and this" }),
+      data: JSON.stringify({ text: "check this", entry_id: "u2", run_id: "r2" }),
     });
-    expect(next.items.map(item => item.kind === "message" && item.text)).toEqual([
-      "check this",
-      "and this",
+    expect(next.items.map(item => item.id)).toEqual(["m_u1", "m_u2"]);
+    const durable = timelineFromEntries([
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        runId: "r1",
+        blocks: [{ kind: "text", text: "check this" }],
+      },
     ]);
+    expect(applyStreamEvent(durable, event).items).toHaveLength(1);
   });
 });
 

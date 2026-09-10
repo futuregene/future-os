@@ -45,3 +45,4 @@ export {
   unwrapNestedJson,
 } from "./approval";
 export { isRecord, pathBasename, pathExtension, singleLine, truncate } from "./utils";
+export { userMessageFromEvent, upsertUserMessage } from "./userMessage";

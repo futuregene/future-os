@@ -586,7 +586,12 @@ impl ServerSession {
                 serde_json::Value::String(run_lease.run_id.clone()),
             );
         }
-        user_message.ensure_journal_entry_id();
+        let user_entry_id = user_message.ensure_journal_entry_id();
+        let user_attachments = user_message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("attachments"))
+            .cloned();
         self.messages.write().push(user_message);
 
         // Log the user message so the run log shows the question alongside
@@ -633,7 +638,13 @@ impl ServerSession {
         // a bogus extra bubble.
         self.broadcaster.broadcast(crate::rpc::SseEvent::new(
             "user_message",
-            serde_json::json!({"text": user_display_text}),
+            serde_json::json!({
+                "text": user_display_text,
+                "entry_id": user_entry_id,
+                "run_id": run_lease.run_id,
+                "created_at_ms": chrono::Utc::now().timestamp_millis(),
+                "attachments": user_attachments,
+            }),
         ));
 
         // Clone shared state for the background task

@@ -363,3 +363,14 @@ describe("on-demand history", () => {
     });
   });
 });
+
+it("a repeated mobile prompt stays after the previous reply", async () => {
+  page.mockResolvedValueOnce(history(["same prompt"], 0, false));
+  const root = createRoot(document.createElement("div"));
+  await act(async () => root.render(<Harness />));
+  await act(async () => current.setMessages(prev => [...prev, { id: "previous-reply", role: "assistant", authorKey: "author.researchCopilot", content: "previous reply", status: "complete", createdAt: "2026-01-01T00:00:01Z" }]));
+  await act(async () => window.dispatchEvent(new CustomEvent("future:agent-event", { detail: { threadId: "synthetic", sessionId: "synthetic-session", eventType: "user_message", payload: { text: "same prompt", entry_id: "second-user", run_id: "second-run" } } })));
+  const contents = current.messages.map(m => m.content);
+  await act(async () => root.unmount());
+  expect(contents).toEqual(["same prompt", "previous reply", "same prompt"]);
+});
