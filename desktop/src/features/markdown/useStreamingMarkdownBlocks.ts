@@ -3,6 +3,34 @@ import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
 
+/**
+ * Consecutive off-thread parse failures tolerated before this component gives up
+ * on the worker and parses synchronously. The counter resets on every successful
+ * response, so an intermittent failure (memory pressure, a worker killed under a
+ * multi-hundred-KB block) keeps using the off-thread parser.
+ *
+ * Latching on the FIRST failure is what makes a transient hiccup permanent: the
+ * synchronous fallback re-parses the whole accumulated block on the UI thread,
+ * which for a high-throughput reasoning model is ~100ms per push at up to 60
+ * pushes/s — the chat stops responding while the Agent keeps streaming fine.
+ */
+const MAX_WORKER_FAILURES = 3;
+
+/**
+ * Never let a parser throw escape into the render tree. Pathologically nested
+ * markdown (a long reasoning reply is full of nested lists/quotes) can exhaust
+ * the parser's stack; degrading to one undivided block shows slightly worse
+ * placement instead of unmounting the conversation.
+ */
+function safeSplitStreamingMarkdown(text: string, live: boolean): StreamingMarkdownBlock[] {
+  try {
+    return splitStreamingMarkdown(text, live);
+  }
+  catch {
+    return [{ content: text, live, start: 0 }];
+  }
+}
+
 interface Projection {
   blocks: StreamingMarkdownBlock[];
   text: string;
@@ -34,7 +62,7 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
   streamedRef.current ||= live;
   const shouldProject = streamedRef.current;
   const [projection, setProjection] = useState<Projection>(() => ({
-    blocks: shouldProject ? splitStreamingMarkdown(text, live) : [],
+    blocks: shouldProject ? safeSplitStreamingMarkdown(text, live) : [],
     text,
   }));
   const workerRef = useRef<Worker | null>(null);
@@ -43,14 +71,14 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
   const latestIdRef = useRef(0);
   const liveRef = useRef(live);
   const textRef = useRef(text);
-  const workerFailedRef = useRef(false);
+  const workerFailuresRef = useRef(0);
   liveRef.current = live;
   textRef.current = text;
 
   useEffect(() => {
-    if (!shouldProject || typeof Worker === "undefined" || workerFailedRef.current) {
+    if (!shouldProject || typeof Worker === "undefined" || workerFailuresRef.current >= MAX_WORKER_FAILURES) {
       if (shouldProject)
-        setProjection({ blocks: splitStreamingMarkdown(text, live), text });
+        setProjection({ blocks: safeSplitStreamingMarkdown(text, live), text });
       return;
     }
 
@@ -60,6 +88,9 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
       workerRef.current = worker;
       worker.onmessage = (event: MessageEvent<StreamingMarkdownWorkerResponse>) => {
         activeRef.current = false;
+        // A response proves the off-thread parser works, so earlier transient
+        // failures must not count toward the give-up budget.
+        workerFailuresRef.current = 0;
         const latest = event.data.id === latestIdRef.current;
         if (latest) {
           setProjection({ blocks: event.data.blocks, text: event.data.text });
@@ -79,14 +110,14 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
         }
       };
       worker.onerror = () => {
-        workerFailedRef.current = true;
+        workerFailuresRef.current += 1;
         activeRef.current = false;
         queuedRef.current = null;
         workerRef.current?.terminate();
         workerRef.current = null;
         const currentText = textRef.current;
         setProjection({
-          blocks: splitStreamingMarkdown(currentText, liveRef.current),
+          blocks: safeSplitStreamingMarkdown(currentText, liveRef.current),
           text: currentText,
         });
       };

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { cn } from "../../lib/cn";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 
@@ -5,8 +6,13 @@ import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
  * Dimmed, always-expanded display of the model's reasoning for one point in the
  * assistant reply's timeline. Rendered inline (in chronological order with text
  * and tool activity) and only when the "show thinking" setting is on.
+ *
+ * Memoized: a streaming reply re-renders on every push, but every reasoning
+ * block except the growing tail has identical `text`/`live` props, so without
+ * the memo each push rebuilt their whole element subtree. A long reasoning
+ * reply is a hundred-odd blocks, so that walk is pure per-push waste.
  */
-export function ThinkingBlock({
+export const ThinkingBlock = memo(({
   text,
   workspaceId,
   live,
@@ -15,7 +21,7 @@ export function ThinkingBlock({
   workspaceId?: string | null;
   /** True while this reasoning block is the growing tail of a streaming reply. */
   live?: boolean;
-}) {
+}) => {
   return (
     <div
       className={cn(
@@ -28,4 +34,4 @@ export function ThinkingBlock({
       <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />
     </div>
   );
-}
+});
