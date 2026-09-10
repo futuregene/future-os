@@ -103,6 +103,19 @@ const config: ExpoConfig = {
     package: "cn.futureos.mobile",
     versionCode: Number.parseInt(buildNumber, 10),
     permissions: ["android.permission.REQUEST_INSTALL_PACKAGES"],
+    // Share targets. `MainActivity` is `singleTask`, so a share while the app
+    // is running is delivered through `onNewIntent` (see the local
+    // `future-share-intent` module, which captures both receipts).
+    // TEXT is listed alongside the file types because many apps send shared
+    // text with `*/*`, and a mimeType filter for `text/plain` alone would drop
+    // those. Images keep their own entry so the gallery offers FutureOS first.
+    intentFilters: [
+      { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "text/plain" }] },
+      { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "image/*" }] },
+      { action: "SEND_MULTIPLE", category: ["DEFAULT"], data: [{ mimeType: "image/*" }] },
+      { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "*/*" }] },
+      { action: "SEND_MULTIPLE", category: ["DEFAULT"], data: [{ mimeType: "*/*" }] },
+    ],
     adaptiveIcon: {
       backgroundColor: "#0f172a",
       foregroundImage: "../desktop/src-tauri/icons/icon.png",

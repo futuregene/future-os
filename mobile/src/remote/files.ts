@@ -296,6 +296,40 @@ export async function pickAttachments(existing: MobileAttachment[]): Promise<Mob
   return combined;
 }
 
+/**
+ * Prepare files that arrived from outside the app (the share sheet) as
+ * attachments. Same quotas and image handling as the pickers; the name the
+ * sending app reported is kept, because the cached copy carries a generated
+ * prefix that would otherwise leak into the transcript.
+ */
+export async function prepareSharedAttachments(
+  files: { uri: string; name: string; mimeType: string }[],
+): Promise<MobileAttachment[]> {
+  const selected = files.map(file => ({ file: new File(file.uri), mimeType: file.mimeType }));
+  validateRawSelection([], selected);
+  const prepared = await Promise.all(
+    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
+  );
+  const named = prepared.map((attachment, index) => {
+    const name = files[index]?.name || attachment.name;
+    return {
+      ...attachment,
+      name,
+      // A re-encoded image is sent as JPEG; carry the shared name onto it.
+      transferName: attachment.transferName
+        ? `${withoutExtension(name) || "image"}${attachment.transferName.slice(
+            attachment.transferName.lastIndexOf("."),
+          )}`
+        : attachment.transferName,
+      // The cache copy belongs to this attachment — release it when the user
+      // removes it or sends the message.
+      temporary: true,
+    };
+  });
+  validateBatch(named);
+  return named;
+}
+
 export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
   const permission = await ImagePicker.requestCameraPermissionsAsync();
   if (!permission.granted) throw new Error("attachment_camera_permission");
