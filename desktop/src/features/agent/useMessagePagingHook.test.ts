@@ -103,6 +103,46 @@ describe("computePageStart (hook fixtures)", () => {
 });
 
 describe("useMessagePaging", () => {
+  it("reveals the matching text and retains its new anchor during cooldown", () => {
+    const { container, row, h } = setupAnchoredPaging();
+    row.textContent = "needle";
+    const range = document.createRange();
+    range.selectNodeContents(row);
+    Object.defineProperty(range, "getBoundingClientRect", {
+      value: () => ({ top: 150, height: 20 }),
+    });
+    act(() => h.current.revealSearchMatch(range));
+    expect(container.scrollTop).toBe(660);
+    expect(h.current.coolingDown).toBe(true);
+    expect(container.style.overflowY).toBe("hidden");
+    act(() => h.current.handleScroll());
+    expect(container.scrollTop).toBe(660);
+    h.unmount();
+    container.remove();
+  });
+
+  it("expands all cached history only when search can match outside the window", async () => {
+    const { container, h } = setup();
+    await act(async () => h.current.prepareSearch("missing", new AbortController().signal));
+    expect(h.current.visibleMessages[0]?.id).toBe("u5");
+    await act(async () => h.current.prepareSearch("u1", new AbortController().signal));
+    expect(h.current.visibleMessages[0]?.id).toBe("u1");
+    expect(h.current.coolingDown).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    expect(container.style.overflowY).toBe("");
+    h.unmount();
+    container.remove();
+  });
+
+  it("does not restart or release wheel protection while preparing search", async () => {
+    const { container, h } = setupAnchoredPaging();
+    await act(async () => h.current.prepareSearch("u1", new AbortController().signal));
+    expect(h.current.coolingDown).toBe(true);
+    expect(container.style.overflowY).toBe("hidden");
+    h.unmount();
+    container.remove();
+  });
+
   it("shows the last page of exchanges and reports more history", () => {
     const { h } = setup();
     expect(h.current.visibleMessages.map(m => m.id)).toEqual([

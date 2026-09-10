@@ -58,6 +58,47 @@ beforeEach(() => {
 });
 
 describe("on-demand history", () => {
+  it("fills the entire history cache for search and reuses it on the next query", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    page.mockResolvedValueOnce(history(["u2"], 10));
+    page.mockResolvedValueOnce(history(["u1"], 0, false));
+    await act(async () => {
+      const messages = await current.loadAllHistoryForSearch(new AbortController().signal);
+      expect(messages.map(message => message.content)).toEqual(["u1", "u2", "u3"]);
+    });
+    expect(current.hasOlderHistory).toBe(false);
+    const requests = page.mock.calls.length;
+    await act(async () => current.loadAllHistoryForSearch(new AbortController().signal));
+    expect(page).toHaveBeenCalledTimes(requests);
+    act(() => root.unmount());
+  });
+
+  it("stops a full-history search on a failed page instead of returning partial results", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    page.mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      await expect(current.loadAllHistoryForSearch(new AbortController().signal)).rejects.toThrow("cursor");
+    });
+    expect(page).toHaveBeenCalledTimes(2);
+    expect(current.hasOlderHistory).toBe(true);
+    act(() => root.unmount());
+  });
+
+  it("does not read additional pages for a cancelled search", async () => {
+    page.mockResolvedValueOnce(history(["u3"], 20));
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Harness />));
+    const controller = new AbortController();
+    controller.abort();
+    await expect(current.loadAllHistoryForSearch(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(page).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
   it("reconciles a persisted first user entry with its optimistic run identity", async () => {
     page.mockResolvedValueOnce(history([], 0, false));
     const root = createRoot(document.createElement("div"));
