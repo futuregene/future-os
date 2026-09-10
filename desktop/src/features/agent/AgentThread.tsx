@@ -111,6 +111,7 @@ export function AgentThread({
     loadingIndicator,
     hasOlderHistory,
     loadOlderHistory,
+    loadAllHistoryForSearch,
     historyError,
     sessionChanged,
     retryHistory,
@@ -158,17 +159,19 @@ export function AgentThread({
     visibleMessages,
     scrollToLatest,
     showJumpToLatest,
-    canLoadOlder,
     showLoadOlderHint,
     coolingDown,
     handleScroll: handlePagingScroll,
     loadOlder,
+    prepareSearch,
+    revealSearchMatch,
   } = useMessagePaging({
     messages,
     scrollRef,
     userExchangeCount: PAGE_USER_EXCHANGES,
     hasOlderHistory,
     loadOlderHistory,
+    loadAllHistoryForSearch,
     onScroll: handleScrollbarVisibility,
     followEnabled: !loadingIndicator,
     onContentSettled: () => updateFloatingScrollbar(false),
@@ -444,9 +447,9 @@ export function AgentThread({
         {thread
           ? (
               <ThreadSearch
-                canLoadOlder={canLoadOlder}
                 contentKey={visibleMessages}
-                onLoadOlder={loadOlder}
+                onPrepareSearch={prepareSearch}
+                onRevealMatch={revealSearchMatch}
                 rootRef={searchRootRef}
               />
             )
