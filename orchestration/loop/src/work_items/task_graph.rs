@@ -63,6 +63,45 @@ fn is_blocking_source(todo: &Todo) -> bool {
     matches!(todo.class, TaskClass::UserGate | TaskClass::Blocker)
 }
 
+/// Validate a proposed add/update without requiring unrelated legacy damage to
+/// be repaired first. Only the changed references and cycles through that node
+/// are rejected; this lets an operator clear bad edges one todo at a time.
+pub fn validate_dependency_change(goal: &Goal, todo_id: &str) -> Result<(), String> {
+    let todo = goal
+        .todo(todo_id)
+        .ok_or_else(|| format!("unknown todo `{todo_id}`"))?;
+    for id in predecessor_ids(todo) {
+        if id == todo_id {
+            return Err(format!("todo `{todo_id}` cannot reference itself"));
+        }
+        if goal.todo(&id).is_none() {
+            return Err(format!("todo `{todo_id}` references unknown todo `{id}`"));
+        }
+    }
+    let mut outgoing: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for todo in &goal.todos {
+        for other in predecessor_ids(todo) {
+            let (from, to) = if is_blocking_source(todo) {
+                (todo.id.clone(), other)
+            } else {
+                (other, todo.id.clone())
+            };
+            outgoing.entry(from).or_default().push(to);
+        }
+    }
+    let mut pending = outgoing.get(todo_id).cloned().unwrap_or_default();
+    let mut visited = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if id == todo_id {
+            return Err(format!("dependency cycle involving todo `{todo_id}`"));
+        }
+        if visited.insert(id.clone()) {
+            pending.extend(outgoing.get(&id).into_iter().flatten().cloned());
+        }
+    }
+    Ok(())
+}
+
 /// Build the graph from a goal's todos. Validation (fail closed):
 /// - a predecessor reference to an unknown todo id is an error;
 /// - a self-reference is an error;

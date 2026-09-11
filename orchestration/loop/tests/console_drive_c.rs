@@ -81,14 +81,14 @@ fn task_graph_surface() {
         "todo", "add", "--goal", &gid, "--text", "second", "--blocks", &first,
     ]);
     cli_ok(&["task-graph", "--goal", &gid]);
-    // A cycle does NOT fail — it is reported (⚠ cycle) with no topo order.
+    // New cycles are rejected before write; legacy graph rendering stays readable.
     let gid2 = init_goal(&cr, "cycle goal");
     let x = first_todo_id(&cr.root, &gid2);
     cli_ok(&[
         "todo", "add", "--goal", &gid2, "--text", "y", "--blocks", &x,
     ]);
     let y = common::todo_id_by_text(&cr.root, &gid2, "y");
-    cli_ok(&[
+    assert!(cli_err(&[
         "todo",
         "update",
         "--goal",
@@ -97,11 +97,12 @@ fn task_graph_surface() {
         &x,
         "--blocks",
         &y,
-    ]);
+    ])
+    .contains("cycle"));
     cli_ok(&["task-graph", "--goal", &gid2]);
     // Unknown refs fail closed.
     let gid3 = init_goal(&cr, "unknown ref goal");
-    cli_ok(&[
+    assert!(cli_err(&[
         "todo",
         "add",
         "--goal",
@@ -110,7 +111,17 @@ fn task_graph_surface() {
         "dangling",
         "--blocks",
         "todo_ghost",
-    ]);
+    ])
+    .contains("unknown todo"));
+    // Imported legacy damage remains diagnosable (raw append is not a CLI edit).
+    open_store(&cr)
+        .append(future_loop::store::Event::TodoAdded {
+            goal_id: gid3.clone(),
+            todo: future_loop::state::Todo::advancement("legacy", "legacy")
+                .blocking(&["todo_ghost"]),
+            ts: now_epoch(),
+        })
+        .unwrap();
     assert!(cli_err(&["task-graph", "--goal", &gid3]).contains("unknown todo"));
     assert!(cli_err(&["task-graph"]).contains("--goal required"));
     assert!(cli_err(&["task-graph", "--goal", "goal_nope"]).contains("not found"));
