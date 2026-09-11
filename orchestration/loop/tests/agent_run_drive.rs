@@ -156,7 +156,7 @@ fn run_workspace_conflict_and_force_workspace() {
     ]);
     // A second open todo for a2 to pick up after forcing.
     let second = add_todo(&cr, &goal, "second task");
-    let (_rt, _shared) = mock_env(MockState {
+    let (_rt, shared) = mock_env(MockState {
         events: completed_events("mock-run-1"),
         ..Default::default()
     });
@@ -171,6 +171,19 @@ fn run_workspace_conflict_and_force_workspace() {
         "2",
     ]);
     assert!(err.contains("workspace conflict"), "{err}");
+    // The refused run still minted a session (session creation precedes the
+    // guard, which is evaluated per turn) but never prompted it, so the session
+    // must be discarded rather than left as an empty conversation titled with
+    // the goal objective.
+    {
+        let st = shared.lock().unwrap();
+        assert_eq!(st.sessions_created, 1, "session is minted before the guard");
+        assert!(
+            st.live_sessions.is_empty(),
+            "unused session must be discarded, got {:?}",
+            st.live_sessions
+        );
+    }
     // --force-workspace lets a2 claim the second todo and complete it.
     cli_ok(&[
         "run",
@@ -444,7 +457,16 @@ fn run_monitor_not_due_waits() {
     ]);
     append_monitor(&cr, &goal, "mon_future", 3600);
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
-    assert_eq!(shared.lock().unwrap().prompts, 0, "no turn while waiting");
+    let st = shared.lock().unwrap();
+    assert_eq!(st.prompts, 0, "no turn while waiting");
+    // The run minted a session, then decided to wait — nothing was ever
+    // prompted, so the empty session must not be left behind.
+    assert_eq!(st.sessions_created, 1);
+    assert!(
+        st.live_sessions.is_empty(),
+        "unused session must be discarded, got {:?}",
+        st.live_sessions
+    );
 }
 
 #[cfg(unix)]
