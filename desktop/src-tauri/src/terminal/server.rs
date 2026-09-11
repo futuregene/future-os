@@ -211,6 +211,16 @@ impl TerminalServer {
         let path = request.path.clone();
         let route = route(&request.route_path);
 
+        // Preflight. The webview sends an `authorization` header, which is not a
+        // CORS-simple request, so the browser asks first — and a preflight never
+        // carries the secret it is asking permission to send. Answering it is
+        // therefore unauthenticated by construction; the real request still has
+        // to present the token.
+        if method == "OPTIONS" {
+            let _ = write_preflight(&mut stream, request.origin.clone()).await;
+            return;
+        }
+
         // A WebSocket upgrade authenticates with a ticket, not the secret:
         // browsers cannot set an Authorization header on a handshake.
         if let Route::Connect(id) = &route {
@@ -760,14 +770,33 @@ async fn write_json(
         status.canonical_reason().unwrap_or("OK"),
         payload.len()
     );
-    if let Some(origin) = origin {
-        head.push_str(&format!("access-control-allow-origin: {origin}\r\n"));
-        head.push_str("vary: origin\r\n");
-    }
+    append_cors(&mut head, origin.as_deref());
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await?;
     stream.write_all(&payload).await?;
     stream.flush().await
+}
+
+/// Answer a CORS preflight for the loopback listener.
+///
+/// Only the app's own origins reach this point (`handle` rejects a foreign
+/// origin first), so echoing the origin cannot turn the listener into an open
+/// one.
+async fn write_preflight(stream: &mut TcpStream, origin: Option<String>) -> std::io::Result<()> {
+    let mut head = String::from("HTTP/1.1 204 No Content\r\nconnection: close\r\n");
+    append_cors(&mut head, origin.as_deref());
+    head.push_str("access-control-allow-methods: GET, POST, PATCH, DELETE, OPTIONS\r\n");
+    head.push_str("access-control-allow-headers: authorization, content-type\r\n");
+    head.push_str("access-control-max-age: 600\r\n\r\n");
+    stream.write_all(head.as_bytes()).await?;
+    stream.flush().await
+}
+
+fn append_cors(head: &mut String, origin: Option<&str>) {
+    if let Some(origin) = origin {
+        head.push_str(&format!("access-control-allow-origin: {origin}\r\n"));
+        head.push_str("vary: origin\r\n");
+    }
 }
 
 fn query_value(path: &str, key: &str) -> Option<String> {
@@ -960,6 +989,7 @@ mod end_to_end {
     struct HttpResponse {
         status: u16,
         body: String,
+        raw: String,
     }
 
     fn request(
@@ -968,6 +998,19 @@ mod end_to_end {
         path: &str,
         token: Option<&str>,
         body: Option<&str>,
+    ) -> HttpResponse {
+        request_with_origin(port, method, path, token, body, None)
+    }
+
+    /// As `request`, with an explicit Origin header so the CORS rules can be
+    /// exercised the way the webview exercises them.
+    fn request_with_origin(
+        port: u16,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+        origin: Option<&str>,
     ) -> HttpResponse {
         let mut stream = StdStream::connect(("127.0.0.1", port)).expect("connect");
         stream
@@ -980,6 +1023,9 @@ mod end_to_end {
         );
         if let Some(token) = token {
             head.push_str(&format!("authorization: Bearer {token}\r\n"));
+        }
+        if let Some(origin) = origin {
+            head.push_str(&format!("origin: {origin}\r\n"));
         }
         if !payload.is_empty() {
             head.push_str("content-type: application/json\r\n");
@@ -998,7 +1044,11 @@ mod end_to_end {
             .split_once("\r\n\r\n")
             .map(|(_, body)| body.to_string())
             .unwrap_or_default();
-        HttpResponse { status, body }
+        HttpResponse {
+            status,
+            body,
+            raw: response,
+        }
     }
 
     fn body_json(response: &HttpResponse) -> serde_json::Value {
@@ -1052,6 +1102,59 @@ mod end_to_end {
         // The control routes refuse an unauthenticated caller.
         let anonymous = request(port, "GET", "/terminal", None, None);
         assert_eq!(anonymous.status, 401, "body: {}", anonymous.body);
+
+        // The webview sends `authorization`, so it always preflights first.
+        let preflight = request_with_origin(
+            port,
+            "OPTIONS",
+            "/terminal",
+            None,
+            None,
+            Some("tauri://localhost"),
+        );
+        assert_eq!(preflight.status, 204, "raw: {}", preflight.raw);
+        assert!(
+            preflight
+                .raw
+                .to_lowercase()
+                .contains("access-control-allow-origin: tauri://localhost"),
+            "preflight must echo the app origin: {}",
+            preflight.raw
+        );
+        assert!(
+            preflight
+                .raw
+                .to_lowercase()
+                .contains("access-control-allow-headers: authorization, content-type"),
+            "preflight must allow the header the client sends: {}",
+            preflight.raw
+        );
+
+        // A foreign origin is refused even when it holds the secret.
+        let foreign = request_with_origin(
+            port,
+            "GET",
+            "/terminal",
+            Some(&token),
+            None,
+            Some("https://evil.example"),
+        );
+        assert_eq!(foreign.status, 403, "body: {}", foreign.body);
+
+        // The app's own origin is accepted and echoed on the real response.
+        let own = request_with_origin(
+            port,
+            "GET",
+            "/terminal",
+            Some(&token),
+            None,
+            Some("tauri://localhost"),
+        );
+        assert_eq!(own.status, 200, "body: {}", own.body);
+        assert!(own
+            .raw
+            .to_lowercase()
+            .contains("access-control-allow-origin: tauri://localhost"));
 
         // shell listing is a normal authenticated route
         let shells = request(port, "GET", "/terminal/shells", Some(&token), None);
