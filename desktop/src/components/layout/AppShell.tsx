@@ -10,6 +10,7 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
@@ -316,8 +317,8 @@ export function AppShell() {
 
   // The terminal belongs to a conversation: it is offered only while a real
   // thread is on screen, so the shortcut and the panel state never apply to the
-  // new-chat / skills / phone-control views.
-  const terminalThreadId = section === "chat" && centerMode === "thread" ? activeThread?.id ?? null : null;
+  // new-chat / skills / phone-control views (see `terminalTarget`).
+  const terminalThreadId = terminalTarget({ section, centerMode, threadId: activeThread?.id });
   const terminalPanel = useTerminalPanel(terminalThreadId);
   const terminalHeaderAction = terminalThreadId
     ? (

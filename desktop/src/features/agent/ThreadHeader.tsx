@@ -38,7 +38,7 @@ export function ThreadHeader({
       </div>
       {action
         ? (
-            <div className="flex shrink-0 items-center gap-1" data-tauri-drag-region="false">
+            <div className="flex shrink-0 items-center gap-1">
               {action}
             </div>
           )
