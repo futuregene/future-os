@@ -149,6 +149,19 @@ on macOS would be strictly better than the current best-effort paths.
    shell keeps running (no new shell is spawned).
 7. `exit` in the shell: the tab shows the exit code and offers a restart.
 
+## Differences from opencode
+
+Same architecture; the deliberate deviations, so a future reader does not treat
+them as accidents:
+
+| Area | opencode | here | Why |
+| --- | --- | --- | --- |
+| Renderer | `ghostty-web` (libghostty WASM) | `@xterm/xterm` | The repo's dependency policy keeps WASM blobs out of the desktop bundle; xterm has no runtime dependencies and is already the app-facing contract here. The terminal component is renderer-agnostic apart from its imports. |
+| Cursor unit | UTF-16 string length | bytes | The PTY produces bytes; counting decoded characters drifts on any non-ASCII output. |
+| Scope key | directory | `threadId` → workspace | future-os has no worktree concept, and a conversation is what owns a workspace; deleting one must close its shells. |
+| Attach to a dead session | refused | replays the final screen + exit code | The tab can show what happened instead of an empty error. |
+| Teardown | `killpg` | session-scoped sweep | Verified: job-control background jobs live in their own process groups. |
+
 ## Known limitations
 
 * No drag-to-reorder, no rename, no shell picker in the UI (the server already
