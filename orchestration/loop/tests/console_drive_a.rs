@@ -138,6 +138,7 @@ fn todo_add_class_matrix() {
         "--text",
         "user does this",
     ]);
+    let dependent = add_todo(&cr, &gid, "dependent work");
     let blocker = {
         cli_ok(&[
             "todo",
@@ -149,7 +150,7 @@ fn todo_add_class_matrix() {
             "--text",
             "blocked on ext",
             "--blocks",
-            "todo_later",
+            &dependent,
         ]);
         todo_id_by_text(&cr.root, &gid, "blocked on ext")
     };
@@ -207,7 +208,7 @@ fn todo_add_class_matrix() {
     let store = open_store(&cr);
     let g = store.replay(&gid).unwrap().unwrap();
     let b = g.todos.iter().find(|t| t.id == blocker).unwrap();
-    assert_eq!(b.blocked_by_gate.as_deref(), Some("todo_later"));
+    assert_eq!(b.blocked_by_gate.as_deref(), Some(dependent.as_str()));
     assert!(b.class == future_loop::state::TaskClass::Blocker);
     let m = g.todos.iter().find(|t| t.text == "watch it").unwrap();
     assert!(m.resume_when.is_some(), "cadence sets the first due time");
@@ -338,8 +339,18 @@ fn todo_add_flag_matrix() {
         "0",
     ]);
     // --blocks on an advancement todo (dependency chain applies to all classes).
+    let a = add_todo(&cr, &gid, "prerequisite a");
+    let b = add_todo(&cr, &gid, "prerequisite b");
+    let dependencies = format!("{a},{b}");
     cli_ok(&[
-        "todo", "add", "--goal", &gid, "--text", "chained", "--blocks", "a,b",
+        "todo",
+        "add",
+        "--goal",
+        &gid,
+        "--text",
+        "chained",
+        "--blocks",
+        &dependencies,
     ]);
     // global-gate user_gate forces goal_bound.
     cli_ok(&[
@@ -416,7 +427,10 @@ fn todo_add_flag_matrix() {
     let clamped = g.todos.iter().find(|t| t.text.contains("clamped")).unwrap();
     assert_eq!(clamped.max_validation_attempts, 1);
     let chained = g.todos.iter().find(|t| t.text.contains("chained")).unwrap();
-    assert_eq!(chained.blocked_by_gate.as_deref(), Some("a,b"));
+    assert_eq!(
+        chained.blocked_by_gate.as_deref(),
+        Some(dependencies.as_str())
+    );
     let gg = g
         .todos
         .iter()
@@ -910,7 +924,10 @@ fn todo_archive_supersede_update() {
             .contains("already done")
     );
 
-    // update: full field set.
+    // update: full field set, with real prerequisites rather than dangling IDs.
+    let x = add_todo(&cr, &gid, "prerequisite x");
+    let y = add_todo(&cr, &gid, "prerequisite y");
+    let dependencies = format!("{x},{y}");
     let u = add_todo(&cr, &gid, "update me");
     cli_ok(&[
         "todo",
@@ -932,7 +949,7 @@ fn todo_archive_supersede_update() {
         "--resume-when",
         "45",
         "--blocks",
-        "x,y",
+        &dependencies,
         "--owner",
         "worker-a",
     ]);
@@ -944,7 +961,7 @@ fn todo_archive_supersede_update() {
         assert_eq!(t.evidence.as_deref(), Some("half done"));
         assert_eq!(t.note.as_deref(), Some("n"));
         assert_eq!(t.priority, future_loop::state::Priority::P0);
-        assert_eq!(t.blocked_by_gate.as_deref(), Some("x,y"));
+        assert_eq!(t.blocked_by_gate.as_deref(), Some(dependencies.as_str()));
         assert_eq!(t.owner.as_deref(), Some("worker-a"));
         assert!(
             t.resume_when.is_some(),

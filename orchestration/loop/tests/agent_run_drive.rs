@@ -201,6 +201,75 @@ fn run_workspace_conflict_and_force_workspace() {
 }
 
 #[test]
+fn run_uses_selected_todo_scope_instead_of_auto_registered_cwd() {
+    let cr = cli_root();
+    let goal = init_goal(&cr, "disjoint task writes");
+    let onboarding = first_todo_id(&cr.root, &goal);
+    cli_ok(&[
+        "todo",
+        "complete",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &onboarding,
+        "--evidence",
+        "setup checked",
+        "--no-follow-up",
+    ]);
+    for (agent, path) in [("a1", "papers/a.md"), ("a2", "papers/b.md")] {
+        cli_ok(&[
+            "todo",
+            "add",
+            "--goal",
+            &goal,
+            "--text",
+            agent,
+            "--owner",
+            agent,
+            "--required-write-scope",
+            path,
+        ]);
+        // Exercise the same automatic whole-cwd fallback used by run.
+        let mut store = open_store(&cr);
+        future_loop::console::ensure_run_identity(&mut store, &goal, Some(agent), false).unwrap();
+    }
+    let first = common::todo_id_by_text(&cr.root, &goal, "a1");
+    let second = common::todo_id_by_text(&cr.root, &goal, "a2");
+    cli_ok(&[
+        "todo",
+        "claim",
+        "--goal",
+        &goal,
+        "--todo-id",
+        &first,
+        "--agent-id",
+        "a1",
+    ]);
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--agent-id",
+        "a2",
+        "--max-turns",
+        "3",
+    ]);
+    let store = open_store(&cr);
+    let replay = store.replay(&goal).unwrap().unwrap();
+    assert_eq!(replay.todo(&second).unwrap().status, TodoStatus::Done);
+    assert!(replay.todo(&first).unwrap().claimed_by.is_some());
+    assert_eq!(shared.lock().unwrap().prompts, 1);
+    assert!(!store.events(&goal).unwrap().iter().any(|e| matches!(
+        e.event,
+        future_loop::store::Event::WorkspaceLockAcquired { forced: true, .. }
+    )));
+}
+
+#[test]
 fn run_failing_turns_exhaust_repair_budget() {
     let cr = cli_root();
     let events = vec![ev(

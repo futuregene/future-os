@@ -6,9 +6,9 @@
 //! claim degrades to serial (refused with a retry hint) unless the caller
 //! passes an explicit `--force`.
 //!
-//! The guard is ADVISORY and fail-open: an agent that declares no
-//! workspaces cannot be assessed and never blocks (legacy peers keep
-//! working). Every successful claim by a workspace-declaring agent also
+//! Todo write scopes take precedence over the agent's fallback workspaces.
+//! The guard is ADVISORY and fail-open only when neither declares a write
+//! set. Every successful claim with a write set also
 //! appends a `WorkspaceLockAcquired` ledger event so `agent list` can show
 //! who occupies which paths.
 
@@ -49,7 +49,9 @@ fn lexical_normalize(path: &std::path::Path) -> String {
             Component::CurDir => {}
             Component::ParentDir => {
                 // Keep leading `..` on relative paths; otherwise pop.
-                if !out.pop() {
+                if out.file_name().is_some_and(|name| name != "..") {
+                    out.pop();
+                } else if !out.has_root() {
                     out.push(comp.as_os_str());
                 }
             }
@@ -65,27 +67,44 @@ fn lexical_normalize(path: &std::path::Path) -> String {
 /// lexical normalization. Storage stays a plain string so replay is
 /// platform-agnostic.
 pub fn normalize_workspace_path(raw: &str) -> String {
-    let expanded = expand_home(raw.trim());
-    let path = std::path::PathBuf::from(expanded);
+    normalize_workspace_path_at(
+        raw,
+        &std::env::current_dir().expect("invariant: process cwd must be readable"),
+    )
+}
+
+/// Resolve against a stable project anchor, including symlinked parents of
+/// files that have not been created yet (e.g. /tmp/new.md on macOS).
+pub fn normalize_workspace_path_at(raw: &str, base: &std::path::Path) -> String {
+    let path = std::path::PathBuf::from(expand_home(raw.trim()));
     let abs = if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .expect("invariant: process cwd must be readable")
-            .join(path)
+        base.join(path)
     };
-    if let Ok(canon) = abs.canonicalize() {
-        return canon.to_string_lossy().into_owned();
+    // Resolve existing prefixes before interpreting later `..` components.
+    // Lexically collapsing the whole path first would lose symlink semantics;
+    // canonicalizing only the full path misses not-yet-created output files.
+    let mut resolved = std::path::PathBuf::new();
+    for component in abs.components() {
+        resolved.push(component.as_os_str());
+        resolved = std::path::PathBuf::from(lexical_normalize(&resolved));
+        if let Ok(canon) = resolved.canonicalize() {
+            resolved = canon;
+        }
     }
-    lexical_normalize(&abs)
+    resolved.to_string_lossy().into_owned()
 }
 
 /// True when two workspace paths overlap: equal, or one is an ancestor of
 /// the other. Component-aware, so `/repo/a` never overlaps `/repo/ab`
 /// while `/repo/a` and `/repo/a/sub` do.
 pub fn paths_overlap(a: &str, b: &str) -> bool {
-    let pa = std::path::Path::new(a);
-    let pb = std::path::Path::new(b);
+    // Windows paths are case-insensitive; preserve component boundaries.
+    #[cfg(windows)]
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    let pa = std::path::Path::new(&a);
+    let pb = std::path::Path::new(&b);
     pa == pb || pa.starts_with(pb) || pb.starts_with(pa)
 }
 
@@ -105,8 +124,7 @@ pub struct WorkspaceConflict {
     pub holder_lease_expires_at: u64,
 }
 
-/// The declared workspace set of an agent (empty = undeclared → guard is
-/// fail-open for that agent).
+/// The agent's fallback write set, used only when a task has no write scopes.
 pub fn agent_workspaces(goal: &Goal, agent_id: &str) -> Vec<String> {
     goal.agent_profiles
         .iter()
@@ -115,42 +133,96 @@ pub fn agent_workspaces(goal: &Goal, agent_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Compute the live workspace conflicts for `agent_id` claiming work at
-/// `now`: every OTHER registered agent that (a) declares workspaces,
-/// (b) holds at least one live lease, and (c) whose declared set overlaps
-/// the claimer's. Empty = safe to claim. Fail-open: an empty claimer set
-/// yields no conflicts (nothing to compare against).
+/// Agent-list advisory: compare this agent's active task scopes (or its
+/// fallback declaration when idle) with peers' live task scopes. Actual claims
+/// must use `todo_workspace_conflicts` with the selected task under the lock.
 pub fn live_workspace_conflicts(goal: &Goal, agent_id: &str, now: u64) -> Vec<WorkspaceConflict> {
-    let mine = agent_workspaces(goal, agent_id);
+    let held: Vec<_> = goal
+        .todos
+        .iter()
+        .filter(|t| live_holder(t, agent_id, now))
+        .collect();
+    let mine = if held.is_empty() {
+        agent_workspaces(goal, agent_id)
+    } else {
+        held.iter()
+            .flat_map(|t| todo_workspaces(goal, agent_id, t))
+            .collect()
+    };
+    conflicts_for_paths(goal, agent_id, &mine, now)
+}
+
+/// Effective write set: task declaration, or the agent's conservative fallback.
+/// Relative task paths are anchored to the goal, never the inspecting worker cwd.
+pub fn todo_workspaces(goal: &Goal, agent_id: &str, todo: &crate::state::Todo) -> Vec<String> {
+    let scopes: Vec<_> = todo
+        .required_write_scope
+        .iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    if scopes.is_empty() {
+        return agent_workspaces(goal, agent_id);
+    }
+    scopes
+        .iter()
+        .map(|s| normalize_workspace_path_at(s, std::path::Path::new(&goal.cwd)))
+        .collect()
+}
+
+pub fn todo_workspace_conflicts(
+    goal: &Goal,
+    agent_id: &str,
+    todo: &crate::state::Todo,
+    now: u64,
+) -> Vec<WorkspaceConflict> {
+    conflicts_for_paths(goal, agent_id, &todo_workspaces(goal, agent_id, todo), now)
+}
+
+fn live_holder(todo: &crate::state::Todo, agent_id: &str, now: u64) -> bool {
+    !matches!(
+        todo.status,
+        crate::state::TodoStatus::Done | crate::state::TodoStatus::Superseded
+    ) && todo.claimed_by.as_deref() == Some(agent_id)
+        && todo.lease_expires_at.is_some_and(|expires| expires > now)
+        && todo.holder_pid.is_none_or(crate::compat::pid_alive)
+}
+
+fn conflicts_for_paths(
+    goal: &Goal,
+    agent_id: &str,
+    mine: &[String],
+    now: u64,
+) -> Vec<WorkspaceConflict> {
     if mine.is_empty() {
         return vec![];
     }
     let mut conflicts = vec![];
-    for profile in &goal.agent_profiles {
-        if profile.id == agent_id || profile.workspaces.is_empty() {
-            continue;
-        }
+    let holders: std::collections::BTreeSet<_> = goal
+        .todos
+        .iter()
+        .filter_map(|t| t.claimed_by.as_deref())
+        .filter(|id| *id != agent_id)
+        .collect();
+    for holder in holders {
+        let mut overlapping = Vec::new();
         let mut held: Vec<&crate::state::Todo> = goal
             .todos
             .iter()
             .filter(|t| {
-                !matches!(
-                    t.status,
-                    crate::state::TodoStatus::Done | crate::state::TodoStatus::Superseded
-                ) && t.claimed_by.as_deref() == Some(profile.id.as_str())
-                    && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
-                    && t.holder_pid.is_none_or(crate::compat::pid_alive)
+                if !live_holder(t, holder, now) {
+                    return false;
+                }
+                let paths: Vec<_> = todo_workspaces(goal, holder, t)
+                    .into_iter()
+                    .filter(|w| mine.iter().any(|m| paths_overlap(m, w)))
+                    .collect();
+                let overlaps = !paths.is_empty();
+                overlapping.extend(paths);
+                overlaps
             })
             .collect();
-        if held.is_empty() {
-            continue;
-        }
-        let overlapping: Vec<String> = profile
-            .workspaces
-            .iter()
-            .filter(|w| mine.iter().any(|m| paths_overlap(m, w)))
-            .cloned()
-            .collect();
+        overlapping.sort();
+        overlapping.dedup();
         if overlapping.is_empty() {
             continue;
         }
@@ -162,7 +234,7 @@ pub fn live_workspace_conflicts(goal: &Goal, agent_id: &str, now: u64) -> Vec<Wo
             .unwrap_or(now);
         conflicts.push(WorkspaceConflict {
             schema_version: WORKSPACE_GUARD_SCHEMA_VERSION.to_string(),
-            holder_agent_id: profile.id.clone(),
+            holder_agent_id: holder.to_string(),
             holder_todo_ids: held.iter().map(|t| t.id.clone()).collect(),
             overlapping_paths: overlapping,
             holder_lease_expires_at: earliest,
