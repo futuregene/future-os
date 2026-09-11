@@ -7,105 +7,168 @@ function scrollEvent(y: number): NativeSyntheticEvent<NativeScrollEvent> {
   return {
     nativeEvent: {
       contentOffset: { x: 0, y },
-      contentInset: { top: 0, left: 0, bottom: 0, right: 0 },
-      contentSize: { width: 320, height: 2_000 },
+      contentSize: { width: 320, height: 2000 },
       layoutMeasurement: { width: 320, height: 600 },
-      zoomScale: 1,
     },
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-describe("timeline paging on an inverted list", () => {
-  let renderer: ReactTestRenderer | null = null;
-  let result: { current: ReturnType<typeof useTimelinePaging> };
-  const forwarded = jest.fn();
-  const requestOlder = jest.fn<Promise<void>, []>();
-
-  function Harness({
-    sessionId = "s1",
-    canLoadOlder = true,
-    loadingOlder = false,
-  }: {
-    sessionId?: string;
-    canLoadOlder?: boolean;
-    loadingOlder?: boolean;
-  }): null {
-    result.current = useTimelinePaging(
+describe("paging transaction", () => {
+  let renderer: ReactTestRenderer;
+  let current: ReturnType<typeof useTimelinePaging>;
+  const request = jest.fn<Promise<false | string[]>, []>();
+  const onScroll = jest.fn();
+  function Harness({ sessionId = "a", ids = [] }: { sessionId?: string; ids?: string[] }) {
+    current = useTimelinePaging(
       sessionId,
-      canLoadOlder,
-      loadingOlder,
-      requestOlder,
-      forwarded,
+      true,
+      false,
+      request,
+      onScroll,
+      ids.map(id => ({ id })),
     );
     return null;
   }
-
+  const advance = async (ms: number) => {
+    await act(async () => {
+      jest.advanceTimersByTime(ms);
+    });
+  };
+  const collide = () =>
+    act(() => {
+      current.onScrollBeginDrag();
+      current.onScroll(scrollEvent(1400));
+    });
   beforeEach(() => {
     jest.useFakeTimers();
-    requestOlder.mockResolvedValue(undefined);
-    result = { current: undefined as never };
+    request.mockResolvedValue([]);
     act(() => {
       renderer = create(createElement(Harness));
     });
   });
-
   afterEach(() => {
-    if (renderer) act(() => renderer!.unmount());
-    renderer = null;
+    act(() => renderer.unmount());
     jest.useRealTimers();
-    forwarded.mockReset();
-    requestOlder.mockReset();
+    request.mockReset();
+    onScroll.mockReset();
   });
 
-  test("latest offset is not mistaken for the older-history edge", () => {
-    act(() => result.current.onScroll(scrollEvent(0)));
-    act(() => jest.advanceTimersByTime(350));
-
-    expect(forwarded).toHaveBeenCalledTimes(1);
-    expect(result.current.showLoadOlderHint).toBe(false);
-    expect(requestOlder).not.toHaveBeenCalled();
+  test("programmatic scroll never loads a page; collision starts request immediately", () => {
+    act(() => current.onScroll(scrollEvent(1400)));
+    expect(request).not.toHaveBeenCalled();
+    collide();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(current.pagingActive).toBe(true);
   });
 
-  test("automatically requests once after settling at the visual top", async () => {
-    act(() => result.current.onScroll(scrollEvent(1_400)));
-    expect(result.current.showLoadOlderHint).toBe(true);
-    await act(async () => jest.advanceTimersByTime(350));
-    expect(requestOlder).toHaveBeenCalledTimes(1);
-
-    // Remaining at the same edge cannot cascade through every page. Leaving
-    // and returning is the explicit gesture that re-arms one automatic page.
-    act(() => result.current.onScroll(scrollEvent(1_400)));
-    await act(async () => jest.advanceTimersByTime(350));
-    expect(requestOlder).toHaveBeenCalledTimes(1);
-    act(() => result.current.onScroll(scrollEvent(100)));
-    act(() => result.current.onScroll(scrollEvent(1_400)));
-    await act(async () => jest.advanceTimersByTime(350));
-    expect(requestOlder).toHaveBeenCalledTimes(2);
+  test("a completed empty page retains the marker for 1500ms from collision", async () => {
+    collide();
+    await act(async () => {});
+    await advance(1499);
+    expect(current.pagingActive).toBe(true);
+    await advance(1);
+    expect(current.showLoadOlderHint).toBe(false);
   });
 
-  test("leaving the older edge cancels the delayed automatic load", () => {
-    act(() => result.current.onScroll(scrollEvent(1_400)));
-    act(() => result.current.onScroll(scrollEvent(100)));
-    act(() => jest.advanceTimersByTime(350));
-
-    expect(result.current.showLoadOlderHint).toBe(false);
-    expect(requestOlder).not.toHaveBeenCalled();
+  test("request completion and unchanged old geometry cannot satisfy a new page", async () => {
+    request.mockResolvedValue(["older"]);
+    collide();
+    await act(async () => {});
+    act(() => current.onListLayout());
+    await advance(2000);
+    expect(current.pagingActive).toBe(true);
+    act(() => renderer.update(createElement(Harness, { ids: ["older"] })));
+    await advance(200);
+    expect(current.pagingActive).toBe(true);
+    act(() => current.onListLayout());
+    await advance(99);
+    expect(current.pagingActive).toBe(true);
+    // Late row layout restarts the quiet window.
+    act(() => current.onListLayout());
+    await advance(100);
+    expect(current.showLoadOlderHint).toBe(false);
   });
 
-  test("does not request while loading or when no older page exists", () => {
-    act(() => renderer!.update(createElement(Harness, { loadingOlder: true })));
-    act(() => result.current.loadOlder());
-    act(() => renderer!.update(createElement(Harness, { canLoadOlder: false })));
-    act(() => result.current.loadOlder());
-    expect(requestOlder).not.toHaveBeenCalled();
+  test("slow response runs concurrently with minimum time, not another 1500ms", async () => {
+    let resolve!: (result: string[]) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolve = done;
+        }),
+    );
+    collide();
+    await advance(2000);
+    expect(current.pagingActive).toBe(true);
+    await act(async () => resolve([]));
+    await advance(100);
+    expect(current.showLoadOlderHint).toBe(false);
   });
 
-  test("switching sessions clears a pending edge load", () => {
-    act(() => result.current.onScroll(scrollEvent(1_400)));
-    expect(result.current.showLoadOlderHint).toBe(true);
-    act(() => renderer!.update(createElement(Harness, { sessionId: "s2" })));
-    expect(result.current.showLoadOlderHint).toBe(false);
-    act(() => jest.advanceTimersByTime(350));
-    expect(requestOlder).not.toHaveBeenCalled();
+  test("drag and momentum cannot cascade to another page even after cooldown", async () => {
+    collide();
+    await act(async () => {});
+    await advance(1500);
+    act(() => {
+      current.onScrollEndDrag(scrollEvent(1400));
+      current.onMomentumScrollEnd(scrollEvent(1400));
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    // Another deliberate drag at the clamped edge can load again.
+    act(() => {
+      current.onScrollBeginDrag();
+      current.onScrollEndDrag(scrollEvent(1400));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  test("timeout and synchronous failures expose a retry without unhandled rejection", async () => {
+    request.mockRejectedValueOnce(new Error("timeout"));
+    collide();
+    await act(async () => {});
+    await advance(1500);
+    expect(current.pagingActive).toBe(false);
+    expect(current.pagingFailed).toBe(true);
+    request.mockImplementationOnce(() => {
+      throw new Error("disconnected");
+    });
+    act(() => current.loadOlder());
+    await advance(1500);
+    expect(current.pagingFailed).toBe(true);
+    act(() => current.loadOlder());
+    await act(async () => {});
+    await advance(1500);
+    expect(current.showLoadOlderHint).toBe(false);
+  });
+
+  test("old-session completion cannot change the new-session transaction", async () => {
+    let resolveOld!: (result: false) => void;
+    request.mockImplementationOnce(
+      () =>
+        new Promise(done => {
+          resolveOld = done;
+        }),
+    );
+    collide();
+    act(() => renderer.update(createElement(Harness, { sessionId: "b" })));
+    request.mockResolvedValueOnce(["b-page"]);
+    collide();
+    await act(async () => resolveOld(false));
+    await advance(2000);
+    expect(current.pagingActive).toBe(true);
+    expect(current.pagingFailed).toBe(false);
+    act(() => renderer.update(createElement(Harness, { sessionId: "b", ids: ["b-page"] })));
+    act(() => current.onListLayout());
+    await advance(100);
+    expect(current.showLoadOlderHint).toBe(false);
+  });
+
+  test("returning to a previous session cannot resurrect its marker", async () => {
+    request.mockImplementationOnce(() => new Promise(() => {}));
+    collide();
+    act(() => renderer.update(createElement(Harness, { sessionId: "b" })));
+    act(() => renderer.update(createElement(Harness, { sessionId: "a" })));
+    expect(current.showLoadOlderHint).toBe(false);
+    expect(current.pagingActive).toBe(false);
   });
 });

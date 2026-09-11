@@ -40,6 +40,10 @@ function TimelineItemGap() {
   return <View style={styles.itemGap} />;
 }
 
+function TimelineFlexSpacer() {
+  return <View />;
+}
+
 export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
@@ -51,12 +55,12 @@ export function ChatScreen() {
   const [showOffline, setShowOffline] = useState(false);
   // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
   // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
-  // under edge-to-edge, so we lift the floating composer + list padding by the
-  // measured keyboard height ourselves. iOS keeps relying on KAV padding.
+  // under edge-to-edge, so we inset the chat flex column by the measured
+  // keyboard height ourselves. iOS keeps relying on KAV padding.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const title = remote.draft ? t("chat.new") : remote.selectedTitle || t("sessions.unnamed");
-  const activeModel = remote.models.find((model) => modelReference(model) === remote.modelId);
+  const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
@@ -81,7 +85,7 @@ export function ChatScreen() {
   // only while undecided — once a decision lands the card disappears.
   const timelineItems = useMemo(() => remote.timeline.items, [remote.timeline]);
   const transcriptItems = useMemo(
-    () => timelineItems.filter((item) => item.kind !== "approval"),
+    () => timelineItems.filter(item => item.kind !== "approval"),
     [timelineItems],
   );
   // FlatList's physical start is the stable latest-message anchor. Reversing
@@ -128,11 +132,18 @@ export function ChatScreen() {
     [remote, t],
   );
 
-  const { listRef, atLatest, composerHeight, setComposerHeight, scrollToLatest, onScroll } =
-    useChatScroll(remote.selectedSessionId);
+  const scroll = useChatScroll(remote.selectedSessionId, transcriptItems.length);
+  const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
   const {
     showLoadOlderHint,
+    pagingActive,
+    pagingFailed,
     loadOlder,
+    onListLayout,
+    onContentSizeChange,
+    onScrollBeginDrag,
+    onScrollEndDrag,
+    onMomentumScrollEnd,
     onScroll: onPagedScroll,
   } = useTimelinePaging(
     remote.selectedSessionId,
@@ -140,6 +151,7 @@ export function ChatScreen() {
     remote.loadingOlderTimeline,
     remote.loadOlderTimeline,
     onScroll,
+    timelineItems,
   );
 
   // Keep FlatList row callbacks referentially stable while still dispatching
@@ -180,14 +192,16 @@ export function ChatScreen() {
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem }) => (
-      <TimelineCard
-        item={item}
-        isLatestAssistant={item.id === latestAssistantId}
-        onOpenAttachment={handleTimelineAttachment}
-        onOpenFile={handleTimelineFile}
-        onRetry={handleTimelineRetry}
-        onContinue={handleTimelineContinue}
-      />
+      <View onLayout={onListLayout}>
+        <TimelineCard
+          item={item}
+          isLatestAssistant={item.id === latestAssistantId}
+          onOpenAttachment={handleTimelineAttachment}
+          onOpenFile={handleTimelineFile}
+          onRetry={handleTimelineRetry}
+          onContinue={handleTimelineContinue}
+        />
+      </View>
     ),
     [
       handleTimelineAttachment,
@@ -195,6 +209,7 @@ export function ChatScreen() {
       handleTimelineFile,
       handleTimelineRetry,
       latestAssistantId,
+      onListLayout,
     ],
   );
 
@@ -213,7 +228,7 @@ export function ChatScreen() {
   // nav-bar-height gap above the keyboard.
   useEffect(() => {
     if (Platform.OS !== "android") return;
-    const showSub = Keyboard.addListener("keyboardDidShow", (event) =>
+    const showSub = Keyboard.addListener("keyboardDidShow", event =>
       setKeyboardHeight(event.endCoordinates.height),
     );
     const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
@@ -231,12 +246,9 @@ export function ChatScreen() {
     return () => clearTimeout(timer);
   }, [remote.desktopOnline]);
 
-  // Lift the composer so the floating *card* clears the keyboard, not the dock:
-  // the dock's bottom edge includes composerArea's paddingBottom (spacing.md) of
-  // empty space below the card, so lifting the dock flush to the keyboard top
-  // still hides the card's bottom border + rounded corners + shadow by that
-  // padding (exactly the clipping seen with Gboard). Re-add the padding, plus a
-  // little shadow clearance, so the whole card floats above the IME.
+  // Inset the whole flex column so the composer *card* clears the keyboard. The
+  // dock includes composerArea's bottom padding, so retain a little additional
+  // clearance for the card border, rounded corners, and shadow above Gboard.
   const KEYBOARD_CLEARANCE = spacing.md + spacing.sm;
   const keyboardLift =
     Platform.OS === "android" && keyboardHeight > 0
@@ -270,17 +282,20 @@ export function ChatScreen() {
           />
         )}
 
-        <View style={styles.chatContent}>
-          {/* The inverted newest-first view makes offset zero equal "latest".
-              Older pages append at the opposite edge, so their async Markdown
-              layout cannot move the reader's current viewport. */}
+        <View
+          style={[styles.chatContent, keyboardLift > 0 ? { paddingBottom: keyboardLift } : null]}
+        >
+          {/* Inverted data puts latest at offset zero. Reading-mode native
+              anchoring handles subsequent row layout changes. */}
           <FlatList
             contentContainerStyle={[
               styles.timeline,
               {
                 // The scroll container is inverted, so logical top padding is
-                // rendered at the visual bottom beside the floating composer.
-                paddingTop: composerHeight + COMPOSER_FADE_CLEARANCE + spacing.lg + keyboardLift,
+                // rendered at the visual bottom. The composer itself now
+                // participates in flex layout; only its overlaid fade needs
+                // clearance inside the list.
+                paddingTop: COMPOSER_FADE_CLEARANCE + spacing.lg,
               },
               timelineItems.length === 0 && styles.emptyTimeline,
             ]}
@@ -288,7 +303,9 @@ export function ChatScreen() {
             initialNumToRender={10}
             inverted
             key={remote.selectedSessionId || "draft"}
-            keyExtractor={(item) => item.id}
+            keyExtractor={item => item.id}
+            ListHeaderComponent={invertedTranscriptItems.length > 0 ? TimelineFlexSpacer : null}
+            ListHeaderComponentStyle={styles.timelineFlexSpacer}
             ListEmptyComponent={
               remote.timelineError ? (
                 <View style={styles.loadingState}>
@@ -310,12 +327,26 @@ export function ChatScreen() {
                 <Text style={styles.empty}>{t("chat.noHistory")}</Text>
               )
             }
-            maintainVisibleContentPosition={{
-              minIndexForVisible: 0,
-              autoscrollToTopThreshold: 32,
-            }}
+            maintainVisibleContentPosition={scroll.maintainVisibleContentPosition}
+            automaticallyAdjustContentInsets={false}
+            contentInsetAdjustmentBehavior="never"
+            automaticallyAdjustKeyboardInsets={false}
             maxToRenderPerBatch={8}
+            onContentSizeChange={() => {
+              scroll.onContentSizeChange();
+              onContentSizeChange();
+            }}
+            onLayout={() => {
+              scroll.onLayout();
+              onListLayout();
+            }}
+            onScrollBeginDrag={() => {
+              scroll.onScrollBeginDrag();
+              onScrollBeginDrag();
+            }}
+            onMomentumScrollEnd={onMomentumScrollEnd}
             onScroll={onPagedScroll}
+            onScrollEndDrag={onScrollEndDrag}
             ref={listRef}
             renderItem={renderTimelineItem}
             scrollEventThrottle={16}
@@ -329,11 +360,15 @@ export function ChatScreen() {
           {showLoadOlderHint && (
             <Pressable
               accessibilityRole="button"
+              disabled={pagingActive}
+              accessibilityState={{ busy: pagingActive, disabled: pagingActive }}
               onPress={loadOlder}
               style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
             >
               <History color={colors.inkMuted} size={14} />
-              <Text style={styles.loadOlderLabel}>{t("chat.loadOlder")}</Text>
+              <Text style={styles.loadOlderLabel}>
+                {pagingFailed ? t("common.retry") : t("chat.loadOlder")}
+              </Text>
             </Pressable>
           )}
 
@@ -347,7 +382,11 @@ export function ChatScreen() {
             remote={remote}
             t={t}
             openAttachmentMenu={openAttachmentMenu}
-            send={send}
+            send={async () => {
+              if (!message.trim() && attachments.length === 0) return;
+              scrollToLatest();
+              await send();
+            }}
             atLatest={atLatest}
             scrollToLatest={scrollToLatest}
             showOffline={showOffline}
@@ -355,8 +394,6 @@ export function ChatScreen() {
             approvalSubmitting={approvalSubmitting}
             approvalError={approvalError}
             decideApproval={decideApproval}
-            setComposerHeight={setComposerHeight}
-            keyboardLift={keyboardLift}
             selector={selector}
             setSelector={setSelector}
           />
@@ -424,12 +461,29 @@ export function ChatScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
   keyboard: { flex: 1, backgroundColor: colors.surface },
-  chatContent: { flex: 1 },
-  timelineList: { flex: 1 },
-  timeline: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  emptyTimeline: { flexGrow: 1, alignItems: "center", justifyContent: "center" },
+  chatContent: { flex: 1, minHeight: 0 },
+  timelineList: { flex: 1, minHeight: 0 },
+  // `inverted` flips the visual axis. A flexible physical header consumes only
+  // the unused height of an underfilled list and therefore becomes visual
+  // bottom space, leaving short conversations at the visual top. It collapses
+  // to zero once message rows overflow the viewport.
+  timeline: {
+    flexGrow: 1,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  timelineFlexSpacer: { flexGrow: 1 },
+  emptyTimeline: {
+    flexGrow: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   empty: { color: colors.inkMuted, fontSize: 14 },
-  loadingState: { alignItems: "center", gap: spacing.sm, paddingVertical: spacing.xl },
+  loadingState: {
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: spacing.xl,
+  },
   historyError: { color: colors.inkMuted, fontSize: 14, textAlign: "center" },
   retryButton: {
     backgroundColor: colors.accent,
@@ -465,5 +519,9 @@ const styles = StyleSheet.create({
     height: 2,
     overflow: "hidden",
   },
-  transferFill: { height: 2, borderRadius: radius.pill, backgroundColor: colors.accent },
+  transferFill: {
+    height: 2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+  },
 });
