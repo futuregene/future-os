@@ -157,6 +157,10 @@ pub async fn delete_thread(
     // for a missing thread, so its session id is always present here — the old
     // pre-delete `get_thread` + `if let Some` guard had an unreachable None arm.
     let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
+    // Shells opened from this conversation are children of the app and must not
+    // outlive their conversation: closing them here means a deleted thread can
+    // never leave an orphaned terminal pointable at a removed directory.
+    close_thread_terminals(&input.thread_id);
     let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
     if store::is_agent_session_tombstoned(session_id)? {
         agent_bridge::drop_observer(session_id);
@@ -175,9 +179,21 @@ pub async fn batch_delete_threads(
     input: store::BatchDeleteThreadsInput,
 ) -> Result<store::BatchDeleteResult, crate::AppError> {
     let result = store::batch_delete_threads(&input)?;
+    for thread_id in &input.thread_ids {
+        close_thread_terminals(thread_id);
+    }
     crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
+}
+
+/// Close every terminal tab a conversation owns. Called from the deletion
+/// paths so terminal lifetime is bounded by conversation lifetime, independent
+/// of whether a client still holds an open panel.
+pub(crate) fn close_thread_terminals(thread_id: &str) {
+    if let Some(manager) = crate::terminal::server::manager() {
+        manager.close_thread(thread_id);
+    }
 }
 
 /// Bulk streaming-status query: ONE agent RPC (`list_streaming_sessions`,

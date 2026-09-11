@@ -42,6 +42,7 @@ mod skills;
 mod skills_bootstrap;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod store;
+mod terminal;
 #[cfg(all(feature = "gui", target_os = "windows"))]
 mod windows_power;
 
@@ -863,6 +864,15 @@ mod gui {
                 if let Err(error) = store::initialize_app_store() {
                     eprintln!("FutureOS store initialization failed: {error}");
                 }
+                // Embedded terminal: bind the loopback listener now so the webview
+                // can be told its port as soon as it asks. Accepting connections
+                // starts on `Ready`, when the runtime is live. The server needs the
+                // store (it resolves a conversation's working directory), so this
+                // must come after store initialization. A failure here disables
+                // the terminal panel; the rest of the app is unaffected.
+                if let Err(error) = terminal::server::bind() {
+                    eprintln!("FutureOS terminal server bind failed: {error}");
+                }
                 // Independent fixed-interval maintenance: app updates (24h),
                 // Future balance (1h), and Future models (24h). Missed ticks while
                 // suspended are skipped; each task runs at most once after resume.
@@ -1072,6 +1082,7 @@ mod gui {
                 remote_status,
                 remote_unpair,
                 remote_pairing_status,
+                terminal_server_info,
                 open_url
             ])
             .build(tauri::generate_context!())
@@ -1093,7 +1104,12 @@ mod gui {
             // Starting the bridge there races the runtime initialization on
             // macOS and can leave the detached start task without a live
             // connection. `Ready` is emitted once the process runtime is live.
-            tauri::RunEvent::Ready => spawn_remote_auto_connect(),
+            tauri::RunEvent::Ready => {
+                spawn_remote_auto_connect();
+                if let Err(error) = terminal::server::serve() {
+                    eprintln!("FutureOS terminal server failed to start: {error}");
+                }
+            }
             // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
             // through here, NOT the window's `CloseRequested`. Guard them the same
             // way so a running conversation can't be torn down without warning.
@@ -1113,6 +1129,14 @@ mod gui {
                 // short disconnect notice so the phone disables sending at
                 // once instead of waiting for heartbeat expiry. Crashes and
                 // power loss cannot run this handler and remain timeout-based.
+                //
+                // The embedded terminal is torn down first: shells are children
+                // of this process and must not outlive it. The grace period is
+                // short because the user is waiting to quit, and the teardown is
+                // bounded regardless of how wedged a child is.
+                if let Some(manager) = terminal::server::manager() {
+                    manager.shutdown_all(terminal::manager::CLOSE_GRACE);
+                }
                 tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
                 agent_supervisor::shutdown_agent_gracefully();
             }
