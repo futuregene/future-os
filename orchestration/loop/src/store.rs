@@ -696,6 +696,29 @@ pub struct RegistryEntry {
     pub created_at: u64,
 }
 
+fn valid_goal_id(id: &str) -> bool {
+    !id.is_empty()
+        && !matches!(id, "." | "..")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Safe read-path mapping for legacy or untrusted IDs. Writers reject unsafe
+/// IDs; readers must never traverse outside the state root either.
+pub(crate) fn goal_path_segment(id: &str) -> String {
+    if valid_goal_id(id) {
+        return id.to_string();
+    }
+    format!(
+        "%{}",
+        id.as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
 impl Store {
     pub fn open(root: &str) -> Result<Self> {
         let root = PathBuf::from(root);
@@ -705,10 +728,11 @@ impl Store {
     }
 
     pub fn goal_dir(&self, goal_id: &str) -> PathBuf {
-        self.root.join(format!("goals/{goal_id}"))
+        self.root.join("goals").join(goal_path_segment(goal_id))
     }
 
     fn ensure_goal_dir(&self, goal_id: &str) -> Result<PathBuf> {
+        anyhow::ensure!(valid_goal_id(goal_id), "goal id must be a nonempty filename component (ASCII letters, digits, '.', '_' or '-')");
         let dir = self.goal_dir(goal_id);
         fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -721,6 +745,10 @@ impl Store {
     }
 
     pub fn register(&mut self, goal: &Goal) -> Result<()> {
+        anyhow::ensure!(
+            valid_goal_id(&goal.goal_id),
+            "invalid goal id: must be a filename component"
+        );
         if !self.registered(&goal.goal_id) {
             self.registry.push(RegistryEntry {
                 goal_id: goal.goal_id.clone(),
@@ -820,7 +848,20 @@ impl Store {
         agent_id: &str,
         lease_secs: u64,
     ) -> Result<AtomicClaimOutcome> {
-        use std::io::Write;
+        self.try_claim_todo_with_pid(goal_id, todo_id, agent_id, lease_secs, None)
+    }
+
+    /// Bind liveness only when the caller is the long-lived execution host.
+    /// Manual CLI claims have no host PID and remain valid until expiry.
+    pub fn try_claim_todo_with_pid(
+        &self,
+        goal_id: &str,
+        todo_id: &str,
+        agent_id: &str,
+        lease_secs: u64,
+        holder_pid: Option<u32>,
+    ) -> Result<AtomicClaimOutcome> {
+        use std::io::{Read, Seek, SeekFrom, Write};
         let now = crate::state::now_epoch();
         // Normalize the TTL here (0 → default, >max → error) so every
         // caller gets identical expiry semantics to the non-atomic
@@ -836,42 +877,35 @@ impl Store {
             .open(&path)?;
         file.lock_exclusive()?;
         let result = (|| -> Result<AtomicClaimOutcome> {
-            let existing = fs::read_to_string(&path).unwrap_or_default();
-            // Reconstruct the current lease for this todo from the ledger
-            // (StoredEvent flattens the Event payload to top level).
-            let mut lease: Option<(String, u64, Option<u32>)> = None;
-            for line in existing.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
-                    continue;
-                }
-                match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
-                    "todo_claimed" => {
-                        let agent = v
-                            .get("agent_id")
-                            .and_then(|a| a.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let exp = v
-                            .get("lease_expires_at")
-                            .and_then(|e| e.as_u64())
-                            .unwrap_or(0);
-                        let pid = v
-                            .get("holder_pid")
-                            .and_then(|p| p.as_u64())
-                            .map(|p| p as u32);
-                        lease = Some((agent, exp, pid));
-                    }
-                    "todo_released" => lease = None,
-                    // Mirror replay (apply): an expiry record clears the
-                    // claim too, so a steal/expiry is honored by the atomic
-                    // claim path exactly like by projection replay.
-                    "todo_expired" => lease = None,
-                    _ => {}
-                }
+            // Use the canonical event fold under the claim lock. A separate
+            // partial parser drifted from replay (renewal, owner and completion).
+            let mut goal = Goal::new(goal_id, "", "");
+            let from = self
+                .goal_schema_version(goal_id)
+                .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+            // Windows byte-range locks also exclude reads through a second
+            // handle in this process. Read the snapshot through the handle
+            // that owns the lock, then use the same canonical parser.
+            file.seek(SeekFrom::Start(0))?;
+            let mut text = String::new();
+            file.read_to_string(&mut text)?;
+            for stored in parse_ledger(&dir, &from, &text)? {
+                apply(&mut goal, stored.event);
             }
+            let todo = goal.todo(todo_id).context("unknown todo")?;
+            if matches!(todo.status, TodoStatus::Done | TodoStatus::Superseded)
+                || todo.owner.as_deref().is_some_and(|owner| owner != agent_id)
+            {
+                return Ok(AtomicClaimOutcome {
+                    claimed: false,
+                    stolen: false,
+                });
+            }
+            let lease = todo
+                .claimed_by
+                .clone()
+                .zip(todo.lease_expires_at)
+                .map(|(holder, expiry)| (holder, expiry, todo.holder_pid));
             if let Some((holder, exp, holder_pid)) = &lease {
                 if *exp > now && holder != agent_id {
                     // Lease liveness: a dead holder's claim is reclaimed
@@ -904,7 +938,7 @@ impl Store {
                 todo_id: todo_id.to_string(),
                 agent_id: agent_id.to_string(),
                 lease_expires_at: expires_at,
-                holder_pid: Some(std::process::id()),
+                holder_pid,
                 ts: now,
             };
             let stored = StoredEvent {
@@ -1275,6 +1309,10 @@ fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path).unwrap_or_default();
+    parse_ledger(dir, from_schema, &text)
+}
+
+fn parse_ledger(dir: &Path, from_schema: &str, text: &str) -> Result<Vec<StoredEvent>> {
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out: Vec<StoredEvent> = vec![];
     let mut skipped: Vec<(usize, String)> = vec![];

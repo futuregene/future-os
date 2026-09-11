@@ -332,6 +332,8 @@ function showView(v){ for(const t of document.querySelectorAll(".tab")) t.classL
   if(v==="overview"){ renderOverview(); } }
 function syncDetailTab(){ const t = $("#tab-detail"); if(DETAIL_ID){ t.style.display=""; t.textContent = "Goal · "+DETAIL_ID.slice(0,14); } }
 
+// Encode both contexts: JavaScript string literal, then HTML attribute.
+const jsArg = s => esc(JSON.stringify(String(s ?? "")));
 function openGoal(id){ location.hash = "#/goal/"+id; }
 let lastGoalKey = null;
 async function route(){ const m = location.hash.match(/^#\/goal\/(.+)$/);
@@ -367,7 +369,7 @@ function renderOverview(){
   const t = o.totals;
   const goalRows = o.goals.map(g => {
     const pct = g.todos_total ? Math.round(100*g.todos_done/g.todos_total) : 0;
-    return `<div class="gcard ${g.terminal?"terminal":""} ${g.cancelled?"cancelled":""}" onclick="openGoal('${encodeURIComponent(g.goal_id)}')">
+    return `<div class="gcard ${g.terminal?"terminal":""} ${g.cancelled?"cancelled":""}" onclick="openGoal(${jsArg(encodeURIComponent(g.goal_id))})">
       <div class="top">${statusBadge(g.cancelled?"cancelled":(g.terminal?"done":"active"))}
         ${g.open_gates? badge(g.open_gates+" gate"+(g.open_gates>1?"s":""),"b-vio", TIP.openGates):""}
         <span class="gid">${esc(g.goal_id)}</span></div>
@@ -378,7 +380,7 @@ function renderOverview(){
       <div class="bar" data-tip="${pct}% of todos done"><i style="width:${pct}%"></i></div>
     </div>`; }).join("");
   const attn = o.attention.items.length ? `<div class="sect"><h2 data-tip="${esc(TIP.attnQueue)}">Attention queue <span class="count">${o.attention.item_count}</span></h2>
-    <div class="attn card">${o.attention.items.map(i => `<div class="attn-row" onclick="openGoal('${encodeURIComponent(i.goal_id)}')">
+    <div class="attn card">${o.attention.items.map(i => `<div class="attn-row" onclick="openGoal(${jsArg(encodeURIComponent(i.goal_id))})">
       <span data-tip="${esc(TIP.severity)}">${sevBadge(i.severity)}</span><span class="goal">${esc(i.goal_id)}</span>
       <span class="what" data-tip="${esc(TIP.waitingOn)}">${esc(i.status.replace(/_/g," "))} · waits on <b>${esc(i.waiting_on)}</b></span>
       <span class="rec" data-tip="${esc(TIP.recAction)}">${esc(i.recommended_action)}</span></div>`).join("")}</div></div>` : "";
@@ -534,7 +536,7 @@ function renderDTab(g, d, gates, unvalidated, deliveriesByTodo, openObl){
       const dec = t.decision ? `<div class="sub">→ ${esc(t.decision)}</div>` : "";
       const blockedBy = t.blocked ? `<div class="sub" data-tip="predecessor todos that must finish first">blocked by ${t.blocked_by.map(esc).join(", ")}</div>` : "";
       const span = t.first_run_at ? `<span data-tip="first run: ${tsLocal(t.first_run_at)} · latest run: ${tsLocal(t.last_run_at)}">${ago(t.first_run_at)} → ${ago(t.last_run_at)}</span>` : "—";
-      return `<tr class="clickable" onclick='inspectTodo(${JSON.stringify(t.id)})'>
+      return `<tr class="clickable" onclick='inspectTodo(${jsArg(t.id)})'>
         <td class="mono" style="white-space:nowrap">${esc(t.id)}</td>
         <td><span class="prio prio-${esc(t.priority)}" data-tip="priority: P0 highest — the kernel sorts the frontier by priority first">${esc(t.priority)}</span></td>
         <td class="ttitle"><div class="t" data-tip="${esc(t.text)}">${esc(t.title||t.text)}${t.failed_attempts? ` <span class="chip" data-tip="failed validation attempts / budget before replan">${t.failed_attempts}/${t.max_validation_attempts}</span>`:""}</div>${gateQ}${dec}${lease}${val}${blockedBy}</td>
@@ -698,19 +700,23 @@ function renderGraph(g){
   layers.forEach(l=>l.sort((a,b)=>a.index-b.index));
   const W = 218, H = 54, GX = 64, GY = 22;
   const MAX_COLS = 5; // serpentine wrap so a long chain never runs off-screen
+  const rowStarts = []; let totalRows = 0;
+  for(let i=0;i<layers.length;i+=MAX_COLS){
+    rowStarts.push(totalRows);
+    totalRows += Math.max(4,...layers.slice(i,i+MAX_COLS).map(l=>l.length));
+  }
   const pos = {}; layers.forEach((l,li)=>l.forEach((t,ri)=>{
     const row = Math.floor(li/MAX_COLS), colRaw = li%MAX_COLS;
     const col = row%2 ? MAX_COLS-1-colRaw : colRaw; // snake: even rows L→R, odd R→L
-    pos[t.id] = {x: col*(W+GX)+10, y: (row*4+ri)*(H+GY)+10};
+    pos[t.id] = {x: col*(W+GX)+10, y: (rowStarts[row]+ri)*(H+GY)+10};
   }));
-  const totalRows = Math.ceil(layers.length/MAX_COLS);
-  const width = Math.min(layers.length,MAX_COLS)*(W+GX)-GX+20, height = totalRows*4*(H+GY)-GY+20;
+  const width = Math.min(layers.length,MAX_COLS)*(W+GX)-GX+20, height = totalRows*(H+GY)-GY+20;
   const stColor = s => ({open:"#4da3ff", done:"#3fb96c", superseded:"#5d6f80", deferred:"#e0a53c", blocked:"#e05c5c"}[s]||"#5d6f80");
   const clsGlyph = c => ({user_gate:"◆", user_action:"◇", monitor:"◔", blocker:"✕", advancement:"▸"}[c]||"▸");
   const nodes = todos.map(t => { const p = pos[t.id]; const label = (t.title||t.text||t.id);
     const short = label.length>34? label.slice(0,33)+"…" : label;
     const tipTxt = `${t.id} · ${t.priority} · ${t.status} · ${t.class.replace(/_/g," ")}${t.text? "\n"+t.text:""}`;
-    return `<g class="gnode" data-id="${esc(t.id)}" transform="translate(${p.x},${p.y})" data-tip="${esc(tipTxt)}" onclick="inspectTodo('${esc(t.id)}')">
+    return `<g class="gnode" data-id="${esc(t.id)}" transform="translate(${p.x},${p.y})" data-tip="${esc(tipTxt)}" onclick="inspectTodo(${jsArg(t.id)})">
       <rect width="${W}" height="${H}" style="stroke:${stColor(t.status)};stroke-width:${t.status==="open"?1.8:1}"></rect>
       <text x="10" y="21">${clsGlyph(t.class)} ${esc(short)}</text>
       <text class="gsub" x="10" y="39">${esc(t.id)} · ${esc(t.priority)} · ${esc(t.status)}${t.claimed_by?" · "+esc(t.claimed_by):""}</text></g>`; }).join("");

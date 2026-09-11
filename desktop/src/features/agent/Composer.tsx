@@ -383,13 +383,12 @@ function ComposerImpl({
     // pre-paste `attachments`, so each iteration's setAttachments overwrites
     // the previous one and only the last image survives.
     const saved: string[] = [];
+    const rejected: string[] = [];
     for (const file of files) {
       if (file.size > READ_SOURCE_MAX_BYTES) {
-        setAttachError(t("composer.attachIgnored", {
-          items: t("composer.attachRejectedReason", {
-            name: file.name,
-            reason: t("attachment.imageTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }),
-          }),
+        rejected.push(t("composer.attachRejectedReason", {
+          name: file.name,
+          reason: t("attachment.imageTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }),
         }));
         continue;
       }
@@ -402,7 +401,7 @@ function ComposerImpl({
         saved.push(result.path);
       }
       catch {
-        // Ignore a single failed paste; other clipboard items still attach.
+        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("attachment.readFailed") }));
       }
     }
     if (saved.length > 0) {
@@ -412,6 +411,8 @@ function ComposerImpl({
       // are no longer referenced by the draft and can be reclaimed immediately.
       await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
     }
+    if (rejected.length > 0)
+      setAttachError(t("composer.attachIgnored", { items: rejected.join("，") }));
   }
 
   async function attachPastedFiles(files: File[]) {

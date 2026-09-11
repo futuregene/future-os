@@ -82,7 +82,11 @@ impl FeishuRestClient {
         let mut cached = self.token.write().await;
         *cached = CachedToken {
             value: token.clone(),
-            expires_at: Instant::now() + std::time::Duration::from_secs((expire - 60) as u64),
+            expires_at: Instant::now()
+                .checked_add(std::time::Duration::from_secs(
+                    expire.saturating_sub(60).max(0) as u64,
+                ))
+                .ok_or_else(|| anyhow!("Invalid token expiry"))?,
         };
         Ok(token)
     }
@@ -291,6 +295,7 @@ impl FeishuRestClient {
         message_id: &str,
         file_key: &str,
         resource_type: &str,
+        max_bytes: u64,
     ) -> Result<Vec<u8>> {
         let token = self.get_token().await?;
         let url = format!(
@@ -298,7 +303,7 @@ impl FeishuRestClient {
             self.api_base, message_id, file_key, resource_type
         );
 
-        let resp = self
+        let mut resp = self
             .http
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
@@ -308,8 +313,21 @@ impl FeishuRestClient {
         if !resp.status().is_success() {
             return Err(anyhow!("Download resource failed: HTTP {}", resp.status()));
         }
-
-        Ok(resp.bytes().await?.to_vec())
+        anyhow::ensure!(
+            !resp
+                .content_length()
+                .is_some_and(|length| length > max_bytes),
+            "Resource exceeds download size limit"
+        );
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            anyhow::ensure!(
+                (bytes.len() as u64).saturating_add(chunk.len() as u64) <= max_bytes,
+                "Resource exceeds download size limit"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
     }
 
     /// Get message content.
@@ -748,6 +766,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn chunked_resource_is_limited_without_content_length() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let byte = socket.read_u8().await.unwrap();
+                request.push(byte);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n").await.unwrap();
+        });
+        let c = client(&format!("http://{addr}"));
+        *c.token.write().await = CachedToken {
+            value: "test-token".into(),
+            expires_at: Instant::now() + std::time::Duration::from_secs(3600),
+        };
+        let error = c.download_resource("m", "f", "image", 3).await.unwrap_err();
+        assert!(error.to_string().contains("size limit"), "{error}");
+        server.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn token_short_or_negative_expiry_does_not_panic() {
+        for expire in [30, 0, -1, i64::MIN] {
+            let body = format!(r#"{{"code":0,"tenant_access_token":"tok","expire":{expire}}}"#);
+            let (base, _) =
+                crate::test_support::spawn_http(vec![HttpRoute::json(TOKEN_ROUTE, 200, &body)])
+                    .await;
+            let c = client(&base);
+            assert_eq!(c.get_token().await.unwrap(), "tok");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_token_refreshes_near_expiry() {
         let route = HttpRoute::sequence(
             TOKEN_ROUTE,
@@ -951,7 +1005,16 @@ mod tests {
         ];
         let (base, recorded) = crate::test_support::spawn_http(routes).await;
         let c = client(&base);
-        let data = c.download_resource("om_1", "img_k", "image").await.unwrap();
+        assert!(c
+            .download_resource("om_1", "img_k", "image", 1)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("size limit"));
+        let data = c
+            .download_resource("om_1", "img_k", "image", 1024)
+            .await
+            .unwrap();
         assert_eq!(data, b"\x89PNG");
         let dl =
             crate::test_support::requests_to(&recorded, "/im/v1/messages/om_1/resources/img_k");
@@ -967,7 +1030,7 @@ mod tests {
         ];
         let (base, _) = crate::test_support::spawn_http(routes).await;
         let err = client(&base)
-            .download_resource("om_1", "img_k", "image")
+            .download_resource("om_1", "img_k", "image", 1024)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("HTTP 500"), "{err}");

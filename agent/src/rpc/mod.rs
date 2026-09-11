@@ -652,6 +652,9 @@ pub(super) fn generate_session_html(
     messages: &[crate::types::Message],
 ) -> String {
     let mut html = String::new();
+    let session_id = escape_html(session_id);
+    let model = escape_html(model);
+    let cwd = escape_html(cwd);
 
     html.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
     html.push_str(&format!(
@@ -841,7 +844,14 @@ mod tests {
             content: Some(serde_json::json!("<script>alert('xss')</script>")),
             ..Default::default()
         }];
-        let html = generate_session_html("s1", "model", "/cwd", &messages);
+        let html = generate_session_html(
+            "</title><script>session</script>",
+            "<img src=x onerror=alert(1)>",
+            "<script>cwd</script>",
+            &messages,
+        );
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("<img src=x"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script>alert"));
     }

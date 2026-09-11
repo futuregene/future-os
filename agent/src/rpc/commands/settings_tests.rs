@@ -430,6 +430,81 @@ fn set_session_name_persists_to_disk_session_info() {
 }
 
 #[test]
+fn shipped_non_chat_models_cannot_be_listed_defaulted_replaced_or_cycled() {
+    let home = TestHome::new();
+    let auth_path = home.auth_path();
+    std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        auth_path,
+        r#"{"poe":{"type":"api_key","key":"fixture"},"vercel-ai":{"type":"api_key","key":"fixture"}}"#,
+    )
+    .unwrap();
+    let state = make_app_state();
+    let named = [
+        ("vercel-ai", "bfl/flux-2-flex", "image"),
+        ("vercel-ai", "google/veo-3.1-generate-001", "video"),
+        ("vercel-ai", "voyage/voyage-3-large", "embedding"),
+        ("vercel-ai", "openai/text-embedding-3-large", "embedding"),
+        ("poe", "openai/sora-2", "video"),
+    ];
+    let registry = state.model_registry.read();
+    // These are the actual embedded catalog entries, not test-inserted models.
+    let available: Vec<_> = registry
+        .all_models()
+        .into_iter()
+        .filter(|m| registry.is_model_available(&format!("{}/{}", m.provider, m.id)))
+        .collect();
+    let default = crate::models::get_default_model_with(&registry).unwrap();
+    assert!(registry
+        .resolve(&default)
+        .unwrap()
+        .output
+        .iter()
+        .any(|kind| kind == "text"));
+    for (provider, id, output) in named {
+        let key = format!("{provider}/{id}");
+        assert_eq!(registry.resolve(&key).unwrap().output, [output]);
+        let replacement = registry.replacement_model(&key).unwrap();
+        assert!(registry
+            .resolve(&replacement)
+            .unwrap()
+            .output
+            .iter()
+            .any(|kind| kind == "text"));
+    }
+    drop(registry);
+
+    let listed = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    for (provider, id, _) in named {
+        assert!(!listed["data"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| { model["provider"] == provider && model["id"] == id }));
+        // Without the output filter, the next cycle from this predecessor
+        // selects exactly the named non-chat catalog record.
+        let position = available
+            .iter()
+            .position(|m| m.provider == provider && m.id == id)
+            .unwrap();
+        let previous = &available[(position + available.len() - 1) % available.len()];
+        state.get_session("default").unwrap().write().model =
+            format!("{}/{}", previous.provider, previous.id);
+        let cycled = parse_response(&handle_command_internal(&state, make_cmd("cycle_model")));
+        assert_eq!(cycled["success"], true, "{cycled}");
+        let key = cycled["data"]["model"].as_str().unwrap();
+        assert!(state
+            .model_registry
+            .read()
+            .resolve(key)
+            .unwrap()
+            .output
+            .iter()
+            .any(|kind| kind == "text"));
+    }
+}
+
+#[test]
 fn cycle_model_with_no_credentialled_models_returns_empty() {
     let _home = TestHome::new();
     let state = make_app_state();

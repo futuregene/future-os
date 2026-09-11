@@ -138,6 +138,7 @@ mod tests {
 
     fn record(todo_id: &str, state: &str, source: Option<&str>) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: "run-1".to_string(),

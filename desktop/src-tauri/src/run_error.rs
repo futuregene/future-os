@@ -14,6 +14,15 @@
 pub(crate) fn classify_run_error(error: &str) -> &'static str {
     let lower = error.to_lowercase();
 
+    // Structured agent termination reasons take precedence over ambiguous words
+    // such as "interrupted" or "cancelled" in their human-readable descriptions.
+    if lower.starts_with("[upstream_disconnected]") {
+        return "stream_disconnected";
+    }
+    if lower.starts_with("[provider_cancelled]") {
+        return "model_failed";
+    }
+
     // User-initiated abort wins over every other category, including timeouts
     // that may be reported as a side effect of cancellation.
     if lower.contains("interrupted")
@@ -72,6 +81,18 @@ pub(crate) fn classify_run_error(error: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::classify_run_error;
+
+    #[test]
+    fn structured_termination_is_not_a_user_abort() {
+        assert_eq!(
+            classify_run_error("[UPSTREAM_DISCONNECTED] response interrupted"),
+            "stream_disconnected"
+        );
+        assert_eq!(
+            classify_run_error("[PROVIDER_CANCELLED] provider cancelled generation"),
+            "model_failed"
+        );
+    }
 
     #[test]
     fn test_classify_abort_requested() {

@@ -121,6 +121,49 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
         )
     }
 
+    // Reattach a late real result before manufacturing a placeholder. Moving
+    // the existing entry keeps its identity/content and yields an API-valid
+    // adjacent tool window; merely deduping after repair leaves the real result
+    // on the wrong side of a user/terminal boundary.
+    let mut moved = false;
+    for i in 0..entries.len() {
+        if entries[i].entry_type != ENTRY_TYPE_ASSISTANT {
+            continue;
+        }
+        let calls = entries[i].tool_calls.clone();
+        for call in calls {
+            if call.id.is_empty() {
+                continue;
+            }
+            let mut crossed_boundary = false;
+            let mut late = None;
+            for j in i + 1..entries.len() {
+                let next = &entries[j];
+                if next.entry_type == ENTRY_TYPE_ASSISTANT
+                    && next.tool_calls.iter().any(|tc| tc.id == call.id)
+                {
+                    break; // a later declaration owns subsequent uses of this ID
+                }
+                if next.entry_type == ENTRY_TYPE_TOOL && next.tool_call_id == call.id {
+                    let owner = entries[i].meta.as_ref().and_then(|m| m.get("run_id"));
+                    let result_owner = next.meta.as_ref().and_then(|m| m.get("run_id"));
+                    if crossed_boundary
+                        && (owner.is_none() || result_owner.is_none() || owner == result_owner)
+                    {
+                        late = Some(j);
+                    }
+                    break;
+                }
+                crossed_boundary |= ends_tool_window(&next.entry_type);
+            }
+            if let Some(j) = late {
+                let result = entries.remove(j);
+                entries.insert(i + 1, result);
+                moved = true;
+            }
+        }
+    }
+
     // Collect (insertion_index, Vec<placeholder_entries>) pairs.
     // Process later so earlier insertions don't invalidate indices.
     let mut repairs: Vec<(usize, Vec<SessionEntry>)> = Vec::new();
@@ -184,7 +227,7 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
     }
 
     if repairs.is_empty() {
-        return false;
+        return moved;
     }
 
     // Apply insertions in reverse index order to keep positions valid.

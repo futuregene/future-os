@@ -47,7 +47,6 @@ use crate::state::{Goal, TaskClass, Todo, TodoStatus};
 
 use self::arbitration::{apply_arbitration, ARBITRATION_ENFORCEMENT};
 use self::boundary::boundary_snapshot;
-use self::frontier::{frontier_projection, lane, sorted_runnable};
 use self::goal_boundary::goal_boundary_json;
 use self::heartbeat_recommendation::recommendation;
 use self::identity::identity_gate;
@@ -88,6 +87,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if goal.status == "cancelled" {
         let mut p = packet(
             goal,
+            now,
             DecisionReasonCode::GoalCancelled,
             "skip",
             false,
@@ -110,16 +110,16 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
 
     // ── 0. Identity gate (LoopX: quota --agent-id requires
     //       coordination.registered_agents; anonymous path allowed). ──────
-    if let Some(p) = identity_gate(goal, agent_id) {
+    if let Some(p) = identity_gate(goal, agent_id, now) {
         return p;
     }
 
     // ── 1. User gates (scoped semantics; only gates trigger the ask channel).
     //        Non-blocking user_actions surface in the user channel but never
     //        freeze the agent. ─────────────────────────────────────────────
-    let gates: Vec<&Todo> = goal.open_gates().collect();
-    let user_actions: Vec<&Todo> = goal.open_of(TaskClass::UserAction).collect();
-    let runnable = sorted_runnable(goal, agent_id);
+    let gates: Vec<&Todo> = goal.open_gates_at(now).collect();
+    let user_actions: Vec<&Todo> = goal.open_of_at(TaskClass::UserAction, now).collect();
+    let runnable = frontier::sorted_runnable_at(goal, agent_id, now);
 
     if !gates.is_empty() {
         let question = gates
@@ -140,6 +140,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         let has_fallback = fallback.is_some();
         return packet(
             goal,
+            now,
             DecisionReasonCode::OpenUserGate,
             "run",
             true,
@@ -225,6 +226,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         };
         return packet(
             goal,
+            now,
             code,
             "run",
             true,
@@ -246,10 +248,11 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     //  failure count is surfaced as an advisory above; the agent decides.)
 
     // ── 2c. Blocked by an external blocker with no fallback: quiet wait. ──
-    let blockers: Vec<&Todo> = goal.open_of(TaskClass::Blocker).collect();
+    let blockers: Vec<&Todo> = goal.open_of_at(TaskClass::Blocker, now).collect();
     if !blockers.is_empty() {
         return packet(
             goal,
+            now,
             DecisionReasonCode::BlockedNoFallback,
             "wait",
             false,
@@ -274,6 +277,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if !unclosed.is_empty() {
         return replan_packet(
             goal,
+            now,
             DecisionReasonCode::SuccessionClosureMissing,
             &format!(
                 "completed advancement without closure intent: {} — complete must declare successor or --no-follow-up",
@@ -290,7 +294,8 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
             // (watch-lane expiry / blocker / supersede the monitor).
             return packet(
                 goal,
-                DecisionReasonCode::MonitorBackoff,
+                now,
+                DecisionReasonCode::MonitorStalled,
                 "wait",
                 false,
                 "quiet_wait",
@@ -306,6 +311,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         MonitorOutcome::Due(due) => {
             return packet(
                 goal,
+                now,
                 DecisionReasonCode::MonitorDue,
                 "run",
                 true,
@@ -329,6 +335,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
         MonitorOutcome::Waiting(next_due_ms) => {
             return packet(
                 goal,
+                now,
                 DecisionReasonCode::MonitorBackoff,
                 "wait",
                 false,
@@ -348,6 +355,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     if !gaps.is_empty() {
         return replan_packet(
             goal,
+            now,
             DecisionReasonCode::AcceptanceGapOpen,
             &format!(
                 "acceptance gap(s) open with no runnable work: {}",
@@ -368,6 +376,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     {
         return packet(
             goal,
+            now,
             DecisionReasonCode::DeferredNotDue,
             "wait",
             false,
@@ -391,12 +400,14 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     }) {
         return packet(
             goal,
+            now,
             DecisionReasonCode::WorkLeasedToOthers,
             "wait",
             false,
             "quiet_wait",
             TurnMode::WaitMonitor,
-            "open advancement(s) leased to other agents — quiet wait, goal is not closed",
+            &format!("open advancement(s) unavailable to this agent (blocked, leased to other agents, or owner-scoped); owner IDs are case-sensitive: {} — goal is not closed",
+                goal.todos.iter().filter_map(|t| t.owner.as_deref()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(", ")),
             UserChannel::none(),
             agent_channel(None, None, None, false, false, true),
         );
@@ -410,7 +421,7 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     //       authoritative gate here; any remaining blocker surfaces as a
     //       replan with the explicit gap list (defensive: the pipeline above
     //       catches every blocker before this point). ───────────────────────
-    let judgement = crate::decision::goal_frontier::terminal::terminal_judgement(goal);
+    let judgement = crate::decision::goal_frontier::terminal::terminal_judgement_at(goal, now);
     if !judgement.terminal {
         let gaps: Vec<String> = judgement
             .gaps
@@ -422,12 +433,14 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
             .collect();
         return replan_packet(
             goal,
+            now,
             DecisionReasonCode::AcceptanceGapOpen,
             &format!("terminal judgement open gaps: {}", gaps.join(", ")),
         );
     }
     let mut p = packet(
         goal,
+        now,
         DecisionReasonCode::ValidatedClosure,
         "skip",
         false,
@@ -445,9 +458,15 @@ pub fn decide_for(goal: &Goal, now: SystemTime, agent_id: Option<&str>) -> Shoul
     p
 }
 
-fn replan_packet(goal: &Goal, code: DecisionReasonCode, reason: &str) -> ShouldRunPacket {
+fn replan_packet(
+    goal: &Goal,
+    now: SystemTime,
+    code: DecisionReasonCode,
+    reason: &str,
+) -> ShouldRunPacket {
     packet(
         goal,
+        now,
         code,
         "replan",
         true,
@@ -462,6 +481,7 @@ fn replan_packet(goal: &Goal, code: DecisionReasonCode, reason: &str) -> ShouldR
 #[allow(clippy::too_many_arguments)]
 fn packet(
     goal: &Goal,
+    now: SystemTime,
     reason_code: DecisionReasonCode,
     decision: &str,
     should_run: bool,
@@ -472,9 +492,9 @@ fn packet(
     agent_channel: AgentChannel,
 ) -> ShouldRunPacket {
     let must_attempt = agent_channel.must_attempt;
-    let gates = goal.open_gates().count();
+    let gates = goal.open_gates_at(now).count();
     let done_unclosed = goal.completed_without_closure_intent().len();
-    let monitor_stalled = goal.open_monitors().any(is_monitor_stalled);
+    let monitor_stalled = goal.open_monitors_at(now).any(is_monitor_stalled);
     let replan_required = match mode {
         TurnMode::Replan => true,
         _ => {
@@ -511,7 +531,7 @@ fn packet(
             schema_version: "future_loop_rollout_event_v0".to_string(),
             event_id: uuid::Uuid::new_v4().simple().to_string(),
             event_kind: "quota_should_run".to_string(),
-            recorded_at: crate::compat::rfc3339(crate::state::now_epoch()),
+            recorded_at: crate::compat::rfc3339(now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()),
             status: decision.to_string(),
         }),
         status_health_ok: true,
@@ -572,7 +592,7 @@ fn packet(
         },
         work_lane_contract: WorkLaneContract {
             schema_version: "work_lane_contract_v1".to_string(),
-            lane: lane(goal).to_string(),
+            lane: frontier::lane_at(goal, now).to_string(),
             obligation: "advance_one_bounded_segment".to_string(),
             must_attempt_work: must_attempt,
             reason_codes: if agent_channel.selected_todo.is_some() {
@@ -651,8 +671,8 @@ fn packet(
             pending_approvals: vec![],
         },
         boundary: boundary_snapshot(goal),
-        agent_todo_summary: Some(goal.todo_summary()),
-        user_todo_summary: Some(goal.todo_summary()),
+        agent_todo_summary: Some(goal.todo_summary_at(now)),
+        user_todo_summary: Some(goal.todo_summary_at(now)),
         todo_summary_projection: None,
         goal_boundary: Some(goal_boundary_json(goal)),
         plan_summary: None,
@@ -667,7 +687,7 @@ fn packet(
         promotion_readiness_warning: None,
         autonomous_backlog_candidates: None,
         protocol_action_packet: None,
-        frontier_projection: frontier_projection(goal, replan_required),
+        frontier_projection: frontier::frontier_projection_at(goal, replan_required, now),
         scheduler_arbitration: None,
         terminal_closure: None,
         decision_freshness: goal.decision_freshness.clone(),
@@ -712,7 +732,7 @@ pub fn complete_todo(goal: &mut Goal, todo_id: &str, no_follow_up: bool, success
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
         let mut t = s.chars().take(max).collect::<String>();

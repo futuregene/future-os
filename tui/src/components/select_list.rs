@@ -266,7 +266,8 @@ impl Component for SelectList {
                 .description
                 .as_deref()
                 .unwrap_or("")
-                .replace("\r\n", " ");
+                .replace("\r\n", " ")
+                .replace(['\r', '\n'], " ");
             let desc_part = truncate_to_width(&raw_desc, max_desc_w, &TruncateOptions::default());
 
             if selected {
@@ -373,6 +374,18 @@ mod tests {
 
     fn selected_value(list: &SelectList) -> Option<String> {
         list.get_selected_item().map(|i| i.value.clone())
+    }
+
+    #[test]
+    fn multiline_description_stays_on_one_terminal_row() {
+        let mut list = make_list(3);
+        list.items[0].description = Some("first\nsecond\rthird\r\nfourth".into());
+        list.apply_filter();
+        let lines = list.render(100);
+        assert!(lines.iter().all(|line| !line.contains(['\r', '\n'])));
+        assert!(lines
+            .iter()
+            .any(|line| strip_ansi_codes(line).contains("first second third fourth")));
     }
 
     #[test]

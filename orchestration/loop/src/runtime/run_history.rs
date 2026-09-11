@@ -122,7 +122,7 @@ pub fn build_run_history(
         sample_run_count: rows.len(),
         proxy_note: RUN_HISTORY_PROXY_NOTE.to_string(),
         totals,
-        latest: rows.last().cloned(),
+        latest: rows.first().cloned(),
     }))
 }
 
@@ -170,10 +170,7 @@ mod tests {
             projection.totals.by_class_24h.get("run_recorded"),
             Some(&1u64)
         );
-        assert_eq!(
-            projection.latest.unwrap().classification,
-            "quota_monitor_poll"
-        );
+        assert_eq!(projection.latest.unwrap().classification, "run_recorded");
     }
 
     #[test]

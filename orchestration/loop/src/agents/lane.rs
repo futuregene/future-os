@@ -22,27 +22,14 @@ pub struct AgentLaneRecommendation {
     pub run_id: String,
 }
 
-/// The latest run on an agent's lane: the newest history record whose todo
-/// is claimed by `agent_id` (runs on unclaimed/other-claimed todos are not
-/// this agent's lane). Falls back to the newest run overall when the goal has
-/// exactly one registered agent (single-agent goals attribute all runs).
+/// The latest explicitly attributed run on an agent's lane. Mutable todo
+/// claims and today's registration list cannot identify a historical executor.
+/// Legacy records without attribution remain unknown.
 pub fn latest_agent_lane_run<'a>(goal: &'a Goal, agent_id: &str) -> Option<&'a RunRecord> {
-    let own: Vec<&RunRecord> = goal
-        .history
+    goal.history
         .iter()
-        .filter(|r| {
-            goal.todo(&r.todo_id)
-                .map(|t| t.claimed_by.as_deref() == Some(agent_id))
-                .unwrap_or(false)
-        })
-        .collect();
-    if let Some(run) = own.last() {
-        return Some(run);
-    }
-    if goal.registered_agents.len() == 1 && goal.registered_agents[0] == agent_id {
-        return goal.history.last();
-    }
-    None
+        .filter(|r| r.agent_id.as_deref() == Some(agent_id))
+        .max_by_key(|r| r.recorded_at)
 }
 
 /// Compact lane recommendation from the latest agent lane run (None when the
@@ -76,6 +63,7 @@ mod tests {
 
     fn run(todo_id: &str, run_id: &str, recorded_at: u64) -> RunRecord {
         RunRecord {
+            agent_id: Some("agent-a".into()),
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: run_id.to_string(),
@@ -104,8 +92,10 @@ mod tests {
     }
 
     #[test]
-    fn lane_run_is_attributed_by_todo_claim() {
-        let goal = goal_with_claim("t1", "agent-a", vec![run("t1", "r1", 100)]);
+    fn lane_run_is_attributed_after_completion_and_reassignment() {
+        let mut goal = goal_with_claim("t1", "agent-a", vec![run("t1", "r1", 100)]);
+        goal.todos[0].complete(true, vec![]);
+        goal.todos[0].owner = Some("agent-b".into());
         let rec = latest_agent_lane_run(&goal, "agent-a").unwrap();
         assert_eq!(rec.run_id, "r1");
         assert!(latest_agent_lane_run(&goal, "agent-b").is_none());
@@ -126,10 +116,11 @@ mod tests {
     }
 
     #[test]
-    fn single_agent_goal_attributes_all_runs() {
+    fn single_agent_goal_does_not_guess_legacy_attribution() {
         let mut goal = Goal::new("g1", "objective", "/tmp");
         goal.registered_agents = vec!["agent-a".to_string()];
         goal.history = vec![run("t1", "r1", 100)];
-        assert!(latest_agent_lane_run(&goal, "agent-a").is_some());
+        goal.history[0].agent_id = None;
+        assert!(latest_agent_lane_run(&goal, "agent-a").is_none());
     }
 }

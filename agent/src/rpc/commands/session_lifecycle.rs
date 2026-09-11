@@ -605,6 +605,14 @@ pub(crate) fn cmd_fork(
         }
     };
 
+    if !parent.entries.iter().any(|entry| entry.id == *entry_id) {
+        return RpcResponse::build_fail(
+            id,
+            "fork",
+            "Fork point not found in the parent session; reload history and choose a message.",
+        );
+    }
+
     // Fork a new session
     let child_created_by = if cmd.created_by.is_empty() {
         parent_created_by.as_str()

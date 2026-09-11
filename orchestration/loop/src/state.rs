@@ -6,7 +6,7 @@
 //! Decision *inputs* live here; the decision *compiler* lives in
 //! `decision.rs` (LoopX: quota.py::build_quota_should_run).
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Priority (LoopX: P0/P1/P2 — the decision kernel sorts the frontier by
 /// priority before anything else). Serialized with the EXACT reference values.
@@ -481,6 +481,9 @@ impl Todo {
     pub fn complete(&mut self, no_follow_up: bool, successor_ids: Vec<String>) {
         let now = now_epoch();
         self.status = TodoStatus::Done;
+        self.claimed_by = None;
+        self.lease_expires_at = None;
+        self.holder_pid = None;
         self.no_follow_up = no_follow_up;
         self.successor_ids = successor_ids;
         self.completed_at = Some(now);
@@ -580,6 +583,10 @@ pub fn task_validation_receipt(
 /// One recorded bounded turn (spend ledger entry).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RunRecord {
+    /// Execution identity captured by the run host, independent of mutable
+    /// todo ownership/leases. Legacy records remain explicitly unattributed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub turn: u32,
     pub todo_id: String,
     pub run_id: String,
@@ -1087,26 +1094,46 @@ impl Goal {
     }
 
     pub fn open_of(&self, class: TaskClass) -> impl Iterator<Item = &Todo> {
-        self.todos
-            .iter()
-            .filter(move |t| t.class == class && t.status == TodoStatus::Open)
+        self.open_of_at(class, SystemTime::now())
+    }
+
+    /// Due deferred work re-enters the same lane as open work of its class.
+    pub fn open_of_at(&self, class: TaskClass, now: SystemTime) -> impl Iterator<Item = &Todo> {
+        self.todos.iter().filter(move |t| {
+            t.class == class && (t.status == TodoStatus::Open || t.is_due_deferred(now))
+        })
     }
 
     pub fn open_gates(&self) -> impl Iterator<Item = &Todo> {
-        self.open_of(TaskClass::UserGate)
+        self.open_gates_at(SystemTime::now())
+    }
+
+    pub fn open_gates_at(&self, now: SystemTime) -> impl Iterator<Item = &Todo> {
+        self.open_of_at(TaskClass::UserGate, now)
     }
 
     /// Open blocking sources: user gates AND external blockers. Both gate
     /// dependent todos (LoopX: blocker task class).
     pub fn open_blocking_sources(&self) -> impl Iterator<Item = &Todo> {
-        self.todos.iter().filter(|t| {
+        self.open_blocking_sources_at(SystemTime::now())
+    }
+
+    pub fn open_blocking_sources_at(&self, now: SystemTime) -> impl Iterator<Item = &Todo> {
+        self.todos.iter().filter(move |t| {
             (t.class == TaskClass::UserGate || t.class == TaskClass::Blocker)
-                && t.status == TodoStatus::Open
+                && (t.status == TodoStatus::Open || t.is_due_deferred(now))
         })
     }
 
     pub fn open_monitors(&self) -> impl Iterator<Item = &Todo> {
-        self.open_of(TaskClass::Monitor)
+        self.open_monitors_at(SystemTime::now())
+    }
+
+    pub fn open_monitors_at(&self, now: SystemTime) -> impl Iterator<Item = &Todo> {
+        self.todos.iter().filter(move |t| {
+            t.class == TaskClass::Monitor
+                && (t.status == TodoStatus::Open || t.is_due_deferred(now))
+        })
     }
 
     /// Open advancement todos NOT blocked by any open gate.
@@ -1128,9 +1155,13 @@ impl Goal {
     /// Unknown predecessor ids do NOT block here (liveness); the
     /// `task-graph` projection fails closed on them instead.
     pub fn is_blocked(&self, t: &Todo) -> bool {
+        self.is_blocked_at(t, SystemTime::now())
+    }
+
+    pub fn is_blocked_at(&self, t: &Todo, now: SystemTime) -> bool {
         // Gates/blockers may declare outgoing edges; advancement todos declare
         // incoming edges. Honor both forms, consistently with task-graph.
-        if self.open_blocking_sources().any(|source| {
+        if self.open_blocking_sources_at(now).any(|source| {
             source.id != t.id
                 && (source.global_gate
                     || source
@@ -1150,7 +1181,9 @@ impl Goal {
             }
             match self.todo(gid) {
                 Some(pred) => match pred.class {
-                    TaskClass::UserGate | TaskClass::Blocker => pred.status == TodoStatus::Open,
+                    TaskClass::UserGate | TaskClass::Blocker => {
+                        pred.status == TodoStatus::Open || pred.is_due_deferred(now)
+                    }
                     _ => !matches!(pred.status, TodoStatus::Done | TodoStatus::Superseded),
                 },
                 None => false,
@@ -1165,8 +1198,18 @@ impl Goal {
         &'a self,
         agent_id: Option<&'a str>,
     ) -> impl Iterator<Item = &'a Todo> + 'a {
-        let now_sys = SystemTime::now();
-        let now = now_epoch();
+        self.runnable_advancement_for_at(agent_id, SystemTime::now())
+    }
+
+    pub fn runnable_advancement_for_at<'a>(
+        &'a self,
+        agent_id: Option<&'a str>,
+        now_sys: SystemTime,
+    ) -> impl Iterator<Item = &'a Todo> + 'a {
+        let now = now_sys
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         self.todos.iter().filter(move |t| {
             // Open OR due-deferred (returns to the frontier) advancement.
             (t.class == TaskClass::Advancement
@@ -1176,7 +1219,7 @@ impl Goal {
                 // owner (the scope survives lease expiry — see `Todo::owner`).
                 // `None` owner = shared pool (first-claim-wins).
                 && (t.owner.is_none() || t.owner.as_deref() == agent_id)
-                && !self.is_blocked(t)
+                && !self.is_blocked_at(t, now_sys)
         })
     }
 
@@ -1197,14 +1240,23 @@ impl Goal {
     /// todos reserved for a specific owner. Display code uses both so an
     /// all-owner-scoped goal never reads as "all todos complete".
     pub fn pending_advancement_owner_aware(&self) -> (Vec<&Todo>, Vec<&Todo>) {
-        let now_sys = SystemTime::now();
-        let now = now_epoch();
+        self.pending_advancement_owner_aware_at(SystemTime::now())
+    }
+
+    pub fn pending_advancement_owner_aware_at(
+        &self,
+        now_sys: SystemTime,
+    ) -> (Vec<&Todo>, Vec<&Todo>) {
+        let now = now_sys
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut claimable = vec![];
         let mut owner_scoped = vec![];
         for t in &self.todos {
             let open = t.class == TaskClass::Advancement
                 && (t.status == TodoStatus::Open || t.is_due_deferred(now_sys))
-                && !self.is_blocked(t);
+                && !self.is_blocked_at(t, now_sys);
             if !open {
                 continue;
             }
@@ -1399,12 +1451,10 @@ impl Goal {
     /// deferred) work AND no acceptance gap AND every done advancement
     /// declared closure intent (successor or no-follow-up).
     pub fn is_terminal(&self) -> bool {
-        let now = SystemTime::now();
-        self.todos.iter().all(|t| {
-            t.status != TodoStatus::Open
-                && t.status != TodoStatus::Blocked
-                && (t.status != TodoStatus::Deferred || t.is_due_deferred(now))
-        }) && self.unsatisfied_gaps().is_empty()
+        self.todos
+            .iter()
+            .all(|t| matches!(t.status, TodoStatus::Done | TodoStatus::Superseded))
+            && self.unsatisfied_gaps().is_empty()
             && self.completed_without_closure_intent().is_empty()
             && self.unvalidated_deliveries().is_empty()
     }
@@ -1420,10 +1470,16 @@ impl Goal {
     /// source proof, and terminal closure proof. The summary is a PROJECTION
     /// derived from canonical state, never a second source of truth.
     pub fn todo_summary(&self) -> TodoSummary {
+        self.todo_summary_at(SystemTime::now())
+    }
+
+    pub fn todo_summary_at(&self, now: SystemTime) -> TodoSummary {
         let user_open = self
             .todos
             .iter()
-            .filter(|t| t.role == TodoRole::User && t.status == TodoStatus::Open)
+            .filter(|t| {
+                t.role == TodoRole::User && (t.status == TodoStatus::Open || t.is_due_deferred(now))
+            })
             .count();
         let user_done = self
             .todos
@@ -1433,7 +1489,10 @@ impl Goal {
         let agent_open = self
             .todos
             .iter()
-            .filter(|t| t.role == TodoRole::Agent && t.status == TodoStatus::Open)
+            .filter(|t| {
+                t.role == TodoRole::Agent
+                    && (t.status == TodoStatus::Open || t.is_due_deferred(now))
+            })
             .count();
         let agent_done = self
             .todos
@@ -1443,7 +1502,10 @@ impl Goal {
         let monitor_open = self
             .todos
             .iter()
-            .filter(|t| t.class == TaskClass::Monitor && t.status == TodoStatus::Open)
+            .filter(|t| {
+                t.class == TaskClass::Monitor
+                    && (t.status == TodoStatus::Open || t.is_due_deferred(now))
+            })
             .count();
         let no_followup_count = self.todos.iter().filter(|t| t.no_follow_up).count();
         let closure_proof = TerminalClosureProof {

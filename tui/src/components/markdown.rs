@@ -405,7 +405,21 @@ impl<'a> MdParser<'a> {
                     spans.push(s);
                 }
                 Event::Start(_) => {
-                    if let Some((block, span)) = self.parse_block_start() {
+                    if let Some((mut block, span)) = self.parse_block_start() {
+                        // Top-level paragraph indentation is presentation text,
+                        // unlike container indentation in nested lists/quotes.
+                        if insert_defs {
+                            if let MdBlock::Paragraph { inline } = &mut block {
+                                let line = self.line_content(span.0);
+                                let leading: String = line
+                                    .chars()
+                                    .take_while(|c| matches!(c, ' ' | '\t'))
+                                    .collect();
+                                if !leading.is_empty() {
+                                    inline.insert(0, MdInline::Text { text: leading });
+                                }
+                            }
+                        }
                         blocks.push(block);
                         spans.push(span);
                     }
@@ -809,6 +823,8 @@ impl<'a> MdParser<'a> {
 
     /// Append text, merging consecutive text runs (marked merges them).
     fn push_text(&self, tokens: &mut Vec<MdInline>, text: String) {
+        // cmark decodes numeric entities, including ESC/BEL/C1 controls.
+        let text = sanitize_terminal_text(&text);
         if let Some(MdInline::Text { text: last }) = tokens.last_mut() {
             last.push_str(&text);
         } else {
@@ -1066,7 +1082,7 @@ impl MarkdownRenderer {
         }
 
         let content_width = std::cmp::max(1, max_width.saturating_sub(self.padding_x * 2));
-        let normalized_text = effective_text.replace('\t', "   ");
+        let normalized_text = sanitize_terminal_text(effective_text).replace('\t', "   ");
 
         let mut rendered_lines: Vec<String> = Vec::new();
 
@@ -1088,6 +1104,13 @@ impl MarkdownRenderer {
                     &style_ctx,
                 ));
             }
+        }
+
+        if rendered_lines.is_empty()
+            && !effective_text.is_empty()
+            && effective_text.trim().is_empty()
+        {
+            rendered_lines.push(String::new());
         }
 
         // Word-wrap all lines via wrap_text_with_ansi.
@@ -1340,7 +1363,7 @@ impl MarkdownRenderer {
                 start,
                 items,
             } => {
-                lines.extend(self.render_list(*ordered, *start, items, 0, style_ctx));
+                lines.extend(self.render_list(*ordered, *start, items, 0, style_ctx, width));
             }
 
             MdBlock::Hr => {
@@ -1444,6 +1467,7 @@ impl MarkdownRenderer {
         items: &[Vec<MdBlock>],
         depth: usize,
         style_ctx: &InlineStyleContext,
+        width: usize,
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
         let indent = "  ".repeat(depth);
@@ -1461,7 +1485,10 @@ impl MarkdownRenderer {
             } else {
                 "- ".to_string()
             };
-            let item_lines = self.render_list_item(item, depth, style_ctx);
+            let content_width = width
+                .saturating_sub(indent.len() + bullet.len().max(2))
+                .max(1);
+            let item_lines = self.render_list_item(item, depth, style_ctx, width, content_width);
 
             if !item_lines.is_empty() {
                 let first_line = &item_lines[0];
@@ -1497,6 +1524,8 @@ impl MarkdownRenderer {
         tokens: &[MdBlock],
         parent_depth: usize,
         style_ctx: &InlineStyleContext,
+        width: usize,
+        content_width: usize,
     ) -> Vec<String> {
         let mut lines: Vec<String> = Vec::new();
 
@@ -1513,13 +1542,14 @@ impl MarkdownRenderer {
                         items,
                         parent_depth + 1,
                         style_ctx,
+                        width,
                     ));
                 }
                 MdBlock::Text { inline } => {
                     let text = self.render_inline_tokens(inline, style_ctx);
                     lines.push(text);
                 }
-                MdBlock::Paragraph { inline } => {
+                MdBlock::Paragraph { inline } | MdBlock::Heading { inline, .. } => {
                     let text = self.render_inline_tokens(inline, style_ctx);
                     lines.push(text);
                 }
@@ -1529,7 +1559,8 @@ impl MarkdownRenderer {
                         .code_block_indent
                         .clone()
                         .unwrap_or_else(|| "  ".to_string());
-                    let border_line = (self.theme.code_block_border)(&"─".repeat(60));
+                    let border_line =
+                        (self.theme.code_block_border)(&"─".repeat(content_width.min(60)));
                     lines.push(border_line.clone());
                     if let Some(highlight) = &self.theme.highlight_code {
                         for hl_line in highlight(text, Some(lang)) {
@@ -1904,6 +1935,12 @@ fn apply_default_style_fn(
 
 /// marked's blockquote token `text` field: content lines with `> ` markers
 /// stripped, trailing empty lines dropped, joined with `\n`.
+fn sanitize_terminal_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
 fn blockquote_raw_text(blocks: &[MdBlock]) -> String {
     // The blockquote's blocks don't retain the raw source; reconstruct the
     // marker-stripped text from a serialized approximation. This mirrors
@@ -1930,7 +1967,9 @@ fn blockquote_raw_text(blocks: &[MdBlock]) -> String {
     let mut lines: Vec<String> = Vec::new();
     for b in blocks {
         match b {
-            MdBlock::Paragraph { inline } => lines.push(render_inline_text(inline)),
+            MdBlock::Paragraph { inline } | MdBlock::Heading { inline, .. } => {
+                lines.push(render_inline_text(inline))
+            }
             MdBlock::Text { inline } => lines.push(render_inline_text(inline)),
             MdBlock::Code { text, .. } => {
                 for l in text.split('\n') {
@@ -2892,7 +2931,7 @@ mod tests {
                 }]],
             },
         ];
-        let lines = r.render_list_item(&item, 0, &ctx);
+        let lines = r.render_list_item(&item, 0, &ctx, 80, 78);
         let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
         assert!(plain.iter().any(|l| l.contains("item code")));
         assert!(plain.iter().any(|l| l.contains("<i>x</i>")));
@@ -3375,7 +3414,7 @@ mod tests {
                 }],
             },
         ]];
-        let lines = r.render_list(false, None, &items, 0, &ctx);
+        let lines = r.render_list(false, None, &items, 0, &ctx, 80);
         let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
         assert!(plain.iter().any(|l| l.contains("deep")));
         assert!(plain.iter().any(|l| l.contains("tail")));
@@ -3394,7 +3433,7 @@ mod tests {
             text: "fn x()".into(),
             lang: "rs".into(),
         }];
-        let lines = r.render_list_item(&item, 0, &ctx);
+        let lines = r.render_list_item(&item, 0, &ctx, 80, 78);
         assert!(strip_ansi_codes(&lines.join("\n")).contains("HL fn x()"));
     }
 

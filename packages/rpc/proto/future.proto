@@ -365,7 +365,9 @@ message ImageContent {
   oneof content {
     // Remote image URL (HTTP/HTTPS).
     string url = 10;
-    // Base64-encoded image data.
+    // Complete data URI, including MIME type: data:image/png;base64,<encoded bytes>.
+    // Despite the historical field name, bare base64 bytes are not a valid
+    // image_url reference. First-party clients send this complete URI.
     string base64 = 11;
   }
 
@@ -456,6 +458,8 @@ message SessionEntriesResponse {
 // on-disk/wire JSON spelling (snake_case).
 message PromptAck {
   string run_id = 1;
+  // Valid for running/existing acknowledgments. A queued run has not acquired
+  // an execution epoch yet and carries 0; inspect accepted_state first.
   uint64 run_epoch = 2;
   // "existing" | "running" | "queued".
   string accepted_state = 3;
@@ -667,6 +671,8 @@ message AgentEnd {
   optional uint64 output_tokens = 4;
   // "incomplete" when the stream was truncated.
   optional string reason = 5;
+  // Original structured truncation diagnostics, encoded as JSON.
+  optional string truncation_json = 6;
 }
 
 message ToolStart {
@@ -675,6 +681,9 @@ message ToolStart {
   // Tool-call arguments, JSON-serialised (object or JSON-encoded string,
   // mirroring the wire).
   string tool_args = 3;
+  // "input" while arguments stream, "execution" when the tool starts.
+  optional string phase = 4;
+  optional int32 tc_index = 5;
 }
 
 message ToolDelta {
@@ -683,6 +692,8 @@ message ToolDelta {
   string text = 2;
   // Tool-call index within the assistant message, when > 0.
   optional int32 tc_index = 3;
+  // True means text replaces the current argument buffer, not an append.
+  optional bool snapshot = 4;
 }
 
 message ToolEnd {
@@ -713,6 +724,7 @@ message ApprovalDecisionEvent {
 
 message UsageEvent {
   UsageInfo usage = 1;
+  optional string stop_reason = 2;
 }
 
 message UsageInfo {
@@ -723,6 +735,8 @@ message UsageInfo {
   optional int64 cache_write_tokens = 5;
   // Provider-reported cost, when present.
   optional double credit_cost = 6;
+  optional int64 reasoning_tokens = 7;
+  optional string provider_metadata_json = 8;
 }
 
 message ErrorEvent {

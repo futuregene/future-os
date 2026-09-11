@@ -57,13 +57,12 @@ export function ArtifactsPanel({
     if (uploading)
       return;
     setUploadError(null);
-    const selected = await open({ multiple: false, title: t("panel.uploadDialogTitle") });
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (!path)
-      return;
-
     setUploading(true);
     try {
+      const selected = await open({ multiple: false, title: t("panel.uploadDialogTitle") });
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path)
+        return;
       const info = await inspectAttachment(path);
       if (info.isDir) {
         setUploadError(t("panel.uploadNotFile"));

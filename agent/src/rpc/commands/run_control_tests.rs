@@ -157,9 +157,53 @@ fn approval_decision_invalid_mode() {
 #[test]
 fn abort_retry_works() {
     let state = make_app_state();
+    let receiver = state
+        .approval_gate
+        .insert_pending_for_test("abort-retry-pending", "default");
     let cmd = make_cmd("abort_retry");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
+    let decision = receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(decision.status, ApprovalDecisionStatus::Cancelled);
+    assert!(state
+        .approval_gate
+        .pending_for_session("default")
+        .is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_rpc_releases_session_lock_and_abort_stops_process() {
+    let state = Arc::new(make_app_state());
+    let session = state.get_session("default").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    session.write().cwd = dir.path().to_string_lossy().into_owned();
+    let cancel = session.read().shell_cancel_generation.clone();
+    let worker_state = state.clone();
+    let thread = std::thread::spawn(move || {
+        let mut cmd = make_cmd("shell");
+        cmd.command = "printf ready > ready; sleep 30".into();
+        handle_command_internal(&worker_state, cmd)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !dir.path().join("ready").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let readable = session.try_read().is_some();
+    if readable {
+        let response = parse_response(&handle_command_internal(&state, make_cmd("abort")));
+        assert_eq!(response["success"], true);
+    } else {
+        // Release a regressed implementation before asserting, so test failure
+        // cannot leave a long-running child or locked test worker behind.
+        cancel.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let response = parse_response(&thread.join().unwrap());
+    assert!(readable, "shell must not retain the session lock");
+    assert_eq!(response["success"], false);
+    assert!(response["error"].as_str().unwrap().contains("cancelled"));
 }
 
 #[test]

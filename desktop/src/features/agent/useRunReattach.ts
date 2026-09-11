@@ -24,10 +24,6 @@ interface UseRunReattachInput {
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
   reloadMessagesQuiet: (targetThreadId: string, force?: boolean) => Promise<void>;
-  // Generation counter shared with useThreadMessages: bump after every
-  // streaming upsert so in-flight direct-replacement loads see the change
-  // and discard themselves instead of clobbering the live bubble.
-  messagesGenRef: MutableRefObject<number>;
 }
 
 /**
@@ -50,7 +46,6 @@ export function useRunReattach({
   setMessages,
   refreshRecentRun,
   reloadMessagesQuiet,
-  messagesGenRef,
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
 
@@ -78,13 +73,8 @@ export function useRunReattach({
     const liveTick = createLiveTick({
       isActive: isLive,
       project: () => upsertStreamingPreview(runId, startedAt, setMessages, isLive),
-      // Bump the generation counter after every streaming upsert so an in-flight
-      // quiet reload sees that state changed under it and discards its write
-      // instead of clobbering the live bubble.
-      afterProject: () => {
-        if (isLive())
-          messagesGenRef.current += 1;
-      },
+      // Quiet reloads reconcile against their request-time message baseline
+      // so a streaming update made while the request was in flight survives.
     });
     liveTick.request();
     const unlisten = listen<ThreadRuntimeUpdateBatch>("thread-runtime-updated", (event) => {
@@ -127,7 +117,6 @@ export function useRunReattach({
     activeRunId,
     activeRunStartedAt,
     loadingThread,
-    messagesGenRef,
     refreshRecentRun,
     reloadMessagesQuiet,
     sendingRef,
@@ -143,10 +132,8 @@ export function useRunReattach({
     const previous = prevActiveRunIdRef.current;
     prevActiveRunIdRef.current = activeRunId;
     if (previous && !activeRunId && !sendingRef.current && threadId) {
-      // Force-reload: the streaming interval has already stopped.
-      // Skipping the generation-counter guard ensures the persisted
-      // assistant message replaces the synthetic bubble even if the
-      // last tick bumped gen moments ago.
+      // Force-reload after streaming stops so persisted history can replace
+      // the synthetic bubble instead of preserving the live baseline.
       void reloadMessagesQuiet(threadId, true);
     }
   }, [activeRunId, reloadMessagesQuiet, sendingRef, threadId]);

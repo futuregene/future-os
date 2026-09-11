@@ -9,7 +9,7 @@ import {
 } from "../files";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "../storage";
 import { emptyTimeline } from "../timeline";
-import type { DownloadInfo, HistoryAttachment, RemoteModel, RemoteSessionState } from "../types";
+import { modelReference, type DownloadInfo, type HistoryAttachment, type RemoteModel, type RemoteSessionState } from "../types";
 import type { SyncEngine } from "../syncEngine";
 import { useConversationController } from "../useConversationController";
 
@@ -356,6 +356,22 @@ describe("attachment helpers", () => {
 });
 
 describe("command dispatchers", () => {
+  it("sends distinct qualified identities for two providers sharing a slash-containing id", async () => {
+    const catalog = [
+      model("deepseek/deepseek-v4-flash", "deepseek"),
+      model("deepseek/deepseek-v4-flash", "ambient"),
+    ];
+    const h = await mountController({ selected: "s1", models: catalog });
+    for (const selected of catalog) {
+      await act(async () => current(h).setModel(modelReference(selected)));
+    }
+    expect(h.request.mock.calls.map(([command]) => command.modelId)).toEqual([
+      "deepseek/deepseek/deepseek-v4-flash",
+      "ambient/deepseek/deepseek-v4-flash",
+    ]);
+    expect(h.request.mock.calls.map(([command]) => command.providerId)).toEqual(["deepseek", "ambient"]);
+  });
+
   it("abort is a no-op without a client or session", async () => {
     const h = await mountController({});
     await act(async () => {

@@ -3,6 +3,7 @@
 //!
 //! Shows: pwd, model, thinking, token stats, cost, context usage.
 
+#[cfg(test)]
 use std::env;
 
 use crate::tui::{Component, RESET};
@@ -107,12 +108,18 @@ impl Component for Footer {
 
         // PWD — uses default fg (245)
         if let Some(cwd) = &self.data.cwd {
-            let home = env::var("HOME").unwrap_or_default();
-            let pwd = if !home.is_empty() && cwd.starts_with(&home) {
-                format!("~{}", &cwd[home.len()..])
-            } else {
-                cwd.clone()
-            };
+            let home = dirs::home_dir();
+            let pwd = home
+                .as_deref()
+                .and_then(|home| std::path::Path::new(cwd).strip_prefix(home).ok())
+                .map(|rest| {
+                    if rest.as_os_str().is_empty() {
+                        "~".to_string()
+                    } else {
+                        format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+                    }
+                })
+                .unwrap_or_else(|| cwd.clone());
             left_parts.push(format!("{base_fg}{pwd}"));
         }
 
@@ -277,6 +284,21 @@ mod tests {
         );
         let text = strip_ansi_codes(&line);
         assert!(text.contains("/home/user/project"));
+    }
+
+    #[test]
+    fn home_prefix_without_component_boundary_is_not_abbreviated() {
+        let _guard = crate::test_env::lock();
+        let home = dirs::home_dir().unwrap();
+        let cousin = std::path::PathBuf::from(format!("{}-other", home.display())).join("project");
+        let line = render_footer(
+            FooterData {
+                cwd: Some(cousin.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            2000,
+        );
+        assert!(strip_ansi_codes(&line).contains(cousin.to_string_lossy().as_ref()));
     }
 
     #[test]

@@ -225,9 +225,10 @@ mod tests {
             DecisionReasonCode::DeferredNotDue,
             DecisionReasonCode::ValidatedClosure,
             DecisionReasonCode::OscillationDetected,
+            DecisionReasonCode::WorkLeasedToOthers,
         ];
-        // 16 variants — one per kernel exit path.
-        assert_eq!(all.len(), 16);
+        // Include legacy/advisory codes as well as current kernel exits.
+        assert_eq!(all.len(), 17);
         let mut seen = std::collections::HashSet::new();
         for code in all {
             assert!(seen.insert(code.as_str()), "duplicate wire code {code}");

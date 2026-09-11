@@ -11,6 +11,7 @@ use future_loop::state::{delta_kind_changes_frontier, ExecutionProfile, Goal, Ru
 
 fn run_record(turn: u32, todo_id: &str, state: &str, tools: usize, evidence: &str) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn,
         todo_id: todo_id.to_string(),
         run_id: format!("run-{turn}"),

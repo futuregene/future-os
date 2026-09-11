@@ -135,6 +135,7 @@ pub async fn safari_status(
         std::time::Duration::from_secs(2),
         client
             .get(format!("{}/status", connection.endpoint()))
+            .timeout(std::time::Duration::from_secs(2))
             .send(),
     )
     .await
@@ -148,7 +149,15 @@ pub async fn safari_status(
             None,
             Some(format!("HTTP {}", response.status().as_u16())),
         ),
-        Ok(Err(e)) => (false, None, Some(e.to_string())),
+        Ok(Err(e)) => (
+            false,
+            None,
+            Some(if e.is_timeout() {
+                "Timed out".into()
+            } else {
+                e.to_string()
+            }),
+        ),
         Err(_) => (false, None, Some("Timed out".to_string())),
     }
 }

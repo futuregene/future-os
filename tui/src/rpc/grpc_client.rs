@@ -108,6 +108,8 @@ struct Inner {
     /// `Notify` cannot drop the wakeup).
     poke_count: AtomicU64,
     poke_notify: Notify,
+    #[cfg(test)]
+    before_empty_wait: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// Permanent stop (disconnect).
     stop: AtomicBool,
     stop_notify: Notify,
@@ -149,6 +151,8 @@ impl GrpcClient {
             conn_tx,
             poke_count: AtomicU64::new(0),
             poke_notify: Notify::new(),
+            #[cfg(test)]
+            before_empty_wait: Mutex::new(None),
             stop: AtomicBool::new(false),
             stop_notify: Notify::new(),
         });
@@ -726,17 +730,30 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Age
 fn spawn_stream_manager(inner: Arc<Inner>) {
     tokio::spawn(async move {
         loop {
+            // Register before reading state: notify_waiters does not retain a
+            // permit for a future created after the notification.
+            let poked = inner.poke_notify.notified();
+            tokio::pin!(poked);
+            poked.as_mut().enable();
             if inner.stop.load(Ordering::SeqCst) {
                 return;
             }
 
             let session = inner.state.lock().current_session_id.clone();
             if session.is_empty() {
+                #[cfg(test)]
+                {
+                    let barrier = inner.before_empty_wait.lock().take();
+                    if let Some(barrier) = barrier {
+                        barrier.wait().await;
+                        barrier.wait().await;
+                    }
+                }
                 // Never subscribe without a session ID — an empty session_id
                 // may leak events from ALL sessions (TS comment). Wait for a
                 // poke or stop.
                 tokio::select! {
-                    _ = inner.poke_notify.notified() => {}
+                    _ = &mut poked => {}
                     _ = inner.stop_notify.notified() => {
                         if inner.stop.load(Ordering::SeqCst) { return; }
                     }
@@ -825,6 +842,7 @@ enum StreamExit {
 /// errors, the 5 s first-data watchdog fires, the session changes, or a
 /// poke arrives.
 async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
+    let poke_version = inner.poke_count.load(Ordering::SeqCst);
     let connected = match future_rpc::transport::connect_channel(
         Some(&inner.addr),
         Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
@@ -856,6 +874,12 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     let watchdog = tokio::time::sleep(Duration::from_millis(CONNECT_WATCHDOG_MS));
     tokio::pin!(watchdog);
     loop {
+        let poked = inner.poke_notify.notified();
+        tokio::pin!(poked);
+        poked.as_mut().enable();
+        if inner.poke_count.load(Ordering::SeqCst) != poke_version {
+            return StreamExit::Poked;
+        }
         // Session changed — silent resubscribe (TS connectEvents semantics).
         if inner.state.lock().current_session_id != session {
             return StreamExit::Poked;
@@ -918,7 +942,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                 // the watchdog on first data and never re-arms it).
                 return StreamExit::Lost;
             }
-            _ = inner.poke_notify.notified() => {
+            _ = &mut poked => {
                 // Session change or explicit connect_events — silent
                 // resubscribe (TS ignores the cancelled stale stream).
                 return StreamExit::Poked;
@@ -1713,6 +1737,23 @@ mod tests {
             run_id: run_id.into(),
             ..Default::default()
         })
+    }
+
+    #[tokio::test]
+    async fn session_poke_between_empty_read_and_wait_is_not_lost() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_empty_wait.lock() = Some(barrier.clone());
+        barrier.wait().await;
+        client.set_current_session_id("s1");
+        barrier.wait().await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .is_some());
+        client.disconnect();
     }
 
     #[tokio::test(flavor = "multi_thread")]

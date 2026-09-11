@@ -24,9 +24,11 @@ fn expand_tilde_with_home(path: &str, home: Option<&Path>) -> PathBuf {
             return home.to_path_buf();
         }
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = home {
-            return home.join(rest);
+    if let Some(rest) = path.strip_prefix('~') {
+        if rest.starts_with(std::path::is_separator) {
+            if let Some(home) = home {
+                return home.join(rest.trim_start_matches(std::path::is_separator));
+            }
         }
     }
     PathBuf::from(path)
@@ -50,7 +52,14 @@ pub fn normalize_lexically(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                normalized.pop();
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
             }
             _ => normalized.push(component.as_os_str()),
         }
@@ -184,6 +193,24 @@ mod tests {
         let home = Path::new("/home/tester");
         assert_eq!(expand_tilde_with_home("~", Some(home)), home);
         assert_eq!(expand_tilde_with_home("~/x", Some(home)), home.join("x"));
+    }
+
+    #[test]
+    fn relative_parent_components_and_tilde_anchor_survive_normalization() {
+        for (input, expected) in [
+            ("../x", "../x"),
+            ("../../x", "../../x"),
+            ("a/../../x", "../x"),
+        ] {
+            assert_eq!(
+                normalize_lexically(Path::new(input)),
+                PathBuf::from(expected)
+            );
+        }
+        let home = std::env::temp_dir().join("path-test-home");
+        assert_eq!(expand_tilde_with_home("~//x", Some(&home)), home.join("x"));
+        #[cfg(windows)]
+        assert_eq!(expand_tilde_with_home(r"~\x", Some(&home)), home.join("x"));
     }
 
     #[test]

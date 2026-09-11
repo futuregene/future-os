@@ -2612,8 +2612,9 @@ async fn handle_web_request(stream: &mut tokio::net::TcpStream, web_dir: &std::p
         .unwrap_or("/")
         .trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
-    // Prevent directory traversal.
-    if path.contains("..") {
+    // URL paths never need Windows separators or drive/ADS prefixes. Reject
+    // them on every host before Path::join can replace the serving root.
+    if path.contains("..") || path.contains(['\\', ':']) {
         let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let _ = stream.write_all(resp.as_bytes()).await;
         return;
@@ -4390,6 +4391,17 @@ mod runtime_tests {
 
         let response = request(&dir, "GET /../secret HTTP/1.1\r\n\r\n").await;
         assert!(response.contains("403"), "{response}");
+
+        for target in [
+            r"\Windows\win.ini",
+            r"\\server\share\file",
+            "C:/Windows/win.ini",
+            r"/C:\Windows\win.ini",
+            "/file:stream",
+        ] {
+            let response = request(&dir, &format!("GET {target} HTTP/1.1\r\n\r\n")).await;
+            assert!(response.contains("403"), "{target}: {response}");
+        }
 
         // A request line without a path defaults to the index.
         let response = request(&dir, "GARBAGE\r\n\r\n").await;

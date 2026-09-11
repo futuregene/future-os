@@ -397,13 +397,8 @@ impl CommandRegistry {
             out.push('\n');
         }
         out.push_str(&format!(
-            "State root: {} (env FUTURE_LOOP_ROOT)",
-            std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
-                format!(
-                    "{}/.future/loop",
-                    std::env::var("HOME").unwrap_or_else(|_| ".".into())
-                )
-            })
+            "State root: {} (env FUTURE_LOOP_ROOT)\n",
+            crate::console::root_dir()
         ));
         out
     }

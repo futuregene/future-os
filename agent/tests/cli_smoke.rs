@@ -198,8 +198,7 @@ fn agent_rejects_unknown_flag() {
 fn agent_grpc_addr_forms_and_profile_default_path() {
     // ":0" (bare port), "0" (plain number) and "host:port" all reach the
     // server; --profile-seconds 0 without --profile writes the default
-    // flamegraph path. (A non-numeric bare string falls back to 50051, which
-    // may legitimately be in use on a dev machine — not covered here.)
+    // flamegraph path. Invalid addresses are rejected before any bind.
     for addr in [":0", "0", "127.0.0.1:0"] {
         let home = isolated_home();
         let work = home.path().join("work");
@@ -596,24 +595,33 @@ fn agent_profiler_write_failure_is_logged_and_ignored() {
 }
 
 #[test]
-fn agent_bare_nonnumeric_addr_falls_back_to_default_port() {
-    // "banana" has no ':' and does not parse as u16, so the agent falls back
-    // to 127.0.0.1:50051. On a dev machine that port may legitimately be in
-    // use (then the bind fails and the agent exits 1) — both outcomes
-    // exercise the fallback arm, which is what this test pins.
-    let home = isolated_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
-        .args(["--grpc-addr", "banana", "--profile-seconds", "0"])
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .output()
-        .expect("spawn future-agent");
-    assert!(
-        output.status.code() == Some(0) || output.status.code() == Some(1),
-        "unexpected exit {:?}: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn invalid_grpc_addresses_fail_without_panicking_or_binding_a_default_port() {
+    for address in [
+        "banana",
+        "127.0.0.1:70000",
+        "0.0.0.0:",
+        "localhost:1234",
+        "::1:1234",
+    ] {
+        let home = isolated_home();
+        let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+            .args(["--grpc-addr", address, "--profile-seconds", "0"])
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .expect("spawn future-agent");
+        let diagnostic = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(1), "{address}: {diagnostic}");
+        assert!(diagnostic.contains("invalid --grpc-addr"), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("gRPC server listening"),
+            "must not bind a fallback: {diagnostic}"
+        );
+    }
 }
 
 #[test]

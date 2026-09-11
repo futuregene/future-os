@@ -757,6 +757,25 @@ describe("deleteTemporaryAttachment", () => {
 });
 
 describe("uploadAttachments", () => {
+  test("cancels instead of sending endless empty chunks if the source shrinks", async () => {
+    mockFS.__set("file:///docs/a.txt", { bytes: new Uint8Array([1, 2, 3, 4]) });
+    const client = mockClient();
+    client.request.mockResolvedValue({ success: true, data: { uploadId: "u1", chunkBytes: 4 } });
+    client.uploadChunk.mockResolvedValue(undefined);
+    await expect(uploadAttachments(client as unknown as RemoteClient, [attachment()])).rejects.toThrow("attachment_read_stalled");
+    expect(client.uploadChunk).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalledWith({ type: "upload_cancel", transferId: "u1" }, "transfer");
+    expect(client.requestRetry).not.toHaveBeenCalled();
+  });
+
+  test.each([0, -1, NaN, Infinity])("rejects invalid chunk size %s", async chunkBytes => {
+    mockFS.__set("file:///docs/a.txt", { bytes: new Uint8Array(8) });
+    const client = mockClient();
+    client.request.mockResolvedValue({ success: true, data: { uploadId: "u1", chunkBytes } });
+    await expect(uploadAttachments(client as unknown as RemoteClient, [attachment()])).rejects.toThrow("invalid_upload_chunk_size");
+    expect(client.uploadChunk).not.toHaveBeenCalled();
+  });
+
   test("uploads every chunk and completes with server content identity", async () => {
     mockFS.__set("file:///docs/a.txt", { bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]) });
     const client = mockClient();

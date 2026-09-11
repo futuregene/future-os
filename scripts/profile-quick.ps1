@@ -9,6 +9,11 @@ param(
     [string]$Binary = ".\target\release\future-agent.exe"
 )
 
+if ($env:FUTURE_PROFILE_ISOLATED -ne '1') {
+    & python "$PSScriptRoot/profile-isolated.py" powershell -ExecutionPolicy Bypass -File $PSCommandPath -Duration $Duration -Port $Port -Binary $Binary
+    exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = "Continue"
 $addr = "127.0.0.1:$Port"
 $svg = "profile-results/quick-profile.svg"

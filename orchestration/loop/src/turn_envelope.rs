@@ -313,6 +313,7 @@ mod tests {
         let mut g = Goal::new("g1", "o", "/tmp");
         g.add(Todo::advancement("T1", "Work"));
         let prev = RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "T0".to_string(),
             run_id: "run-1".to_string(),
@@ -416,6 +417,7 @@ mod tests {
         validation: Option<crate::state::TaskValidation>,
     ) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: format!("run-{todo_id}"),

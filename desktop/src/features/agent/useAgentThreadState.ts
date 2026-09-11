@@ -67,7 +67,6 @@ export function useAgentThreadState({
     refreshRecentRun,
     setMessages,
     setRecentRun,
-    messagesGenRef,
   } = useThreadMessages({
     threadId,
     workspaceId,
@@ -127,7 +126,6 @@ export function useAgentThreadState({
     setMessages,
     refreshRecentRun,
     reloadMessagesQuiet,
-    messagesGenRef,
   });
 
   // ── Settle watchdog ────────────────────────────────────────────────────

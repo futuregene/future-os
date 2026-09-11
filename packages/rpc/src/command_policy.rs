@@ -213,11 +213,16 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
 
 /// Wrap one unary command with its command-specific gRPC deadline.
 pub fn request_with_timeout(command: RpcCommand) -> Request<RpcCommand> {
-    let timeout = command_policy(&command.r#type)
-        .map(|policy| policy.timeout)
-        // Unknown commands are rejected immediately by the Agent. Keep a
-        // finite boundary for malformed/out-of-tree callers nonetheless.
-        .unwrap_or(FAST_TIMEOUT);
+    let timeout = if command.r#type == "shell" && command.shell_timeout_ms > 0 {
+        // Mirror the server's 5s..30min clamp and retain transport headroom.
+        Duration::from_millis(command.shell_timeout_ms.clamp(5_000, 30 * 60 * 1000) + 5_000)
+    } else {
+        command_policy(&command.r#type)
+            .map(|policy| policy.timeout)
+            // Unknown commands are rejected immediately by the Agent. Keep a
+            // finite boundary for malformed/out-of-tree callers nonetheless.
+            .unwrap_or(FAST_TIMEOUT)
+    };
     let mut request = Request::new(command);
     request.set_timeout(timeout);
     request
@@ -242,6 +247,23 @@ mod tests {
         assert_eq!(command_policy("compact").unwrap().timeout, CONTROL_TIMEOUT);
         assert_eq!(command_policy("shell").unwrap().timeout, SHELL_RPC_TIMEOUT);
         assert!(command_policy("unknown").is_none());
+    }
+
+    #[test]
+    fn shell_deadline_tracks_clamped_execution_timeout() {
+        for (requested, expected_seconds) in [(600_000, 605), (u64::MAX, 1805), (1, 10), (0, 125)] {
+            let request = request_with_timeout(RpcCommand {
+                r#type: "shell".into(),
+                shell_timeout_ms: requested,
+                ..Default::default()
+            });
+            let mut expected = Request::new(());
+            expected.set_timeout(Duration::from_secs(expected_seconds));
+            assert_eq!(
+                request.metadata().get("grpc-timeout"),
+                expected.metadata().get("grpc-timeout")
+            );
+        }
     }
 
     #[test]

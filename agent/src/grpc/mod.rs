@@ -66,7 +66,11 @@ async fn serve_tcp_with(
     let grpc_service = FutureAgentService { state };
 
     // Start gRPC server
-    let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .map_err(|error| anyhow::anyhow!("invalid gRPC bind IP {host:?}: {error}"))?;
+    let grpc_addr = SocketAddr::new(ip, port);
 
     // Raise the message-size limits above tonic's 4MB default. Image bytes no
     // longer cross the wire (the agent reads them from the path), but a large
@@ -165,6 +169,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
+        if cmd
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox"))
+        {
+            return Err(tonic::Status::invalid_argument(
+                "sandbox tier must be off, manual, or sandbox",
+            ));
+        }
 
         // Log requests in verbose mode
         if self.state.verbose {
@@ -1092,6 +1105,26 @@ mod tests {
             .expect("server shuts down promptly")
             .expect("server task did not panic")
             .expect("clean shutdown is Ok");
+    }
+
+    #[tokio::test]
+    async fn invalid_sandbox_policy_is_rejected_at_wire_boundary() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        for tier in ["strict", "Sandbox", ""] {
+            let cmd = proto::RpcCommand {
+                r#type: "set_sandbox_policy".into(),
+                session_id: "default".into(),
+                sandbox_policy: Some(proto::SandboxPolicy { tier: tier.into() }),
+                ..Default::default()
+            };
+            let error = service
+                .execute_command(tonic::Request::new(cmd))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

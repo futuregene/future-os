@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { getFutureEnvironment, listAgentProviders, logoutFutureProvider, peekAgentProviders } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
+import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
@@ -39,6 +40,7 @@ export function AccountPage({
     null,
   );
   const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
 
@@ -62,10 +64,16 @@ export function AccountPage({
   }
 
   async function handleLogout() {
-    // logoutFutureProvider clears the profile cache internally.
-    await logoutFutureProvider();
-    setConfirmingLogout(false);
-    reload();
+    setActionError(null);
+    try {
+      // logoutFutureProvider clears the profile cache internally.
+      await logoutFutureProvider();
+      setConfirmingLogout(false);
+      reload();
+    }
+    catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   async function handleOpenAccount() {
@@ -81,6 +89,7 @@ export function AccountPage({
 
   return (
     <div className="space-y-6">
+      {actionError ? <p role="alert" className="text-xs text-danger">{actionError}</p> : null}
       <SettingsSection>
         <SettingsList>
           <SettingsRow

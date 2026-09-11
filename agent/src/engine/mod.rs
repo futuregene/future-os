@@ -88,8 +88,8 @@ impl Engine {
         api_key: &str,
     ) -> Result<Self> {
         let cwd = config.cwd.clone();
-        let _max_turns = config.max_turns;
-        let agent_loop = Loop::new(client.clone(), model);
+        let mut agent_loop = Loop::new(client.clone(), model);
+        agent_loop.config.max_turns = config.max_turns;
 
         let mut engine = Self {
             provider: client,
@@ -200,6 +200,7 @@ mod tests {
     #[test]
     fn engine_new_with_custom_config() {
         let mut config = EngineConfig::with_defaults();
+        config.max_turns = 7;
         config.thinking_level = "high".to_string();
         let engine = Engine::new(
             "https://api.test.com",
@@ -211,6 +212,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(engine.config.thinking_level, "high");
+        assert_eq!(engine.agent_loop.config.max_turns, 7);
     }
 
     #[test]

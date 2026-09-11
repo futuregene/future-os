@@ -15,7 +15,7 @@ pub mod session_store;
 use crate::config::AgentConfig;
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 const AGENT_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 const WEBSOCKET_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -78,12 +78,7 @@ impl FeishuChannel {
             // replaces tonic's stale transport before reconnecting Feishu.
             let retry_delay = tokio::select! {
                 result = ws_client.connect_and_listen(move |event| {
-                    let b = b.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = b.handle_event(event).await {
-                            error!("Error handling event: {}", e);
-                        }
-                    });
+                    b.enqueue_event(event);
                 }) => match result {
                     Ok(()) => {
                         info!("WebSocket closed cleanly, reconnecting...");

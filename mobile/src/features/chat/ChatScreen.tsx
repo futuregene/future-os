@@ -108,7 +108,7 @@ export function ChatScreen() {
     [timelineItems],
   );
   const [approvalSubmitting, setApprovalSubmitting] = useState<string | null>(null);
-  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState<{ id: string; message: string } | null>(null);
   // History load is in flight (selectSession holds busy until it lands) — show
   // a spinner instead of flashing the "no history" empty state.
   const loadingHistory =
@@ -124,7 +124,7 @@ export function ChatScreen() {
       try {
         await remote.decideApproval(id, decision);
       } catch {
-        setApprovalError(t("approval.submitFailed"));
+        setApprovalError({ id, message: t("approval.submitFailed") });
       } finally {
         setApprovalSubmitting(null);
       }

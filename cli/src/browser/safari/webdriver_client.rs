@@ -363,7 +363,9 @@ impl WebDriverClient {
             reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET),
             &url,
         );
-        req = req.header("Content-Type", "application/json; charset=utf-8");
+        req = req
+            .timeout(std::time::Duration::from_secs(30))
+            .header("Content-Type", "application/json; charset=utf-8");
         if let Some(body) = body {
             req = req.json(body);
         }

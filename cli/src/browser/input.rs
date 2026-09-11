@@ -174,8 +174,8 @@ pub struct ElementBox {
 /// `centerOf(box)` — Math.round of the box center.
 pub fn center_of(box_: ElementBox) -> (i64, i64) {
     (
-        (box_.x + box_.width / 2.0).round() as i64,
-        (box_.y + box_.height / 2.0).round() as i64,
+        (box_.x + box_.width / 2.0 + 0.5).floor() as i64,
+        (box_.y + box_.height / 2.0 + 0.5).floor() as i64,
     )
 }
 
@@ -252,6 +252,15 @@ mod tests {
 
     #[test]
     fn center_of_simple_box() {
+        assert_eq!(
+            center_of(ElementBox {
+                x: -1.0,
+                y: -1.0,
+                width: 1.0,
+                height: 1.0
+            }),
+            (0, 0)
+        );
         assert_eq!(
             center_of(ElementBox {
                 x: 0.0,

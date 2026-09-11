@@ -23,11 +23,20 @@ pub async fn resolve_cdp_endpoint(
     let client = reqwest::Client::new();
     let response = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
-        client.get(format!("{http_endpoint}/json/version")).send(),
+        client
+            .get(format!("{http_endpoint}/json/version"))
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .send(),
     )
     .await
     .map_err(|_| "CDP /json/version timed out".to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        if e.is_timeout() {
+            "CDP /json/version timed out".to_string()
+        } else {
+            e.to_string()
+        }
+    })?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -148,6 +157,28 @@ mod tests {
             let info = resolve_cdp_endpoint(&base, 5_000).await.expect("resolve");
             assert_eq!(info.browser_kind, kind);
         }
+    }
+
+    #[tokio::test]
+    async fn response_body_is_covered_by_timeout() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            resolve_cdp_endpoint(&format!("http://{address}"), 50),
+        )
+        .await;
+        server.abort();
+        assert!(result.expect("body read must terminate").is_err());
     }
 
     #[tokio::test]

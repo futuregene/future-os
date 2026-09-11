@@ -12,8 +12,9 @@ Data sources:
     - https://openrouter.ai/api/v1/models → OpenRouter
     - https://ai-gateway.vercel.sh/v1/models → Vercel AI Gateway
 
-The script filters to tool-capable models only and applies provider-specific
-configurations matching Go's generate-models.go exactly.
+Tool-capability filters are applied where the source exposes them. Declared
+input/output modalities are retained so runtime chat-model selection can exclude
+image-only, embedding and other non-text output models.
 """
 
 import json
@@ -40,6 +41,31 @@ def fetch_json(url: str, timeout: int = 30) -> Optional[Dict]:
     except Exception as e:
         print(f"Warning: Failed to fetch {url}: {e}")
         return None
+
+
+def model_modalities(model: Dict, direction: str) -> List[str]:
+    """Preserve declared modalities; never infer capabilities from model names.
+
+    models.dev uses modalities.input/output; OpenRouter and AI Gateway expose
+    architecture.input_modalities/output_modalities (or a modality arrow).
+    Gateway also identifies non-language models with an explicit type field.
+    Missing metadata keeps the legacy text default, but an explicit empty list
+    stays empty rather than being turned into a chat-capable model.
+    """
+    # Gateway embedding metadata may label its modality "text", but the
+    # explicit task type produces vectors, not a chat completion.
+    if direction == "output" and model.get("type") in ("embedding", "image", "video", "audio"):
+        return [model["type"]]
+    modalities = model.get("modalities") or {}
+    architecture = model.get("architecture") or {}
+    for value in (modalities.get(direction), architecture.get(f"{direction}_modalities")):
+        if isinstance(value, list):
+            return list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
+    modality = architecture.get("modality")
+    if isinstance(modality, str) and "->" in modality:
+        inputs, outputs = modality.split("->", 1)
+        return [item for item in (inputs if direction == "input" else outputs).split("+") if item]
+    return ["text"]
 
 
 def process_models_dev(data: Dict) -> List[Dict]:
@@ -78,7 +104,7 @@ def process_models_dev(data: Dict) -> List[Dict]:
             
             name = model.get("name") or model_id
             reasoning = model.get("reasoning", False)
-            modalities = model.get("modalities", {}).get("input", ["text"])
+            modalities = model_modalities(model, "input")
             
             limit = model.get("limit", {})
             context_window = limit.get("context", 4096)
@@ -94,6 +120,7 @@ def process_models_dev(data: Dict) -> List[Dict]:
                 "base_url": base_url,
                 "reasoning": reasoning,
                 "input": modalities,
+                "output": model_modalities(model, "output"),
                 "context_window": context_window,
                 "max_tokens": max_tokens,
                 "cost_input": float(cost.get("input", 0)),
@@ -134,7 +161,8 @@ def process_openrouter(data: Dict) -> List[Dict]:
             "api": "chat",
             "base_url": "https://openrouter.ai/api/v1",
             "reasoning": False,  # OpenRouter doesn't expose this directly
-            "input": ["text"],  # Assume text only
+            "input": model_modalities(model, "input"),
+            "output": model_modalities(model, "output"),
             "context_window": context_window,
             "max_tokens": min(context_window, 32768),  # Conservative estimate
             "cost_input": float(pricing.get("input", 0)),
@@ -154,8 +182,8 @@ def process_vercel_ai(data: Dict) -> List[Dict]:
 
     The API now returns OpenAI-compatible format: {"data": [...], "object": "list"}.
     Each model has: id, name, owned_by, context_window, max_tokens, pricing, etc.
-    Vercel models are all assumed to support tool calling (the gateway proxies
-    them with tool support).
+    The gateway includes non-language models too; preserve their declared
+    output modalities/type instead of treating every entry as a chat model.
     """
     models = []
 
@@ -179,7 +207,8 @@ def process_vercel_ai(data: Dict) -> List[Dict]:
             "api": "chat",
             "base_url": "https://ai-gateway.vercel.sh/v1",
             "reasoning": False,
-            "input": ["text"],
+            "input": model_modalities(model, "input"),
+            "output": model_modalities(model, "output"),
             "context_window": context_window,
             "max_tokens": max_tokens,
             "cost_input": float(pricing.get("input", 0)),
@@ -214,6 +243,7 @@ def generate_models_json(models: List[Dict]) -> str:
             "base_url": m.get("base_url", ""),
             "reasoning": m.get("reasoning", False),
             "input": m.get("input", ["text"]),
+            "output": m.get("output", ["text"]),
             "context_window": m["context_window"],
             "max_tokens": m["max_tokens"],
             "cost_input": m["cost_input"],
@@ -378,6 +408,8 @@ def main():
             unique_models.append(m)
     
     print(f"\nTotal unique models: {len(unique_models)}")
+    if not unique_models:
+        raise RuntimeError("No models fetched; refusing to overwrite the existing catalog and wiki docs")
     
     # Generate JSON model catalog
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z")

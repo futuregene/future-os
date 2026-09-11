@@ -184,7 +184,7 @@ pub struct Input {
     // ─── Cached visual layout (invalidated on edit / size change) ────
     cached_visual_width: i64, // -1 = invalid
     cached_visual_lines: Vec<String>,
-    cached_line_map: Vec<usize>, // visualLine → logical line index
+    cached_line_map: Vec<usize>, // visualLine → source UTF-16 offset
     cached_value_for_layout: String,
 }
 
@@ -219,6 +219,11 @@ impl Input {
 
     pub fn get_value(&self) -> &str {
         &self.value
+    }
+
+    /// Cursor translated to a UTF-8 boundary for byte-indexed consumers.
+    pub fn cursor_byte(&self) -> usize {
+        u16_to_byte(&self.value, self.cursor)
     }
 
     pub fn cursor(&self) -> usize {
@@ -470,7 +475,8 @@ impl Input {
         let mut line_map: Vec<usize> = Vec::new();
         let value_lines: Vec<&str> = self.value.split('\n').collect();
 
-        for (li, logical_line) in value_lines.iter().enumerate() {
+        let mut logical_start = 0;
+        for logical_line in &value_lines {
             let source = if logical_line.is_empty() {
                 " "
             } else {
@@ -479,10 +485,30 @@ impl Input {
             // width ≥ 1 here (0 returns early above) and source is never ""
             // — wrap_text_with_ansi always yields at least one line.
             let sub_lines = wrap_text_with_ansi(source, available_width);
+            let mut source_byte = 0;
             for sub in sub_lines {
+                let plain = strip_ansi_codes(&sub);
+                let start = logical_line[source_byte..]
+                    .find(&plain)
+                    .map_or(source_byte, |offset| source_byte + offset);
+                line_map.push(logical_start + u16_len(&logical_line[..start]));
+                // The wrapped fragment omits ANSI bytes. Adding its plain
+                // length to a raw source offset can split the next UTF-8 char.
+                // Advance over source tokens instead, skipping invisible codes.
+                source_byte = start;
+                let mut visible_bytes = 0;
+                while source_byte < logical_line.len() && visible_bytes < plain.len() {
+                    if let Some(code) = extract_ansi_code(logical_line, source_byte) {
+                        source_byte += code.length;
+                    } else {
+                        let ch = logical_line[source_byte..].chars().next().unwrap();
+                        source_byte += ch.len_utf8();
+                        visible_bytes += ch.len_utf8();
+                    }
+                }
                 lines.push(sub);
-                line_map.push(li);
             }
+            logical_start += u16_len(logical_line) + 1;
         }
 
         self.cached_visual_width = available_width as i64;
@@ -513,10 +539,10 @@ impl Input {
         };
         let lines = self.build_visual_layout(w);
 
-        let mut consumed = 0usize;
         let mut result = None;
 
         for (vi, sub) in lines.iter().enumerate() {
+            let consumed = self.cached_line_map[vi];
             let plain = strip_ansi_codes(sub);
             let sub_len = u16_len(&plain);
 
@@ -531,8 +557,6 @@ impl Input {
                 });
                 break;
             }
-
-            consumed += sub_len;
         }
 
         // The layout always has ≥1 visual line, so the last iteration
@@ -551,10 +575,7 @@ impl Input {
         let lines = self.build_visual_layout(available_width);
         let vl = target_vl.min(lines.len().saturating_sub(1));
 
-        let mut consumed = 0usize;
-        for line in &lines[..vl] {
-            consumed += u16_len(&strip_ansi_codes(line));
-        }
+        let consumed = self.cached_line_map[vl];
 
         // Find the UTF-16 offset within the target visual line corresponding
         // to targetCol
@@ -1155,8 +1176,8 @@ mod tests {
         let mut input = make_input();
         input.set_value("hello\nworld", Some(1)); // cursor on 'e' in "hello"
         input.handle_key("down");
-        // Cursor lands at column 1 of "world" (position 6 = 'w')
-        assert_eq!(input.cursor(), 6);
+        // Column 1 of "world" is 'o': the source newline also occupies an offset.
+        assert_eq!(input.cursor(), 7);
     }
 
     #[test]

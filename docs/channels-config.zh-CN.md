@@ -46,7 +46,8 @@
     "enabled": false,
     "client_id": "",
     "client_secret": "",
-    "domain": "api.dingtalk.com"
+    "domain": "api.dingtalk.com",
+    "sender_allowlist": []                // 发送者 ID；空列表拒绝所有人，["*"] 显式信任所有人
   }
 }
 ```
@@ -76,8 +77,8 @@
 | `group_allowlist` | `[]` | 允许的 chat_id；`["*"]` 表示所有群。 |
 | `require_mention` | `true` | 群里仅在 @机器人 时回复。 |
 | `streaming` | `true` | 流式回复（CardKit 卡片流式）。 |
-| `resolve_sender_names` | `true` | 解析发送者显示名。 |
-| `max_image_mb` | `10` | 入站图片大小上限（MiB）。 |
+| `resolve_sender_names` | `true` | 为诊断日志解析已获授权发送者的显示名。 |
+| `max_image_mb` | `10` | 下载附件（图片和文件）的大小上限（MiB）；读取响应时逐块检查，无 Content-Length 时同样有效。 |
 | `typing_indicator` | `false` | 显示输入中指示。 |
 
 > 运行时可以对单个群做覆盖（例如禁用某个特定群）；上面的配置文件只设置
@@ -90,8 +91,15 @@
 | `enabled` | `false` | 启动钉钉桥。 |
 | `client_id` / `client_secret` | 空 | 钉钉应用凭据。 |
 | `domain` | `api.dingtalk.com` | API 域名。 |
+| `sender_allowlist` | `[]` | 私聊和群聊中获准操作 agent 的发送者 ID。空列表拒绝所有消息及斜杠命令；`["*"]` 显式信任所有能联系机器人的人。 |
+
+**升级提示：** 已配置的钉钉桥需要填写 `sender_allowlist` 才会接收 prompt。仅加入群聊并不获得操作 agent 的授权。
 
 ## 运行时行为
+
+- 飞书模型、思考级别和权限默认值只初始化新会话；用户通过 `/model` 或 `/effort` 设置的选项会保留到后续消息。
+- 审批按钮绑定原始聊天与会话（含线程）。渠道桥重启后，无法恢复绑定的旧卡片会明确报告未送达，而不是向当前选中的其他会话发送审批。
+- 每个会话的准备阶段按消息到达顺序执行；延迟执行的旧任务不会覆盖新消息。流式回复期间不占用入站队列。每个会话最多缓存 128 个入站事件；超限会拒绝新事件并记录渠道警告，而不是无限增加任务与内存。传输 ACK 不代表过载事件已被执行，请在积压消退后重试。
 
 - 新渠道会话不会主动开启桌面沙箱策略。应限制可操作机器人的用户；默认 `all` 不是默认审批。
 - **斜杠命令：** 两个桥在桥接代码中分发 9 个命令（部分调用 Agent RPC，并非模型 prompt）

@@ -10,6 +10,7 @@ import { validateImageAttachment } from "../../../integrations/storage/files";
 import { createThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
+import { truncate } from "../../../lib/objects";
 
 export interface PendingPrompt {
   attachments?: MessageAttachment[];
@@ -123,7 +124,7 @@ function deriveThreadTitle(content: string) {
   const compact = content.replace(/\s+/g, " ").trim();
   if (!compact)
     return i18n.t("layout:appShell.newChat");
-  return compact.length > 28 ? `${compact.slice(0, 28)}...` : compact;
+  return truncate(compact, 28);
 }
 
 let pendingPromptCounter = 0;

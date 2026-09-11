@@ -297,9 +297,17 @@ pub(crate) fn handle_approval_decision(state: &AppState, cmd: &RpcCommand, id: &
 }
 
 pub(crate) fn handle_abort_retry(
+    state: &AppState,
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
-    session.read().abort();
+    let session_id = {
+        let sess = session.read();
+        sess.abort();
+        sess.session_id.clone()
+    };
+    state
+        .approval_gate
+        .cancel_session(&session_id, "Cancelled because the run was terminated.");
     RpcResponse::ok(id, "abort_retry", serde_json::json!({}))
 }

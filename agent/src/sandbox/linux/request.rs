@@ -6,7 +6,11 @@ pub const REQUEST_VERSION: u16 = 3;
 /// Maximum decoded JSON request size. The legacy base64 CLI form is accepted
 /// only by the hidden test/compatibility entry point; production uses an FD.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
-pub const MAX_MOUNTS: usize = 16_384;
+pub const MAX_BWRAP_ARGS: usize = 9000;
+// The largest mount encoding is --perms 000 --tmpfs TARGET (four args).
+// Reserve room for the fixed preamble, cwd and outer argv, so every accepted
+// plan fits the helper's argument-count ceiling, not merely its JSON budget.
+pub const MAX_MOUNTS: usize = (MAX_BWRAP_ARGS - 32) / 4;
 // Leave headroom below Linux's per-string execve limit for `bash -c`.
 pub const MAX_ARG_BYTES: usize = 96 * 1024;
 pub const HELPER_REQUEST_FD: i32 = 3;

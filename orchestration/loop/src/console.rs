@@ -78,14 +78,14 @@ fn next_action_text(goal: &Goal) -> String {
 /// Project-local state root: `<cwd>/.future/loop/` (run future-loop from the
 /// project dir, or override with FUTURE_LOOP_ROOT). All goal state stays
 /// inside the project.
-fn root_dir() -> String {
+pub(crate) fn root_dir() -> String {
     std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
-        format!(
-            "{}/.future/loop",
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| ".".into())
-        )
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(".future")
+            .join("loop")
+            .to_string_lossy()
+            .into_owned()
     })
 }
 
@@ -1795,6 +1795,22 @@ fn looks_like_external_delivery(text: &str) -> bool {
             .any(|tok| DELIVERY_WORDS.contains(&tok))
 }
 
+/// Assignment may precede registration; warn rather than silently changing
+/// identity or forbidding the normal plan-then-onboard workflow.
+fn owner_assignment_warning(goal: &Goal, owner: &str) -> Option<String> {
+    if owner.is_empty() || goal.registered_agents.iter().any(|id| id == owner) {
+        return None;
+    }
+    let similar = goal
+        .registered_agents
+        .iter()
+        .find(|id| id.eq_ignore_ascii_case(owner));
+    Some(match similar {
+        Some(id) => format!("owner `{owner}` is not registered; IDs are case-sensitive. Did you mean `{id}`? Use `todo update --goal {} --todo-id T --owner {id}` or register the exact owner.", goal.goal_id),
+        None => format!("owner `{owner}` is not registered yet; only that exact case-sensitive ID can run this todo. Onboard `{owner}` or update --owner before dispatch.")
+    })
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -1986,6 +2002,9 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // Owner assignment: `--owner X` declares this todo is for agent X (see
     // `Todo::owner`). Optional — absent = shared pool.
     if let Some(aid) = &owner {
+        if let Some(warning) = owner_assignment_warning(&goal, aid) {
+            eprintln!("warning: {warning}");
+        }
         todo = todo.owned_by(aid);
     }
     // Apply --blocks for every task class (previously only user_gate/blocker
@@ -2448,8 +2467,10 @@ fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) ->
         .map(|aid| {
             let mut work: Vec<String> = Vec::new();
             for t in goal.todos.iter() {
-                if t.claimed_by.as_deref() == Some(aid.as_str())
+                if !matches!(t.status, TodoStatus::Done | TodoStatus::Superseded)
+                    && t.claimed_by.as_deref() == Some(aid.as_str())
                     && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+                    && t.holder_pid.is_none_or(crate::compat::pid_alive)
                 {
                     let left = t.lease_expires_at.unwrap().saturating_sub(now);
                     work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
@@ -3026,6 +3047,20 @@ fn cmd_frontier(store: &Store, args: &[String]) -> Result<()> {
         fp.monitors_open,
         fp.monitors_due
     );
+    for assignment in &show.todo_assignments {
+        if let Some(owner) = assignment.owner.as_deref() {
+            println!(
+                "  todo {} owner={}{}",
+                assignment.todo_id,
+                owner,
+                if assignment.owner_registered == Some(false) {
+                    " (not registered; IDs are case-sensitive)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
     if show.outcome_segments.is_empty() {
         println!("  outcome_segments: (no runs yet)");
     } else {
@@ -3233,6 +3268,10 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
                 "status": status_label(t),
                 "priority": format!("{:?}", t.priority),
                 "blocks": t.blocked_by_gate.clone().unwrap_or_default(),
+                "owner": t.owner,
+                "claimed_by": t.claimed_by,
+                "lease_expires_at": t.lease_expires_at,
+                "holder_pid": t.holder_pid,
             })).collect::<Vec<_>>(),
         }));
     }
@@ -4513,7 +4552,13 @@ fn claim_selected_with_lease(
         match &agent_id {
             Some(aid) => {
                 if store
-                    .try_claim_todo(goal_id, &tid, aid, lease_secs)?
+                    .try_claim_todo_with_pid(
+                        goal_id,
+                        &tid,
+                        aid,
+                        lease_secs,
+                        Some(std::process::id()),
+                    )?
                     .claimed
                 {
                     todo_id_opt = Some(tid);
@@ -8602,6 +8647,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     if goal.todo(&todo_id).is_none() {
         anyhow::bail!("todo {todo_id} not found in goal {goal_id}");
     }
+    if let Some(owner) = owner.as_deref() {
+        if let Some(warning) = owner_assignment_warning(&goal, owner) {
+            eprintln!("warning: {warning}");
+        }
+    }
     if status.as_deref() == Some("done") {
         bail!(
             "todo update --status done is not allowed — use `todo complete --no-follow-up|--successor` \
@@ -8660,6 +8710,7 @@ mod coverage_tests {
 
     fn record(todo_id: &str) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: "run-1".to_string(),
@@ -9638,6 +9689,7 @@ mod cli_quirks_tests {
             mk(Event::RunRecorded {
                 goal_id: "g1".into(),
                 record: crate::state::RunRecord {
+                    agent_id: None,
                     turn: 3,
                     todo_id: "t2".into(),
                     run_id: "r1".into(),
@@ -10499,6 +10551,7 @@ mod residual_branch_tests {
             })
             .unwrap();
         let run = crate::state::RunRecord {
+            agent_id: None,
             turn: 4,
             todo_id: "t1".into(),
             run_id: "run-1".into(),

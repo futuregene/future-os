@@ -89,6 +89,7 @@ pub struct Client {
     adapters: AdapterRegistry,
 }
 
+#[derive(Clone)]
 struct LiveModelSource {
     canonical_model: String,
     registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
@@ -226,37 +227,43 @@ impl crate::types::LLMProvider for Client {
         // the durable conversation when a model temporarily loses image input;
         // adapt only this outbound projection.
         if target.capabilities.supports_image_input {
-            for message in &mut request.messages {
-                let already_has_image = message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, crate::types::ContentBlock::Image { .. }));
-                if already_has_image {
-                    continue;
-                }
-                let image_paths = message
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("attachments"))
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|attachment| {
-                        attachment.get("kind").and_then(serde_json::Value::as_str) == Some("image")
-                    })
-                    .filter_map(|attachment| {
-                        attachment
-                            .get("path")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .collect::<Vec<_>>();
-                for path in image_paths {
-                    if let Some(url) = crate::utils::image_data_url_for_model(&path) {
-                        message.content.push(crate::types::ContentBlock::image(url));
+            request = tokio::task::spawn_blocking(move || {
+                for message in &mut request.messages {
+                    let already_has_image = message
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, crate::types::ContentBlock::Image { .. }));
+                    if already_has_image {
+                        continue;
+                    }
+                    let image_paths = message
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("attachments"))
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|attachment| {
+                            attachment.get("kind").and_then(serde_json::Value::as_str)
+                                == Some("image")
+                        })
+                        .filter_map(|attachment| {
+                            attachment
+                                .get("path")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .collect::<Vec<_>>();
+                    for path in image_paths {
+                        if let Some(url) = crate::utils::image_data_url_for_model(&path) {
+                            message.content.push(crate::types::ContentBlock::image(url));
+                        }
                     }
                 }
-            }
+                request
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("image preparation worker failed: {error}"))?;
         } else {
             for message in &mut request.messages {
                 message
@@ -562,6 +569,16 @@ impl crate::types::LLMProvider for Client {
         Ok(ReceiverStream::new(rx))
     }
 
+    fn snapshot(&self) -> Option<std::sync::Arc<dyn crate::types::LLMProvider>> {
+        Some(std::sync::Arc::new(Self {
+            http: self.http.clone(),
+            target: RwLock::new(self.target.read().clone()),
+            generation: RwLock::new(self.generation.read().clone()),
+            live_model: self.live_model.clone(),
+            adapters: self.adapters.clone(),
+        }))
+    }
+
     fn update_thinking(&self, level: &str, budget: i32) {
         let mut generation = self.generation.write();
         generation.thinking_level = level.to_string();
@@ -662,6 +679,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn provider_snapshot_sends_frozen_thinking_on_the_real_http_path() {
+        let server = mock_server(|_| {
+            (
+                200,
+                "text/event-stream",
+                "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n".into(),
+            )
+        });
+        let mut target = chat_target(&server.base_url, "test-only-key", None, None);
+        target.protocol = schema::ProtocolConfig::OpenAiResponses(Default::default());
+        target.capabilities.reasoning.supported = true;
+        target.generation.thinking_level = "medium".into();
+        let client = Client::from_target(target);
+        let snapshot = crate::types::LLMProvider::snapshot(&client).unwrap();
+        crate::types::LLMProvider::update_thinking(&client, "high", 16000);
+        let _events: Vec<_> = snapshot
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let requests = server.requests.lock().unwrap();
+        let body: Value = serde_json::from_str(&requests[0]).unwrap();
+        assert_eq!(body["reasoning"]["effort"], "medium");
+    }
+
     #[test]
     fn runtime_thinking_setter_updates_generation_controls() {
         let client = Client::from_target(chat_target("https://api.test", "old-key", None, None));
@@ -671,6 +715,11 @@ mod tests {
         assert_eq!(target.route.base_url, "https://api.test");
         assert_eq!(target.generation.thinking_level, "high");
         assert_eq!(target.generation.thinking_budget, 16000);
+        let snapshot = crate::types::LLMProvider::snapshot(&client).unwrap();
+        snapshot.update_thinking("low", 4000);
+        let original = client.target_for_request().unwrap();
+        assert_eq!(original.generation.thinking_level, "high");
+        assert_eq!(original.generation.thinking_budget, 16000);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 /// DingTalk-specific channel configuration.
 #[derive(Debug, Clone)]
 pub struct DingtalkConfig {
+    pub sender_allowlist: Vec<String>,
     pub client_id: String,
     pub client_secret: String,
     /// API domain (default: api.dingtalk.com)
@@ -28,6 +29,7 @@ pub(crate) fn base_url(domain: &str) -> String {
 impl From<&crate::config::FeishuChannelConfig> for DingtalkConfig {
     fn from(cfg: &crate::config::FeishuChannelConfig) -> Self {
         Self {
+            sender_allowlist: cfg.dm_allowlist.clone(),
             client_id: cfg.app_id.clone(),
             client_secret: cfg.app_secret.clone(),
             domain: cfg.domain.clone(),
@@ -42,6 +44,7 @@ mod tests {
     #[test]
     fn dingtalk_config_api_domain() {
         let cfg = DingtalkConfig {
+            sender_allowlist: Vec::new(),
             client_id: "id".to_string(),
             client_secret: "secret".to_string(),
             domain: "api.dingtalk.com".to_string(),
@@ -52,6 +55,7 @@ mod tests {
     #[test]
     fn dingtalk_config_custom_domain() {
         let cfg = DingtalkConfig {
+            sender_allowlist: Vec::new(),
             client_id: "id".to_string(),
             client_secret: "secret".to_string(),
             domain: "custom.example.com".to_string(),

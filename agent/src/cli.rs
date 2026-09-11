@@ -95,9 +95,61 @@ fn load_project_context(cwd: &str) -> String {
 }
 
 /// Abort every live session (SIGINT / profile-timer shutdown path).
+fn default_log_filter(verbose: bool) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(if verbose { "debug" } else { "info" })
+}
+
+#[cfg(test)]
+#[test]
+fn verbose_default_filter_enables_grpc_debug_events() {
+    for verbose in [false, true] {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(default_log_filter(verbose))
+            .with_writer(std::io::sink)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(tracing::enabled!(tracing::Level::DEBUG), verbose);
+        });
+    }
+}
+
+fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
+    let address = if addr.starts_with(':') && !addr[1..].contains(':') {
+        format!("127.0.0.1{addr}")
+    } else if !addr.contains(':') {
+        format!("127.0.0.1:{addr}")
+    } else {
+        addr.to_owned()
+    };
+    let socket: std::net::SocketAddr = address.parse().with_context(|| {
+        format!("invalid --grpc-addr {addr:?}: expected IP:port (bracket IPv6 addresses)")
+    })?;
+    Ok((socket.ip().to_string(), socket.port()))
+}
+
+#[cfg(test)]
+#[test]
+fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
+    for value in [
+        "localhost:1234",
+        "127.0.0.1:70000",
+        "0.0.0.0:",
+        "abc",
+        "::1:1234",
+    ] {
+        assert!(parse_tcp_bind(value).is_err(), "{value}");
+    }
+    assert_eq!(parse_tcp_bind(":1234").unwrap(), ("127.0.0.1".into(), 1234));
+    assert_eq!(parse_tcp_bind("[::1]:1234").unwrap(), ("::1".into(), 1234));
+}
+
 fn abort_all_sessions(sessions: &SessionsMap) {
     for s in sessions.read().values() {
-        s.read().abort();
+        let session = s.read();
+        session.abort();
+        session
+            .approval_gate
+            .cancel_session(&session.session_id, "Agent is shutting down.");
     }
 }
 
@@ -398,7 +450,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
     // mutexed File with the raw streaming prints (eprint_log!) — so the log
     // file ends up identical to the console output, minus ANSI colors.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| default_log_filter(cli.verbose));
 
     let console_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
@@ -665,18 +717,7 @@ async fn async_main(
 
     // Native per-user IPC is the default. Supplying --grpc-addr explicitly
     // opts into TCP compatibility mode.
-    let tcp_bind = cli.grpc_addr.as_deref().map(|addr| {
-        if let Some(port_str) = addr.strip_prefix(':') {
-            ("127.0.0.1".to_string(), port_str.parse().unwrap_or(50051))
-        } else if let Some((host, port)) = addr.rsplit_once(':') {
-            (host.to_string(), port.parse::<u16>().unwrap_or(50051))
-        } else {
-            match addr.parse::<u16>() {
-                Ok(port) => ("127.0.0.1".to_string(), port),
-                Err(_) => ("127.0.0.1".to_string(), 50051),
-            }
-        }
-    });
+    let tcp_bind = cli.grpc_addr.as_deref().map(parse_tcp_bind).transpose()?;
     // Discover skills (global user-level dirs only — project/cwd-relative
     // skill dirs are intentionally not scanned).
     let skill_dirs = crate::global_skill_dirs();

@@ -166,6 +166,10 @@ fn extract_complete_sequences(buffer: &str) -> (Vec<String>, String) {
             let mut seq_end = 1usize;
             let mut advanced = false;
             while seq_end <= remaining.len() {
+                if !remaining.is_char_boundary(seq_end) {
+                    seq_end += 1;
+                    continue;
+                }
                 let candidate = &remaining[..seq_end];
                 match is_complete_sequence(candidate) {
                     CompleteStatus::Complete | CompleteStatus::NotEscape => {

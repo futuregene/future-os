@@ -47,7 +47,7 @@ impl SafariSession {
             value = body.to_string();
         } else if let Some(text) = selector.strip_prefix("text=") {
             using = "xpath";
-            value = format!("//*[contains(text(),\"{text}\")]");
+            value = format!("//*[contains(text(),{})]", xpath_literal(text));
         }
 
         match self
@@ -82,6 +82,14 @@ impl SafariSession {
             .execute_script::<Value>(&self.session_id, &console_hook_invocation_source(), &[])
             .await;
     }
+}
+
+fn xpath_literal(text: &str) -> String {
+    if !text.contains('"') {
+        return format!("\"{text}\"");
+    }
+    let parts: Vec<_> = text.split('"').map(|part| format!("\"{part}\"")).collect();
+    format!("concat({})", parts.join(", '\"', "))
 }
 
 /// Whether a formatted WebDriver error carries the "no such element"
@@ -222,7 +230,7 @@ impl BrowserSession for SafariSession {
         ];
         let webdriver_key = key_map
             .iter()
-            .find(|(k, _)| *k == key)
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
             .map(|(_, v)| *v)
             .unwrap_or(key);
 
@@ -675,6 +683,10 @@ mod tests {
 
     #[tokio::test]
     async fn find_one_translates_xpath_and_text_prefixes() {
+        assert_eq!(
+            xpath_literal("both \" and ' quotes"),
+            "concat(\"both \", '\"', \" and ' quotes\")"
+        );
         let base = mock(vec![HttpRoute::json(
             "/session/s1/element",
             200,
@@ -756,7 +768,7 @@ mod tests {
         let mut s = session(&base);
         // Mapped key without a target → sent to body element.
         let r = s
-            .press("Enter", None, PressOptions::default())
+            .press("enter", None, PressOptions::default())
             .await
             .unwrap();
         assert!(!r.did_navigate);

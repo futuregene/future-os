@@ -70,6 +70,9 @@ export function RunInspectPanel({
       ),
     [tools],
   );
+  // Store polls reconstruct tool objects even when nothing changed. Outputs
+  // are finalized with the tool; status/end changes still invalidate this key.
+  const outputsKey = JSON.stringify(sortedTools.map(tool => [tool.runId, tool.id, tool.status, tool.endedAt]));
   const { data: details, error } = useAsyncResource<RunDetails>(
     async () => {
       const outputEntries = await Promise.all(
@@ -87,7 +90,7 @@ export function RunInspectPanel({
       );
       return { outputsByTool: Object.fromEntries(outputEntries) };
     },
-    [sortedTools],
+    [outputsKey, sortedTools.some(tool => tool.status === "running") ? tools : null],
     { outputsByTool: {} },
   );
   const outputsByTool = details.outputsByTool;

@@ -519,6 +519,11 @@ pub fn render_image(
 }
 
 pub fn hyperlink(text: &str, url: &str) -> String {
+    // An OSC destination is protocol data, not terminal markup. Keep the
+    // styled label but do not emit an OSC wrapper for control-bearing URLs.
+    if url.chars().any(char::is_control) {
+        return text.to_string();
+    }
     format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
 }
 

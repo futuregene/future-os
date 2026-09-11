@@ -443,7 +443,11 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         })
         .unwrap_or_else(|| (vec!["text".to_string()], vec!["text".to_string()]));
 
-    let context_window = entry.context_length.map(|v| v as i32).unwrap_or(128000);
+    let context_window = entry
+        .context_length
+        .and_then(|v| i32::try_from(v).ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(128000);
     let max_tokens = entry
         .max_tokens
         .filter(|value| *value > 0)
@@ -959,6 +963,24 @@ mod tests {
     }
 
     // ─── convert_future_model (via public interface) ───────────────────────
+
+    #[test]
+    fn context_window_conversion_rejects_overflow_and_nonpositive_values() {
+        for (value, expected) in [
+            (0, 128000),
+            (-1, 128000),
+            (3_000_000_000_i64, 128000),
+            (64_000, 64_000),
+        ] {
+            let entry: FutureModelEntry =
+                serde_json::from_value(serde_json::json!({"id":"bounds", "context_length":value}))
+                    .unwrap();
+            assert_eq!(
+                convert_future_model(entry, "https://example.invalid").context_window,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn convert_model_reasoning_detection() {

@@ -45,6 +45,15 @@ pub use terminal::{
 pub const FRONTIER_SHOW_SCHEMA_VERSION: &str = "goal_frontier_show_v0";
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TodoAssignment {
+    pub todo_id: String,
+    pub owner: Option<String>,
+    pub owner_registered: Option<bool>,
+    pub claimed_by: Option<String>,
+    pub lease_expires_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FrontierShow {
     pub schema_version: String,
     pub goal_id: String,
@@ -52,6 +61,8 @@ pub struct FrontierShow {
     /// should-run packet's `work_lane_contract.lane`.
     pub lane: String,
     pub frontier_projection: FrontierProjection,
+    /// Pending work's durable assignment and temporary execution lease.
+    pub todo_assignments: Vec<TodoAssignment>,
     pub outcome_segments: Vec<OutcomeSegment>,
     pub replan_rule: ReplanRuleDecision,
     pub terminal_judgement: TerminalJudgement,
@@ -75,6 +86,26 @@ pub fn frontier_show(goal: &Goal) -> FrontierShow {
         goal_id: goal.goal_id.clone(),
         lane: super::frontier::lane(goal).to_string(),
         frontier_projection: super::frontier::frontier_projection(goal, replan_required(goal)),
+        todo_assignments: goal
+            .todos
+            .iter()
+            .filter(|t| {
+                !matches!(
+                    t.status,
+                    crate::state::TodoStatus::Done | crate::state::TodoStatus::Superseded
+                )
+            })
+            .map(|t| TodoAssignment {
+                todo_id: t.id.clone(),
+                owner: t.owner.clone(),
+                owner_registered: t
+                    .owner
+                    .as_deref()
+                    .map(|owner| goal.is_registered_agent(Some(owner))),
+                claimed_by: t.claimed_by.clone(),
+                lease_expires_at: t.lease_expires_at,
+            })
+            .collect(),
         outcome_segments: outcome_segments(goal),
         replan_rule: select_replan_rule(goal),
         terminal_judgement: terminal_judgement(goal),

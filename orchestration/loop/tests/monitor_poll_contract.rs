@@ -194,6 +194,7 @@ fn no_change_polls_never_enter_the_spend_ledger() {
     goal.add(Todo::monitor("M1", "Watch A", Duration::from_millis(10)));
     std::thread::sleep(Duration::from_millis(30));
     let record = future_loop::state::RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "M1".into(),
         run_id: "run-1".into(),

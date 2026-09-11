@@ -298,6 +298,7 @@ export const resources = {
         off: "Unrestricted",
       },
       common: {
+        retry: "Retry",
         error: "Something went wrong.",
         back: "Back",
         close: "Close",
@@ -605,6 +606,7 @@ export const resources = {
         off: "完全放开",
       },
       common: {
+        retry: "重试",
         error: "操作失败，请重试。",
         back: "返回",
         close: "关闭",
