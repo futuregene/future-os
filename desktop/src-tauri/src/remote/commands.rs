@@ -3,10 +3,13 @@
 //! `agent_bridge::headless` so the persist/finalize contract is shared with
 //! the rest of the backend.
 
+use super::protocol::IncomingCmd;
+use super::services::ReplySink;
+#[cfg(test)]
+use crate::remote_host::business::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use flate2::{write::GzEncoder, Compression};
 use futures::StreamExt;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -40,24 +43,12 @@ fn remote_json_gzip_enabled() -> bool {
     })
 }
 
-type ReplySlot = Arc<tokio::sync::Mutex<Option<Vec<u8>>>>;
-
-async fn product_sandbox_available() -> Result<bool, crate::AppError> {
-    #[cfg(target_os = "macos")]
-    {
-        Ok(true)
-    }
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    {
-        crate::agent_bridge::probe_sandbox()
-            .await
-            .map(|result| result.available)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        Ok(false)
-    }
+pub(super) struct CachedReply {
+    request: Value,
+    response: tokio::sync::Mutex<Option<Vec<u8>>>,
 }
+
+type ReplySlot = Arc<CachedReply>;
 
 /// Command-id → in-flight/completed response cache (single-flight). Created
 /// once per bridge start and SHARED across command loops: credential refresh
@@ -68,7 +59,9 @@ pub(super) type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
 
 #[derive(Clone)]
 pub(super) struct HandshakeState {
+    host: &'static dyn super::services::BusinessHost,
     creds: crate::remote::pairing::PairingCreds,
+    access_epoch: Option<u64>,
     confirmed: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     bridge_instance_id: String,
@@ -80,6 +73,7 @@ struct PendingHandshake {
     transcript: String,
     device_id: String,
     client_public_key: String,
+    created_at: std::time::Instant,
 }
 
 impl HandshakeState {
@@ -90,11 +84,23 @@ impl HandshakeState {
     ) -> Self {
         Self {
             creds,
+            access_epoch: None,
+            host: super::host(),
             confirmed,
             active: Arc::new(AtomicBool::new(false)),
             bridge_instance_id,
             pending: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub(super) fn with_access(mut self, epoch: u64) -> Self {
+        self.access_epoch = Some(epoch);
+        self
+    }
+
+    fn access_current(&self) -> bool {
+        self.access_epoch
+            .is_none_or(|epoch| super::SUPERVISOR.access.current() == epoch)
     }
 
     pub(super) fn bridge_instance_id(&self) -> &str {
@@ -123,105 +129,6 @@ fn reply_slot_ttl() -> Duration {
 
 tokio::task_local! {
     static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
-}
-
-/// Command sent by the client via NATS (camelCase JSON, only the fields the bridge needs).
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct IncomingCmd {
-    id: String,
-    #[serde(rename = "type")]
-    cmd_type: String,
-    session_id: String,
-    message: String,
-    // approval_decision
-    entry_id: String,
-    mode: String,
-    // get_events_since (P1c backfill)
-    run_id: String,
-    prompt_id: String,
-    since_idx: i64,
-    // get_messages pagination (NATS payload-limit guard)
-    offset: i64,
-    limit: i64,
-    // get_session_entries backward cursor (mobile lazy history)
-    before: Option<i64>,
-    // set_model / set_thinking_level
-    model_id: String,
-    provider_id: String,
-    level: String,
-    // set_approval_tier
-    tier: String,
-    // set_session_name
-    name: String,
-    transfer_name: String,
-    // delete_session / set_session_pinned (thread-scoped, see ThreadRecord)
-    thread_id: String,
-    pinned: bool,
-    // prompt creation mode / existing workspace selection
-    workspace_id: String,
-    // file transfer control + prompt attachment references
-    mime_type: String,
-    kind: String,
-    original_size: u64,
-    transfer_size: u64,
-    transfer_id: String,
-    file_path: String,
-    attachments: Vec<super::transfer::UploadReference>,
-    // signed application-level pairing handshake
-    protocol_version: u32,
-    pair_id: String,
-    device_id: String,
-    client_public_key: String,
-    client_nonce: String,
-    desktop_nonce: String,
-    expected_desktop_id: String,
-    expected_desktop_public_key: String,
-    client_signature: String,
-}
-
-impl Default for IncomingCmd {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            cmd_type: String::new(),
-            session_id: String::new(),
-            message: String::new(),
-            entry_id: String::new(),
-            mode: String::new(),
-            run_id: String::new(),
-            prompt_id: String::new(),
-            since_idx: -1,
-            offset: 0,
-            limit: 0,
-            before: None,
-            model_id: String::new(),
-            provider_id: String::new(),
-            level: String::new(),
-            tier: String::new(),
-            name: String::new(),
-            transfer_name: String::new(),
-            thread_id: String::new(),
-            pinned: false,
-            workspace_id: String::new(),
-            mime_type: String::new(),
-            kind: String::new(),
-            original_size: 0,
-            transfer_size: 0,
-            transfer_id: String::new(),
-            file_path: String::new(),
-            attachments: Vec::new(),
-            protocol_version: 0,
-            pair_id: String::new(),
-            device_id: String::new(),
-            client_public_key: String::new(),
-            client_nonce: String::new(),
-            desktop_nonce: String::new(),
-            expected_desktop_id: String::new(),
-            expected_desktop_public_key: String::new(),
-            client_signature: String::new(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -284,6 +191,9 @@ async fn handle_command_singleflight(
     reply_slots: ReplySlots,
     handshake: HandshakeState,
 ) {
+    if !handshake.access_current() {
+        return;
+    }
     let command_id = serde_json::from_slice::<IncomingCmd>(&msg.payload)
         .ok()
         .map(|cmd| cmd.id)
@@ -293,17 +203,47 @@ async fn handle_command_singleflight(
         return;
     };
 
+    let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
     let (slot, inserted) = {
         let mut slots = reply_slots.lock().unwrap();
         match slots.get(&command_id) {
             Some(slot) => (slot.clone(), false),
             None => {
-                let slot = Arc::new(tokio::sync::Mutex::new(None));
+                let slot = Arc::new(CachedReply {
+                    request: request.clone(),
+                    response: tokio::sync::Mutex::new(None),
+                });
                 slots.insert(command_id.clone(), slot.clone());
                 (slot, true)
             }
         }
     };
+    if slot.request != request {
+        reply(
+            client,
+            &msg,
+            false,
+            Value::Null,
+            Some("command_id_conflict"),
+        )
+        .await;
+        return;
+    }
+
+    let mut cached = slot.response.lock().await;
+    if !handshake.access_current() {
+        return;
+    }
+    if let Some(payload) = cached.as_ref() {
+        publish_reply_payload(client, &msg, payload.clone()).await;
+        return;
+    }
+
+    let capture = Arc::new(Mutex::new(None));
+    REPLY_CAPTURE
+        .scope(capture.clone(), handle_command(client, msg, handshake))
+        .await;
+    *cached = capture.lock().unwrap().clone();
     if inserted {
         let slots = reply_slots.clone();
         let id = command_id.clone();
@@ -319,18 +259,6 @@ async fn handle_command_singleflight(
             }
         });
     }
-
-    let mut cached = slot.lock().await;
-    if let Some(payload) = cached.as_ref() {
-        publish_reply_payload(client, &msg, payload.clone()).await;
-        return;
-    }
-
-    let capture = Arc::new(Mutex::new(None));
-    REPLY_CAPTURE
-        .scope(capture.clone(), handle_command(client, msg, handshake))
-        .await;
-    *cached = capture.lock().unwrap().clone();
 }
 
 // SECURITY: NATS admits this bridge with a short-lived user JWT whose server-
@@ -344,6 +272,9 @@ async fn handle_command(
     msg: async_nats::Message,
     handshake: HandshakeState,
 ) {
+    if !handshake.access_current() {
+        return;
+    }
     let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -375,6 +306,20 @@ async fn handle_command(
         return;
     }
 
+    if !handshake_command
+        && !cmd.bridge_instance_id.is_empty()
+        && cmd.bridge_instance_id != handshake.bridge_instance_id
+    {
+        reply(
+            client,
+            &msg,
+            false,
+            Value::Null,
+            Some("remote_access_changed"),
+        )
+        .await;
+        return;
+    }
     match cmd.cmd_type.as_str() {
         "pair_handshake" => {
             handle_pair_handshake(client, &msg, &cmd, &handshake).await;
@@ -406,585 +351,20 @@ async fn handle_command(
         // requester can clear itself without waiting for token expiry.
         "unpair" => {
             reply(client, &msg, true, json!({}), None).await;
-            tauri::async_runtime::spawn(async {
+            tauri::async_runtime::spawn(async move {
+                if !handshake.access_current() {
+                    return;
+                }
                 if let Err(error) = super::unpair().await {
                     eprintln!("remote: phone-initiated unpair failed: {error}");
                 }
             });
         }
-        "list_sessions" => match crate::store::list_threads() {
-            Ok(threads) => {
-                let active_sessions: Vec<String> =
-                    crate::store::active_run_sessions().unwrap_or_default();
-                let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
-                let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
-                let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
-                    .iter()
-                    .map(|info| (info.thread_id.as_str(), info.status.as_str()))
-                    .collect();
-                let sessions: Vec<Value> = threads
-                    .into_iter()
-                    .filter_map(|t| {
-                        t.agent_session_id.map(|sid| {
-                            let streaming = active_sessions.iter().any(|active| active == &sid);
-                            let status = run_status_by_thread.get(t.id.as_str()).copied();
-                            json!({
-                                "sessionId": sid,
-                                "threadId": t.id,
-                                "title": t.title,
-                                "mode": t.mode,
-                                "workspaceId": t.workspace_id,
-                                "parentSessionId": t.parent_session_id,
-                                "pinned": t.pinned,
-                                "streaming": streaming,
-                                "status": status,
-                            })
-                        })
-                    })
-                    .collect();
-                reply(client, &msg, true, json!({ "sessions": sessions }), None).await;
-            }
-            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-        },
-        "list_workspaces" => match crate::store::list_workspaces() {
-            Ok(workspaces) => {
-                let workspaces: Vec<Value> = workspaces
-                    .into_iter()
-                    .filter(|workspace| workspace.kind == "user")
-                    .filter_map(|workspace| serde_json::to_value(workspace).ok())
-                    .collect();
-                reply(
-                    client,
-                    &msg,
-                    true,
-                    json!({ "workspaces": workspaces }),
-                    None,
-                )
+        _ => {
+            handshake
+                .host
+                .execute(cmd, &NatsReply { client, msg: &msg })
                 .await;
-            }
-            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-        },
-        "get_messages" => {
-            // Serve history from the agent (source of truth for all sessions).
-            // The GUI store only has message rows for GUI-native threads —
-            // TUI/CLI sessions imported as thread stubs would show empty history.
-            // Fall back to the store when the agent is unreachable.
-            //
-            // The whole history is fetched locally (gRPC/store have no payload
-            // limit) then paged here, because NATS rejects any single reply over
-            // the 1MB user-JWT payload cap — a long session's full history would
-            // otherwise fail silently (client times out with no response).
-            let offset = cmd.offset.max(0) as usize;
-            let limit = if cmd.limit > 0 {
-                cmd.limit as usize
-            } else {
-                DEFAULT_MESSAGE_PAGE_LIMIT
-            };
-            let messages = match crate::agent_bridge::get_session_messages(cmd.session_id.clone())
-                .await
-            {
-                Ok(data) => messages_vec(data),
-                Err(agent_err) => {
-                    reply(
-                            client,
-                            &msg,
-                            false,
-                            Value::Null,
-                            Some(&format!(
-                                "{agent_err}; conversation history is unavailable while the Agent is offline"
-                            )),
-                        )
-                        .await;
-                    return;
-                }
-            };
-            reply(
-                client,
-                &msg,
-                true,
-                paginate_messages(messages, offset, limit),
-                None,
-            )
-            .await;
-        }
-        "get_session_entries" => {
-            // Display-shaped history (plain-text content + per-entry meta with
-            // user attachments) for clients that render attachment chips.
-            // Paged for the same NATS payload cap as get_messages.
-            let offset = cmd.offset.max(0) as usize;
-            let limit = if cmd.limit > 0 {
-                cmd.limit as usize
-            } else {
-                DEFAULT_MESSAGE_PAGE_LIMIT
-            };
-            if let Some(before) = cmd.before {
-                match crate::agent_bridge::get_session_entries_before(
-                    cmd.session_id.clone(),
-                    before,
-                    limit as i64,
-                )
-                .await
-                {
-                    Ok(data) => {
-                        let page = prepare_backward_entries_page(&cmd.session_id, data);
-                        reply(client, &msg, true, page, None).await;
-                    }
-                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-                }
-                return;
-            }
-            match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(data) => {
-                    let entries = entries_vec(data);
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        paginate_items(entries, offset, limit, "entries"),
-                        None,
-                    )
-                    .await;
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "get_events_since" => {
-            // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
-            let offset = cmd.offset.max(0) as usize;
-            let limit = if cmd.limit > 0 {
-                cmd.limit as usize
-            } else {
-                DEFAULT_MESSAGE_PAGE_LIMIT
-            };
-            match crate::agent_bridge::get_events_since(
-                cmd.session_id.clone(),
-                cmd.run_id.clone(),
-                cmd.since_idx,
-            )
-            .await
-            {
-                Ok(data) => {
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        paginate_events(data, offset, limit),
-                        None,
-                    )
-                    .await
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "upload_init" => {
-            match super::transfer::init_upload(
-                &cmd.name,
-                &cmd.transfer_name,
-                &cmd.mime_type,
-                &cmd.kind,
-                cmd.original_size,
-                cmd.transfer_size,
-            ) {
-                Ok(data) => {
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        serde_json::to_value(data).unwrap_or(Value::Null),
-                        None,
-                    )
-                    .await
-                }
-                Err(error) => {
-                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await
-                }
-            }
-        }
-        "upload_complete" => match super::transfer::complete_upload(&cmd.transfer_id) {
-            Ok(data) => {
-                reply(
-                    client,
-                    &msg,
-                    true,
-                    serde_json::to_value(data).unwrap_or(Value::Null),
-                    None,
-                )
-                .await
-            }
-            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
-        },
-        "upload_cancel" => {
-            reply_unit(
-                client,
-                &msg,
-                super::transfer::cancel_upload(&cmd.transfer_id),
-            )
-            .await
-        }
-        "download_prepare" => {
-            match super::transfer::prepare_download_variant(
-                &cmd.session_id,
-                &cmd.file_path,
-                &cmd.mode,
-            )
-            .await
-            {
-                Ok(data) => {
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        serde_json::to_value(data).unwrap_or(Value::Null),
-                        None,
-                    )
-                    .await
-                }
-                Err(error) => {
-                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await
-                }
-            }
-        }
-        "download_cancel" => {
-            super::transfer::cancel_download(&cmd.transfer_id);
-            reply(client, &msg, true, json!({}), None).await;
-        }
-        "prompt" => {
-            // The command id is persisted on the run. This lookup survives the
-            // in-memory reply cache, mobile process death, and desktop restart.
-            // A retry therefore returns the original receipt without executing
-            // the user's prompt twice.
-            match remote_prompt_receipt(&cmd.id) {
-                Ok(Some(ack)) => {
-                    reply(client, &msg, true, ack, None).await;
-                    return;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                    return;
-                }
-            }
-            // Lazy creation (matches the GUI new-chat flow): the web client's
-            // "new" button only stages a local draft and sends the first message
-            // with an empty `session_id`. Here an empty/unknown id creates the
-            // thread + a real agent session on the fly, so the accept-ack can
-            // carry the identifiers the events will be published under and the
-            // client can latch onto the real session id. Model / thinking level
-            // travel with the first prompt so the freshly-created session is
-            // seeded with the user's draft selections.
-            let model_id = qualified_model_id(&cmd.model_id, &cmd.provider_id);
-            let thinking_level = (!cmd.level.trim().is_empty()).then(|| cmd.level.clone());
-            match prepare_remote_prompt(
-                &cmd.session_id,
-                cmd.message.clone(),
-                RemotePromptOptions {
-                    model_id,
-                    thinking_level,
-                    mode: cmd.mode.clone(),
-                    workspace_id: cmd.workspace_id.clone(),
-                    upload_references: cmd.attachments.clone(),
-                    command_id: cmd.id.clone(),
-                },
-            )
-            .await
-            {
-                Ok(prepared) => {
-                    let ack = json!({
-                        "sessionId": prepared.session_id,
-                        "threadId": prepared.thread_id,
-                        "runId": prepared.run_id,
-                    });
-                    // Actual execution runs in the background (completion visible via event stream agent_end).
-                    tokio::spawn(async move {
-                        let thread_id = prepared.thread_id.clone();
-                        if let Err(e) = crate::agent_bridge::run_prepared_prompt(prepared).await {
-                            eprintln!("remote: prompt processing failed: {e}");
-                        }
-                        crate::emit_remote_activity(&thread_id);
-                    });
-                    reply(client, &msg, true, ack, None).await;
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "get_prompt_receipt" => match remote_prompt_receipt(&cmd.prompt_id) {
-            Ok(receipt) => reply(client, &msg, true, receipt.unwrap_or(Value::Null), None).await,
-            Err(error) => reply(client, &msg, false, Value::Null, Some(&error.to_string())).await,
-        },
-        "abort" => {
-            reply_unit(
-                client,
-                &msg,
-                crate::agent_bridge::abort_session(&cmd.session_id).await,
-            )
-            .await
-        }
-        "continue_run" => {
-            // Continuations create a normal persisted run with this command id
-            // as its trigger. Consult that durable receipt before doing any
-            // work so retries remain idempotent after reply-cache expiry,
-            // mobile process death, or a desktop restart.
-            match remote_prompt_receipt(&cmd.id) {
-                Ok(Some(ack)) => {
-                    reply(client, &msg, true, ack, None).await;
-                    return;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                    return;
-                }
-            }
-            if let Err(error) = validate_continue_source(&cmd.session_id, &cmd.run_id) {
-                reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                return;
-            }
-            // Resume a failed run: synthesize a continue prompt from the run's
-            // recent terminal events and push it through the normal prompt
-            // pipeline (model/thinking default to the session's current values).
-            let prompt = build_continue_prompt(&cmd.run_id);
-            match prepare_remote_prompt(
-                &cmd.session_id,
-                prompt,
-                RemotePromptOptions {
-                    model_id: None,
-                    thinking_level: None,
-                    mode: "chat".to_string(),
-                    workspace_id: String::new(),
-                    upload_references: Vec::new(),
-                    command_id: cmd.id.clone(),
-                },
-            )
-            .await
-            {
-                Ok(prepared) => {
-                    let ack = json!({
-                        "sessionId": prepared.session_id,
-                        "threadId": prepared.thread_id,
-                        "runId": prepared.run_id,
-                    });
-                    tokio::spawn(async move {
-                        let thread_id = prepared.thread_id.clone();
-                        if let Err(e) = crate::agent_bridge::run_prepared_prompt(prepared).await {
-                            eprintln!("remote: continue_run failed: {e}");
-                        }
-                        crate::emit_remote_activity(&thread_id);
-                    });
-                    reply(client, &msg, true, ack, None).await;
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "approval_decision" => {
-            let ownership = (|| -> Result<(), crate::AppError> {
-                let approval = crate::store::get_approval_request(&cmd.entry_id)?
-                    .ok_or_else(|| "Approval request could not be loaded.".to_string())?;
-                let thread = crate::store::get_thread(&approval.thread_id)?
-                    .ok_or_else(|| "Approval thread could not be loaded.".to_string())?;
-                let owner_session_id = thread.agent_session_id.unwrap_or(thread.id);
-                if cmd.session_id != owner_session_id {
-                    return Err(crate::AppError::Message(
-                        "Approval request does not belong to this session.".to_string(),
-                    ));
-                }
-                Ok(())
-            })();
-            if let Err(error) = ownership {
-                reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                return;
-            }
-            let input = crate::store::DecideApprovalRequestInput {
-                approval_request_id: cmd.entry_id.clone(),
-                status: cmd.mode.clone(),
-                decision_note: None,
-            };
-            reply_unit(
-                client,
-                &msg,
-                crate::agent_bridge::decide_approval(input)
-                    .await
-                    .map(|_| ()),
-            )
-            .await;
-        }
-        "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
-            Ok(data) => reply(client, &msg, true, data, None).await,
-            Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-        },
-        "list_models" | "get_available_models" => {
-            match crate::agent_bridge::get_available_models().await {
-                Ok(data) => reply(client, &msg, true, data, None).await,
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "set_model" => {
-            reply_unit(
-                client,
-                &msg,
-                crate::agent_bridge::set_session_model(
-                    cmd.session_id.clone(),
-                    qualified_model_id(&cmd.model_id, &cmd.provider_id).unwrap_or_default(),
-                )
-                .await,
-            )
-            .await;
-        }
-        "set_thinking_level" => {
-            reply_unit(
-                client,
-                &msg,
-                crate::agent_bridge::set_session_thinking_level(
-                    cmd.session_id.clone(),
-                    cmd.level.clone(),
-                )
-                .await,
-            )
-            .await;
-        }
-        "get_settings" => {
-            match crate::store::get_app_settings() {
-                Ok(settings) => {
-                    let sandbox_available = match product_sandbox_available().await {
-                        Ok(available) => available,
-                        Err(error) => {
-                            reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                            return;
-                        }
-                    };
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        json!({
-                            "approvalTier": settings.approval_tier,
-                            // Windows is exposed only when the real host probe
-                            // passes. The phone never receives paths or native
-                            // diagnostics.
-                            "sandboxAvailable": sandbox_available,
-                        }),
-                        None,
-                    )
-                    .await
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "set_approval_tier" => {
-            // The tier is a global app preference (not per-session): writing it
-            // here is the same as flipping it in the desktop Settings. It takes
-            // effect on the next session establishment, where the bridge pushes
-            // it to the agent via `set_agent_sandbox_policy`.
-            let tier = if cmd.tier == "sandbox" {
-                match product_sandbox_available().await {
-                    Ok(true) => cmd.tier.clone(),
-                    Ok(false) => "manual".to_string(),
-                    Err(error) => {
-                        reply(client, &msg, false, Value::Null, Some(&error.to_string())).await;
-                        return;
-                    }
-                }
-            } else {
-                cmd.tier.clone()
-            };
-            match crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
-                approval_tier: Some(tier),
-                ..Default::default()
-            }) {
-                Ok(settings) => {
-                    reply(
-                        client,
-                        &msg,
-                        true,
-                        json!({ "approvalTier": settings.approval_tier }),
-                        None,
-                    )
-                    .await
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "set_session_name" => {
-            match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
-                .await
-            {
-                Ok(()) => {
-                    if let Ok(Some(thread)) =
-                        crate::store::find_thread_by_agent_session(&cmd.session_id)
-                    {
-                        crate::emit_remote_activity(&thread.id);
-                    }
-                    reply(client, &msg, true, json!({}), None).await
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "set_session_pinned" => {
-            match crate::store::pin_thread(crate::store::PinThreadInput {
-                thread_id: cmd.thread_id.clone(),
-                pinned: cmd.pinned,
-            }) {
-                Ok(_) => {
-                    crate::emit_remote_activity(&cmd.thread_id);
-                    reply(client, &msg, true, json!({}), None).await
-                }
-                Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-            }
-        }
-        "delete_session" => {
-            // Matches the desktop single-thread delete: the session record is
-            // removed (and, when it is the only owner, the agent session too),
-            // but the temporary chat workspace files are kept (delete_files =
-            // false). Only reachable with a non-empty thread id from the remote
-            // client; a missing id is a malformed request, not a deletion.
-            if cmd.thread_id.is_empty() {
-                reply(client, &msg, false, Value::Null, Some("missing thread_id")).await;
-            } else {
-                match crate::store::delete_thread_with_files(&cmd.thread_id, false) {
-                    Ok(_) => {
-                        crate::emit_remote_activity(&cmd.thread_id);
-                        reply(client, &msg, true, json!({}), None).await
-                    }
-                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-                }
-            }
-        }
-        "delete_workspace" => {
-            // Phone parity with the desktop sidebar's workspace delete: reuse the
-            // exact command the GUI calls, so the store cascade, the agent-session
-            // delete outbox and the orphaned scratch/review dirs are handled
-            // identically. The user's own files at `workspace.path` are never
-            // touched. A missing id is a malformed request, not a deletion.
-            if cmd.workspace_id.is_empty() {
-                reply(
-                    client,
-                    &msg,
-                    false,
-                    Value::Null,
-                    Some("missing workspace_id"),
-                )
-                .await;
-            } else {
-                match crate::commands::delete_workspace(cmd.workspace_id.clone()).await {
-                    Ok(_) => {
-                        // The workspace and every thread in it are gone; the GUI
-                        // sidebar re-lists from this bare invalidation. The phone's
-                        // catalogue converges through the dirty-flag workspace push.
-                        crate::emit_threads_updated();
-                        reply(client, &msg, true, json!({}), None).await
-                    }
-                    Err(e) => reply(client, &msg, false, Value::Null, Some(&e.to_string())).await,
-                }
-            }
-        }
-        other => {
-            reply(
-                client,
-                &msg,
-                false,
-                Value::Null,
-                Some(&format!("Unsupported command: {other}")),
-            )
-            .await;
         }
     }
 }
@@ -1059,9 +439,7 @@ async fn handle_pair_handshake(
         return;
     }
 
-    // Identity validated — the handshake may now suspend command processing
-    // until the confirm round completes (see handle_pair_handshake_confirm).
-    state.active.store(false, Ordering::Release);
+    // A candidate challenge must not revoke the already authenticated peer.
 
     let desktop_nonce = nkeys::KeyPair::new_user().public_key();
     let transcript = handshake_transcript(&HandshakeTranscript {
@@ -1079,15 +457,22 @@ async fn handle_pair_handshake(
             .sign(transcript.as_bytes())
             .expect("a seed-derived KeyPair always signs"),
     );
-    state.pending.lock().unwrap().clear();
-    state.pending.lock().unwrap().insert(
-        desktop_nonce.clone(),
-        PendingHandshake {
-            transcript,
-            device_id: cmd.device_id.clone(),
-            client_public_key: cmd.client_public_key.clone(),
-        },
-    );
+    {
+        let mut pending = state.pending.lock().unwrap();
+        pending.retain(|_, value| value.created_at.elapsed() < Duration::from_secs(30));
+        if pending.len() >= 32 {
+            return;
+        }
+        pending.insert(
+            desktop_nonce.clone(),
+            PendingHandshake {
+                transcript,
+                created_at: std::time::Instant::now(),
+                device_id: cmd.device_id.clone(),
+                client_public_key: cmd.client_public_key.clone(),
+            },
+        );
+    }
     reply(
         client,
         msg,
@@ -1127,7 +512,10 @@ async fn handle_pair_handshake_confirm(
         .await;
         return;
     };
-    if cmd.device_id != pending.device_id {
+    if !state.access_current()
+        || pending.created_at.elapsed() >= Duration::from_secs(30)
+        || cmd.device_id != pending.device_id
+    {
         reply(
             client,
             msg,
@@ -1160,14 +548,26 @@ async fn handle_pair_handshake_confirm(
         .await;
         return;
     }
-    if !state.confirmed.load(Ordering::Acquire) {
-        if let Err(error) = crate::remote::pairing::save_creds(&state.creds) {
+    let confirm = || -> Result<(), crate::AppError> {
+        if !state.confirmed.load(Ordering::Acquire) {
+            crate::remote::pairing::save_creds(&state.creds)?;
+            state.confirmed.store(true, Ordering::Release);
+        }
+        state.active.store(true, Ordering::Release);
+        Ok(())
+    };
+    let committed = match state.access_epoch {
+        Some(epoch) => super::SUPERVISOR.access.commit(epoch, confirm),
+        None => Some(confirm()),
+    };
+    match committed {
+        None => return,
+        Some(Err(error)) => {
             reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
             return;
         }
-        state.confirmed.store(true, Ordering::Release);
+        Some(Ok(())) => {}
     }
-    state.active.store(true, Ordering::Release);
     reply(
         client,
         msg,
@@ -1188,490 +588,6 @@ async fn handle_pair_handshake_confirm(
         None,
     )
     .await;
-}
-
-fn new_chat_thread_input() -> crate::store::CreateThreadInput {
-    crate::store::CreateThreadInput {
-        mode: "chat".to_string(),
-        title: None,
-        workspace_id: None,
-        workspace_path: None,
-        workspace_name: None,
-        agent_session_id: None,
-    }
-}
-
-/// Model ids from the agent catalogue are only unique inside their provider.
-/// The Agent RPC accepts a single qualified `provider/model` value, so normalize
-/// new mobile commands and keep legacy already-qualified callers working.
-fn qualified_model_id(model_id: &str, provider_id: &str) -> Option<String> {
-    let model_id = model_id.trim();
-    if model_id.is_empty() {
-        return None;
-    }
-    let provider_id = provider_id.trim();
-    if provider_id.is_empty() || model_id.contains('/') {
-        Some(model_id.to_string())
-    } else {
-        Some(format!("{provider_id}/{model_id}"))
-    }
-}
-
-/// One-shot injected failure for the prompt-prepare step (tests only): the
-/// store write inside `prepare_prompt_persisted` cannot fail deterministically
-/// from the outside (pooled WAL connections keep working across chmod/unlink),
-/// so the claimed-attachment rollback path is exercised through this seam.
-#[cfg(test)]
-static INJECT_PREPARE_FAILURE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// See [`INJECT_PREPARE_FAILURE`]; armed by tests, disarmed on use.
-#[cfg(test)]
-fn injected_prepare_failure() -> Result<(), crate::AppError> {
-    INJECT_PREPARE_FAILURE
-        .swap(false, std::sync::atomic::Ordering::Relaxed)
-        .then(|| crate::AppError::Message("injected prepare failure".to_string()))
-        .map_or(Ok(()), Err)
-}
-
-/// Build the "continue the previous task" prompt for a failed run. Mirrors the
-/// desktop `buildContinuePrompt`/`loadRunResumeSummary` shape, but folds only
-/// the run's recent terminal events (tool output detail lives in the GUI-side
-/// summary; the store exposes the events, which is enough to resume). Sent to
-/// the LLM, so the text is intentionally not localized.
-fn build_continue_prompt(run_id: &str) -> String {
-    let events = crate::store::list_run_events(run_id).unwrap_or_default();
-    let mut lines = vec!["继续上一个任务。".to_string()];
-    let terminal: Vec<_> = events
-        .iter()
-        .filter(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "error" | "agent_error" | "agent_end" | "tool_end" | "tool_result"
-            )
-        })
-        .collect();
-    if !terminal.is_empty() {
-        lines.push(String::new());
-        lines.push("已执行内容摘要:".to_string());
-        for event in terminal.iter().rev().take(6).rev() {
-            let payload = event.payload.as_deref().unwrap_or("");
-            let truncated: String = payload.chars().take(360).collect();
-            lines.push(format!("- {}: {}", event.event_type, truncated));
-        }
-    }
-    lines.join("\n")
-}
-
-/// A continuation is not a free-form prompt alias: it may only resume the
-/// failed run that belongs to the addressed session. This keeps a stale mobile
-/// outbox entry (including one from a previous pairing) from creating or
-/// steering an unrelated conversation.
-fn validate_continue_source(session_id: &str, run_id: &str) -> Result<(), crate::AppError> {
-    if session_id.trim().is_empty() || run_id.trim().is_empty() {
-        return Err("A continuation requires a session and source run."
-            .to_string()
-            .into());
-    }
-    let run = crate::store::get_run(run_id)?
-        .ok_or_else(|| "The source run no longer exists.".to_string())?;
-    if run.status != "failed" {
-        return Err("Only a failed run can be continued.".to_string().into());
-    }
-    let thread = crate::store::get_thread(&run.thread_id)?
-        .ok_or_else(|| "The source run's conversation no longer exists.".to_string())?;
-    let run_session_id = thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&thread.id);
-    if run_session_id != session_id {
-        return Err("The source run does not belong to this session."
-            .to_string()
-            .into());
-    }
-    Ok(())
-}
-
-fn remote_prompt_receipt(command_id: &str) -> Result<Option<Value>, crate::AppError> {
-    let Some(run) = crate::store::find_run_by_trigger_message_id(command_id)? else {
-        return Ok(None);
-    };
-    let Some(thread) = crate::store::get_thread(&run.thread_id)? else {
-        return Ok(None);
-    };
-    let session_id = thread
-        .agent_session_id
-        .clone()
-        .unwrap_or_else(|| thread.id.clone());
-    Ok(Some(json!({
-        "sessionId": session_id,
-        "threadId": thread.id,
-        "runId": run.id,
-    })))
-}
-
-struct RemotePromptOptions {
-    model_id: Option<String>,
-    thinking_level: Option<String>,
-    mode: String,
-    workspace_id: String,
-    upload_references: Vec<super::transfer::UploadReference>,
-    command_id: String,
-}
-
-/// Find the thread for `session_id` (create a new chat thread when unknown —
-/// remote policy), then persist user message + run via `agent_bridge::headless`.
-async fn prepare_remote_prompt(
-    session_id: &str,
-    message: String,
-    options: RemotePromptOptions,
-) -> Result<crate::agent_bridge::PreparedPrompt, crate::AppError> {
-    let RemotePromptOptions {
-        model_id,
-        thinking_level,
-        mode,
-        workspace_id,
-        upload_references,
-        command_id,
-    } = options;
-    let thread = match crate::store::find_thread_by_agent_session(session_id)? {
-        Some(thread) => thread,
-        None => {
-            // Lazy creation: the thread is born with the first message, titled
-            // from it (mirrors the GUI new-chat draft), and immediately gets a
-            // real agent session id so the ack, the event subjects, and history
-            // all agree from the start (no empty row, no id drift).
-            let mut input = if mode == "workspace" {
-                if workspace_id.trim().is_empty() {
-                    return Err(crate::AppError::Message(
-                        "Select a workspace before starting a workspace conversation.".to_string(),
-                    ));
-                }
-                crate::store::CreateThreadInput {
-                    mode: "workspace".to_string(),
-                    title: None,
-                    workspace_id: Some(workspace_id),
-                    workspace_path: None,
-                    workspace_name: None,
-                    agent_session_id: None,
-                }
-            } else {
-                new_chat_thread_input()
-            };
-            input.title = Some(derive_thread_title(&message));
-            let mut thread = crate::store::create_thread(input)?;
-            match crate::agent_bridge::provision_agent_session(
-                &thread.id,
-                model_id.clone(),
-                thinking_level.clone(),
-            )
-            .await
-            {
-                Ok(sid) => thread.agent_session_id = Some(sid),
-                Err(e) => {
-                    // Thread exists but has no agent session → it would show as
-                    // an orphan empty row in the GUI list. Remove it best-effort.
-                    let _ = crate::store::delete_thread(&thread.id);
-                    return Err(e);
-                }
-            }
-            thread
-        }
-    };
-    // Reject a prompt for a session that is already running BEFORE persisting
-    // anything (matches GUI semantics: no follow-up/queue). The agent
-    // refuses a concurrent prompt too, but only after the ack — checking here
-    // keeps a busy session from accumulating a phantom user message, a failed
-    // run, and a fake "Future Agent error" assistant reply. Residual race: two
-    // clients prompting the same idle session within milliseconds can both pass
-    // this check; the agent's is_streaming refusal stays as the backstop.
-    let resolved_session_id = thread
-        .agent_session_id
-        .clone()
-        .unwrap_or_else(|| thread.id.clone());
-    if crate::store::active_run_sessions()?
-        .iter()
-        .any(|active| active == &resolved_session_id)
-    {
-        return Err(crate::AppError::Message(
-            "This session is still running; wait for it to finish or abort it first.".to_string(),
-        ));
-    }
-    let attachments = super::transfer::claim_uploads(&upload_references, &thread.id)?;
-    let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(
-        &thread,
-        message,
-        model_id,
-        thinking_level,
-        attachments.clone(),
-        (!command_id.trim().is_empty()).then_some(command_id),
-    );
-    #[cfg(test)]
-    let prepared = prepared.and_then(|prepared| injected_prepare_failure().map(|()| prepared));
-    let prepared = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            super::transfer::rollback_claimed(&attachments);
-            return Err(error);
-        }
-    };
-    // Notify frontend: new thread/run appeared (trigger list refresh).
-    crate::emit_remote_activity(&thread.id);
-    Ok(prepared)
-}
-
-/// Derive a thread title from the first message, matching the GUI new-chat
-/// draft (`deriveThreadTitle`): collapse whitespace, take 28 chars, ellipsize.
-/// Empty input falls back to the default chat title so the row isn't blank.
-fn derive_thread_title(content: &str) -> String {
-    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    let compact = compact.trim();
-    if compact.is_empty() {
-        return "New Chat".to_string();
-    }
-    let chars: Vec<char> = compact.chars().collect();
-    if chars.len() > 28 {
-        format!("{}...", chars.into_iter().take(28).collect::<String>())
-    } else {
-        compact.to_string()
-    }
-}
-
-/// Reply budget for a `get_messages` page: comfortably under NATS's 1MB
-/// user-JWT payload limit, leaving headroom for the reply envelope.
-const MESSAGES_PAGE_BYTES: usize = 512 * 1024;
-/// Backward mobile history keeps the requested ten-exchange semantic maximum,
-/// with the same 512 KiB wire budget as other remote history pages. Complete
-/// oldest exchanges are deferred only when an unusually content-heavy ten-turn
-/// page would exceed that budget; a page never splits an exchange.
-const BACKWARD_HISTORY_PAGE_BYTES: usize = 512 * 1024;
-/// A single persisted message can embed a huge tool result; cap its content so
-/// one oversized message can't push a page past the payload limit on its own.
-const MESSAGE_CONTENT_CAP_BYTES: usize = 256 * 1024;
-/// Default page size when the client doesn't ask for one.
-const DEFAULT_MESSAGE_PAGE_LIMIT: usize = 100;
-
-/// Extract the `messages` array from an agent `get_messages` reply.
-fn messages_vec(data: Value) -> Vec<Value> {
-    data.get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Extract the `entries` array from an agent `get_session_entries` reply.
-fn entries_vec(data: Value) -> Vec<Value> {
-    data.get("entries")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usize) -> Value {
-    paginate_items(messages, offset, limit, "messages")
-}
-
-/// Apply the remote wire caps to a backward Agent page without losing its
-/// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
-/// complete oldest exchanges until the page fits and advance the returned
-/// cursor past those omitted rows; they remain reachable on the next pull.
-fn prepare_backward_entries_page(_session_id: &str, data: Value) -> Value {
-    let mut entries = entries_vec(data.clone());
-    for entry in &mut entries {
-        cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
-    }
-    let agent_start = data
-        .get("nextOffset")
-        .or_else(|| data.get("next_offset"))
-        .and_then(Value::as_u64)
-        .unwrap_or_default() as usize;
-    let agent_has_more = data
-        .get("hasMore")
-        .or_else(|| data.get("has_more"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut removed = 0usize;
-    while serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
-    {
-        let Some(next_user) = entries
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find_map(|(index, entry)| {
-                (entry.get("role").and_then(Value::as_str) == Some("user")).then_some(index)
-            })
-        else {
-            break;
-        };
-        entries.drain(..next_user);
-        removed += next_user;
-    }
-    let next_offset = agent_start.saturating_add(removed);
-    json!({
-        "offset": next_offset,
-        "nextOffset": next_offset,
-        "hasMore": agent_has_more || removed > 0,
-        "entries": entries,
-    })
-}
-
-/// Page a full item list into a reply that fits the NATS payload cap.
-///
-/// Each item is content-capped first (so no single item is huge), then items
-/// are accumulated from `offset` until the serialized page would exceed
-/// [`MESSAGES_PAGE_BYTES`] or `limit` is reached (always at least one item —
-/// it's already capped). Returns the page (under `key`) plus cursor fields the
-/// client uses to fetch the remainder.
-fn paginate_items(mut items: Vec<Value>, offset: usize, limit: usize, key: &str) -> Value {
-    for item in items.iter_mut() {
-        cap_remote_item(item, MESSAGE_CONTENT_CAP_BYTES);
-    }
-    let total = items.len();
-    let start = offset.min(total);
-    let mut end = start;
-    let mut bytes = 0usize;
-    for (index, item) in items.iter().skip(start).enumerate() {
-        let size = serde_json::to_vec(item)
-            .map(|bytes| bytes.len())
-            .unwrap_or(0);
-        if index > 0 && (index >= limit || bytes + size > MESSAGES_PAGE_BYTES) {
-            break;
-        }
-        bytes += size;
-        end += 1;
-    }
-    let page: Vec<Value> = items.drain(start..end).collect();
-    let mut value = json!({
-        "offset": start,
-        "nextOffset": end,
-        "total": total,
-        "hasMore": end < total,
-    });
-    value[key] = json!(page);
-    value
-}
-
-/// Page a session's replay event tail into a reply that fits the NATS payload
-/// cap, mirroring `paginate_items` (each event's `data` is capped, then events
-/// accumulate until the page would exceed [`MESSAGES_PAGE_BYTES`]). The reply
-/// keeps the envelope's non-event fields (`runId`, `projection`, `truncated`)
-/// on every page so the client can distinguish a ring-overflow projection from
-/// a plain tail replay regardless of which page it lands on.
-fn paginate_events(mut data: Value, offset: usize, limit: usize) -> Value {
-    let run_id = data.get("runId").cloned().unwrap_or(Value::Null);
-    let projection = data.get("projection").cloned().unwrap_or(Value::Null);
-    let truncated = data.get("truncated").cloned().unwrap_or(Value::Null);
-    let events = data
-        .get_mut("events")
-        .and_then(Value::as_array_mut)
-        .map(std::mem::take)
-        .unwrap_or_default();
-    let mut page = paginate_items(events, offset, limit, "events");
-    if !run_id.is_null() {
-        page["runId"] = run_id;
-    }
-    if !projection.is_null() {
-        page["projection"] = projection;
-    }
-    if !truncated.is_null() {
-        page["truncated"] = truncated;
-    }
-    page
-}
-
-/// Bound presentation payloads without changing the stored record.
-fn truncate_message_content(message: &mut Value, cap: usize) {
-    if serialized_len(message) <= cap {
-        return;
-    }
-    if let Some(blocks) = message.get_mut("blocks").and_then(Value::as_array_mut) {
-        let mut remaining = cap;
-        for block in blocks {
-            if let Some(Value::String(text)) = block.get_mut("text") {
-                let (end, truncated) = byte_cut(text, remaining);
-                if truncated {
-                    let mut cut = text[..end].to_owned();
-                    cut.push('…');
-                    *text = cut;
-                }
-                remaining = remaining.saturating_sub(text.len());
-            }
-        }
-    } else if let Some(Value::String(data)) = message.get_mut("data") {
-        if data.len() > cap {
-            *data = json!({"_truncated":true,"bytes":data.len()}).to_string();
-        }
-    }
-}
-
-fn cap_remote_item(item: &mut Value, cap: usize) {
-    truncate_message_content(item, cap.saturating_sub(16 * 1024));
-    if serialized_len(item) <= cap {
-        return;
-    }
-    if let Some(blocks) = item.get_mut("blocks").and_then(Value::as_array_mut) {
-        for block in blocks {
-            if let Some(arguments) = block.get_mut("arguments") {
-                let bytes = serialized_len(arguments);
-                if bytes > 8 * 1024 {
-                    *arguments = json!({"truncated":true,"bytes":bytes});
-                }
-            }
-        }
-    }
-    if serialized_len(item) <= cap {
-        return;
-    }
-    let original_bytes = serialized_len(item);
-    if item.get("blocks").is_some() {
-        let mut replacement = serde_json::Map::new();
-        for key in ["id", "role", "kind", "runId", "createdAtMs", "usage", "run"] {
-            if let Some(value) = item.get(key) {
-                replacement.insert(key.into(), value.clone());
-            }
-        }
-        if let Some(checkpoint) = item.get("checkpoint").and_then(Value::as_object) {
-            let minimal: serde_json::Map<String, Value> =
-                ["checkpointId", "tokensBefore", "tokensAfter", "trigger"]
-                    .into_iter()
-                    .filter_map(|key| checkpoint.get(key).map(|value| (key.into(), value.clone())))
-                    .collect();
-            replacement.insert("checkpoint".into(), Value::Object(minimal));
-        }
-        replacement.insert(
-            "metadata".into(),
-            json!({"remoteTruncated":true,"originalBytes":original_bytes}),
-        );
-        replacement.insert(
-            "blocks".into(),
-            json!([{"kind":"text","text":"[…远程条目过大，已截断；完整内容见本机会话…]"}]),
-        );
-        *item = Value::Object(replacement);
-    } else if let Some(object) = item.as_object_mut() {
-        object.insert(
-            "data".into(),
-            Value::String(json!({"_truncated":true,"bytes":original_bytes}).to_string()),
-        );
-    }
-}
-
-fn serialized_len(value: &Value) -> usize {
-    serde_json::to_vec(value).map_or(0, |bytes| bytes.len())
-}
-
-/// Return a byte index at a char boundary, not exceeding `max_bytes`, and
-/// whether the string had to be cut.
-fn byte_cut(text: &str, max_bytes: usize) -> (usize, bool) {
-    if text.len() <= max_bytes {
-        return (text.len(), false);
-    }
-    let mut end = max_bytes;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (end, true)
 }
 
 /// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.
@@ -1722,19 +638,6 @@ fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
         return plain;
     }
     compressed
-}
-
-/// Reply `{}` on success or the error text on failure — the shared shape for
-/// every unit-result command (abort, set_model, ...).
-async fn reply_unit(
-    client: &async_nats::Client,
-    msg: &async_nats::Message,
-    result: Result<(), crate::AppError>,
-) {
-    match result {
-        Ok(()) => reply(client, msg, true, json!({}), None).await,
-        Err(error) => reply(client, msg, false, Value::Null, Some(&error.to_string())).await,
-    }
 }
 
 async fn publish_reply_payload(
@@ -2140,8 +1043,8 @@ mod bridge_tests {
         await_publish, ensure_mock_agent, init_store, jwt, mock_agent_lock, nats_connect,
         nats_connect_once, now_secs, unique, FakeNats, HomeGuard,
     };
-    use super::super::transfer;
     use super::*;
+    use crate::remote_host::files as transfer;
     use serde_json::json;
     use std::time::Duration;
 
@@ -2185,15 +1088,19 @@ mod bridge_tests {
 
     impl Bridge {
         async fn start() -> Self {
+            Self::start_with_host(super::super::host()).await
+        }
+        async fn start_with_host(host: &'static dyn super::super::services::BusinessHost) -> Self {
             let nats = FakeNats::start().await;
             let client = nats_connect(&nats).await;
             let creds = bridge_creds();
             let pair_id = creds.pair_id.clone();
-            let handshake = HandshakeState::new(
+            let mut handshake = HandshakeState::new(
                 creds,
                 Arc::new(AtomicBool::new(false)),
                 format!("bridge_{}", unique("cmd")),
             );
+            handshake.host = host;
             let reply_slots = new_reply_slots();
             let loop_handle = tokio::spawn(command_loop(
                 client.clone(),
@@ -2231,6 +1138,35 @@ mod bridge_tests {
         fn stop(self) {
             self.loop_handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn protocol_routes_to_a_substitute_host_and_rejects_a_stale_access_identity() {
+        struct Echo;
+        impl super::super::services::BusinessHost for Echo {
+            fn execute<'a>(
+                &'a self,
+                cmd: IncomingCmd,
+                sink: &'a dyn ReplySink,
+            ) -> futures::future::BoxFuture<'a, ()> {
+                Box::pin(async move {
+                    sink.send(true, json!({"host": "substitute", "id": cmd.id}), None)
+                        .await
+                })
+            }
+        }
+        static ECHO: Echo = Echo;
+        let bridge = Bridge::start_with_host(&ECHO).await;
+        bridge.activate();
+        let response = bridge
+            .call(json!({"id":"host-test", "type":"get_state"}))
+            .await;
+        assert_eq!(response["data"]["host"], "substitute");
+        let response = bridge
+            .call(json!({"id":"stale-test", "type":"prompt", "bridgeInstanceId":"old-access"}))
+            .await;
+        assert_eq!(response["error"], "remote_access_changed");
+        bridge.stop();
     }
 
     fn handshake_cmd(
@@ -2431,11 +1367,17 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
 
-        // A second handshake resets activity until reconfirmed — and the
-        // reconfirm skips the credential save (already persisted above).
+        // A candidate handshake preserves the authenticated session and does
+        // not invalidate another outstanding challenge.
         let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
         let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
-        assert!(!bridge.handshake.active_flag().load(Ordering::Acquire));
+        assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
+        let overlapping = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        assert_eq!(overlapping["success"], json!(true));
+        let live = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_sessions" }))
+            .await;
+        assert_eq!(live["success"], json!(true));
         let transcript = handshake_transcript(&HandshakeTranscript {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
@@ -3683,6 +2625,10 @@ mod bridge_tests {
             .filter(|(command, sid)| command == "get_state" && sid == &session)
             .count();
         assert_eq!(executions, 1, "retried command must not re-execute");
+        let conflict = bridge
+            .call(json!({ "id": command_id, "type": "delete_session", "sessionId": session }))
+            .await;
+        assert_eq!(conflict["error"], json!("command_id_conflict"));
 
         // After the reply-slot TTL the entry expires and the command runs again.
         tokio::time::sleep(Duration::from_millis(650)).await;
@@ -3775,5 +2721,20 @@ mod bridge_tests {
             json!({"entries":[entry.clone()],"hasMore":false,"nextOffset":0}),
         );
         assert_eq!(page["entries"][0], entry);
+    }
+}
+
+struct NatsReply<'a> {
+    client: &'a async_nats::Client,
+    msg: &'a async_nats::Message,
+}
+impl ReplySink for NatsReply<'_> {
+    fn send<'a>(
+        &'a self,
+        success: bool,
+        data: Value,
+        error: Option<String>,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move { reply(self.client, self.msg, success, data, error.as_deref()).await })
     }
 }

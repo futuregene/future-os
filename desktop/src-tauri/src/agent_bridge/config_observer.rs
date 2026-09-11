@@ -90,7 +90,7 @@ async fn observe_once(
         if let Some(handle) = crate::APP_HANDLE.get() {
             let _ = handle.emit("provider-config-changed", &payload);
         }
-        crate::remote::publish_event(
+        crate::agent_events::publish_event(
             "_global",
             "provider_config_changed",
             &data,

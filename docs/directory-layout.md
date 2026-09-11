@@ -38,6 +38,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)
 ├── remote_pairing.json        # desktop remote-bridge identity (nkey_seed + user_jwt)
+├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/agent.sock             # Unix IPC fallback (not used by Windows)

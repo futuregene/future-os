@@ -36,7 +36,7 @@ describe("fetchEventsSince", () => {
       { events: [event("c", 2)] },
     ]);
     const result = await fetchEventsSince(client, "s1", "r1", 0);
-    expect((result.events ?? []).map(e => e.idx)).toEqual([0, 1, 2]);
+    expect((result.events ?? []).map((e) => e.idx)).toEqual([0, 1, 2]);
     expect(request).toHaveBeenCalledTimes(3);
     expect(request.mock.calls[1][0]).toMatchObject({ offset: 1 });
     expect(request.mock.calls[2][0]).toMatchObject({ offset: 2 });
@@ -80,4 +80,22 @@ describe("fetchEventsSince", () => {
     expect(result.events).toEqual([]);
     expect(request).toHaveBeenCalledTimes(1);
   });
+});
+
+test("new Desktop replay advances event cursors while pinning the first page watermark", async () => {
+  const { client, request } = clientReturning([
+    { events: [event("a", 4)], hasMore: true, nextSinceIdx: 4, watermark: 9 },
+    { events: [event("b", 9)], hasMore: false, watermark: 9 },
+  ]);
+  const result = await fetchEventsSince(client, "s", "r", -1);
+  expect(result.events?.map((e) => e.idx)).toEqual([4, 9]);
+  expect(request.mock.calls[1][0]).toMatchObject({ sinceIdx: 4, offset: 0, replayUntilIdx: 9 });
+});
+
+test("a changed replay window rejects the partial result so sync can retry from durable state", async () => {
+  const { client } = clientReturning([
+    { events: [event("a", 4)], hasMore: true, nextSinceIdx: 4, watermark: 9 },
+    { events: [event("b", 10)], hasMore: false, watermark: 10 },
+  ]);
+  await expect(fetchEventsSince(client, "s", "r", -1)).rejects.toThrow("replay_window_changed");
 });

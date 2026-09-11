@@ -1,4 +1,5 @@
 mod agent_bridge;
+mod agent_events;
 mod agent_proto;
 mod agent_providers;
 mod agent_supervisor;
@@ -21,6 +22,7 @@ mod macos_power;
 mod menu;
 mod proc;
 mod remote;
+mod remote_host;
 mod run_error;
 mod scheduler;
 mod shadow_review;

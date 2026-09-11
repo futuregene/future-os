@@ -39,7 +39,9 @@ describe("useSessionCatalog", () => {
 
   beforeEach(() => {
     request = jest.fn();
-    clientRef = { current: { request, requestRetry: request } as unknown as RemoteClient };
+    clientRef = {
+      current: { request, requestRetry: request } as unknown as RemoteClient,
+    };
     selectedRef = { current: "s1" };
     result = { current: undefined as unknown as Catalog };
     renderer = null;
@@ -50,6 +52,76 @@ describe("useSessionCatalog", () => {
       act(() => renderer!.unmount());
       renderer = null;
     }
+  });
+
+  test("late pull cannot overwrite a more recent pushed sessions snapshot", async () => {
+    render();
+    let resolve!: (value: unknown) => void;
+    request.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const pulling = result.current.refreshSessions();
+    act(() => void result.current.applySessionSnapshot([session("new")]));
+    await act(async () => {
+      resolve({ data: { sessions: [session("old")] } });
+      await pulling;
+    });
+    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["new"]);
+  });
+
+  test("reset fences outstanding directory and settings requests", async () => {
+    render();
+    let resolve!: (value: unknown) => void;
+    request.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const pulling = Promise.all([
+      result.current.refreshSessions(),
+      result.current.refreshWorkspaces(),
+      result.current.refreshSettings(),
+    ]);
+    act(() => result.current.reset());
+    await act(async () => {
+      resolve({
+        data: {
+          sessions: [session("old")],
+          workspaces: [{ id: "old" }],
+          approvalTier: "manual",
+          sandboxAvailable: true,
+        },
+      });
+      await pulling;
+    });
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.workspaces).toEqual([]);
+    expect(result.current.approvalTier).toBe("off");
+    expect(result.current.sandboxAvailable).toBe(false);
+  });
+
+  test("late delete completion cannot close or remove a new pairing's conversation", async () => {
+    render();
+    let resolve!: (value: unknown) => void;
+    request.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const deleting = result.current.deleteSession("s1", "thread-s1");
+    act(() => {
+      result.current.reset();
+      result.current.applySessionSnapshot([session("s1")]);
+    });
+    let close = true;
+    await act(async () => {
+      resolve({ data: {} });
+      close = await deleting;
+    });
+    expect(close).toBe(false);
+    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["s1"]);
   });
 
   test("returns the full catalogue surface on mount", () => {
@@ -67,7 +139,7 @@ describe("useSessionCatalog", () => {
   test("applySessionSnapshot decorates titles and detects a finished transition", async () => {
     render();
     // Baseline: s2 is running (establishes lastStatusRef).
-    act(() => result.current.applySessionSnapshot([session("s2", "running")]));
+    act(() => void result.current.applySessionSnapshot([session("s2", "running")]));
     expect(result.current.sessions[0]?.title).toBe("Title s2");
 
     // Rename s2 to install a title override (synced to titleOverridesRef via effect).
@@ -77,21 +149,26 @@ describe("useSessionCatalog", () => {
     });
 
     // Second snapshot: s2 completed — uses the override and flags unread.
-    act(() => result.current.applySessionSnapshot([session("s2", "completed")]));
-    expect(result.current.sessions[0]).toMatchObject({ sessionId: "s2", title: "Custom Title" });
+    act(() => void result.current.applySessionSnapshot([session("s2", "completed")]));
+    expect(result.current.sessions[0]).toMatchObject({
+      sessionId: "s2",
+      title: "Custom Title",
+    });
     expect(result.current.unreadSessions.has("s2")).toBe(true);
   });
 
   test("applySessionSnapshot leaves the selected session out of unread", () => {
     render();
-    act(() => result.current.applySessionSnapshot([session("s1", "running")]));
-    act(() => result.current.applySessionSnapshot([session("s1", "completed")]));
+    act(() => void result.current.applySessionSnapshot([session("s1", "running")]));
+    act(() => void result.current.applySessionSnapshot([session("s1", "completed")]));
     expect(result.current.unreadSessions.has("s1")).toBe(false);
   });
 
   test("refreshSessions applies the pushed snapshot", async () => {
     render();
-    request.mockResolvedValueOnce({ data: { sessions: [session("s2", "running")] } });
+    request.mockResolvedValueOnce({
+      data: { sessions: [session("s2", "running")] },
+    });
     await act(async () => {
       await result.current.refreshSessions();
     });
@@ -119,7 +196,9 @@ describe("useSessionCatalog", () => {
 
   test("refreshModels returns models on the first attempt", async () => {
     render();
-    request.mockResolvedValueOnce({ data: { models: [{ id: "m1", label: "M1" }] } });
+    request.mockResolvedValueOnce({
+      data: { models: [{ id: "m1", label: "M1" }] },
+    });
     await act(async () => {
       await result.current.refreshModels();
     });
@@ -238,7 +317,9 @@ describe("useSessionCatalog", () => {
 
   test("reset clears catalogue state", async () => {
     render();
-    request.mockResolvedValueOnce({ data: { sessions: [session("s2", "running")] } });
+    request.mockResolvedValueOnce({
+      data: { sessions: [session("s2", "running")] },
+    });
     await act(async () => {
       await result.current.refreshSessions();
     });
@@ -251,8 +332,12 @@ describe("useSessionCatalog", () => {
 
   test("rename trims the name and updates both the override and the session", async () => {
     render();
-    act(() =>
-      result.current.applySessionSnapshot([session("s1", "running"), session("s2", "running")]),
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          session("s1", "running"),
+          session("s2", "running"),
+        ]),
     );
     request.mockResolvedValueOnce({ data: {} });
     await act(async () => {
@@ -264,7 +349,7 @@ describe("useSessionCatalog", () => {
     );
     expect(result.current.titleOverrides["s2"]).toBe("New Name");
     expect(
-      result.current.sessions.map(s => (s.sessionId === "s2" ? s.title : s.sessionId)),
+      result.current.sessions.map((s) => (s.sessionId === "s2" ? s.title : s.sessionId)),
     ).toEqual(["s1", "New Name"]);
   });
 
@@ -281,8 +366,12 @@ describe("useSessionCatalog", () => {
 
   test("deleteSession drops the session and reports the selected one", async () => {
     render();
-    act(() =>
-      result.current.applySessionSnapshot([session("s1", "running"), session("s2", "running")]),
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          session("s1", "running"),
+          session("s2", "running"),
+        ]),
     );
     request.mockResolvedValueOnce({ data: {} });
     let selected = false;
@@ -290,12 +379,12 @@ describe("useSessionCatalog", () => {
       selected = await result.current.deleteSession("s1", "thread-s1");
     });
     expect(selected).toBe(true);
-    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["s2"]);
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
   });
 
   test("deleteSession returns false for a non-selected session", async () => {
     render();
-    act(() => result.current.applySessionSnapshot([session("s2", "running")]));
+    act(() => void result.current.applySessionSnapshot([session("s2", "running")]));
     request.mockResolvedValueOnce({ data: {} });
     let selected = false;
     await act(async () => {
@@ -312,7 +401,7 @@ describe("useSessionCatalog", () => {
 
   test("deleteSession rejects a dropped connection and retains the catalogue for retry", async () => {
     render();
-    act(() => result.current.applySessionSnapshot([session("s1")]));
+    act(() => void result.current.applySessionSnapshot([session("s1")]));
     clientRef.current = null;
     await expect(result.current.deleteSession("s1", "thread-s1")).rejects.toThrow(
       "Session unavailable",
@@ -323,7 +412,7 @@ describe("useSessionCatalog", () => {
 
   test("deleteWorkspace rejects a dropped connection and retains the catalogue for retry", async () => {
     render();
-    act(() => result.current.applySessionSnapshot([session("s1")]));
+    act(() => void result.current.applySessionSnapshot([session("s1")]));
     clientRef.current = null;
     await expect(result.current.deleteWorkspace("w1")).rejects.toThrow("Workspace unavailable");
     expect(result.current.sessions).toHaveLength(1);
@@ -350,13 +439,20 @@ describe("useSessionCatalog", () => {
       mode: "workspace",
       workspaceId,
     });
-    act(() => result.current.applySessionSnapshot([inWorkspace("s1", "w1"), inWorkspace("s2", "w2")]));
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          inWorkspace("s1", "w1"),
+          inWorkspace("s2", "w2"),
+        ]),
+    );
     // Both finish while nothing is selected, so both are flagged unread.
-    act(() =>
-      result.current.applySessionSnapshot([
-        { ...inWorkspace("s1", "w1"), status: "completed" },
-        { ...inWorkspace("s2", "w2"), status: "completed" },
-      ]),
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          { ...inWorkspace("s1", "w1"), status: "completed" },
+          { ...inWorkspace("s2", "w2"), status: "completed" },
+        ]),
     );
     expect(result.current.unreadSessions).toEqual(new Set(["s1", "s2"]));
 
@@ -370,7 +466,7 @@ describe("useSessionCatalog", () => {
       "list",
     );
     expect(result.current.workspaces).toEqual([]);
-    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["s2"]);
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
     expect(result.current.unreadSessions).toEqual(new Set(["s2"]));
     // The selected session (none) was not inside the deleted workspace.
     expect(selected).toBe(false);
@@ -383,7 +479,7 @@ describe("useSessionCatalog", () => {
       mode: "workspace",
       workspaceId: "w1",
     });
-    act(() => result.current.applySessionSnapshot([inWorkspace("s1")]));
+    act(() => void result.current.applySessionSnapshot([inWorkspace("s1")]));
     request.mockResolvedValueOnce({ data: {} });
     let selected = false;
     await act(async () => {
@@ -395,26 +491,31 @@ describe("useSessionCatalog", () => {
 
   test("deleteWorkspace keeps the local catalogue when the desktop refuses", async () => {
     render();
-    act(() =>
-      result.current.applySessionSnapshot([
-        { ...session("s1"), mode: "workspace", workspaceId: "w1" },
-      ]),
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          { ...session("s1"), mode: "workspace", workspaceId: "w1" },
+        ]),
     );
     request.mockRejectedValueOnce(new Error("workspace not found"));
     await expect(result.current.deleteWorkspace("w1")).rejects.toThrow("workspace not found");
-    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["s1"]);
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
   test("setSessionPinned reorders pinned sessions to the top", async () => {
     render();
-    act(() =>
-      result.current.applySessionSnapshot([session("a", "running"), session("b", "running")]),
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          session("a", "running"),
+          session("b", "running"),
+        ]),
     );
     request.mockResolvedValueOnce({ data: {} });
     await act(async () => {
       await result.current.setSessionPinned("b", "thread-b", true);
     });
-    expect(result.current.sessions.map(s => s.sessionId)).toEqual(["b", "a"]);
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["b", "a"]);
   });
 
   test("setSessionPinned ignores empty ids", async () => {
@@ -423,5 +524,30 @@ describe("useSessionCatalog", () => {
       await result.current.setSessionPinned("", "", true);
     });
     expect(request).not.toHaveBeenCalled();
+  });
+  test("versioned pulls and pushes converge at one commit point and report sync readiness", async () => {
+    render();
+    act(() => {
+      result.current.setCatalogEpoch("source");
+      result.current.applySessionSnapshot([session("new")], { epoch: "source", revision: 2 });
+    });
+    request.mockResolvedValueOnce({
+      data: { sessions: [session("latest")], version: { epoch: "source", revision: 3 } },
+    });
+    await act(async () => {
+      await result.current.refreshSessions();
+    });
+    act(() => {
+      result.current.applySessionSnapshot([session("old")], { epoch: "source", revision: 1 });
+    });
+    expect(result.current.sessions[0]?.sessionId).toBe("latest");
+    expect(result.current.catalogSync.sessions).toBe("ready");
+    request.mockResolvedValueOnce({
+      data: { sessions: [session("latest")], version: { epoch: "source", revision: 3 } },
+    });
+    await act(async () => {
+      await result.current.refreshSessions();
+    });
+    expect(result.current.catalogSync.sessions).toBe("ready");
   });
 });

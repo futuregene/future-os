@@ -24,6 +24,18 @@ jest.mock("expo-secure-store", () => ({
 }));
 
 const mockedStore = SecureStore as jest.Mocked<typeof SecureStore>;
+let values: Map<string, string>;
+beforeEach(() => {
+  jest.resetAllMocks();
+  values = new Map();
+  mockedStore.getItemAsync.mockImplementation(async (key) => values.get(key) ?? null);
+  mockedStore.setItemAsync.mockImplementation(async (key, value) => {
+    values.set(key, value);
+  });
+  mockedStore.deleteItemAsync.mockImplementation(async (key) => {
+    values.delete(key);
+  });
+});
 
 const credentials: RemoteCredentials = {
   pairId: "pair_1",
@@ -49,7 +61,7 @@ describe("credential storage", () => {
 
   test("loadCredentials clears and returns null when only some fields exist", async () => {
     // First field present, the rest absent — a torn write must self-heal.
-    mockedStore.getItemAsync.mockImplementation(async key =>
+    mockedStore.getItemAsync.mockImplementation(async (key) =>
       key === "futureos.remote.pair-id.v1" ? "pair_1" : null,
     );
     expect(await loadCredentials()).toBeNull();
@@ -59,8 +71,10 @@ describe("credential storage", () => {
   test("loadCredentials clears and returns null when the device identity is missing", async () => {
     // Every credential field is present but the device id is gone — a corrupt
     // bundle must self-heal so a fresh pair re-establishes both.
-    mockedStore.getItemAsync.mockImplementation(async key =>
-      key === "futureos.remote.device-id.v1" ? null : "value",
+    mockedStore.getItemAsync.mockImplementation(async (key) =>
+      key === "futureos.remote.device-id.v1" || key === "futureos.remote.credential-commit.v2"
+        ? null
+        : "value",
     );
     expect(await loadCredentials()).toBeNull();
     expect(mockedStore.deleteItemAsync).toHaveBeenCalled();
@@ -77,7 +91,7 @@ describe("credential storage", () => {
   });
 
   test("loadCredentials rebuilds a full credential set", async () => {
-    mockedStore.getItemAsync.mockImplementation(async key => {
+    mockedStore.getItemAsync.mockImplementation(async (key) => {
       const byKey: Record<string, string> = {
         "futureos.remote.pair-id.v1": "pair_1",
         "futureos.remote.device-id.v1": "dev_1",
@@ -96,9 +110,9 @@ describe("credential storage", () => {
 
   test("saveCredentials writes every field", async () => {
     await saveCredentials(credentials);
-    expect(mockedStore.setItemAsync).toHaveBeenCalledTimes(9);
+    expect(mockedStore.setItemAsync).toHaveBeenCalledTimes(10);
     expect(mockedStore.setItemAsync).toHaveBeenCalledWith(
-      "futureos.remote.seed.v1",
+      "futureos.remote.seed.v1.a",
       "seed",
       expect.anything(),
     );
@@ -106,27 +120,27 @@ describe("credential storage", () => {
 
   test("clearCredentials deletes every credential field but keeps the device id", async () => {
     await clearCredentials();
-    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(8);
+    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(24);
   });
 
   test("serializes clear behind an in-flight credential save", async () => {
     let finishSeedWrite: (() => void) | undefined;
-    mockedStore.setItemAsync.mockImplementation(async key => {
-      if (key !== "futureos.remote.seed.v1") return;
-      await new Promise<void>(resolve => {
+    mockedStore.setItemAsync.mockImplementation(async (key) => {
+      if (key !== "futureos.remote.seed.v1.a") return;
+      await new Promise<void>((resolve) => {
         finishSeedWrite = resolve;
       });
     });
 
     const save = saveCredentials(credentials);
     const clear = clearCredentials();
-    await Promise.resolve();
+    for (let tick = 0; tick < 12; tick++) await Promise.resolve();
     expect(mockedStore.deleteItemAsync).not.toHaveBeenCalled();
 
     finishSeedWrite?.();
     await save;
     await clear;
-    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(8);
+    expect(mockedStore.deleteItemAsync).toHaveBeenCalledTimes(24);
   });
 });
 
@@ -186,7 +200,7 @@ describe("pending revoke queue", () => {
     await savePendingRevoke(revoke);
     expect(mockedStore.setItemAsync).toHaveBeenCalledWith(
       "futureos.remote.pending-revoke.v1",
-      JSON.stringify(revoke),
+      JSON.stringify([revoke]),
       expect.anything(),
     );
   });
@@ -201,13 +215,10 @@ describe("pending revoke queue", () => {
     expect(await loadPendingRevoke()).toEqual(revoke);
   });
 
-  test("loadPendingRevoke clears a corrupt entry and returns null", async () => {
+  test("loadPendingRevoke reports corrupt storage without deleting it", async () => {
     mockedStore.getItemAsync.mockResolvedValue("not json{");
-    expect(await loadPendingRevoke()).toBeNull();
-    expect(mockedStore.deleteItemAsync).toHaveBeenCalledWith(
-      "futureos.remote.pending-revoke.v1",
-      expect.anything(),
-    );
+    await expect(loadPendingRevoke()).rejects.toThrow();
+    expect(mockedStore.deleteItemAsync).not.toHaveBeenCalled();
   });
 
   test("clearPendingRevoke deletes the slot", async () => {
@@ -216,5 +227,35 @@ describe("pending revoke queue", () => {
       "futureos.remote.pending-revoke.v1",
       expect.anything(),
     );
+  });
+});
+
+describe("crash-consistent credentials and revoke ownership", () => {
+  test("a failed replacement preserves the previously committed bundle", async () => {
+    await saveCredentials(credentials);
+    mockedStore.setItemAsync.mockImplementation(async (key, value) => {
+      if (key === "futureos.remote.seed.v1.b") throw new Error("disk full");
+      values.set(key, value);
+    });
+    await expect(
+      saveCredentials({ ...credentials, seed: "new-seed", pairId: "new-pair" }),
+    ).rejects.toThrow("disk full");
+    expect(await loadCredentials()).toEqual(credentials);
+  });
+  test("a failed commit marker leaves the old JWT readable", async () => {
+    await saveCredentials(credentials);
+    mockedStore.setItemAsync.mockImplementation(async (key, value) => {
+      if (key === "futureos.remote.credential-commit.v2") throw new Error("commit failed");
+      values.set(key, value);
+    });
+    await expect(saveCredentials({ ...credentials, userJwt: "new-jwt" })).rejects.toThrow();
+    expect(await loadCredentials()).toEqual(credentials);
+  });
+  test("clearing one revoke cannot discard a later pair's compensation", async () => {
+    await savePendingRevoke(credentials);
+    await savePendingRevoke({ ...credentials, pairId: "pair_2" });
+    await clearPendingRevoke(credentials.pairId);
+    expect((await loadPendingRevoke())?.pairId).toBe("pair_2");
+    expect(values.get("futureos.remote.pending-revoke.v1")).not.toContain("userJwt");
   });
 });

@@ -5,6 +5,7 @@ import type { MobileAttachment, ThinkingLevel } from "./types";
 export interface PendingPrompt {
   version: 2;
   commandId: string;
+  bridgeInstanceId?: string;
   pairId: string;
   expectedDesktopId: string;
   draftKey: string;

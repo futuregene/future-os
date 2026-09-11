@@ -5,13 +5,14 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { openExternalUrl } from "../../integrations/storage/files";
-import { cn } from "../../lib/cn";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
-  remoteFailurePresentation,
+  remoteConnectionPresentation,
+  shouldShowRemoteConnectionHint,
   startRemote,
   stopRemote,
   unpairRemote,
@@ -63,15 +64,17 @@ export function RemoteView({
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const phase = remoteStatus?.phase ?? "stopped";
   const running = phase !== "stopped" && phase !== "failed" && phase !== "revoked";
-  const connected = phase === "ready";
-  const reconnecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
+  const presentation = remoteConnectionPresentation(remoteStatus);
+  const connected = presentation?.level === "connected";
+  const connecting = presentation?.level === "connecting";
+  const showConnectionHint = shouldShowRemoteConnectionHint(remoteStatus);
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
   // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
   const isPaired = Boolean(remoteStatus?.pairId);
   const terminal = phase === "failed" || phase === "revoked";
-  const failure = terminal && remoteStatus?.reason
-    ? remoteFailurePresentation(remoteStatus.reason)
+  const failure = terminal && presentation?.messageKey && presentation.messageKey !== "connection" && presentation.messageKey !== "devicePreparing"
+    ? { messageKey: presentation.messageKey, supportCode: presentation.supportCode }
     : null;
   const errorText = failure
     ? t(`failure.${failure.messageKey}`, { code: failure.supportCode })
@@ -191,21 +194,11 @@ export function RemoteView({
             ? (
                 <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span
-                      className={cn(
-                        "inline-block size-2 shrink-0 rounded-full",
-                        connected
-                          ? "bg-accent"
-                          : reconnecting
-                            ? "animate-pulse bg-warning"
-                            : showError
-                              ? "bg-danger"
-                              : "bg-ink-muted/60",
-                      )}
-                    />
-                    <span className="min-w-0 truncate text-sm font-medium text-ink">
-                      {t(reconnecting ? "reconnectingAs" : connected ? "connectedAs" : "pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}
-                    </span>
+                    <Badge tone={connected ? "info" : connecting ? "warning" : "danger"}>
+                      {presentation ? t(presentation.titleKey) : t("statusDisconnected")}
+                      {presentation?.supportCode ? ` (${presentation.supportCode})` : ""}
+                    </Badge>
+                    <span className="min-w-0 truncate text-sm text-ink-muted">{formatPairId(remoteStatus?.pairId)}</span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                       <Button
                         disabled={busy}
@@ -215,9 +208,9 @@ export function RemoteView({
                       >
                         {running
                           ? t("disconnect")
-                          : phase === "revoked"
+                          : presentation?.action === "pairAgain"
                             ? t("pairAgain")
-                            : phase === "failed"
+                            : presentation?.action === "retry" || presentation?.action === "checkNetwork" || presentation?.action === "contactSupport"
                               ? t("reconnect")
                               : t("connect")}
                       </Button>
@@ -241,6 +234,10 @@ export function RemoteView({
                   <span className="min-w-0 flex-1">{errorText}</span>
                 </div>
               )
+            : null}
+
+          {showConnectionHint
+            ? <p className="text-sm text-ink-muted">{t(presentation?.messageKey === "devicePreparing" ? "agentUnavailable" : "connectionHint")}</p>
             : null}
 
           {remoteStatus?.warningCode === "web_bind"

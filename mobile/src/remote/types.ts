@@ -62,7 +62,16 @@ export interface PresenceSession {
   status?: string;
 }
 
+export interface SnapshotVersion {
+  epoch: string;
+  revision: number;
+}
+
 export interface Presence {
+  catalogEpoch?: string;
+  sessionsVersion?: SnapshotVersion;
+  workspacesVersion?: SnapshotVersion;
+  agentAvailable?: boolean;
   online: boolean;
   /** An intentional desktop disconnect; `online: false` is authoritative. */
   disconnected?: boolean;
@@ -281,6 +290,8 @@ export interface RpcResponse<T = unknown> {
 }
 
 export interface RemoteCommand {
+  replayUntilIdx?: number;
+  bridgeInstanceId?: string;
   id?: string;
   type: string;
   sessionId?: string;
@@ -323,6 +334,7 @@ export interface RemoteCommand {
 }
 
 export interface SessionsData {
+  version?: SnapshotVersion;
   sessions: RemoteSession[];
 }
 
@@ -331,6 +343,7 @@ export interface ModelsData {
 }
 
 export interface WorkspacesData {
+  version?: SnapshotVersion;
   workspaces: RemoteWorkspace[];
 }
 

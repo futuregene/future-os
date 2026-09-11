@@ -130,8 +130,8 @@ export function ActivityRail({
   // sign-in. Hide the nav entry while signed out.
   const showRemote = userEmail != null;
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
-  // amber while recovery is in progress, red for an actionable bridge error,
-  // and nothing when disconnected.
+  // amber while a connection is being attempted, red when remote access is disconnected,
+  // and nothing before pairing.
   const remoteDot = remoteIndicator
     ? (
         <span
@@ -139,10 +139,10 @@ export function ActivityRail({
             "absolute -right-1 -top-1 size-2 rounded-full",
             remoteIndicator === "connected"
               ? "bg-accent"
-              : remoteIndicator === "reconnecting"
+              : remoteIndicator === "connecting"
                 ? "bg-warning"
                 : "bg-danger",
-            remoteIndicator === "reconnecting" && "animate-pulse",
+            remoteIndicator === "connecting" && "animate-pulse",
           )}
         />
       )

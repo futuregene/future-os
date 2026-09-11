@@ -56,7 +56,7 @@ export function ChatScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const title = remote.draft ? t("chat.new") : remote.selectedTitle || t("sessions.unnamed");
-  const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
+  const activeModel = remote.models.find((model) => modelReference(model) === remote.modelId);
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
@@ -81,7 +81,7 @@ export function ChatScreen() {
   // only while undecided — once a decision lands the card disappears.
   const timelineItems = useMemo(() => remote.timeline.items, [remote.timeline]);
   const transcriptItems = useMemo(
-    () => timelineItems.filter(item => item.kind !== "approval"),
+    () => timelineItems.filter((item) => item.kind !== "approval"),
     [timelineItems],
   );
   // FlatList's physical start is the stable latest-message anchor. Reversing
@@ -213,7 +213,7 @@ export function ChatScreen() {
   // nav-bar-height gap above the keyboard.
   useEffect(() => {
     if (Platform.OS !== "android") return;
-    const showSub = Keyboard.addListener("keyboardDidShow", event =>
+    const showSub = Keyboard.addListener("keyboardDidShow", (event) =>
       setKeyboardHeight(event.endCoordinates.height),
     );
     const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
@@ -261,7 +261,12 @@ export function ChatScreen() {
         {remote.error && (
           <ErrorBanner
             message={remote.error}
-            onDismiss={remote.phase === "failed" ? undefined : remote.clearError}
+            onDismiss={
+              remote.connectionPresentation.level === "disconnected" &&
+              remote.connectionPresentation.supportCode
+                ? undefined
+                : remote.clearError
+            }
           />
         )}
 
@@ -283,7 +288,7 @@ export function ChatScreen() {
             initialNumToRender={10}
             inverted
             key={remote.selectedSessionId || "draft"}
-            keyExtractor={item => item.id}
+            keyExtractor={(item) => item.id}
             ListEmptyComponent={
               remote.timelineError ? (
                 <View style={styles.loadingState}>

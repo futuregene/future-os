@@ -689,7 +689,7 @@ async fn handle_event(
                 &event_data,
             );
         }
-        crate::remote::publish_event(
+        crate::agent_events::publish_event(
             session_id,
             event_type,
             &event_data,
@@ -747,7 +747,7 @@ async fn handle_event(
         // client healing from this signal reads back the store we just wrote.
         // Folded events cannot be applied incrementally, so this goes out as a
         // wholesale-replacement signal, not as individual events.
-        crate::remote::publish_snapshot(
+        crate::agent_events::publish_snapshot(
             session_id,
             run_id,
             event.snapshot_cursor,
@@ -789,7 +789,7 @@ async fn handle_event(
                             &event_data,
                         );
                     }
-                    crate::remote::publish_event(
+                    crate::agent_events::publish_event(
                         session_id,
                         event_type,
                         &event_data,
@@ -864,7 +864,7 @@ async fn handle_event(
             &event_data,
         );
     }
-    crate::remote::publish_event(
+    crate::agent_events::publish_event(
         session_id,
         event_type,
         &event_data,

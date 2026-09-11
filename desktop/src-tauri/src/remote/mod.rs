@@ -3,16 +3,19 @@
 //! contract lives in `agent_bridge::headless` (shared with any future headless
 //! caller, so it can't drift from the frontend semantics).
 //!
-//! Design: see `desktop/DEV_MD/remote-control-*.md`. The embedded bridge connects
+//! Design: see `desktop/DEV_MD/CONNECTION.md`. The embedded bridge connects
 //! with a short-lived, pair-scoped NATS user JWT, mirrors agent events, routes
 //! Web/App commands through the GUI persistence path, publishes presence, and
 //! refreshes credentials before expiry.
 
 mod commands;
+mod lifecycle;
 pub(crate) mod pairing;
+pub(crate) mod protocol;
+pub(crate) mod services;
 #[cfg(test)]
 pub(crate) mod test_support;
-mod transfer;
+pub(crate) mod transfer;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -277,6 +280,7 @@ struct NatsHealth {
     /// This belongs to one NATS generation, never the process. A late event
     /// from an old socket must not decide whether a newer JWT is terminal.
     credential_was_refreshed: AtomicBool,
+    credential_expires_at: AtomicU64,
     authorization_rejection_logged: AtomicBool,
     event_episode: FailureEpisode,
 }
@@ -362,7 +366,9 @@ impl NatsHealth {
         // state transition is enough to make the supervisor refresh the JWT;
         // suppress the duplicate events so a sleeping laptop cannot flood its
         // console while that handoff is in progress.
-        if self.credential_was_refreshed.load(Ordering::Acquire) {
+        if self.credential_was_refreshed.load(Ordering::Acquire)
+            && self.credential_expires_at.load(Ordering::Acquire) > unix_timestamp()
+        {
             self.service_config_error.store(true, Ordering::Release);
             if !self
                 .authorization_rejection_logged
@@ -447,7 +453,73 @@ struct RemoteState {
     pairing_confirmed: Arc<AtomicBool>,
 }
 
-static STATE: Mutex<Option<RemoteState>> = Mutex::new(None);
+/// The sole Desktop-process owner of remote intent, access epoch, runtime,
+/// recovery budgets and background scheduling. UI only reads its projection.
+struct Supervisor {
+    access: lifecycle::AccessEpoch,
+    state: Mutex<Option<RemoteState>>,
+    bridge_shared: Mutex<Option<BridgeRuntimeShared>>,
+    last_error_code: Mutex<Option<String>>,
+    start_lock: tokio::sync::Mutex<()>,
+    start_requested: AtomicBool,
+    suspended: AtomicBool,
+    start_retry_running: AtomicBool,
+    start_retry_attempts: AtomicU64,
+    start_retry_since: AtomicU64,
+    start_retry_next_at: AtomicU64,
+    credential_refreshing: AtomicBool,
+    runtime_reconnect_running: AtomicBool,
+    runtime_reconnect_attempts: AtomicU8,
+    runtime_failure_window_started: AtomicU64,
+    web_reconnect_running: AtomicBool,
+    web_reconnect_attempts: AtomicU8,
+    tasks: Mutex<Vec<(futures::future::AbortHandle, Arc<AtomicBool>)>>,
+}
+static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(|| Supervisor {
+    access: lifecycle::AccessEpoch::new(),
+    state: Mutex::new(None),
+    bridge_shared: Mutex::new(None),
+    last_error_code: Mutex::new(None),
+    start_lock: tokio::sync::Mutex::const_new(()),
+    start_requested: AtomicBool::new(false),
+    suspended: AtomicBool::new(false),
+    start_retry_running: AtomicBool::new(false),
+    start_retry_attempts: AtomicU64::new(0),
+    start_retry_since: AtomicU64::new(0),
+    start_retry_next_at: AtomicU64::new(0),
+    credential_refreshing: AtomicBool::new(false),
+    runtime_reconnect_running: AtomicBool::new(false),
+    runtime_reconnect_attempts: AtomicU8::new(0),
+    runtime_failure_window_started: AtomicU64::new(0),
+    web_reconnect_running: AtomicBool::new(false),
+    web_reconnect_attempts: AtomicU8::new(0),
+    tasks: Mutex::new(Vec::new()),
+});
+impl Supervisor {
+    fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if !self.start_requested.load(Ordering::Acquire) || self.suspended.load(Ordering::Acquire) {
+            return;
+        }
+        tasks.retain(|(_, done)| !done.load(Ordering::Acquire));
+        let (abort, registration) = futures::future::AbortHandle::new_pair();
+        let done = Arc::new(AtomicBool::new(false));
+        tasks.push((abort, done.clone()));
+        tauri::async_runtime::spawn(async move {
+            let _ = futures::future::Abortable::new(future, registration).await;
+            done.store(true, Ordering::Release);
+        });
+    }
+    fn cancel_tasks(&self) {
+        for (task, _) in self.tasks.lock().unwrap().drain(..) {
+            task.abort();
+        }
+        self.start_retry_running.store(false, Ordering::Release);
+        self.runtime_reconnect_running
+            .store(false, Ordering::Release);
+        self.web_reconnect_running.store(false, Ordering::Release);
+    }
+}
 
 /// State whose correctness spans credential and transport generations. A
 /// generation swap must never clear command single-flight replies or pairing
@@ -461,16 +533,15 @@ struct BridgeRuntimeShared {
     bridge_instance_id: String,
     drop_counters: Arc<DropCounters>,
     next_generation_id: Arc<AtomicU64>,
+    handshake: Arc<Mutex<Option<commands::HandshakeState>>>,
 }
-
-static BRIDGE_SHARED: Mutex<Option<BridgeRuntimeShared>> = Mutex::new(None);
 
 fn shared_runtime(
     pair_id: &str,
     pairing_confirmed: bool,
     rotate_epoch: bool,
 ) -> BridgeRuntimeShared {
-    let mut guard = BRIDGE_SHARED.lock().unwrap();
+    let mut guard = SUPERVISOR.bridge_shared.lock().unwrap();
     if let Some(shared) = guard.as_mut().filter(|shared| shared.pair_id == pair_id) {
         if rotate_epoch {
             shared.bridge_instance_id =
@@ -488,46 +559,19 @@ fn shared_runtime(
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
         drop_counters: Arc::new(DropCounters::new()),
         next_generation_id: Arc::new(AtomicU64::new(1)),
+        handshake: Arc::new(Mutex::new(None)),
     };
     *guard = Some(shared.clone());
     shared
 }
 
-/// Why the bridge last stopped on its own (e.g. the pairing was revoked by
-/// the web client), as a machine-readable category the UI localizes
-/// (`error.<code>`). Surfaced through [`status()`] so the GUI can explain a
-/// bridge that is no longer running instead of showing a bare "not running".
-static LAST_ERROR_CODE: Mutex<Option<String>> = Mutex::new(None);
-
-/// Serializes concurrent `start()` calls: `STATE` can't be held across the
-/// connect `await`, so without this two racing starts both pass `stop()`, both
-/// spawn a command loop, and the loser's task is never aborted — its NATS
-/// queue-group membership then silently steals a share of incoming commands.
-static START_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// User/runtime intent for the bridge to stay online. A transient startup
-/// failure leaves this set so the background retry worker can recover when the
-/// network returns; an explicit stop clears it and prevents resurrection.
-static START_REQUESTED: AtomicBool = AtomicBool::new(false);
-/// At most one process-lifetime startup retry worker may run at once.
-static START_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
-static START_RETRY_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-static START_RETRY_SINCE: AtomicU64 = AtomicU64::new(0);
-static START_RETRY_NEXT_AT: AtomicU64 = AtomicU64::new(0);
-static CREDENTIAL_REFRESHING: AtomicBool = AtomicBool::new(false);
-/// A finished critical task is rebuilt automatically. Bound repeated
-/// reconnects so a deterministic panic cannot spin forever.
-static RUNTIME_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
-static RUNTIME_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
-static RUNTIME_FAILURE_WINDOW_STARTED: AtomicU64 = AtomicU64::new(0);
+// Recovery budgets belong to the supervisor and survive transport replacement.
 const MAX_RUNTIME_RECONNECT_ATTEMPTS: u8 = 3;
 const RUNTIME_FAILURE_WINDOW_MS: u64 = 10 * 60 * 1_000;
 /// Do not forgive a crash-loop merely because a replacement generation stayed
 /// alive for one poll. Only a sustained healthy minute resets the budget.
 #[cfg(not(test))]
 const RUNTIME_HEALTHY_RESET_SECS: u8 = 60;
-static WEB_RECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
-static WEB_RECONNECT_ATTEMPTS: AtomicU8 = AtomicU8::new(0);
 const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +616,7 @@ pub struct RecoveryProgress {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStatus {
+    pub agent_available: bool,
     pub phase: RemotePhase,
     pub reason: Option<RemoteFailureReason>,
     pub recovery: Option<RecoveryProgress>,
@@ -628,20 +673,30 @@ fn empty() -> RemoteStatus {
         desktop_public_key: String::new(),
         web_url: None,
         web_lan_url: None,
+        agent_available: host().agent_available(),
         warning_code: None,
     }
 }
 
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
+    spawn_revoke_cleanup();
     // An explicit user reconnect gets fresh automatic-reconnect budgets.
-    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
-    WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
-    START_RETRY_ATTEMPTS.store(0, Ordering::Release);
-    START_RETRY_SINCE.store(0, Ordering::Release);
-    START_RETRY_NEXT_AT.store(0, Ordering::Release);
-    START_REQUESTED.store(true, Ordering::Release);
+    SUPERVISOR
+        .runtime_reconnect_attempts
+        .store(0, Ordering::Release);
+    SUPERVISOR
+        .runtime_failure_window_started
+        .store(0, Ordering::Release);
+    SUPERVISOR
+        .web_reconnect_attempts
+        .store(0, Ordering::Release);
+    SUPERVISOR
+        .credential_refreshing
+        .store(false, Ordering::Release);
+    SUPERVISOR.start_retry_attempts.store(0, Ordering::Release);
+    SUPERVISOR.start_retry_since.store(0, Ordering::Release);
+    SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
+    SUPERVISOR.start_requested.store(true, Ordering::Release);
     let result = start_once(true).await;
     if result.as_ref().is_ok_and(retryable_start_status) {
         spawn_start_retry();
@@ -650,8 +705,23 @@ pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppE
 }
 
 async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppError> {
-    let _start_guard = START_LOCK.lock().await;
-    if !START_REQUESTED.load(Ordering::Acquire) {
+    let epoch = SUPERVISOR.access.current();
+    tokio::select! {
+        biased;
+        _ = SUPERVISOR.access.cancelled(epoch) => Ok(empty()),
+        result = start_generation(replace_existing, epoch) => result,
+    }
+}
+
+async fn start_generation(
+    replace_existing: bool,
+    epoch: u64,
+) -> Result<RemoteStatus, crate::AppError> {
+    crate::remote_host::attach_events();
+    let _start_guard = SUPERVISOR.start_lock.lock().await;
+    if !SUPERVISOR.start_requested.load(Ordering::Acquire)
+        || SUPERVISOR.suspended.load(Ordering::Acquire)
+    {
         return Ok(empty());
     }
     if !replace_existing {
@@ -660,8 +730,7 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
             return Ok(current);
         }
     }
-    let replacing_generation = STATE.lock().unwrap().is_some();
-    *LAST_ERROR_CODE.lock().unwrap() = Some("connecting".to_string());
+    *SUPERVISOR.last_error_code.lock().unwrap() = Some("connecting".to_string());
 
     // A remote/server failure here (offline, revoked, HTTP error) is not a
     // program fault — surface it as a localized, not-running status instead of
@@ -673,10 +742,10 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
             return start_failure(error);
         }
     };
-    if !START_REQUESTED.load(Ordering::Acquire) {
+    if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
         return Ok(empty());
     }
-    let connected_nats = match connect_nats(&creds, false).await {
+    let connected_nats = match connect_nats(&creds, true).await {
         Ok(connection) => connection,
         Err(error) => {
             return start_failure(error);
@@ -684,14 +753,23 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     };
     let client = connected_nats.client;
     let nats_health = connected_nats.health;
-    if !START_REQUESTED.load(Ordering::Acquire) {
+    if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
         return Ok(empty());
     }
-    let shared = shared_runtime(&creds.pair_id, pairing_code.is_none(), replacing_generation);
+    let Some(shared) = SUPERVISOR
+        .access
+        .commit(epoch, || -> Result<_, crate::AppError> {
+            let shared = shared_runtime(&creds.pair_id, pairing_code.is_none(), false);
+            if shared.pairing_confirmed.load(Ordering::Acquire) {
+                pairing::save_creds(&creds)?;
+            }
+            Ok(shared)
+        })
+    else {
+        return Ok(empty());
+    };
+    let shared = shared?;
     let pairing_confirmed = shared.pairing_confirmed.clone();
-    if pairing_confirmed.load(Ordering::Acquire) {
-        pairing::save_creds(&creds)?;
-    }
     let desktop_public_key = pairing::public_key(&creds)?;
     let bridge_instance_id = shared.bridge_instance_id.clone();
     let generation_id = shared.next_generation_id.fetch_add(1, Ordering::AcqRel);
@@ -702,71 +780,40 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     // be wiped each swap — retrying clients would re-execute commands (a
     // retried prompt = a duplicated user message + run).
     let reply_slots = shared.reply_slots.clone();
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-    let handshake_state = commands::HandshakeState::new(
-        creds.clone(),
-        pairing_confirmed.clone(),
-        bridge_instance_id.clone(),
-    );
+    let handshake_state = shared
+        .handshake
+        .lock()
+        .unwrap()
+        .get_or_insert_with(|| {
+            commands::HandshakeState::new(
+                creds.clone(),
+                pairing_confirmed.clone(),
+                bridge_instance_id.clone(),
+            )
+            .with_access(epoch)
+        })
+        .clone();
 
-    let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
-    let cmd_task = tokio::spawn(commands::command_loop_with_ready(
-        client.clone(),
-        pair_id.clone(),
-        reply_slots.clone(),
-        handshake_state.clone(),
-        Some(command_ready_tx),
-    ));
-    let (transfer_ready_tx, transfer_ready_rx) = tokio::sync::oneshot::channel();
-    let transfer_task = transfer::spawn_transfer_loop_with_ready(
-        client.clone(),
-        pair_id.clone(),
-        handshake_state.active_flag(),
-        Some(transfer_ready_tx),
-    );
-    let event_task = spawn_event_publisher(client.clone(), event_rx);
-    let heartbeat_task =
-        spawn_presence_heartbeat(client.clone(), pair_id.clone(), bridge_instance_id.clone());
+    let transport =
+        match build_transport(&client, &pair_id, &handshake_state, reply_slots.clone()).await {
+            Ok(transport) => transport,
+            Err(error) => return start_failure(error),
+        };
+    let TransportTasks {
+        event_tx,
+        event_task,
+        cmd_task,
+        transfer_task,
+        heartbeat_task,
+        mut candidate_tasks,
+    } = transport;
     let refresh_task = spawn_credential_refresh(
         pair_id.clone(),
         reply_slots,
         pairing_confirmed.clone(),
         handshake_state,
     );
-    // Readiness barrier: give the subscription tasks a scheduling turn, then
-    // publish and flush the first presence packet. The generation is not
-    // installed in STATE (and therefore cannot report ready) until the broker
-    // has acknowledged every command queued before this flush.
-    tokio::task::yield_now().await;
-    let readiness = async {
-        command_ready_rx.await.map_err(|_| {
-            crate::AppError::Message("Remote command subscription stopped during readiness".into())
-        })?;
-        transfer_ready_rx.await.map_err(|_| {
-            crate::AppError::Message("Remote transfer subscription stopped during readiness".into())
-        })?;
-        let payload = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))?;
-        client
-            .publish(format!("p.{pair_id}.presence"), payload.into())
-            .await
-            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))?;
-        client
-            .flush()
-            .await
-            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
-    };
-    let readiness = tokio::time::timeout(std::time::Duration::from_secs(10), readiness)
-        .await
-        .map_err(|_| crate::AppError::RemoteTransport("Remote readiness timed out".into()))
-        .and_then(|result| result);
-    if let Err(error) = readiness {
-        event_task.abort();
-        cmd_task.abort();
-        transfer_task.abort();
-        heartbeat_task.abort();
-        refresh_task.abort();
-        return start_failure(error);
-    }
+    candidate_tasks.track(&refresh_task);
     // The browser client is a test-environment-only validation surface. Keep
     // the NATS/mobile bridge available in every environment, but never expose
     // the unauthenticated local HTTP listener in production or custom envs.
@@ -789,6 +836,9 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
     // A failed web bind is non-fatal (the bridge still runs) and is retried
     // silently before the UI is asked to intervene.
     let web_bind_failed = web_enabled && web_task.is_none();
+    if let Some(task) = &web_task {
+        candidate_tasks.track(task);
+    }
 
     let status = RemoteStatus {
         phase: RemotePhase::Ready,
@@ -802,49 +852,61 @@ async fn start_once(replace_existing: bool) -> Result<RemoteStatus, crate::AppEr
         desktop_public_key: desktop_public_key.clone(),
         web_url: web_url.clone(),
         web_lan_url: web_lan_url.clone(),
+        agent_available: host().agent_available(),
         warning_code: web_bind_failed.then(|| "web_bind".to_string()),
     };
     // Keep the previous generation serving until every readiness prerequisite
     // above is complete. Replacing the pointer is the hand-off point; only
     // after it do we cancel the old generation.
-    let previous = STATE.lock().unwrap().replace(RemoteState {
-        generation_id,
-        client,
-        nats_health,
-        nats_url: creds.nats_url,
-        pair_id,
-        desktop_id: creds.desktop_id,
-        desktop_public_key,
-        bridge_instance_id: bridge_instance_id.clone(),
-        event_tx,
-        drop_counters: shared.drop_counters.clone(),
-        event_task,
-        cmd_task,
-        transfer_task,
-        heartbeat_task,
-        refresh_task,
-        web_task,
-        web_url,
-        web_lan_url,
-        pairing_code,
-        pairing_code_expires_at,
-        pairing_confirmed,
+    let previous = SUPERVISOR.access.commit(epoch, || {
+        SUPERVISOR.state.lock().unwrap().replace(RemoteState {
+            generation_id,
+            client,
+            nats_health,
+            nats_url: creds.nats_url,
+            pair_id,
+            desktop_id: creds.desktop_id,
+            desktop_public_key,
+            bridge_instance_id: bridge_instance_id.clone(),
+            event_tx,
+            drop_counters: shared.drop_counters.clone(),
+            event_task,
+            cmd_task,
+            transfer_task,
+            heartbeat_task,
+            refresh_task,
+            web_task,
+            web_url,
+            web_lan_url,
+            pairing_code,
+            pairing_code_expires_at,
+            pairing_confirmed,
+        })
     });
+    let Some(previous) = previous else {
+        return Ok(empty());
+    };
+    candidate_tasks.installed();
     if let Some(previous) = previous {
         abort_generation(previous);
     }
-    *LAST_ERROR_CODE.lock().unwrap() = None;
-    if let Some(line) = START_EPISODE.recovered() {
-        eprintln!("{line}");
-    }
-    START_RETRY_ATTEMPTS.store(0, Ordering::Release);
-    START_RETRY_SINCE.store(0, Ordering::Release);
-    START_RETRY_NEXT_AT.store(0, Ordering::Release);
-    spawn_runtime_supervisor(bridge_instance_id, generation_id);
-    if web_bind_failed {
-        spawn_web_reconnect(status.pair_id.clone());
-    }
-    Ok(status)
+    SUPERVISOR
+        .access
+        .commit(epoch, || {
+            *SUPERVISOR.last_error_code.lock().unwrap() = None;
+            if let Some(line) = START_EPISODE.recovered() {
+                eprintln!("{line}");
+            }
+            SUPERVISOR.start_retry_attempts.store(0, Ordering::Release);
+            SUPERVISOR.start_retry_since.store(0, Ordering::Release);
+            SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
+            spawn_runtime_supervisor(bridge_instance_id, generation_id);
+            if web_bind_failed {
+                spawn_web_reconnect(status.pair_id.clone());
+            }
+            Ok(status)
+        })
+        .unwrap_or_else(|| Ok(empty()))
 }
 
 /// Keep retrying a categorized startup failure on Tauri's process-lifetime
@@ -857,25 +919,28 @@ fn spawn_start_retry() {
 
     #[cfg(not(test))]
     {
-        if START_RETRY_RUNNING.swap(true, Ordering::AcqRel) {
+        if SUPERVISOR.start_retry_running.swap(true, Ordering::AcqRel) {
             return;
         }
-        tauri::async_runtime::spawn(async {
+        SUPERVISOR.spawn(async {
             let mut delay = std::time::Duration::from_secs(1);
-            START_RETRY_SINCE
+            SUPERVISOR
+                .start_retry_since
                 .compare_exchange(0, unix_millis(), Ordering::AcqRel, Ordering::Acquire)
                 .ok();
             loop {
                 let jitter = 0.8 + rand::random::<f64>() * 0.4;
                 let jittered =
                     std::time::Duration::from_secs_f64((delay.as_secs_f64() * jitter).min(30.0));
-                START_RETRY_NEXT_AT.store(
+                SUPERVISOR.start_retry_next_at.store(
                     unix_millis().saturating_add(jittered.as_millis() as u64),
                     Ordering::Release,
                 );
                 tokio::time::sleep(jittered).await;
-                START_RETRY_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-                if !START_REQUESTED.load(Ordering::Acquire)
+                SUPERVISOR
+                    .start_retry_attempts
+                    .fetch_add(1, Ordering::AcqRel);
+                if !SUPERVISOR.start_requested.load(Ordering::Acquire)
                     || matches!(status().phase, RemotePhase::Ready)
                 {
                     break;
@@ -890,13 +955,16 @@ fn spawn_start_retry() {
                     Ok(_) | Err(_) => break,
                 }
             }
-            START_RETRY_NEXT_AT.store(0, Ordering::Release);
-            START_RETRY_RUNNING.store(false, Ordering::Release);
+            SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
+            SUPERVISOR
+                .start_retry_running
+                .store(false, Ordering::Release);
             // Close the tiny stop→start race: a new start may have requested
             // recovery after this worker decided to exit but before it released
             // the singleton flag. Re-arm from the latest status in that case.
             let latest = status();
-            if START_REQUESTED.load(Ordering::Acquire) && retryable_start_status(&latest) {
+            if SUPERVISOR.start_requested.load(Ordering::Acquire) && retryable_start_status(&latest)
+            {
                 spawn_start_retry();
             }
         });
@@ -913,59 +981,74 @@ fn spawn_runtime_reconnect() {
 
     #[cfg(not(test))]
     {
-        if RUNTIME_RECONNECT_RUNNING.swap(true, Ordering::AcqRel) {
+        if SUPERVISOR
+            .runtime_reconnect_running
+            .swap(true, Ordering::AcqRel)
+        {
             return;
         }
         let attempt = record_runtime_failure(unix_millis());
         eprintln!(
             "remote: critical task stopped [RT001]; rebuilding generation ({attempt}/{MAX_RUNTIME_RECONNECT_ATTEMPTS})"
         );
-        tauri::async_runtime::spawn(async move {
+        SUPERVISOR.spawn(async move {
             let result = start_once(true).await;
             match &result {
                 Ok(status) if retryable_start_status(status) => spawn_start_retry(),
                 Err(error) => {
                     eprintln!("remote: automatic bridge reconnect failed [RT001]: {error}");
-                    *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
+                    *SUPERVISOR.last_error_code.lock().unwrap() =
+                        Some("reconnect_required".to_string());
                 }
                 _ => {}
             }
-            RUNTIME_RECONNECT_RUNNING.store(false, Ordering::Release);
+            SUPERVISOR
+                .runtime_reconnect_running
+                .store(false, Ordering::Release);
         });
     }
 }
 
 fn record_runtime_failure(now: u64) -> u8 {
-    let started = RUNTIME_FAILURE_WINDOW_STARTED.load(Ordering::Acquire);
+    let started = SUPERVISOR
+        .runtime_failure_window_started
+        .load(Ordering::Acquire);
     if started == 0 || now.saturating_sub(started) > RUNTIME_FAILURE_WINDOW_MS {
-        RUNTIME_FAILURE_WINDOW_STARTED.store(now, Ordering::Release);
-        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_failure_window_started
+            .store(now, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
     }
-    RUNTIME_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1
+    SUPERVISOR
+        .runtime_reconnect_attempts
+        .fetch_add(1, Ordering::AcqRel)
+        + 1
 }
 
 /// Watch the active bridge from the process runtime, independently of any UI
 /// status polling. This is essential for Remote clients: a phone must recover
 /// even when the desktop window is hidden or no frontend has mounted yet.
 #[cfg(not(test))]
-struct RemoteSupervisor {
+struct GenerationWatch {
     bridge_instance_id: String,
     generation_id: u64,
 }
 
 #[cfg(not(test))]
-impl RemoteSupervisor {
+impl GenerationWatch {
     async fn run(self) {
         let bridge_instance_id = self.bridge_instance_id;
         let generation_id = self.generation_id;
         let mut healthy_secs = 0u8;
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if !START_REQUESTED.load(Ordering::Acquire) {
+            if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
                 return;
             }
             let unhealthy = {
-                let guard = STATE.lock().unwrap();
+                let guard = SUPERVISOR.state.lock().unwrap();
                 let Some(state) = guard.as_ref().filter(|state| {
                     state.bridge_instance_id == bridge_instance_id
                         && state.generation_id == generation_id
@@ -985,17 +1068,25 @@ impl RemoteSupervisor {
             if !unhealthy {
                 healthy_secs = healthy_secs.saturating_add(1);
                 if healthy_secs >= RUNTIME_HEALTHY_RESET_SECS {
-                    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-                    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
+                    SUPERVISOR
+                        .runtime_reconnect_attempts
+                        .store(0, Ordering::Release);
+                    SUPERVISOR
+                        .runtime_failure_window_started
+                        .store(0, Ordering::Release);
                 }
                 continue;
             }
-            if RUNTIME_RECONNECT_RUNNING.load(Ordering::Acquire) {
+            if SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire) {
                 continue;
             }
-            if RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) >= MAX_RUNTIME_RECONNECT_ATTEMPTS
+            if SUPERVISOR
+                .runtime_reconnect_attempts
+                .load(Ordering::Acquire)
+                >= MAX_RUNTIME_RECONNECT_ATTEMPTS
             {
-                *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
+                *SUPERVISOR.last_error_code.lock().unwrap() =
+                    Some("reconnect_required".to_string());
                 return;
             }
             spawn_runtime_reconnect();
@@ -1011,8 +1102,8 @@ fn spawn_runtime_supervisor(bridge_instance_id: String, generation_id: u64) {
     }
 
     #[cfg(not(test))]
-    tauri::async_runtime::spawn(
-        RemoteSupervisor {
+    SUPERVISOR.spawn(
+        GenerationWatch {
             bridge_instance_id,
             generation_id,
         }
@@ -1031,27 +1122,35 @@ fn spawn_web_reconnect(pair_id: String) {
 
     #[cfg(not(test))]
     {
-        if WEB_RECONNECT_RUNNING.swap(true, Ordering::AcqRel) {
+        if SUPERVISOR
+            .web_reconnect_running
+            .swap(true, Ordering::AcqRel)
+        {
             return;
         }
-        let attempt = WEB_RECONNECT_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
+        let attempt = SUPERVISOR
+            .web_reconnect_attempts
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
         eprintln!(
             "remote: local web listener unavailable; retrying ({attempt}/{MAX_WEB_RECONNECT_ATTEMPTS})"
         );
-        tauri::async_runtime::spawn(async move {
+        SUPERVISOR.spawn(async move {
             match bind_web_listener().await {
                 Ok(listener) => {
                     let web_url = Some(format!("http://localhost:{WEB_PORT}"));
                     let web_lan_url = lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}"));
                     let web_task = spawn_web_server(listener);
-                    let mut guard = STATE.lock().unwrap();
+                    let mut guard = SUPERVISOR.state.lock().unwrap();
                     if let Some(state) = guard.as_mut().filter(|state| state.pair_id == pair_id) {
                         if let Some(previous) = state.web_task.replace(web_task) {
                             previous.abort();
                         }
                         state.web_url = web_url;
                         state.web_lan_url = web_lan_url;
-                        WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+                        SUPERVISOR
+                            .web_reconnect_attempts
+                            .store(0, Ordering::Release);
                         eprintln!("remote: local web listener reconnected [LC002]");
                     } else {
                         web_task.abort();
@@ -1061,7 +1160,9 @@ fn spawn_web_reconnect(pair_id: String) {
                     eprintln!("remote: local web listener reconnect failed [LC002]: {error}")
                 }
             }
-            WEB_RECONNECT_RUNNING.store(false, Ordering::Release);
+            SUPERVISOR
+                .web_reconnect_running
+                .store(false, Ordering::Release);
         });
     }
 }
@@ -1111,7 +1212,7 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
             if let Some(line) = START_EPISODE.record(code, &error) {
                 eprintln!("{line}");
             }
-            *LAST_ERROR_CODE.lock().unwrap() = Some(code.to_string());
+            *SUPERVISOR.last_error_code.lock().unwrap() = Some(code.to_string());
             Ok(RemoteStatus {
                 phase: match code {
                     "network" | "server" => RemotePhase::Reconnecting,
@@ -1126,9 +1227,9 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
                     _ => RemoteFailureReason::Local,
                 }),
                 recovery: matches!(code, "network" | "server").then(|| RecoveryProgress {
-                    attempt: START_RETRY_ATTEMPTS.load(Ordering::Acquire),
+                    attempt: SUPERVISOR.start_retry_attempts.load(Ordering::Acquire),
                     max_attempts: None,
-                    since: START_RETRY_SINCE.load(Ordering::Acquire),
+                    since: SUPERVISOR.start_retry_since.load(Ordering::Acquire),
                     next_retry_at: None,
                 }),
                 ..empty()
@@ -1158,6 +1259,9 @@ async fn connect_nats(
     health
         .credential_was_refreshed
         .store(credential_was_refreshed, Ordering::Release);
+    health
+        .credential_expires_at
+        .store(creds.jwt_expires_at.max(0) as u64, Ordering::Release);
     let event_health = health.clone();
     let options = async_nats::ConnectOptions::with_jwt(creds.user_jwt.clone(), move |nonce| {
         let key_pair = key_pair.clone();
@@ -1195,53 +1299,102 @@ fn classify_nats_connect_error(
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").
-pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
-    // Give an online phone an immediate, authenticated signal before the
-    // server-side revoke invalidates the shared NATS credentials. Revocation
-    // remains the authoritative fallback when this at-most-once message cannot
-    // be delivered (phone offline, broker outage, older client, etc.).
-    notify_mobile_unpair().await;
-    if let Some(creds) = pairing::load_creds() {
-        pairing::revoke_pairing(&creds).await?;
+fn spawn_revoke_cleanup() {
+    #[cfg(not(test))]
+    {
+        // Compensation is independent of remote access and never opens a socket.
+        // One Desktop-process worker retries persisted network failures.
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        if RUNNING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        tauri::async_runtime::spawn(async {
+            loop {
+                if let Err(error) = pairing::retry_pending_revokes().await {
+                    if let Some(line) = START_EPISODE.record("local", error) {
+                        eprintln!("{line}");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
     }
-    let status = stop();
-    transfer::clear_preview_cache();
-    pairing::clear_creds()?;
-    Ok(status)
 }
 
+pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
+    let notice = mobile_unpair_notice();
+    let result = stop_with(|| {
+        if let Some(creds) = pairing::load_creds() {
+            pairing::queue_revoke(&creds)?;
+        }
+        pairing::clear_creds()
+    });
+    if let Some((client, subject, payload)) = notice {
+        tauri::async_runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
+    }
+    // Stop is already effective even if local persistence fails. Keep the
+    // credential on disk when queueing fails so a user retry can still revoke.
+    result?;
+    transfer::clear_preview_cache();
+    spawn_revoke_cleanup();
+    Ok(empty())
+}
+
+#[cfg(test)]
 async fn notify_mobile_unpair() {
-    let Some((client, pair_id, bridge_instance_id)) = STATE.lock().unwrap().as_ref().map(|state| {
-        (
-            state.client.clone(),
-            state.pair_id.clone(),
-            state.bridge_instance_id.clone(),
-        )
-    }) else {
-        return;
-    };
+    if let Some((client, subject, payload)) = mobile_unpair_notice() {
+        send_mobile_disconnect_notice(client, subject, payload).await;
+    }
+}
+
+fn mobile_unpair_notice() -> Option<(async_nats::Client, String, Vec<u8>)> {
+    let guard = SUPERVISOR.state.lock().unwrap();
+    let state = guard.as_ref()?;
     let payload = serde_json::to_vec(&json!({
-        "online": false,
-        "unpaired": true,
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        "lastHeartbeatTs": unix_timestamp(),
+        "online": false, "unpaired": true, "pairId": state.pair_id,
+        "bridgeInstanceId": state.bridge_instance_id, "lastHeartbeatTs": unix_timestamp(),
     }))
-    .unwrap_or_default();
-    let _ = client
-        .publish(format!("p.{pair_id}.presence"), payload.into())
-        .await;
-    let _ = client.flush().await;
+    .ok()?;
+    Some((
+        state.client.clone(),
+        format!("p.{}.presence", state.pair_id),
+        payload,
+    ))
 }
 
 pub fn stop() -> RemoteStatus {
-    START_REQUESTED.store(false, Ordering::Release);
-    RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
-    WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
-    let status = stop_runtime();
-    *BRIDGE_SHARED.lock().unwrap() = None;
-    status
+    stop_with(|| ());
+    empty()
+}
+
+fn stop_with<T>(cleanup: impl FnOnce() -> T) -> T {
+    SUPERVISOR.access.invalidate(|| {
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.suspended.store(false, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_failure_window_started
+            .store(0, Ordering::Release);
+        SUPERVISOR
+            .web_reconnect_attempts
+            .store(0, Ordering::Release);
+        SUPERVISOR.cancel_tasks();
+        disable_handshake();
+        stop_runtime();
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        cleanup()
+    })
+}
+
+fn disable_handshake() {
+    if let Some(shared) = SUPERVISOR.bridge_shared.lock().unwrap().as_ref() {
+        let mut handshake = shared.handshake.lock().unwrap();
+        if let Some(state) = handshake.take() {
+            state.active_flag().store(false, Ordering::Release);
+        }
+    }
 }
 
 /// Notify an online mobile client before an intentional desktop disconnect.
@@ -1270,7 +1423,7 @@ pub async fn notify_mobile_disconnect(reason: &str) {
 }
 
 fn mobile_disconnect_notice(reason: &str) -> Option<(async_nats::Client, String, Vec<u8>)> {
-    STATE.lock().unwrap().as_ref().map(|state| {
+    SUPERVISOR.state.lock().unwrap().as_ref().map(|state| {
         let pair_id = state.pair_id.clone();
         let bridge_instance_id = state.bridge_instance_id.clone();
         (
@@ -1342,12 +1495,25 @@ fn power_transition(event: PowerEvent, desired_running: bool) -> PowerTransition
 /// resources; pairing, reply deduplication, drop episodes, and desired-running
 /// intent remain available for resume.
 pub async fn handle_system_suspend() {
-    notify_mobile_disconnect("system_sleep").await;
-    let transition = power_transition(PowerEvent::Suspend, START_REQUESTED.load(Ordering::Acquire));
-    if transition.stop_generation {
-        *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
-        CREDENTIAL_REFRESHING.store(false, Ordering::Release);
-        let _ = stop_runtime();
+    let notice = mobile_disconnect_notice("system_sleep");
+    SUPERVISOR.access.invalidate(|| {
+        SUPERVISOR.suspended.store(true, Ordering::Release);
+        SUPERVISOR.cancel_tasks();
+        let transition = power_transition(
+            PowerEvent::Suspend,
+            SUPERVISOR.start_requested.load(Ordering::Acquire),
+        );
+        if transition.stop_generation {
+            *SUPERVISOR.last_error_code.lock().unwrap() = Some("system_sleep".to_string());
+            SUPERVISOR
+                .credential_refreshing
+                .store(false, Ordering::Release);
+            disable_handshake();
+            stop_runtime();
+        }
+    });
+    if let Some((client, subject, payload)) = notice {
+        send_mobile_disconnect_notice(client, subject, payload).await;
     }
 }
 
@@ -1355,24 +1521,29 @@ pub async fn handle_system_suspend() {
 /// pre-sleep socket for the current generation. `establish()` refreshes the
 /// JWT before the NATS connection is built.
 pub fn handle_system_resume() {
-    let transition = power_transition(PowerEvent::Resume, START_REQUESTED.load(Ordering::Acquire));
+    SUPERVISOR.suspended.store(false, Ordering::Release);
+    let transition = power_transition(
+        PowerEvent::Resume,
+        SUPERVISOR.start_requested.load(Ordering::Acquire),
+    );
     if !transition.start_generation {
         return;
     }
     if transition.rotate_epoch {
-        if let Some(shared) = BRIDGE_SHARED.lock().unwrap().as_mut() {
+        if let Some(shared) = SUPERVISOR.bridge_shared.lock().unwrap().as_mut() {
             shared.bridge_instance_id =
                 format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
         }
     }
-    *LAST_ERROR_CODE.lock().unwrap() = Some("system_sleep".to_string());
-    tauri::async_runtime::spawn(async {
+    *SUPERVISOR.last_error_code.lock().unwrap() = Some("system_sleep".to_string());
+    SUPERVISOR.spawn(async {
         match start_once(false).await {
             Ok(status) if retryable_start_status(&status) => spawn_start_retry(),
             Ok(_) => {}
             Err(error) => {
                 eprintln!("remote: resume recovery failed [PW001]: {error}");
-                *LAST_ERROR_CODE.lock().unwrap() = Some("reconnect_required".to_string());
+                *SUPERVISOR.last_error_code.lock().unwrap() =
+                    Some("reconnect_required".to_string());
             }
         }
     });
@@ -1388,12 +1559,12 @@ fn abort_generation(state: RemoteState) {
     if let Some(web_task) = state.web_task {
         web_task.abort();
     }
-    // In-flight transfers are generation-scoped. Preview artifacts are kept.
-    transfer::clear_transfers();
+    // Transfers belong to the access epoch, not the replaced socket.
 }
 
 fn stop_runtime() -> RemoteStatus {
-    if let Some(state) = STATE.lock().unwrap().take() {
+    transfer::clear_transfers();
+    if let Some(state) = SUPERVISOR.state.lock().unwrap().take() {
         let pair_id = state.pair_id.clone();
         let client = state.client.clone();
         let bridge_instance_id = state.bridge_instance_id.clone();
@@ -1406,8 +1577,7 @@ fn stop_runtime() -> RemoteStatus {
                 "lastHeartbeatTs": unix_timestamp(),
             }))
             .unwrap_or_default();
-            let _ = client.publish(subject, payload.into()).await;
-            let _ = client.flush().await;
+            send_mobile_disconnect_notice(client, subject, payload).await;
         });
         abort_generation(state);
     }
@@ -1415,10 +1585,10 @@ fn stop_runtime() -> RemoteStatus {
 }
 
 pub fn status() -> RemoteStatus {
-    match STATE.lock().unwrap().as_ref() {
+    match SUPERVISOR.state.lock().unwrap().as_ref() {
         Some(s) => {
             // Derive real health instead of reporting `connected: true` for as
-            // long as STATE is occupied: the NATS client reconnects with state
+            // long as SUPERVISOR.state is occupied: the NATS client reconnects with state
             // transitions, and every critical background task can die
             // independently. Any finished task requires a full generation
             // reconnect; otherwise the bridge can look connected while losing
@@ -1432,12 +1602,14 @@ pub fn status() -> RemoteStatus {
             let generation_unhealthy = critical_task_dead || s.nats_health.needs_reconnect();
             let nats_reconnecting =
                 s.client.connection_state() != async_nats::connection::State::Connected;
-            let reconnect_in_flight = RUNTIME_RECONNECT_RUNNING.load(Ordering::Acquire);
-            let can_auto_reconnect =
-                RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_RUNTIME_RECONNECT_ATTEMPTS;
+            let reconnect_in_flight = SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire);
+            let can_auto_reconnect = SUPERVISOR
+                .runtime_reconnect_attempts
+                .load(Ordering::Acquire)
+                < MAX_RUNTIME_RECONNECT_ATTEMPTS;
             let reconnecting = (generation_unhealthy || nats_reconnecting)
                 && !terminal_service_error
-                && START_REQUESTED.load(Ordering::Acquire)
+                && SUPERVISOR.start_requested.load(Ordering::Acquire)
                 && (!generation_unhealthy || reconnect_in_flight || can_auto_reconnect);
             let connected = !generation_unhealthy && !terminal_service_error && !nats_reconnecting;
 
@@ -1446,12 +1618,15 @@ pub fn status() -> RemoteStatus {
             let web_enabled = web_client_enabled();
             let web_dead = web_enabled && s.web_task.as_ref().is_none_or(|task| task.is_finished());
             if web_enabled && !web_dead {
-                WEB_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+                SUPERVISOR
+                    .web_reconnect_attempts
+                    .store(0, Ordering::Release);
             }
             let web_reconnect_in_flight =
-                web_enabled && WEB_RECONNECT_RUNNING.load(Ordering::Acquire);
+                web_enabled && SUPERVISOR.web_reconnect_running.load(Ordering::Acquire);
             let can_reconnect_web = web_enabled
-                && WEB_RECONNECT_ATTEMPTS.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
+                && SUPERVISOR.web_reconnect_attempts.load(Ordering::Acquire)
+                    < MAX_WEB_RECONNECT_ATTEMPTS;
             if web_dead && can_reconnect_web && !web_reconnect_in_flight {
                 spawn_web_reconnect(s.pair_id.clone());
             }
@@ -1472,7 +1647,7 @@ pub fn status() -> RemoteStatus {
             RemoteStatus {
                 phase: if terminal_service_error {
                     RemotePhase::Failed
-                } else if CREDENTIAL_REFRESHING.load(Ordering::Acquire) {
+                } else if SUPERVISOR.credential_refreshing.load(Ordering::Acquire) {
                     RemotePhase::Refreshing
                 } else if connected {
                     RemotePhase::Ready
@@ -1483,7 +1658,7 @@ pub fn status() -> RemoteStatus {
                 },
                 reason: if terminal_service_error {
                     Some(RemoteFailureReason::ServiceAuthorization)
-                } else if CREDENTIAL_REFRESHING.load(Ordering::Acquire) {
+                } else if SUPERVISOR.credential_refreshing.load(Ordering::Acquire) {
                     Some(RemoteFailureReason::CredentialExpired)
                 } else if generation_unhealthy {
                     Some(RemoteFailureReason::GenerationUnhealthy)
@@ -1494,18 +1669,22 @@ pub fn status() -> RemoteStatus {
                 },
                 recovery: reconnecting.then(|| RecoveryProgress {
                     attempt: if generation_unhealthy {
-                        RUNTIME_RECONNECT_ATTEMPTS.load(Ordering::Acquire) as u64
+                        SUPERVISOR
+                            .runtime_reconnect_attempts
+                            .load(Ordering::Acquire) as u64
                     } else {
-                        START_RETRY_ATTEMPTS.load(Ordering::Acquire)
+                        SUPERVISOR.start_retry_attempts.load(Ordering::Acquire)
                     },
                     max_attempts: generation_unhealthy
                         .then_some(MAX_RUNTIME_RECONNECT_ATTEMPTS as u64),
                     since: if generation_unhealthy {
-                        RUNTIME_FAILURE_WINDOW_STARTED.load(Ordering::Acquire)
+                        SUPERVISOR
+                            .runtime_failure_window_started
+                            .load(Ordering::Acquire)
                     } else {
-                        START_RETRY_SINCE.load(Ordering::Acquire)
+                        SUPERVISOR.start_retry_since.load(Ordering::Acquire)
                     },
-                    next_retry_at: match START_RETRY_NEXT_AT.load(Ordering::Acquire) {
+                    next_retry_at: match SUPERVISOR.start_retry_next_at.load(Ordering::Acquire) {
                         0 => None,
                         value => Some(value),
                     },
@@ -1518,6 +1697,7 @@ pub fn status() -> RemoteStatus {
                 desktop_public_key: s.desktop_public_key.clone(),
                 web_url: s.web_url.clone(),
                 web_lan_url: s.web_lan_url.clone(),
+                agent_available: host().agent_available(),
                 warning_code: web_reconnect_exhausted.then(|| "web_bind".to_string()),
             }
         }
@@ -1525,15 +1705,15 @@ pub fn status() -> RemoteStatus {
         // through the last recorded error code instead of a bare "not running".
         // When stopped, surface the persisted pair_id so the frontend can still
         // show the paired row (disconnected state) — the authoritative pairing
-        // fact is the persisted credential, not the runtime STATE.
+        // fact is the persisted credential, not the runtime SUPERVISOR.state.
         None => {
-            let error_code = LAST_ERROR_CODE.lock().unwrap().clone();
+            let error_code = SUPERVISOR.last_error_code.lock().unwrap().clone();
             // Startup retries run before a bridge instance exists, so this
-            // state cannot be inferred from `STATE`. Expose it explicitly so
+            // state cannot be inferred from `SUPERVISOR.state`. Expose it explicitly so
             // the UI shows an amber reconnecting indicator instead of briefly
             // presenting the initial transient network/server error as final.
-            let reconnecting = START_REQUESTED.load(Ordering::Acquire)
-                && START_RETRY_RUNNING.load(Ordering::Acquire)
+            let reconnecting = SUPERVISOR.start_requested.load(Ordering::Acquire)
+                && SUPERVISOR.start_retry_running.load(Ordering::Acquire)
                 && matches!(error_code.as_deref(), Some("network") | Some("server"));
             let (phase, reason) = if reconnecting {
                 (
@@ -1579,10 +1759,10 @@ pub fn status() -> RemoteStatus {
                 phase,
                 reason,
                 recovery: reconnecting.then(|| RecoveryProgress {
-                    attempt: START_RETRY_ATTEMPTS.load(Ordering::Acquire),
+                    attempt: SUPERVISOR.start_retry_attempts.load(Ordering::Acquire),
                     max_attempts: None,
-                    since: START_RETRY_SINCE.load(Ordering::Acquire),
-                    next_retry_at: match START_RETRY_NEXT_AT.load(Ordering::Acquire) {
+                    since: SUPERVISOR.start_retry_since.load(Ordering::Acquire),
+                    next_retry_at: match SUPERVISOR.start_retry_next_at.load(Ordering::Acquire) {
                         0 => None,
                         value => Some(value),
                     },
@@ -1624,7 +1804,7 @@ pub fn publish_event(
     run_sequence: i64,
 ) {
     let Some((tx, pair_id, connected, drop_counters)) = ({
-        let guard = STATE.lock().unwrap();
+        let guard = SUPERVISOR.state.lock().unwrap();
         guard.as_ref().map(|s| {
             (
                 s.event_tx.clone(),
@@ -1726,6 +1906,7 @@ fn build_event_body(
 /// out as a single `run_snapshot` event and the client heals by resyncing
 /// rather than folding. The folded events ride along in `data` for consumers
 /// that can apply a snapshot directly.
+#[cfg(test)]
 pub fn publish_snapshot(
     session_id: &str,
     run_id: &str,
@@ -1827,6 +2008,40 @@ fn spawn_presence_heartbeat(
     bridge_instance_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let health = tokio::spawn(host().monitor_agent());
+        let mut catalog = spawn_catalog_publisher(client.clone(), pair_id.clone());
+        let mut tasks = lifecycle::CandidateTasks::default();
+        tasks.track(&catalog);
+        tasks.track(&health);
+        let mut interval = tokio::time::interval(presence_tick());
+        loop {
+            tokio::select! {
+                _ = &mut catalog => return,
+                _ = interval.tick() => {}
+            }
+            let bytes = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
+                .expect("a presence Value always serializes");
+            if let Err(error) = client
+                .publish(format!("p.{pair_id}.presence"), bytes.into())
+                .await
+            {
+                if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("heartbeat_publish", error) {
+                    eprintln!("{line}");
+                }
+                return;
+            }
+            if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.recovered() {
+                eprintln!("{line}");
+            }
+        }
+    })
+}
+
+fn spawn_catalog_publisher(
+    client: async_nats::Client,
+    pair_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         // Three independent publish channels:
         //   p.{pair}.presence          — liveness micro-packet every 1s
         //   p.{pair}.state.sessions    — session list on signature change + 20s self-heal
@@ -1839,29 +2054,25 @@ fn spawn_presence_heartbeat(
         loop {
             interval.tick().await;
 
-            // 1. Liveness micro-packet (every tick). A Value always serializes.
-            let bytes = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
-                .expect("a presence Value always serializes");
-            if let Err(e) = client
-                .publish(format!("p.{pair_id}.presence"), bytes.into())
-                .await
-            {
-                if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("heartbeat_publish", e) {
-                    eprintln!("{line}");
-                }
-                return;
-            } else if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.recovered() {
-                eprintln!("{line}");
-            }
-
             // 2. Sessions snapshot (signature change or 20s self-heal).
-            let dirty = crate::store::take_catalog_dirty();
+            let snapshot_pair = pair_id.clone();
+            let Ok((dirty, sessions, workspaces)) = tokio::task::spawn_blocking(move || {
+                (
+                    host().catalog_dirty(),
+                    build_sessions_snapshot(&snapshot_pair),
+                    build_workspaces_snapshot(),
+                )
+            })
+            .await
+            else {
+                return;
+            };
             // A prolonged store read failure must not overflow and panic the
             // heartbeat task in debug/dev builds; the task supervisor would
             // reconnect it, but the deterministic panic would simply repeat.
             secs_since_sessions = secs_since_sessions.saturating_add(1);
             secs_since_workspaces = secs_since_workspaces.saturating_add(1);
-            if let Some((sessions_payload, sessions_sig)) = build_sessions_snapshot(&pair_id) {
+            if let Some((sessions_payload, sessions_sig)) = sessions {
                 if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
                     let bytes = serde_json::to_vec(&sessions_payload)
                         .expect("a sessions Value always serializes");
@@ -1880,7 +2091,9 @@ fn spawn_presence_heartbeat(
             }
 
             // 3. Workspaces snapshot (dirty flag or 20s self-heal).
-            let (workspaces_payload, workspaces_sig) = build_workspaces_snapshot();
+            let Some((workspaces_payload, workspaces_sig)) = workspaces else {
+                continue;
+            };
             if dirty || workspaces_sig != last_workspaces_sig || secs_since_workspaces >= 20 {
                 let bytes = serde_json::to_vec(&workspaces_payload)
                     .expect("a workspaces Value always serializes");
@@ -1897,6 +2110,101 @@ fn spawn_presence_heartbeat(
                 secs_since_workspaces = 0;
             }
         }
+    })
+}
+
+struct TransportTasks {
+    event_tx: tokio::sync::mpsc::Sender<EventPublish>,
+    event_task: tokio::task::JoinHandle<()>,
+    cmd_task: tokio::task::JoinHandle<()>,
+    transfer_task: tokio::task::JoinHandle<()>,
+    heartbeat_task: tokio::task::JoinHandle<()>,
+    candidate_tasks: lifecycle::CandidateTasks,
+}
+
+#[cfg(test)]
+type ReadinessPause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+#[cfg(test)]
+static READINESS_PAUSE: Mutex<Option<ReadinessPause>> = Mutex::new(None);
+
+/// All connection paths use the same subscription readiness and task ownership.
+async fn build_transport(
+    client: &async_nats::Client,
+    pair_id: &str,
+    handshake: &commands::HandshakeState,
+    reply_slots: commands::ReplySlots,
+) -> Result<TransportTasks, crate::AppError> {
+    let mut candidate_tasks = lifecycle::CandidateTasks::default();
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let event_task = spawn_event_publisher(client.clone(), event_rx);
+    candidate_tasks.track(&event_task);
+    let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
+    let cmd_task = tokio::spawn(commands::command_loop_with_ready(
+        client.clone(),
+        pair_id.into(),
+        reply_slots,
+        handshake.clone(),
+        Some(command_ready_tx),
+    ));
+    candidate_tasks.track(&cmd_task);
+    let (transfer_ready_tx, transfer_ready_rx) = tokio::sync::oneshot::channel();
+    let transfer_task = transfer::spawn_transfer_loop_with_ready(
+        client.clone(),
+        pair_id.into(),
+        handshake.active_flag(),
+        Some(transfer_ready_tx),
+    );
+    candidate_tasks.track(&transfer_task);
+    #[cfg(test)]
+    {
+        let pause = READINESS_PAUSE.lock().unwrap().take();
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            let _ = release.await;
+        }
+    }
+    let readiness = async {
+        command_ready_rx
+            .await
+            .map_err(|_| crate::AppError::RemoteTransport("command readiness ended".into()))?;
+        transfer_ready_rx
+            .await
+            .map_err(|_| crate::AppError::RemoteTransport("transfer readiness ended".into()))?;
+        client
+            .publish(
+                format!("p.{pair_id}.presence"),
+                serde_json::to_vec(&light_presence_payload(
+                    pair_id,
+                    handshake.bridge_instance_id(),
+                ))?
+                .into(),
+            )
+            .await
+            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))?;
+        client
+            .flush()
+            .await
+            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), readiness)
+        .await
+        .map_err(|_| crate::AppError::RemoteTransport("Remote readiness timed out".into()))??;
+    let heartbeat_task = spawn_presence_heartbeat(
+        client.clone(),
+        pair_id.into(),
+        handshake.bridge_instance_id().into(),
+    );
+    candidate_tasks.track(&heartbeat_task);
+    Ok(TransportTasks {
+        event_tx,
+        event_task,
+        cmd_task,
+        transfer_task,
+        heartbeat_task,
+        candidate_tasks,
     })
 }
 
@@ -1920,14 +2228,21 @@ fn spawn_credential_refresh(
             // generation concurrently.
             loop {
                 tokio::time::sleep(refresh_tick()).await;
-                let generation_active = STATE.lock().unwrap().as_ref().is_some_and(|state| {
-                    state.pair_id == pair_id
-                        && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
-                });
+                let generation_active =
+                    SUPERVISOR
+                        .state
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|state| {
+                            state.pair_id == pair_id
+                                && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+                        });
                 if !generation_active {
                     return;
                 }
-                if STATE
+                if SUPERVISOR
+                    .state
                     .lock()
                     .unwrap()
                     .as_ref()
@@ -1943,10 +2258,13 @@ fn spawn_credential_refresh(
                 let refresh_due =
                     pairing::refresh_delay(&creds) < std::time::Duration::from_secs(15);
                 if refresh_due {
-                    CREDENTIAL_REFRESHING.store(true, Ordering::Release);
+                    SUPERVISOR
+                        .credential_refreshing
+                        .store(true, Ordering::Release);
                     break;
                 }
             }
+            let _start_guard = SUPERVISOR.start_lock.lock().await;
             let refreshed = match pairing::refresh_bridge_jwt(creds).await {
                 Ok(creds) => creds,
                 Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
@@ -1956,16 +2274,24 @@ fn spawn_credential_refresh(
                     // shows "running": drop the dead credential, record why,
                     // and stop the bridge. `stop()` aborts this very task, but
                     // abort only lands at the next await and we return here.
-                    let generation_active = STATE.lock().unwrap().as_ref().is_some_and(|state| {
-                        state.pair_id == pair_id
-                            && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
-                    });
+                    let generation_active =
+                        SUPERVISOR
+                            .state
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|state| {
+                                state.pair_id == pair_id
+                                    && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
+                            });
                     if !generation_active {
                         return;
                     }
                     eprintln!("remote: pairing was revoked on the server [PA001]; stopping bridge");
-                    *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
-                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                    *SUPERVISOR.last_error_code.lock().unwrap() = Some("revoked".to_string());
+                    SUPERVISOR
+                        .credential_refreshing
+                        .store(false, Ordering::Release);
                     let _ = pairing::clear_creds();
                     let _ = stop();
                     return;
@@ -1974,7 +2300,9 @@ fn spawn_credential_refresh(
                     if let Some(line) = CREDENTIAL_EPISODE.record("credential_network", error) {
                         eprintln!("{line}");
                     }
-                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                    SUPERVISOR
+                        .credential_refreshing
+                        .store(false, Ordering::Release);
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
                 }
@@ -1983,84 +2311,62 @@ fn spawn_credential_refresh(
                 Ok(connection) => connection,
                 Err(crate::AppError::RemoteAuthorization(error)) => {
                     eprintln!("remote: refreshed NATS credential rejected [AU001]: {error}");
-                    if let Some(state) = STATE.lock().unwrap().as_ref() {
+                    if let Some(state) = SUPERVISOR.state.lock().unwrap().as_ref() {
                         state
                             .nats_health
                             .service_config_error
                             .store(true, Ordering::Release);
                     }
-                    *LAST_ERROR_CODE.lock().unwrap() = Some("service_authorization".to_string());
-                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                    *SUPERVISOR.last_error_code.lock().unwrap() =
+                        Some("service_authorization".to_string());
+                    SUPERVISOR
+                        .credential_refreshing
+                        .store(false, Ordering::Release);
                     return;
                 }
                 Err(error) => {
                     if let Some(line) = CREDENTIAL_EPISODE.record("credential_connect", error) {
                         eprintln!("{line}");
                     }
-                    CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                    SUPERVISOR
+                        .credential_refreshing
+                        .store(false, Ordering::Release);
                     tokio::time::sleep(refresh_tick()).await;
                     continue;
                 }
             };
             let client = connected_nats.client;
             let nats_health = connected_nats.health;
-            let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-            let new_event = spawn_event_publisher(client.clone(), event_rx);
-            let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
-            let new_cmd = tokio::spawn(commands::command_loop_with_ready(
-                client.clone(),
-                pair_id.clone(),
-                reply_slots.clone(),
-                handshake_state.clone(),
-                Some(command_ready_tx),
-            ));
-            let (transfer_ready_tx, transfer_ready_rx) = tokio::sync::oneshot::channel();
-            let new_transfer = transfer::spawn_transfer_loop_with_ready(
-                client.clone(),
-                pair_id.clone(),
-                handshake_state.active_flag(),
-                Some(transfer_ready_tx),
-            );
-            let new_heartbeat = spawn_presence_heartbeat(
-                client.clone(),
-                pair_id.clone(),
-                handshake_state.bridge_instance_id().to_string(),
-            );
-            tokio::task::yield_now().await;
-            let readiness = async {
-                command_ready_rx.await.map_err(|_| ())?;
-                transfer_ready_rx.await.map_err(|_| ())?;
-                client
-                    .publish(
-                        format!("p.{pair_id}.presence"),
-                        serde_json::to_vec(&light_presence_payload(
-                            &pair_id,
-                            handshake_state.bridge_instance_id(),
-                        ))
-                        .unwrap_or_default()
-                        .into(),
-                    )
+            // Serialize refresh installation with explicit start/recovery. A
+            // refresh scheduler belongs to its current runtime and is aborted
+            // when that runtime is replaced.
+            let transport =
+                match build_transport(&client, &pair_id, &handshake_state, reply_slots.clone())
                     .await
-                    .map_err(|_| ())?;
-                client.flush().await.map_err(|_| ())
-            };
-            let readiness_failed = !matches!(
-                tokio::time::timeout(std::time::Duration::from_secs(10), readiness).await,
-                Ok(Ok(()))
-            );
-            if readiness_failed {
-                new_event.abort();
-                new_cmd.abort();
-                new_transfer.abort();
-                new_heartbeat.abort();
-                CREDENTIAL_REFRESHING.store(false, Ordering::Release);
-                tokio::time::sleep(refresh_tick()).await;
-                continue;
-            }
-            // Hold the STATE lock across the generation check AND the creds
+                {
+                    Ok(transport) => transport,
+                    Err(error) => {
+                        if let Some(line) = CREDENTIAL_EPISODE.record("credential_connect", error) {
+                            eprintln!("{line}");
+                        }
+                        SUPERVISOR
+                            .credential_refreshing
+                            .store(false, Ordering::Release);
+                        continue;
+                    }
+                };
+            let TransportTasks {
+                event_tx,
+                event_task: new_event,
+                cmd_task: new_cmd,
+                transfer_task: new_transfer,
+                heartbeat_task: new_heartbeat,
+                mut candidate_tasks,
+            } = transport;
+            // Hold the SUPERVISOR.state lock across the generation check AND the creds
             // save: saving outside the lock raced `unpair()` (stop → clear
             // creds) and could resurrect a just-revoked credential file.
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let Some(state) = guard.as_mut().filter(|state| {
                 state.pair_id == pair_id
                     && Arc::ptr_eq(&state.pairing_confirmed, &pairing_confirmed)
@@ -2069,12 +2375,19 @@ fn spawn_credential_refresh(
                 new_cmd.abort();
                 new_transfer.abort();
                 new_heartbeat.abort();
-                CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+                SUPERVISOR
+                    .credential_refreshing
+                    .store(false, Ordering::Release);
                 return;
             };
             if let Err(error) = pairing::save_creds(&refreshed) {
                 eprintln!("remote: save refreshed credential failed [LC004]: {error}");
+                SUPERVISOR
+                    .credential_refreshing
+                    .store(false, Ordering::Release);
+                continue;
             }
+            candidate_tasks.installed();
             let old_cmd = std::mem::replace(&mut state.cmd_task, new_cmd);
             let old_transfer = std::mem::replace(&mut state.transfer_task, new_transfer);
             let old_heartbeat = std::mem::replace(&mut state.heartbeat_task, new_heartbeat);
@@ -2093,7 +2406,9 @@ fn spawn_credential_refresh(
             if let Some(line) = CREDENTIAL_EPISODE.recovered() {
                 eprintln!("{line}");
             }
-            CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+            SUPERVISOR
+                .credential_refreshing
+                .store(false, Ordering::Release);
         }
     })
 }
@@ -2103,86 +2418,25 @@ fn spawn_credential_refresh(
 /// whole catalog signature unambiguous without any record/field separator — so a
 /// title that happens to contain a separator character can't collide two
 /// different catalogs into the same signature (which would silently skip a sync).
-fn push_sig_field(sig: &mut String, value: &str) {
-    sig.push_str(&value.len().to_string());
-    sig.push(':');
-    sig.push_str(value);
-}
-
 /// Build the full presence snapshot (directory + per-session streaming) together
 /// with a signature that changes iff the snapshot's UI-visible content changes.
 /// The signature is recomputed straight from the store each call, so it can never
 /// drift from reality: a missed dirty-mark only delays propagation (the 20s
 /// heartbeat recomputes and self-heals), it never desyncs.
 fn build_presence_snapshot(pair_id: &str, bridge_instance_id: &str) -> (serde_json::Value, String) {
-    let active_sessions: Vec<String> = crate::store::active_run_sessions().unwrap_or_default();
-    let threads = crate::store::list_threads().unwrap_or_default();
-    let workspaces = crate::store::list_workspaces().unwrap_or_default();
-
-    let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
-    let run_infos = crate::store::latest_run_infos(&thread_ids).unwrap_or_default();
-    let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
-        .iter()
-        .map(|info| (info.thread_id.as_str(), info.status.as_str()))
-        .collect();
-
-    let mut sessions: Vec<serde_json::Value> = Vec::new();
+    let mut payload = light_presence_payload(pair_id, bridge_instance_id);
+    payload["catalogEpoch"] = json!(host().catalog_epoch());
     let mut signature = String::new();
-    for t in &threads {
-        let Some(sid) = t
-            .agent_session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let streaming = active_sessions.iter().any(|active| active == sid);
-        let status = run_status_by_thread.get(t.id.as_str()).copied();
-        sessions.push(json!({
-            "sessionId": sid,
-            "threadId": t.id,
-            "title": t.title,
-            "mode": t.mode,
-            "workspaceId": t.workspace_id,
-            "parentSessionId": t.parent_session_id,
-            "pinned": t.pinned,
-            "streaming": streaming,
-            "status": status,
-        }));
-        signature.push('s');
-        push_sig_field(&mut signature, sid);
-        push_sig_field(&mut signature, &t.id);
-        push_sig_field(&mut signature, &t.title);
-        push_sig_field(&mut signature, &t.mode);
-        push_sig_field(&mut signature, &t.workspace_id);
-        push_sig_field(&mut signature, t.parent_session_id.as_deref().unwrap_or(""));
-        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
-        push_sig_field(&mut signature, if streaming { "1" } else { "0" });
-        push_sig_field(&mut signature, status.unwrap_or(""));
+    if let Some((sessions, sig)) = build_sessions_snapshot(pair_id) {
+        payload["sessions"] = sessions["sessions"].clone();
+        payload["sessionsVersion"] = sessions["version"].clone();
+        signature.push_str(&sig);
     }
-
-    let mut workspace_values: Vec<serde_json::Value> = Vec::new();
-    for w in &workspaces {
-        if w.kind != "user" {
-            continue;
-        }
-        if let Ok(value) = serde_json::to_value(w) {
-            workspace_values.push(value);
-        }
-        signature.push('w');
-        push_sig_field(&mut signature, &w.id);
-        push_sig_field(&mut signature, &w.name);
+    if let Some((workspaces, sig)) = build_workspaces_snapshot() {
+        payload["workspaces"] = workspaces["workspaces"].clone();
+        payload["workspacesVersion"] = workspaces["version"].clone();
+        signature.push_str(&sig);
     }
-
-    let payload = json!({
-        "online": true,
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        "lastHeartbeatTs": unix_timestamp(),
-        "sessions": sessions,
-        "workspaces": workspace_values,
-    });
     (payload, signature)
 }
 
@@ -2200,75 +2454,10 @@ fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json
 /// conversation the user is reading (audit 05 L8). On failure the publisher
 /// skips this tick and the phone keeps the previous snapshot.
 fn build_sessions_snapshot(pair_id: &str) -> Option<(serde_json::Value, String)> {
-    let active_sessions = crate::store::active_run_sessions().ok()?;
-    let threads = crate::store::list_threads().ok()?;
-
-    let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
-    let run_infos = crate::store::latest_run_infos(&thread_ids).ok()?;
-    let run_status_by_thread: std::collections::HashMap<&str, &str> = run_infos
-        .iter()
-        .map(|info| (info.thread_id.as_str(), info.status.as_str()))
-        .collect();
-
-    let mut sessions: Vec<serde_json::Value> = Vec::new();
-    let mut signature = String::new();
-    for t in &threads {
-        let Some(sid) = t
-            .agent_session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        let streaming = active_sessions.iter().any(|active| active == sid);
-        let status = run_status_by_thread.get(t.id.as_str()).copied();
-        sessions.push(json!({
-            "sessionId": sid,
-            "threadId": t.id,
-            "title": t.title,
-            "mode": t.mode,
-            "workspaceId": t.workspace_id,
-            "parentSessionId": t.parent_session_id,
-            "pinned": t.pinned,
-            "streaming": streaming,
-            "status": status,
-        }));
-        push_sig_field(&mut signature, sid);
-        push_sig_field(&mut signature, &t.id);
-        push_sig_field(&mut signature, &t.title);
-        push_sig_field(&mut signature, &t.mode);
-        push_sig_field(&mut signature, &t.workspace_id);
-        push_sig_field(&mut signature, t.parent_session_id.as_deref().unwrap_or(""));
-        push_sig_field(&mut signature, if t.pinned { "1" } else { "0" });
-        push_sig_field(&mut signature, if streaming { "1" } else { "0" });
-        push_sig_field(&mut signature, status.unwrap_or(""));
-    }
-
-    let payload = json!({
-        "pairId": pair_id,
-        "sessions": sessions,
-    });
-    Some((payload, signature))
+    host().sessions(pair_id)
 }
-
-/// Workspaces-only snapshot for `p.{pair}.state.workspaces`.
-fn build_workspaces_snapshot() -> (serde_json::Value, String) {
-    let workspaces = crate::store::list_workspaces().unwrap_or_default();
-    let mut workspace_values: Vec<serde_json::Value> = Vec::new();
-    let mut signature = String::new();
-    for w in &workspaces {
-        if w.kind != "user" {
-            continue;
-        }
-        if let Ok(value) = serde_json::to_value(w) {
-            workspace_values.push(value);
-        }
-        push_sig_field(&mut signature, &w.id);
-        push_sig_field(&mut signature, &w.name);
-    }
-    let payload = json!({ "workspaces": workspace_values });
-    (payload, signature)
+fn build_workspaces_snapshot() -> Option<(serde_json::Value, String)> {
+    host().workspaces()
 }
 
 /// Liveness-only heartbeat (no directory). Sent every ~20s while the catalog is
@@ -2276,6 +2465,7 @@ fn build_workspaces_snapshot() -> (serde_json::Value, String) {
 fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
     json!({
         "online": true,
+        "agentAvailable": host().agent_available(),
         "pairId": pair_id,
         "bridgeInstanceId": bridge_instance_id,
         "lastHeartbeatTs": unix_timestamp(),
@@ -2692,7 +2882,7 @@ mod contract_tests {
         // An uncategorized local failure still propagates as Err.
         assert!(start_failure(crate::AppError::Message("local".to_string())).is_err());
 
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 }
 
@@ -2768,11 +2958,12 @@ mod runtime_tests {
     /// serialized test starts clean. Poison-tolerant: one test's failure must
     /// not cascade into every later lock.
     fn install_state(state: RemoteState) {
-        let previous = STATE
+        let previous = SUPERVISOR
+            .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .replace(state);
-        assert!(previous.is_none(), "previous test leaked STATE");
+        assert!(previous.is_none(), "previous test leaked SUPERVISOR.state");
     }
 
     #[test]
@@ -2820,6 +3011,9 @@ mod runtime_tests {
 
         health.handle_event(&async_nats::Event::Connected);
 
+        health
+            .credential_expires_at
+            .store(unix_timestamp() + 3600, Ordering::Release);
         // The same rejection on the generation created by the reactive
         // refresh is terminal service authorization.
         health
@@ -2894,30 +3088,34 @@ mod runtime_tests {
     #[test]
     fn status_of_stopped_bridge_surfaces_last_error_and_pairing() {
         let _home = HomeGuard::new("remote-stopped");
-        assert!(STATE.lock().unwrap().is_none());
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
         let current = status();
         assert!(!matches!(current.phase, RemotePhase::Ready));
         assert_eq!(current.reason, None);
         assert_eq!(current.pair_id, "");
 
         pairing::save_creds(&test_creds("pair_stopped", "nats://127.0.0.1:1", 3600)).unwrap();
-        *LAST_ERROR_CODE.lock().unwrap() = Some("revoked".to_string());
+        *SUPERVISOR.last_error_code.lock().unwrap() = Some("revoked".to_string());
         let current = status();
         assert_eq!(current.reason, Some(RemoteFailureReason::CredentialRevoked));
         assert_eq!(current.pair_id, "pair_stopped");
 
         // A transient first connect failure starts the process-lifetime retry
-        // worker before `STATE` exists. It is reconnecting, not a final error.
-        *LAST_ERROR_CODE.lock().unwrap() = Some("network".to_string());
-        START_REQUESTED.store(true, Ordering::Release);
-        START_RETRY_RUNNING.store(true, Ordering::Release);
+        // worker before `SUPERVISOR.state` exists. It is reconnecting, not a final error.
+        *SUPERVISOR.last_error_code.lock().unwrap() = Some("network".to_string());
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR
+            .start_retry_running
+            .store(true, Ordering::Release);
         let current = status();
         assert!(matches!(current.phase, RemotePhase::Reconnecting));
         assert_eq!(current.reason, Some(RemoteFailureReason::Network));
 
-        START_RETRY_RUNNING.store(false, Ordering::Release);
-        START_REQUESTED.store(false, Ordering::Release);
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        SUPERVISOR
+            .start_retry_running
+            .store(false, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
         pairing::clear_creds().unwrap();
     }
 
@@ -2933,13 +3131,13 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-graceful-stop");
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_graceful_stop").await);
-        START_REQUESTED.store(true, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         let stopped = stop_gracefully("user_disconnect").await;
 
         assert!(matches!(stopped.phase, RemotePhase::Stopped));
-        assert!(STATE.lock().unwrap().is_none());
-        assert!(!START_REQUESTED.load(Ordering::Acquire));
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
+        assert!(!SUPERVISOR.start_requested.load(Ordering::Acquire));
     }
 
     #[tokio::test]
@@ -2962,7 +3160,7 @@ mod runtime_tests {
 
         // Expired code → hidden even while unconfirmed.
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.pairing_code_expires_at = Some(now_secs() - 1);
         }
@@ -2970,7 +3168,7 @@ mod runtime_tests {
 
         // Confirmed → hidden regardless of freshness.
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.pairing_code_expires_at = Some(now_secs() + 600);
             state.pairing_confirmed.store(true, Ordering::Release);
@@ -2979,13 +3177,15 @@ mod runtime_tests {
 
         // A dead critical task first enters transparent automatic reconnect.
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.cmd_task.abort();
             state.cmd_task = tokio::spawn(async {});
         }
-        START_REQUESTED.store(true, Ordering::Release);
-        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
         tokio::time::sleep(Duration::from_millis(20)).await;
         let current = status();
         assert!(!matches!(current.phase, RemotePhase::Ready));
@@ -2997,7 +3197,9 @@ mod runtime_tests {
 
         // Only after the bounded automatic budget is exhausted does the UI
         // receive an actionable reconnect-required error.
-        RUNTIME_RECONNECT_ATTEMPTS.store(MAX_RUNTIME_RECONNECT_ATTEMPTS, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(MAX_RUNTIME_RECONNECT_ATTEMPTS, Ordering::Release);
         let current = status();
         assert!(!matches!(current.phase, RemotePhase::Reconnecting));
         assert_eq!(
@@ -3009,14 +3211,16 @@ mod runtime_tests {
         // generation: do not spend the reconnect budget on the same invalid
         // service configuration.
         {
-            let guard = STATE.lock().unwrap();
+            let guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_ref().unwrap();
             state
                 .nats_health
                 .service_config_error
                 .store(true, Ordering::Release);
         }
-        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
         let current = status();
         assert!(!matches!(current.phase, RemotePhase::Ready));
         assert!(!matches!(current.phase, RemotePhase::Reconnecting));
@@ -3024,7 +3228,8 @@ mod runtime_tests {
             current.reason,
             Some(RemoteFailureReason::ServiceAuthorization)
         );
-        STATE
+        SUPERVISOR
+            .state
             .lock()
             .unwrap()
             .as_ref()
@@ -3034,9 +3239,9 @@ mod runtime_tests {
             .store(false, Ordering::Release);
 
         // The reconnect-path authorization shape must never leave the UI on
-        // "connected" merely because the old generation still owns STATE.
+        // "connected" merely because the old generation still owns SUPERVISOR.state.
         {
-            let guard = STATE.lock().unwrap();
+            let guard = SUPERVISOR.state.lock().unwrap();
             guard
                 .as_ref()
                 .unwrap()
@@ -3049,7 +3254,7 @@ mod runtime_tests {
         assert!(!matches!(current.phase, RemotePhase::Ready));
         assert!(matches!(current.phase, RemotePhase::Reconnecting));
         {
-            let guard = STATE.lock().unwrap();
+            let guard = SUPERVISOR.state.lock().unwrap();
             guard
                 .as_ref()
                 .unwrap()
@@ -3060,18 +3265,20 @@ mod runtime_tests {
         // The optional Web listener retries silently, then becomes actionable
         // only after its own reconnect budget is exhausted.
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.web_task = None;
             state.cmd_task = tokio::spawn(std::future::pending());
         }
         assert_eq!(status().warning_code, None);
-        WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
+        SUPERVISOR
+            .web_reconnect_attempts
+            .store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
         assert_eq!(status().warning_code.as_deref(), Some("web_bind"));
 
         let stopped = stop();
         assert!(!matches!(stopped.phase, RemotePhase::Ready));
-        assert!(STATE.lock().unwrap().is_none());
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -3162,7 +3369,7 @@ mod runtime_tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let disconnected = {
-                let guard = STATE.lock().unwrap();
+                let guard = SUPERVISOR.state.lock().unwrap();
                 let state = guard.as_ref().unwrap();
                 state.client.connection_state() != async_nats::connection::State::Connected
             };
@@ -3178,7 +3385,7 @@ mod runtime_tests {
         // Full/closed queue → the queue-full drop path. Reset this runtime's
         // cross-generation counters so this drop is the first in its episode.
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.drop_counters.dropping.store(false, Ordering::Relaxed);
             state.drop_counters.dropped.store(0, Ordering::Relaxed);
@@ -3191,17 +3398,26 @@ mod runtime_tests {
         let nats2 = FakeNats::start().await;
         let client2 = nats_connect(&nats2).await;
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             guard.as_mut().unwrap().client = client2;
         }
         publish_event("sess", "t", "{}", "r", 1, 0, "e", "", -1, 0);
 
         // Recovery: a successful enqueue after the episode reports once.
         let (tx, rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-        let drain =
-            spawn_event_publisher(STATE.lock().unwrap().as_ref().unwrap().client.clone(), rx);
+        let drain = spawn_event_publisher(
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .client
+                .clone(),
+            rx,
+        );
         {
-            let mut guard = STATE.lock().unwrap();
+            let mut guard = SUPERVISOR.state.lock().unwrap();
             guard.as_mut().unwrap().event_tx = tx;
         }
         let mut tap = nats2.tap();
@@ -3274,17 +3490,78 @@ mod runtime_tests {
         platform.push("/client/v1/remote/pair/revoke", 200, json!({}));
         unpair().await.unwrap();
         assert!(pairing::load_creds().is_none());
+        assert!(
+            platform.requests().is_empty(),
+            "local unpair must not await HTTP"
+        );
+        pairing::retry_pending_revokes().await.unwrap();
         assert_eq!(platform.requests().len(), 1);
 
-        // A revoke failure propagates.
+        // A revoke failure keeps compensation without undoing local unpair.
         pairing::save_creds(&creds).unwrap();
         platform.push(
             "/client/v1/remote/pair/revoke",
             500,
             json!({ "error": "boom", "message": "no" }),
         );
-        assert!(unpair().await.is_err());
-        pairing::clear_creds().unwrap();
+        assert!(unpair().await.is_ok());
+        assert!(pairing::load_creds().is_none());
+        pairing::retry_pending_revokes().await.unwrap();
+        platform.push("/client/v1/remote/pair/revoke", 200, json!({}));
+        pairing::retry_pending_revokes().await.unwrap();
+        assert_eq!(platform.requests().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn stop_during_readiness_cancels_candidate_before_a_new_start() {
+        let _home = HomeGuard::new("remote-stop-readiness");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *READINESS_PAUSE.lock().unwrap() = Some((entered_tx, release_rx));
+        let opening = tokio::spawn(start(RemoteStartInput {}));
+        tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        stop();
+        let stopped = tokio::time::timeout(Duration::from_secs(1), opening)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!matches!(stopped.phase, RemotePhase::Ready));
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
+        assert!(SUPERVISOR.bridge_shared.lock().unwrap().is_none());
+        assert!(
+            release_tx.send(()).is_err(),
+            "cancel must drop the readiness future"
+        );
+        platform.respond_pair_code(nats.url());
+        assert_eq!(
+            start(RemoteStartInput {}).await.unwrap().phase,
+            RemotePhase::Ready
+        );
+        stop();
+        wait_for_web_port_free().await;
+    }
+
+    #[test]
+    fn expired_rotated_credential_is_refreshable_not_a_configuration_failure() {
+        let health = NatsHealth::default();
+        health
+            .credential_was_refreshed
+            .store(true, Ordering::Release);
+        health
+            .credential_expires_at
+            .store(unix_timestamp().saturating_sub(1), Ordering::Release);
+        health.mark_authorization_rejected();
+        assert!(health.needs_reconnect());
+        assert!(!health.is_terminal());
     }
 
     #[tokio::test]
@@ -3372,7 +3649,7 @@ mod runtime_tests {
         )
         .await;
         assert_eq!(offline.json()["online"], json!(false));
-        assert!(STATE.lock().unwrap().is_none());
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
         wait_for_web_port_free().await;
     }
 
@@ -3393,7 +3670,9 @@ mod runtime_tests {
         assert_eq!(started.web_lan_url, None);
         assert_eq!(started.warning_code.as_deref(), Some("web_bind"));
         assert_eq!(status().warning_code, None);
-        WEB_RECONNECT_ATTEMPTS.store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
+        SUPERVISOR
+            .web_reconnect_attempts
+            .store(MAX_WEB_RECONNECT_ATTEMPTS, Ordering::Release);
         assert_eq!(status().warning_code.as_deref(), Some("web_bind"));
         stop();
         drop(blocker);
@@ -3512,7 +3791,7 @@ mod runtime_tests {
             std::fs::set_permissions(&config_dir, permissions).unwrap();
             assert!(result.is_err());
         }
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     #[test]
@@ -3578,7 +3857,7 @@ mod runtime_tests {
     #[test]
     fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
         let _home = HomeGuard::new("remote-shared-generation");
-        *BRIDGE_SHARED.lock().unwrap() = None;
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
         let first = shared_runtime("pair_shared", true, false);
         let same_credential_epoch = shared_runtime("pair_shared", true, false);
         assert!(Arc::ptr_eq(
@@ -3601,14 +3880,18 @@ mod runtime_tests {
             &rebuilt.pairing_confirmed
         ));
         assert_ne!(first.bridge_instance_id, rebuilt.bridge_instance_id);
-        *BRIDGE_SHARED.lock().unwrap() = None;
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
     }
 
     #[test]
     fn runtime_failure_budget_uses_a_ten_minute_window() {
         let _home = HomeGuard::new("remote-runtime-budget");
-        RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
-        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_failure_window_started
+            .store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
         assert_eq!(record_runtime_failure(1_000), 1);
         assert_eq!(record_runtime_failure(2_000), 2);
         assert_eq!(record_runtime_failure(3_000), 3);
@@ -3617,8 +3900,12 @@ mod runtime_tests {
             record_runtime_failure(1_000 + RUNTIME_FAILURE_WINDOW_MS + 1),
             1
         );
-        RUNTIME_FAILURE_WINDOW_STARTED.store(0, Ordering::Release);
-        RUNTIME_RECONNECT_ATTEMPTS.store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_failure_window_started
+            .store(0, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
     }
 
     #[tokio::test]
@@ -3648,11 +3935,11 @@ mod runtime_tests {
             handshake,
         );
 
-        // The refresh runs, reconnects to the second server and swaps STATE.
+        // The refresh runs, reconnects to the second server and swaps SUPERVISOR.state.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let swapped = {
-                let guard = STATE.lock().unwrap();
+                let guard = SUPERVISOR.state.lock().unwrap();
                 guard
                     .as_ref()
                     .map(|state| state.nats_url == nats2.url())
@@ -3667,7 +3954,7 @@ mod runtime_tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        // The refreshed credential was persisted under the STATE lock.
+        // The refreshed credential was persisted under the SUPERVISOR.state lock.
         assert_eq!(pairing::load_creds().unwrap().nats_url, nats2.url());
         assert!(platform
             .requests()
@@ -3745,10 +4032,16 @@ mod runtime_tests {
             .await
             .expect("refresh task ends after revocation")
             .expect("refresh task not panicked");
-        assert!(STATE.lock().unwrap().is_none(), "bridge stopped itself");
-        assert_eq!(LAST_ERROR_CODE.lock().unwrap().as_deref(), Some("revoked"));
+        assert!(
+            SUPERVISOR.state.lock().unwrap().is_none(),
+            "bridge stopped itself"
+        );
+        assert_eq!(
+            SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
+            Some("revoked")
+        );
         assert!(pairing::load_creds().is_none());
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     #[tokio::test]
@@ -3850,7 +4143,7 @@ mod runtime_tests {
         pairing::save_creds(&creds).unwrap();
         platform.respond_refresh(nats.url());
 
-        // STATE has the same pairing id but belongs to a newer bridge
+        // SUPERVISOR.state has the same pairing id but belongs to a newer bridge
         // generation → the old refresh worker must not overwrite it.
         let state = fake_state(&nats, "pair_gen").await;
         install_state(state);
@@ -4154,7 +4447,7 @@ mod runtime_tests {
         assert_eq!(payload["online"], json!(true));
         assert_eq!(payload["sessions"], json!([]));
         assert_eq!(payload["workspaces"], json!([]));
-        assert!(signature.is_empty());
+        assert_eq!(signature, "[][]");
         assert_eq!(payload, build_presence_payload("pair_x", "bridge_x"));
 
         let light = light_presence_payload("pair_x", "bridge_x");
@@ -4222,7 +4515,7 @@ mod runtime_tests {
             create_directory: None,
         })
         .unwrap();
-        let (payload, signature) = build_workspaces_snapshot();
+        let (payload, signature) = build_workspaces_snapshot().expect("store readable");
         assert!(payload["workspaces"]
             .as_array()
             .unwrap()
@@ -4254,7 +4547,7 @@ mod runtime_tests {
     #[tokio::test]
     async fn start_once_returns_empty_when_not_requested() {
         let _home = HomeGuard::new("remote-start-not-requested");
-        START_REQUESTED.store(false, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
         let result = start_once(true).await.expect("empty status");
         assert_eq!(result.phase, RemotePhase::Stopped);
     }
@@ -4264,13 +4557,13 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-start-no-replace");
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_no_replace").await);
-        START_REQUESTED.store(true, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         let result = start_once(false).await.expect("returns the current bridge");
         assert_eq!(result.pair_id, "pair_no_replace");
         assert!(matches!(result.phase, RemotePhase::Ready));
         stop();
-        START_REQUESTED.store(false, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
     }
 
     #[tokio::test]
@@ -4304,15 +4597,15 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_suspend").await);
         let mut tap = nats.tap();
-        START_REQUESTED.store(true, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         handle_system_suspend().await;
         assert_eq!(
-            LAST_ERROR_CODE.lock().unwrap().as_deref(),
+            SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
             Some("system_sleep")
         );
         assert!(
-            STATE.lock().unwrap().is_none(),
+            SUPERVISOR.state.lock().unwrap().is_none(),
             "suspend stopped the bridge"
         );
         let offline =
@@ -4320,9 +4613,9 @@ mod runtime_tests {
         assert_eq!(offline.json()["disconnected"], json!(true));
 
         // Not requested to run: suspend (and its disconnect notice) is a no-op.
-        START_REQUESTED.store(false, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
         handle_system_suspend().await;
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     #[tokio::test]
@@ -4331,22 +4624,22 @@ mod runtime_tests {
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_resume").await);
         let _shared = shared_runtime("pair_resume", true, false);
-        START_REQUESTED.store(true, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         handle_system_resume();
         // The spawned recovery reuses the running bridge (Ready), so it takes
         // the Ok(_) arm after a scheduling turn.
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            LAST_ERROR_CODE.lock().unwrap().as_deref(),
+            SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
             Some("system_sleep")
         );
 
         stop();
-        START_REQUESTED.store(false, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
         handle_system_resume();
-        *BRIDGE_SHARED.lock().unwrap() = None;
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     #[tokio::test]
@@ -4356,19 +4649,23 @@ mod runtime_tests {
         install_state(fake_state(&nats, "pair_status_recovery").await);
 
         // A live generation mid credential refresh reports Refreshing.
-        CREDENTIAL_REFRESHING.store(true, Ordering::Release);
+        SUPERVISOR
+            .credential_refreshing
+            .store(true, Ordering::Release);
         let current = status();
         assert!(matches!(current.phase, RemotePhase::Refreshing));
         assert_eq!(current.reason, Some(RemoteFailureReason::CredentialExpired));
-        CREDENTIAL_REFRESHING.store(false, Ordering::Release);
+        SUPERVISOR
+            .credential_refreshing
+            .store(false, Ordering::Release);
 
         // A dead broker surfaces as Network with start-retry recovery details.
-        START_REQUESTED.store(true, Ordering::Release);
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
         nats.kill();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let disconnected = {
-                let guard = STATE.lock().unwrap();
+                let guard = SUPERVISOR.state.lock().unwrap();
                 guard.as_ref().unwrap().client.connection_state()
                     != async_nats::connection::State::Connected
             };
@@ -4378,9 +4675,9 @@ mod runtime_tests {
             assert!(std::time::Instant::now() < deadline, "client never noticed");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        START_RETRY_ATTEMPTS.store(3, Ordering::Release);
-        START_RETRY_SINCE.store(12345, Ordering::Release);
-        START_RETRY_NEXT_AT.store(999, Ordering::Release);
+        SUPERVISOR.start_retry_attempts.store(3, Ordering::Release);
+        SUPERVISOR.start_retry_since.store(12345, Ordering::Release);
+        SUPERVISOR.start_retry_next_at.store(999, Ordering::Release);
         let current = status();
         assert!(matches!(current.phase, RemotePhase::Reconnecting));
         assert_eq!(current.reason, Some(RemoteFailureReason::Network));
@@ -4390,16 +4687,16 @@ mod runtime_tests {
         assert_eq!(recovery.next_retry_at, Some(999));
 
         stop();
-        START_REQUESTED.store(false, Ordering::Release);
-        START_RETRY_ATTEMPTS.store(0, Ordering::Release);
-        START_RETRY_SINCE.store(0, Ordering::Release);
-        START_RETRY_NEXT_AT.store(0, Ordering::Release);
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.start_retry_attempts.store(0, Ordering::Release);
+        SUPERVISOR.start_retry_since.store(0, Ordering::Release);
+        SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
     }
 
     #[test]
     fn status_none_branch_maps_every_error_code() {
         let _home = HomeGuard::new("remote-status-none-codes");
-        assert!(STATE.lock().unwrap().is_none());
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
 
         let cases = [
             (
@@ -4440,24 +4737,50 @@ mod runtime_tests {
             ),
         ];
         for (code, phase, reason) in cases {
-            *LAST_ERROR_CODE.lock().unwrap() = Some(code.to_string());
+            *SUPERVISOR.last_error_code.lock().unwrap() = Some(code.to_string());
             let current = status();
             assert_eq!(current.phase, phase, "code {code}");
             assert_eq!(current.reason, reason, "code {code}");
         }
 
         // The retry recovery block exposes the next-retry timestamp when set.
-        *LAST_ERROR_CODE.lock().unwrap() = Some("network".to_string());
-        START_REQUESTED.store(true, Ordering::Release);
-        START_RETRY_RUNNING.store(true, Ordering::Release);
-        START_RETRY_NEXT_AT.store(1234, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = Some("network".to_string());
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR
+            .start_retry_running
+            .store(true, Ordering::Release);
+        SUPERVISOR
+            .start_retry_next_at
+            .store(1234, Ordering::Release);
         let current = status();
         assert_eq!(current.recovery.as_ref().unwrap().next_retry_at, Some(1234));
 
-        *LAST_ERROR_CODE.lock().unwrap() = None;
-        START_REQUESTED.store(false, Ordering::Release);
-        START_RETRY_RUNNING.store(false, Ordering::Release);
-        START_RETRY_NEXT_AT.store(0, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR
+            .start_retry_running
+            .store(false, Ordering::Release);
+        SUPERVISOR.start_retry_next_at.store(0, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn stopping_supervisor_cancels_owned_recovery_work() {
+        let _home = HomeGuard::new("supervisor-cancel");
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel::<()>();
+        SUPERVISOR.spawn(async move {
+            let _held = held_tx;
+            let _ = entered_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        entered_rx.await.unwrap();
+        stop();
+        assert!(tokio::time::timeout(Duration::from_secs(1), held_rx)
+            .await
+            .unwrap()
+            .is_err());
+        assert_eq!(status().phase, RemotePhase::Stopped);
     }
 
     #[tokio::test]
@@ -4480,11 +4803,10 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbs".into());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            handle.is_finished(),
-            "sessions publish failure ends the heartbeat"
-        );
+        tokio::time::timeout(Duration::from_secs(3), handle)
+            .await
+            .expect("catalog publish failure must stop heartbeat")
+            .expect("heartbeat did not panic");
     }
 
     #[tokio::test]
@@ -4507,11 +4829,10 @@ mod runtime_tests {
         .unwrap();
 
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbw".into());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            handle.is_finished(),
-            "workspaces publish failure ends the heartbeat"
-        );
+        tokio::time::timeout(Duration::from_secs(3), handle)
+            .await
+            .expect("catalog publish failure must stop heartbeat")
+            .expect("heartbeat did not panic");
         std::fs::remove_dir_all(&workspace_dir).ok();
     }
 
@@ -4527,7 +4848,7 @@ mod runtime_tests {
         install_state(state);
         // Mark the generation's health terminal before the refresh loops.
         {
-            let guard = STATE.lock().unwrap();
+            let guard = SUPERVISOR.state.lock().unwrap();
             guard
                 .as_ref()
                 .unwrap()
@@ -4589,15 +4910,15 @@ mod runtime_tests {
     #[tokio::test]
     async fn start_once_without_replace_falls_through_when_inactive() {
         let _home = HomeGuard::new("remote-start-inactive");
-        assert!(STATE.lock().unwrap().is_none());
-        START_REQUESTED.store(true, Ordering::Release);
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
         // No running bridge → runtime_active is false, so the no-replace check
         // falls through, then establish fails (no platform) → network status.
         sign_in("http://127.0.0.1:9");
         let result = start_once(false).await.expect("network maps to status");
         assert_eq!(result.reason, Some(RemoteFailureReason::Network));
-        START_REQUESTED.store(false, Ordering::Release);
-        *LAST_ERROR_CODE.lock().unwrap() = None;
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     #[tokio::test]
@@ -4620,4 +4941,8 @@ mod runtime_tests {
         assert_eq!(body["unpaired"], json!(true));
         stop();
     }
+}
+
+fn host() -> &'static dyn services::RemoteHost {
+    crate::remote_host::host()
 }

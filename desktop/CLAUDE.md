@@ -13,7 +13,7 @@ FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend
 | `DEV_MD/COLOR.md` (~5KB) | Color semantic tokens + quick usage reference | **Read** when picking colors / changing styles; **modify** only when adding/changing tokens |
 | `DEV_MD/SANDBOX/COMMON.md` | Shared rules, tiers, approval UI/protocol, decisions and Codex references | **Read** for approval semantics; distinguish implemented behavior, accepted limitations and future plans |
 | `DEV_MD/SANDBOX/MACOS.md` / `LINUX.md` / `WINDOWS.md` | Platform implementation, differences, diagnostics, progress, validation procedures and evidence | **Read** the relevant platform; historical PASS is not validation of a new candidate; preserve the accepted Windows unelevated and Linux snapshot boundaries |
-| `DEV_MD/CONTEXT_COMPACTION.md` / `DEV_MD/CONNECTION.md` | Compaction plans / connection semantics | **Read** for the corresponding feature; verify plan-vs-current against code |
+| `DEV_MD/CONTEXT_COMPACTION.md` / `DEV_MD/CONNECTION.md` | Compaction plans / remote product rationale, architecture, connection contract and implementation plan | **Read** for the corresponding feature; verify plan-vs-current against code |
 
 > `DEV_MD/PRODUCT.md` / `DEV_MD/ER.md` are large: use `Read` with `offset/limit` to read **specific sections** from the chapter index below — don't load the whole file.
 

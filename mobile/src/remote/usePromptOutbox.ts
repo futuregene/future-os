@@ -33,7 +33,7 @@ function samePendingPrompt(
   candidate: Omit<PendingPrompt, "version" | "commandId" | "createdAt">,
 ): boolean {
   const attachmentKey = (items: MobileAttachment[]) =>
-    items.map(item => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
+    items.map((item) => `${item.localUri}\u0000${item.name}\u0000${item.transferSize}`).sort();
   return (
     pending.draftKey === candidate.draftKey &&
     pending.sessionId === candidate.sessionId &&
@@ -66,6 +66,7 @@ async function deliverPendingPrompt(
   receiptSupported: boolean,
   assertCurrentPairing: () => void,
   onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
+  recovering = false,
 ): Promise<PromptAck> {
   assertCurrentPairing();
   if (checkReceipt && receiptSupported) {
@@ -73,12 +74,18 @@ async function deliverPendingPrompt(
     assertCurrentPairing();
     if (receipt) return receipt;
   }
+  if (
+    recovering &&
+    (!pending.bridgeInstanceId || pending.bridgeInstanceId !== client.accessIdentity)
+  )
+    throw new Error("remote_access_changed");
   const uploaded = await uploadAttachments(client, pending.attachments, onUploadProgress);
   assertCurrentPairing();
   return (
     await client.requestRetry<PromptAck>(
       {
         id: pending.commandId,
+        ...(pending.bridgeInstanceId ? { bridgeInstanceId: pending.bridgeInstanceId } : {}),
         type: "prompt",
         sessionId: pending.sessionId,
         message: pending.text.trim(),
@@ -86,7 +93,7 @@ async function deliverPendingPrompt(
         providerId: modelProviderFromReference(pending.modelId),
         level: pending.thinkingLevel,
         ...(uploaded.length
-          ? { attachments: uploaded.map(attachment => ({ uploadId: attachment.uploadId! })) }
+          ? { attachments: uploaded.map((attachment) => ({ uploadId: attachment.uploadId! })) }
           : {}),
         ...(pending.mode === "workspace"
           ? { mode: "workspace", workspaceId: pending.workspaceId }
@@ -102,11 +109,17 @@ async function deliverPendingContinuation(
   pending: PendingContinuation,
   checkReceipt: boolean,
   receiptSupported: boolean,
+  recovering = false,
 ): Promise<PromptAck> {
   if (checkReceipt && receiptSupported) {
     const receipt = await pendingPromptReceipt(client, pending.commandId);
     if (receipt) return receipt;
   }
+  if (
+    recovering &&
+    (!pending.bridgeInstanceId || pending.bridgeInstanceId !== client.accessIdentity)
+  )
+    throw new Error("remote_access_changed");
   return (
     await client.requestRetry<PromptAck>(
       {
@@ -258,10 +271,15 @@ export function usePromptOutbox({
           assertCurrentPairing();
           pending = {
             version: 2,
+            bridgeInstanceId: client.accessIdentity,
             commandId: randomId("prompt"),
             ...candidate,
             createdAt: Date.now(),
           };
+          await savePendingPrompt(pending);
+        }
+        if (pending.bridgeInstanceId !== client.accessIdentity) {
+          pending = { ...pending, bridgeInstanceId: client.accessIdentity };
           await savePendingPrompt(pending);
         }
         try {
@@ -276,14 +294,14 @@ export function usePromptOutbox({
           await clearPendingPrompt(pending.commandId);
           await clearSessionDraftIfMatches(pending.draftKey, pending);
           const nextSessionId = response.sessionId || targetSessionId;
-          engine?.mutate(nextSessionId, timeline =>
+          engine?.mutate(nextSessionId, (timeline) =>
             commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
               id: `local:${pending.commandId}`,
               runId: response.runId,
               text: text.trim(),
               ...(attachments.length
                 ? {
-                    attachments: attachments.map(attachment => ({
+                    attachments: attachments.map((attachment) => ({
                       path: attachment.localUri,
                       name: attachment.name,
                       kind: attachment.kind,
@@ -302,7 +320,7 @@ export function usePromptOutbox({
               setDraftMode("chat");
               setDraftWorkspaceId("");
             }
-            engine?.mutate(targetSessionId, timeline => ({
+            engine?.mutate(targetSessionId, (timeline) => ({
               ...(timeline ?? emptyTimeline()),
               items: [],
             }));
@@ -374,7 +392,10 @@ export function usePromptOutbox({
           true,
           promptReceiptSupported,
           assertCurrentPairing,
+          undefined,
+          true,
         );
+        assertCurrentPairing();
         await clearPendingPrompt(pending.commandId);
         await clearSessionDraftIfMatches(pending.draftKey, pending);
         void refreshSessions();
@@ -382,7 +403,10 @@ export function usePromptOutbox({
       } catch (recoveryError) {
         if (!isTransientNatsRequestError(recoveryError)) {
           await clearPendingPrompt(pending.commandId);
-          recordError(recoveryError);
+          if (!(
+            recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
+          ))
+            recordError(recoveryError);
         }
       }
     })().finally(() => {
@@ -430,6 +454,7 @@ export function usePromptOutbox({
         if (!pending) {
           pending = {
             version: 2,
+            bridgeInstanceId: client.accessIdentity,
             commandId: randomId("continue"),
             pairId: credentials.pairId,
             expectedDesktopId: credentials.expectedDesktopId,
@@ -437,6 +462,10 @@ export function usePromptOutbox({
             sourceRunId: runId,
             createdAt: Date.now(),
           } satisfies PendingContinuation;
+          await savePendingContinuation(pending);
+        }
+        if (pending.bridgeInstanceId !== client.accessIdentity) {
+          pending = { ...pending, bridgeInstanceId: client.accessIdentity };
           await savePendingContinuation(pending);
         }
         try {
@@ -484,14 +513,20 @@ export function usePromptOutbox({
           pending,
           true,
           promptReceiptSupported,
+          true,
         );
+        if (clientRef.current !== client || credentialsRef.current?.pairId !== pending.pairId)
+          return;
         await clearPendingContinuation(pending.commandId);
         void refreshSessions();
         reconcileSession(receipt.sessionId || pending.sessionId, "reconnect", receipt.runId);
       } catch (recoveryError) {
         if (!isTransientNatsRequestError(recoveryError)) {
           await clearPendingContinuation(pending.commandId);
-          recordError(recoveryError);
+          if (!(
+            recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
+          ))
+            recordError(recoveryError);
         }
       }
     })();

@@ -1,4 +1,5 @@
 {
+  "agentUnavailable": "正在尝试连接；若长时间未连接，请重启 FutureOS。",
   "title": "手机遥控",
   "description": "让手机远程接管本机会话（工具在本机执行）。开启后，本地对话会镜像给手机，手机也可驱动同一会话。",
   "downloadMobile": "下载手机端",
@@ -35,5 +36,15 @@
   },
   "error": {
     "generic": "操作未完成，请稍后再试（LC999）"
-  }
+  },
+  "statusConnected": "已连接",
+  "statusConnecting": "正在连接",
+  "statusWaitingDesktop": "等待桌面端",
+  "statusDevicePreparing": "桌面端准备中",
+  "statusDisconnected": "已断开",
+  "statusPairingExpired": "配对已失效",
+  "statusNetworkUnavailable": "网络异常",
+  "statusServiceUnavailable": "服务不可用",
+  "statusDeviceUnavailable": "设备暂不可用",
+  "connectionHint": "正在尝试连接，请检查电脑网络并保持 FutureOS 运行。"
 }
