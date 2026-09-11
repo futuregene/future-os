@@ -1135,8 +1135,13 @@ mod bridge_tests {
             serde_json::from_slice(&message.payload).expect("reply is JSON")
         }
 
-        fn stop(self) {
+        async fn stop(self) {
             self.loop_handle.abort();
+            // Wait until the command loop has actually stopped before the
+            // HomeGuard is released. Otherwise a cancelled loop can resume on
+            // another Tokio worker after the next test changes process-global
+            // HOME and briefly contend for that test's fresh SQLite database.
+            let _ = self.loop_handle.await;
         }
     }
 
@@ -1166,7 +1171,7 @@ mod bridge_tests {
             .call(json!({"id":"stale-test", "type":"prompt", "bridgeInstanceId":"old-access"}))
             .await;
         assert_eq!(response["error"], "remote_access_changed");
-        bridge.stop();
+        bridge.stop().await;
     }
 
     fn handshake_cmd(
@@ -1255,7 +1260,7 @@ mod bridge_tests {
             b"{ not json either".to_vec(),
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1400,7 +1405,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1421,7 +1426,7 @@ mod bridge_tests {
             }))
             .await;
         assert_eq!(reply["error"], json!("pairing_identity_mismatch"));
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1456,8 +1461,8 @@ mod bridge_tests {
             }))
             .await;
         assert_eq!(reply["success"], json!(false));
+        bridge.stop().await;
         drop(home);
-        bridge.stop();
     }
 
     /// Activated bridge with a store and mock agent behind it.
@@ -1532,7 +1537,7 @@ mod bridge_tests {
             json!("parent-session")
         );
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1561,7 +1566,7 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
             .await;
         assert_eq!(reply["success"], json!(false));
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1727,7 +1732,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1798,7 +1803,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true));
 
         std::fs::remove_dir_all(dir).ok();
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1876,7 +1881,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(false));
         assert!(reply["error"].as_str().unwrap().contains("still running"));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -1965,7 +1970,7 @@ mod bridge_tests {
         assert!(!leaked, "claimed attachment copies must roll back");
 
         std::fs::remove_dir_all(&workspace_dir).ok();
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2109,7 +2114,7 @@ mod bridge_tests {
             .unwrap()
             .contains("Unsupported command"));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2167,7 +2172,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2201,7 +2206,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(true), "got: {reply}");
         assert_eq!(reply["data"]["approvalTier"], json!("manual"));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2291,7 +2296,7 @@ mod bridge_tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2341,7 +2346,7 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(false));
         assert!(reply["error"].as_str().unwrap().contains("still running"));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2413,7 +2418,7 @@ mod bridge_tests {
             .unwrap()
             .contains("does not belong"));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2603,7 +2608,7 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2649,7 +2654,7 @@ mod bridge_tests {
             serde_json::to_vec(&cmd()).unwrap(),
         );
         tokio::time::sleep(Duration::from_millis(150)).await;
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[tokio::test]
@@ -2710,7 +2715,7 @@ mod bridge_tests {
         // Give the spawned cleanup a moment to run (it is a no-op without a
         // persisted pairing).
         tokio::time::sleep(Duration::from_millis(50)).await;
-        bridge.stop();
+        bridge.stop().await;
     }
 
     #[test]
