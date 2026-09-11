@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   MessageAttachment,
 } from "@future-os/thread-projection";
+import type { ReactNode } from "react";
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
@@ -74,6 +75,11 @@ interface AgentThreadProps {
   onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
+  /**
+   * Optional header affordance supplied by the shell (e.g. the terminal
+   * toggle). Kept as a node so this feature does not depend on the terminal.
+   */
+  headerAction?: ReactNode;
 }
 
 export function AgentThread({
@@ -101,6 +107,7 @@ export function AgentThread({
   onForked,
   onThreadActivity,
   onToggleLeftPanel,
+  headerAction,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -440,6 +447,7 @@ export function AgentThread({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       <ThreadHeader
+        action={headerAction}
         leftPanelExpanded={leftPanelExpanded}
         thread={thread}
         onToggleLeftPanel={onToggleLeftPanel}

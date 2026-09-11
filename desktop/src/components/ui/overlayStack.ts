@@ -9,6 +9,14 @@ import { useCallback, useEffect, useRef } from "react";
  */
 const stack: symbol[] = [];
 
+/**
+ * True while any Overlay layer is open. Used by global shortcuts that must not
+ * fire behind a dialog.
+ */
+export function hasOpenOverlay(): boolean {
+  return stack.length > 0;
+}
+
 export function useOverlayLayer(open: boolean) {
   const idRef = useRef<symbol | null>(null);
 
