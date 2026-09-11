@@ -158,11 +158,10 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
         const live = await listTerminals(threadId);
         if (cancelled || threadRef.current !== threadId)
           return;
-        setState((previous) => {
-          const merged = reconcileTabs(previous, live);
-          saveTabsState(threadId, merged);
-          return merged;
-        });
+        const merged = reconcileTabs(stateRef.current, live);
+        stateRef.current = merged;
+        saveTabsState(threadId, merged);
+        setState(merged);
         setError(null);
       }
       catch (cause) {
@@ -181,13 +180,12 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
   }, [threadId]);
 
   const update = useCallback((mutate: (previous: TerminalTabsState) => TerminalTabsState) => {
-    setState((previous) => {
-      const next = mutate(previous);
-      const currentThread = threadRef.current;
-      if (currentThread)
-        saveTabsState(currentThread, next);
-      return next;
-    });
+    const next = mutate(stateRef.current);
+    stateRef.current = next;
+    setState(next);
+    const currentThread = threadRef.current;
+    if (currentThread)
+      saveTabsState(currentThread, next);
   }, []);
 
   const create = useCallback(async (policy: CwdPolicy = "thread") => {
@@ -279,11 +277,22 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
   }, [update]);
 
   const save = useCallback((id: string, patch: Partial<TerminalTab>) => {
-    update(current => ({
-      ...current,
-      all: current.all.map(tab => (tab.id === id ? { ...tab, ...patch } : tab)),
-    }));
-  }, [update]);
+    // Written to storage *before* React is asked to re-render: this is called
+    // from the view's unmount path (collapsing the panel, switching tabs,
+    // reloading the webview), where a scheduled state update can be discarded
+    // with the component. Losing the screen here would mean re-rendering
+    // history on the next mount.
+    const thread = threadRef.current;
+    const previous = stateRef.current;
+    const next: TerminalTabsState = {
+      ...previous,
+      all: previous.all.map(tab => (tab.id === id ? { ...tab, ...patch } : tab)),
+    };
+    stateRef.current = next;
+    if (thread)
+      saveTabsState(thread, next);
+    setState(next);
+  }, []);
 
   const markExit = useCallback((id: string, exitCode: number | null) => {
     update(current => ({

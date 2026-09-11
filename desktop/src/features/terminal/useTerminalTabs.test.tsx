@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 import { resetTerminalServerCache } from "./client";
@@ -246,6 +247,46 @@ describe("useTerminalTabs", () => {
     expect(harness.current.error).not.toBeNull();
     expect(harness.current.tabs).toHaveLength(0);
     harness.unmount();
+  });
+
+  it("persists view state synchronously so an unmount cannot lose the screen", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [] };
+      return {
+        status: 200,
+        body: {
+          id: "term_1",
+          threadId: "thread-1",
+          title: "Terminal 1",
+          command: "/bin/bash",
+          args: [],
+          cwd: "/tmp",
+          status: "running",
+          exitCode: null,
+          pid: 1,
+          cols: 80,
+          rows: 24,
+        },
+      };
+    });
+    const harness = renderHook(() => useTerminalTabs("thread-1"));
+    await flush();
+    await harness.current.create();
+    await flush();
+
+    // This is what the mounted view does on its way out (collapse, tab switch,
+    // webview reload). The write must not depend on React committing a render
+    // that the unmount would discard.
+    harness.current.save("term_1", { buffer: "serialized screen", cursor: 42, scrollY: 3 });
+    const stored = JSON.parse(localStorage.getItem("future.terminal.tabs.v1.thread-1") ?? "{}");
+    expect(stored.all[0]).toMatchObject({ buffer: "serialized screen", cursor: 42, scrollY: 3 });
+
+    await act(async () => {
+      harness.unmount();
+    });
+    const afterUnmount = JSON.parse(localStorage.getItem("future.terminal.tabs.v1.thread-1") ?? "{}");
+    expect(afterUnmount.all[0]).toMatchObject({ buffer: "serialized screen", cursor: 42 });
   });
 
   it("does nothing without a conversation", async () => {

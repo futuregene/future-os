@@ -233,7 +233,9 @@ pub fn kill_tree(pgid: Option<i32>, pid: i32, grace: Duration) {
 ///
 /// `kill(pid, 0)` alone would report a zombie as alive (its pid is still
 /// reserved until reaped), which would make every grace period run to its
-/// deadline.
+/// deadline. Unix-only: the Windows teardown path hands the tree to `taskkill`
+/// and never inspects a pid.
+#[cfg(unix)]
 pub fn pid_running(pid: i32) -> bool {
     if pid <= 0 {
         return false;
@@ -242,18 +244,9 @@ pub fn pid_running(pid: i32) -> bool {
     if let Some(state) = linux_state(pid) {
         return state != 'Z' && state != 'X';
     }
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 performs the permission/existence check only.
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows has no signal 0; treat "not yet reaped by us" as running and
-        // let the bounded grace period do the waiting.
-        true
-    }
+    // SAFETY: signal 0 performs the permission/existence check only.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(target_os = "linux")]
