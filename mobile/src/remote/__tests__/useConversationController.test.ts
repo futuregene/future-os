@@ -111,6 +111,7 @@ async function mountController(opts: MountOpts = {}) {
   const setUnreadSessions = jest.fn();
   const setApprovalTierState = jest.fn();
   const ensureDraftTimeline = jest.fn();
+  const prepareTimelineOpen = jest.fn();
   const recordError = jest.fn();
   const removeSession = opts.removeSession ?? jest.fn(async () => true);
   const removeWorkspace = opts.removeWorkspace ?? jest.fn(async () => true);
@@ -133,6 +134,7 @@ async function mountController(opts: MountOpts = {}) {
       setUnreadSessions,
       setApprovalTierState,
       ensureDraftTimeline,
+      prepareTimelineOpen,
       recordError,
       removeSession,
       removeWorkspace,
@@ -161,6 +163,7 @@ async function mountController(opts: MountOpts = {}) {
     setUnreadSessions,
     setApprovalTierState,
     ensureDraftTimeline,
+    prepareTimelineOpen,
     recordError,
     removeSession,
     closeConversation,
@@ -199,6 +202,7 @@ describe("selectSession", () => {
       await current(h).selectSession("s1");
     });
     expect(h.setSelectedSessionId).toHaveBeenCalledWith("s1");
+    expect(h.prepareTimelineOpen).toHaveBeenCalledWith("s1");
     expect(h.setDraft).toHaveBeenCalledWith(false);
     expect(current(h).modelId).toBe("openai/gpt-4");
     expect(current(h).thinkingLevel).toBe("high");

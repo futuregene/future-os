@@ -33,6 +33,7 @@ interface ConversationControllerOptions {
   setUnreadSessions: Dispatch<SetStateAction<Set<string>>>;
   setApprovalTierState: Dispatch<SetStateAction<string>>;
   ensureDraftTimeline(): void;
+  prepareTimelineOpen(sessionId: string): void;
   recordError(error: unknown): void;
   removeSession(sessionId: string, threadId: string): Promise<boolean>;
   removeWorkspace(workspaceId: string): Promise<boolean>;
@@ -53,6 +54,7 @@ export function useConversationController({
   setUnreadSessions,
   setApprovalTierState,
   ensureDraftTimeline,
+  prepareTimelineOpen,
   recordError,
   removeSession,
   removeWorkspace,
@@ -68,6 +70,7 @@ export function useConversationController({
       if (!client) return;
       setOpeningSession(true);
       conversationEpochRef.current += 1;
+      prepareTimelineOpen(sessionId);
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
       setDraft(false);
@@ -99,6 +102,7 @@ export function useConversationController({
       conversationEpochRef,
       hydrateAttachmentsRef,
       models,
+      prepareTimelineOpen,
       recordError,
       selectedRef,
       setDraft,

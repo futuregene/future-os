@@ -1,95 +1,185 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 
-const OLDER_EDGE_THRESHOLD_PX = 8;
-const OLDER_EDGE_SETTLE_MS = 350;
+type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
+type PageResult = false | string[];
+type Transaction = {
+  sessionId: string;
+  deadline: number;
+  expectedIds: string[] | null;
+  failed: boolean;
+  committed: boolean;
+  lastLayout: number;
+  layoutObserved: boolean;
+};
 
-interface TimelinePagingApi {
-  showLoadOlderHint: boolean;
-  loadOlder: () => void;
-  onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
-}
+const MIN_HINT_MS = 1_500;
+// Native VirtualizedList mounts rows in 32ms batches. Two JS animation frames
+// alone can fall entirely between those batches. Require a quiet layout window
+// after the requested ids are committed AND a native layout has been observed.
+const LAYOUT_QUIET_MS = 100;
 
 /**
- * Loads one older page after the user settles at the visual top of the
- * inverted list. Older rows are appended to the inverted data, so pagination
- * cannot shift the existing rows and no height/offset compensation is needed.
+ * A gesture starts at most one page transaction. Network completion, React
+ * commit and native layout are distinct barriers; the minimum display timer
+ * starts at collision and runs concurrently with all three.
  */
 export function useTimelinePaging(
   sessionId: string,
   canLoadOlder: boolean,
   loadingOlder: boolean,
-  requestOlder: () => void | Promise<void>,
-  onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void,
-): TimelinePagingApi {
-  const [edgeState, setEdgeState] = useState({ sessionId, atOlderEdge: false });
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const requestPendingRef = useRef(false);
-  const autoLoadAttemptedRef = useRef(false);
+  requestOlder: () => Promise<PageResult>,
+  onScroll: (event: ScrollEvent) => void,
+  items: readonly { id: string }[] = [],
+) {
+  const [presentation, setPresentation] = useState({
+    sessionId,
+    active: false,
+    failed: false,
+  });
+  if (presentation.sessionId !== sessionId) {
+    setPresentation({ sessionId, active: false, failed: false });
+  }
+  const transactionRef = useRef<Transaction | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gestureRef = useRef({ active: false, used: false });
+  const idsRef = useRef(new Set<string>());
+  const checkRef = useRef<() => void>(() => undefined);
 
-  const clearSettleTimer = useCallback(() => {
-    if (settleTimerRef.current == null) return;
-    clearTimeout(settleTimerRef.current);
-    settleTimerRef.current = null;
+  const cancelTimer = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = null;
   }, []);
 
-  useEffect(() => {
-    clearSettleTimer();
-    requestPendingRef.current = false;
-    autoLoadAttemptedRef.current = false;
-  }, [clearSettleTimer, sessionId]);
+  const check = useCallback(() => {
+    cancelTimer();
+    const tx = transactionRef.current;
+    if (!tx || tx.expectedIds === null) return;
+    if (!tx.committed) {
+      if (!tx.expectedIds.every(id => idsRef.current.has(id))) return;
+      tx.committed = true;
+      tx.lastLayout = Date.now();
+      tx.layoutObserved = false;
+      // Empty/failed pages have no new native rows to wait for.
+      if (tx.expectedIds.length === 0) tx.layoutObserved = true;
+    }
+    if (!tx.layoutObserved) return;
+    const remaining = Math.max(tx.deadline, tx.lastLayout + LAYOUT_QUIET_MS) - Date.now();
+    if (remaining > 0) {
+      timerRef.current = setTimeout(() => checkRef.current(), remaining);
+      return;
+    }
+    transactionRef.current = null;
+    setPresentation({ sessionId: tx.sessionId, active: false, failed: tx.failed });
+  }, [cancelTimer]);
 
-  useEffect(() => {
-    if (loadingOlder || !canLoadOlder) clearSettleTimer();
-  }, [canLoadOlder, clearSettleTimer, loadingOlder]);
+  useLayoutEffect(() => {
+    checkRef.current = check;
+  }, [check]);
 
-  useEffect(() => () => clearSettleTimer(), [clearSettleTimer]);
+  useLayoutEffect(() => {
+    transactionRef.current = null;
+    gestureRef.current = { active: false, used: false };
+    return () => {
+      transactionRef.current = null;
+      cancelTimer();
+    };
+  }, [sessionId, cancelTimer]);
 
-  const atOlderEdge = edgeState.sessionId === sessionId && edgeState.atOlderEdge;
-  const showLoadOlderHint = canLoadOlder && atOlderEdge && !loadingOlder;
+  useLayoutEffect(() => {
+    idsRef.current = new Set(items.map(item => item.id));
+    check();
+  }, [items, check, sessionId]);
 
   const loadOlder = useCallback(() => {
-    if (!canLoadOlder || loadingOlder || requestPendingRef.current) return;
-    requestPendingRef.current = true;
-    clearSettleTimer();
+    if (!canLoadOlder || loadingOlder || transactionRef.current) return;
+    const previousIds = idsRef.current;
+    const tx: Transaction = {
+      sessionId,
+      deadline: Date.now() + MIN_HINT_MS,
+      expectedIds: null,
+      failed: false,
+      committed: false,
+      lastLayout: Date.now(),
+      layoutObserved: false,
+    };
+    transactionRef.current = tx;
+    gestureRef.current.used = true;
+    setPresentation({ sessionId, active: true, failed: false });
+    const complete = (result: PageResult) => {
+      // Identity guards every continuation, including failures from old sessions.
+      if (transactionRef.current !== tx) return;
+      tx.failed = result === false;
+      tx.expectedIds = result === false ? [] : result.filter(id => !previousIds.has(id));
+      checkRef.current();
+    };
     try {
-      void Promise.resolve(requestOlder()).finally(() => {
-        requestPendingRef.current = false;
-      });
-    } catch (error) {
-      requestPendingRef.current = false;
-      throw error;
+      void requestOlder().then(complete, () => complete(false));
+    } catch {
+      complete(false);
     }
-  }, [canLoadOlder, clearSettleTimer, loadingOlder, requestOlder]);
+  }, [canLoadOlder, loadingOlder, requestOlder, sessionId]);
 
-  const handleScroll = useCallback(
-    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      onScroll(event);
+  const onListLayout = useCallback(() => {
+    const tx = transactionRef.current;
+    if (!tx) return;
+    tx.lastLayout = Date.now();
+    // Only native layouts after the React commit satisfy the render barrier.
+    if (tx.committed) tx.layoutObserved = true;
+    checkRef.current();
+  }, []);
+
+  const detectCollision = useCallback(
+    (event: ScrollEvent) => {
+      const gesture = gestureRef.current;
+      if (!gesture.active || gesture.used) return;
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-      const isAtOlderEdge =
-        contentOffset.y + layoutMeasurement.height >= contentSize.height - OLDER_EDGE_THRESHOLD_PX;
-      setEdgeState({ sessionId, atOlderEdge: isAtOlderEdge });
-
-      if (!isAtOlderEdge || !canLoadOlder || loadingOlder) {
-        clearSettleTimer();
-        if (!isAtOlderEdge) autoLoadAttemptedRef.current = false;
-        return;
-      }
       if (
-        settleTimerRef.current != null ||
-        requestPendingRef.current ||
-        autoLoadAttemptedRef.current
-      ) {
-        return;
-      }
-      settleTimerRef.current = setTimeout(() => {
-        settleTimerRef.current = null;
-        autoLoadAttemptedRef.current = true;
+        contentSize.height > 0 &&
+        contentOffset.y + layoutMeasurement.height >= contentSize.height - 8
+      )
         loadOlder();
-      }, OLDER_EDGE_SETTLE_MS);
     },
-    [canLoadOlder, clearSettleTimer, loadOlder, loadingOlder, onScroll, sessionId],
+    [loadOlder],
   );
 
-  return { showLoadOlderHint, loadOlder, onScroll: handleScroll };
+  const handleScroll = useCallback(
+    (event: ScrollEvent) => {
+      onScroll(event);
+      detectCollision(event);
+    },
+    [detectCollision, onScroll],
+  );
+
+  const onScrollBeginDrag = useCallback(() => {
+    gestureRef.current = { active: true, used: transactionRef.current !== null };
+  }, []);
+  const onScrollEndDrag = useCallback(
+    (event: ScrollEvent) => {
+      detectCollision(event);
+      // Momentum belongs to this same gesture and shares its used flag.
+    },
+    [detectCollision],
+  );
+  const onMomentumScrollEnd = useCallback(
+    (event: ScrollEvent) => {
+      detectCollision(event);
+      gestureRef.current.active = false;
+    },
+    [detectCollision],
+  );
+
+  const current = presentation.sessionId === sessionId;
+  return {
+    showLoadOlderHint: current && (presentation.active || presentation.failed),
+    pagingActive: current && presentation.active,
+    pagingFailed: current && presentation.failed,
+    loadOlder,
+    onListLayout,
+    onContentSizeChange: onListLayout,
+    onScrollBeginDrag,
+    onScrollEndDrag,
+    onMomentumScrollEnd,
+    onScroll: handleScroll,
+  };
 }

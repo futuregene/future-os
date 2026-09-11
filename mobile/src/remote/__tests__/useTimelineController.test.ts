@@ -9,7 +9,13 @@ type Options = Parameters<typeof useTimelineController>[0];
 type Result = ReturnType<typeof useTimelineController>;
 
 function userEntry(id: string, text: string): HistoryEntry {
-  return { id, kind: "user", role: "user", createdAtMs: 0, blocks: [{ kind: "text", text }] };
+  return {
+    id,
+    kind: "user",
+    role: "user",
+    createdAtMs: 0,
+    blocks: [{ kind: "text", text }],
+  };
 }
 function assistantEntry(id: string, text: string, runId?: string): HistoryEntry {
   return {
@@ -22,7 +28,12 @@ function assistantEntry(id: string, text: string, runId?: string): HistoryEntry 
   };
 }
 function evt(type: string, data: string, runId?: string, idx?: number): StreamEvent {
-  return { type, data, ...(runId ? { runId } : {}), ...(idx != null ? { idx } : {}) };
+  return {
+    type,
+    data,
+    ...(runId ? { runId } : {}),
+    ...(idx != null ? { idx } : {}),
+  };
 }
 
 describe("useTimelineController", () => {
@@ -442,7 +453,11 @@ describe("useTimelineController", () => {
         .map(i => (i.kind === "message" ? i.text : ""));
       expect(texts).toEqual(["older", "older answer", "latest", "answer"]);
       expect(request.mock.calls[2]?.[0]).toEqual(
-        expect.objectContaining({ type: "get_session_entries", before: 20, limit: 10 }),
+        expect.objectContaining({
+          type: "get_session_entries",
+          before: 20,
+          limit: 10,
+        }),
       );
       expect(result.current.canLoadOlderTimeline).toBe(false);
 
@@ -457,7 +472,44 @@ describe("useTimelineController", () => {
       );
     });
 
-    test("rejects a non-advancing backward cursor", async () => {
+    test("reopening a warm timeline renders only the latest ten exchanges", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      const exchanges = (start: number, end: number) =>
+        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(n => [
+          userEntry(`u${n}`, `user ${n}`),
+          assistantEntry(`a${n}`, `answer ${n}`),
+        ]);
+      request
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: { entries: exchanges(1, 10), hasMore: false, nextOffset: 0 },
+        });
+      render();
+      await establish();
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      await flush();
+      expect(result.current.timeline.items).toHaveLength(40);
+
+      act(() => result.current.prepareTimelineOpen("s1"));
+      await flush();
+
+      expect(
+        result.current.timeline.items
+          .filter(item => item.kind === "message" && item.role === "user")
+          .map(item => (item.kind === "message" ? item.text : "")),
+      ).toEqual(Array.from({ length: 10 }, (_, index) => `user ${index + 11}`));
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+    });
+
+    test("timeout retains the cursor and retry returns the committed page identities", async () => {
       const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
@@ -467,9 +519,54 @@ describe("useTimelineController", () => {
           success: true,
           data: { entries: [userEntry("e2", "latest")], hasMore: true, nextOffset: 20 },
         })
+        .mockRejectedValueOnce(new Error("timeout"))
         .mockResolvedValueOnce({
           success: true,
-          data: { entries: [userEntry("e1", "older")], hasMore: true, nextOffset: 20 },
+          data: { entries: [userEntry("e1", "older")], hasMore: false, nextOffset: 0 },
+        });
+      render();
+      await establish();
+      await act(async () => {
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+      });
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      expect(result.current.loadingOlderTimeline).toBe(false);
+      const page: { ids: false | string[] } = { ids: false };
+      await act(async () => {
+        page.ids = await result.current.loadOlderTimeline();
+      });
+      await flush();
+      expect(page.ids).toEqual(expect.arrayContaining([expect.any(String)]));
+      expect(result.current.timeline.items.map(item => item.id)).toEqual(
+        expect.arrayContaining(page.ids === false ? [] : page.ids),
+      );
+      expect(request.mock.calls[2][0].before).toBe(20);
+      expect(request.mock.calls[3][0].before).toBe(20);
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+      errorSpy.mockRestore();
+    });
+
+    test("rejects a non-advancing backward cursor", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request
+        .mockResolvedValueOnce({ success: true, data: {} })
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            entries: [userEntry("e2", "latest")],
+            hasMore: true,
+            nextOffset: 20,
+          },
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          data: {
+            entries: [userEntry("e1", "older")],
+            hasMore: true,
+            nextOffset: 20,
+          },
         });
       render();
       await establish();
@@ -497,7 +594,9 @@ describe("useTimelineController", () => {
       await flush();
       expect(errorSpy).toHaveBeenCalledWith(
         "[remote] session timeline sync failed",
-        expect.objectContaining({ error: expect.objectContaining({ message: "not_connected" }) }),
+        expect.objectContaining({
+          error: expect.objectContaining({ message: "not_connected" }),
+        }),
       );
       errorSpy.mockRestore();
     });
@@ -508,7 +607,10 @@ describe("useTimelineController", () => {
         if (cmd.type === "get_state")
           return { success: true, data: { activeRun: { runId: "r1" } } };
         if (cmd.type === "get_session_entries")
-          return { success: true, data: { entries: [userEntry("e1", "hi")], hasMore: false } };
+          return {
+            success: true,
+            data: { entries: [userEntry("e1", "hi")], hasMore: false },
+          };
         if (cmd.type === "get_events_since")
           return {
             success: true,
@@ -545,7 +647,10 @@ describe("useTimelineController", () => {
         if (cmd.type === "get_session_entries") {
           // Drop the client after history so fetchReplay sees null.
           options.clientRef.current = null;
-          return { success: true, data: { entries: [userEntry("e1", "hi")], hasMore: false } };
+          return {
+            success: true,
+            data: { entries: [userEntry("e1", "hi")], hasMore: false },
+          };
         }
         return { success: true, data: {} };
       });
@@ -553,7 +658,9 @@ describe("useTimelineController", () => {
       await establish();
       expect(errorSpy).toHaveBeenCalledWith(
         "[remote] session timeline sync failed",
-        expect.objectContaining({ error: expect.objectContaining({ message: "not_connected" }) }),
+        expect.objectContaining({
+          error: expect.objectContaining({ message: "not_connected" }),
+        }),
       );
       errorSpy.mockRestore();
     });
@@ -595,7 +702,14 @@ describe("useTimelineController", () => {
       const engine = result.current.syncEngineRef.current!;
       engine.mutate("s1", () => ({
         ...emptyTimeline(),
-        items: [{ id: "m1", kind: "message" as const, role: "assistant" as const, text: "x" }],
+        items: [
+          {
+            id: "m1",
+            kind: "message" as const,
+            role: "assistant" as const,
+            text: "x",
+          },
+        ],
       }));
       await flush();
       result.current.applySessionStreaming("s1", true);

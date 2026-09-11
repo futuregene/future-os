@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react-native";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import type { Dispatch, SetStateAction } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
@@ -22,6 +22,9 @@ import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 type Remote = ReturnType<typeof useRemote>;
 
 type PendingApproval = Extract<TimelineItem, { kind: "approval" }>;
+
+const INPUT_MIN_HEIGHT = 46;
+const INPUT_MAX_HEIGHT = 160;
 
 export function ComposerDock({
   message,
@@ -41,8 +44,6 @@ export function ComposerDock({
   approvalSubmitting,
   approvalError,
   decideApproval,
-  setComposerHeight,
-  keyboardLift,
   selector,
   setSelector,
 }: {
@@ -63,16 +64,12 @@ export function ComposerDock({
   approvalSubmitting: string | null;
   approvalError: string | null;
   decideApproval: (id: string, decision: "approved" | "rejected") => Promise<void>;
-  setComposerHeight: (value: number) => void;
-  keyboardLift: number;
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
 }) {
+  const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT);
   return (
-    <View
-      onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
-      style={[styles.composerDock, keyboardLift > 0 ? { bottom: keyboardLift } : null]}
-    >
+    <View style={styles.composerDock}>
       <View pointerEvents="none" style={styles.composerFade}>
         <Svg height="100%" width="100%">
           <Defs>
@@ -103,13 +100,11 @@ export function ComposerDock({
       {!remote.draft && remote.desktopOnline && remote.models.length === 0 && !remote.modelId && (
         <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
       )}
-      {pendingApprovals.map((item) => (
+      {pendingApprovals.map(item => (
         <View key={item.id} style={styles.dockedApproval}>
           <PendingApprovalCard
             error={approvalSubmitting === item.payload.approval_request_id ? null : approvalError}
-            onDecision={(decision) =>
-              void decideApproval(item.payload.approval_request_id, decision)
-            }
+            onDecision={decision => void decideApproval(item.payload.approval_request_id, decision)}
             payload={item.payload}
             submitting={approvalSubmitting === item.payload.approval_request_id}
           />
@@ -145,7 +140,7 @@ export function ComposerDock({
                     accessibilityLabel={t("attachment.remove", { name: attachment.name })}
                     hitSlop={8}
                     onPress={() =>
-                      setAttachments((current) => {
+                      setAttachments(current => {
                         deleteTemporaryAttachment(current[index]!);
                         return current.filter((_, itemIndex) => itemIndex !== index);
                       })
@@ -157,18 +152,29 @@ export function ComposerDock({
               ))}
             </ScrollView>
           )}
-          {attachments.some((a) => a.kind === "image") && !supportsImages && (
+          {attachments.some(a => a.kind === "image") && !supportsImages && (
             <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
           )}
           <TextInput
             accessibilityLabel={t("chat.placeholder")}
+            autoCapitalize="none"
+            autoCorrect={false}
             editable={remote.desktopOnline && !remote.timeline.streaming && !remote.busy}
             multiline
+            onContentSizeChange={event =>
+              setInputHeight(
+                Math.max(
+                  INPUT_MIN_HEIGHT,
+                  Math.min(INPUT_MAX_HEIGHT, event.nativeEvent.contentSize.height),
+                ),
+              )
+            }
             onChangeText={setMessage}
             onSubmitEditing={() => void send()}
             placeholder={t("chat.placeholder")}
             placeholderTextColor={colors.inkMuted}
-            style={styles.input}
+            spellCheck={false}
+            style={[styles.input, { height: message ? inputHeight : INPUT_MIN_HEIGHT }]}
             value={message}
           />
           <View style={styles.composerToolbar}>
@@ -260,10 +266,7 @@ export function ComposerDock({
 
 const styles = StyleSheet.create({
   composerDock: {
-    position: "absolute",
-    right: 0,
-    bottom: 0,
-    left: 0,
+    flexShrink: 0,
     backgroundColor: colors.surface,
   },
   composerFade: {
@@ -348,8 +351,8 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
   input: {
-    minHeight: 46,
-    maxHeight: 160,
+    minHeight: INPUT_MIN_HEIGHT,
+    maxHeight: INPUT_MAX_HEIGHT,
     color: colors.ink,
     ...chatTypography,
     paddingHorizontal: spacing.lg,
