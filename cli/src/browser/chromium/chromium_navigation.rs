@@ -90,7 +90,7 @@ pub async fn wait_for_explicit_navigation(
     }
     .await;
 
-    drop(unsub);
+    unsub.unsubscribe();
     result
 }
 
@@ -148,7 +148,9 @@ impl ActionNavigationObserver {
                 }
             });
         let unsub = session.on("Page.lifecycleEvent", handler);
-        *self._unsub.lock().unwrap() = Some(unsub);
+        if let Some(old) = self._unsub.lock().unwrap().replace(unsub) {
+            old.unsubscribe();
+        }
     }
 
     /// `wait(session, deadline)` — poll up to 500 ms for a new loaderId.
@@ -200,7 +202,9 @@ impl ActionNavigationObserver {
     /// `dispose()`.
     pub fn dispose(&self) {
         self.disposed.store(true, Ordering::SeqCst);
-        *self._unsub.lock().unwrap() = None;
+        if let Some(unsub) = self._unsub.lock().unwrap().take() {
+            unsub.unsubscribe();
+        }
     }
 }
 
@@ -340,6 +344,16 @@ mod tests {
 
         let result = observer.wait(&deadline(500)).await.unwrap();
         observer.dispose();
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId":"main","loaderId":"after-dispose","name":"init"}),
+        );
+        assert_eq!(
+            observer.new_loader_id.lock().unwrap().as_deref(),
+            Some("loader-new"),
+            "disposed observer must not receive events"
+        );
         assert!(result.did_navigate);
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }

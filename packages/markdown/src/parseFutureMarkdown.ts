@@ -65,9 +65,12 @@ export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
   }
   const tree = parseMdast(raw);
   const context = createParseContext(tree);
-  const nodes = tree.children.flatMap((node) =>
-    blockToFutureNode(node, context),
-  );
+  // Bound both conversion and downstream recursive renderers. Inspect the AST
+  // iteratively so hostile nesting cannot overflow this guard itself. Preserve
+  // the entire source as text rather than silently dropping the deep tail.
+  const nodes: MarkdownNode[] = exceedsNestingLimit(tree)
+    ? [{ type: "paragraph", children: [{ type: "text", text: raw }] }]
+    : tree.children.flatMap((node) => blockToFutureNode(node, context));
   const references = collectReferences(nodes);
   const document = { nodes, raw, references };
   if (parseCache.size >= PARSE_CACHE_MAX) {
@@ -76,6 +79,23 @@ export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
   }
   parseCache.set(raw, document);
   return document;
+}
+
+interface TreeNode {
+  type: string;
+  children?: TreeNode[];
+}
+
+function exceedsNestingLimit(tree: TreeNode): boolean {
+  const stack = [{ node: tree, depth: 0 }];
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!;
+    if (depth > 64) return true;
+    for (const child of node.children ?? []) {
+      stack.push({ node: child, depth: depth + 1 });
+    }
+  }
+  return false;
 }
 
 function parseMdast(raw: string): Root {

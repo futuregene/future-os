@@ -25,6 +25,7 @@ fn sample_goal_with_todo() -> (Goal, Todo) {
 
 fn sample_record(state: &str) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "todo_x".into(),
         run_id: "run-x".into(),
@@ -588,7 +589,7 @@ fn execute_turn_completed_no_validator() {
             &mut client,
             "sess",
             &goal,
-            None,
+            Some("worker-a"),
             &todo,
             1,
             None,
@@ -601,6 +602,7 @@ fn execute_turn_completed_no_validator() {
         .unwrap();
         assert_eq!(record.terminal_state, "completed");
         assert_eq!(record.run_id, "mock-run-1");
+        assert_eq!(record.agent_id.as_deref(), Some("worker-a"));
         // get_state returns the same totals before/after → zero deltas.
         assert_eq!(record.tokens_in_delta, 0);
         assert!(record.validation.is_none(), "no validator ⇒ not required");

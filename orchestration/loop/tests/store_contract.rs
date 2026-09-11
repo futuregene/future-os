@@ -234,6 +234,7 @@ fn full_goal_lifecycle_through_events() {
 mod crate_helper {
     pub fn run_record(turn: u32, todo_id: &str, state: &str) -> future_loop::state::RunRecord {
         future_loop::state::RunRecord {
+            agent_id: None,
             turn,
             todo_id: todo_id.to_string(),
             run_id: format!("run-{turn}"),

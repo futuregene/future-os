@@ -68,6 +68,7 @@ pub(crate) fn split_unified_patch_by_path(patch: &str) -> HashMap<String, String
     let mut map = HashMap::new();
     let mut current_path: Option<String> = None;
     let mut current = String::new();
+    let mut in_hunk = false;
 
     fn flush(path: &Option<String>, body: &str, map: &mut HashMap<String, String>) {
         if let Some(path) = path {
@@ -82,9 +83,15 @@ pub(crate) fn split_unified_patch_by_path(patch: &str) -> HashMap<String, String
             flush(&current_path, &current, &mut map);
             current = String::new();
             current_path = diff_git_new_path(line);
+            in_hunk = false;
         }
-        if let Some(stripped) = line.strip_prefix("+++ b/") {
-            current_path = Some(stripped.to_string());
+        if line.starts_with("@@") {
+            in_hunk = true;
+        }
+        if !in_hunk {
+            if let Some(stripped) = line.strip_prefix("+++ b/") {
+                current_path = Some(stripped.to_string());
+            }
         }
         current.push_str(line);
         current.push('\n');
@@ -178,6 +185,16 @@ mod tests {
         assert!(map.contains_key("src/a.rs"));
         assert!(map.contains_key("b.txt"));
         assert!(map["src/a.rs"].contains("+new"));
+    }
+
+    #[test]
+    fn hunk_content_cannot_override_file_path() {
+        let patch = "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1 @@\n+++ b/fake.rs\ndiff --git a/next.md b/next.md\n--- a/next.md\n+++ b/renamed.md\n@@ -0,0 +1 @@\n+next\n";
+        let map = split_unified_patch_by_path(patch);
+        assert_eq!(map.len(), 2);
+        assert!(map["notes.md"].ends_with("+++ b/fake.rs"));
+        assert!(map["renamed.md"].ends_with("+next"));
+        assert!(!map.contains_key("fake.rs"));
     }
 
     #[test]

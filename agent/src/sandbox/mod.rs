@@ -287,7 +287,7 @@ impl ResolvedSandbox {
     /// PowerShell backtick escapes (`", `{, `}) and strips any explicit
     /// powershell -Command wrapper the model may have generated (the agent
     /// already wraps commands in PowerShell).
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     fn normalize_shell_quoting(command: &str) -> String {
         let command = command.trim();
 
@@ -299,8 +299,9 @@ impl ResolvedSandbox {
                 .trim_start_matches("-Command ")
                 .trim_start_matches("-c ")
                 .trim();
-            if (inner.starts_with('"') && inner.ends_with('"'))
-                || (inner.starts_with('\'') && inner.ends_with('\''))
+            if inner.len() >= 2
+                && ((inner.starts_with('"') && inner.ends_with('"'))
+                    || (inner.starts_with('\'') && inner.ends_with('\'')))
             {
                 &inner[1..inner.len() - 1]
             } else {
@@ -352,7 +353,7 @@ impl ResolvedSandbox {
 
     /// Find the closing double quote for a JSON-like argument starting at
     /// `start`, skipping over bash-style \" escaped quotes inside.
-    #[cfg(windows)]
+    #[cfg(any(windows, test))]
     fn find_closing_quote(chars: &[char], start: usize) -> Option<usize> {
         let mut i = start + 1;
         while i < chars.len() {
@@ -1027,6 +1028,10 @@ pub(crate) fn platform_sandbox_availability() -> std::io::Result<bool> {
 
 #[cfg(target_os = "windows")]
 fn cached_windows_sandbox_probe() -> std::io::Result<&'static WindowsSandboxProbe> {
+    // Serialize initialization while retaining retry-on-failure semantics.
+    // get_or_init would cache transient diagnostic failures permanently.
+    static PROBE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = PROBE_INIT.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(result) = WINDOWS_SANDBOX_PROBE.get() {
         return Ok(result);
     }
@@ -1215,6 +1220,18 @@ pub fn looks_like_sandbox_denial(sandbox: &ResolvedSandbox, exit_code: i32, stde
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_powershell_wrapper_quotes_never_panic() {
+        for command in [
+            "powershell \"",
+            "powershell '",
+            "powershell -Command \"",
+            "powershell -c '",
+        ] {
+            assert_eq!(ResolvedSandbox::normalize_shell_quoting(command).len(), 1);
+        }
+    }
 
     #[test]
     fn unavailable_backend_explicitly_falls_back_to_manual() {

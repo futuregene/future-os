@@ -110,7 +110,7 @@ fn ascii_without_control(value: &str) -> bool {
 }
 
 pub fn validate_auth_mutation(mutation: &AuthMutation) -> Result<(), String> {
-    let provider = mutation.provider.trim();
+    let provider = mutation.provider.as_str();
     if !valid_provider_id(provider) {
         return Err("provider id must use lowercase letters, digits, '-' or '_'".to_string());
     }
@@ -130,7 +130,7 @@ pub fn validate_auth_mutation(mutation: &AuthMutation) -> Result<(), String> {
 }
 
 pub fn validate_provider_upsert(spec: &ProviderUpsertSpec) -> Result<(), String> {
-    let id = spec.id.trim();
+    let id = spec.id.as_str();
     if !valid_provider_id(id) {
         return Err("provider id must use lowercase letters, digits, '-' or '_'".to_string());
     }
@@ -616,7 +616,9 @@ pub fn delete_provider_files(auth_path: &Path, models_path: &Path, id: &str) -> 
         }
         if auth_changed {
             if let Err(error) = write_json_atomic(auth_path, &auth, true) {
-                restore_file(models_path, models_snapshot.as_deref(), false);
+                if models_changed {
+                    restore_file(models_path, models_snapshot.as_deref(), false);
+                }
                 return Err(error);
             }
         }
@@ -1369,6 +1371,9 @@ mod tests {
     fn validate_auth_mutation_rejects_invalid_provider_id() {
         let error = validate_auth_mutation(&mutation("Bad Provider!")).unwrap_err();
         assert!(error.contains("lowercase"));
+        for id in [" openai", "openai ", "\topenai"] {
+            assert!(validate_auth_mutation(&mutation(id)).is_err());
+        }
     }
 
     #[test]
@@ -1563,6 +1568,28 @@ mod tests {
             ..Default::default()
         };
         apply_provider_upsert(&mut root, &spec).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_auth_failure_does_not_rewrite_unchanged_models() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if skip_if_root() {
+            return;
+        }
+        let (dir, _, _) = temp_paths("delete-no-model-change");
+        let readonly = dir.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        let auth = readonly.join("auth.json");
+        std::fs::write(&auth, r#"{"gone":{"type":"api_key"}}"#).unwrap();
+        let models = dir.path().join("models.json");
+        std::fs::write(&models, "{}\n").unwrap();
+        let inode = std::fs::metadata(&models).unwrap().ino();
+        make_readonly(&readonly);
+        let result = delete_provider_files(&auth, &models, "gone");
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::metadata(&models).unwrap().ino(), inode);
     }
 
     #[cfg(unix)]

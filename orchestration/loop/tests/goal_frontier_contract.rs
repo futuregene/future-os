@@ -54,6 +54,7 @@ fn open_goal(store: &mut Store, goal_id: &str) -> Goal {
 
 fn run(turn: u32, todo_id: &str, at: u64, tools: &[&str], evidence: &str) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn,
         todo_id: todo_id.to_string(),
         run_id: format!("r{turn}"),

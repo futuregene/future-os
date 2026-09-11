@@ -380,6 +380,7 @@ fn run_path_writeback_uses_the_same_cadence_derivation() {
         std::time::Duration::from_millis(1),
     ));
     let record = future_loop::state::RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "M1".into(),
         run_id: "run-1".into(),

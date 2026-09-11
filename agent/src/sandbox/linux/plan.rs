@@ -503,6 +503,29 @@ mod tests {
     }
 
     #[test]
+    fn oversized_literal_mount_plan_fails_before_helper_execution() {
+        let root = root();
+        let mut rules = Vec::new();
+        for index in 0..super::super::request::MAX_MOUNTS {
+            let relative = format!("work/protected-{index}");
+            std::fs::write(root.join(&relative), "fixture").unwrap();
+            rules.push(subtree(&root, &relative, Access::Write, Decision::Deny));
+        }
+        let input = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Workspace,
+                rules,
+            }],
+        );
+        assert!(matches!(
+            LinuxSandboxPlan::compile(&input),
+            Err(LinuxSandboxPlanError::MountLimit)
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn roots_reopen_and_hard_deny_are_compiled() {
         let root = root();
         std::fs::create_dir(root.join("work/.future")).unwrap();

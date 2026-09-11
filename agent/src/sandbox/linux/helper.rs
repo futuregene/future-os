@@ -19,7 +19,7 @@ const HELPER_INFRA_EXIT: i32 = 125;
 // FD payload still needs a deterministic resource ceiling of its own.
 const MAX_BWRAP_ARGS_BYTES: usize = 16 * 1024 * 1024;
 // Both upstream v0.9.0 and v0.11.1 count real argv plus --args entries.
-const MAX_BWRAP_ARGS: usize = 9000;
+const MAX_BWRAP_ARGS: usize = super::request::MAX_BWRAP_ARGS;
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 
 fn emit_violation(violation: &super::violation::LinuxSandboxViolation) {

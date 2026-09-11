@@ -124,6 +124,37 @@ describe("SyncEngine", () => {
     resetSeq();
   });
 
+  test("an empty successful replay retains the gap tail and retries without a hot loop", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    const replay = jest.spyOn(h.journal, "since");
+    try {
+      h.journal.add(agentStart(run));
+      h.journal.add(textChunk(run, 1, "a"));
+      h.engine.reconcile("s1", "open");
+      await jest.advanceTimersByTimeAsync(20);
+      h.engine.event("s1", textChunk(run, 3, "c"));
+      h.engine.event("s1", agentEnd(run, 4));
+      h.engine.mutate("s1", timeline => ({ ...timeline, durableItemIds: new Set(["retained-mutation"]) }));
+      await jest.advanceTimersByTimeAsync(20);
+      expect(h.textOf("s1")).toBe("a");
+      const callsAfterGap = replay.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(400);
+      expect(replay).toHaveBeenCalledTimes(callsAfterGap);
+      h.journal.add(textChunk(run, 2, "b"));
+      h.journal.add(textChunk(run, 3, "c"));
+      h.journal.add(agentEnd(run, 4));
+      await jest.advanceTimersByTimeAsync(200);
+      expect(h.textOf("s1")).toBe("abc");
+      expect(h.timelineOf("s1").streaming).toBe(false);
+      expect(h.timelineOf("s1").durableItemIds?.has("retained-mutation")).toBe(true);
+    } finally {
+      h.engine.clear();
+      jest.useRealTimers();
+    }
+  });
+
   test("clear drops pairing state but preserves the Provider commit subscription", async () => {
     const h = new Harness();
     const commits = jest.fn();

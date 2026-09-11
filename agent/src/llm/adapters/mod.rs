@@ -60,6 +60,17 @@ impl AdapterRegistry {
     }
 }
 
+/// Gateways encode token counts as JSON integers, floats, or numeric strings.
+pub(super) fn token_count(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        value
+            .as_f64()
+            .or_else(|| value.as_str()?.parse::<f64>().ok())
+            .filter(|number| number.is_finite())
+            .map(|number| number as i64)
+    })
+}
+
 pub(super) fn namespaced_metadata(namespace: &str, value: Value) -> crate::types::ProviderMetadata {
     let mut metadata = crate::types::ProviderMetadata::new();
     metadata.insert(namespace.to_string(), value);

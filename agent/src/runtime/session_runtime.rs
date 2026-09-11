@@ -111,7 +111,7 @@ impl SessionRuntime {
             let lease = RunLease {
                 run_id: snapshot.run_id,
                 epoch: snapshot.epoch,
-                run_sequence: None,
+                run_sequence: snapshot.run_sequence,
             };
             handle.spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -594,7 +594,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn cancellation_watchdog_marks_stuck_after_timeout() {
         let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
-        runtime.begin(Some("run-a"), None).unwrap();
+        runtime.begin_scheduled("run-a", "request-a", 7).unwrap();
         runtime.request_abort(None).unwrap();
         assert_eq!(
             runtime.snapshot().unwrap().phase,

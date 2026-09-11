@@ -9,7 +9,9 @@ use crate::browser::backend::{
     BrowserSession, BrowserSessionParams, CaptureScreenshotOptions, ClickOptions, EvaluateRequest,
     OpenPageOptions, PressOptions, ResolvedTarget, TabsAction, TypeOptions,
 };
-use crate::browser::browser_state::{load_browser_config, save_browser_config};
+use crate::browser::browser_state::{
+    load_browser_config, lock_browser_config, save_browser_config,
+};
 use crate::browser::chromium::chromium_endpoint::resolve_cdp_endpoint;
 use crate::browser::chromium::chromium_manager::{
     endpoint_reachable, find_browser_launcher, resolve_port,
@@ -118,7 +120,14 @@ pub async fn call_browser_tool(
 // ── start ───────────────────────────────────────────────────────────
 
 async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, String> {
-    let requested_port = number_arg(args, "port").unwrap_or(9222.0) as i64;
+    let requested_port = number_arg(args, "port").unwrap_or(9222.0);
+    if !requested_port.is_finite()
+        || requested_port.fract() != 0.0
+        || !(1.0..=65535.0).contains(&requested_port)
+    {
+        return Err("browser start: port must be an integer between 1 and 65535".into());
+    }
+    let requested_port = requested_port as i64;
     let browser_arg = string_arg(args, "browser");
 
     // Safari path — delegate to SafariManager.
@@ -131,6 +140,7 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     let endpoint = format!("http://127.0.0.1:{port}");
 
     if endpoint_reachable(&endpoint).await {
+        let _transaction = lock_browser_config().await?;
         let mut config = load_browser_config().await?;
         let existing_endpoint = config.connection.endpoint().to_string();
         config.connection = BrowserConnectionConfig::Cdp {
@@ -215,6 +225,7 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         if endpoint_reachable(&endpoint).await {
+            let _transaction = lock_browser_config().await?;
             let mut cfg = load_browser_config().await?;
             cfg.connection = BrowserConnectionConfig::Cdp {
                 browser_kind: "chromium".to_string(),
@@ -237,6 +248,7 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
         crate::utils::time::sleep(250).await;
     }
 
+    let _transaction = lock_browser_config().await?;
     let mut cfg2 = load_browser_config().await?;
     cfg2.connection = BrowserConnectionConfig::Cdp {
         browser_kind: "chromium".to_string(),
@@ -269,6 +281,7 @@ async fn browser_start_safari(
             // Persist connection config (safari_start always returns a
             // Webdriver connection on success).
             debug_assert_eq!(result.connection.protocol(), "webdriver");
+            let _transaction = lock_browser_config().await?;
             let mut config = load_browser_config().await?;
             config.connection = result.connection.clone();
             config.active_url = string_arg(args, "url");
@@ -322,7 +335,10 @@ async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, St
     let client = reqwest::Client::new();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        client.get(format!("{endpoint}/json/version")).send(),
+        client
+            .get(format!("{endpoint}/json/version"))
+            .timeout(std::time::Duration::from_secs(1))
+            .send(),
     )
     .await;
     match result {
@@ -381,9 +397,11 @@ async fn create_session(
                     browser_kind = info.browser_kind;
                     // Atomically update config (only when the saved config is
                     // still the generic "chromium" CDP form).
+                    let _transaction = lock_browser_config().await?;
                     let refinable = load_browser_config().await.ok().filter(|fresh| {
                         fresh.connection.protocol() == "cdp"
                             && fresh.connection.browser_kind() == "chromium"
+                            && fresh.connection.endpoint() == endpoint
                     });
                     if let Some(mut updated) = refinable {
                         updated.connection = BrowserConnectionConfig::Cdp {
@@ -501,7 +519,7 @@ async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, Strin
             "browser command tabs: action \"{action}\" requires a valid 0-based index."
         ));
     };
-    if index < 0.0 {
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 || index >= usize::MAX as f64 {
         return Err(format!(
             "browser command tabs: action \"{action}\" requires a valid 0-based index."
         ));
@@ -950,6 +968,7 @@ fn resolve_target_from_args_optional(
 }
 
 async fn save_active_page(url: &str, page_id: Option<&str>) -> Result<(), String> {
+    let _transaction = lock_browser_config().await?;
     let mut config = load_browser_config().await?;
     config.active_url = Some(url.to_string());
     if let Some(pid) = page_id {
@@ -959,12 +978,14 @@ async fn save_active_page(url: &str, page_id: Option<&str>) -> Result<(), String
 }
 
 async fn clear_refs() -> Result<(), String> {
+    let _transaction = lock_browser_config().await?;
     let mut config = load_browser_config().await?;
     config.refs = Some(Map::new());
     save_browser_config(&config).await.map_err(String::from)
 }
 
 async fn save_refs_and_url(refs: &Map<String, Value>, url: &str) -> Result<(), String> {
+    let _transaction = lock_browser_config().await?;
     let mut config = load_browser_config().await?;
     config.refs = Some(refs.clone());
     config.active_url = Some(url.to_string());
@@ -1492,6 +1513,21 @@ mod tests {
             "{err}"
         );
 
+        for port in [0.0, -1.0, 70000.0, 9222.5] {
+            assert!(browser_start(&args(&[("port", json!(port))]))
+                .await
+                .unwrap_err()
+                .contains("port must be an integer"));
+        }
+        let mut fractional = ctx_with(
+            MockSession::default(),
+            BrowserConfig::default(),
+            args(&[("action", json!("select")), ("index", json!(0.5))]),
+        );
+        assert!(browser_tabs(&mut fractional)
+            .await
+            .unwrap_err()
+            .contains("valid 0-based index"));
         // select/close without index.
         for action in ["select", "close"] {
             let mut ctx = ctx_with(

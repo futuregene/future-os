@@ -128,7 +128,7 @@ static STREAM_FENCE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 static STREAM_LINK_DEF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
 fn stream_fence_re() -> &'static Regex {
-    STREAM_FENCE_RE.get_or_init(|| Regex::new(r"^ {0,3}(`{3,}|~{3,})").unwrap())
+    STREAM_FENCE_RE.get_or_init(|| Regex::new(r"^ *(`{3,}|~{3,})").unwrap())
 }
 
 fn stream_link_def_re() -> &'static Regex {
@@ -884,7 +884,9 @@ impl ChatArea {
     // ─── User message (markdown + full-width background Box) ────────────
 
     fn render_user_message(&mut self, msg: &ChatMessage) {
-        let rendered = self.md.render_text(&msg.content, self.width - 2);
+        let rendered = self
+            .md
+            .render_text(&msg.content, self.width.saturating_sub(2).max(1));
         for line in rendered {
             let text = format!(" {line}");
             let bg_line = apply_background_to_line(&text, self.width, self.theme.user_bg);
@@ -939,11 +941,12 @@ impl ChatArea {
                     &mut self.stream_caches,
                     &format!("{}:t", msg.id),
                     thinking,
-                    self.width - 2,
+                    self.width.saturating_sub(2).max(1),
                     &mut self.md_thinking,
                 )
             } else {
-                self.md_thinking.render_text(thinking, self.width - 2)
+                self.md_thinking
+                    .render_text(thinking, self.width.saturating_sub(2).max(1))
             };
             let think_prefix = format!("\x1b[3m\x1b[38;5;{}m", self.theme.thinking_text);
             for line in thinking_lines {
@@ -981,7 +984,7 @@ impl ChatArea {
         }
 
         // Render markdown content.
-        let content_width = self.width - 2;
+        let content_width = self.width.saturating_sub(2).max(1);
         let rendered = if msg.pending {
             Self::render_streaming_markdown(
                 &mut self.stream_caches,
@@ -1234,7 +1237,7 @@ impl ChatArea {
     // ─── System message ────────────────────────────────────────────────
 
     fn render_system_message(&mut self, msg: &ChatMessage) {
-        let wrap_width = std::cmp::max(1, self.width - 2);
+        let wrap_width = self.width.saturating_sub(2).max(1);
         let lines: Vec<&str> = msg.content.split('\n').collect();
         if msg.welcome {
             for line in lines {
@@ -1468,6 +1471,32 @@ mod tests {
             frames += 1;
         }
         frames
+    }
+
+    #[test]
+    fn nested_indented_fence_stream_matches_eager_render() {
+        let mut chat = ChatArea::new(60, None);
+        chat.render(60);
+        let mut message = ChatMessage::new("m".into(), ChatRole::Assistant, "");
+        message.pending = true;
+        chat.add_message(message);
+        expect_streaming_matches_full_render(
+            &mut chat,
+            "- item\n    ```ts\n    code\n\n    more code\n    ```\n\n",
+            60,
+        );
+    }
+
+    #[test]
+    fn tiny_terminal_width_does_not_underflow() {
+        for width in 0..=2 {
+            let mut chat = ChatArea::new(width, None);
+            chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hello"));
+            let mut assistant = ChatMessage::new("a".into(), ChatRole::Assistant, "answer");
+            assistant.thinking = Some("thinking".into());
+            chat.add_message(assistant);
+            let _ = chat.render(width);
+        }
     }
 
     #[test]

@@ -82,8 +82,9 @@ Windows 将 capability/ACL 清理元数据保存在 `~/.future/windows-capabilit
 
 ## `~/.future/agent-app/` — 遗留凭据目录
 
-agent 解析 `auth.json` 时会先读 `~/.future/agent-app/auth.json`，再读
-`~/.future/agent/auth.json`（向后兼容旧版 GUI 写入的凭据）；GUI 的文件访问
+agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文件无法加载时
+才回退到 `~/.future/agent-app/auth.json`（向后兼容旧版 GUI 写入的凭据）。
+规范位置的空对象仍然是权威配置，不会重新启用旧密钥；GUI 的文件访问
 守卫把 `agent/` 与 `agent-app/` 都视为凭据位置。新的写入都落到 `~/.future/agent/`。
 这不表示沙箱隔离了凭据：`auth.json` 当前为 CLI 技能保留了硬拒绝例外，见
 [SECURITY](../SECURITY.md)。

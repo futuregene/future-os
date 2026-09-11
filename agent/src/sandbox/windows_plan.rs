@@ -80,6 +80,7 @@ pub fn build_plan(sandbox: &ResolvedSandbox) -> WindowsSandboxPlan {
     // rules must remain visible because their effective path sets differ.
     let mut seen_read = HashSet::new();
     let mut seen_write = HashSet::new();
+    let mut covered_write_subtrees: Vec<PathBuf> = Vec::new();
     for layer in rules.profile_layers() {
         for rule in &layer {
             let matcher = matcher(rule.matcher_sbpl());
@@ -98,6 +99,18 @@ pub fn build_plan(sandbox: &ResolvedSandbox) -> WindowsSandboxPlan {
             }
 
             if access.covers_write() && seen_write.insert(matcher.clone()) {
+                if let WindowsRuleMatcher::Subtree(path) = &matcher {
+                    // A preceding literal ancestor matches this entire subtree
+                    // before the later rule can ever run. Do not turn a shadowed
+                    // deny into an unconditional NTFS DENY ACE.
+                    if covered_write_subtrees
+                        .iter()
+                        .any(|root| super::paths::path_within(path, root))
+                    {
+                        continue;
+                    }
+                    covered_write_subtrees.push(path.clone());
+                }
                 match (&matcher, decision) {
                     (WindowsRuleMatcher::Subtree(path), Decision::Allow) => {
                         plan.writable_roots.push(path.clone());
@@ -337,6 +350,10 @@ mod tests {
                 "path": external,
                 "access": "write",
                 "action": "deny"
+            }, {
+                "path": external.join("child"),
+                "access": "write",
+                "action": "deny"
             }]
         });
         std::fs::write(
@@ -360,6 +377,11 @@ mod tests {
 
         assert!(covers(&plan.writable_roots, &external));
         assert!(!has_carveout(&plan, &external, Decision::Deny));
+        assert!(!has_carveout(
+            &plan,
+            &external.join("child"),
+            Decision::Deny
+        ));
     }
 
     #[test]

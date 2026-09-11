@@ -7,18 +7,20 @@ use super::dingtalk_ws::DingtalkEvent;
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, AgentEvent};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 pub struct DingtalkBridge {
+    event_queues: std::sync::Mutex<HashMap<String, tokio::sync::mpsc::Sender<DingtalkEvent>>>,
+    sender_allowlist: Vec<String>,
     dingtalk: DingtalkRestClient,
     agent: Arc<RwLock<AgentClient>>,
     agent_cfg: Arc<AgentConfig>,
     gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
-    processed: RwLock<HashSet<String>>,
+    processed: RwLock<VecDeque<String>>,
     /// One Agent session per DingTalk conversation. Sharing a single cached
     /// session across chats would leak context; creating one per message would
     /// make supersede_session a no-op.
@@ -34,11 +36,13 @@ impl DingtalkBridge {
         );
         let agent = AgentClient::connect(&agent_cfg.grpc_addr).await?;
         Ok(Self {
+            event_queues: std::sync::Mutex::new(HashMap::new()),
+            sender_allowlist: dingtalk_cfg.sender_allowlist,
             dingtalk,
             agent: Arc::new(RwLock::new(agent)),
             agent_cfg,
             gen_counters: RwLock::new(HashMap::new()),
-            processed: RwLock::new(HashSet::new()),
+            processed: RwLock::new(VecDeque::new()),
             session_ids: RwLock::new(HashMap::new()),
         })
     }
@@ -50,6 +54,38 @@ impl DingtalkBridge {
         agent.wait_for_disconnect().await
     }
 
+    pub fn enqueue_event(self: &Arc<Self>, event: DingtalkEvent) -> bool {
+        let key = event
+            .chat_id
+            .clone()
+            .unwrap_or_else(|| format!("sender:{}", event.sender_id.as_deref().unwrap_or("")));
+        let mut queues = self.event_queues.lock().unwrap();
+        let sender = queues.entry(key).or_insert_with(|| {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+            let bridge = Arc::downgrade(self);
+            tokio::spawn(async move {
+                while let Some(event) = receiver.recv().await {
+                    let Some(bridge) = bridge.upgrade() else {
+                        break;
+                    };
+                    if let Err(error) = bridge.handle_event(event).await {
+                        error!("DingTalk event error: {}", error);
+                    }
+                }
+            });
+            sender
+        });
+        if let Err(error) = sender.try_send(event) {
+            warn!(
+                "DingTalk event not accepted (conversation queue full or closed): {}",
+                error
+            );
+            false
+        } else {
+            true
+        }
+    }
+
     pub async fn handle_event(&self, event: DingtalkEvent) -> Result<()> {
         let sender_id = match &event.sender_id {
             Some(id) => id.clone(),
@@ -58,6 +94,16 @@ impl DingtalkBridge {
                 return Ok(());
             }
         };
+        // Admission precedes slash commands and any session creation. Group
+        // membership alone does not authorize a sender to operate the agent.
+        if !self
+            .sender_allowlist
+            .iter()
+            .any(|id| id == "*" || id == &sender_id)
+        {
+            warn!("DingTalk sender is not authorized: {}", sender_id);
+            return Ok(());
+        }
         let message_id = match &event.message_id {
             Some(id) => id.clone(),
             None => return Ok(()),
@@ -72,12 +118,9 @@ impl DingtalkBridge {
             if processed.contains(&message_id) {
                 return Ok(());
             }
-            processed.insert(message_id.clone());
+            processed.push_back(message_id.clone());
             if processed.len() > 1000 {
-                let old: Vec<String> = processed.iter().take(500).cloned().collect();
-                for id in old {
-                    processed.remove(&id);
-                }
+                processed.drain(..500);
             }
         }
         if let Some(create_ms) = event.create_time_ms {
@@ -316,7 +359,18 @@ impl DingtalkBridge {
         // Ordinary messages share one Agent session, so the Agent scheduler's
         // supersede_session policy can atomically replace the prior run. /new
         // is the only path that deliberately rotates this cached session.
-        let session_id = self.get_or_create_session(conversation_key).await?;
+        let session_id = match self.get_or_create_session(conversation_key).await {
+            Ok(id) => id,
+            Err(error) => {
+                if let Some(ref wh) = webhook {
+                    let _ = self
+                        .dingtalk
+                        .reply_webhook_markdown(wh, "Error", &format!("**Error:** {error}"))
+                        .await;
+                }
+                return Err(error);
+            }
+        };
         let agent = self.agent.clone();
         let dingtalk = self.dingtalk.clone();
         let text = text.to_string();
@@ -327,11 +381,25 @@ impl DingtalkBridge {
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .clone()
         };
+        let generation = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
-            if let Err(e) =
-                run_prompt_loop(&dingtalk, &agent, &session_id, &text, &gen_counter, webhook).await
+            if let Err(e) = run_prompt_loop(
+                &dingtalk,
+                &agent,
+                &session_id,
+                &text,
+                &gen_counter,
+                webhook.clone(),
+                Some(generation),
+            )
+            .await
             {
                 error!("DingTalk prompt loop error: {}", e);
+                if let Some(ref wh) = webhook {
+                    let _ = dingtalk
+                        .reply_webhook_markdown(wh, "Error", &format!("**Error:** {e}"))
+                        .await;
+                }
             }
         });
         Ok(())
@@ -345,9 +413,15 @@ async fn run_prompt_loop(
     text: &str,
     gen_counter: &AtomicU64,
     webhook: Option<String>,
+    arrival_generation: Option<u64>,
 ) -> Result<()> {
     let (expected_run_id, my_gen, mut stream) = {
         let mut client = agent.write().await;
+        if arrival_generation
+            .is_some_and(|generation| generation != gen_counter.load(Ordering::SeqCst))
+        {
+            return Ok(());
+        }
         let send_preview = if text.len() > 300 {
             truncate_at_char(text, 300)
         } else {
@@ -368,7 +442,8 @@ async fn run_prompt_loop(
         let stream = client
             .stream_run_events(session_id, &expected_run_id)
             .await?;
-        let my_gen = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let my_gen =
+            arrival_generation.unwrap_or_else(|| gen_counter.fetch_add(1, Ordering::SeqCst) + 1);
         (expected_run_id, my_gen, stream)
     };
     let mut stream_text = String::new();
@@ -531,6 +606,7 @@ mod tests {
         let (base, http) = ts::spawn_http(routes).await;
         let (addr, grpc) = ts::spawn_mock_grpc(state).await;
         let cfg = crate::dingtalk::config::DingtalkConfig {
+            sender_allowlist: vec!["*".into()],
             client_id: "id".into(),
             client_secret: "secret".into(),
             domain: base.clone(), // full URL → base_url verbatim
@@ -551,6 +627,68 @@ mod tests {
             http,
             base,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ingress_queue_has_a_fixed_capacity() {
+        let fx = make_bridge("bounded-ding", MockState::default(), vec![]).await;
+        let bridge = Arc::new(fx.bridge);
+        for i in 0..128 {
+            assert!(bridge.enqueue_event(event(&fx.base, &format!("burst-{i}"), "x")));
+        }
+        assert!(!bridge.enqueue_event(event(&fx.base, "overflow", "x")));
+        assert_eq!(bridge.event_queues.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_events_and_stale_tasks_keep_newest_prompt_last() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        state
+            .command_delay
+            .insert("new_session".into(), std::time::Duration::from_millis(100));
+        let fx = make_bridge("ordered-ding", state, vec![]).await;
+        let bridge = Arc::new(fx.bridge);
+        bridge.enqueue_event(event(&fx.base, "old", "old"));
+        bridge.enqueue_event(event(&fx.base, "new", "new"));
+        assert!(
+            ts::wait_until(
+                || ts::recorded_of(&fx.grpc, "prompt")
+                    .last()
+                    .is_some_and(|p| p.message == "new"),
+                std::time::Duration::from_secs(5)
+            )
+            .await
+        );
+        let before = ts::recorded_of(&fx.grpc, "prompt").len();
+        run_prompt_loop(
+            &bridge.dingtalk,
+            &bridge.agent,
+            "session",
+            "stale",
+            &AtomicU64::new(2),
+            None,
+            Some(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), before);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admission_denies_unlisted_senders_before_slash_or_prompt() {
+        let mut fx = make_bridge("admission", MockState::default(), vec![]).await;
+        fx.bridge.sender_allowlist.clear();
+        fx.bridge
+            .handle_event(event(&fx.base, "denied-prompt", "hello"))
+            .await
+            .unwrap();
+        fx.bridge
+            .handle_event(event(&fx.base, "denied-slash", "/new"))
+            .await
+            .unwrap();
+        assert!(ts::recorded_of(&fx.grpc, "new_session").is_empty());
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
     }
 
     fn done_events() -> Vec<future_rpc::proto::StreamEvent> {
@@ -815,8 +953,13 @@ mod tests {
             )
             .await
         );
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(hook_bodies(&fx.http).is_empty());
+        assert!(
+            ts::wait_until(
+                || hook_bodies(&fx.http).iter().any(|b| b.contains("Error")),
+                std::time::Duration::from_secs(5)
+            )
+            .await
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1084,7 +1227,7 @@ mod tests {
         let agent = fx.bridge.agent.clone();
         let gen = AtomicU64::new(0);
         let long = "w".repeat(400);
-        run_prompt_loop(&fx.bridge.dingtalk, &agent, &sid, &long, &gen, None)
+        run_prompt_loop(&fx.bridge.dingtalk, &agent, &sid, &long, &gen, None, None)
             .await
             .unwrap();
         assert!(hook_bodies(&fx.http).is_empty(), "no text → no reply");
@@ -1094,6 +1237,7 @@ mod tests {
     async fn new_fails_without_agent() {
         ts::ensure_crypto_provider();
         let cfg = crate::dingtalk::config::DingtalkConfig {
+            sender_allowlist: Vec::new(),
             client_id: "id".into(),
             client_secret: "s".into(),
             domain: "api.dingtalk.com".into(),
@@ -1224,6 +1368,7 @@ mod tests {
         .await;
         let (addr, grpc) = ts::spawn_mock_grpc(state).await;
         let cfg = crate::dingtalk::config::DingtalkConfig {
+            sender_allowlist: vec!["*".into()],
             client_id: "id".into(),
             client_secret: "secret".into(),
             domain: base.clone(),

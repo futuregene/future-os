@@ -32,6 +32,10 @@ pub struct UsageData {
     pub cache_write_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credit_cost: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<serde_json::Value>,
 }
 
 // ── text streams ─────────────────────────────────────────────────────────────
@@ -91,6 +95,8 @@ pub struct AgentEndData {
     /// "incomplete" when the stream was truncated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncation: Option<serde_json::Value>,
 }
 
 /// The `usage` sub-object of agent_end.
@@ -105,12 +111,14 @@ pub struct AgentEndUsage {
 pub struct UsageEventData {
     #[serde(default)]
     pub usage: UsageData,
+    #[serde(rename = "stopReason", skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
 }
 
 /// error: a run-level error.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ErrorEventData {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub error: String,
 }
 
@@ -119,6 +127,8 @@ pub struct ErrorEventData {
 /// tool_start: tool execution began.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolStartData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -133,6 +143,8 @@ pub struct ToolStartData {
 /// tool_delta: streaming tool-argument fragment.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolDeltaData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<bool>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tool_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

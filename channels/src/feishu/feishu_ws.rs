@@ -439,7 +439,20 @@ pub fn extract_text_content(content: &str, msg_type: &str) -> Option<String> {
 /// Extract image_key from an image message.
 pub fn extract_image_key(content: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(content).ok()?;
-    parsed["image_key"].as_str().map(|s| s.to_string())
+    parsed["image_key"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            parsed["content"]
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_array)
+                .flatten()
+                .find(|element| element["tag"] == "img")?
+                .get("image_key")?
+                .as_str()
+                .map(str::to_string)
+        })
 }
 
 /// Extract file_key from a file/media message.

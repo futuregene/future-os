@@ -722,12 +722,17 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
 /// pure (spawn itself is an OS seam).
 #[cfg(target_os = "macos")]
 fn fallback_open_text(path: &str) -> Result<(), crate::AppError> {
-    let status = std::process::Command::new("open")
-        .arg("-t")
-        .arg(path)
+    let status = open_text_command(path)
         .status()
         .map_err(|e| format!("Failed to open: {e}"))?;
     open_t_status_to_result(status.success(), path)
+}
+
+#[cfg(target_os = "macos")]
+fn open_text_command(path: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("open");
+    command.arg("-t").arg("--").arg(path);
+    command
 }
 
 /// Pure classifier for the `open -t` fallback's exit status.
@@ -749,6 +754,14 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn text_opener_treats_option_like_paths_as_operands() {
+        let command = open_text_command("-aCalculator");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-t", "--", "-aCalculator"]);
+    }
 
     /// Fresh, canonicalized fake `~/.future` root for one test.
     fn future_root(name: &str) -> PathBuf {

@@ -35,7 +35,7 @@ fn two_agents_hold_disjoint_identity_scoped_frontiers() {
     assert!(excluded.visible_agent_todo_ids.is_empty());
 }
 
-/// ── Agent lane recommendation attributes runs by claim ───────────────────
+/// ── Agent lane recommendation uses durable execution identity ───────────
 #[test]
 fn agent_lane_recommendation_attributes_runs_to_claiming_agent() {
     use future_loop::agents::lane::compact_agent_lane_recommendation;
@@ -44,6 +44,7 @@ fn agent_lane_recommendation_attributes_runs_to_claiming_agent() {
     let mut goal = Goal::new("g1", "objective", "/tmp");
     goal.todos = vec![todo];
     goal.history = vec![future_loop::state::RunRecord {
+        agent_id: Some("agent-a".into()),
         turn: 1,
         todo_id: "t1".into(),
         run_id: "run-1".into(),
@@ -70,6 +71,6 @@ fn agent_lane_recommendation_attributes_runs_to_claiming_agent() {
         .as_deref()
         .unwrap()
         .contains("merged"));
-    // Agent B has no lane run (todo not claimed by B).
+    // Agent B has no attributed run, regardless of the todo's current claim.
     assert!(compact_agent_lane_recommendation(&goal, "agent-b").is_none());
 }

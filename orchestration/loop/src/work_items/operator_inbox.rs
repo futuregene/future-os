@@ -67,7 +67,7 @@ pub fn operator_inbox_attention_kind(
     let explicit_mention =
         !operator_name.is_empty() && content.contains('@') && content.contains(&operator_name);
     let loop_mention = content.contains('@') && content.contains("future-loop");
-    if capture_scope != "addressed_only" && !explicit_mention && !loop_mention {
+    if capture_scope == "addressed_only" && !explicit_mention && !loop_mention {
         return None;
     }
     if content.contains('?') || content.contains('？') {
@@ -256,6 +256,38 @@ mod tests {
             inbox_dir: "inbox".into(),
             operator_display_name: name.into(),
             reply_enabled,
+        }
+    }
+
+    #[test]
+    fn scope_question_mention_matrix_is_symmetric() {
+        for (text, addressed, all) in [
+            (
+                "unrelated question?",
+                None,
+                Some(OperatorAttentionKind::DirectQuestion),
+            ),
+            ("ordinary statement", None, None),
+            (
+                "@operator question?",
+                Some(OperatorAttentionKind::DirectQuestion),
+                Some(OperatorAttentionKind::DirectQuestion),
+            ),
+            (
+                "@operator hello",
+                Some(OperatorAttentionKind::DirectMention),
+                Some(OperatorAttentionKind::DirectMention),
+            ),
+        ] {
+            let e = event(text, false, false);
+            assert_eq!(
+                operator_inbox_attention_kind(&e, "operator", "addressed_only"),
+                addressed
+            );
+            assert_eq!(
+                operator_inbox_attention_kind(&e, "operator", "configured_chat_all"),
+                all
+            );
         }
     }
 

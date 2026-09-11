@@ -33,6 +33,10 @@ enum PersistenceCommand {
         entries: Vec<SessionEntry>,
         ack: mpsc::SyncSender<std::result::Result<(), String>>,
     },
+    Recover {
+        entries: Vec<SessionEntry>,
+        ack: mpsc::SyncSender<std::result::Result<(), String>>,
+    },
     Barrier(mpsc::SyncSender<std::result::Result<(), String>>),
     /// Test-only crash injection: the worker drops its receiver (marking the
     /// slotted sender disconnected), releases the barrier, and returns — a
@@ -213,14 +217,9 @@ impl SessionPersistence {
     /// to supersede a prior writer error and records a conservative terminal
     /// outcome before the scheduler is released.
     pub fn recover_with_entries(&self, entries: Vec<SessionEntry>) -> Result<()> {
-        if self.inner.closed.load(Ordering::Acquire) {
-            return Err(anyhow!("session persistence is closed"));
-        }
-        self.inner
-            .manager
-            .append_entries_synced(&self.inner.session_id, &entries)?;
-        *self.inner.last_error.lock() = None;
-        Ok(())
+        let (ack, receiver) = mpsc::sync_channel(1);
+        self.send_boundary(PersistenceCommand::Recover { entries, ack })?;
+        receive_ack(receiver)
     }
 
     /// Stop accepting persistence work and wait until every command accepted
@@ -552,6 +551,14 @@ fn run_worker(
 
 fn execute(state: &PersistenceInner, command: PersistenceCommand) {
     match command {
+        PersistenceCommand::Recover { entries, ack } => {
+            let result = state
+                .manager
+                .append_entries_synced(&state.session_id, &entries)
+                .map_err(|error| error.to_string());
+            record_result(state, &result, true);
+            let _ = ack.send(result);
+        }
         PersistenceCommand::Append(entries) => {
             let result = state
                 .manager
@@ -1310,6 +1317,37 @@ mod tests {
         let error = persistence.barrier().unwrap_err();
         assert!(error.to_string().contains("closed"));
         let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn recovery_is_ordered_after_already_accepted_appends() {
+        let (dir, manager, _) = fixture();
+        let persistence = test_persistence(manager.clone());
+        let gate = persistence.hold_worker_for_test();
+        gate.wait();
+        let first = SessionEntry::new_user("user", serde_json::json!("accepted before recovery"));
+        let last = SessionEntry::run_terminal("run-recovered", "error", 0, 0, Some("recovered"));
+        let first_id = first.id.clone();
+        let last_id = last.id.clone();
+        persistence.append(vec![first]).unwrap();
+        let recover = persistence.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(recover.recover_with_entries(vec![last])).unwrap();
+        });
+        let premature = rx.recv_timeout(Duration::from_millis(100));
+        gate.wait(); // always release before assertions, including a regression failure
+        if premature.is_err() {
+            rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        }
+        worker.join().unwrap();
+        persistence.barrier().unwrap();
+        let entries = manager.load("session-1").unwrap().entries;
+        let a = entries.iter().position(|e| e.id == first_id).unwrap();
+        let b = entries.iter().position(|e| e.id == last_id).unwrap();
+        assert!(a < b, "recovery terminal must follow every accepted append");
+        persistence.close().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

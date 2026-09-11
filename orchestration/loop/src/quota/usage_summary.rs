@@ -182,6 +182,7 @@ mod tests {
 
     fn record(recorded_at: u64, tools: bool, evidence: bool, source: &str) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "T1".to_string(),
             run_id: "run-1".to_string(),

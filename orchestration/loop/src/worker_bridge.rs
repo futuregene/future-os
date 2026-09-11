@@ -54,6 +54,9 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout();
 
+    let base_turn =
+        crate::quota::decision_summary::decision_summaries(&store.events(&opts.goal_id)?).len()
+            as u32;
     for turn in 1..=opts.max_turns {
         let goal = store
             .replay(&opts.goal_id)?
@@ -69,7 +72,7 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             store,
             &packet,
             opts.agent_id.as_deref(),
-            turn,
+            base_turn.saturating_add(turn),
         )?;
         let mode = packet.interaction_contract.mode;
         if mode == TurnMode::Terminal {
@@ -118,9 +121,10 @@ pub async fn run_bridge(store: &mut Store, opts: &BridgeOptions) -> Result<()> {
             .replay(&opts.goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {} not found", opts.goal_id))?;
         let mut record = RunRecord {
-            turn,
+            agent_id: opts.agent_id.clone(),
+            turn: base_turn.saturating_add(turn),
             todo_id: result.todo_id.clone(),
-            run_id: format!("worker-{turn}-{}", crate::state::now_epoch()),
+            run_id: format!("worker-{}", uuid::Uuid::new_v4().simple()),
             terminal_state: if result.terminal_state.is_empty() {
                 "completed".to_string()
             } else {

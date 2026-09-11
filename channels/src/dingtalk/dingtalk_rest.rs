@@ -97,13 +97,22 @@ impl DingtalkRestClient {
             "msgtype": "markdown",
             "markdown": {"title": title, "text": markdown},
         });
-        client
+        let response = client
             .post(webhook_url)
             .header("x-acs-dingtalk-access-token", &token)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
+        let body: serde_json::Value = response.json().await?;
+        if body
+            .get("errcode")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|code| code != 0)
+        {
+            anyhow::bail!("DingTalk webhook rejected reply: {}", body);
+        }
         Ok(())
     }
 }
@@ -222,6 +231,23 @@ mod tests {
         );
         assert!(calls[0].body_string().contains("\"msgtype\":\"markdown\""));
         assert!(calls[0].body_string().contains("**bold** reply"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn webhook_rejects_http_and_application_failures() {
+        ts::ensure_crypto_provider();
+        for (status, body) in [
+            (503, "{}"),
+            (200, r#"{"errcode":310000,"errmsg":"expired"}"#),
+        ] {
+            let (base, _) =
+                ts::spawn_http(vec![token_ok(), HttpRoute::json("/hook", status, body)]).await;
+            let c = client(&base);
+            assert!(c
+                .reply_webhook_markdown(&format!("{base}/hook"), "T", "m")
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

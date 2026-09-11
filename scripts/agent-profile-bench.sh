@@ -12,6 +12,10 @@
 #   profile-results/agent-profile-<ts>.log   agent stdout/stderr
 set -euo pipefail
 
+if [[ "${FUTURE_PROFILE_ISOLATED:-}" != "1" ]]; then
+    exec python3 "$(dirname "$0")/profile-isolated.py" bash "$0" "$@"
+fi
+
 DURATION="${PROFILE_DURATION:-90}"
 PORT="${PROFILE_PORT:-50052}"
 ADDR="127.0.0.1:${PORT}"

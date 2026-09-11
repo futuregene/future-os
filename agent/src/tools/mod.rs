@@ -293,7 +293,7 @@ pub fn shell_tool() -> AgentTool {
     // command on this platform — it is the model's only reliable signal for
     // generating syntax that will parse (see sandbox::shell_invocation).
     #[cfg(not(target_os = "windows"))]
-    let description = "Execute a shell command in the current working directory. Commands are interpreted by bash. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by the host shell identified in the system prompt. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
     // Version-neutral on Windows: the precise interpreter (pwsh 7 vs Windows
     // PowerShell 5.1) and its chaining rules live in the host-platform section
     // of the system prompt (prompt::os_hint), resolved at runtime.
@@ -616,6 +616,19 @@ fn is_protected_rm_target(target: &str) -> bool {
         || t == "$home"
         || t.starts_with("$home/")
         || t.starts_with("${home}")
+    {
+        return true;
+    }
+
+    if std::path::Path::new(t).is_absolute()
+        && crate::utils::home_dir_opt().is_some_and(|home| {
+            crate::sandbox::paths::normalize_lexically(std::path::Path::new(t))
+                .to_string_lossy()
+                .to_lowercase()
+                == crate::sandbox::paths::normalize_lexically(&home)
+                    .to_string_lossy()
+                    .to_lowercase()
+        })
     {
         return true;
     }
@@ -1212,23 +1225,14 @@ async fn spawn_shell_with_report(
     let mut read_buf = [0u8; 8192];
     let timeout_dur = std::time::Duration::from_secs(timeout_secs.max(1));
 
-    // On Windows the CLI terminates itself via TerminateProcess/process.exit.
-    // PowerShell can keep waiting for the browser descendant, so waiting for
-    // the shell process would hang forever. The wrapper already merges stderr
-    // into stdout; EOF therefore means the CLI result is complete.
+    // On Windows, EOF is not proof of success. Include process exit in the
+    // same deadline, and keep kill-on-close armed on every failure path.
     #[cfg(windows)]
     {
         let result = tokio::select! {
             result = tokio::time::timeout(timeout_dur, async {
-                use tokio::io::AsyncReadExt;
-                loop {
-                    match stdout.read(&mut read_buf).await {
-                        Ok(0) => break,
-                        Ok(n) => output_buf.extend_from_slice(&read_buf[..n]),
-                        Err(e) => return Err(anyhow!("Failed to read shell output: {}", e)),
-                    }
-                }
-                Ok(())
+                read_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await?;
+                spawned.wait().await.map_err(|error| anyhow!("Failed to wait for shell: {error}"))
             }) => result,
             _ = wait_for_interrupt(interrupt_flag.clone()) => {
                 if let Some(job) = &job {
@@ -1238,18 +1242,22 @@ async fn spawn_shell_with_report(
             }
         };
 
-        if let Some(job) = &job {
-            job.disarm();
-        }
         // PowerShell may keep stderr open while waiting for the browser too.
         // Do not await that drain after stdout has provided the completion
         // signal, or it would recreate the same hang.
         drop(stderr_task);
 
         match result {
-            Ok(Ok(())) => {
+            Ok(Ok(status)) => {
+                if let Some(job) = &job {
+                    job.disarm();
+                }
                 let combined = String::from_utf8_lossy(&output_buf);
-                Ok(format_shell_output(&combined, combined.len(), 0))
+                Ok(format_shell_output(
+                    &combined,
+                    combined.len(),
+                    status.code().unwrap_or(-1),
+                ))
             }
             Ok(Err(e)) => Err(e),
             Err(_elapsed) => {
@@ -1269,7 +1277,7 @@ async fn spawn_shell_with_report(
                     ))
                 } else {
                     spawned.kill().await.ok();
-                    Ok(format_shell_output(&combined, total, 0))
+                    Ok(format_shell_output(&combined, total, -1))
                 }
             }
         }
@@ -1384,7 +1392,6 @@ fn path_with_own_dir(exe: std::io::Result<std::path::PathBuf>) -> Option<String>
 /// Read the child's stdout into `buf` until EOF; a read error aborts the run.
 /// Extracted from spawn_shell so the error arm is directly testable with a
 /// failing reader (a real pipe read failure has no reliable injection point).
-#[cfg(not(windows))]
 async fn read_shell_output<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     buf: &mut Vec<u8>,
@@ -1516,19 +1523,36 @@ async fn run_edit(
     ensure_workspace_access(&cwd, &path)?;
     let current = tokio::fs::read_to_string(&path).await?;
 
+    // read() presents CRLF lines with LF separators. Match that view without
+    // rewriting untouched bytes, and preserve the file's CRLF style on insert.
+    fn replace_once(current: &str, old: &str, new: &str) -> Option<String> {
+        let crlf = current.contains("\r\n");
+        let old_crlf = old.replace("\r\n", "\n").replace('\n', "\r\n");
+        let (pos, matched) = current.find(old).map(|p| (p, old)).or_else(|| {
+            crlf.then(|| current.find(&old_crlf).map(|p| (p, old_crlf.as_str())))
+                .flatten()
+        })?;
+        let new = if crlf {
+            new.replace("\r\n", "\n").replace('\n', "\r\n")
+        } else {
+            new.to_owned()
+        };
+        Some(format!(
+            "{}{}{}",
+            &current[..pos],
+            new,
+            &current[pos + matched.len()..]
+        ))
+    }
+
     let final_content = if let Some(edits) = edits {
         // Multi-edit mode — all-or-nothing: if any edit fails to match,
         // the file is not modified and the error lists every failed edit.
         let mut result = current.clone();
         let mut failures: Vec<String> = Vec::new();
         for (i, edit) in edits.iter().enumerate() {
-            if let Some(pos) = result.rfind(&edit.old_text) {
-                result = format!(
-                    "{}{}{}",
-                    &result[..pos],
-                    edit.new_text,
-                    &result[pos + edit.old_text.len()..]
-                );
+            if let Some(replaced) = replace_once(&result, &edit.old_text, &edit.new_text) {
+                result = replaced;
             } else {
                 failures.push(format!(
                     "edit {}: could not find \"{}\"",
@@ -1547,8 +1571,8 @@ async fn run_edit(
         }
         result
     } else if let (Some(old), Some(new)) = (old_text, new_text) {
-        if let Some(pos) = current.find(old) {
-            format!("{}{}{}", &current[..pos], new, &current[pos + old.len()..])
+        if let Some(replaced) = replace_once(&current, old, new) {
+            replaced
         } else {
             return Err(anyhow!(
                 "Edit failed: could not find the text to replace in the file. \
@@ -1943,8 +1967,38 @@ mod tests {
 
     // ─── reject_dangerous_command ──────────────────────────────────────────
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_shell_reports_exit_status_and_timeout_kills_descendants() {
+        let output = run_shell("cmd /c exit /b 7", 5, false, "").await.unwrap();
+        assert!(output.contains("[exit: 7]"), "{output}");
+        let output = run_shell("$p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru; Write-Output ('child_pid=' + $p.Id); Start-Sleep -Seconds 30", 2, false, "").await.unwrap();
+        assert!(output.contains("[exit: signal]"), "{output}");
+        let pid: u32 = output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("child_pid="))
+            .unwrap()
+            .parse()
+            .unwrap();
+        // Only inspect the child created by this test, never a running agent.
+        unsafe {
+            use windows_sys::Win32::{
+                Foundation::CloseHandle,
+                System::Threading::{OpenProcess, WaitForSingleObject},
+            };
+            let handle = OpenProcess(0x0010_0000, 0, pid); // SYNCHRONIZE
+            if !handle.is_null() {
+                let waited = WaitForSingleObject(handle, 2000);
+                CloseHandle(handle);
+                assert_eq!(waited, 0, "test descendant survived Job cleanup");
+            }
+        }
+    }
+
     #[test]
     fn rejects_recursive_rm_of_home_and_roots() {
+        let home = crate::utils::home_dir();
+        assert!(reject_dangerous_command(&format!("rm -rf '{}'", home.display())).is_err());
         for cmd in [
             "rm -rf ~",
             "rm -rf ~/",
@@ -2718,6 +2772,31 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(workspace.join("output.txt")).unwrap(),
             "written content"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_matches_read_crlf_view_and_batch_uses_first_occurrence() {
+        let workspace = tempfile::tempdir().unwrap();
+        let file = workspace.path().join("edit.txt");
+        std::fs::write(&file, "alpha\r\nbeta\r\nalpha\r\nbeta\r\n").unwrap();
+        with_workspace_scope(
+            workspace.path().to_string_lossy().into_owned(),
+            "all".into(),
+            async {
+                let read = run_read("edit.txt", None, None).await.unwrap();
+                assert!(read.contains("alpha\nbeta"));
+                edit_handler(serde_json::json!({"path":"edit.txt", "edits":[{
+                    "oldText":"alpha\nbeta", "newText":"one\ntwo"
+                }]}))
+                .await
+                .unwrap();
+            },
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(file).unwrap(),
+            "one\r\ntwo\r\nalpha\r\nbeta\r\n"
         );
     }
 

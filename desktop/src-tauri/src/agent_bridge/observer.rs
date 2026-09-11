@@ -160,6 +160,24 @@ impl ObserverShared {
 pub(super) static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
+type TestObserverTask = (
+    tauri::async_runtime::JoinHandle<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(test)]
+static TEST_OBSERVER_TASKS: LazyLock<Mutex<Vec<TestObserverTask>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[cfg(test)]
+struct TestObserverCompletion(std::sync::mpsc::Sender<()>);
+#[cfg(test)]
+impl Drop for TestObserverCompletion {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -348,6 +366,20 @@ pub(crate) fn cancel_all_observers() {
     for handle in handles {
         let _ = handle.cancel.send(());
     }
+    // Cancellation alone is not checked during initial connect/replay/probe.
+    // Wait for the owned futures to be dropped before a test switches HOME;
+    // otherwise they can open/write the next test's database during migration.
+    let tasks = std::mem::take(
+        &mut *TEST_OBSERVER_TASKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    );
+    for (task, completed) in &tasks {
+        task.abort();
+        completed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("test observer must stop before changing HOME");
+    }
 }
 
 /// Evict least-recently-active idle observers while at/over the cap. Active
@@ -471,10 +503,25 @@ impl Default for ObserverState {
 }
 
 fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: oneshot::Receiver<()>) {
-    tauri::async_runtime::spawn(async move {
+    #[cfg(test)]
+    let (done, completed) = std::sync::mpsc::channel();
+    // Capture the guard before spawning so cancellation before the first poll
+    // still acknowledges that the future (and its database work) is gone.
+    #[cfg(test)]
+    let completion = TestObserverCompletion(done);
+    let task = tauri::async_runtime::spawn(async move {
+        #[cfg(test)]
+        let _completion = completion;
         run_observer(&session_id, &shared, cancel).await;
         unregister(&session_id, &shared);
     });
+    #[cfg(test)]
+    TEST_OBSERVER_TASKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((task, completed));
+    #[cfg(not(test))]
+    drop(task);
 }
 
 async fn run_observer(

@@ -63,8 +63,10 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
                 .collect::<Result<_, _>>()
                 .ok()?;
             let mut value = json!({ "entries": entries });
-            if response.has_more {
-                value["hasMore"] = Value::Bool(true);
+            // Unpaged responses carry proto defaults too. Preserve meaningful
+            // final-page offsets without inventing pagination on unpaged reads.
+            if response.has_more || response.next_offset != 0 {
+                value["hasMore"] = Value::Bool(response.has_more);
                 value["nextOffset"] = Value::Number(response.next_offset.into());
             }
             Some(value)
@@ -867,16 +869,22 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
                 output_tokens: tokens,
             }),
             reason: data.reason.clone(),
+            truncation: data
+                .truncation_json
+                .as_deref()
+                .and_then(inflate_optional_json),
         })
         .ok(),
         K::ToolStart(data) => serde_json::to_value(ev::ToolStartData {
+            phase: data.phase.clone(),
             tool_id: data.tool_id.clone(),
             tool_name: data.tool_name.clone(),
             tool_args: inflate_optional_json(&data.tool_args),
-            tc_index: None,
+            tc_index: data.tc_index,
         })
         .ok(),
         K::ToolDelta(data) => serde_json::to_value(ev::ToolDeltaData {
+            snapshot: data.snapshot,
             tool_id: data.tool_id.clone(),
             text: data.text.clone(),
             tc_index: data.tc_index,
@@ -901,7 +909,7 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
         })
         .ok(),
         K::Usage(data) => {
-            let usage = data.usage.unwrap_or_default();
+            let usage = data.usage.clone().unwrap_or_default();
             serde_json::to_value(ev::UsageEventData {
                 usage: ev::UsageData {
                     prompt_tokens: usage.prompt_tokens,
@@ -910,7 +918,13 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
                     cache_read_tokens: usage.cache_read_tokens,
                     cache_write_tokens: usage.cache_write_tokens,
                     credit_cost: usage.credit_cost,
+                    reasoning_tokens: usage.reasoning_tokens,
+                    provider_metadata: usage
+                        .provider_metadata_json
+                        .as_deref()
+                        .and_then(inflate_optional_json),
                 },
+                stop_reason: data.stop_reason.clone(),
             })
             .ok()
         }
@@ -1048,6 +1062,34 @@ mod tests {
         assert_eq!(payload.session_name.as_deref(), Some("Demo"));
         assert_eq!(payload.recent_terminal_acks[0].run_id, "r0");
         assert_eq!(payload.recent_terminal_acks[0].run_sequence, 4);
+    }
+
+    #[test]
+    fn final_entries_page_retains_pagination_metadata() {
+        let response = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            entries: vec![],
+            has_more: false,
+            next_offset: 42,
+        }));
+        assert_eq!(
+            response_data(&response),
+            json!({"entries": [], "hasMore": false, "nextOffset": 42})
+        );
+        let raw = json!({"type":"image_url", "image_url":{"data":"retained"}});
+        let block = crate::message::MessageBlock::from_model(&raw);
+        assert_eq!(block.data, Some(raw.clone()));
+        let entry = SessionEntryPayload {
+            blocks: vec![block],
+            ..Default::default()
+        };
+        let response = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            entries: vec![crate::encode::session_entry_to_proto(&entry)],
+            ..Default::default()
+        }));
+        assert_eq!(
+            decode_session_entries(&response).unwrap()[0].blocks[0].data,
+            Some(raw)
+        );
     }
 
     #[test]

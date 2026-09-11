@@ -41,7 +41,7 @@ pub(crate) enum MonitorOutcome<'a> {
 /// Evaluate the monitor lane. Mirrors the original pipeline order:
 /// stall → replan, due → one poll, present-but-not-due → quiet wait.
 pub(crate) fn monitor_outcome(goal: &Goal, now: SystemTime) -> MonitorOutcome<'_> {
-    let monitors: Vec<&Todo> = goal.open_monitors().collect();
+    let monitors: Vec<&Todo> = goal.open_monitors_at(now).collect();
     if let Some(stalled) = monitors.iter().find(|m| is_monitor_stalled(m)) {
         return MonitorOutcome::Stalled(stalled);
     }

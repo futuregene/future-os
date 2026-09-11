@@ -959,6 +959,13 @@ pub trait LLMProvider: Send + Sync {
 
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
+
+    /// Snapshot mutable generation settings for an accepted run. Immutable
+    /// providers can keep the default; providers implementing update_thinking
+    /// should return a private configuration copy.
+    fn snapshot(&self) -> Option<std::sync::Arc<dyn LLMProvider>> {
+        None
+    }
 }
 
 // ─── Message ↔ AgentMessage conversion ────────────────────────────────────

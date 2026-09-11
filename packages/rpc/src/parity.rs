@@ -607,6 +607,33 @@ fn get_session_events_since_wire_parity() {
 
 // ── event payloads ───────────────────────────────────────────────────────────
 
+#[test]
+fn producer_tool_and_truncation_fields_survive_typed_wire() {
+    // Source: agent/src/rpc/prompt_helpers.rs::run_event_to_sse and its
+    // typed_run_events_preserve_public_wire_shapes fixtures, not proto-shaped data.
+    for wire in [
+        json!({"type":"tool_start","phase":"execution","tool_id":"call","tool_name":"shell","tool_args":{"command":"echo ok"}}),
+        json!({"type":"tool_start","phase":"input","tool_id":"call","tool_name":"read","tool_args":{"path":"a.txt"},"tc_index":1}),
+    ] {
+        assert_event_parity("tool_start", wire);
+    }
+    for snapshot in [true, false] {
+        assert_event_parity(
+            "tool_delta",
+            json!({"snapshot":snapshot,"type":"tool_delta","text":"{}","tool_id":"call","tc_index":2}),
+        );
+    }
+    // Source: agent/src/rpc/session_prompt.rs terminal truncation projection.
+    assert_event_parity(
+        "agent_end",
+        json!({"state":"incomplete","reason":"incomplete","usage":{"output_tokens":7},"truncation":{"turns_so_far":3,"output_len":12,"tool_calls_so_far":1,"detected_by":"clean_eof"}}),
+    );
+    assert_event_parity(
+        "usage",
+        json!({"type":"usage","stopReason":"tool_calls","usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"reasoning_tokens":5,"provider_metadata":{"vendor":{"trace":"preserved"}}}}),
+    );
+}
+
 /// Event wire-parity: encode the real wire `data` JSON into the typed form,
 /// then verify (a) data-first decode returns the original JSON verbatim
 /// (byte-stable for journal/NATS consumers during the migration window) and
@@ -615,6 +642,9 @@ fn get_session_events_since_wire_parity() {
 fn assert_event_parity(event_type: &str, wire_data: Value) {
     let encoded = encode::event_payload(event_type, &wire_data.to_string())
         .unwrap_or_else(|| panic!("{event_type}: event encode returned None"));
+    // Exercise the protobuf wire, not just an in-memory carrier conversion.
+    let bytes = prost::Message::encode_to_vec(&encoded);
+    let encoded = <proto::EventPayload as prost::Message>::decode(bytes.as_slice()).unwrap();
 
     // Dual-write: the original data string wins, byte-stable.
     let event = proto::StreamEvent {
@@ -665,6 +695,7 @@ fn user_message_event_parity() {
 
 #[test]
 fn error_event_parity() {
+    assert_event_parity("error", json!({"error": ""}));
     // Inline run-error build (no injected type key)...
     assert_event_parity("error", json!({"error": "model exploded"}));
     // ...and the provider-derived variant with the injected type key: both

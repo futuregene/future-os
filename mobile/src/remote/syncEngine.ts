@@ -340,14 +340,16 @@ export class SyncEngine {
         this.scheduleRetry(lane);
         return;
       }
-      lane.retryAttempt = 0;
       lane.retryNotBefore = 0;
       if (lane.retryTimer) clearTimeout(lane.retryTimer);
       lane.retryTimer = null;
       justReconciledRun = request.runId ?? null;
-      this.deps.onRecovered?.(lane.sessionId);
     }
     this.applyOps(lane, justReconciledRun);
+    if (request && lane.retryNotBefore === 0) {
+      lane.retryAttempt = 0;
+      this.deps.onRecovered?.(lane.sessionId);
+    }
   }
 
   private scheduleRetry(lane: SessionLane): void {
@@ -472,10 +474,9 @@ export class SyncEngine {
 
   /**
    * Apply the queued synchronous ops to the snapshot in order. `justReconciledRun`
-   * is the run the immediately-preceding reconcile covered — a gap event for it
-   * must not be re-enqueued: the reconcile just fetched from its cursor, so a
-   * repeat would loop forever when the replay is genuinely empty (the run's
-   * durable journal ended where the cursor sits).
+   * is the run the immediately-preceding reconcile covered. If the journal
+   * still has not caught up to a queued gap, retain the tail and use bounded
+   * backoff; neither dropping it nor an immediate replay loop is safe.
    */
   private applyOps(lane: SessionLane, justReconciledRun: string | null): void {
     if (lane.ops.length === 0) return;
@@ -503,11 +504,25 @@ export class SyncEngine {
       const verdict = nextEvent(lane.cursor, event.runId, event.idx);
       if (verdict.kind === "dup") continue;
       if (verdict.kind === "gap") {
-        if (event.runId && justReconciledRun !== event.runId) {
-          // Defer the gap event and everything after it until the gap reconcile
-          // fills the hole, then continue applying in order.
-          lane.ops.unshift(...ops.slice(index));
-          this.enqueueReplay(lane, { reason: "gap", runId: event.runId ?? "" });
+        // Preserve the entire suffix, including mutations and terminal events.
+        lane.ops.unshift(...ops.slice(index));
+        if (event.runId) {
+          if (justReconciledRun === event.runId) {
+            lane.retryAttempt += 1;
+            const delay = Math.min(RECONCILE_RETRY_MAX_MS, 500 * 2 ** Math.min(lane.retryAttempt - 1, 6));
+            lane.retryNotBefore = Date.now() + delay;
+            this.deps.onFailure?.({
+              sessionId: lane.sessionId,
+              runId: event.runId,
+              reason: "gap",
+              stage: "replay",
+              attempt: lane.retryAttempt,
+              retryInMs: delay,
+              error: new Error("replay_gap_unresolved"),
+            });
+            this.scheduleRetry(lane);
+          }
+          this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
         }
         break;
       }

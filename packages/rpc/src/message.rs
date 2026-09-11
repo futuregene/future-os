@@ -101,6 +101,9 @@ impl MessageBlock {
             "image_url" => {
                 block.kind = "image".into();
                 block.image_url = value["image_url"]["url"].as_str().map(str::to_owned);
+                if block.image_url.is_none() {
+                    block.data = Some(value.clone());
+                }
             }
             _ => block.data = Some(value.clone()),
         }

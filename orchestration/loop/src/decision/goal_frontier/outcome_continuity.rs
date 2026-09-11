@@ -97,6 +97,7 @@ mod tests {
 
     fn run(turn: u32, at: u64, tools: &[&str], evidence: &str) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn,
             todo_id: format!("T{turn}"),
             run_id: format!("r{turn}"),

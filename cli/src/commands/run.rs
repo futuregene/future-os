@@ -556,8 +556,10 @@ mod tests {
         assert_eq!(parsed.messages, vec!["hi"]);
     }
 
-    #[test]
-    fn parse_trailing_flags_without_values_are_ignored() {
+    #[tokio::test]
+    async fn parse_trailing_flags_without_values_are_ignored() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_AGENT_GRPC_ADDR"]);
         // A flag as the LAST arg has no value → option stays unset (JS: undefined).
         let parsed = parse(&["--model", "m1", "hi", "--fork"]).unwrap();
         assert!(parsed.fork.is_none());

@@ -227,9 +227,19 @@ impl ProbeHost for SystemProbeHost {
     }
 }
 
+#[derive(Debug)]
+struct FailedProbe {
+    probe: LinuxSandboxProbe,
+    expires: SystemTime,
+    path: Option<OsString>,
+    workspace: PathBuf,
+    cwd: PathBuf,
+}
+
 #[derive(Debug, Default)]
 pub struct LinuxProbeCache {
     success: Option<(LinuxSandboxProbe, SystemTime)>,
+    failure: Option<FailedProbe>,
 }
 
 impl LinuxProbeCache {
@@ -240,6 +250,16 @@ impl LinuxProbeCache {
         workspace: &Path,
         cwd: &Path,
     ) -> LinuxSandboxProbe {
+        if let Some(failed) = &self.failure {
+            if host.now() < failed.expires
+                && path == failed.path
+                && workspace == failed.workspace
+                && cwd == failed.cwd
+            {
+                return failed.probe.clone();
+            }
+            self.failure = None;
+        }
         if let Some((cached, expires_at)) = &self.success {
             if host.now() < *expires_at {
                 if let (Some(path), Some(expected)) = (&cached.path, &cached.identity) {
@@ -253,10 +273,21 @@ impl LinuxProbeCache {
             }
         }
 
-        let result = probe_with_host(host, path, workspace, cwd);
+        let result = probe_with_host(host, path.clone(), workspace, cwd);
         if result.available {
             let expires_at = host.now() + CACHE_TTL;
             self.success = Some((result.clone(), expires_at));
+        } else {
+            // Avoid repeatedly blocking request workers on a broken probe, but
+            // retry quickly after transient host changes. PATH/cwd changes bypass
+            // the negative cache immediately; no failure becomes permanent.
+            self.failure = Some(FailedProbe {
+                probe: result.clone(),
+                expires: host.now() + Duration::from_secs(5),
+                path,
+                workspace: workspace.to_path_buf(),
+                cwd: cwd.to_path_buf(),
+            });
         }
         result
     }
@@ -716,6 +747,45 @@ mod tests {
         );
         assert_eq!(probe.code, LinuxSandboxProbeCode::ProbeTimeout);
         assert!(!probe.available);
+        assert!(host.outputs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_probe_is_cached_briefly_then_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let system = root.path().join("system");
+        executable(&system);
+        let path = Some(std::env::join_paths([system]).unwrap());
+        let mut host = FakeHost {
+            now: UNIX_EPOCH,
+            outputs: Mutex::new(VecDeque::from([output(false, "bad-version", "")])),
+            root_owned: true,
+        };
+        let mut cache = LinuxProbeCache::default();
+        assert!(
+            !cache
+                .get_or_probe(&host, path.clone(), &workspace, &workspace)
+                .available
+        );
+        *host.outputs.lock().unwrap() = success_outputs();
+        assert!(
+            !cache
+                .get_or_probe(&host, path.clone(), &workspace, &workspace)
+                .available
+        );
+        assert_eq!(
+            host.outputs.lock().unwrap().len(),
+            3,
+            "negative cache must not run subprocesses"
+        );
+        host.now += Duration::from_secs(6);
+        assert!(
+            cache
+                .get_or_probe(&host, path, &workspace, &workspace)
+                .available
+        );
         assert!(host.outputs.lock().unwrap().is_empty());
     }
 

@@ -64,13 +64,15 @@ fn lane_recommendation_arms() {
     goal.register_agent("w1", vec![]);
     // A run with EMPTY evidence → no recommended action.
     let mut r = run_record("t1", "completed", now_epoch());
+    r.agent_id = Some("w1".into());
     r.evidence = String::new();
     goal.history.push(r);
     let rec = compact_agent_lane_recommendation(&goal, "w1").unwrap();
     assert!(rec.recommended_action.is_none());
     // With evidence → truncated action.
-    goal.history
-        .push(run_record("t1", "completed", now_epoch()));
+    let mut r = run_record("t1", "completed", now_epoch());
+    r.agent_id = Some("w1".into());
+    goal.history.push(r);
     let rec = compact_agent_lane_recommendation(&goal, "w1").unwrap();
     assert!(rec.recommended_action.is_some());
 }

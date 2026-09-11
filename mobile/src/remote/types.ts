@@ -95,8 +95,9 @@ export interface RemoteModel {
 
 /** Stable agent model identifier; model ids are only unique within a provider. */
 export function modelReference(model: Pick<RemoteModel, "id" | "provider">): string {
-  if (!model.provider || model.id.startsWith(`${model.provider}/`)) return model.id;
-  return `${model.provider}/${model.id}`;
+  // Catalogue ids are raw provider-local ids, even when they contain '/' or
+  // already begin with the provider's name (for example openrouter/auto).
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
 export function modelProviderFromReference(modelReference: string): string | undefined {

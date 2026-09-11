@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::runtime::run_history::{row_epoch, RunIndexRow};
+use crate::runtime::run_history::row_epoch;
 
 pub const RUN_ARCHIVE_DIR: &str = "archive";
 
@@ -37,6 +37,7 @@ pub struct CompactionReport {
     pub goal_id: String,
     pub cutoff: u64,
     pub archived: Vec<String>,
+    /// Run records remaining outside archive after this operation.
     pub kept: usize,
     pub archive_dir: String,
     pub recoverable: bool,
@@ -57,14 +58,18 @@ pub fn archive_runs_before(
     let archive_dir = runs.join(RUN_ARCHIVE_DIR);
 
     let mut archived: Vec<String> = vec![];
-    let mut rewritten: Vec<RunIndexRow> = vec![];
+    let mut kept = 0;
+    let archive_prefix = format!("goals/{goal_id}/runs/archive/");
     for row in rows {
+        if row.path.starts_with(&archive_prefix) {
+            continue;
+        }
         let Some(epoch) = row_epoch(&row) else {
-            rewritten.push(row);
+            kept += 1;
             continue;
         };
         if epoch >= cutoff_epoch {
-            rewritten.push(row);
+            kept += 1;
             continue;
         }
         // Move the artifact files (json + md) into archive/, preserving
@@ -82,17 +87,18 @@ pub fn archive_runs_before(
                 let dest = archive_dir.join(format!("{stem}{suffix}"));
                 if !dest.exists() {
                     std::fs::rename(&src, &dest).context("move run file to archive")?;
+                    if suffix == ".json" {
+                        moved = true;
+                    }
                 }
-                moved = true;
             }
         }
         let archived_path = format!("goals/{goal_id}/runs/archive/{stem}.json");
         if moved {
-            archived.push(archived_path.clone());
+            archived.push(archived_path);
+        } else {
+            kept += 1;
         }
-        let mut rewritten_row = row;
-        rewritten_row.path = archived_path;
-        rewritten.push(rewritten_row);
     }
 
     // NOTE: the index is no longer persisted, so there is nothing to re-point
@@ -102,8 +108,8 @@ pub fn archive_runs_before(
     Ok(CompactionReport {
         goal_id: goal_id.to_string(),
         cutoff: cutoff_epoch,
+        kept,
         archived,
-        kept: rewritten.len(),
         archive_dir: archive_dir.to_string_lossy().into_owned(),
         recoverable: true,
     })
@@ -117,6 +123,8 @@ pub fn archive_keeping_latest(
     keep: usize,
 ) -> Result<CompactionReport> {
     let mut rows = crate::runtime::run_index::load_run_index(runtime_root, goal_id)?;
+    let archive_prefix = format!("goals/{goal_id}/runs/archive/");
+    rows.retain(|row| !row.path.starts_with(&archive_prefix));
     if rows.len() <= keep {
         return Ok(CompactionReport {
             goal_id: goal_id.to_string(),
@@ -142,6 +150,7 @@ mod tests {
     #[test]
     fn compact_record_is_a_field_subset() {
         let record = crate::state::RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -193,7 +202,11 @@ mod tests {
         .unwrap();
         let cutoff = crate::scheduler::state::parse_epoch("2026-08-05T00:00:00+00:00").unwrap();
         let report = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
-        assert_eq!(report.archived.len(), 1);
+        assert!(
+            report.archived.is_empty(),
+            "a destination collision is not a successful archive"
+        );
+        assert_eq!(report.kept, 2);
         let rows =
             crate::runtime::run_index::load_run_index(dir.path().to_str().unwrap(), "g1").unwrap();
         assert!(
@@ -227,6 +240,13 @@ mod tests {
         let cutoff = now.saturating_sub(3 * 86400);
         let report = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
         assert_eq!(report.archived.len(), 1);
+        assert_eq!(report.kept, 1);
+        let again = archive_runs_before(dir.path().to_str().unwrap(), "g1", cutoff).unwrap();
+        assert!(again.archived.is_empty());
+        assert_eq!(
+            again.kept, 1,
+            "already archived runs are not active kept runs"
+        );
         assert!(report.archived[0].contains("archive/"));
         assert!(runs.join("archive/2026-07-01T00-00-00-00-00.json").exists());
         // The archived run re-derives under archive/; the fresh run is intact.

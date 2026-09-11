@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../../integrations/agent/agentClient";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import { useEffect, useRef, useState } from "react";
 import i18n from "../../../i18n";
-import { defaultThinkingLevel, modelOption, modelSupportsThinking, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelKey, modelOption, modelSupportsThinking, modelThinkingLevel, normalizeThinkingLevel, readLastUsedThinkingLevel, rememberLastUsedModel, rememberLastUsedThinkingLevel, resolveInitialModelId, resolveInitialThinkingLevel } from "../../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
@@ -74,8 +74,9 @@ export function useModelSelection({
   // switching to an old thread doesn't briefly show the model default.
   const agentState = useCachedAgentState(activeThread?.id);
   const rawThreadModelId = agentState?.model ?? selectedModelId;
-  const activeThreadModelId = modelOption(rawThreadModelId, visibleModelOptions)
-    ? rawThreadModelId
+  const activeThreadModel = modelOption(rawThreadModelId, visibleModelOptions);
+  const activeThreadModelId = activeThreadModel
+    ? modelKey(activeThreadModel)
     : resolveInitialModelId(visibleModelOptions);
   const effectiveDraftThinkingLevel = modelSupportsThinking(selectedModelId, visibleModelOptions) ? selectedThinkingLevel : "off";
   const activeThinkingLevel = !modelSupportsThinking(activeThreadModelId, visibleModelOptions)

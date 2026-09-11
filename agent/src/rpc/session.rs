@@ -116,6 +116,8 @@ pub struct ServerSession {
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Approval gate: holds pending approval requests and their decisions.
     pub approval_gate: ApprovalGate,
+    /// Cancellation generation for direct shell RPCs, including idle sessions.
+    pub shell_cancel_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Permission level for tool execution: "all" | "workspace" | "none"
     pub permission_level: String,
     /// Sandbox + approval policy. `None` = the sandbox stays dormant and the
@@ -131,6 +133,7 @@ pub struct ServerSession {
     /// session. Provider commands replace it atomically after durable writes;
     /// actual LLM requests resolve all provider/model settings from it.
     pub model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+    queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
 }
 
 /// Default workspace directory for new sessions.
@@ -209,11 +212,13 @@ impl ServerSession {
             crate::runtime::DEFAULT_SESSION_QUEUE_BYTES,
             crate::runtime::DEFAULT_REQUEST_BYTES,
             256,
-            queue_budget,
+            queue_budget.clone(),
         ));
         let persistence =
             crate::session::SessionPersistence::new(manager.clone(), session_id.clone());
         Self {
+            queue_budget,
+            shell_cancel_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             session_id: session_id.clone(),
             agent_loop,
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
@@ -379,7 +384,10 @@ impl ServerSession {
     }
 
     pub fn abort_run(&self, expected_run_id: Option<&str>) -> Result<()> {
-        self.runtime.request_abort(expected_run_id)
+        self.runtime.request_abort(expected_run_id)?;
+        self.shell_cancel_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn new_session(&mut self) -> Result<()> {
@@ -811,7 +819,35 @@ impl ServerSession {
         command: &str,
         timeout: std::time::Duration,
     ) -> Result<serde_json::Value> {
-        use std::io::Read;
+        Self::execute_shell_at(
+            &self.cwd,
+            command,
+            timeout,
+            &self.shell_cancel_generation,
+            self.shell_cancel_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
+    pub(crate) fn execute_shell_at(
+        cwd: &str,
+        command: &str,
+        timeout: std::time::Duration,
+        cancellation: &std::sync::atomic::AtomicU64,
+        generation: u64,
+    ) -> Result<serde_json::Value> {
+        fn read_bounded(mut stream: impl std::io::Read) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            while let Ok(n) = stream.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let keep = n.min(500_000usize.saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&chunk[..keep]);
+            }
+            bytes
+        }
 
         // Same platform-shell contract as the shell tool (bash -c on Unix,
         // the PowerShell wrapper on Windows) so exit codes are reliable.
@@ -819,8 +855,8 @@ impl ServerSession {
         let mut process = std::process::Command::new(program);
         process
             .args(&args)
-            .current_dir(&self.cwd)
-            .env("PWD", &self.cwd)
+            .current_dir(cwd)
+            .env("PWD", cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         #[cfg(unix)]
@@ -836,26 +872,19 @@ impl ServerSession {
             job.assign(child.id()).ok()?;
             Some(job)
         });
-        let stdout = child.stdout.take().map(|mut stream| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = stream.read_to_end(&mut bytes);
-                bytes
-            })
-        });
-        let stderr = child.stderr.take().map(|mut stream| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = stream.read_to_end(&mut bytes);
-                bytes
-            })
-        });
+        let stdout = child
+            .stdout
+            .take()
+            .map(|stream| std::thread::spawn(move || read_bounded(stream)));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stream| std::thread::spawn(move || read_bounded(stream)));
         let started = std::time::Instant::now();
+        let mut status = None;
         let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if started.elapsed() >= timeout {
+            let cancelled = cancellation.load(std::sync::atomic::Ordering::SeqCst) != generation;
+            if cancelled || started.elapsed() >= timeout {
                 #[cfg(unix)]
                 // SAFETY: the child was created as leader of this process group.
                 unsafe {
@@ -867,12 +896,24 @@ impl ServerSession {
                 }
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stdout.map(std::thread::JoinHandle::join);
-                let _ = stderr.map(std::thread::JoinHandle::join);
+                // Never wait for EOF from a descendant that escaped the process group.
+                if cancelled {
+                    anyhow::bail!("shell command cancelled");
+                }
                 anyhow::bail!(
                     "shell command timed out after {} seconds",
                     timeout.as_secs_f64()
                 );
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if stdout.as_ref().is_none_or(|r| r.is_finished())
+                && stderr.as_ref().is_none_or(|r| r.is_finished())
+            {
+                if let Some(status) = status {
+                    break status;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         };
@@ -899,9 +940,14 @@ impl ServerSession {
     }
 
     pub fn get_session_stats(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering;
         let msgs = self.messages.read();
+        let input = self.tokens_in.load(Ordering::Relaxed);
+        let output = self.tokens_out.load(Ordering::Relaxed);
+        let cache_read = self.tokens_cache_r.load(Ordering::Relaxed);
+        let cache_write = self.tokens_cache_w.load(Ordering::Relaxed);
         serde_json::json!({
-            "sessionFile": "",
+            "sessionFile": self.session_manager.database_path(),
             "sessionId": self.session_id(),
             "userMessages": msgs.iter().filter(|m| m.role == "user").count(),
             "assistantMessages": msgs.iter().filter(|m| m.role == "assistant").count(),
@@ -909,12 +955,13 @@ impl ServerSession {
             "toolResults": msgs.iter().filter(|m| m.role == "tool").count(),
             "totalMessages": msgs.len(),
             "tokens": {
-                "input": 0,
-                "output": 0,
-                "cacheRead": 0,
-                "total": 0,
+                "input": input,
+                "output": output,
+                "cacheRead": cache_read,
+                "cacheWrite": cache_write,
+                "total": input.saturating_add(output),
             },
-            "cost": 0,
+            "cost": *self.cumulative_cost.lock(),
         })
     }
 
@@ -1066,9 +1113,14 @@ impl ServerSession {
             *self.messages.write() = msgs;
             self.history_loaded = load_history;
             self.session_id = id.to_string();
-            self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::new(
+            self.scheduler = Arc::new(crate::runtime::InMemoryRunQueue::with_limits_and_global(
                 id,
                 crate::session::next_run_sequence(&session.entries),
+                crate::runtime::DEFAULT_SESSION_QUEUE_CAPACITY,
+                crate::runtime::DEFAULT_SESSION_QUEUE_BYTES,
+                crate::runtime::DEFAULT_REQUEST_BYTES,
+                256,
+                self.queue_budget.clone(),
             ));
         }
         Ok(())
@@ -1464,6 +1516,20 @@ mod tests {
     #[test]
     fn session_stats_empty() {
         let session = make_test_session("s1");
+        session
+            .tokens_in
+            .store(123, std::sync::atomic::Ordering::Relaxed);
+        session
+            .tokens_out
+            .store(45, std::sync::atomic::Ordering::Relaxed);
+        *session.cumulative_cost.lock() = 0.75;
+        let measured = session.get_session_stats();
+        assert_eq!(measured["tokens"]["total"], 168);
+        assert_eq!(measured["cost"], 0.75);
+        assert_eq!(
+            measured["sessionFile"],
+            serde_json::json!(session.session_manager.database_path())
+        );
         let stats = session.get_session_stats();
         assert_eq!(stats["sessionId"], "s1");
         assert_eq!(stats["userMessages"], 0);
@@ -1700,6 +1766,40 @@ mod tests {
     }
 
     // ─── execute_shell ──────────────────────────────────────────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_shell_bounds_inherited_pipe_lifetime() {
+        let session = make_test_session("shell-lifetime");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let started = std::time::Instant::now();
+        let error = session
+            .execute_shell("sleep 10 &", std::time::Duration::from_millis(100))
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn execute_shell_snapshot_can_be_cancelled_without_session_lock() {
+        let session = make_test_session("shell-cancellation");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let cancellation = session.shell_cancel_generation.clone();
+        let cwd = session.cwd.clone();
+        let worker = std::thread::spawn(move || {
+            ServerSession::execute_shell_at(
+                &cwd,
+                "sleep 10",
+                std::time::Duration::from_secs(20),
+                &cancellation,
+                0,
+            )
+        });
+        session.abort();
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+    }
 
     #[test]
     fn execute_shell_echo() {
@@ -2635,6 +2735,58 @@ mod tests {
     }
 
     // ── coverage batch: hydrate/switch/scheduler-worker arms ───────────────
+
+    #[test]
+    fn hydrated_scheduler_keeps_injected_global_budget() {
+        let original = make_test_session("hydrate-budget-source");
+        let manager = original.session_manager.clone();
+        manager
+            .save(&crate::session::Session::snapshot(
+                "hydrate-budget".into(),
+                original.cwd.clone(),
+                "mock".into(),
+                "budget".into(),
+                String::new(),
+                vec![crate::session::SessionEntry::new_user(
+                    "user",
+                    serde_json::json!("saved"),
+                )],
+            ))
+            .unwrap();
+        let mut session = ServerSession::new_with_queue_budget(
+            "hydrate-budget".into(),
+            original.agent_loop.clone(),
+            manager,
+            &original.cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            original.model_registry.clone(),
+            Arc::new(crate::runtime::GlobalQueueBudget::new(1, 100_000)),
+        );
+        session.switch_session_metadata("hydrate-budget").unwrap();
+        session
+            .scheduler
+            .accept(
+                "first",
+                Some("first"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
+            .unwrap();
+        let error = session
+            .scheduler
+            .accept(
+                "second",
+                Some("second"),
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({}),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::runtime::RunQueueError::GlobalQueueFull { limit: 1 }
+        ));
+    }
 
     #[test]
     fn construction_with_locked_loop_uses_fresh_counters() {

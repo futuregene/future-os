@@ -106,16 +106,14 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(512 * 1024 * 1024);
     reader.limits(limits);
+    let format = reader.format()?;
     let img = reader.decode().ok()?;
     let (width, height) = (img.width(), img.height());
 
     // Small enough already: send the original bytes, keeping the source format
     // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
     if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
-        let mime = detect_image_mime_type(Path::new(path))
-            .or_else(|| detect_image_mime_type_from_extension(Path::new(path)))
-            .unwrap_or_else(|| "image/png".to_string());
-        return Some(data_url(&mime, &bytes));
+        return Some(data_url(format.to_mime_type(), &bytes));
     }
 
     // Downscale to fit MAX_DIM (aspect-preserving), then JPEG-compress at
@@ -319,6 +317,17 @@ mod image_prep_tests {
         ));
         img.save(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn bmp_with_nonstandard_extension_keeps_true_mime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attachment.bin");
+        image::RgbImage::new(2, 2)
+            .save_with_format(&path, image::ImageFormat::Bmp)
+            .unwrap();
+        let url = image_data_url_for_model(path.to_str().unwrap()).unwrap();
+        assert!(url.starts_with("data:image/bmp;base64,"));
     }
 
     #[test]

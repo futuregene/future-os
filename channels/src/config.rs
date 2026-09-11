@@ -64,6 +64,10 @@ pub struct FeishuChannelConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DingtalkChannelConfig {
+    /// Sender IDs permitted to use the agent in DMs or groups. Empty denies all.
+    /// Use ["*"] only when every sender with access to the bot is trusted.
+    #[serde(default)]
+    pub sender_allowlist: Vec<String>,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -81,6 +85,7 @@ fn default_dingtalk_domain() -> String {
 impl Default for DingtalkChannelConfig {
     fn default() -> Self {
         Self {
+            sender_allowlist: Vec::new(),
             enabled: false,
             client_id: String::new(),
             client_secret: String::new(),

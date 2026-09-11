@@ -123,7 +123,8 @@ impl ScopedModelsSelector {
             return true;
         }
         if key == "enter" {
-            let enabled: Vec<String> = self.enabled_set.iter().cloned().collect();
+            let mut enabled: Vec<String> = self.enabled_set.iter().cloned().collect();
+            enabled.sort();
             (self.on_save)(&enabled);
             return true;
         }
@@ -401,6 +402,22 @@ mod tests {
             .borrow()
             .contains(&"anthropic/claude-sonnet-4".to_string()));
         assert!(saved.borrow().contains(&"openai/gpt-4o".to_string()));
+    }
+
+    #[test]
+    fn save_order_is_stable_across_hashset_instances() {
+        for _ in 0..16 {
+            let (saved, on_save) = saved_sink();
+            let mut sel = make_selector(on_save, noop_cancel());
+            sel.handle_key("enter");
+            assert_eq!(
+                *saved.borrow(),
+                vec![
+                    "anthropic/claude-sonnet-4".to_string(),
+                    "openai/gpt-4o".to_string()
+                ]
+            );
+        }
     }
 
     #[test]

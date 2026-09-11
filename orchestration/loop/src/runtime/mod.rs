@@ -21,7 +21,7 @@ use std::path::PathBuf;
 pub fn runs_dir(runtime_root: &str, goal_id: &str) -> PathBuf {
     PathBuf::from(runtime_root)
         .join("goals")
-        .join(goal_id)
+        .join(crate::store::goal_path_segment(goal_id))
         .join("runs")
 }
 

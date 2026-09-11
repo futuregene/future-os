@@ -26,8 +26,8 @@ impl AuthStore {
     pub fn load() -> Self {
         let home = crate::utils::home_dir();
         let paths = vec![
-            home.join(".future/agent-app/auth.json"),
             home.join(".future/agent/auth.json"),
+            home.join(".future/agent-app/auth.json"),
         ];
 
         for path in paths {
@@ -52,8 +52,13 @@ impl AuthStore {
 
         let mut entries = HashMap::new();
         for (name, value) in raw {
-            if let Ok(entry) = serde_json::from_value::<AuthEntry>(value.clone()) {
-                entries.insert(name, entry);
+            match serde_json::from_value::<AuthEntry>(value) {
+                Ok(entry) => {
+                    entries.insert(name, entry);
+                }
+                Err(_) => {
+                    tracing::warn!(provider = %name, "ignoring malformed auth entry (expected type, string key and optional base_url)")
+                }
             }
         }
 
@@ -109,6 +114,38 @@ mod tests {
 
     fn make_store(json: &str) -> AuthStore {
         AuthStore::from_json(json).unwrap()
+    }
+
+    #[test]
+    fn malformed_auth_entries_warn_without_logging_credential_values() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let store = AuthStore::from_json(r#"{"bad":{"type":"api_key","key":{"secret":"DO_NOT_LOG_THIS"}},"good":{"type":"api_key","key":"valid"}}"#).unwrap();
+            assert!(store.get("bad").is_none());
+            assert_eq!(store.get("good").as_deref(), Some("valid"));
+        });
+        let bytes = capture.0.lock().unwrap();
+        let log = String::from_utf8_lossy(&bytes);
+        assert!(log.contains("ignoring malformed auth entry"));
+        assert!(log.contains("bad"));
+        assert!(!log.contains("DO_NOT_LOG_THIS"));
     }
 
     #[test]
@@ -248,6 +285,25 @@ mod tests {
             }"#,
         );
         assert_eq!(store.base_url("openai"), None);
+    }
+
+    #[test]
+    fn canonical_auth_overrides_legacy_even_when_empty() {
+        let home = crate::test_support::TestHome::new();
+        let current = home.auth_path();
+        let legacy = current
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("agent-app/auth.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, r#"{"future":{"type":"api_key","key":"old"}}"#).unwrap();
+        std::fs::write(&current, r#"{"future":{"type":"api_key","key":"new"}}"#).unwrap();
+        assert_eq!(AuthStore::load().get("future").as_deref(), Some("new"));
+        std::fs::write(&current, "{}").unwrap();
+        assert_eq!(AuthStore::load().get("future"), None);
     }
 
     #[test]

@@ -148,6 +148,214 @@ fn worker_bridge_enforces_acceptance_and_machine_validation() {
 }
 
 #[test]
+fn owner_diagnostics_frontier_and_completion_lease_views_agree() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let gid = init_goal(root, "owner and lease projections");
+    assert_eq!(
+        run(
+            root,
+            &["agent", "register", "--goal", &gid, "--agent-id", "OwnerA"]
+        )
+        .2,
+        0
+    );
+    let (_, err, code) = run(
+        root,
+        &[
+            "todo",
+            "add",
+            "--goal",
+            &gid,
+            "--text",
+            "assigned work",
+            "--owner",
+            "ownera",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        err.contains("case-sensitive") && err.contains("Did you mean `OwnerA`"),
+        "{err}"
+    );
+    let store = future_loop::store::Store::open(root).unwrap();
+    let tid = store
+        .replay(&gid)
+        .unwrap()
+        .unwrap()
+        .todos
+        .iter()
+        .find(|t| t.text == "assigned work")
+        .unwrap()
+        .id
+        .clone();
+    let (out, err, code) = run(
+        root,
+        &["frontier", "show", "--goal", &gid, "--format", "json"],
+    );
+    assert_eq!(code, 0, "{err}");
+    let frontier: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let assignment = frontier["todo_assignments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["todo_id"] == tid)
+        .unwrap();
+    assert_eq!(assignment["owner"], "ownera");
+    assert_eq!(assignment["owner_registered"], false);
+    let (_, err, code) = run(
+        root,
+        &[
+            "todo",
+            "update",
+            "--goal",
+            &gid,
+            "--todo-id",
+            &tid,
+            "--owner",
+            "OWNERA",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("Did you mean `OwnerA`"));
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "update",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &tid,
+                "--owner",
+                "OwnerA"
+            ]
+        )
+        .2,
+        0
+    );
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "claim",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &tid,
+                "--agent-id",
+                "OwnerA"
+            ]
+        )
+        .2,
+        0
+    );
+    let (out, err, code) = run(root, &["status", "--goal", &gid, "--format", "json"]);
+    assert_eq!(code, 0, "{err}");
+    let status: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let todo = status[0]["todos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == tid)
+        .unwrap();
+    assert_eq!(todo["owner"], "OwnerA");
+    assert_eq!(todo["claimed_by"], "OwnerA");
+    assert!(todo["lease_expires_at"].as_u64().is_some());
+    assert!(todo["holder_pid"].is_null());
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "complete",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &tid,
+                "--no-follow-up",
+                "--evidence",
+                "done"
+            ]
+        )
+        .2,
+        0
+    );
+    let (out, err, code) = run(root, &["agent", "list", "--goal", &gid, "--format", "json"]);
+    assert_eq!(code, 0, "{err}");
+    let agents: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(agents[0]["status"], "idle");
+    let goal = store.replay(&gid).unwrap().unwrap();
+    assert!(goal.todo(&tid).unwrap().claimed_by.is_none());
+}
+
+#[test]
+fn separate_bridge_runs_persist_identity_and_distinct_global_turns() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let gid = init_goal(root, "bridge attribution and receipt identity");
+    assert_eq!(
+        run(
+            root,
+            &["agent", "register", "--goal", &gid, "--agent-id", "a1"]
+        )
+        .2,
+        0
+    );
+    let store = future_loop::store::Store::open(root).unwrap();
+    let todo_id = store.replay(&gid).unwrap().unwrap().todos[0].id.clone();
+    let input = format!(
+        "{}\n",
+        serde_json::json!({"todo_id":todo_id,"terminal_state":"error","error":"fixture failure","evidence":"attempted"})
+    );
+    for _ in 0..2 {
+        let (_, err, code) = run_stdin(
+            root,
+            &[
+                "worker-bridge",
+                "--goal",
+                &gid,
+                "--agent-id",
+                "a1",
+                "--max-turns",
+                "1",
+            ],
+            &input,
+        );
+        assert_eq!(
+            code, 1,
+            "one unsuccessful turn exhausts the requested budget: {err}"
+        );
+        assert!(err.contains("max-turns reached"));
+    }
+    let goal = store.replay(&gid).unwrap().unwrap();
+    assert_eq!(goal.history.len(), 2);
+    assert!(goal
+        .history
+        .iter()
+        .all(|r| r.agent_id.as_deref() == Some("a1")));
+    assert_eq!(
+        goal.history.iter().map(|r| r.turn).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_ne!(goal.history[0].run_id, goal.history[1].run_id);
+    let receipt_ids: Vec<String> = store
+        .events(&gid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.event {
+            future_loop::store::Event::HeartbeatReceiptRecorded {
+                turn_instance_id, ..
+            } => Some(turn_instance_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(receipt_ids, ["turn-1", "turn-2"]);
+}
+
+#[test]
 fn worker_bridge_worker_finishes_on_eof_and_done() {
     let root = tmp_root("bridge-eof");
     let gid = init_goal(&root, "bridge eof");

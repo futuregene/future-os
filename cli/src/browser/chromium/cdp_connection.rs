@@ -199,13 +199,21 @@ impl CdpConnection {
         }
 
         let (tx, rx) = oneshot::channel::<Result<Value, CdpSendError>>();
-        self.pending.lock().unwrap().insert(
-            id,
-            PendingRequest {
-                session_id: session_id.map(str::to_string),
-                tx,
-            },
-        );
+        {
+            let mut pending = self.pending.lock().unwrap();
+            // disconnect marks closed before draining this same mutex. A send
+            // either joins that drain or observes closed; no late orphan entry.
+            if !self.is_connected() {
+                return Err(CdpSendError::Closed);
+            }
+            pending.insert(
+                id,
+                PendingRequest {
+                    session_id: session_id.map(str::to_string),
+                    tx,
+                },
+            );
+        }
         self.transport
             .send(&serde_json::to_string(&message).unwrap_or_default());
 
@@ -868,6 +876,35 @@ mod tests {
         assert_eq!(e.code, -1);
         assert_eq!(e.message, "Unknown CDP error");
         conn.disconnect().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_send_and_disconnect_never_orphans_requests() {
+        let mock = MockCdp::start().await;
+        mock.state
+            .lock()
+            .unwrap()
+            .no_reply_methods
+            .insert("Never.answered".into());
+        let conn = CdpConnection::connect(&mock.ws_url, 5_000).await.unwrap();
+        let start = Arc::new(tokio::sync::Barrier::new(65));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..64 {
+            let conn = conn.clone();
+            let start = start.clone();
+            tasks.spawn(async move {
+                start.wait().await;
+                conn.send_with_timeout("Never.answered", None, None, 1_000)
+                    .await
+            });
+        }
+        start.wait().await;
+        conn.disconnect().await;
+        while let Some(result) = tasks.join_next().await {
+            let error = result.unwrap().unwrap_err();
+            assert!(!matches!(error, CdpSendError::Timeout(_)), "{error}");
+        }
+        assert!(conn.pending.lock().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -977,34 +977,60 @@ fn openai_reasoning_metadata(
 }
 
 fn responses_usage(value: &Value) -> Usage {
+    let prompt_tokens = value
+        .get("input_tokens")
+        .and_then(super::token_count)
+        .unwrap_or(0);
+    let completion_tokens = value
+        .get("output_tokens")
+        .and_then(super::token_count)
+        .unwrap_or(0);
     Usage {
-        prompt_tokens: value
-            .get("input_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        completion_tokens: value
-            .get("output_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
+        prompt_tokens,
+        completion_tokens,
         total_tokens: value
             .get("total_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
+            .and_then(super::token_count)
+            .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens)),
         cache_read_tokens: value
             .get("input_tokens_details")
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_i64),
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(super::token_count),
         cache_write_tokens: value
             .get("input_tokens_details")
-            .and_then(|details| details.get("cache_write_tokens"))
-            .and_then(Value::as_i64),
+            .and_then(|d| d.get("cache_write_tokens"))
+            .and_then(super::token_count),
         reasoning_tokens: value
             .get("output_tokens_details")
-            .and_then(|details| details.get("reasoning_tokens"))
-            .and_then(Value::as_i64),
-        credit_cost: None,
+            .and_then(|d| d.get("reasoning_tokens"))
+            .and_then(super::token_count),
+        // Only platform credits have this unit; USD cost/estimated_cost are NOT aliases.
+        credit_cost: value
+            .get("credit_cost")
+            .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse().ok())),
         provider_metadata: None,
     }
+}
+
+#[cfg(test)]
+#[test]
+fn responses_usage_preserves_numeric_encodings_and_platform_credits() {
+    let usage = responses_usage(&json!({"input_tokens":"120", "output_tokens":30.0,
+        "input_tokens_details":{"cached_tokens":"50", "cache_write_tokens":2.0},
+        "output_tokens_details":{"reasoning_tokens":"10"}, "credit_cost":"1.25", "cost":99}));
+    assert_eq!(
+        (
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens
+        ),
+        (120, 30, 150)
+    );
+    assert_eq!(usage.cache_read_tokens, Some(50));
+    assert_eq!(usage.cache_write_tokens, Some(2));
+    assert_eq!(usage.reasoning_tokens, Some(10));
+    assert_eq!(usage.credit_cost, Some(1.25));
+    assert_eq!(responses_usage(&json!({"cost":99})).credit_cost, None);
 }
 
 fn completed_output_reason(response: &Value) -> FinishReason {

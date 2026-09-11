@@ -79,10 +79,7 @@ fn run_history_buckets_by_class() {
         projection.totals.by_class_7d.get("run_recorded"),
         Some(&2u64)
     );
-    assert_eq!(
-        projection.latest.unwrap().classification,
-        "quota_monitor_poll"
-    );
+    assert_eq!(projection.latest.unwrap().classification, "run_recorded");
 }
 
 /// ── Compaction archives (never deletes) and re-points the index ───────────
@@ -254,6 +251,7 @@ fn stale_latest_run_warns_and_clears() {
         })
         .unwrap();
     let mut record = future_loop::state::RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "t1".to_string(),
         run_id: "r1".to_string(),

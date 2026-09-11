@@ -91,9 +91,10 @@ The reset refuses cleanup while sandbox permissions are in use.
 
 ## `~/.future/agent-app/` — legacy credential directory
 
-The agent resolves `auth.json` from `~/.future/agent-app/auth.json` before
-`~/.future/agent/auth.json` (back-compat with credentials written by older
-GUI builds); both `agent/` and `agent-app/` are treated as credential
+The agent resolves `auth.json` from `~/.future/agent/auth.json` first, falling
+back to `~/.future/agent-app/auth.json` only when the canonical file cannot be
+loaded (back-compat with credentials written by older GUI builds). An empty
+canonical object remains authoritative and does not resurrect legacy keys; both `agent/` and `agent-app/` are treated as credential
 locations by the GUI's file-access guard. New writes go to `~/.future/agent/`.
 This classification does not imply sandbox isolation: `auth.json` currently has
 an explicit hard-deny exception for CLI-based skills; see [SECURITY](../SECURITY.md).

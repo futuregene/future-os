@@ -43,6 +43,7 @@ fn turn_envelope_includes_prior_evidence_and_gate_decisions() {
     goal.todo_mut("G1").unwrap().status = future_loop::state::TodoStatus::Done;
     goal.add(Todo::advancement("T2", "Blocked work").blocking(&["G1"]));
     let prev = future_loop::state::RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "T0".into(),
         run_id: "run-1".into(),

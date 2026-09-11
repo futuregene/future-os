@@ -108,14 +108,14 @@ pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
     profile
 }
 
-/// `sandbox-exec -p <profile> bash -c <cmd>` as a structured invocation.
+/// Run the same selected shell as the unwrapped tool, inside Seatbelt.
 pub fn prepare(sandbox: &ResolvedSandbox, command: &str) -> super::backend::PreparedShell {
     super::backend::PreparedShell {
         program: "/usr/bin/sandbox-exec".into(),
         args: vec![
             "-p".into(),
             build_profile(sandbox),
-            "bash".into(),
+            super::unix_shell().into(),
             "-c".into(),
             command.into(),
         ],
@@ -146,6 +146,15 @@ mod tests {
             },
             ws.to_string_lossy().as_ref(),
         )
+    }
+
+    #[test]
+    fn seatbelt_uses_the_same_interpreter_as_plain_shell() {
+        let sandbox = ResolvedSandbox::default();
+        let prepared = prepare(&sandbox, "printf ok");
+        assert_eq!(prepared.args[2], super::super::unix_shell());
+        assert_eq!(prepared.args[3], "-c");
+        assert_eq!(prepared.args[4], "printf ok");
     }
 
     #[test]

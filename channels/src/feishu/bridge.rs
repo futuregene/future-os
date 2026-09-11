@@ -17,13 +17,14 @@ use super::session_store::SessionStore;
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, ImageData, ImageInput};
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 pub struct Bridge {
+    event_queues: std::sync::Mutex<HashMap<String, tokio::sync::mpsc::Sender<FeishuEvent>>>,
     feishu: FeishuRestClient,
     agent: Arc<RwLock<AgentClient>>,
     feishu_cfg: FeishuConfig,
@@ -40,8 +41,10 @@ pub struct Bridge {
     /// Per-chat generation counter: incremented on each new prompt.
     /// Streams check this to detect they've been superseded and stop early.
     gen_counters: RwLock<HashMap<String, Arc<AtomicU64>>>,
+    approval_routes: prompt_loop::ApprovalRoutes,
+    chat_types: RwLock<HashMap<String, String>>,
     /// Dedup: track recently processed message IDs to prevent Feishu redelivery duplicates.
-    processed: RwLock<HashSet<String>>,
+    processed: RwLock<VecDeque<String>>,
     /// Whether the current model supports image input.
     image_support: RwLock<bool>,
 }
@@ -97,6 +100,7 @@ impl Bridge {
         };
 
         Ok(Self {
+            event_queues: std::sync::Mutex::new(HashMap::new()),
             feishu,
             agent: Arc::new(RwLock::new(agent)),
             feishu_cfg,
@@ -107,7 +111,9 @@ impl Bridge {
             data_dir,
             prompt_locks: RwLock::new(HashMap::new()),
             gen_counters: RwLock::new(HashMap::new()),
-            processed: RwLock::new(HashSet::new()),
+            approval_routes: Arc::new(RwLock::new(HashMap::new())),
+            chat_types: RwLock::new(HashMap::new()),
+            processed: RwLock::new(VecDeque::new()),
             image_support: RwLock::new(false),
         })
     }
@@ -117,6 +123,37 @@ impl Bridge {
     pub async fn wait_for_agent_disconnect(&self) -> Result<()> {
         let mut agent = self.agent.read().await.clone();
         agent.wait_for_disconnect().await
+    }
+
+    /// Reserve arrival order synchronously in the WS callback. Each chat's
+    /// setup is serialized, but its response streams run independently.
+    pub fn enqueue_event(self: &Arc<Self>, event: FeishuEvent) -> bool {
+        let key = event.chat_id.clone().unwrap_or_default();
+        let mut queues = self.event_queues.lock().unwrap();
+        let sender = queues.entry(key).or_insert_with(|| {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+            let bridge = Arc::downgrade(self);
+            tokio::spawn(async move {
+                while let Some(event) = receiver.recv().await {
+                    let Some(bridge) = bridge.upgrade() else {
+                        break;
+                    };
+                    if let Err(error) = bridge.handle_event(event).await {
+                        error!("Error handling event: {}", error);
+                    }
+                }
+            });
+            sender
+        });
+        if let Err(error) = sender.try_send(event) {
+            warn!(
+                "Feishu event not accepted (conversation queue full or closed): {}",
+                error
+            );
+            false
+        } else {
+            true
+        }
     }
 
     /// Process an incoming Feishu event.
@@ -140,20 +177,33 @@ impl Bridge {
             None => return Ok(()),
         };
 
+        let is_card_action = event.event_type == "card.action.trigger";
+        let dedup_key = if is_card_action {
+            event
+                .raw
+                .pointer("/header/event_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|id| format!("card:{id}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "card:{message_id}:{sender_id}:{}",
+                        event.content.as_deref().unwrap_or("")
+                    )
+                })
+        } else {
+            message_id.clone()
+        };
         // Dedup: skip if already processed (Feishu redelivers after 3s without ACK)
         {
             let mut processed = self.processed.write().await;
-            if processed.contains(&message_id) {
+            if processed.contains(&dedup_key) {
                 info!("[DEDUP] skipping duplicate message_id={}", message_id);
                 return Ok(());
             }
-            processed.insert(message_id.clone());
-            // Keep set bounded: remove oldest if too large
+            processed.push_back(dedup_key);
+            // FIFO eviction retains the newest redelivery IDs deterministically.
             if processed.len() > 1000 {
-                let old: Vec<String> = processed.iter().take(500).cloned().collect();
-                for id in old {
-                    processed.remove(&id);
-                }
+                processed.drain(..500);
             }
         }
 
@@ -176,7 +226,26 @@ impl Bridge {
             }
         }
 
-        let chat_type = event.chat_type.as_deref().unwrap_or("p2p");
+        let card_route = if is_card_action {
+            let content: serde_json::Value =
+                serde_json::from_str(event.content.as_deref().unwrap_or("")).unwrap_or_default();
+            let routes = self.approval_routes.read().await;
+            routes
+                .get(content["approval_request_id"].as_str().unwrap_or(""))
+                .filter(|route| route.chat_id == chat_id)
+                .cloned()
+        } else {
+            None
+        };
+        if is_card_action && card_route.is_none() {
+            self.feishu.reply_message(&message_id, "text", &serde_json::json!({"text":"⚠️ Approval was not delivered. No matching approval in this chat."}).to_string()).await?;
+            return Ok(());
+        }
+        let chat_type = card_route
+            .as_ref()
+            .map(|route| route.chat_type.as_str())
+            .or(event.chat_type.as_deref())
+            .unwrap_or("p2p");
 
         // Log incoming message
         let msg_type = event.msg_type.as_deref().unwrap_or("text");
@@ -236,19 +305,18 @@ impl Bridge {
                     .as_ref()
                     .map(|m| is_bot_mentioned_in_mentions(m, &bot_id))
                     .unwrap_or(false);
-                let mentioned = content_mentioned || event_mentioned;
+                let mentioned = is_card_action || content_mentioned || event_mentioned;
                 debug!(
                     "[POLICY] group chat={} mentioned={} (content={} event={}) bot_id={}",
                     chat_id, mentioned, content_mentioned, event_mentioned, bot_id
                 );
-                // Silently skip non-mentioned messages — no ACK, no reaction
-                if !mentioned {
-                    return Ok(());
-                }
                 let policy = self.policy.read().await;
-                match policy.check_group(&chat_id, true) {
+                match policy.check_group(&chat_id, mentioned) {
                     Access::Denied(reason) => {
                         debug!("[POLICY] group denied: {}", reason);
+                        if !mentioned {
+                            return Ok(());
+                        }
                         self.feishu
                             .reply_message(
                                 &message_id,
@@ -266,31 +334,40 @@ impl Bridge {
             _ => {}
         }
 
-        // ─── ACK: react to indicate processing (must complete within 3s) ────
-        let ack_reaction_id = match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.feishu.react_to_message(&message_id, "Typing"),
-        )
-        .await
-        {
-            Ok(Ok(id)) => {
-                debug!("[ACK] reaction succeeded: {}", id);
-                Some(id)
-            }
-            Ok(Err(e)) => {
-                warn!("[ACK] reaction failed: {}", e);
-                None
-            }
-            Err(_) => {
-                warn!("[ACK] reaction timed out after 5s");
-                None
-            }
-        };
-
-        // ─── Handle card action events (approval button clicks) ────────────
-        if event.event_type == "card.action.trigger" {
+        if is_card_action {
             return self.handle_card_action(&event).await;
         }
+        self.chat_types
+            .write()
+            .await
+            .insert(chat_id.clone(), chat_type.to_string());
+        let sender_name = self.resolve_sender_name(&sender_id).await;
+        debug!("[RECV] sender_name={:?}", sender_name);
+
+        // ─── ACK: react to indicate processing (must complete within 3s) ────
+        let ack_reaction_id = if !self.feishu_cfg.behavior.typing_indicator {
+            None
+        } else {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.feishu.react_to_message(&message_id, "Typing"),
+            )
+            .await
+            {
+                Ok(Ok(id)) => {
+                    debug!("[ACK] reaction succeeded: {}", id);
+                    Some(id)
+                }
+                Ok(Err(e)) => {
+                    warn!("[ACK] reaction failed: {}", e);
+                    None
+                }
+                Err(_) => {
+                    warn!("[ACK] reaction timed out after 5s");
+                    None
+                }
+            }
+        };
 
         // ─── Extract message content ───────────────────────────────────────
         let msg_type = event.msg_type.as_deref().unwrap_or("text");
@@ -380,6 +457,10 @@ impl Bridge {
     /// Ensure a session exists for this chat/thread, creating one if needed.
     /// Returns the session_id.
     async fn ensure_session(&self, chat_id: &str, thread_id: Option<&str>) -> Result<String> {
+        let is_new = self
+            .sessions
+            .get(chat_id, thread_id)
+            .is_none_or(|sid| sid.is_empty());
         let sid = if let Some(sid) = self.sessions.get(chat_id, thread_id) {
             if !sid.is_empty() {
                 // Re-activate session on the agent side (agent may have restarted)
@@ -401,21 +482,20 @@ impl Bridge {
             drop(agent);
             sid
         };
-        // Always re-apply channel defaults so config changes take effect,
-        // including after channel restart when sessions are recreated.
+        // Defaults initialize new sessions; do not undo explicit /model or /effort.
         let mut agent = self.agent.write().await;
-        if !self.agent_cfg.model.is_empty() {
+        if is_new && !self.agent_cfg.model.is_empty() {
             match agent.set_model(&sid, &self.agent_cfg.model).await {
                 Ok(()) => tracing::info!("[feishu] set model={}", self.agent_cfg.model),
                 Err(e) => tracing::warn!("[feishu] set model failed: {}", e),
             }
         }
-        if !self.agent_cfg.thinking_level.is_empty() {
+        if is_new && !self.agent_cfg.thinking_level.is_empty() {
             let _ = agent
                 .set_thinking_level(&sid, &self.agent_cfg.thinking_level)
                 .await;
         }
-        if !self.agent_cfg.permission_level.is_empty() {
+        if is_new && !self.agent_cfg.permission_level.is_empty() {
             let _ = agent
                 .set_permission_level(&sid, &self.agent_cfg.permission_level)
                 .await;
@@ -781,12 +861,23 @@ impl Bridge {
         // Download image, save to disk, and convert to base64
         match self
             .feishu
-            .download_resource(message_id, image_key, "image")
+            .download_resource(
+                message_id,
+                image_key,
+                "image",
+                self.feishu_cfg
+                    .behavior
+                    .max_image_mb
+                    .saturating_mul(1024 * 1024),
+            )
             .await
         {
             Ok(data) => {
-                let file_path =
-                    save_received_file(&self.data_dir, &data, &format!("image_{}.png", message_id));
+                let file_path = save_received_file(
+                    &self.data_dir,
+                    &data,
+                    &format!("image_{}.png", message_id),
+                )?;
                 let prompt = format!("[User sent an image: {}]", file_path.display());
                 let image_support = *self.image_support.read().await;
                 let images = if image_support {
@@ -834,16 +925,35 @@ impl Bridge {
         ack_reaction_id: Option<String>,
     ) -> Result<()> {
         let content = event.content.as_deref().unwrap_or("");
+        if event.msg_type.as_deref() == Some("post") {
+            if let Some(key) = extract_image_key(content) {
+                return self
+                    .handle_image_message(chat_id, thread_id, message_id, &key, ack_reaction_id)
+                    .await;
+            }
+        }
         let (file_key, file_name) = extract_file_key(content);
 
         if let Some(key) = file_key {
             // handle_media_message is only reached for file-like message
             // types; images go through handle_image_message.
             let rtype = "file";
-            match self.feishu.download_resource(message_id, &key, rtype).await {
+            match self
+                .feishu
+                .download_resource(
+                    message_id,
+                    &key,
+                    rtype,
+                    self.feishu_cfg
+                        .behavior
+                        .max_image_mb
+                        .saturating_mul(1024 * 1024),
+                )
+                .await
+            {
                 Ok(data) => {
                     let name = file_name.unwrap_or("file".to_string());
-                    let file_path = save_received_file(&self.data_dir, &data, &name);
+                    let file_path = save_received_file(&self.data_dir, &data, &name)?;
                     let text = format!(
                         "[User sent a file: {} ({} bytes)]\nFile path: {}",
                         name,
@@ -925,7 +1035,7 @@ impl Bridge {
         let prompt_lock = {
             let mut locks = self.prompt_locks.write().await;
             locks
-                .entry(chat_id.to_string())
+                .entry(session_id.clone())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
         };
@@ -934,11 +1044,14 @@ impl Bridge {
         let gen_counter = {
             let mut counters = self.gen_counters.write().await;
             counters
-                .entry(chat_id.to_string())
+                .entry(session_id.clone())
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
                 .clone()
         };
 
+        // Assign before spawning: a delayed old task must never supersede a
+        // newer arrival merely because the executor polls it later.
+        let generation = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let streaming = self.feishu_cfg.behavior.streaming;
         let feishu = self.feishu.clone();
         let feishu_msg_id = feishu_msg_id.to_string();
@@ -946,6 +1059,18 @@ impl Bridge {
         let session_id_clone = session_id.clone();
         let images_vec: Vec<ImageInput> = images.to_vec();
         let text_owned = text.to_string();
+        let approval_routes = self.approval_routes.clone();
+        let approval_route = prompt_loop::ApprovalRoute {
+            session_id: session_id.clone(),
+            chat_id: chat_id.to_string(),
+            chat_type: self
+                .chat_types
+                .read()
+                .await
+                .get(chat_id)
+                .cloned()
+                .unwrap_or_else(|| "p2p".into()),
+        };
 
         // Spawn async task for prompt execution (so Feishu ACK is fast)
         tokio::spawn(async move {
@@ -960,6 +1085,8 @@ impl Bridge {
                 &prompt_lock,
                 &gen_counter,
                 ack_reaction_id,
+                Some((&approval_routes, approval_route)),
+                Some(generation),
             )
             .await
             {
@@ -997,6 +1124,9 @@ impl Bridge {
             return Ok(());
         }
 
+        if !matches!(action, "approve" | "reject") {
+            return Ok(());
+        }
         let approved = action == "approve";
         let note = if approved {
             "approved via Feishu card"
@@ -1013,24 +1143,41 @@ impl Bridge {
         // Card actions may arrive after the streaming session has changed,
         // so we try the session associated with the chat.
         let session_id = self
-            .sessions
-            .get(event.chat_id.as_deref().unwrap_or(""), None)
+            .approval_routes
+            .read()
+            .await
+            .get(approval_request_id)
+            .filter(|route| Some(route.chat_id.as_str()) == event.chat_id.as_deref())
+            .map(|route| route.session_id.clone())
             .unwrap_or_default();
 
-        if !session_id.is_empty() {
+        let delivered = if !session_id.is_empty() {
             let mut agent = self.agent.write().await;
             match agent
                 .approval_decision(&session_id, approval_request_id, approved, note)
                 .await
             {
-                Ok(()) => info!("[CARD_ACTION] decision sent successfully"),
-                Err(e) => warn!("[CARD_ACTION] failed to send decision: {}", e),
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("[CARD_ACTION] failed to send decision: {}", e);
+                    false
+                }
             }
-        }
+        } else {
+            false
+        };
 
-        // Reply to the card message to acknowledge
+        if delivered {
+            self.approval_routes
+                .write()
+                .await
+                .remove(approval_request_id);
+        }
+        // A successful-looking acknowledgment is only valid after RPC delivery.
         if let Some(ref msg_id) = event.message_id {
-            let ack_text = if approved {
+            let ack_text = if !delivered {
+                "⚠️ Approval was not delivered. The session or request may no longer exist."
+            } else if approved {
                 "✅ Approved. The tool will execute shortly."
             } else {
                 "❌ Rejected. The tool call has been denied."
@@ -1072,12 +1219,30 @@ fn save_received_file(
     base_dir: &std::path::Path,
     data: &[u8],
     filename: &str,
-) -> std::path::PathBuf {
+) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+    // Treat remote metadata as a single portable filename, never as a path.
+    anyhow::ensure!(
+        !filename.is_empty()
+            && filename != "."
+            && filename != ".."
+            && !filename.ends_with(['.', ' '])
+            && !filename
+                .chars()
+                .any(|c| c.is_control() || "/\\:<>\"|?*".contains(c)),
+        "Invalid received filename"
+    );
     let dir = base_dir.join("files");
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(filename);
-    let _ = std::fs::write(&path, data);
-    path
+    std::fs::create_dir_all(&dir)?;
+    // Unique names avoid overwriting previous uploads; create_new also refuses
+    // existing symlinks instead of following them outside the downloads dir.
+    let path = dir.join(format!("{}_{}", uuid::Uuid::new_v4(), filename));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(data)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -1089,6 +1254,121 @@ mod tests {
     use crate::config::AgentConfig;
     use crate::feishu::config::{BehaviorConfig, FeishuConfig, PolicyConfig};
     use crate::test_support::{self as ts, HttpRoute, MockState};
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn image_only_post_is_downloaded_and_typing_flag_is_respected() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_cfg("post-image", state, |cfg| {
+            cfg.behavior.typing_indicator = false
+        })
+        .await;
+        let mut e = event("om_1");
+        e.msg_type = Some("post".into());
+        e.content = Some(r#"{"content":[[{"tag":"img","image_key":"img_k"}]]}"#.into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+        assert!(!ts::requests_to(&fx.http, "/im/v1/messages/om_1/reactions")
+            .iter()
+            .any(|r| r.body_string().contains("Typing")));
+    }
+
+    #[test]
+    fn received_files_reject_paths_and_propagate_write_failures() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "../escape",
+            "/absolute",
+            r"..\escape",
+            "C:stream",
+            "",
+            ".",
+            "..",
+            "trailing.",
+        ] {
+            assert!(
+                save_received_file(root.path(), b"test", name).is_err(),
+                "{name:?}"
+            );
+        }
+        let a = save_received_file(root.path(), b"first", "报告.pdf").unwrap();
+        let b = save_received_file(root.path(), b"second", "报告.pdf").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), b"first");
+        assert!(a.starts_with(root.path().join("files")));
+        let blocked = root.path().join("not-a-directory");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert!(save_received_file(&blocked, b"test", "file.txt").is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ingress_queue_has_a_fixed_capacity() {
+        let fx = make_bridge("bounded-ingress", vec![]).await;
+        let bridge = Arc::new(fx.bridge);
+        // No await in the enqueue burst: the receiver cannot drain yet.
+        for i in 0..128 {
+            assert!(bridge.enqueue_event(event(&format!("burst-{i}"))));
+        }
+        assert!(!bridge.enqueue_event(event("overflow")));
+        assert_eq!(bridge.event_queues.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn queued_arrivals_do_not_allow_slow_old_message_to_supersede_new() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let mut routes = std_routes(&["om_1", "om_2"]);
+        routes.retain(|route| route.path != "/im/v1/messages/om_1/reactions");
+        routes.push(HttpRoute::slow_json(
+            "/im/v1/messages/om_1/reactions",
+            r#"{"code":0,"data":{"reaction_id":"rid_1"}}"#,
+            std::time::Duration::from_millis(200),
+        ));
+        let fx = make_bridge_routes("ordered-arrivals", state, routes).await;
+        let bridge = Arc::new(fx.bridge);
+        let mut old = event("om_1");
+        old.content = Some(r#"{"text":"old"}"#.into());
+        let mut new = event("om_2");
+        new.content = Some(r#"{"text":"new"}"#.into());
+        bridge.enqueue_event(old);
+        bridge.enqueue_event(new);
+        assert!(wait_done(&fx.http, "om_2").await);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let prompts = ts::recorded_of(&fx.grpc, "prompt");
+        assert_eq!(prompts.last().unwrap().message, "new");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_defaults_are_not_reapplied_after_model_change() {
+        let fx = make_bridge("keep-model", done_events()).await;
+        let sid = fx.bridge.ensure_session("chat", None).await.unwrap();
+        fx.bridge
+            .agent
+            .write()
+            .await
+            .set_model(&sid, "custom/model")
+            .await
+            .unwrap();
+        fx.bridge.ensure_session("chat", None).await.unwrap();
+        let calls = ts::recorded_of(&fx.grpc, "set_model");
+        assert_eq!(calls.len(), 2, "default once, then explicit override only");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_without_mention_respects_disabled_requirement() {
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge_cfg("no-mention-required", state, |cfg| {
+            cfg.policy.require_mention = false
+        })
+        .await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        assert_eq!(ts::recorded_of(&fx.grpc, "prompt").len(), 1);
+    }
 
     const TOKEN_ROUTE: &str = "/auth/v3/tenant_access_token/internal";
 
@@ -1170,6 +1450,7 @@ mod tests {
                 require_mention: true,
             },
             behavior: BehaviorConfig {
+                typing_indicator: true,
                 streaming: true,
                 resolve_sender_names: true,
                 max_image_mb: 10,
@@ -1326,6 +1607,9 @@ mod tests {
         assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
         let len = fx.bridge.processed.read().await.len();
         assert!(len <= 510, "dedup set should be trimmed, got {len}");
+        let processed = fx.bridge.processed.read().await;
+        assert_eq!(processed.front().map(String::as_str), Some("om_stale_500"));
+        assert_eq!(processed.back().map(String::as_str), Some("om_stale_1004"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2036,9 +2320,28 @@ mod tests {
         e
     }
 
+    fn approval_events() -> Vec<future_rpc::proto::StreamEvent> {
+        let mut events = vec![
+            ts::ev(
+                "",
+                0,
+                "approval_request",
+                r#"{"approval_request_id":"req_1","tool_name":"shell"}"#,
+            ),
+            ts::ev(
+                "",
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_2","tool_name":"shell"}"#,
+            ),
+        ];
+        events.extend(done_events());
+        events
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn card_action_approve_and_reject() {
-        let fx = make_bridge("card-action", done_events()).await;
+        let fx = make_bridge("card-action", approval_events()).await;
         // Establish a session first.
         fx.bridge.handle_event(event("om_1")).await.unwrap();
         assert!(wait_done(&fx.http, "om_1").await);
@@ -2057,15 +2360,39 @@ mod tests {
             .any(|b| b.contains("Approved")));
 
         fx.bridge
-            .handle_event(card_action("om_3", "reject", "req_2"))
+            .handle_event(card_action("om_2", "reject", "req_2"))
             .await
             .unwrap();
         let decisions = ts::recorded_of(&fx.grpc, "approval_decision");
         assert_eq!(decisions.len(), 2);
         assert_eq!(decisions[1].mode, "rejected");
-        assert!(replies(&fx.http, "om_3")
+        assert!(replies(&fx.http, "om_2")
             .iter()
             .any(|b| b.contains("Rejected")));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_thread_card_uses_origin_policy_and_session() {
+        let mut state = MockState::default();
+        state.events = approval_events();
+        let fx = make_bridge_cfg("group-thread-approval", state, |cfg| {
+            cfg.policy.dm_policy = "disabled".into();
+            cfg.policy.require_mention = false;
+        })
+        .await;
+        let mut e = event("om_1");
+        e.chat_type = Some("group".into());
+        e.root_id = Some("thread-root".into());
+        fx.bridge.handle_event(e).await.unwrap();
+        assert!(wait_done(&fx.http, "om_1").await);
+        let expected = fx.bridge.sessions.get("oc_1", Some("thread-root")).unwrap();
+        fx.bridge.sessions.reset("oc_1", Some("thread-root"));
+        let mut action = card_action("om_2", "approve", "req_1");
+        action.chat_type = None; // Real parser omits this field.
+        fx.bridge.handle_event(action).await.unwrap();
+        let decisions = ts::recorded_of(&fx.grpc, "approval_decision");
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].session_id, expected);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2094,13 +2421,13 @@ mod tests {
         assert!(ts::recorded_of(&fx.grpc, "approval_decision").is_empty());
         assert!(replies(&fx.http, "om_5")
             .iter()
-            .any(|b| b.contains("Approved")));
+            .any(|b| b.contains("not delivered")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn card_action_agent_failure_only_warns() {
         let mut state = MockState::default();
-        state.events = done_events();
+        state.events = approval_events();
         state.fail_commands.insert("approval_decision".into());
         let fx = make_bridge_routes("card-agent-fail", state, std_routes(&["om_1", "om_2"])).await;
         fx.bridge.handle_event(event("om_1")).await.unwrap();
@@ -2112,7 +2439,7 @@ mod tests {
             .unwrap();
         assert!(replies(&fx.http, "om_2")
             .iter()
-            .any(|b| b.contains("Approved")));
+            .any(|b| b.contains("not delivered")));
     }
 
     // ─── Session management arms ─────────────────────────────────────────────

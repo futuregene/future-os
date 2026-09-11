@@ -248,6 +248,9 @@ fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
     let lines: Vec<&str> = frontmatter.lines().collect();
 
     for (index, line) in lines.iter().enumerate() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
         let trimmed_line = line.trim();
         if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
             continue;
@@ -430,6 +433,20 @@ version: "1.0.0"
         assert_eq!(
             extract_frontmatter_field(content, "description").as_deref(),
             Some("First line.\nSecond line.")
+        );
+    }
+
+    #[test]
+    fn nested_frontmatter_keys_do_not_shadow_top_level_fields() {
+        let content =
+            "---\nmetadata:\n  name: nested\n  version: 0\nname: actual\nversion: 2\n---\n";
+        assert_eq!(
+            extract_frontmatter_field(content, "name").as_deref(),
+            Some("actual")
+        );
+        assert_eq!(
+            extract_frontmatter_field(content, "version").as_deref(),
+            Some("2")
         );
     }
 

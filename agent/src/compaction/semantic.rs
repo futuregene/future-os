@@ -553,7 +553,7 @@ fn split_to_token_budget(value: &str, budget: u64) -> Vec<String> {
     let mut quarters = 0_u64;
     let quarter_budget = budget.saturating_mul(4).max(4);
     for ch in value.chars() {
-        let cost = if ch.is_ascii() { 1 } else { 4 };
+        let cost = super::char_token_quarters(ch);
         if !current.is_empty() && quarters.saturating_add(cost) > quarter_budget {
             parts.push(std::mem::take(&mut current));
             quarters = 0;
@@ -823,11 +823,21 @@ fn internal_summary(message: &AgentMessage) -> Option<String> {
 }
 
 fn estimate_text_tokens(value: &str) -> u64 {
-    let mut quarters = 0_u64;
-    for ch in value.chars() {
-        quarters += if ch.is_ascii() { 1 } else { 4 };
+    super::estimate_text_tokens(value) as u64
+}
+
+#[cfg(test)]
+#[test]
+fn summary_chunks_and_context_estimates_share_unicode_costs() {
+    for text in ["ПриветПривет", "🙂🙂🙂🙂", "漢字漢字", "hello世界"] {
+        assert_eq!(
+            estimate_text_tokens(text),
+            super::estimate_text_tokens(text) as u64
+        );
+        let parts = split_to_token_budget(text, 3);
+        assert_eq!(parts.concat(), text);
+        assert!(parts.iter().all(|part| estimate_text_tokens(part) <= 3));
     }
-    quarters.saturating_add(3) / 4
 }
 
 fn valid_summary(summary: &str) -> bool {

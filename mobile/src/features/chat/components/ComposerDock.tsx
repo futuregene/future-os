@@ -62,7 +62,7 @@ export function ComposerDock({
   showOffline: boolean;
   pendingApprovals: PendingApproval[];
   approvalSubmitting: string | null;
-  approvalError: string | null;
+  approvalError: { id: string; message: string } | null;
   decideApproval: (id: string, decision: "approved" | "rejected") => Promise<void>;
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
@@ -103,7 +103,7 @@ export function ComposerDock({
       {pendingApprovals.map(item => (
         <View key={item.id} style={styles.dockedApproval}>
           <PendingApprovalCard
-            error={approvalSubmitting === item.payload.approval_request_id ? null : approvalError}
+            error={approvalSubmitting !== item.payload.approval_request_id && approvalError?.id === item.payload.approval_request_id ? approvalError.message : null}
             onDecision={decision => void decideApproval(item.payload.approval_request_id, decision)}
             payload={item.payload}
             submitting={approvalSubmitting === item.payload.approval_request_id}

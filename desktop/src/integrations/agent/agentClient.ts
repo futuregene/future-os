@@ -205,8 +205,9 @@ export function readLastUsedModel(): string | null {
 export function resolveInitialModelId(models: AgentModelOption[]): string {
   const lastUsed = readLastUsedModel();
   // Last-used model is valid in the current catalog? Use it.
-  if (lastUsed && modelOption(lastUsed, models))
-    return lastUsed;
+  const lastOption = lastUsed ? modelOption(lastUsed, models) : undefined;
+  if (lastOption)
+    return modelKey(lastOption);
   // Catalog not loaded yet — return last-used as best-effort seed (if any).
   if (models.length === 0)
     return lastUsed || defaultAgentModelId;
@@ -287,8 +288,9 @@ export function modelOption(modelId: string, models: AgentModelOption[]) {
   const exact = models.find(model => modelKey(model) === modelId);
   if (exact)
     return exact;
-  // Fall back to a bare-id match for legacy selections / threads persisted
-  // before ids were provider-qualified (ambiguous, so first match wins).
-  const bareId = modelId.includes("/") ? modelId.split("/").pop() ?? modelId : modelId;
-  return models.find(model => model.id === bareId);
+  // Legacy bare ids may themselves contain slashes. Only a unique exact id
+  // can be upgraded safely; stripping a prefix or choosing the first provider
+  // can change the endpoint/credentials behind the user's selection.
+  const legacyMatches = models.filter(model => model.id === modelId);
+  return legacyMatches.length === 1 ? legacyMatches[0] : undefined;
 }

@@ -134,8 +134,12 @@ pub fn live_workspace_conflicts(goal: &Goal, agent_id: &str, now: u64) -> Vec<Wo
             .todos
             .iter()
             .filter(|t| {
-                t.claimed_by.as_deref() == Some(profile.id.as_str())
+                !matches!(
+                    t.status,
+                    crate::state::TodoStatus::Done | crate::state::TodoStatus::Superseded
+                ) && t.claimed_by.as_deref() == Some(profile.id.as_str())
                     && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+                    && t.holder_pid.is_none_or(crate::compat::pid_alive)
             })
             .collect();
         if held.is_empty() {
@@ -209,6 +213,31 @@ mod tests {
         t.claimed_by = Some(holder.to_string());
         t.lease_expires_at = Some(expires_at);
         t
+    }
+
+    #[test]
+    fn completed_or_dead_holder_does_not_reserve_workspace() {
+        let now = crate::state::now_epoch();
+        let workspace = std::env::temp_dir()
+            .join("loop-workspace-regression")
+            .to_string_lossy()
+            .into_owned();
+        let mut t = claimed("t", "a", now + 3600);
+        t.holder_pid = Some(std::process::id());
+        let mut goal = goal_with(&[("a", vec![&workspace]), ("b", vec![&workspace])], vec![t]);
+        assert_eq!(live_workspace_conflicts(&goal, "b", now).len(), 1);
+        goal.todos[0].complete(true, vec![]);
+        assert!(live_workspace_conflicts(&goal, "b", now).is_empty());
+        // Terminal filtering also protects legacy snapshots carrying stale leases.
+        goal.todos[0].claimed_by = Some("a".into());
+        goal.todos[0].lease_expires_at = Some(now + 3600);
+        assert!(live_workspace_conflicts(&goal, "b", now).is_empty());
+        #[cfg(unix)]
+        {
+            goal.todos[0].status = crate::state::TodoStatus::Open;
+            goal.todos[0].holder_pid = Some(i32::MAX as u32);
+            assert!(live_workspace_conflicts(&goal, "b", now).is_empty());
+        }
     }
 
     // ── path normalization ───────────────────────────────────────────────

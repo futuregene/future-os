@@ -12,12 +12,13 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $Base = if ($env:FUTUREOS_BASE) { $env:FUTUREOS_BASE } else { 'https://dl.future-os.cn/releases' }
-$Version = $env:FUTUREOS_VERSION
+$Version = $env:FUTUREOS_VERSION -replace '^[vV]', ''
 
 if ($Version) {
     # Signed release installers use the canonical name without a signing suffix.
     $Url = "$Base/$Version/FutureOS_${Version}_x64-setup.exe"
     $Sha = $null
+    Write-Warning 'FUTUREOS_VERSION is pinned - skipping SHA-256 verification (no manifest lookup)'
 } else {
     $latest = Invoke-RestMethod "$Base/latest.json"
     $Version = $latest.version

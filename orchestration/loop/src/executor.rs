@@ -343,6 +343,7 @@ pub async fn execute_turn(
     let terminal_state = summary.terminal_state.clone();
 
     let mut record = RunRecord {
+        agent_id: agent_id.map(str::to_string),
         turn,
         todo_id: todo.id.clone(),
         run_id: summary.run_id.clone(),
@@ -538,6 +539,7 @@ mod validator_tests {
             validation: Option<TaskValidation>,
         ) -> RunRecord {
             RunRecord {
+                agent_id: None,
                 turn: 1,
                 todo_id: "T1".to_string(),
                 run_id: "run-1".to_string(),
@@ -616,6 +618,7 @@ mod validator_tests {
         use super::{incomplete_streak, RunRecord};
         fn rec(turn: u32, todo: &str, state: &str) -> RunRecord {
             RunRecord {
+                agent_id: None,
                 turn,
                 todo_id: todo.to_string(),
                 run_id: format!("run-{turn}"),

@@ -21,6 +21,7 @@ fn todo(id: &str) -> Todo {
 
 fn run_record(todo_id: &str, terminal: &str) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: todo_id.to_string(),
         run_id: "r1".to_string(),

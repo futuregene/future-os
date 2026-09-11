@@ -112,6 +112,7 @@ pub(crate) fn handle_cycle_model(
     let models: Vec<String> = registry
         .all_models()
         .into_iter()
+        .filter(|m| m.output.iter().any(|kind| kind == "text"))
         .filter(|m| registry.is_model_available(&format!("{}/{}", m.provider, m.id)))
         .map(|m| format!("{}/{}", m.provider, m.id))
         .collect();
@@ -392,7 +393,17 @@ pub(crate) fn handle_shell(
             std::time::Duration::from_secs(30 * 60),
         )
     };
-    let result = session.write().execute_shell(&cmd.command, timeout);
+    let (cwd, cancellation, generation) = {
+        let sess = session.read();
+        (
+            sess.cwd.clone(),
+            sess.shell_cancel_generation.clone(),
+            sess.shell_cancel_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    };
+    let result =
+        ServerSession::execute_shell_at(&cwd, &cmd.command, timeout, &cancellation, generation);
     match result {
         Ok(r) => RpcResponse::ok(id, "shell", r),
         Err(e) => RpcResponse::build_fail(id, "shell", &e.to_string()),

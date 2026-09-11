@@ -167,6 +167,7 @@ mod tests {
 
     fn run(evidence: &str) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "t1".into(),
             run_id: "r".into(),

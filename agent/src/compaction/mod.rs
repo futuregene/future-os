@@ -11,6 +11,8 @@ pub(super) const INTERNAL_CHECKPOINT_METADATA_KEY: &str = "internal_context_chec
 /// Derive compaction budgets without allowing the historical 16K minimum to
 /// consume an entire small model window. The minimum remains useful for large
 /// models, but scales down to at most one quarter of the available context.
+/// A degenerate window <= 1 has no positive reserve that also leaves input
+/// room; return zero budgets rather than inventing unavailable capacity.
 pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
     let window = context_window.max(1);
     let proportional_reserve = ((window as f64 * 0.1) as i32).max(1);
@@ -21,6 +23,15 @@ pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
         .max(reserve_tokens)
         .min(usable_context);
     (reserve_tokens, keep_recent_tokens)
+}
+
+#[cfg(test)]
+#[test]
+fn degenerate_windows_do_not_invent_reserved_capacity() {
+    for window in [-1, 0, 1] {
+        assert_eq!(context_token_budgets(window), (0, 0));
+    }
+    assert_eq!(context_token_budgets(2), (1, 1));
 }
 
 pub(super) fn stamp_internal_checkpoint_message(message: &mut AgentMessage, entry_id: &str) {
@@ -436,18 +447,24 @@ fn is_cjk(c: char) -> bool {
 /// Estimate tokens for a text by classifying each character: CJK ~1.5
 /// tokens/char, ASCII ~0.25, everything else ~0.5. Errors toward
 /// overestimate so compaction triggers early rather than late.
-fn estimate_text_tokens(text: &str) -> i32 {
-    let mut tokens = 0.0f64;
-    for c in text.chars() {
-        tokens += if is_cjk(c) {
-            1.5
-        } else if c.is_ascii() {
-            0.25
-        } else {
-            0.5
-        };
+fn char_token_quarters(c: char) -> u64 {
+    if is_cjk(c) {
+        6
+    } else if c.is_ascii() {
+        1
+    } else {
+        2
     }
-    tokens.ceil() as i32
+}
+
+fn estimate_text_tokens(text: &str) -> i32 {
+    let quarters = text
+        .chars()
+        .fold(0_u64, |n, c| n.saturating_add(char_token_quarters(c)));
+    quarters
+        .saturating_add(3)
+        .div_euclid(4)
+        .min(i32::MAX as u64) as i32
 }
 
 /// EstimateContextTokens estimates total tokens from messages.

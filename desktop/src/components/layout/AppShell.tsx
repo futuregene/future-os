@@ -456,11 +456,8 @@ export function AppShell() {
     // would then stay hidden after the window grows back.
     if (!canShowLeftPanel(windowWidth))
       return;
-    setLeftExpanded((expanded) => {
-      const nextExpanded = !expanded;
-      setLeftOverlayOpen(false);
-      return nextExpanded;
-    });
+    setLeftOverlayOpen(false);
+    setLeftExpanded(expanded => !expanded);
   }
 
   function handlePreviewLeftPanel(open: boolean) {

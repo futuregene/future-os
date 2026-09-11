@@ -175,7 +175,11 @@ impl Loop {
     /// is cloned only as a seed: `ServerSession::set_model` replaces it with a
     /// freshly-built client for the session's selected model.
     pub fn independent_copy(&self) -> Loop {
-        let mut copy = Loop::new(self.provider.clone(), &self.model)
+        let provider = self
+            .provider
+            .snapshot()
+            .unwrap_or_else(|| self.provider.clone());
+        let mut copy = Loop::new(provider, &self.model)
             .with_tools(self.tools.clone())
             .with_system_prompt(&self.system_prompt)
             .with_config(self.config.clone());
@@ -185,7 +189,11 @@ impl Loop {
         copy.model_registry = self.model_registry.clone();
         copy.preflight_context_check = self.preflight_context_check;
         copy.context_manager = self.context_manager.clone();
-        copy.active_checkpoint = self.active_checkpoint.clone();
+        // A template copy must not share mutable compaction state across sessions.
+        // Run snapshots explicitly reconnect to their session's checkpoint cell.
+        copy.active_checkpoint = Arc::new(parking_lot::Mutex::new(
+            self.active_checkpoint.lock().clone(),
+        ));
         copy
     }
 
@@ -619,6 +627,15 @@ mod tests {
         let copy = loop_.independent_copy();
         assert_eq!(copy.model, loop_.model);
         assert_eq!(copy.system_prompt, "original prompt");
+        let peer = loop_.independent_copy();
+        assert!(!Arc::ptr_eq(
+            &copy.active_checkpoint,
+            &loop_.active_checkpoint
+        ));
+        assert!(!Arc::ptr_eq(
+            &copy.active_checkpoint,
+            &peer.active_checkpoint
+        ));
         // Independent state: interrupt flag should be fresh.
         assert!(!copy
             .interrupt_flag()

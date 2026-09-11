@@ -200,7 +200,12 @@ fn data_agent_event(event_type: &str, data: &str) -> Option<AgentEvent> {
         "error" => {
             let msg = serde_json::from_str::<Value>(data)
                 .ok()
-                .and_then(|d| d["error"].as_str().map(|s| s.to_string()))
+                .and_then(|d| {
+                    d["error"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                })
                 .unwrap_or_else(|| "unknown error".to_string());
             Some(AgentEvent::Error(msg))
         }
@@ -519,6 +524,9 @@ mod tests {
 
     #[test]
     fn parse_error_event() {
+        parse_both_twins("error", r#"{"error":""}"#, |event| {
+            assert_eq!(expect_error(event), "unknown error");
+        });
         parse_both_twins("error", r#"{"error":"something went wrong"}"#, |event| {
             assert_eq!(expect_error(event), "something went wrong");
         });

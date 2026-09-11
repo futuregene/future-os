@@ -214,7 +214,10 @@ pub fn approval_card(
     let mut elements: Vec<Value> = vec![json!({"tag": "markdown", "content": body_text})];
     if !requested_action.is_empty() {
         let preview = if requested_action.len() > 500 {
-            format!("{}\n..._(truncated)_", &requested_action[..500])
+            format!(
+                "{}\n..._(truncated)_",
+                &requested_action[..requested_action.floor_char_boundary(500)]
+            )
         } else {
             requested_action.to_string()
         };
@@ -619,7 +622,7 @@ mod tests {
 
     #[test]
     fn approval_card_long_action_truncated() {
-        let action = "x".repeat(600);
+        let action = "中😀".repeat(200);
         let card = approval_card("req_2", "tool", "low", "T", "S", &action);
         let elements = card["elements"].as_array().unwrap();
         let preview = elements[1]["content"].as_str().unwrap();

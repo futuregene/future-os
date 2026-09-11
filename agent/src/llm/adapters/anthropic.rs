@@ -360,10 +360,36 @@ impl ProtocolAdapter for AnthropicMessagesAdapter {
             Ok(Vec::new())
         } else {
             state.finished = true;
-            Ok(vec![ModelStreamEvent::Finish {
+            let mut events = Vec::new();
+            for (index, block) in std::mem::take(&mut state.blocks) {
+                match block {
+                    AnthropicBlock::Text { id } => events.push(ModelStreamEvent::TextEnd { id }),
+                    // An unfinished thinking signature is not replay authority.
+                    AnthropicBlock::Reasoning { id, .. } => {
+                        events.push(ModelStreamEvent::ReasoningEnd {
+                            id,
+                            provider_metadata: ProviderMetadata::new(),
+                        })
+                    }
+                    AnthropicBlock::Tool {
+                        id,
+                        name,
+                        arguments,
+                    } => events.push(ModelStreamEvent::ToolInputEnd {
+                        index,
+                        id,
+                        name,
+                        arguments: parse_json_arguments(&Value::String(arguments)),
+                        provider_metadata: ProviderMetadata::new(),
+                    }),
+                    AnthropicBlock::Other => {}
+                }
+            }
+            events.push(ModelStreamEvent::Finish {
                 reason: FinishReason::Incomplete,
                 usage: Some(state.usage.clone()),
-            }])
+            });
+            Ok(events)
         }
     }
 }
@@ -1149,6 +1175,51 @@ mod tests {
                 .unwrap();
             assert!(events.is_empty());
         }
+    }
+
+    #[test]
+    fn unfinished_blocks_close_in_order_without_replaying_partial_signature() {
+        let mut state = AnthropicState::default();
+        state
+            .blocks
+            .insert(0, AnthropicBlock::Text { id: "text".into() });
+        state.blocks.insert(
+            1,
+            AnthropicBlock::Reasoning {
+                id: "thinking".into(),
+                signature: "partial-signature".into(),
+                redacted_data: None,
+            },
+        );
+        state.blocks.insert(
+            2,
+            AnthropicBlock::Tool {
+                id: "tool".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        );
+        let events = AnthropicMessagesAdapter.finish_stream(&mut state).unwrap();
+        assert!(matches!(&events[0], ModelStreamEvent::TextEnd { .. }));
+        assert!(
+            matches!(&events[1], ModelStreamEvent::ReasoningEnd { provider_metadata, .. } if provider_metadata.is_empty())
+        );
+        assert!(matches!(
+            &events[2],
+            ModelStreamEvent::ToolInputEnd { index: 2, .. }
+        ));
+        assert!(matches!(
+            &events[3],
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Incomplete,
+                ..
+            }
+        ));
+        assert!(state.blocks.is_empty());
+        assert!(AnthropicMessagesAdapter
+            .finish_stream(&mut state)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -17,6 +17,7 @@ use future_loop::state::{
 /// independent-validator receipt (V), otherwise the outcome is accepted (A).
 fn delivery(turn: u32, ts: u64, validation_ok: Option<bool>) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn,
         todo_id: format!("t{turn}"),
         run_id: format!("run-{turn}"),

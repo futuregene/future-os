@@ -10,13 +10,18 @@ use super::primary_action::agent_channel;
 
 /// Fail-closed identity gate. Returns the blocked packet when `agent_id` is
 /// present but not a registered peer; `None` lets the pipeline continue.
-pub(crate) fn identity_gate(goal: &Goal, agent_id: Option<&str>) -> Option<ShouldRunPacket> {
+pub(crate) fn identity_gate(
+    goal: &Goal,
+    agent_id: Option<&str>,
+    now: std::time::SystemTime,
+) -> Option<ShouldRunPacket> {
     if goal.is_registered_agent(agent_id) {
         return None;
     }
     // LoopX: state=blocked_health, status=quota_collection_failed, ok=false.
     let mut p = packet(
         goal,
+        now,
         crate::quota::error_codes::DecisionReasonCode::IdentityNotRegistered,
         "skip",
         false,
@@ -41,20 +46,21 @@ mod tests {
     #[test]
     fn anonymous_identity_passes() {
         let g = Goal::new("g", "objective", "/tmp");
-        assert!(identity_gate(&g, None).is_none());
+        assert!(identity_gate(&g, None, std::time::SystemTime::now()).is_none());
     }
 
     #[test]
     fn registered_identity_passes() {
         let mut g = Goal::new("g", "objective", "/tmp");
         g.register_agent("a1", vec![]);
-        assert!(identity_gate(&g, Some("a1")).is_none());
+        assert!(identity_gate(&g, Some("a1"), std::time::SystemTime::now()).is_none());
     }
 
     #[test]
     fn unregistered_identity_fails_closed() {
         let g = Goal::new("g", "objective", "/tmp");
-        let p = identity_gate(&g, Some("ghost")).expect("unregistered identity must block");
+        let p = identity_gate(&g, Some("ghost"), std::time::SystemTime::now())
+            .expect("unregistered identity must block");
         assert!(!p.ok);
         assert!(!p.should_run);
         assert!(!p.actionable_by_codex);

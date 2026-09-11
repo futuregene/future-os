@@ -66,7 +66,10 @@ async fn load_account_auth() -> Result<AccountAuth, String> {
     let future = future.unwrap();
 
     // `typeof future.key === "string" ? future.key : undefined`
-    let key = future.get("key").and_then(Value::as_str);
+    let key = future
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty());
     if key.is_none() {
         return Err(format!(
             "No API key for \"{FUTURE_AUTH_PROVIDER}\" in {}. Run \"future auth login\" first.",
@@ -118,12 +121,11 @@ async fn account_profile(json_flag: bool, out: &Output) -> Result<(), String> {
 
     if json_flag {
         // `JSON.stringify({email, user_id, email_verified, created_at}, null, 2)`
-        let output = json!({
-            "email": profile.get("email").cloned().unwrap_or(Value::Null),
-            "user_id": profile.get("user_id").cloned().unwrap_or(Value::Null),
-            "email_verified": profile.get("email_verified").cloned().unwrap_or(Value::Null),
-            "created_at": profile.get("created_at").cloned().unwrap_or(Value::Null),
-        });
+        let output: serde_json::Map<String, Value> =
+            ["email", "user_id", "email_verified", "created_at"]
+                .into_iter()
+                .filter_map(|key| profile.get(key).map(|v| (key.to_string(), v.clone())))
+                .collect();
         out.log(&serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?);
     } else {
         out.log(&format!(
@@ -164,14 +166,14 @@ async fn account_balance(json_flag: bool, out: &Output) -> Result<(), String> {
     let raw_credits = balance
         .get("balance_credits")
         .and_then(Value::as_f64)
-        .unwrap_or(0.0);
+        .unwrap_or(f64::NAN);
     let credits = raw_credits / 10_000_000_000.0;
 
     if json_flag {
-        let output = json!({
-            "balance_credits": balance.get("balance_credits").cloned().unwrap_or(Value::Null),
-            "credits": to_fixed(&credits, 3),
-        });
+        let mut output = json!({ "credits": to_fixed(&credits, 3) });
+        if let Some(raw) = balance.get("balance_credits") {
+            output["balance_credits"] = raw.clone();
+        }
         out.log(&serde_json::to_string_pretty(&output).map_err(|e| e.to_string())?);
     } else {
         // `credits.toFixed(3)` — Rust {:.3} matches for all non-tie values.
@@ -352,7 +354,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn balance_missing_field_is_zero() {
+    async fn balance_missing_field_is_unknown() {
         let _guard = crate::test_env::lock_env().await;
         let _home = EnvGuard::temp_home();
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
@@ -364,7 +366,11 @@ mod tests {
         write_auth(&base).await;
         let (code, stdout, _) = run(&["account", "balance"]).await;
         assert_eq!(code, 0);
-        assert_eq!(stdout, "  Balance: 0.000 credits\n");
+        assert_eq!(stdout, "  Balance: NaN credits\n");
+        let (code, stdout, _) = run(&["account", "balance", "--json"]).await;
+        assert_eq!(code, 0);
+        let parsed: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(parsed, json!({"credits": null}));
     }
 
     #[tokio::test]
@@ -459,6 +465,13 @@ mod tests {
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
+        // Empty credentials must be rejected locally, before any HTTP call.
+        tokio::fs::write(&path, r#"{"future":{"key":""}}"#)
+            .await
+            .unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No API key"));
         // Non-object JSON.
         tokio::fs::write(&path, "[1,2]").await.unwrap();
         let (code, _, stderr) = run(&["account", "profile"]).await;
