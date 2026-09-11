@@ -36,6 +36,7 @@ AGENT_LOG="$HOME/.future/agent/logs/agent.log"
 AGENT_CONSOLE_LOG="$LOG_DIR/future-agent-test.log.console"
 AGENT_PID_FILE="$LOG_DIR/future-agent-test.pid"
 STARTED_AGENT_PID=""
+DESKTOP_PID=""
 
 REUSE_AGENT="${REUSE_AGENT:-0}"
 BUILD_AGENT="${BUILD_AGENT:-1}"
@@ -43,12 +44,37 @@ BUILD_CLI="${BUILD_CLI:-1}"
 CLEAN_STALE_APP_TASKS="${CLEAN_STALE_APP_TASKS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
-cleanup() {
-  if [[ -n "$STARTED_AGENT_PID" ]] && kill -0 "$STARTED_AGENT_PID" 2>/dev/null; then
-    echo "Stopping future-agent pid=$STARTED_AGENT_PID"
-    kill "$STARTED_AGENT_PID" 2>/dev/null || true
-    wait "$STARTED_AGENT_PID" 2>/dev/null || true
+# Monitor mode gives each background job its own process group on macOS's
+# system Bash, without requiring GNU setsid. Disable it inside each job so its
+# descendants stay in that job's group. The launcher alone receives terminal
+# Ctrl-C and controls shutdown order.
+set -m
+
+stop_process_group() {
+  local pid="$1"
+  local label="$2"
+  local attempt
+  [[ -n "$pid" ]] || return 0
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    echo "Stopping $label process group=$pid"
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      kill -0 -- "-$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 -- "-$pid" 2>/dev/null; then
+      echo "Force stopping $label process group=$pid"
+      kill -KILL -- "-$pid" 2>/dev/null || true
+    fi
   fi
+  wait "$pid" 2>/dev/null || true
+}
+
+cleanup() {
+  trap '' INT TERM
+  # Tauri/Vite and the GUI must stop before the endpoint they consume.
+  stop_process_group "$DESKTOP_PID" "desktop"
+  stop_process_group "$STARTED_AGENT_PID" "future-agent"
   if [[ -f "$AGENT_PID_FILE" ]] && [[ "$(cat "$AGENT_PID_FILE" 2>/dev/null || true)" == "$STARTED_AGENT_PID" ]]; then
     rm -f "$AGENT_PID_FILE"
   fi
@@ -58,6 +84,10 @@ wait_for_agent() {
   local attempts=60
 
   for _ in $(seq 1 "$attempts"); do
+    if ! kill -0 "$STARTED_AGENT_PID" 2>/dev/null; then
+      echo "future-agent exited before becoming ready."
+      break
+    fi
     if agent_is_ready; then
       return 0
     fi
@@ -167,7 +197,9 @@ WHERE status IN ('queued', 'running', 'waiting_approval');
 SQL
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 mkdir -p "$LOG_DIR"
 
@@ -246,13 +278,14 @@ else
   # $AGENT_CONSOLE_LOG so the same lines are not duplicated into $AGENT_LOG by
   # shell redirection.
   (
+    set +m
     cd "$AGENT_DIR"
     if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
       exec "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
     else
       exec "$AGENT_BIN" --log-file
     fi
-  ) >"$AGENT_CONSOLE_LOG" 2>&1 &
+  ) </dev/null >"$AGENT_CONSOLE_LOG" 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
   wait_for_agent
@@ -278,12 +311,29 @@ fi
 echo "Starting desktop..."
 echo "Press Ctrl-C here to stop the desktop and the agent started by this script."
 
+# The launcher owns terminal input (Ctrl-C); background readers must not suspend
+# the Tauri group with SIGTTIN. Vite already receives piped stdin from Tauri.
 (
+  set +m
   cd "$DESKTOP_DIR"
   if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
-    FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR" npm run tauri:dev
+    export FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR"
+    exec npm run tauri:dev
   else
     unset FUTURE_AGENT_GRPC_ADDR
-    npm run tauri:dev
+    exec npm run tauri:dev
   fi
-)
+) </dev/null &
+DESKTOP_PID="$!"
+
+# Rebuilds happen inside the long-lived Tauri job. Keep the same Agent alive
+# across them; never silently restart a crashed Agent with active sessions.
+while kill -0 "$DESKTOP_PID" 2>/dev/null; do
+  if [[ -n "$STARTED_AGENT_PID" ]] && ! kill -0 "$STARTED_AGENT_PID" 2>/dev/null; then
+    echo "future-agent exited unexpectedly; stopping desktop. See $AGENT_LOG and $AGENT_CONSOLE_LOG" >&2
+    exit 1
+  fi
+  sleep 1 &
+  wait "$!"
+done
+wait "$DESKTOP_PID"
