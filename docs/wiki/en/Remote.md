@@ -24,8 +24,16 @@ code or endpoint.
 Read streaming replies, thinking and tool activity; send prompts and attachments;
 choose the model/thinking level; rename conversations; stop runs; and respond to
 approval requests. Image/file previews and downloads are available for supported
-formats. Reconnection can refill missed events, but a sleeping/offline desktop
-cannot execute new work until it is reachable again.
+formats. Conversations can be pinned, renamed or deleted individually — or in
+bulk from multi-select — and a workspace can be deleted with everything in it.
+Workspace groups remember whether you folded them. Attachments come from the
+system camera, the system photo picker or the system file picker, and text,
+images or files can be **shared** into FutureOS from another app: that opens a
+new conversation with the content in the composer, which you review before
+sending.
+
+Reconnection can refill missed events, but a sleeping/offline desktop cannot
+execute new work until it is reachable again.
 
 Remote controls the same desktop sessions and their permissions. Pairing does not
 automatically turn on approval or sandbox mode. Review [[Sandbox]] before allowing

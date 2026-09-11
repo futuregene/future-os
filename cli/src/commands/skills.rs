@@ -14,12 +14,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// `SKILLS_DIR` from skills.ts — `~/.future/agent/skills`.
+///
+/// Shares the agent's `~/.future/agent` root (`HOME`, then `USERPROFILE`):
+/// `dirs::home_dir()` reads the Windows token profile and ignores a redirected
+/// `HOME`, so installs landed outside the tree the agent discovers — and test
+/// runs wrote skill fixtures into the developer's real skills directory.
 pub fn skills_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".future")
-        .join("agent")
-        .join("skills")
+    future_agent::utils::default_config_dir().join("skills")
 }
 
 /// Reject path components before any network or filesystem side effect. Both
@@ -905,6 +906,22 @@ async fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `~/.future/agent/skills` must follow a redirected `HOME` even when
+    /// `USERPROFILE` points elsewhere: on Windows `dirs::home_dir()` reads the
+    /// token profile, so the CLI used to write skill fixtures into the real
+    /// developer profile during test runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn skills_dir_follows_the_redirected_home() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        let _home = crate::test_env::EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("USERPROFILE", profile.as_os_str().to_owned()),
+        ]);
+        assert_eq!(skills_dir(), dir.path().join(".future/agent/skills"));
+    }
 
     #[tokio::test]
     async fn read_skill_md_version_direct_field() {

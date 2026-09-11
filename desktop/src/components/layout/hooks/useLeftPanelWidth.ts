@@ -1,9 +1,8 @@
 import type { PointerEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MIN_CENTER_PANEL_WIDTH, MIN_RIGHT_PANEL_WIDTH } from "./panelGeometry";
+import { MIN_CENTER_PANEL_WIDTH, MIN_LEFT_PANEL_WIDTH, MIN_RIGHT_PANEL_WIDTH } from "./panelGeometry";
 
 const STORAGE_KEY = "future.leftPanelWidth";
-export const MIN_LEFT_PANEL_WIDTH = 224;
 const MAX_LEFT_PANEL_WIDTH = 480;
 
 function initialWidth(): number {
@@ -17,15 +16,20 @@ function initialWidth(): number {
   return window.innerWidth >= 1280 ? 288 : window.innerWidth >= 768 ? 256 : 224;
 }
 
-export function useLeftPanelWidth(rightExpanded: boolean) {
+/**
+ * Preferred (drag-resized, restart-persisted) width of the left rail, clamped
+ * so the center keeps `MIN_CENTER_PANEL_WIDTH` and — while the right context
+ * panel is actually visible — that panel keeps its own floor.
+ */
+export function useLeftPanelWidth(rightPanelVisible: boolean) {
   const [preferredWidth, setPreferredWidth] = useState(initialWidth);
   const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const [resizing, setResizing] = useState(false);
   const cleanupRef = useRef<(() => void) | null>(null);
-  // Reserve the existing right panel's floor; its own hook re-clamps its width.
+  // Reserve the visible right panel's floor; its own hook re-clamps its width.
   const maxWidth = Math.max(
     MIN_LEFT_PANEL_WIDTH,
-    Math.min(MAX_LEFT_PANEL_WIDTH, windowWidth - MIN_CENTER_PANEL_WIDTH - (rightExpanded ? MIN_RIGHT_PANEL_WIDTH : 0)),
+    Math.min(MAX_LEFT_PANEL_WIDTH, windowWidth - MIN_CENTER_PANEL_WIDTH - (rightPanelVisible ? MIN_RIGHT_PANEL_WIDTH : 0)),
   );
   const width = Math.min(maxWidth, Math.max(MIN_LEFT_PANEL_WIDTH, preferredWidth));
 

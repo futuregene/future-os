@@ -1,11 +1,13 @@
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState, type PropsWithChildren } from "react";
+import { useEffect, useState, useSyncExternalStore, type PropsWithChildren } from "react";
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ChatScreen } from "./src/features/chat/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
 import { RemoteProvider, useRemote } from "./src/remote/RemoteContext";
+import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
+import { useShareIntake } from "./src/share/useShareIntake";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";
 import { colors } from "./src/theme/tokens";
 
@@ -39,6 +41,11 @@ function EnterTransition({ fromRight, children }: PropsWithChildren<{ fromRight:
 function AppContent() {
   const remote = useRemote();
   useUpdateReminder();
+  useShareIntake();
+  // A share stages its payload in the composer draft; when the app is already
+  // showing that same draft, the key below is what makes the composer re-read
+  // it (see src/share/shareInbox.ts).
+  const shareRevision = useSyncExternalStore(subscribeShareLanded, shareLandedRevision);
 
   if (remote.phase === "booting") {
     return (
@@ -59,7 +66,10 @@ function AppContent() {
   if (!remote.credentials) return <PairingScreen />;
   const inChat = Boolean(remote.selectedSessionId || remote.draft);
   return (
-    <EnterTransition key={inChat ? "chat" : "sessions"} fromRight={inChat}>
+    <EnterTransition
+      key={inChat ? `chat:${shareRevision}` : "sessions"}
+      fromRight={inChat}
+    >
       {inChat ? <ChatScreen /> : <SessionsScreen />}
     </EnterTransition>
   );

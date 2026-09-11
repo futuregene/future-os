@@ -4333,6 +4333,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     let parent_session = parent_session
         .as_deref()
         .or(goal0.supervisor_session_id.as_deref());
+    // Whether this invocation minted the session (as opposed to resuming a
+    // live one). A freshly minted session that never reaches a prompt belongs
+    // to no one: see the unused-session cleanup after the turn loop.
+    let mut created_session = false;
     let session_id = match want_session {
         Some(id) if client.session_alive(&id).await => {
             println!("   ⤺ resuming session {id}");
@@ -4340,11 +4344,13 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
         Some(id) => {
             println!("   ⚠ retained session {id} is no longer alive — starting fresh");
+            created_session = true;
             client
                 .new_child_session(&goal0.cwd, &session_title, parent_session)
                 .await?
         }
         None => {
+            created_session = true;
             client
                 .new_child_session(&goal0.cwd, &session_title, parent_session)
                 .await?
@@ -4377,6 +4383,10 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
     // resumable advisory) on the goal and lets the NEXT caller decide
     // resume-vs-fresh via --resume-session.
     let mut last_failure_kind: Option<crate::state::FailureKind> = None;
+    // Set by `run_turns` the moment a turn actually reaches the model. Stays
+    // false when the loop breaks out before executing anything (wait/terminal
+    // decision, workspace conflict, no claimable todo).
+    let mut executed_turn = false;
     // Down-channel steering: watch the ledger for supervisor steering
     // instructions targeting THIS worker and abort the session mid-turn so the
     // next turn drains the instruction into its envelope. Aborted after the
@@ -4397,9 +4407,26 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         max_incomplete_retries,
         force_workspace,
         &mut last_failure_kind,
+        &mut executed_turn,
     )
     .await;
     steer_handle.abort();
+
+    // A session we minted but never prompted is an empty husk: nothing ran, so
+    // nothing references it — but it still shows up in `session list` / the
+    // desktop sidebar under the goal objective, and no later pass heals it
+    // (a session with no entries never reappears in `list_sessions`). Drop it
+    // instead of leaving a permanently-unrepairable empty conversation. Common
+    // causes: the workspace guard refusing turn 1 (degrade-to-serial) or a
+    // wait/terminal first decision. Best-effort — a delete failure must not
+    // fail the run itself.
+    let discarded_unused_session = created_session && !executed_turn;
+    if discarded_unused_session {
+        match client.delete_session(&session_id).await {
+            Ok(()) => println!("   ↦ discarded unused session {session_id} (no turn ran)"),
+            Err(e) => println!("   ⚠ could not discard unused session {session_id}: {e}"),
+        }
+    }
 
     // Post-run supervision: sweep dead holders (best-effort — the run's own
     // writeback already landed; a lost notification must not fail it).
@@ -4438,13 +4465,17 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
 
-    // Session retention: never delete the agent session. The session (and its
-    // accumulated exploration) stays on the agent; the NEXT caller decides
+    // Session retention: never delete a session that did work. A session (and
+    // its accumulated exploration) stays on the agent; the NEXT caller decides
     // resume-vs-fresh explicitly. The default is a fresh session; the only
     // resume path is an explicit pin (`--resume-session <id>`), so this
     // resumable classification is advisory data for the orchestrator's own
-    // judgment, not a directive.
-    if resumable {
+    // judgment, not a directive. The one exception is a session this run
+    // minted and never prompted — discarded above, so there is nothing to
+    // resume and saying otherwise would point at a deleted id.
+    if discarded_unused_session {
+        println!("   ↦ no session retained (the unused one was discarded)");
+    } else if resumable {
         println!(
             "   ⤺ session {session_id} retained (resumable) — resume it with --resume-session {session_id}"
         );
@@ -4643,6 +4674,7 @@ async fn run_turns(
     max_incomplete_retries: u32,
     force_workspace: bool,
     last_failure_kind: &mut Option<crate::state::FailureKind>,
+    executed_turn: &mut bool,
 ) -> Result<()> {
     let mut turn = 0u32;
     // P2: goal-monotonic turn counter. `turn` below restarts at 1 on every
@@ -4889,6 +4921,9 @@ async fn run_turns(
         );
         notes.extend(next_continue_note.take());
         let turn_note = (!notes.is_empty()).then(|| notes.join("\n\n"));
+        // Past this point the turn reaches the model, so the session is in use
+        // and must outlive the run (see the unused-session cleanup in `cmd_run`).
+        *executed_turn = true;
         let turn_future = execute_turn(
             client,
             session_id,

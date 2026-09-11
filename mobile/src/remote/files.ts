@@ -4,6 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Crypto from "expo-crypto";
 import { Image, Platform } from "react-native";
 import { isPhotoPickerAvailable } from "future-native-ui";
+import { withNativePresentation } from "./nativePresentation";
 import { startActivityAsync, ResultCode } from "expo-intent-launcher";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
@@ -278,7 +279,9 @@ export async function pickAttachments(existing: MobileAttachment[]): Promise<Mob
   // The iOS native module expects an array here. Passing a scalar is accepted
   // by the TypeScript surface but can be marshalled as an invalid Record on
   // some Expo native builds, which makes the picker dismiss immediately.
-  const result = await File.pickFileAsync({ multipleFiles: true, mimeTypes: ["*/*"] });
+  const result = await withNativePresentation(() =>
+    File.pickFileAsync({ multipleFiles: true, mimeTypes: ["*/*"] }),
+  );
   if (result.canceled) return existing;
   const selected = result.result.map(file => ({ file, mimeType: file.type }));
   // Quotas are intentionally checked against original bytes before any image
@@ -293,14 +296,50 @@ export async function pickAttachments(existing: MobileAttachment[]): Promise<Mob
   return combined;
 }
 
+/**
+ * Prepare files that arrived from outside the app (the share sheet) as
+ * attachments. Same quotas and image handling as the pickers; the name the
+ * sending app reported is kept, because the cached copy carries a generated
+ * prefix that would otherwise leak into the transcript.
+ */
+export async function prepareSharedAttachments(
+  files: { uri: string; name: string; mimeType: string }[],
+): Promise<MobileAttachment[]> {
+  const selected = files.map(file => ({ file: new File(file.uri), mimeType: file.mimeType }));
+  validateRawSelection([], selected);
+  const prepared = await Promise.all(
+    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
+  );
+  const named = prepared.map((attachment, index) => {
+    const name = files[index]?.name || attachment.name;
+    return {
+      ...attachment,
+      name,
+      // A re-encoded image is sent as JPEG; carry the shared name onto it.
+      transferName: attachment.transferName
+        ? `${withoutExtension(name) || "image"}${attachment.transferName.slice(
+            attachment.transferName.lastIndexOf("."),
+          )}`
+        : attachment.transferName,
+      // The cache copy belongs to this attachment — release it when the user
+      // removes it or sends the message.
+      temporary: true,
+    };
+  });
+  validateBatch(named);
+  return named;
+}
+
 export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
   const permission = await ImagePicker.requestCameraPermissionsAsync();
   if (!permission.granted) throw new Error("attachment_camera_permission");
-  const result = await ImagePicker.launchCameraAsync({
-    mediaTypes: ["images"],
-    quality: 1,
-    exif: false,
-  });
+  const result = await withNativePresentation(() =>
+    ImagePicker.launchCameraAsync({
+      mediaTypes: ["images"],
+      quality: 1,
+      exif: false,
+    }),
+  );
   if (result.canceled || !result.assets[0]) return existing;
   const asset = result.assets[0];
   const selected = { file: new File(asset.uri), mimeType: asset.mimeType ?? "image/jpeg" };
@@ -341,10 +380,12 @@ export async function pickFromAlbum(existing: MobileAttachment[]): Promise<Mobil
     // AndroidX otherwise falls back to ACTION_OPEN_DOCUMENT (a folder browser).
     // A gallery-only ACTION_PICK keeps old/non-GMS devices in the system album.
     // These galleries may only support one image at a time; users can add more.
-    const result = await startActivityAsync("android.intent.action.PICK", {
-      data: "content://media/external/images/media",
-      type: "image/*",
-    }).catch(() => {
+    const result = await withNativePresentation(() =>
+      startActivityAsync("android.intent.action.PICK", {
+        data: "content://media/external/images/media",
+        type: "image/*",
+      }),
+    ).catch(() => {
       throw new Error("attachment_album_unavailable");
     });
     if (result.resultCode !== ResultCode.Success || !result.data) return existing;
@@ -366,15 +407,17 @@ export async function pickFromAlbum(existing: MobileAttachment[]): Promise<Mobil
   }
   // System photo pickers grant access to selected images, not the whole library.
   // Do not block them behind READ_MEDIA_IMAGES / full-album permission.
-  const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ["images"],
-    allowsMultipleSelection: true,
-    selectionLimit: remaining,
-    legacy: false,
-    defaultTab: "albums",
-    quality: 1,
-    exif: false,
-  });
+  const result = await withNativePresentation(() =>
+    ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+      legacy: false,
+      defaultTab: "albums",
+      quality: 1,
+      exif: false,
+    }),
+  );
   if (result.canceled || result.assets.length === 0) return existing;
   return prepareImagePickerAssets(existing, result.assets);
 }

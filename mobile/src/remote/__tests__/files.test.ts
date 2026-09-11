@@ -17,6 +17,7 @@ import {
   pickAttachments,
   pickFromAlbum,
   prepareDownload,
+  prepareSharedAttachments,
   recoverPendingImagePickerAttachments,
   rememberPreparedPreview,
   takePhoto,
@@ -684,6 +685,60 @@ describe("recoverPendingImagePickerAttachments", () => {
   test("surfaces a pending native picker error", async () => {
     mockedPendingResult.mockResolvedValue({ code: "E_PICKER", message: "picker failed" });
     await expect(recoverPendingImagePickerAttachments([])).rejects.toThrow("attachment_failed");
+  });
+});
+
+describe("prepareSharedAttachments", () => {
+  test("keeps the name the sending app reported and marks the copy temporary", async () => {
+    const file = fsFile("file:///cache/share/0f1-a.png", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+    // A small non-JPEG image passes through untouched — only the name is
+    // re-labelled from the cache copy's generated prefix.
+    const result = await prepareSharedAttachments([
+      { uri: file.uri, name: "holiday.png", mimeType: "image/png" },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      localUri: "file:///cache/share/0f1-a.png",
+      name: "holiday.png",
+      kind: "image",
+      temporary: true,
+    });
+    expect(result[0]!.transferName).toBeUndefined();
+  });
+
+  test("carries the shared name onto a downsampled transfer copy", async () => {
+    const file = fsFile("file:///cache/share/0f1-photo.png", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+    setImageSize({ "file:///cache/share/0f1-photo.png": { width: 4000, height: 2000 } });
+    mockedManipulate.mockResolvedValue({ uri: "file:///converted/out.jpg" });
+    mockFS.__set("file:///converted/out.jpg", { bytes: new Uint8Array(5) });
+
+    const result = await prepareSharedAttachments([
+      { uri: file.uri, name: "screenshot.png", mimeType: "image/png" },
+    ]);
+    expect(mockedManipulate).toHaveBeenCalled();
+    expect(result[0]).toMatchObject({
+      name: "screenshot.png",
+      transferName: "screenshot.jpg",
+      mimeType: "image/jpeg",
+      temporary: true,
+    });
+  });
+
+  test("rejects a file over the size ceiling before anything is staged", async () => {
+    const file = fsFile("file:///cache/share/big.bin", {
+      bytes: new Uint8Array(1),
+      size: 11 * 1024 * 1024,
+      type: "application/pdf",
+    });
+    await expect(
+      prepareSharedAttachments([{ uri: file.uri, name: "big.bin", mimeType: "application/pdf" }]),
+    ).rejects.toThrow("attachment_file_too_large");
   });
 });
 

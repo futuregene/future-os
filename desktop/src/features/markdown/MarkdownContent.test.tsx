@@ -101,4 +101,20 @@ describe("streamingMarkdownContent", () => {
     expect(html).toContain("Second paragraph");
     expect(html).toContain("space-y-3");
   });
+
+  it("marks the growing tail for layout containment and leaves closed blocks untouched", () => {
+    // While a reply streams, only the still-growing tail gets `data-streamed-block`
+    // (MessageBlock scopes `contain: layout style` to it, so a delta's relayout
+    // stays inside the tail instead of re-walking the whole message).
+    const live = renderToStaticMarkup(
+      <StreamingMarkdownContent content="Done.\n\nGrowing" live />,
+    );
+    expect(live.match(/data-streamed-block=""/g)).toHaveLength(1);
+
+    // Settled content is never marked: the browser measures it exactly once.
+    const settled = renderToStaticMarkup(
+      <StreamingMarkdownContent content="Done.\n\nGrowing" live={false} />,
+    );
+    expect(settled).not.toContain("data-streamed-block");
+  });
 });

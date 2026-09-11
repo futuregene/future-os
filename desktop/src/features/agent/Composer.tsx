@@ -640,8 +640,12 @@ function ComposerImpl({
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
-      <div className="flex items-center justify-between pt-1">
-        <div className="flex items-center gap-1">
+      {/* Wraps rather than overflows: a narrow center cannot fit the model /
+          thinking / send group beside the attach / approval group, so the
+          right-hand group drops to a second row instead of pushing the send
+          button past the pane's edge. */}
+      <div className="flex flex-wrap items-center justify-between gap-y-1 pt-1">
+        <div className="flex min-w-0 items-center gap-1">
           <button
             className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
             disabled={disabled}
@@ -661,7 +665,7 @@ function ComposerImpl({
                   panelClassName="w-64 overflow-hidden"
                   trigger={(
                     <button
-                      className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                      className="inline-flex h-7 max-w-40 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                       onClick={() => {
                         setModelMenuOpen(false);
                         setThinkingMenuOpen(false);
@@ -710,7 +714,7 @@ function ComposerImpl({
               )
             : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="ms-auto flex min-w-0 items-center gap-2">
           <SelectMenu
             className="hidden md:block"
             open={modelMenuOpen}
@@ -718,7 +722,7 @@ function ComposerImpl({
             panelClassName="max-h-[40vh] w-56 overflow-y-auto"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-48 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                className="inline-flex h-7 max-w-48 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
                 onClick={() => {
                   setThinkingMenuOpen(false);
                   setApprovalMenuOpen(false);
@@ -768,7 +772,7 @@ function ComposerImpl({
             panelClassName="w-40 overflow-hidden"
             trigger={(
               <button
-                className="inline-flex h-7 max-w-40 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-7 max-w-40 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => {
                   setModelMenuOpen(false);
                   setApprovalMenuOpen(false);
