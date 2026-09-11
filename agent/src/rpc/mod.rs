@@ -492,10 +492,22 @@ fn get_state_internal(
         0.0
     };
 
-    let parent_session_id = loaded
-        .as_ref()
-        .map(|s| s.parent_session_id.clone())
-        .unwrap_or_default();
+    // In-memory first: a session created via `new_session` knows its parent
+    // immediately, but only commits it to disk (session_info) at its first
+    // run boundary. Reading disk-first therefore reported `parentSessionId`
+    // as absent for every freshly created, not-yet-prompted session — clients
+    // that bind lineage on `session_created` (desktop `import_discovered_session`)
+    // lost the parent permanently, since a session with no entries never
+    // reappears in `list_sessions` for a later heal pass. Disk stays the
+    // durable fallback (it is written from this same field).
+    let parent_session_id = if !sess.parent_session_id.is_empty() {
+        sess.parent_session_id.clone()
+    } else {
+        loaded
+            .as_ref()
+            .map(|s| s.parent_session_id.clone())
+            .unwrap_or_default()
+    };
     let active_run = sess
         .runtime
         .snapshot()
@@ -1298,6 +1310,35 @@ mod tests {
         assert!(text.contains("1.25"), "{text}");
         assert!(text.contains("\"runId\""), "{text}");
         assert!(!text.contains("\"run_id\""), "no legacy alias: {text}");
+    }
+
+    #[test]
+    fn get_state_reports_parent_before_it_is_committed_to_disk() {
+        let (_dir, state) = bare_app_state();
+        // `new_session` with a parent (what `loop run` does) keeps the lineage
+        // in memory; the parent only reaches disk at the first run boundary.
+        // Nothing is persisted here, so the disk fallback cannot supply it.
+        let mut session = crate::rpc::ServerSession::new_with_queue_budget(
+            "fresh".to_string(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                std::sync::Arc::new(crate::test_support::EmptyProvider),
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            "/tmp",
+            std::sync::Arc::new(SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        session.parent_session_id = "parent-1".to_string();
+        state.create_session(session);
+        let payload = get_state_internal(&state, "fresh", None).unwrap();
+        let text = payload.to_string();
+        assert!(
+            text.contains("\"parentSessionId\":\"parent-1\""),
+            "unprompted session must report its in-memory parent: {text}"
+        );
     }
 
     #[test]
