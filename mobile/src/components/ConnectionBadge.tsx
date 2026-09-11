@@ -1,35 +1,33 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import type { ConnectionPhase } from "../remote/types";
+import type { ConnectionPresentation } from "../remote/connectionPresentation";
 import { colors, radius, spacing } from "../theme/tokens";
 
 export function ConnectionBadge({
-  phase,
-  desktopOnline,
+  presentation,
   onReconnect,
   compact = false,
 }: {
-  phase: ConnectionPhase;
-  desktopOnline: boolean;
+  presentation: ConnectionPresentation;
   onReconnect?: () => void;
   compact?: boolean;
 }) {
   const { t } = useTranslation();
-  const connected = phase === "ready" && desktopOnline;
-  const connecting = phase === "connecting" || phase === "reconnecting" || phase === "refreshing";
-  const disconnected = !connected && !connecting;
-  const label = connected
-    ? t("connection.connected")
-    : connecting
-      ? t("connection.connecting")
-      : t("connection.disconnected");
+  const connected = presentation.level === "connected";
+  const connecting = presentation.level === "connecting";
+  const reconnectable =
+    presentation.action === "reconnect" ||
+    presentation.action === "retry" ||
+    presentation.action === "checkNetwork";
+  const label =
+    t(presentation.titleKey) + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
 
   return (
     <Pressable
-      accessibilityLabel={disconnected ? t("connection.reconnect") : label}
-      accessibilityRole={disconnected ? "button" : undefined}
-      disabled={!disconnected}
-      onPress={disconnected ? onReconnect : undefined}
+      accessibilityLabel={reconnectable ? `${label}. ${t("connection.reconnect")}` : label}
+      accessibilityRole={reconnectable ? "button" : undefined}
+      disabled={!reconnectable}
+      onPress={reconnectable ? onReconnect : undefined}
       style={[
         styles.badge,
         connected ? styles.connected : connecting ? styles.connecting : styles.disconnected,
@@ -81,15 +79,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     borderColor: colors.lineSoft,
   },
-  connected: { backgroundColor: colors.successSoft, borderColor: colors.successLine },
+  connected: { backgroundColor: colors.infoSoft, borderColor: colors.infoLine },
   connecting: { backgroundColor: colors.warningSoft, borderColor: colors.warningLine },
   disconnected: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerLine },
   dot: { width: 7, height: 7, borderRadius: 4 },
-  connectedDot: { backgroundColor: colors.success },
+  connectedDot: { backgroundColor: colors.info },
   connectingDot: { backgroundColor: colors.warning },
   disconnectedDot: { backgroundColor: colors.danger },
   label: { fontSize: 12, fontWeight: "600" },
-  connectedLabel: { color: colors.success },
+  connectedLabel: { color: colors.info },
   connectingLabel: { color: colors.warning },
   disconnectedLabel: { color: colors.danger },
 });

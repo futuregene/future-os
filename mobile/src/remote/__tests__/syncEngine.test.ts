@@ -32,7 +32,7 @@ class Journal {
     this.events.push(event);
   }
   since(run: string, from: number): StreamEvent[] {
-    return this.events.filter(e =>
+    return this.events.filter((e) =>
       e.runId === run && e.idx != null && from === -1 ? true : (e.idx ?? -1) > from,
     );
   }
@@ -71,11 +71,11 @@ class Harness {
         const runKey = this.snakeCaseReplay ? "run_id" : "runId";
         const events = this.journal
           .since(run, since)
-          .map(e => ({ type: e.type, data: e.data, [runKey]: e.runId, idx: e.idx }));
+          .map((e) => ({ type: e.type, data: e.data, [runKey]: e.runId, idx: e.idx }));
         if (this.projection) {
           // Folded projections carry NO run_id per event (whole-run coalesced
           // deltas) — exactly the wire shape that reproduced the ghost item.
-          const wire = this.projection.map(e => ({ type: e.type, data: e.data, idx: e.idx }));
+          const wire = this.projection.map((e) => ({ type: e.type, data: e.data, idx: e.idx }));
           const projection = this.omitProjectionCursor
             ? { run_id: run, events: wire }
             : { run_id: run, cursor: wire.length - 1, events: wire };
@@ -89,7 +89,7 @@ class Harness {
         return result;
       },
     });
-    this.engine.subscribe(commit => {
+    this.engine.subscribe((commit) => {
       this.timeline[commit.sessionId] = commit.timeline;
     });
   }
@@ -101,7 +101,7 @@ class Harness {
 
   /** Wait for the lane to drain. */
   async settle(): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
   /** Timeline committed for a session (thrown if the lane never established). */
@@ -113,8 +113,8 @@ class Harness {
 
   textOf(sessionId: string): string {
     return (this.timeline[sessionId]?.items ?? [])
-      .filter(item => item.kind === "message")
-      .map(item => (item.kind === "message" ? item.text : ""))
+      .filter((item) => item.kind === "message")
+      .map((item) => (item.kind === "message" ? item.text : ""))
       .join("");
   }
 }
@@ -141,7 +141,7 @@ describe("SyncEngine", () => {
 
   test("clear rejects a late commit from the previous pairing generation", async () => {
     let releaseState: ((state: { activeRun?: { runId: string } }) => void) | undefined;
-    const state = new Promise<{ activeRun?: { runId: string } }>(resolve => {
+    const state = new Promise<{ activeRun?: { runId: string } }>((resolve) => {
       releaseState = resolve;
     });
     const engine = new SyncEngine({
@@ -153,21 +153,21 @@ describe("SyncEngine", () => {
     engine.subscribe(commits);
 
     engine.event("old-session", agentStart("old-run"));
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     engine.clear();
     releaseState?.({ activeRun: { runId: "old-run" } });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(commits).not.toHaveBeenCalled();
 
     engine.mutate("new-session", () => emptyTimeline());
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(commits).toHaveBeenCalledTimes(1);
     expect(commits.mock.calls[0][0].sessionId).toBe("new-session");
   });
 
   test("restart bypasses a request still pending on the previous connection", async () => {
     let releaseOldState: (() => void) | undefined;
-    const oldState = new Promise<{ activeRun?: { runId: string } }>(resolve => {
+    const oldState = new Promise<{ activeRun?: { runId: string } }>((resolve) => {
       releaseOldState = () => resolve({});
     });
     let stateReads = 0;
@@ -186,16 +186,16 @@ describe("SyncEngine", () => {
     engine.subscribe(commits);
 
     engine.reconcile("s1", "open");
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     engine.restart("s1", "reconnect");
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(stateReads).toBe(2);
     expect(commits).toHaveBeenCalledTimes(1);
     expect(commits.mock.calls[0][0].timeline.items[0]).toMatchObject({ text: "restored" });
 
     releaseOldState?.();
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(commits).toHaveBeenCalledTimes(1);
   });
 
@@ -211,7 +211,7 @@ describe("SyncEngine", () => {
     });
 
     engine.reconcile("s1", "open");
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(onFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -321,7 +321,7 @@ describe("SyncEngine", () => {
 
     // The first reconcile fails. The lane-owned retry fires after 500ms and
     // must retain the gap event plus the terminal event queued behind it.
-    await new Promise(resolve => setTimeout(resolve, 650));
+    await new Promise((resolve) => setTimeout(resolve, 650));
     expect(h.textOf("s1")).toBe("abc");
     expect(h.timelineOf("s1").streaming).toBe(false);
   });
@@ -386,7 +386,7 @@ describe("SyncEngine", () => {
     h.journal.add(agentStart(run, 0));
 
     h.engine.event("s1", agentStart(run, 0));
-    h.engine.mutate("s1", tl => ({
+    h.engine.mutate("s1", (tl) => ({
       ...tl,
       items: [
         ...tl.items,
@@ -398,7 +398,7 @@ describe("SyncEngine", () => {
 
     expect(h.textOf("s1")).toContain("streamed");
     expect(
-      h.timelineOf("s1").items.some(item => item.kind === "notice" && item.text === "sent"),
+      h.timelineOf("s1").items.some((item) => item.kind === "notice" && item.text === "sent"),
     ).toBe(true);
   });
 
@@ -413,7 +413,7 @@ describe("SyncEngine", () => {
     expect(h.timelineOf("s1").streaming).toBe(false);
     const assistantItems = h
       .timelineOf("s1")
-      .items.filter(item => item.kind === "message" && item.role === "assistant");
+      .items.filter((item) => item.kind === "message" && item.role === "assistant");
     expect(assistantItems).toHaveLength(1);
     expect(assistantItems[0]).toMatchObject({ runId: run, streaming: false });
   });
@@ -473,7 +473,7 @@ describe("SyncEngine", () => {
 
     const userItems = h
       .timelineOf("s1")
-      .items.filter(item => item.kind === "message" && item.role === "user");
+      .items.filter((item) => item.kind === "message" && item.role === "user");
     expect(userItems).toHaveLength(1);
     expect(userItems[0]).toMatchObject({ text: "hi there" });
   });
@@ -561,8 +561,8 @@ describe("SyncEngine", () => {
     // The first reconcile failed and armed a retry timer. A mutation arriving
     // inside the backoff window re-runs step(), which must defer to the pending
     // timer (retryNotBefore > now) instead of re-entering the reconcile.
-    h.engine.mutate("s1", tl => tl);
-    await new Promise(resolve => setTimeout(resolve, 650));
+    h.engine.mutate("s1", (tl) => tl);
+    await new Promise((resolve) => setTimeout(resolve, 650));
     expect(h.textOf("s1")).toBe("abc");
     expect(h.timelineOf("s1").streaming).toBe(false);
   });
@@ -578,9 +578,9 @@ describe("SyncEngine", () => {
     };
     h.engine.reconcile("s1", "open");
     await h.settle();
-    expect(h.timelineOf("s1").items.map(i => i.id)).toEqual(["h1", "h2"]);
+    expect(h.timelineOf("s1").items.map((i) => i.id)).toEqual(["h1", "h2"]);
 
-    h.engine.mutate("s1", tl => ({
+    h.engine.mutate("s1", (tl) => ({
       ...tl,
       items: [
         ...tl.items,
@@ -593,6 +593,20 @@ describe("SyncEngine", () => {
     h.engine.reconcile("s1", "resend");
     await h.settle();
 
-    expect(h.timelineOf("s1").items.map(i => i.id)).toEqual(["h1", "h2", "notice-1"]);
+    expect(h.timelineOf("s1").items.map((i) => i.id)).toEqual(["h1", "h2", "notice-1"]);
+  });
+  test("live queue overflow converges from the durable journal without losing text", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run));
+    h.engine.event("s1", agentStart(run));
+    for (let idx = 1; idx <= 4200; idx += 1) {
+      const event = textChunk(run, idx, "a");
+      h.journal.add(event);
+      h.engine.event("s1", event);
+    }
+    await h.settle();
+    expect(h.textOf("s1")).toBe("a".repeat(4200));
+    h.engine.clear();
   });
 });

@@ -5,7 +5,9 @@ import type { RemoteCredentials } from "./types";
 // stable device identity that must survive an unpair, so it lives under
 // DEVICE_ID_KEY alone (single source of truth) rather than being duplicated
 // inside the credential set.
-const CREDENTIAL_KEYS: { [Key in Exclude<keyof RemoteCredentials, "deviceId">]: string } = {
+const CREDENTIAL_KEYS: {
+  [Key in Exclude<keyof RemoteCredentials, "deviceId">]: string;
+} = {
   pairId: "futureos.remote.pair-id.v1",
   seed: "futureos.remote.seed.v1",
   userJwt: "futureos.remote.user-jwt.v1",
@@ -15,6 +17,7 @@ const CREDENTIAL_KEYS: { [Key in Exclude<keyof RemoteCredentials, "deviceId">]: 
   expectedDesktopId: "futureos.remote.desktop-id.v1",
   expectedDesktopPublicKey: "futureos.remote.desktop-public-key.v1",
 };
+const CREDENTIAL_COMMIT_KEY = "futureos.remote.credential-commit.v2";
 const DEVICE_ID_KEY = "futureos.remote.device-id.v1";
 const LAST_MODEL_KEY = "futureos.remote.last-model.v1";
 const LAST_THINKING_KEY = "futureos.remote.last-thinking.v1";
@@ -38,51 +41,79 @@ function enqueueCredentialOperation<T>(operation: () => Promise<T>): Promise<T> 
   return result;
 }
 
+async function settleWrites(writes: Promise<void>[]): Promise<void> {
+  const results = await Promise.allSettled(writes);
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
+
 async function deleteCredentialFields(): Promise<void> {
-  await Promise.all(
-    Object.values(CREDENTIAL_KEYS).map(key => SecureStore.deleteItemAsync(key, secureOptions)),
+  // Persist the tombstone before deleting fields, including legacy credentials.
+  await SecureStore.setItemAsync(CREDENTIAL_COMMIT_KEY, "cleared", secureOptions);
+  await settleWrites(
+    Object.values(CREDENTIAL_KEYS).flatMap((key) =>
+      [key, key + ".a", key + ".b"].map((item) => SecureStore.deleteItemAsync(item, secureOptions)),
+    ),
   );
 }
 
 export async function loadCredentials(): Promise<RemoteCredentials | null> {
   return enqueueCredentialOperation(async () => {
+    const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
+    if (commit === "cleared") return null;
+    if (commit !== null && commit !== "a" && commit !== "b")
+      throw new Error("invalid_credential_commit");
     const entries = await Promise.all(
       Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
         field,
-        await SecureStore.getItemAsync(key, secureOptions),
+        await SecureStore.getItemAsync(commit ? key + "." + commit : key, secureOptions),
       ]),
     );
     if (entries.every(([, value]) => value == null)) return null;
-    if (entries.some(([, value]) => value == null)) {
-      await deleteCredentialFields();
-      return null;
-    }
     const deviceId = await loadDeviceId();
-    if (deviceId == null) {
-      // A credential bundle without its device identity is corrupt; clear it so a
-      // fresh pair re-establishes both.
+    if (entries.some(([, value]) => !value) || !deviceId) {
       await deleteCredentialFields();
       return null;
     }
-    return { ...Object.fromEntries(entries), deviceId } as unknown as RemoteCredentials;
+    return {
+      ...Object.fromEntries(entries),
+      deviceId,
+    } as unknown as RemoteCredentials;
   });
 }
 
 export async function saveCredentials(credentials: RemoteCredentials): Promise<void> {
   return enqueueCredentialOperation(async () => {
+    const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
+    const slot = commit === "a" ? "b" : "a";
     const { deviceId, ...rest } = credentials;
+    // Identity is installation-scoped and must never rotate with a pairing.
+    const storedDeviceId = await loadDeviceId();
+    if (storedDeviceId && storedDeviceId !== deviceId)
+      throw new Error("credential_device_mismatch");
+    if (!storedDeviceId) await saveDeviceId(deviceId);
     const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof rest)[];
-    await Promise.all([
-      ...fields.map(field =>
-        SecureStore.setItemAsync(CREDENTIAL_KEYS[field], rest[field], secureOptions),
+    await settleWrites(
+      fields.map((field) =>
+        SecureStore.setItemAsync(CREDENTIAL_KEYS[field] + "." + slot, rest[field], secureOptions),
       ),
-      saveDeviceId(deviceId),
-    ]);
+    );
+    // Only this single write makes the complete new bundle visible. A failed
+    // write or process exit leaves the previously committed slot readable.
+    await SecureStore.setItemAsync(CREDENTIAL_COMMIT_KEY, slot, secureOptions);
   });
 }
 
-export async function clearCredentials(): Promise<void> {
-  return enqueueCredentialOperation(deleteCredentialFields);
+export async function clearCredentials(expectedPairId?: string): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    if (expectedPairId) {
+      const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
+      const key = CREDENTIAL_KEYS.pairId + (commit === "a" || commit === "b" ? `.${commit}` : "");
+      const pairId = await SecureStore.getItemAsync(key, secureOptions);
+      if (pairId && pairId !== expectedPairId) return;
+    }
+    await deleteCredentialFields();
+  });
 }
 
 export async function loadDeviceId(): Promise<string | null> {
@@ -123,21 +154,55 @@ export interface PendingRevoke {
  * server-side revoke is queued here to fire on a later launch. Store only the
  * revoke-relevant fields — never the full credential set.
  */
-export async function savePendingRevoke(revoke: PendingRevoke): Promise<void> {
-  await SecureStore.setItemAsync(PENDING_REVOKE_KEY, JSON.stringify(revoke), secureOptions);
-}
-
-export async function loadPendingRevoke(): Promise<PendingRevoke | null> {
+async function readPendingRevokes(): Promise<PendingRevoke[]> {
   const raw = await SecureStore.getItemAsync(PENDING_REVOKE_KEY, secureOptions);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PendingRevoke;
-  } catch {
-    await clearPendingRevoke();
-    return null;
-  }
+  if (!raw) return [];
+  const parsed: unknown = JSON.parse(raw);
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  if (
+    !entries.every(
+      (entry) =>
+        entry &&
+        ["pairId", "deviceId", "seed", "refreshToken", "tokenUrl"].every(
+          (field) => typeof entry[field] === "string" && entry[field].length > 0,
+        ),
+    )
+  )
+    throw new Error("invalid_pending_revoke");
+  return entries as PendingRevoke[];
 }
 
-export async function clearPendingRevoke(): Promise<void> {
-  await SecureStore.deleteItemAsync(PENDING_REVOKE_KEY, secureOptions);
+export async function savePendingRevoke(revoke: PendingRevoke): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const pending = await readPendingRevokes();
+    const { pairId, deviceId, seed, refreshToken, tokenUrl } = revoke;
+    await SecureStore.setItemAsync(
+      PENDING_REVOKE_KEY,
+      JSON.stringify([
+        ...pending.filter((entry) => entry.pairId !== revoke.pairId),
+        { pairId, deviceId, seed, refreshToken, tokenUrl },
+      ]),
+      secureOptions,
+    );
+  });
+}
+
+export async function loadPendingRevoke(
+  excluded: ReadonlySet<string> = new Set(),
+): Promise<PendingRevoke | null> {
+  return enqueueCredentialOperation(
+    async () =>
+      (await readPendingRevokes()).find((pending) => !excluded.has(pending.pairId)) ?? null,
+  );
+}
+
+export async function clearPendingRevoke(pairId?: string): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const pending = pairId
+      ? (await readPendingRevokes()).filter((entry) => entry.pairId !== pairId)
+      : [];
+    if (pending.length)
+      await SecureStore.setItemAsync(PENDING_REVOKE_KEY, JSON.stringify(pending), secureOptions);
+    else await SecureStore.deleteItemAsync(PENDING_REVOKE_KEY, secureOptions);
+  });
 }

@@ -11,6 +11,8 @@ export interface EventsData {
 }
 
 export interface EventsPage extends EventsData {
+  watermark?: number;
+  nextSinceIdx?: number;
   hasMore?: boolean;
   nextOffset?: number;
 }
@@ -32,17 +34,39 @@ export async function fetchEventsSince(
   let projection: EventsData["projection"] = null;
   let truncated = false;
   let offset = 0;
+  let cursor = sinceIdx;
+  let watermark: number | undefined;
   for (;;) {
     const page = (
       await client.requestRetry<EventsPage>(
-        { type: "get_events_since", sessionId, runId, sinceIdx, offset },
+        {
+          type: "get_events_since",
+          sessionId,
+          runId,
+          sinceIdx: cursor,
+          offset,
+          ...(watermark === undefined ? {} : { replayUntilIdx: watermark }),
+        },
         sessionId,
       )
     ).data;
+    if (watermark !== undefined && page.watermark !== watermark)
+      throw new Error("replay_window_changed");
     events.push(...(page.events ?? []));
     if (page.projection?.events?.length) projection = page.projection;
     if (page.truncated) truncated = true;
     if (!page.hasMore) break;
+    if (Number.isSafeInteger(page.watermark)) {
+      if (watermark !== undefined && page.watermark !== watermark)
+        throw new Error("replay_window_changed");
+      watermark = page.watermark;
+      const nextCursor = page.nextSinceIdx;
+      if (!Number.isSafeInteger(nextCursor) || nextCursor! <= cursor)
+        throw new Error("replay_cursor_stalled");
+      cursor = nextCursor!;
+      offset = 0;
+      continue;
+    }
     const next = page.nextOffset;
     if (typeof next !== "number" || next <= offset) break;
     offset = next;

@@ -70,7 +70,7 @@ export function ComposerDock({
 }) {
   return (
     <View
-      onLayout={event => setComposerHeight(event.nativeEvent.layout.height)}
+      onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
       style={[styles.composerDock, keyboardLift > 0 ? { bottom: keyboardLift } : null]}
     >
       <View pointerEvents="none" style={styles.composerFade}>
@@ -95,15 +95,21 @@ export function ComposerDock({
           <Text style={styles.backToLatestText}>{t("chat.backToLatest")}</Text>
         </Pressable>
       )}
-      {showOffline && <Text style={styles.offlineComposer}>{t("connection.offlineHint")}</Text>}
+      {(showOffline || remote.connectionPresentation.customerState === "devicePreparing") && (
+        <Text style={styles.offlineComposer}>
+          {t(remote.connectionPresentation.hintKey ?? "connection.offlineHint")}
+        </Text>
+      )}
       {!remote.draft && remote.desktopOnline && remote.models.length === 0 && !remote.modelId && (
         <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
       )}
-      {pendingApprovals.map(item => (
+      {pendingApprovals.map((item) => (
         <View key={item.id} style={styles.dockedApproval}>
           <PendingApprovalCard
             error={approvalSubmitting === item.payload.approval_request_id ? null : approvalError}
-            onDecision={decision => void decideApproval(item.payload.approval_request_id, decision)}
+            onDecision={(decision) =>
+              void decideApproval(item.payload.approval_request_id, decision)
+            }
             payload={item.payload}
             submitting={approvalSubmitting === item.payload.approval_request_id}
           />
@@ -139,7 +145,7 @@ export function ComposerDock({
                     accessibilityLabel={t("attachment.remove", { name: attachment.name })}
                     hitSlop={8}
                     onPress={() =>
-                      setAttachments(current => {
+                      setAttachments((current) => {
                         deleteTemporaryAttachment(current[index]!);
                         return current.filter((_, itemIndex) => itemIndex !== index);
                       })
@@ -151,7 +157,7 @@ export function ComposerDock({
               ))}
             </ScrollView>
           )}
-          {attachments.some(a => a.kind === "image") && !supportsImages && (
+          {attachments.some((a) => a.kind === "image") && !supportsImages && (
             <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
           )}
           <TextInput

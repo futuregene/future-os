@@ -1,4 +1,5 @@
-import type { NatsConnection } from "@nats-io/nats-core";
+import { ConnectionGeneration } from "./connectionGeneration";
+import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { fromSeed } from "nkeys.js";
@@ -8,6 +9,7 @@ import { backoffDelayMs, classifyError, transition, type ConnectionState } from 
 import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "./handshake";
 import { decodeRemoteJson } from "./remoteJson";
 import type {
+  SnapshotVersion,
   Presence,
   PresenceSession,
   RemoteCommand,
@@ -43,9 +45,10 @@ export interface RemoteClientCallbacks {
   onCredentials(credentials: RemoteCredentials): Promise<void>;
   onEvent(event: StreamEvent, sessionId: string): void;
   onEventDecodeFailure(sessionId: string, error: Error): void;
+  onCatalogEpoch?(epoch: string | undefined): void;
   onPresence(presence: Presence): void;
-  onSessions(sessions: PresenceSession[]): void;
-  onWorkspaces(workspaces: RemoteWorkspace[]): void;
+  onSessions(sessions: PresenceSession[], version?: SnapshotVersion): void;
+  onWorkspaces(workspaces: RemoteWorkspace[], version?: SnapshotVersion): void;
   onFeatures(features: string[]): void;
   onConnectionState(state: ConnectionState): void;
   onReconnected(): void;
@@ -94,14 +97,20 @@ export class RemoteClient {
    */
   private authRetryCount = 0;
   private generation = 0;
+  private activeGeneration: ConnectionGeneration | null = null;
+  private candidateGeneration: ConnectionGeneration | null = null;
+  private candidateConnection: NatsConnection | null = null;
+  private attemptController: AbortController | null = null;
+  private openPromise: Promise<void> | null = null;
   private stopped = false;
   private appActive = true;
   private networkAvailable = true;
   private recoveryPromise: Promise<void> | null = null;
   private failedGeneration: number | null = null;
   private state: ConnectionState = "unpaired";
+  private negotiatedFeatures = new Set<string>();
   private confirmedBridgeInstanceId = "";
-  private handshakePromise: Promise<HandshakeConfirmation> | null = null;
+  private readonly handshakes = new WeakMap<NatsConnection, Promise<HandshakeConfirmation>>();
   /** Guards against overlapping token refresh (timer + auth failure racing). */
   private refreshInFlight = false;
   private systemFailures: number[] = [];
@@ -220,38 +229,69 @@ export class RemoteClient {
    * 1s later" storm is structurally impossible — close never arms a timer, and
    * the retry timer is owned by exactly one place, here).
    */
-  async open(): Promise<void> {
+  open(): Promise<void> {
+    if (this.openPromise) return this.openPromise;
+    const pending = this.openAttempt().finally(() => {
+      if (this.openPromise === pending) this.openPromise = null;
+    });
+    this.openPromise = pending;
+    return pending;
+  }
+
+  private async openAttempt(): Promise<void> {
     if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
+    const controller = new AbortController();
+    this.attemptController = controller;
+    const current = () =>
+      !controller.signal.aborted && !this.stopped && generation === this.generation;
     try {
       const previous = this.credentials;
-      const fresh = await ensureFreshCredentials(this.credentials);
-      if (this.stopped || generation !== this.generation) return;
-      this.credentials = fresh;
+      const fresh = await ensureFreshCredentials(previous, controller.signal);
+      if (!current()) return;
       if (fresh !== previous) {
         await this.callbacks.onCredentials(fresh);
-        if (this.stopped || generation !== this.generation) return;
+        if (!current()) return;
       }
+      this.credentials = fresh;
       await this.connectSocket(generation);
-      if (
-        this.stopped ||
-        !this.appActive ||
-        !this.networkAvailable ||
-        generation !== this.generation
-      )
-        return;
-      this.scheduleRefresh();
+      if (current()) this.scheduleRefresh();
     } catch (error) {
-      if (this.stopped || generation !== this.generation) return;
-      this.handleFailure(error);
+      if (current()) {
+        this.openPromise = null;
+        this.handleFailure(error);
+      }
+    } finally {
+      if (this.attemptController === controller) this.attemptController = null;
     }
+  }
+
+  private cancelAttempt(): void {
+    this.generation += 1;
+    this.attemptController?.abort();
+    this.attemptController = null;
+    this.openPromise = null;
+    this.candidateGeneration?.retire();
+    this.candidateGeneration = null;
+    const candidate = this.candidateConnection;
+    this.candidateConnection = null;
+    if (candidate) void candidate.close().catch(() => undefined);
+  }
+
+  private isLiveGeneration(generation: number): boolean {
+    return (
+      !this.stopped &&
+      ((this.activeGeneration?.id === generation && this.activeGeneration.live) ||
+        (this.candidateGeneration?.id === generation && this.candidateGeneration.live))
+    );
   }
 
   /** Full teardown — never arms a retry, never broadcasts a phase. Idempotent. */
   async close(reason: "UserInitiated" | "Unpair" = "UserInitiated"): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.cancelAttempt();
     this.clearTimers();
     this.disposeConnection(reason === "UserInitiated" ? "close" : "unpair");
     this.rejectDownloadWaiters("closed");
@@ -263,7 +303,7 @@ export class RemoteClient {
     if (this.stopped || available === this.networkAvailable) return;
     this.networkAvailable = available;
     if (available) return;
-    this.generation += 1;
+    this.cancelAttempt();
     this.recoveryPromise = null;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
@@ -281,7 +321,7 @@ export class RemoteClient {
     this.appActive = active;
     if (active) return;
     this.recoveryPromise = null;
-    this.generation += 1;
+    this.cancelAttempt();
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
     this.disposeConnection("background");
@@ -334,7 +374,6 @@ export class RemoteClient {
     // Keep the old generation as the serving fallback while the replacement
     // completes its handshake, subscriptions, and flush. `connectSocket()`
     // atomically publishes the new connection and only then closes this one.
-    this.generation += 1;
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
     this.retryAttempt = 0;
@@ -343,21 +382,31 @@ export class RemoteClient {
 
   /** Rotate the JWT in place and resume the connection (M1's refreshable class). */
   private async refreshToken(): Promise<void> {
-    if (this.refreshInFlight || this.isTerminal() || !this.appActive) return;
+    if (
+      this.stopped ||
+      this.refreshInFlight ||
+      this.openPromise ||
+      this.isTerminal() ||
+      !this.appActive ||
+      !this.networkAvailable
+    )
+      return;
     this.refreshInFlight = true;
+    const controller = new AbortController();
+    this.attemptController = controller;
     try {
       this.signal({ type: "auth_failed" }); // moves to refreshing
-      const fresh = await refreshCredentials(this.credentials);
-      if (this.stopped) return;
+      const fresh = await refreshCredentials(this.credentials, controller.signal);
+      if (this.stopped || controller.signal.aborted) return;
       this.credentials = fresh;
       await this.callbacks.onCredentials(fresh);
-      if (this.stopped) return;
+      if (this.stopped || controller.signal.aborted) return;
       // Re-open with the fresh token while retaining the old generation until
       // the replacement passes its readiness barrier. The FSM is already in
       // refreshing, so this does not expose a second ready connection.
       await this.open();
     } catch (error) {
-      if (this.stopped) return;
+      if (this.stopped || controller.signal.aborted) return;
       // Refresh is attempted ONCE. A repeat failure must not loop straight
       // back into another refresh (M1's infinite retry): a revoked refresh
       // token is terminal, anything else backs off and re-opens, where
@@ -371,6 +420,7 @@ export class RemoteClient {
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       this.scheduleRetry();
     } finally {
+      if (this.attemptController === controller) this.attemptController = null;
       this.refreshInFlight = false;
     }
   }
@@ -381,6 +431,7 @@ export class RemoteClient {
     try {
       connection = await wsconnect({
         servers: this.credentials.natsWsUrl,
+        timeout: 10_000,
         inboxPrefix: `p.${this.credentials.pairId}.rep.${this.credentials.deviceId}`,
         authenticator: jwtAuthenticator(this.credentials.userJwt, seed),
       });
@@ -394,6 +445,9 @@ export class RemoteClient {
       await connection.close();
       return;
     }
+    const candidate = new ConnectionGeneration(generation);
+    this.candidateGeneration = candidate;
+    this.candidateConnection = connection;
     try {
       let confirmation: HandshakeConfirmation;
       try {
@@ -412,7 +466,8 @@ export class RemoteClient {
       this.subscribeLiveness(connection, generation);
       this.subscribeState(connection, generation);
       this.subscribeTransfers(connection, generation);
-      await connection.flush();
+      await withTimeout(connection.flush(), 10_000);
+      candidate.check();
       if (this.stopped || this.isTerminal() || generation !== this.generation) {
         await connection.close().catch(() => undefined);
         return;
@@ -421,17 +476,24 @@ export class RemoteClient {
       // ghost connection: the old path nulled `this.connection` before the
       // refresh, leaking it on failure.
       const previous = this.connection;
+      const previousGeneration = this.activeGeneration;
+      this.activeGeneration = candidate;
+      this.candidateGeneration = null;
+      this.candidateConnection = null;
       this.connection = connection;
+      previousGeneration?.retire();
       this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
       this.retryAttempt = 0;
       this.authRetryCount = 0;
       this.failedGeneration = null;
       this.watchStatus(connection, generation);
-      if (previous && previous !== connection) {
-        await previous.close().catch(() => undefined);
-      }
+      if (previous && previous !== connection) void previous.close().catch(() => undefined);
+      this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
       this.callbacks.onPresence(confirmation.presence);
+      this.negotiatedFeatures = new Set(confirmation.features ?? []);
       this.callbacks.onFeatures(confirmation.features ?? []);
+      candidate.activate();
+      if (this.stopped || this.connection !== connection) return;
       this.signal({ type: "ready" });
       this.finishFailureEpisode("recovered");
       if (this.healthyTimer) clearTimeout(this.healthyTimer);
@@ -448,6 +510,11 @@ export class RemoteClient {
       if (!this.stopped && generation === this.generation) {
         this.failedGeneration = generation;
       }
+      candidate.retire();
+      if (this.candidateGeneration === candidate) {
+        this.candidateGeneration = null;
+        this.candidateConnection = null;
+      }
       await connection.close().catch(() => undefined);
       throw error;
     }
@@ -458,7 +525,7 @@ export class RemoteClient {
     if (kind === "authTerminal") {
       // The device was revoked (M1) — stop every network action and tell the
       // UI to guide the user to re-pair.
-      this.generation += 1;
+      this.cancelAttempt();
       this.failedGeneration = null;
       this.clearTimers();
       this.signal({ type: "revoked" });
@@ -468,7 +535,7 @@ export class RemoteClient {
       return;
     }
     if (kind === "fatal") {
-      this.generation += 1;
+      this.cancelAttempt();
       this.failedGeneration = null;
       this.clearTimers();
       const failure = error instanceof Error ? error : new Error(String(error));
@@ -495,6 +562,7 @@ export class RemoteClient {
       // keeps failing after a successful refresh must not spin at one full
       // RTT per cycle (no backoff): the second consecutive auth failure takes
       // the shared retry path instead.
+      if ((jwtExpiry(this.credentials.userJwt) ?? 0) * 1000 <= Date.now()) this.authRetryCount = 0;
       this.authRetryCount += 1;
       if (this.authRetryCount === 1 && !this.refreshInFlight) {
         void this.refreshToken();
@@ -505,7 +573,7 @@ export class RemoteClient {
       const failure = new Error(
         `remote_service_misconfigured: ${error instanceof Error ? error.message : String(error)}`,
       );
-      this.generation += 1;
+      this.cancelAttempt();
       this.failedGeneration = null;
       this.clearTimers();
       this.signal({ type: "fatal", error: failure });
@@ -522,14 +590,23 @@ export class RemoteClient {
    * exactly once so their terminal callbacks cannot reset the retry timer into
    * a reconnect storm. */
   private failGeneration(error: unknown, generation: number): void {
-    if (this.stopped || generation !== this.generation || this.failedGeneration === generation) {
+    if (this.candidateGeneration?.id === generation) {
+      this.candidateGeneration.fail(error);
+      void this.candidateConnection?.close().catch(() => undefined);
+      return;
+    }
+    if (!this.isLiveGeneration(generation) || this.failedGeneration === generation) {
       return;
     }
     this.failedGeneration = generation;
+    if (this.openPromise) {
+      this.signal({ type: "transport_disconnect" });
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("subscription_ended") || message.includes("protocol_error")) {
       const cutoff = Date.now() - SYSTEM_FAILURE_WINDOW_MS;
-      this.systemFailures = this.systemFailures.filter(timestamp => timestamp >= cutoff);
+      this.systemFailures = this.systemFailures.filter((timestamp) => timestamp >= cutoff);
       this.systemFailures.push(Date.now());
       this.recordFailure("generation_unhealthy", error);
       if (this.systemFailures.length > MAX_SYSTEM_RECOVERIES) {
@@ -604,178 +681,125 @@ export class RemoteClient {
   private disposeConnection(reason: string): void {
     const connection = this.connection;
     this.connection = null;
-    this.handshakePromise = null;
+    this.activeGeneration?.retire();
+    this.activeGeneration = null;
     this.confirmedBridgeInstanceId = "";
     this.rejectDownloadWaiters(reason);
     if (connection) void connection.close().catch(() => undefined);
   }
 
-  private subscribeTransfers(connection: NatsConnection, generation: number): void {
-    const prefix = `p.${this.credentials.pairId}.xfer.down.`;
-    const subscription = connection.subscribe(`${prefix}>`);
+  private subscribe(
+    connection: NatsConnection,
+    generation: number,
+    subject: string,
+    category: string,
+    consume: (message: Msg) => void | Promise<void>,
+  ): void {
+    const owner =
+      this.candidateGeneration?.id === generation
+        ? this.candidateGeneration
+        : this.activeGeneration;
+    if (!owner) throw new Error("missing_connection_generation");
+    const subscription = connection.subscribe(subject);
     void (async () => {
-      let liveGeneration = true;
-      let failure: unknown = new Error("remote_transfer_subscription_ended");
       try {
         for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) {
-            liveGeneration = false;
-            break;
-          }
-          const suffix = message.subject.startsWith(prefix)
-            ? message.subject.slice(prefix.length)
-            : "";
-          const parts = suffix.split(".");
-          if (parts.length !== 3 || parts[1] !== "chunk") continue;
-          const key = `${parts[0]}:${parts[2]}`;
-          const waiter = this.downloadWaiters.get(key);
-          if (!waiter) continue;
-          clearTimeout(waiter.timer);
-          this.downloadWaiters.delete(key);
-          waiter.resolve(message.data);
+          if (!this.isLiveGeneration(generation)) return;
+          owner.deliver(() => {
+            if (!this.isLiveGeneration(generation)) return;
+            void Promise.resolve()
+              .then(() => {
+                if (this.isLiveGeneration(generation)) return consume(message);
+              })
+              .catch((error) => this.failGeneration(error, generation));
+          }, message.data.length);
         }
+        this.failGeneration(new Error(`remote_${category}_subscription_ended`), generation);
       } catch (error) {
-        if (!this.stopped && generation === this.generation) {
-          failure = error;
-        } else {
-          liveGeneration = false;
-        }
-      }
-      if (liveGeneration) {
-        this.failGeneration(failure, generation);
+        this.failGeneration(error, generation);
       }
     })();
+  }
+
+  private subscribeTransfers(connection: NatsConnection, generation: number): void {
+    const prefix = `p.${this.credentials.pairId}.xfer.down.`;
+    this.subscribe(connection, generation, `${prefix}>`, "transfer", (message) => {
+      const parts = message.subject.slice(prefix.length).split(".");
+      if (parts.length !== 3 || parts[1] !== "chunk") return;
+      const key = `${parts[0]}:${parts[2]}`;
+      const waiter = this.downloadWaiters.get(key);
+      if (!waiter) return;
+      clearTimeout(waiter.timer);
+      this.downloadWaiters.delete(key);
+      waiter.resolve(message.data);
+    });
   }
 
   private subscribeEvents(connection: NatsConnection, generation: number): void {
-    const subscription = connection.subscribe(`p.${this.credentials.pairId}.evt.>`);
-    void (async () => {
-      let liveGeneration = true;
-      let failure: unknown = new Error("remote_event_subscription_ended");
+    const prefix = `p.${this.credentials.pairId}.evt.`;
+    this.subscribe(connection, generation, `${prefix}>`, "event", (message) => {
+      const sessionId = message.subject.slice(prefix.length);
+      let event: StreamEvent;
       try {
-        for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) {
-            liveGeneration = false;
-            break;
-          }
-          const prefix = `p.${this.credentials.pairId}.evt.`;
-          const sessionId = message.subject.startsWith(prefix)
-            ? message.subject.slice(prefix.length)
-            : "";
-          let event: StreamEvent;
-          try {
-            event = decodeRemoteJson<StreamEvent>(message.data);
-          } catch (error) {
-            // A single malformed event must not kill the whole subscription
-            // (L6). Reconcile this subject immediately: if the malformed frame
-            // was the run's final event there may be no later idx gap to trigger
-            // the normal replay path.
-            this.callbacks.onEventDecodeFailure(
-              sessionId,
-              errorWithContext("remote_event_decode_failed", error),
-            );
-            continue;
-          }
-          this.callbacks.onEvent(event, sessionId);
-        }
+        event = decodeRemoteJson<StreamEvent>(message.data);
       } catch (error) {
-        if (!this.stopped && generation === this.generation) {
-          failure = error;
-        } else {
-          liveGeneration = false;
-        }
+        this.callbacks.onEventDecodeFailure(
+          sessionId,
+          errorWithContext("remote_event_decode_failed", error),
+        );
+        return;
       }
-      // A subscription can fail independently of the NATS status iterator.
-      // Restart the whole connection generation so realtime delivery cannot die
-      // silently while commands and presence still appear healthy.
-      if (liveGeneration && !this.stopped && generation === this.generation) {
-        this.failGeneration(failure, generation);
-      }
-    })();
+      this.callbacks.onEvent(event, sessionId);
+    });
   }
 
   private subscribeLiveness(connection: NatsConnection, generation: number): void {
-    const subscription = connection.subscribe(`p.${this.credentials.pairId}.presence`);
-    void (async () => {
-      let liveGeneration = true;
-      let failure: unknown = new Error("remote_presence_subscription_ended");
-      try {
-        for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) {
-            liveGeneration = false;
-            break;
-          }
-          let presence: Presence;
-          try {
-            presence = decodeRemoteJson<Presence>(message.data);
-          } catch {
-            continue;
-          }
-          if (
-            !presence.bridgeInstanceId ||
-            presence.bridgeInstanceId !== this.confirmedBridgeInstanceId
-          ) {
-            // The bridge restarted — the confirmed handshake is stale. Rotate
-            // back through the handshake to re-bind, then resync.
-            try {
-              const confirmation = await this.ensureHandshake(connection);
-              if (this.stopped || generation !== this.generation) break;
-              this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
-              this.callbacks.onPresence(confirmation.presence);
-              this.callbacks.onFeatures(confirmation.features ?? []);
-              this.callbacks.onReconnected();
-            } catch (error) {
-              this.failGeneration(error, generation);
-              return;
-            }
-          } else {
-            this.callbacks.onPresence(presence);
-          }
+    this.subscribe(
+      connection,
+      generation,
+      `p.${this.credentials.pairId}.presence`,
+      "presence",
+      async (message) => {
+        let presence: Presence;
+        try {
+          presence = decodeRemoteJson<Presence>(message.data);
+        } catch {
+          return;
         }
-      } catch (error) {
-        if (!this.stopped && generation === this.generation) {
-          failure = error;
-        } else {
-          liveGeneration = false;
-        }
-      }
-      if (liveGeneration) {
-        this.failGeneration(failure, generation);
-      }
-    })();
+        if (
+          !presence.bridgeInstanceId ||
+          presence.bridgeInstanceId !== this.confirmedBridgeInstanceId
+        ) {
+          const confirmation = await this.ensureHandshake(connection);
+          if (!this.isLiveGeneration(generation) || connection !== this.connection) return;
+          this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
+          this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
+          this.callbacks.onPresence(confirmation.presence);
+          this.negotiatedFeatures = new Set(confirmation.features ?? []);
+          this.callbacks.onFeatures(confirmation.features ?? []);
+          this.callbacks.onReconnected();
+        } else this.callbacks.onPresence(presence);
+      },
+    );
   }
 
   private subscribeState(connection: NatsConnection, generation: number): void {
-    const subscription = connection.subscribe(`p.${this.credentials.pairId}.state.>`);
-    void (async () => {
-      let liveGeneration = true;
-      let failure: unknown = new Error("remote_state_subscription_ended");
-      try {
-        for await (const message of subscription) {
-          if (this.stopped || generation !== this.generation) {
-            liveGeneration = false;
-            break;
-          }
-          const suffix = message.subject.slice(`p.${this.credentials.pairId}.state.`.length);
-          if (suffix === "sessions") {
-            const data = decodeRemoteJson<{ sessions?: PresenceSession[] }>(message.data);
-            this.callbacks.onSessions(data.sessions ?? []);
-          } else if (suffix === "workspaces") {
-            const data = decodeRemoteJson<{ workspaces?: RemoteWorkspace[] }>(message.data);
-            this.callbacks.onWorkspaces(data.workspaces ?? []);
-          }
-        }
-      } catch (error) {
-        if (!this.stopped && generation === this.generation) {
-          failure = error;
-        } else {
-          liveGeneration = false;
-        }
+    const prefix = `p.${this.credentials.pairId}.state.`;
+    this.subscribe(connection, generation, `${prefix}>`, "state", (message) => {
+      const suffix = message.subject.slice(prefix.length);
+      if (suffix === "sessions") {
+        const data = decodeRemoteJson<{ sessions?: PresenceSession[]; version?: SnapshotVersion }>(
+          message.data,
+        );
+        this.callbacks.onSessions(data.sessions ?? [], data.version);
+      } else if (suffix === "workspaces") {
+        const data = decodeRemoteJson<{
+          workspaces?: RemoteWorkspace[];
+          version?: SnapshotVersion;
+        }>(message.data);
+        this.callbacks.onWorkspaces(data.workspaces ?? [], data.version);
       }
-      if (liveGeneration) {
-        this.failGeneration(failure, generation);
-      }
-    })();
+    });
   }
 
   /**
@@ -793,7 +817,7 @@ export class RemoteClient {
       let exitedNaturally = true;
       try {
         for await (const status of connection.status()) {
-          if (this.stopped || generation !== this.generation) {
+          if (!this.isLiveGeneration(generation)) {
             exitedNaturally = false;
             break;
           }
@@ -803,13 +827,16 @@ export class RemoteClient {
             if (this.connection !== connection) continue;
             try {
               const confirmation = await this.ensureHandshake(connection);
-              if (this.stopped || generation !== this.generation) {
+              if (!this.isLiveGeneration(generation)) {
                 exitedNaturally = false;
                 break;
               }
               this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
-              await connection.flush();
+              await withTimeout(connection.flush(), 10_000);
+              if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
+              this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
               this.callbacks.onPresence(confirmation.presence);
+              this.negotiatedFeatures = new Set(confirmation.features ?? []);
               this.callbacks.onFeatures(confirmation.features ?? []);
               this.signal({ type: "ready" });
               this.callbacks.onReconnected();
@@ -844,7 +871,7 @@ export class RemoteClient {
       // backoff timer (single owner) keeps the app reconnecting — without this,
       // a >30s outage wedges the UI in "reconnecting" until a JWT refresh
       // happens to fire.
-      if (exitedNaturally && !this.stopped && generation === this.generation) {
+      if (exitedNaturally && this.isLiveGeneration(generation)) {
         this.failGeneration(new Error("nats_connection_exhausted"), generation);
       }
     })();
@@ -867,6 +894,10 @@ export class RemoteClient {
       if (this.isTerminal()) return;
       void this.refreshToken();
     }, delay);
+  }
+
+  get accessIdentity(): string | undefined {
+    return this.confirmedBridgeInstanceId || undefined;
   }
 
   async request<T>(
@@ -899,20 +930,31 @@ export class RemoteClient {
     command: RemoteCommand,
     sessionId = command.sessionId ?? "list",
   ): Promise<RpcResponse<T>> {
-    const stableCommand = { ...command, id: command.id ?? randomId("cmd") };
+    const stableCommand = {
+      bridgeInstanceId: this.confirmedBridgeInstanceId || undefined,
+      ...command,
+      id: command.id ?? randomId("cmd"),
+    };
     let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    const retryable =
+      command.type.startsWith("get_") ||
+      command.type.startsWith("list_") ||
+      command.type === "upload_complete" ||
+      (["prompt", "continue_run"].includes(command.type) &&
+        this.negotiatedFeatures.has("prompt_receipt_v1"));
+    const attempts = retryable ? 3 : 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await this.request<T>(stableCommand, sessionId);
       } catch (error) {
         lastError = error;
         if (!isTransientNatsRequestError(error)) throw error;
-        if (attempt < 2) {
+        if (attempt < attempts - 1) {
           // A retry on the same half-open generation only spends another
           // timeout. Validate/rebuild the transport first; the stable command
           // id keeps a reply lost during the swap idempotent on the desktop.
           await this.recoverAfterTransientRequest(error);
-          await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
+          await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
         }
       }
     }
@@ -969,7 +1011,11 @@ export class RemoteClient {
     sessionId = command.sessionId ?? "list",
     timeoutMs = 10_000,
   ): Promise<RpcResponse<T>> {
-    const payload = { ...command, id: command.id ?? randomId("cmd") };
+    const payload = {
+      bridgeInstanceId: this.confirmedBridgeInstanceId || undefined,
+      ...command,
+      id: command.id ?? randomId("cmd"),
+    };
     const message = await connection.request(
       `p.${this.credentials.pairId}.cmd.${sessionId || "new"}`,
       encoder.encode(JSON.stringify(payload)),
@@ -1038,16 +1084,16 @@ export class RemoteClient {
     ) {
       throw new Error("pairing_confirmation_mismatch");
     }
-    this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
     return confirmation;
   }
 
   private ensureHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
-    if (this.handshakePromise) return this.handshakePromise;
+    const existing = this.handshakes.get(connection);
+    if (existing) return existing;
     const pending = this.performHandshake(connection);
-    this.handshakePromise = pending;
+    this.handshakes.set(connection, pending);
     const clear = () => {
-      if (this.handshakePromise === pending) this.handshakePromise = null;
+      if (this.handshakes.get(connection) === pending) this.handshakes.delete(connection);
     };
     void pending.then(clear, clear);
     return pending;

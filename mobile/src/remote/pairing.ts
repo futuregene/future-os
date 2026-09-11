@@ -1,3 +1,4 @@
+import { remoteHttp } from "./http";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
@@ -69,7 +70,10 @@ function deviceName(): string {
   return Device.modelName ?? `${Platform.OS} device`;
 }
 
-export async function claimPairingCode(code: string): Promise<RemoteCredentials> {
+export async function claimPairingCode(
+  code: string,
+  signal?: AbortSignal,
+): Promise<RemoteCredentials> {
   const invitation = parsePairingInvitation(code);
   if (!invitation) throw new Error("invalid_pairing_code");
   const pairing = decodePairingCode(invitation.code);
@@ -79,8 +83,9 @@ export async function claimPairingCode(code: string): Promise<RemoteCredentials>
   const keyPair = createUser();
   const seed = new TextDecoder().decode(keyPair.getSeed());
   const id = await deviceId();
-  const body = await responseJson<ClaimResponse>(
-    await fetch(pairing.claim_url, {
+  const body = await remoteHttp(
+    pairing.claim_url,
+    {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -89,7 +94,9 @@ export async function claimPairingCode(code: string): Promise<RemoteCredentials>
         device_public_key: keyPair.getPublicKey(),
         device_name: deviceName(),
       }),
-    }),
+    },
+    responseJson<ClaimResponse>,
+    signal,
   );
   assertSecureNatsUrl(body.nats_ws_url);
   assertValidJwt(body.user_jwt);
@@ -109,10 +116,12 @@ export async function claimPairingCode(code: string): Promise<RemoteCredentials>
 
 export async function refreshCredentials(
   credentials: RemoteCredentials,
+  signal?: AbortSignal,
 ): Promise<RemoteCredentials> {
   const keyPair = fromSeed(new TextEncoder().encode(credentials.seed));
-  const body = await responseJson<RefreshResponse>(
-    await fetch(credentials.tokenUrl, {
+  const body = await remoteHttp(
+    credentials.tokenUrl,
+    {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -122,7 +131,9 @@ export async function refreshCredentials(
         role: "client",
         refresh_token: credentials.refreshToken,
       }),
-    }),
+    },
+    responseJson<RefreshResponse>,
+    signal,
   );
   const refreshed = {
     ...credentials,
@@ -136,13 +147,16 @@ export async function refreshCredentials(
 
 export async function ensureFreshCredentials(
   credentials: RemoteCredentials,
+  signal?: AbortSignal,
 ): Promise<RemoteCredentials> {
   const expiry = jwtExpiry(credentials.userJwt);
   // A JWT we can't read expiry from is corrupt, not expired. The desktop
   // rejects such a token outright; looping a refresh here would hammer the
   // token endpoint on every (re)connect. Fail loudly instead.
   if (expiry === null) throw new Error("invalid_jwt");
-  return expiry * 1000 < Date.now() + 60_000 ? refreshCredentials(credentials) : credentials;
+  return expiry * 1000 < Date.now() + 60_000
+    ? refreshCredentials(credentials, signal)
+    : credentials;
 }
 
 /**
@@ -155,21 +169,26 @@ export async function ensureFreshCredentials(
 export async function serverRevoke(credentials: RemoteCredentials): Promise<void> {
   const keyPair = fromSeed(new TextEncoder().encode(credentials.seed));
   const revokeUrl = credentials.tokenUrl.replace(/\/auth\/token$/, "/pair/revoke");
-  const response = await fetch(revokeUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      pair_id: credentials.pairId,
-      device_id: credentials.deviceId,
-      public_key: keyPair.getPublicKey(),
-      refresh_token: credentials.refreshToken,
-    }),
-  });
-  // 401/404 are terminal outcomes (unknown pair / already revoked) — treat
-  // them as success so the retry queue drains instead of looping.
-  if (!response.ok && response.status !== 401 && response.status !== 404) {
-    await responseJson(response);
-  }
+  await remoteHttp(
+    revokeUrl,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pair_id: credentials.pairId,
+        device_id: credentials.deviceId,
+        public_key: keyPair.getPublicKey(),
+        refresh_token: credentials.refreshToken,
+      }),
+    },
+    async (response) => {
+      // 401/404 are terminal outcomes (unknown pair / already revoked) — treat
+      // them as success so the retry queue drains instead of looping.
+      if (!response.ok && response.status !== 401 && response.status !== 404) {
+        await responseJson(response);
+      }
+    },
+  );
 }
 
 /**

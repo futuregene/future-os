@@ -148,7 +148,7 @@ describe("usePromptOutbox recovery", () => {
       renderer = create(createElement(Harness));
     });
     await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     });
     return { requestRetry, reconcileSession, refreshSessions, renderer: renderer! };
   }
@@ -184,7 +184,7 @@ describe("usePromptOutbox recovery", () => {
   it.each([
     { pairId: "other-pair", expectedDesktopId: credentials.expectedDesktopId },
     { pairId: credentials.pairId, expectedDesktopId: "other-desktop" },
-  ])("never queries or uploads a prompt from another pairing: %j", async identity => {
+  ])("never queries or uploads a prompt from another pairing: %j", async (identity) => {
     await savePendingPrompt({
       version: 2,
       ...identity,
@@ -746,7 +746,7 @@ describe("usePromptOutbox recovery error handling", () => {
   });
 
   async function mountRecovery(requestRetry: jest.Mock) {
-    const client = { requestRetry } as unknown as RemoteClient;
+    const client = { requestRetry, accessIdentity: "active" } as unknown as RemoteClient;
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
@@ -800,6 +800,7 @@ describe("usePromptOutbox recovery error handling", () => {
   it("clears and records a non-transient prompt recovery failure", async () => {
     await savePendingPrompt({
       version: 2,
+      bridgeInstanceId: "active",
       pairId: credentials.pairId,
       expectedDesktopId: credentials.expectedDesktopId,
       commandId: "prompt-err",
@@ -826,6 +827,7 @@ describe("usePromptOutbox recovery error handling", () => {
   it("clears and records a non-transient continuation recovery failure", async () => {
     await savePendingContinuation({
       version: 2,
+      bridgeInstanceId: "active",
       commandId: "continue-err",
       pairId: credentials.pairId,
       expectedDesktopId: credentials.expectedDesktopId,
@@ -842,4 +844,44 @@ describe("usePromptOutbox recovery error handling", () => {
     await expect(loadPendingContinuation()).resolves.toBeNull();
     await act(async () => h.renderer.unmount());
   });
+  it.each(["retired", undefined])(
+    "does not automatically execute unaccepted operations from access %s",
+    async (bridgeInstanceId) => {
+      await savePendingPrompt({
+        version: 2,
+        commandId: "stale-prompt",
+        bridgeInstanceId,
+        pairId: credentials.pairId,
+        expectedDesktopId: credentials.expectedDesktopId,
+        draftKey: "session-1",
+        sessionId: "session-1",
+        text: "keep my draft",
+        attachments: [],
+        modelId: "provider/model",
+        thinkingLevel: "medium",
+        mode: "chat",
+        workspaceId: "",
+        createdAt: 1,
+      });
+      await savePendingContinuation({
+        version: 2,
+        commandId: "stale-continue",
+        bridgeInstanceId,
+        pairId: credentials.pairId,
+        expectedDesktopId: credentials.expectedDesktopId,
+        sessionId: "session-1",
+        sourceRunId: "failed",
+        createdAt: 1,
+      });
+      const requestRetry = jest.fn(async () => ({ data: null }));
+      const h = await mountRecovery(requestRetry);
+      expect(requestRetry.mock.calls).toHaveLength(2);
+      for (const call of requestRetry.mock.calls as unknown as [{ type: string }][]) {
+        expect(call[0].type).toBe("get_prompt_receipt");
+      }
+      expect(h.recordError).not.toHaveBeenCalled();
+      expect(h.reconcileSession).not.toHaveBeenCalled();
+      await act(async () => h.renderer.unmount());
+    },
+  );
 });

@@ -1,3 +1,4 @@
+import { ConnectionGeneration } from "../connectionGeneration";
 import {
   backoffDelayMs,
   classifyError,
@@ -78,7 +79,7 @@ describe("connectionState FSM", () => {
       { type: "ready" },
     ] as LifecycleEvent[]) {
       const action = transition("ready", event);
-      expect(action.effects.some(e => e.type === "schedule_reconnect")).toBe(false);
+      expect(action.effects.some((e) => e.type === "schedule_reconnect")).toBe(false);
     }
   });
 
@@ -203,7 +204,7 @@ describe("connectionState FSM", () => {
       expect(blipped.effects).toEqual([]);
     }
     // Across 10 blips, exactly zero retry timers were armed.
-    const armed = transitions.flat().filter(effect => effect.type === "schedule_reconnect");
+    const armed = transitions.flat().filter((effect) => effect.type === "schedule_reconnect");
     expect(armed).toEqual([]);
   });
 
@@ -214,7 +215,7 @@ describe("connectionState FSM", () => {
     let state: ConnectionState = "connecting";
     const failed = transition(state, { type: "open_failed", error: new Error("timeout") });
     expect(failed.next).toBe("reconnecting");
-    expect(failed.effects.filter(e => e.type === "schedule_reconnect")).toHaveLength(1);
+    expect(failed.effects.filter((e) => e.type === "schedule_reconnect")).toHaveLength(1);
     state = failed.next;
 
     // While reconnecting, another disconnect status is absorbed (no re-arm).
@@ -315,7 +316,11 @@ function recoveryClient(): {
     onReconnected: jest.fn(),
     onError: jest.fn(),
   } as jest.Mocked<RemoteClientCallbacks>;
-  return { client: new RemoteClient(credentials, callbacks), callbacks };
+  const client = new RemoteClient(credentials, callbacks);
+  const serving = new ConnectionGeneration(0);
+  serving.activate();
+  Object.assign(client, { activeGeneration: serving });
+  return { client, callbacks };
 }
 
 describe("RemoteClient terminal iterator recovery", () => {
@@ -370,7 +375,7 @@ describe("RemoteClient terminal iterator recovery", () => {
   test.each([
     new UserAuthenticationExpiredError("user authentication expired"),
     new AuthorizationError("account authentication expired"),
-  ])("an expired status refreshes credentials: %s", async error => {
+  ])("an expired status refreshes credentials: %s", async (error) => {
     const { client } = recoveryClient();
     const refreshToken = jest.fn();
     const testClient = client as unknown as {
@@ -386,7 +391,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       yield { type: "error", error };
     }
     testClient.watchStatus({ status: statuses }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(testClient.recordFailure).toHaveBeenCalledWith("credential_expired", error.message);
   });
@@ -409,7 +414,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       };
     }
     testClient.watchStatus({ status: statuses }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("nats_authorization_rejected") }),
     );
@@ -429,7 +434,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       yield { type: "error", error: new ProtocolError("invalid protocol") };
     }
     testClient.watchStatus({ status: statuses }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(failGeneration).toHaveBeenCalledTimes(1);
     expect(failGeneration).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("nats_protocol_error") }),
@@ -449,7 +454,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       throw new Error("status iterator failed");
     }
     testClient.watchStatus({ status: statuses }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(expect.any(Error));
   });
 
@@ -465,7 +470,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       throw new Error("event iterator failed");
     }
     testClient.subscribeEvents({ subscribe: events }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(recovery).toHaveBeenCalledWith(expect.any(Error));
   });
 
@@ -482,7 +487,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       await new Promise(() => {});
     }
     testClient.subscribeEvents({ subscribe: () => events() }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(callbacks.onEventDecodeFailure).toHaveBeenCalledWith(
       "session_1",
       expect.objectContaining({ message: expect.stringContaining("remote_event_decode_failed") }),
@@ -507,7 +512,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       await new Promise(() => {});
     }
     testClient.subscribeEvents({ subscribe: () => events() }, 0);
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(callbacks.onEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "provider_config_changed" }),
       "_global",
@@ -516,7 +521,7 @@ describe("RemoteClient terminal iterator recovery", () => {
 
   test.each(["subscribeTransfers", "subscribeLiveness", "subscribeState"] as const)(
     "%s reconnects when its iterator ends independently",
-    async method => {
+    async (method) => {
       const { client } = recoveryClient();
       const recovery = jest.fn();
       const testClient = client as unknown as {
@@ -531,7 +536,7 @@ describe("RemoteClient terminal iterator recovery", () => {
       }
 
       testClient[method]({ subscribe: () => ended() }, 0);
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(recovery).toHaveBeenCalledWith(expect.any(Error));
     },
@@ -608,6 +613,9 @@ describe("RemoteClient terminal iterator recovery", () => {
       testClient.state = "ready";
       for (let generation = 0; generation < 4; generation += 1) {
         testClient.generation = generation;
+        const serving = new ConnectionGeneration(generation);
+        serving.activate();
+        Object.assign(client, { activeGeneration: serving });
         testClient.failedGeneration = null;
         testClient.failGeneration(new Error("remote_event_subscription_ended"), generation);
       }
@@ -797,7 +805,7 @@ describe("independent app and network lifecycle", () => {
   test("a suspended probe cannot block or replace the next foreground connection", async () => {
     const { client } = recoveryClient();
     let release!: () => void;
-    const flush = new Promise<void>(resolve => {
+    const flush = new Promise<void>((resolve) => {
       release = resolve;
     });
     (client as unknown as { connection: unknown }).connection = {

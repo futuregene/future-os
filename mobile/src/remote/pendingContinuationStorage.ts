@@ -4,6 +4,7 @@ import { createAsyncOperationQueue } from "./asyncOperationQueue";
 export interface PendingContinuation {
   version: 2;
   commandId: string;
+  bridgeInstanceId?: string;
   pairId: string;
   expectedDesktopId: string;
   sessionId: string;

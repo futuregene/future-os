@@ -10,6 +10,8 @@ import {
 } from "react";
 import type { TimelineState } from "./timeline";
 import { RemoteClient } from "./client";
+import { connectionPresentation as buildConnectionPresentation } from "./connectionPresentation";
+import type { ConnectionPresentation } from "./connectionPresentation";
 import { useConversationController } from "./useConversationController";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { usePromptOutbox } from "./usePromptOutbox";
@@ -35,6 +37,9 @@ interface RemoteContextValue {
   credentials: RemoteCredentials | null;
   presence: Presence | null;
   desktopOnline: boolean;
+  agentAvailable: boolean;
+  connectionPresentation: ConnectionPresentation;
+  catalogSync: import("./useSessionCatalog").CatalogSyncState;
   sessions: RemoteSession[];
   workspaces: RemoteWorkspace[];
   unreadSessions: Set<string>;
@@ -123,6 +128,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setApprovalTier: setApprovalTierState,
     sandboxAvailable,
     setTitleOverrides,
+    catalogSync,
+    setCatalogEpoch,
     applySessionSnapshot,
     refreshSessions,
     refreshModels,
@@ -186,19 +193,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setDraftWorkspaceId("");
   }, []);
 
-  const recoverRemoteState = useCallback(
-    async (sessionId?: string) => {
-      await Promise.allSettled([
-        refreshModels(),
-        refreshSessions(),
-        refreshWorkspaces(),
-        refreshSettings(),
-      ]);
-      reconcileSession(sessionId, "reconnect");
-    },
-    [reconcileSession, refreshModels, refreshSessions, refreshSettings, refreshWorkspaces],
-  );
-
   const {
     phase,
     error,
@@ -220,7 +214,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     syncEngineRef,
     handleEvent,
     reconcileSession,
-    recoverRemoteState,
+    setCatalogEpoch,
     applySessionSnapshot,
     applySessionStreaming,
     setWorkspaces,
@@ -293,7 +287,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     recordError,
   });
   const selectedTitle =
-    sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
+    sessions.find((session) => session.sessionId === selectedSessionId)?.title ?? "";
+  const agentAvailable = presence?.agentAvailable !== false;
+  const connectionPresentation = useMemo(
+    () =>
+      buildConnectionPresentation({
+        phase,
+        desktopOnline,
+        agentAvailable,
+        desktopDisconnected: presence?.disconnected,
+        error,
+      }),
+    [agentAvailable, desktopOnline, error, phase, presence?.disconnected],
+  );
 
   const value = useMemo<RemoteContextValue>(
     () => ({
@@ -302,6 +308,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentials,
       presence,
       desktopOnline,
+      catalogSync,
+      agentAvailable,
+      connectionPresentation,
       sessions,
       workspaces,
       unreadSessions,
@@ -356,13 +365,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentials,
       closeConversation,
       clearError,
+      connectionPresentation,
       continueRun,
       decideApproval,
       desktopOnline,
+      catalogSync,
       deleteSession,
       deleteWorkspace,
       draft,
       error,
+      agentAvailable,
       modelId,
       models,
       newConversation,

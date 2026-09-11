@@ -108,7 +108,7 @@ export function SessionsScreen() {
   };
 
   const approvalTiers = (["manual", "sandbox", "off"] as const).filter(
-    tier => tier !== "sandbox" || remote.sandboxAvailable,
+    (tier) => tier !== "sandbox" || remote.sandboxAvailable,
   );
   const approvalDisabled = !remote.desktopOnline || approvalSaving;
 
@@ -127,7 +127,7 @@ export function SessionsScreen() {
 
   const openApprovalMenu = () => {
     if (approvalDisabled) return;
-    const options = [...approvalTiers.map(tier => t(`approvalTier.${tier}`)), t("chat.cancel")];
+    const options = [...approvalTiers.map((tier) => t(`approvalTier.${tier}`)), t("chat.cancel")];
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
         {
@@ -135,7 +135,7 @@ export function SessionsScreen() {
           options,
           cancelButtonIndex: approvalTiers.length,
         },
-        index => {
+        (index) => {
           const tier = approvalTiers[index];
           if (tier) deferPresentation(() => void selectApprovalTier(tier));
         },
@@ -143,7 +143,7 @@ export function SessionsScreen() {
       return;
     }
     void showAndroidActionSheet(options, t("approvalTier.title"))
-      .then(index => {
+      .then((index) => {
         const tier = index === null ? undefined : approvalTiers[index];
         if (tier) deferPresentation(() => void selectApprovalTier(tier));
       })
@@ -276,20 +276,23 @@ export function SessionsScreen() {
       .catch(() => Alert.alert(t("common.error")));
   };
 
-  const connected = remote.desktopOnline;
+  const connection = remote.connectionPresentation;
+  const connected = connection.level === "connected";
+  const connecting = connection.level === "connecting";
 
   const offlineEmpty = (
     <View style={styles.emptyState}>
-      <View style={[styles.emptyIcon, styles.emptyIconOffline]}>
-        <Unplug color={colors.danger} size={26} />
+      <View
+        style={[
+          styles.emptyIcon,
+          { backgroundColor: connecting ? colors.warningSoft : colors.dangerSoft },
+        ]}
+      >
+        <Unplug color={connecting ? colors.warning : colors.danger} size={26} />
       </View>
-      <Text style={styles.emptyTitle}>
-        {t(remote.phase === "failed" ? "connection.failed" : "connection.offline")}
-      </Text>
-      <Text style={styles.emptyHint}>
-        {t(remote.phase === "failed" ? "connection.failedHint" : "connection.offlineHint")}
-      </Text>
-      {remote.phase === "failed" && (
+      <Text style={styles.emptyTitle}>{t(connection.titleKey)}</Text>
+      <Text style={styles.emptyHint}>{t(connection.hintKey ?? "connection.offlineHint")}</Text>
+      {(connection.action === "retry" || connection.action === "checkNetwork") && (
         <Button compact label={t("connection.retry")} onPress={() => void remote.reconnect()} />
       )}
     </View>
@@ -348,8 +351,7 @@ export function SessionsScreen() {
           <View style={styles.topActions}>
             <ConnectionBadge
               compact={width < 400}
-              phase={remote.phase}
-              desktopOnline={remote.desktopOnline}
+              presentation={connection}
               onReconnect={() => void remote.reconnect()}
             />
             <Pressable
@@ -366,7 +368,11 @@ export function SessionsScreen() {
         {remote.error && (
           <ErrorBanner
             message={remote.error}
-            onDismiss={remote.phase === "failed" ? undefined : remote.clearError}
+            onDismiss={
+              connection.level === "disconnected" && connection.supportCode
+                ? undefined
+                : remote.clearError
+            }
           />
         )}
 
@@ -404,7 +410,7 @@ export function SessionsScreen() {
                 </Pressable>
               </View>
               <View style={styles.modeOptions}>
-                {(["workspace", "chat"] as Tab[]).map(mode => (
+                {(["workspace", "chat"] as Tab[]).map((mode) => (
                   <Pressable
                     key={mode}
                     onPress={() => {
@@ -431,7 +437,7 @@ export function SessionsScreen() {
                   contentContainerStyle={styles.workspaceOptionsContent}
                   style={styles.workspaceOptions}
                 >
-                  {remote.workspaces.map(workspace => (
+                  {remote.workspaces.map((workspace) => (
                     <Pressable
                       key={workspace.id}
                       onPress={() => setWorkspaceId(workspace.id)}

@@ -114,6 +114,7 @@ interface SessionLane {
   cursor: RunCursor;
   timeline: TimelineState | null;
   ops: Op[];
+  bufferedBytes: number;
   replayQueue: ReconcileRequest[];
   established: boolean;
   retryAttempt: number;
@@ -152,6 +153,15 @@ export class SyncEngine {
     if (establishing) {
       this.enqueueReplay(lane, { reason: "open" });
     }
+    const bytes = JSON.stringify(event).length * 2;
+    if (lane.ops.length >= 4096 || lane.bufferedBytes + bytes > 8 * 1024 * 1024) {
+      lane.ops = lane.ops.filter((op) => op.kind !== "event");
+      lane.bufferedBytes = 0;
+      this.enqueueReplay(lane, { reason: "prefix" });
+      // Oversized live packets are recovered from bounded durable replay pages.
+      if (bytes > 8 * 1024 * 1024) return;
+    }
+    lane.bufferedBytes += bytes;
     lane.ops.push({ kind: "event", event });
     // First contact already queued an immediate reconcile step, which will
     // drain this op. Established lanes collect live deltas for one display
@@ -181,7 +191,7 @@ export class SyncEngine {
    * not enqueue behind a request that was suspended with the previous socket.
    */
   restartAll(reason: ReconcileReason): void {
-    const sessionIds = [...this.lanes.keys()].filter(sessionId => sessionId !== "");
+    const sessionIds = [...this.lanes.keys()].filter((sessionId) => sessionId !== "");
     for (const sessionId of sessionIds) this.restart(sessionId, reason);
   }
 
@@ -197,6 +207,7 @@ export class SyncEngine {
       cursor: previous ? new Map(previous.cursor) : newCursor(),
       timeline: previous?.timeline ?? null,
       ops: [],
+      bufferedBytes: 0,
       replayQueue: [],
       established: previous?.timeline != null,
       retryAttempt: 0,
@@ -250,6 +261,7 @@ export class SyncEngine {
         cursor: newCursor(),
         timeline: null,
         ops: [],
+        bufferedBytes: 0,
         replayQueue: [],
         established: false,
         retryAttempt: 0,
@@ -276,7 +288,7 @@ export class SyncEngine {
 
   private enqueueReplay(lane: SessionLane, request: ReconcileRequest): void {
     const duplicate = lane.replayQueue.some(
-      existing => existing.reason === request.reason && existing.runId === request.runId,
+      (existing) => existing.reason === request.reason && existing.runId === request.runId,
     );
     if (duplicate) return;
     if (lane.replayQueue.length >= MAX_REPLAY_QUEUE) return;
@@ -427,13 +439,13 @@ export class SyncEngine {
       // item as the live stream — without this, agent_start builds an
       // `assistant:` ghost that no later agent_end can clear, leaving a
       // permanent run indicator.
-      events = events.map(ev => (ev.runId ? ev : { ...ev, runId }));
+      events = events.map((ev) => (ev.runId ? ev : { ...ev, runId }));
       const cursorIdx =
         result.projection.cursor ?? events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
       advanceCursor(lane.cursor, runId, cursorIdx, true);
       const stripped = stripRunItems(base, runId);
       const projected = timelineFromProjection(events);
-      const settled = events.some(ev => ev.type === "agent_end");
+      const settled = events.some((ev) => ev.type === "agent_end");
       return {
         ...stripped,
         items: [...stripped.items, ...projected.items],
@@ -451,7 +463,7 @@ export class SyncEngine {
       advanceCursor(lane.cursor, ev.runId ?? runId, ev.idx ?? -1, since === -1);
       next = applyStreamEvent(next, ev);
     }
-    const settled = events.some(ev => ev.type === "agent_end");
+    const settled = events.some((ev) => ev.type === "agent_end");
     if (result.truncated) next = { ...next, items: upsertTruncationNotice(next.items, runId) };
     // A settled replay overrides the live streaming flag; an empty replay
     // leaves it alone (the run may have ended between the fetch and now).
@@ -470,6 +482,7 @@ export class SyncEngine {
     let timeline = lane.timeline ?? emptyTimeline();
     const ops = lane.ops;
     lane.ops = [];
+    lane.bufferedBytes = 0;
     const beforeStreaming = timeline.streaming;
     let flipRunId: string | undefined;
     let changed = false;
@@ -562,11 +575,11 @@ export class SyncEngine {
  */
 function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
-  const historyIds = new Set(history.items.map(item => item.id));
+  const historyIds = new Set(history.items.map((item) => item.id));
   const historyUserRuns = new Set(
     history.items
-      .filter(item => item.kind === "message" && item.role === "user")
-      .map(item => item.runId)
+      .filter((item) => item.kind === "message" && item.role === "user")
+      .map((item) => item.runId)
       .filter(Boolean),
   );
   // Keep only transient items the durable history does not carry: optimistic bubbles, notices,
@@ -574,7 +587,7 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
   // active run's *assistant* items are dropped by fullReconcile's stripRunItems
   // (the replay rebuilds them). Cached durable rows outside the new window
   // remain reachable through paging and must not be appended after its tail.
-  const folded = live.items.filter(item => {
+  const folded = live.items.filter((item) => {
     if (live.durableItemIds?.has(item.id)) return false;
     if (historyIds.has(item.id)) return false;
     if (

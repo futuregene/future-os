@@ -63,7 +63,10 @@ jest.mock("../client", () => {
     close = jest.fn(async () => {});
     setAppActive = jest.fn();
     setNetworkAvailable = jest.fn();
-    open = jest.fn(async () => {});
+    open = jest.fn(async () => {
+      this.callbacks.onConnectionState?.("ready" as never);
+      this.callbacks.onReconnected?.();
+    });
     recoverNow = jest.fn(async () => {});
     request = jest.fn(async () => ({ success: true, data: {} }));
     constructor(credentials: unknown, callbacks: Record<string, (...args: never[]) => unknown>) {
@@ -89,7 +92,10 @@ jest.mock("expo-network", () => ({
 
 jest.mock("react-native", () => ({
   __esModule: true,
-  AppState: { currentState: "active", addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
+  AppState: {
+    currentState: "active",
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
   Platform: {
     OS: "ios",
     select: (specifics: Record<string, unknown>) =>
@@ -148,7 +154,12 @@ const presence: Presence = {
 };
 
 function presenceSession(id: string, streaming = false): PresenceSession {
-  return { sessionId: id, threadId: `t-${id}`, title: `Title ${id}`, streaming };
+  return {
+    sessionId: id,
+    threadId: `t-${id}`,
+    title: `Title ${id}`,
+    streaming,
+  };
 }
 
 type Options = Parameters<typeof useRemoteConnection>[0];
@@ -162,7 +173,6 @@ function makeOptions(): Options {
     syncEngineRef: { current: null } as Options["syncEngineRef"],
     handleEvent: jest.fn(),
     reconcileSession: jest.fn(),
-    recoverRemoteState: jest.fn(async () => {}),
     applySessionSnapshot: jest.fn(),
     applySessionStreaming: jest.fn(),
     setWorkspaces: jest.fn(),
@@ -177,9 +187,21 @@ function makeOptions(): Options {
   };
 }
 
-const wifiState = { type: "WIFI", isConnected: true, isInternetReachable: true };
-const cellularState = { type: "CELLULAR", isConnected: true, isInternetReachable: true };
-const noneState = { type: "NONE", isConnected: false, isInternetReachable: false };
+const wifiState = {
+  type: "WIFI",
+  isConnected: true,
+  isInternetReachable: true,
+};
+const cellularState = {
+  type: "CELLULAR",
+  isConnected: true,
+  isInternetReachable: true,
+};
+const noneState = {
+  type: "NONE",
+  isConnected: false,
+  isInternetReachable: false,
+};
 
 function cast<T>(value: unknown): T {
   return value as T;
@@ -214,11 +236,11 @@ describe("useRemoteConnection", () => {
   }
 
   function appStateListeners(): ((state: string) => void)[] {
-    return cast<jest.Mock>(AppState.addEventListener).mock.calls.map(c => c[1]);
+    return cast<jest.Mock>(AppState.addEventListener).mock.calls.map((c) => c[1]);
   }
 
   function networkListeners(): ((state: unknown) => void)[] {
-    return cast<jest.Mock>(Network.addNetworkStateListener).mock.calls.map(c => c[0]);
+    return cast<jest.Mock>(Network.addNetworkStateListener).mock.calls.map((c) => c[0]);
   }
 
   beforeEach(() => {
@@ -274,6 +296,16 @@ describe("useRemoteConnection", () => {
       expect(result.current.phase).toBe("unpaired");
     });
 
+    test("pending cloud revoke does not block loading an existing pairing", async () => {
+      cast<jest.Mock>(loadPendingRevoke).mockResolvedValue({ pairId: "old-pair" });
+      cast<jest.Mock>(attemptPendingRevoke).mockReturnValue(new Promise(() => {}));
+      cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
+      render();
+      await flush();
+      expect(client().open).toHaveBeenCalled();
+      expect(result.current.credentials).toEqual(credentials);
+    });
+
     test("connects when stored credentials exist", async () => {
       cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
       render();
@@ -287,7 +319,7 @@ describe("useRemoteConnection", () => {
     });
 
     test("surfaces a load failure as unpaired with an error", async () => {
-      cast<jest.Mock>(loadPendingRevoke).mockRejectedValue(new Error("boom"));
+      cast<jest.Mock>(loadCredentials).mockRejectedValue(new Error("boom"));
       render();
       await flush();
       expect(result.current.phase).toBe("unpaired");
@@ -357,9 +389,17 @@ describe("useRemoteConnection", () => {
       await mountConnected();
       options.selectedRef.current = "s1";
       act(() => client().callbacks.onSessions([presenceSession("s2")]));
-      expect(options.applySessionSnapshot).toHaveBeenCalledWith([
-        { sessionId: "s2", threadId: "t-s2", title: "Title s2", streaming: false },
-      ]);
+      expect(options.applySessionSnapshot).toHaveBeenCalledWith(
+        [
+          {
+            sessionId: "s2",
+            threadId: "t-s2",
+            title: "Title s2",
+            streaming: false,
+          },
+        ],
+        undefined,
+      );
       expect(options.closeConversation).toHaveBeenCalled();
     });
 
@@ -386,8 +426,10 @@ describe("useRemoteConnection", () => {
 
     test("onReconnected restarts sync and refreshes catalogues", async () => {
       await mountConnected();
-      options.syncEngineRef.current = { restartAll: jest.fn() } as unknown as SyncEngine;
-      act(() => client().callbacks.onReconnected());
+      options.syncEngineRef.current = {
+        restartAll: jest.fn(),
+      } as unknown as SyncEngine;
+      await act(async () => client().callbacks.onReconnected());
       expect(options.syncEngineRef.current!.restartAll).toHaveBeenCalledWith("reconnect");
       expect(options.refreshModels).toHaveBeenCalled();
       expect(options.refreshSessions).toHaveBeenCalled();
@@ -498,7 +540,7 @@ describe("useRemoteConnection", () => {
         await flush();
       });
       expect(client().recoverNow).toHaveBeenCalledWith("foreground");
-      expect(options.recoverRemoteState).toHaveBeenCalled();
+      expect(options.refreshSettings).toHaveBeenCalledTimes(2);
     });
 
     test("foreground recovery aborts when the network is unavailable", async () => {
@@ -511,6 +553,23 @@ describe("useRemoteConnection", () => {
       });
       expect(client().recoverNow).not.toHaveBeenCalled();
       expect(client().setAppActive).toHaveBeenLastCalledWith(true);
+    });
+
+    test("foreground socket replacement uses the same recovery pass as onReconnected", async () => {
+      await mountConnected();
+      cast<jest.Mock>(options.refreshSettings).mockClear();
+      client().recoverNow.mockImplementationOnce(async () => {
+        client().callbacks.onReconnected();
+        // Let the callback's recovery finish before recoverNow returns: checking
+        // only for an in-flight promise would start a redundant second pass.
+        await flush();
+      });
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        await flush();
+      });
+      expect(options.refreshSettings).toHaveBeenCalledTimes(1);
     });
 
     test("network restore triggers a recovery", async () => {
@@ -566,13 +625,38 @@ describe("useRemoteConnection", () => {
       await flush();
     }
 
+    test("late claim cannot reconnect after local unpair", async () => {
+      render();
+      await flush();
+      let resolve!: (value: RemoteCredentials) => void;
+      cast<jest.Mock>(claimPairingCode).mockReturnValue(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+      let pairing!: Promise<void>;
+      act(() => {
+        pairing = result.current.pair("code");
+      });
+      await act(async () => {
+        await result.current.unpair();
+      });
+      await act(async () => {
+        resolve(credentials);
+        await pairing;
+      });
+      expect(result.current.phase).toBe("unpaired");
+      expect(result.current.credentials).toBeNull();
+      expect(options.clientRef.current).toBeNull();
+    });
+
     test("pair claims a code and connects", async () => {
       render();
       await flush();
       await act(async () => {
         await result.current.pair("code");
       });
-      expect(claimPairingCode).toHaveBeenCalledWith("code");
+      expect(claimPairingCode).toHaveBeenCalledWith("code", expect.any(AbortSignal));
       expect(client()).toBeTruthy();
       expect(client().open).toHaveBeenCalled();
     });
@@ -652,13 +736,15 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         await result.current.unpair();
       });
-      expect(savePendingRevoke).toHaveBeenCalledWith({
-        pairId: "pair",
-        deviceId: "device",
-        seed: "seed",
-        refreshToken: "refresh",
-        tokenUrl: "https://example.test/auth/token",
-      });
+      expect(savePendingRevoke).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pairId: "pair",
+          deviceId: "device",
+          seed: "seed",
+          refreshToken: "refresh",
+          tokenUrl: "https://example.test/auth/token",
+        }),
+      );
     });
 
     test("unpair clears a pending prompt", async () => {
@@ -729,4 +815,3 @@ describe("useRemoteConnection", () => {
     });
   });
 });
-

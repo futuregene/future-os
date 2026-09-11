@@ -28,6 +28,7 @@ export interface RecoveryProgress {
 }
 
 export interface RemoteStatus {
+  agentAvailable?: boolean;
   phase: RemotePhase;
   reason: RemoteFailureReason | null;
   recovery: RecoveryProgress | null;
@@ -51,6 +52,45 @@ export interface RemoteStatus {
 export interface RemoteFailurePresentation {
   messageKey: "network" | "pairing" | "serviceLater" | "serviceSupport" | "local";
   supportCode: string;
+}
+
+export type RemoteConnectionLevel = "connected" | "connecting" | "disconnected";
+export type RemoteCustomerState
+  = | "connected"
+    | "connecting"
+    | "waitingDesktop"
+    | "devicePreparing"
+    | "disconnected"
+    | "pairingExpired"
+    | "networkUnavailable"
+    | "serviceUnavailable"
+    | "deviceUnavailable";
+export type RemoteCustomerAction
+  = | "none"
+    | "wait"
+    | "checkNetwork"
+    | "restartDesktop"
+    | "connect"
+    | "retry"
+    | "pairAgain"
+    | "contactSupport";
+
+export interface RemoteConnectionPresentation {
+  level: RemoteConnectionLevel;
+  customerState: RemoteCustomerState;
+  action: RemoteCustomerAction;
+  supportCode: string | null;
+  titleKey:
+    | "statusConnected"
+    | "statusConnecting"
+    | "statusWaitingDesktop"
+    | "statusDevicePreparing"
+    | "statusDisconnected"
+    | "statusPairingExpired"
+    | "statusNetworkUnavailable"
+    | "statusServiceUnavailable"
+    | "statusDeviceUnavailable";
+  messageKey: RemoteFailurePresentation["messageKey"] | "connection" | "devicePreparing" | null;
 }
 
 /**
@@ -112,4 +152,103 @@ export async function unpairRemote() {
 
 export async function openUrl(url: string) {
   return invokeCommand<void>("open_url", { url });
+}
+
+function failedConnectionPresentation(
+  failure: RemoteFailurePresentation,
+): RemoteConnectionPresentation {
+  const common = {
+    level: "disconnected" as const,
+    supportCode: failure.supportCode,
+    messageKey: failure.messageKey,
+  };
+  switch (failure.messageKey) {
+    case "network":
+      return { ...common, customerState: "networkUnavailable", action: "checkNetwork", titleKey: "statusNetworkUnavailable" };
+    case "pairing":
+      return { ...common, customerState: "pairingExpired", action: "pairAgain", titleKey: "statusPairingExpired" };
+    case "serviceSupport":
+      return { ...common, customerState: "serviceUnavailable", action: "contactSupport", titleKey: "statusServiceUnavailable" };
+    case "serviceLater":
+      return { ...common, customerState: "serviceUnavailable", action: "retry", titleKey: "statusServiceUnavailable" };
+    case "local":
+      return { ...common, customerState: "deviceUnavailable", action: "retry", titleKey: "statusDeviceUnavailable" };
+  }
+}
+
+/** Convert internal lifecycle facts into the single model consumed by every Desktop surface. */
+export function remoteConnectionPresentation(
+  status: RemoteStatus | null,
+): RemoteConnectionPresentation | null {
+  if (!status)
+    return null;
+  if (status.phase === "stopped") {
+    return status.pairId
+      ? {
+          level: "disconnected",
+          customerState: "disconnected",
+          action: "connect",
+          supportCode: null,
+          titleKey: "statusDisconnected",
+          messageKey: null,
+        }
+      : null;
+  }
+  if (status.phase === "revoked") {
+    return {
+      level: "disconnected",
+      customerState: "pairingExpired",
+      action: "pairAgain",
+      supportCode: "PA001",
+      titleKey: "statusPairingExpired",
+      messageKey: "pairing",
+    };
+  }
+  if (status.phase === "failed") {
+    return failedConnectionPresentation(
+      remoteFailurePresentation(status.reason ?? "local"),
+    );
+  }
+  if (status.phase === "ready" && status.agentAvailable !== false) {
+    return {
+      level: "connected",
+      customerState: "connected",
+      action: "none",
+      supportCode: null,
+      titleKey: "statusConnected",
+      messageKey: null,
+    };
+  }
+  if (status.phase === "ready" && status.agentAvailable === false) {
+    return {
+      level: "connecting",
+      customerState: "devicePreparing",
+      action: "restartDesktop",
+      supportCode: "LC003",
+      titleKey: "statusDevicePreparing",
+      messageKey: "devicePreparing",
+    };
+  }
+  const failure = status.reason ? remoteFailurePresentation(status.reason) : null;
+  return {
+    level: "connecting",
+    customerState: status.reason === "system_sleep"
+      ? "waitingDesktop"
+      : status.reason === "network"
+        ? "networkUnavailable"
+        : "connecting",
+    action: status.reason === "network" ? "checkNetwork" : "wait",
+    supportCode: failure?.supportCode ?? null,
+    titleKey: status.reason === "system_sleep"
+      ? "statusWaitingDesktop"
+      : status.reason === "network"
+        ? "statusNetworkUnavailable"
+        : "statusConnecting",
+    messageKey: "connection",
+  };
+}
+
+/** Initial pairing has its own preparation copy; paired attempts get an action hint. */
+export function shouldShowRemoteConnectionHint(status: RemoteStatus | null): boolean {
+  return remoteConnectionPresentation(status)?.level === "connecting" && Boolean(status?.pairId);
 }

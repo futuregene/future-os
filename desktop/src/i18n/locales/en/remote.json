@@ -1,4 +1,5 @@
 {
+  "agentUnavailable": "Trying to connect. If this continues, restart FutureOS.",
   "title": "Phone Remote Control",
   "description": "Let a phone remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
   "downloadMobile": "Download mobile app",
@@ -35,5 +36,15 @@
   },
   "error": {
     "generic": "The action could not be completed. Try again later. (LC999)"
-  }
+  },
+  "statusConnected": "Connected",
+  "statusConnecting": "Connecting",
+  "statusWaitingDesktop": "Waiting for desktop",
+  "statusDevicePreparing": "Desktop is preparing",
+  "statusDisconnected": "Disconnected",
+  "statusPairingExpired": "Pairing expired",
+  "statusNetworkUnavailable": "Network unavailable",
+  "statusServiceUnavailable": "Service unavailable",
+  "statusDeviceUnavailable": "Device unavailable",
+  "connectionHint": "Trying to connect. Check the computer’s network and keep FutureOS running."
 }

@@ -79,7 +79,7 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
   );
 
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", state => {
+    const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") void getPermission();
     });
     return () => subscription.remove();
@@ -167,12 +167,6 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
             <Text style={styles.description}>{t("pairing.description")}</Text>
           </View>
 
-          {revoked && (
-            <View accessibilityRole="alert" style={styles.revokedBanner}>
-              <Text style={styles.revokedText}>{t("pairing.revoked")}</Text>
-            </View>
-          )}
-
           <View style={styles.scanner}>
             {!permission ? (
               <ActivityIndicator color={colors.accent} />
@@ -205,6 +199,12 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
               </>
             )}
           </View>
+
+          {revoked && (
+            <View accessibilityRole="alert" style={styles.revokedBanner}>
+              <Text style={styles.revokedText}>{t("pairing.revoked")}</Text>
+            </View>
+          )}
 
           <View style={styles.footer}>
             <Pressable
@@ -363,6 +363,7 @@ const styles = StyleSheet.create({
   toastText: { color: colors.surface, fontSize: 14, fontWeight: "600", textAlign: "center" },
   revokedBanner: {
     width: "100%",
+    marginVertical: spacing.lg,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderRadius: radius.md,
