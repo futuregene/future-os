@@ -50,6 +50,14 @@ function pdfjsWasm(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), pdfjsWasm()],
   clearScreen: false,
+  resolve: {
+    alias: {
+      // Vite's browser condition selects index.dom.js, which touches document
+      // at import time and crashes the Markdown worker. Use the DOM-free entry
+      // in both main/worker graphs (dev dependency prebundling shares them).
+      "decode-named-character-reference": createRequire(import.meta.url).resolve("decode-named-character-reference"),
+    },
+  },
   test: {
     setupFiles: ["./src/test/i18nTestSetup.ts"],
   },
