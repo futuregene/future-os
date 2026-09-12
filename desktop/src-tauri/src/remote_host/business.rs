@@ -118,13 +118,27 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
             } else {
                 DEFAULT_MESSAGE_PAGE_LIMIT
             };
-            match crate::agent_bridge::get_events_since(
-                cmd.session_id.clone(),
-                cmd.run_id.clone(),
-                cmd.since_idx,
-            )
-            .await
-            {
+            // The first read captures the existing protocol's fixed replay
+            // watermark. Continuations already carry it, so fetch only one
+            // Agent page rather than rereading the entire remaining tail.
+            // Keep legacy offset callers on the full-tail path.
+            let data = if cmd.replay_until_idx.is_some() && offset == 0 {
+                crate::agent_bridge::get_events_since_page(
+                    cmd.session_id.clone(),
+                    cmd.run_id.clone(),
+                    cmd.since_idx,
+                    limit,
+                )
+                .await
+            } else {
+                crate::agent_bridge::get_events_since(
+                    cmd.session_id.clone(),
+                    cmd.run_id.clone(),
+                    cmd.since_idx,
+                )
+                .await
+            };
+            match data {
                 Ok(mut data) => {
                     let source_watermark = data["events"]
                         .as_array()
@@ -147,6 +161,7 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                             event["idx"].as_i64().is_none_or(|idx| idx <= watermark)
                         });
                     }
+                    let agent_has_more = data["hasMore"].as_bool().unwrap_or(false);
                     let mut page = paginate_events(data, offset, limit);
                     page["watermark"] = json!(watermark);
                     page["nextSinceIdx"] = page["events"]
@@ -155,6 +170,14 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                         .and_then(|event| event.get("idx"))
                         .cloned()
                         .unwrap_or(json!(cmd.since_idx));
+                    // The local byte/count budget and the Agent page can each
+                    // leave a suffix. Stop at the original watermark even if
+                    // the run has produced more events since the first page.
+                    let next = page["nextSinceIdx"].as_i64().unwrap_or(cmd.since_idx);
+                    page["hasMore"] = json!(
+                        next < watermark
+                            && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))
+                    );
                     reply(sink, true, page, None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,

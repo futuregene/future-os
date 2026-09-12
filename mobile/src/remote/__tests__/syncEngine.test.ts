@@ -120,6 +120,58 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test("publishes cold history before slow replay without claiming a complete prefix", async () => {
+    jest.useFakeTimers();
+    const history = emptyTimeline();
+    history.items = [{ kind: "message", id: "prompt", role: "user", text: "hello", runId: "r" }];
+    const replay = jest.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 16_800));
+      return { events: [agentStart("r"), textChunk("r", 1, "reply"), agentEnd("r", 2)].map(event => ({ ...event })) };
+    });
+    const engine = new SyncEngine({
+      requestGetState: async () => ({ activeRun: { runId: "r" } }),
+      requestHistory: async () => history,
+      fetchReplay: replay,
+    });
+    const commits = jest.fn();
+    engine.subscribe(commits);
+    try {
+      engine.reconcile("s", "open");
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(commits).toHaveBeenCalledTimes(1);
+      expect(engine.timelineFor("s")?.items).toEqual(history.items);
+      expect(engine.streamingFor("s")).toBe(true);
+      expect(engine.cursorFor("s").size).toBe(0);
+      await jest.advanceTimersByTimeAsync(1_801);
+      expect(engine.timelineFor("s")?.items.filter(item => item.id === "prompt")).toHaveLength(1);
+      expect(engine.streamingFor("s")).toBe(false);
+      expect(engine.cursorFor("s").size).toBe(1);
+    } finally {
+      engine.clear();
+      jest.useRealTimers();
+    }
+  });
+
+  test("keeps early history readable after replay failure and retries the full prefix", async () => {
+    jest.useFakeTimers();
+    const h = new Harness("r");
+    h.history.items = [{ kind: "message", id: "prompt", role: "user", text: "hello", runId: "r" }];
+    h.replayFailures = 1;
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      h.engine.reconcile("s", "open");
+      await jest.advanceTimersByTimeAsync(10);
+      expect(h.textOf("s")).toBe("hello");
+      expect(h.engine.cursorFor("s").size).toBe(0);
+      await jest.advanceTimersByTimeAsync(600);
+      expect(h.textOf("s")).toBe("helloreply");
+    } finally {
+      h.engine.clear();
+      jest.useRealTimers();
+    }
+  });
+
   beforeEach(() => {
     resetSeq();
   });

@@ -209,7 +209,7 @@ export class SyncEngine {
       ops: [],
       bufferedBytes: 0,
       replayQueue: [],
-      established: previous?.timeline != null,
+      established: previous?.established ?? false,
       retryAttempt: 0,
       retryNotBefore: 0,
       retryTimer: null,
@@ -372,6 +372,7 @@ export class SyncEngine {
     let targetRunId = request.runId ?? "";
     try {
       const state = await this.deps.requestGetState(lane.sessionId);
+      if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
       const activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
       // just settled is no longer active) else the active run.
@@ -381,8 +382,17 @@ export class SyncEngine {
       if (full) {
         stage = "history";
         const history = await this.deps.requestHistory(lane.sessionId);
+        if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
         let base = mergeLiveInto(history, lane.timeline);
         if (targetRunId) {
+          // History is already readable. A cold open must not wait for every
+          // replay page before its first paint (or turn a slow replay into a
+          // history timeout). This preview does NOT establish the lane or
+          // advance its cursor; live ops still queue behind the full replay.
+          if (lane.timeline === null) {
+            lane.timeline = { ...base, streaming: !!activeRunId };
+            this.commit(lane);
+          }
           stage = "replay";
           base = stripRunItems(base, targetRunId);
           base = await this.replayInto(lane, base, targetRunId, -1);
@@ -566,7 +576,7 @@ export class SyncEngine {
     // A lane with no committed timeline has no live baseline to top up — the
     // only way to build it is from durable history (idle sessions have no
     // active run for a tail reconcile to target).
-    if (lane.timeline === null) return true;
+    if (!lane.established || lane.timeline === null) return true;
     return !isPrefixComplete(lane.cursor, runId);
   }
 
