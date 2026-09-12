@@ -8,6 +8,43 @@ function history(text: string): TimelineState {
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
 
+test("inactive timeline caches obey LRU count and byte budgets without truncating the selected session", async () => {
+  const engine = new SyncEngine({ requestGetState: async () => ({}), requestHistory: async () => history("reloaded"), fetchReplay: jest.fn() });
+  try {
+    for (let i = 0; i < 12; i++) { await engine.open(`s${i}`); await jest.advanceTimersByTimeAsync(0); }
+    expect(engine.pruneCache("s11")).toEqual(["s0", "s1", "s2", "s3"]);
+    expect(engine.timelineFor("s0")).toBeNull();
+    await engine.open("s4");
+    await jest.advanceTimersByTimeAsync(0);
+    await engine.open("s12");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(engine.pruneCache("s12")).toEqual(["s5"]);
+    expect(engine.timelineFor("s4")).not.toBeNull();
+    engine.mutate("s12", () => history("x".repeat(10_000)));
+    await jest.advanceTimersByTimeAsync(0);
+    engine.pruneCache("s12", 8, 1000);
+    expect(engine.timelineFor("s12")?.items).toEqual(history("x".repeat(10_000)).items);
+    expect(engine.timelineFor("s4")).toBeNull();
+  } finally { engine.clear(); }
+});
+
+test("evicting a pending lane fences its late history result", async () => {
+  let finish!: (value: TimelineState) => void;
+  const old = new Promise<TimelineState>(resolve => { finish = resolve; });
+  const engine = new SyncEngine({ requestGetState: async () => ({}), requestHistory: async sid => sid === "old" ? old : history("current"), fetchReplay: jest.fn() });
+  try {
+    await engine.open("old");
+    await jest.advanceTimersByTimeAsync(0);
+    await engine.open("current");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(engine.pruneCache("current", 1)).toEqual(["old"]);
+    finish(history("late"));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(engine.timelineFor("old")).toBeNull();
+    expect(engine.timelineFor("current")?.items).toEqual(history("current").items);
+  } finally { engine.clear(); }
+});
+
 test("one opening state request feeds controls and history without another network round trip", async () => {
   const state = { model: "provider/model" };
   const requestGetState = jest.fn(async () => {

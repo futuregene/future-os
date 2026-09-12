@@ -61,6 +61,9 @@ export function useSessionCatalog(
   const titleOverridesRef = useRef<Record<string, string>>({});
   const modelsRef = useRef<RemoteModel[]>([]);
   const sessionsRef = useRef<RemoteSession[]>([]);
+  const sessionRefreshRef = useRef<{
+    client: RemoteClient; epoch: number; dirty: boolean; promise: Promise<void>;
+  } | null>(null);
   const modelRecoveryRef = useRef<{
     generation: number;
     timer: ReturnType<typeof setTimeout> | null;
@@ -127,7 +130,7 @@ export function useSessionCatalog(
     [selectedRef, markSync],
   );
 
-  const refreshSessions = useCallback(async () => {
+  const readSessions = useCallback(async () => {
     const client = clientRef.current;
     if (!client) return;
     const epoch = catalogEpoch.current;
@@ -154,6 +157,30 @@ export function useSessionCatalog(
       // the error — the reconnect handler will re-fetch.
     }
   }, [applySessionSnapshot, clientRef, markSync]);
+
+  // Coalesce terminal/approval bursts without losing a change that arrived
+  // after the in-flight server snapshot: one trailing read refreshes it.
+  const refreshSessions = useCallback((): Promise<void> => {
+    const client = clientRef.current;
+    if (!client) return Promise.resolve();
+    const epoch = catalogEpoch.current;
+    const pending = sessionRefreshRef.current;
+    if (pending?.client === client && pending.epoch === epoch) {
+      pending.dirty = true;
+      return pending.promise;
+    }
+    const flight = { client, epoch, dirty: false, promise: Promise.resolve() };
+    sessionRefreshRef.current = flight;
+    flight.promise = (async () => {
+      do {
+        flight.dirty = false;
+        await readSessions();
+      } while (flight.dirty && clientRef.current === client && catalogEpoch.current === epoch);
+    })().finally(() => {
+      if (sessionRefreshRef.current === flight) sessionRefreshRef.current = null;
+    });
+    return flight.promise;
+  }, [clientRef, readSessions]);
 
   const refreshModels = useCallback(async () => {
     markSync("models", "syncing");
