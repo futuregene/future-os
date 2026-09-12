@@ -382,7 +382,11 @@ export function useThreadMessages({
       setBlockingLoad(false);
       return;
     }
-    void reloadMessagesQuiet(threadId);
+    // A remount may restore a streaming snapshot whose run finished while
+    // another thread was open. Revalidate that cache, including terminal
+    // status; the request-time baseline still protects writes made during
+    // this read. Otherwise there is no active-run transition to settle it.
+    void reloadMessagesQuiet(threadId, true);
   }, [reloadMessagesQuiet, threadId, workspaceId]);
 
   const loadOlderHistory = useCallback(
