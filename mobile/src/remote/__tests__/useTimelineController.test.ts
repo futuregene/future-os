@@ -102,6 +102,34 @@ describe("useTimelineController", () => {
     await flush();
   }
 
+  test("slow active-run replay does not trigger the 15-second history timeout", async () => {
+    jest.useFakeTimers();
+    options.selectedSessionId = "s1";
+    options.selectedRef.current = "s1";
+    request.mockImplementation(async (command: { type: string }) => {
+      if (command.type === "get_state") return { data: { activeRun: { runId: "r" } } };
+      if (command.type === "get_session_entries") return { data: { entries: [userEntry("u", "readable history")] } };
+      await new Promise(resolve => setTimeout(resolve, 20_000));
+      return { data: { events: [] } };
+    });
+    try {
+      render();
+      await establish();
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timeline.items).toHaveLength(1);
+      await act(async () => { await jest.advanceTimersByTimeAsync(15_001); });
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timelineError).toBeNull();
+      expect(result.current.timeline.items[0]).toMatchObject({ id: "m_u", text: "readable history" });
+      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+      expect(result.current.timelineError).toBeNull();
+    } finally {
+      act(() => renderer!.unmount());
+      renderer = null;
+      jest.useRealTimers();
+    }
+  });
+
   test.each(["restart", "resend"])(
     "%s refreshes an idle session and keeps disjoint history reachable",
     async mode => {

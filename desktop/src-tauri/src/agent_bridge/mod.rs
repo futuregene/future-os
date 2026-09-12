@@ -195,6 +195,15 @@ pub async fn get_events_since_payload(
     run_id: String,
     since_idx: i64,
 ) -> Result<future_rpc::payloads::EventsSincePayload, crate::AppError> {
+    read_events_since(session_id, run_id, since_idx, None).await
+}
+
+async fn read_events_since(
+    session_id: String,
+    run_id: String,
+    since_idx: i64,
+    page_limit: Option<i64>,
+) -> Result<future_rpc::payloads::EventsSincePayload, crate::AppError> {
     let mut client = connect_agent().await?;
     let mut cursor = since_idx;
     let mut merged: Option<future_rpc::payloads::EventsSincePayload> = None;
@@ -202,7 +211,9 @@ pub async fn get_events_since_payload(
         let command = crate::agent_proto::RpcCommand {
             run_id: run_id.clone(),
             since_idx: cursor,
-            max_events: EVENTS_PAGE_SIZE,
+            max_events: page_limit
+                .unwrap_or(EVENTS_PAGE_SIZE)
+                .clamp(1, EVENTS_PAGE_SIZE),
             ..base_command("get_events_since", session_id.clone())
         };
         let response = client
@@ -246,7 +257,11 @@ pub async fn get_events_since_payload(
         if page.run_id.is_empty() {
             page.run_id.clone_from(&run_id);
         }
-        let next = next_events_cursor(&page, cursor);
+        let next = if page_limit.is_some() {
+            None
+        } else {
+            next_events_cursor(&page, cursor)
+        };
         match &mut merged {
             None => merged = Some(page),
             Some(total) => {
@@ -269,8 +284,11 @@ pub async fn get_events_since_payload(
         projection: None,
         has_more: false,
     });
-    // The merged envelope describes the complete tail, not one page.
-    result.has_more = false;
+    // Only the full-tail API has drained all Agent pages. A bounded remote
+    // read must preserve has_more so the phone continues from its cursor.
+    if page_limit.is_none() {
+        result.has_more = false;
+    }
     Ok(result)
 }
 
@@ -283,6 +301,19 @@ pub async fn get_events_since(
     since_idx: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
     serde_json::to_value(get_events_since_payload(session_id, run_id, since_idx).await?)
+        .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
+}
+
+/// One bounded Agent page for a remote continuation with a pinned watermark.
+/// Unlike the native full-tail API, this must not drain subsequent pages.
+pub(crate) async fn get_events_since_page(
+    session_id: String,
+    run_id: String,
+    since_idx: i64,
+    limit: usize,
+) -> Result<serde_json::Value, crate::AppError> {
+    let limit = limit.min(EVENTS_PAGE_SIZE as usize) as i64;
+    serde_json::to_value(read_events_since(session_id, run_id, since_idx, Some(limit)).await?)
         .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
 }
 
@@ -2184,6 +2215,29 @@ mod bridge_tests {
         assert_eq!(requests[0].max_events, EVENTS_PAGE_SIZE);
         assert_eq!(requests[1].since_idx, 2, "paging resumes at the last idx");
         assert_eq!(requests[0].run_id, "run-1");
+    }
+
+    #[tokio::test]
+    async fn events_since_remote_page_is_bounded_and_preserves_has_more() {
+        let mock = mock_agent();
+        mock.push_typed_data(
+            "get_events_since",
+            serde_json::json!({"runId": "r", "events": [{"idx": 100}], "hasMore": true}),
+        );
+        let page = get_events_since_page("s".into(), "r".into(), 99, 100)
+            .await
+            .unwrap();
+        assert_eq!(page["hasMore"], true);
+        assert_eq!(page["events"][0]["idx"], 100);
+        let requests = mock.requests_of("get_events_since");
+        assert_eq!(
+            requests.len(),
+            1,
+            "must not drain the remaining Agent pages"
+        );
+        assert_eq!(requests[0].max_events, 100);
+        assert_eq!(requests[0].since_idx, 99);
+        assert_eq!(requests[0].run_id, "r");
     }
 
     #[tokio::test]
