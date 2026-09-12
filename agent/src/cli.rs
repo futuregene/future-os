@@ -4,6 +4,8 @@
 //! cases; `Cli::parse_from` is fed a synthetic argv whose program name is
 //! always `future-agent`, so help/error text matches the standalone binary.
 
+mod shutdown;
+
 use crate::{Engine, EngineConfig, Manager, ModelRegistry};
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -342,9 +344,14 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         }
         return Ok(());
     }
+    // Environment hydration must precede the signal thread as well as Tokio's
+    // worker threads: mutating the process environment is only sound here.
+    crate::sandbox::hydrate_from_login_shell();
+    // Outlive runtime destruction, profiler output, and Windows ACE cleanup.
+    let (_shutdown_guard, shutdown_request) = shutdown::ShutdownGuard::start()?;
     run_agent_lifecycle(
         cleanup_windows_sandbox_on_startup,
-        || run(cli),
+        || run(cli, shutdown_request),
         cleanup_windows_sandbox_on_exit,
     )
 }
@@ -389,7 +396,7 @@ fn profiler_fail_at(stage: &str) -> bool {
 }
 
 /// The full agent entry point — the former `main()` body.
-pub(crate) fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli, shutdown_request: shutdown::ShutdownRequest) -> Result<()> {
     // Resolve profile path early (before the runtime starts).
     // --profile-seconds alone implies CPU profiling with a default path —
     // but NOT when --profile-heap is set: running the CPU sampler during a
@@ -462,12 +469,6 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         );
     }
 
-    // Load the user's login-shell PATH/env BEFORE spawning any threads or the
-    // tokio runtime — set_var is only sound while single-threaded. Fixes
-    // "command not found" for user-installed tools (nvm/Homebrew/npm-global)
-    // when the agent is launched from a GUI with a minimal inherited PATH.
-    crate::sandbox::hydrate_from_login_shell();
-
     // Initialise tracing with timestamps. The console layer keeps ANSI colors;
     // the optional file layer writes through LogMirror, which shares one
     // mutexed File with the raw streaming prints (eprint_log!) — so the log
@@ -534,7 +535,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         .enable_all()
         .thread_stack_size(2 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry, cli));
+        .block_on(async_main(model_registry, cli, shutdown_request));
 
     // Write profiling flamegraph on shutdown (after the runtime drops,
     // so all async tasks have settled).  ProfilerGuard stops sampling on
@@ -593,6 +594,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
+    shutdown_request: shutdown::ShutdownRequest,
 ) -> Result<()> {
     let cwd = crate::utils::home_dir().to_string_lossy().to_string();
 
@@ -818,8 +820,8 @@ async fn async_main(
         loop_template,
     };
 
-    // Ctrl+C: set the shutting_down flag so new prompts are rejected, then
-    // abort in-flight streams and exit immediately.
+    // Ctrl+C: reject new prompts and abort in-flight streams. The independent
+    // signal thread remains alive if session locks or runtime teardown stall.
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
 
@@ -861,13 +863,15 @@ async fn async_main(
 
     tokio::select! {
         result = server => result?,
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT received — aborting active streams, exiting immediately");
+        signal = shutdown_request => {
+            signal.context("Ctrl-C listener stopped unexpectedly")?
+                .context("Could not listen for Ctrl-C")?;
             shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Interrupt in-flight runs so the process exits promptly instead
             // of waiting for a long LLM stream to finish on its own.
             abort_all_sessions(&sessions);
+            tracing::info!("Ctrl-C received — press Ctrl-C again to force exit");
         }
         _ = profile_rx => {
             // profile timer handled inside the future
