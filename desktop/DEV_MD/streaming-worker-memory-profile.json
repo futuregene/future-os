@@ -7,6 +7,17 @@
   "method": "Each case runs in a fresh process. Baseline and candidate run adjacently for each identical fixture. Measure the first projection, 80 source appends, then 10 identical-text live/settled transitions. GC before heap baseline and after appends; retain only the latest response. Durations below are milliseconds; heap values are MiB. Summary values rounded to 3 decimals.",
   "baselineBundle": "streamingMarkdown.worker-Cij7RHTX.js",
   "candidateBundle": "streamingMarkdown.worker-FyN2ZbRp.js",
+  "candidateRevision": "7ab5bfa3 (before shared cache-parameter reconciliation)",
+  "postMergeVerification": {
+    "revision": "4345f3e0",
+    "workerBundle": "streamingMarkdown.worker-D6ORSHp0.js",
+    "note": "Reuse origin/main's boolean cache parameter instead of the candidate options object; rerun production worker and all three fixtures. This is a candidate-only verification, not a new baseline/candidate ratio. Small mixed-document heap varies with runtime/JIT and is not a claimed memory improvement.",
+    "results": [
+      { "fixture": "list", "updates": 80, "firstParseMs": 319.212, "appendMedianMs": 243.904, "unchangedTextMedianMs": 0.004, "retainedAfterAppendsMiB": 1.146, "sampledHeapHighWaterMiB": 175.795 },
+      { "fixture": "mixed", "updates": 80, "firstParseMs": 100.587, "appendMedianMs": 48.975, "unchangedTextMedianMs": 0.022, "retainedAfterAppendsMiB": 1.126, "sampledHeapHighWaterMiB": 99.605 },
+      { "fixture": "code", "updates": 80, "firstParseMs": 45.979, "appendMedianMs": 14.168, "unchangedTextMedianMs": 0.003, "retainedAfterAppendsMiB": 0.677, "sampledHeapHighWaterMiB": 56.559 }
+    ]
+  },
   "results": [
     {
       "fixture": "list", "initialChars": 56579, "updates": 80,

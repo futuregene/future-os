@@ -138,9 +138,11 @@ npx vite preview --host 127.0.0.1 --port 5190 --outDir benchmark-dist
 
 采样堆高水位不是 OS 峰值/RSS，也不是持续采样的真实 peak；本轮不承诺整个 app 的峰值内存降幅。静态缓存仍是 512 条上限，没有扩大为新的全局内存管理机制。
 
+上述成对数据对应 `7ab5bfa3`。解决与 origin/main 并行共享解析器的参数冲突后，在 `4345f3e0` 重新构建并复验三种输入：列表保留堆 1.146MiB、代码 0.677MiB，相同文本转换分别为 0.004ms / 0.003ms；混合文档首个投影 100.587ms、相同文本转换 0.022ms。混合文档小规模堆数据在这次复验中为 1.126MiB，说明 runtime/JIT 对这类小差值有影响，不把它宣称为稳定内存改善。复验只确认最终实现，不与旧基线拼接计算新的加速倍数。
+
 ### 回归与复现
 
-`streamingMarkdownCache.test.ts` 在改动前有 5 个失败断言，确认 live 缓存污染、结束时重复解析及普通块重复 parse；改动后通过。另逐字符对比混合语法，oracle 显式绕过缓存，避免误复用 candidate 结果而掩盖渲染差异。本轮 desktop 与共享 Markdown 包类型检查、desktop lint 通过；desktop 全量 107 个文件、928 个测试通过。
+`streamingMarkdownCache.test.ts` 在改动前有 5 个失败断言，确认 live 缓存污染、结束时重复解析及普通块重复 parse；改动后通过。另逐字符对比混合语法，oracle 显式绕过缓存，避免误复用 candidate 结果而掩盖渲染差异。本轮 desktop 与共享 Markdown 包类型检查、desktop lint 通过；desktop 全量最初为 107 个文件、928 个测试通过，与 origin/main 的共享解析器合并后为 **108 个文件、956 个测试通过**。
 
 在 desktop 中先构建，再执行（每条为独立进程）：
 
