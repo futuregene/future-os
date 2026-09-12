@@ -94,11 +94,12 @@ fn load_project_context(cwd: &str) -> String {
     String::new()
 }
 
-/// Transport crates that log per-frame / per-poll detail at DEBUG. Raising the
-/// root level to `debug` for `--verbose` would otherwise bury the Agent's own
-/// logs under every HTTP/2 frame h2 sends; pin them to WARN so only their
-/// failures show up. `RUST_LOG` still overrides this filter entirely.
-const NOISY_TRANSPORT_TARGETS: &[&str] = &["h2", "tonic", "tower"];
+/// Transport crates that log per-frame / per-handshake detail at DEBUG. Raising
+/// the root level to `debug` for `--verbose` would otherwise bury the Agent's
+/// own logs under every HTTP/2 frame h2 sends and every TLS record rustls
+/// processes; pin them to WARN so only their failures show up. `RUST_LOG` still
+/// overrides this filter entirely.
+const NOISY_TRANSPORT_TARGETS: &[&str] = &["h2", "rustls", "tonic", "tower"];
 
 fn default_log_filter(verbose: bool) -> tracing_subscriber::EnvFilter {
     if !verbose {
@@ -126,6 +127,7 @@ fn verbose_default_filter_enables_grpc_debug_events() {
             // The transport crates stay quiet even in verbose mode; the
             // `enabled!` macro requires a literal target, so assert one by one.
             assert!(!tracing::enabled!(target: "h2", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "rustls", tracing::Level::DEBUG));
             assert!(!tracing::enabled!(target: "tonic", tracing::Level::DEBUG));
             assert!(!tracing::enabled!(target: "tower", tracing::Level::DEBUG));
             assert!(tracing::enabled!(target: "h2", tracing::Level::WARN));

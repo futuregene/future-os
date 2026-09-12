@@ -160,16 +160,31 @@ fn nonempty(value: String) -> Option<String> {
     }
 }
 
-/// Commands clients issue on a timer rather than in response to user intent:
-/// the session/run cursor replays and the "who is streaming" health probe.
-/// Under `--verbose` they would be the overwhelming majority of the request
-/// log, so they are logged at TRACE instead of DEBUG; `RUST_LOG` at
-/// `trace` (or `future_agent::grpc=trace`) still surfaces every poll.
-fn is_poller_command(command: &str) -> bool {
-    matches!(
-        command,
-        "get_events_since" | "get_session_events_since" | "list_streaming_sessions"
-    )
+/// Commands that clients issue as routine background traffic — cursor replays,
+/// panel/list reloads and the probes behind them — rather than in response to a
+/// user action. One desktop refresh cycle alone sends a dozen of them (the
+/// context panel polls every 1.5 s while a run is live, re-reading every run's
+/// tool calls), so they would drown out the commands a `--verbose` reader
+/// actually wants. They log at TRACE instead of DEBUG; `RUST_LOG=trace` (or
+/// `future_agent::grpc=trace`) still surfaces every request.
+const BACKGROUND_COMMANDS: &[&str] = &[
+    // Cursor replays and health probes.
+    "get_events_since",
+    "get_session_events_since",
+    "list_streaming_sessions",
+    // Panel / catalog reloads.
+    "get_commands",
+    "get_session_entries",
+    "get_state",
+    "get_tool_output",
+    "list_models",
+    "list_providers",
+    "list_tool_calls",
+    "refresh_skills",
+];
+
+fn is_background_command(command: &str) -> bool {
+    BACKGROUND_COMMANDS.contains(&command)
 }
 
 #[tonic::async_trait]
@@ -203,7 +218,9 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             } else {
                 &cmd.message
             };
-            if is_poller_command(&cmd.r#type) {
+            // `tracing::event!` needs a *constant* level, so the two levels
+            // must be separate macro invocations.
+            if is_background_command(&cmd.r#type) {
                 tracing::trace!(
                     "[grpc] {} session={} msg={:.80}",
                     cmd.r#type,
@@ -1114,10 +1131,10 @@ mod tests {
     }
 
     /// `--verbose` (a DEBUG filter) keeps user-intent commands in the request
-    /// log but drops the poller heartbeats to TRACE, so the log stays readable
-    /// while `RUST_LOG=trace` can still surface every poll.
+    /// log but drops background refresh traffic to TRACE, so the log stays
+    /// readable while `RUST_LOG=trace` can still surface every request.
     #[test]
-    fn verbose_logs_poller_commands_at_trace_only() {
+    fn verbose_logs_background_commands_at_trace_only() {
         #[derive(Clone, Default)]
         struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Capture {
@@ -1142,9 +1159,9 @@ mod tests {
         let service = FutureAgentService {
             state: grpc_app_state(true), // verbose logging branch
         };
-        let poller = proto::RpcCommand {
-            id: "cmd-poller".to_string(),
-            r#type: "get_session_events_since".to_string(),
+        let refresh = proto::RpcCommand {
+            id: "cmd-refresh".to_string(),
+            r#type: "list_tool_calls".to_string(),
             session_id: "default".to_string(),
             ..Default::default()
         };
@@ -1164,7 +1181,7 @@ mod tests {
             .unwrap();
         tracing::subscriber::with_default(subscriber, || {
             runtime.block_on(async {
-                let _ = service.execute_command(tonic::Request::new(poller)).await;
+                let _ = service.execute_command(tonic::Request::new(refresh)).await;
                 let _ = service.execute_command(tonic::Request::new(real)).await;
             });
         });
@@ -1172,7 +1189,19 @@ mod tests {
         let bytes = capture.0.lock().unwrap();
         let log = String::from_utf8_lossy(&bytes);
         assert!(log.contains("[grpc] get_agent_info"), "{log}");
-        assert!(!log.contains("[grpc] get_session_events_since"), "{log}");
+        assert!(!log.contains("[grpc] list_tool_calls"), "{log}");
+    }
+
+    /// Every name in the background set is a real command, so a typo cannot
+    /// silently turn a would-be-DEBUG line into dead TRACE-only code.
+    #[test]
+    fn background_commands_are_all_known_commands() {
+        for command in BACKGROUND_COMMANDS {
+            assert!(is_background_command(command), "{command}");
+            assert!(future_rpc::command_policy::command_policy(command).is_some());
+        }
+        assert!(!is_background_command("prompt"));
+        assert!(!is_background_command("abort"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
