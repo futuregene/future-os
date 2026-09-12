@@ -1662,15 +1662,87 @@ mod tests {
         assert!(v.is_null());
     }
 
-    /// Mock whose event stream is fed by a test-owned channel of Results
-    /// (so tests can inject stream errors).
-    type SharedEventRx = Arc<
-        tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<Result<StreamEvent, tonic::Status>>>>,
-    >;
+    /// One live `stream_events` subscription.
+    type EventSubscriber = mpsc::UnboundedSender<Result<StreamEvent, tonic::Status>>;
+    /// Every live subscription, in creation order.
+    type EventSubscribers = Arc<Mutex<Vec<EventSubscriber>>>;
+
+    /// Test-owned event source behind [`EventfulMock`].
+    ///
+    /// Every `stream_events` call is served a live stream of its own, the way
+    /// the real agent behaves: a session change or `connectEvents` makes the
+    /// client resubscribe, and the new subscription has to keep receiving. (The
+    /// previous single-shot channel handed the *first* subscription the real
+    /// receiver and every resubscribe an empty `pending()` stream, so a poke
+    /// that landed while the client was already attached killed the stream and
+    /// the test's next send panicked with `SendError`.)
+    ///
+    /// A poke can also make the manager abandon a subscription it has just
+    /// created — it returns `Poked` at the top of its loop *before* reading a
+    /// message — so a test must prove delivery (see `attach`) rather than wait
+    /// for a subscription to exist.
+    #[derive(Clone, Default)]
+    struct EventSource {
+        subscribers: EventSubscribers,
+        /// `stream_events` calls served so far (monotonic).
+        subscribes: Arc<std::sync::atomic::AtomicUsize>,
+        /// Woken on every subscribe.
+        attached: Arc<Notify>,
+    }
+
+    impl EventSource {
+        /// Serve one `stream_events` call: a live stream of its own.
+        fn stream(&self) -> UnboundedReceiverStream<Result<StreamEvent, tonic::Status>> {
+            let (tx, rx) = mpsc::unbounded_channel();
+            self.subscribers.lock().push(tx);
+            self.subscribes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.attached.notify_waiters();
+            UnboundedReceiverStream::new(rx)
+        }
+
+        /// Deliver one event to every live subscription, pruning the streams
+        /// the client has dropped. Errors when nothing was subscribed: the
+        /// event would be dropped and the test would hang on a missing
+        /// assertion, so fail at the send instead.
+        fn send(&self, event: Result<StreamEvent, tonic::Status>) -> Result<usize, &'static str> {
+            let mut delivered = 0usize;
+            self.subscribers.lock().retain(|subscriber| {
+                let ok = subscriber.send(event.clone()).is_ok();
+                delivered += usize::from(ok);
+                ok
+            });
+            if delivered == 0 {
+                return Err("no live stream_events subscription to deliver to");
+            }
+            Ok(delivered)
+        }
+
+        /// Wait until `count` `stream_events` calls have been served — i.e. the
+        /// client's stream manager (or its resubscription) is attached.
+        async fn wait_for_subscribes(&self, count: usize) {
+            loop {
+                // Register before re-checking: `notify_waiters` only wakes
+                // waiters that are already registered.
+                let attached = self.attached.notified();
+                tokio::pin!(attached);
+                attached.as_mut().enable();
+                if self.subscribe_count() >= count {
+                    return;
+                }
+                attached.await;
+            }
+        }
+
+        /// `stream_events` calls served so far.
+        fn subscribe_count(&self) -> usize {
+            self.subscribes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
 
     #[derive(Clone)]
     struct EventfulMock {
-        rx: SharedEventRx,
+        source: EventSource,
     }
 
     #[tonic::async_trait]
@@ -1698,35 +1770,25 @@ mod tests {
             &self,
             _request: tonic::Request<StreamRequest>,
         ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
-            let rx = self.rx.lock().await.take();
-            match rx {
-                Some(rx) => {
-                    let stream = UnboundedReceiverStream::new(rx);
-                    Ok(tonic::Response::new(Box::pin(stream)))
-                }
-                // Only one subscription gets the channel; resubscribes idle.
-                None => Ok(tonic::Response::new(Box::pin(stream::pending()))),
-            }
+            Ok(tonic::Response::new(Box::pin(self.source.stream())))
         }
     }
 
-    async fn spawn_eventful_mock() -> (
-        mpsc::UnboundedSender<Result<StreamEvent, tonic::Status>>,
-        String,
-    ) {
-        let (tx, rx) = mpsc::unbounded_channel::<Result<StreamEvent, tonic::Status>>();
-        let shared_rx = Arc::new(tokio::sync::Mutex::new(Some(rx)));
+    async fn spawn_eventful_mock() -> (EventSource, String) {
+        let source = EventSource::default();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        let mock = EventfulMock { rx: shared_rx };
+        let mock = EventfulMock {
+            source: source.clone(),
+        };
         tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(mock))
                 .serve(addr),
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
-        (tx, format!("127.0.0.1:{}", addr.port()))
+        (source, format!("127.0.0.1:{}", addr.port()))
     }
 
     #[allow(clippy::result_large_err)] // mock helper mirrors the real stream error type
@@ -1748,6 +1810,9 @@ mod tests {
         barrier.wait().await;
         client.set_current_session_id("s1");
         barrier.wait().await;
+        // The manager subscribes only after the barrier releases it, so wait
+        // for that subscription rather than hoping a send is buffered.
+        tx.wait_for_subscribes(1).await;
         tx.send(stream_event("ping", "{}", "")).unwrap();
         assert!(tokio::time::timeout(Duration::from_secs(2), events.recv())
             .await
@@ -1762,9 +1827,7 @@ mod tests {
         let (client, mut events, _conn) = GrpcClient::new(&addr);
         // A unary call exercises the mock's execute_command.
         assert!(client.try_connect().await);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        attach(&client, &tx, &mut events).await;
 
         // Malformed data is dropped without disturbing the stream.
         tx.send(stream_event("text_chunk", "not json", "")).unwrap();
@@ -1774,60 +1837,57 @@ mod tests {
             .unwrap();
         // agent_start marks the run active…
         tx.send(stream_event("agent_start", "{}", "r1")).unwrap();
-        assert!(spin_until_bool(&client, true).await);
+        let mut seen = recv_until(&mut events, "agent_start").await;
         assert!(client.has_running_run());
-        // agent_end for a DIFFERENT run keeps the active run…
+        // agent_end for a DIFFERENT run keeps the active run. The ping that
+        // follows is delivered in order, so once it arrives the end was
+        // handled (no sleep needed for the negative assertion).
         tx.send(stream_event("agent_end", "{}", "r9")).unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        seen.extend(recv_until(&mut events, "ping").await);
         assert!(client.has_running_run());
         // …and agent_end for the active run clears it.
         tx.send(stream_event("agent_end", "{}", "r1")).unwrap();
-        assert!(spin_until_bool(&client, false).await);
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        seen.extend(recv_until(&mut events, "ping").await);
         assert!(!client.has_running_run());
-        // The events also flow to the app channel.
-        let mut received = Vec::new();
-        while let Ok(ev) = events.try_recv() {
-            received.push(ev.r#type.clone());
-        }
-        assert!(received.contains(&"agent_start".to_string()));
+        // The events also flowed to the app channel.
+        assert!(seen.contains(&"agent_start".to_string()), "saw {seen:?}");
         client.disconnect();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_loop_top_session_check() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, _events, mut conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        // The first delivered event flips the connection on.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(stream_event("ping", "{}", "")).unwrap();
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
         wait_connected(&mut conn).await;
         assert!(client.is_connected());
 
         // Session changed WITHOUT a poke (white-box): the next event drives
         // the loop iteration whose top check silently resubscribes.
+        let before = tx.subscribe_count();
         client.inner.state.lock().current_session_id = "s2".into();
+        tx.send(stream_event("text_chunk", "{}", "")).unwrap();
+        tx.wait_for_subscribes(before + 1).await;
+        // The resubscribed stream is live too: a later event still arrives.
         tx.send(stream_event("ping", "{}", "")).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        recv_until(&mut events, "ping").await;
         client.disconnect();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_event_channel_closed_is_lost() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, events, mut conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(stream_event("ping", "{}", "")).unwrap();
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
         wait_connected(&mut conn).await;
         assert!(client.is_connected());
 
         // App event channel dropped → the next event send fails → Lost.
         drop(events);
         tx.send(stream_event("ping", "{}", "")).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        wait_conn(&mut conn, false, "disconnect after the app channel closes").await;
         assert!(!client.is_connected());
         client.disconnect();
     }
@@ -1835,30 +1895,121 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_loop_top_stop_check() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, _events, mut conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(stream_event("ping", "{}", "")).unwrap();
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
         wait_connected(&mut conn).await;
         assert!(client.is_connected());
 
         // Stop flag set directly (no notify) → the loop-top check exits.
         client.inner.stop.store(true, Ordering::SeqCst);
         tx.send(stream_event("ping", "{}", "")).unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Nothing observable to wait on here (and nothing asserted after it):
+        // let the manager walk its exit path before the test drops it.
+        tokio::time::sleep(Duration::from_millis(100)).await;
         client.disconnect();
     }
 
-    /// Spin until the client's active-run state matches `want`.
-    async fn spin_until_bool(client: &GrpcClient, want: bool) -> bool {
-        for _ in 0..200 {
-            if client.has_running_run() == want {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    /// Drain the app event channel until an event of `kind` arrives, returning
+    /// every type seen on the way (including `kind`); the test fails instead of
+    /// hanging if it never does. The client forwards an event only after its
+    /// run bookkeeping, so a received event proves the state it implies — this
+    /// is what lets the tests below assert client state without sleeping.
+    async fn recv_until(
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        kind: &str,
+    ) -> Vec<String> {
+        match recv_until_within(events, kind, Duration::from_secs(10)).await {
+            Some(seen) => seen,
+            None => panic!("timed out waiting for a {kind:?} event"),
         }
-        false
+    }
+
+    /// [`recv_until`] without the failure: `None` when the event never arrives.
+    async fn recv_until_within(
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        kind: &str,
+        timeout: Duration,
+    ) -> Option<Vec<String>> {
+        let mut seen = Vec::new();
+        let arrived = tokio::time::timeout(timeout, async {
+            while let Some(event) = events.recv().await {
+                seen.push(event.r#type.clone());
+                if event.r#type == kind {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
+        arrived.then_some(seen)
+    }
+
+    /// How long one attach probe may take before it counts as lost. The probe
+    /// is an in-process gRPC round trip (milliseconds), so this is generous
+    /// headroom for an instrumented, fully parallel test run.
+    const ATTACH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+    /// One attach probe: send a `ping` and report whether the client consumed it
+    /// (a `ping` carries no run bookkeeping, so it is a pure liveness probe).
+    async fn probe(source: &EventSource, events: &mut mpsc::UnboundedReceiver<AgentEvent>) -> bool {
+        source.send(stream_event("ping", "{}", "")).is_ok()
+            && recv_until_within(events, "ping", ATTACH_PROBE_TIMEOUT)
+                .await
+                .is_some()
+    }
+
+    /// Subscribe the client to the mock's stream and wait until it is provably
+    /// consuming events.
+    ///
+    /// `set_current_session_id` and `connect_events` both poke the stream
+    /// manager, and a poke that lands while it is subscribing makes it return
+    /// `Poked` at the top of its loop — *before* it ever reads a message. So
+    /// "a subscription was served" is no proof at all: an event sent to that
+    /// subscription is dropped with it, which is what made these tests flaky
+    /// (the old mock turned it into a `SendError` panic instead). Probe until an
+    /// event actually comes back, and require two in a row: the first proves the
+    /// subscription is reading, the second that it survived the poke still in
+    /// flight behind it. Nothing pokes after this, so a subscription that
+    /// answers both keeps receiving for the rest of the test.
+    async fn attach(
+        client: &GrpcClient,
+        source: &EventSource,
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+    ) {
+        client.set_current_session_id("s1");
+        client.connect_events();
+        for _ in 0..20 {
+            if probe(source, events).await && probe(source, events).await {
+                return;
+            }
+            // A probe can be lost to a resubscribe that was already in flight
+            // (the manager serves the replacement within milliseconds): pause
+            // and probe again. Deliberately not "wait for the next
+            // subscription" — a probe that was merely slow must not leave the
+            // test waiting on a resubscription that will never happen.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("client never attached to a live event stream");
+    }
+
+    /// A poke while the subscription is live — the session-change +
+    /// `connectEvents` pair the TUI issues when switching sessions — must leave
+    /// the client on a working stream.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn poke_during_live_subscription_resubscribes_without_losing_events() {
+        let (tx, addr) = spawn_eventful_mock().await;
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
+
+        // A poke against the live subscription, as the TUI's session switch
+        // does: the manager resubscribes, and the new stream must be live.
+        let before = tx.subscribe_count();
+        client.connect_events();
+        tx.wait_for_subscribes(before + 1).await;
+        tx.send(stream_event("ping", "{}", "")).unwrap();
+        recv_until(&mut events, "ping").await;
+        client.disconnect();
     }
 
     #[test]
@@ -1891,14 +2042,6 @@ mod tests {
         assert_eq!(out.snapshot_events.len(), 2);
         assert_eq!(out.snapshot_events[0].r#type, "agent_start");
         assert_eq!(out.snapshot_events[1].idx, 2);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn spin_until_bool_times_out() {
-        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
-        // has_running_run never becomes true → the helper times out.
-        assert!(!spin_until_bool(&client, true).await);
-        client.disconnect();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2128,11 +2271,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_stream_error_is_lost() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, _events, mut conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(stream_event("ping", "{}", "")).unwrap();
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
         wait_connected(&mut conn).await;
         // A stream-level error → Lost → disconnect notification.
         tx.send(Err(tonic::Status::internal("mid-stream boom")))
@@ -2265,11 +2405,8 @@ mod tests {
         // stale subscription exits Poked and the manager's post-Poked stop
         // check returns instead of resubscribing.
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, _events, mut conn) = GrpcClient::new(&addr);
-        client.set_current_session_id("s1");
-        client.connect_events();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        tx.send(stream_event("ping", "{}", "")).unwrap();
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &tx, &mut events).await;
         wait_connected(&mut conn).await;
         client.inner.stop.store(true, Ordering::SeqCst);
         client.set_current_session_id("s2"); // poke → Poked → stop → return
