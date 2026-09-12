@@ -2421,6 +2421,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn run_with_zero_max_turns_is_unlimited() {
+        // `max_turns = 0` (also the absent-setting default) means unlimited.
+        // Run well past the 50 the startup path used to hard-code, so a
+        // reintroduced floor fails here instead of only in production.
+        const ROUNDS: usize = 55;
+        let mut scripts: Vec<_> = (0..ROUNDS)
+            .map(|i| {
+                Script::Events(vec![
+                    ev_toolcall_start(0, &format!("c{i}"), "echo", "{}"),
+                    ev_toolcall_end(),
+                    ev_stop(),
+                ])
+            })
+            .collect();
+        scripts.push(Script::Events(vec![ev_text("done"), ev_stop()]));
+        let provider = ScriptedProvider::new(scripts);
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(crate::types::AgentConfig {
+                max_turns: 0,
+                ..Default::default()
+            });
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("loop"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        // user + (assistant tool_calls + tool result) per round + final assistant
+        assert_eq!(messages.len(), 2 + ROUNDS * 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn run_returns_early_when_interrupt_flag_set() {
         let provider = ScriptedProvider::new(vec![]);
         let loop_ = Loop::new(provider, "mock");

@@ -710,14 +710,13 @@ async fn async_main(
         .as_ref()
         .map(crate::models::effective_max_tokens);
 
-    // Build engine config from settings and model config
+    // Build engine config from settings and model config. The turn limit is
+    // opt-in: an absent or non-positive `maxTurns` is passed through as-is and
+    // means unlimited (see `Loop::run_streaming_with_messages`), matching
+    // `DEFAULT_MAX_TURNS` — no hidden floor is imposed here.
     let config = EngineConfig {
         cwd: cwd.clone(),
-        max_turns: if settings.max_turns > 0 {
-            settings.max_turns
-        } else {
-            50
-        },
+        max_turns: settings.max_turns,
         thinking_level: "high".to_string(),
         compaction_reserve_tokens: settings.compaction_reserve_tokens(),
         compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
