@@ -1752,6 +1752,80 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn replay_continuations_keep_agent_has_more_and_stop_at_the_pinned_watermark() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("bounded-replay").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("session");
+        let events = |start: i64, end: i64| -> Value {
+            json!((start..=end)
+                .map(|idx| json!({"type": "text_chunk", "idx": idx, "data": "{}"}))
+                .collect::<Vec<_>>())
+        };
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r", "events": events(0, 4), "hasMore": false
+            }),
+        );
+        let first = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": -1, "limit": 2
+            }))
+            .await;
+        assert_eq!(first["success"], true);
+        assert_eq!(first["data"]["watermark"], 4);
+        assert_eq!(first["data"]["nextSinceIdx"], 1);
+        assert_eq!(first["data"]["hasMore"], true);
+
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r", "events": events(2, 3), "hasMore": true
+            }),
+        );
+        let middle = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": 1, "limit": 2, "replayUntilIdx": 4
+            }))
+            .await;
+        assert_eq!(middle["success"], true);
+        assert_eq!(middle["data"]["watermark"], 4);
+        assert_eq!(middle["data"]["nextSinceIdx"], 3);
+        assert_eq!(
+            middle["data"]["hasMore"], true,
+            "Agent still has another page"
+        );
+
+        // The task kept generating, but this replay must finish at its
+        // original watermark rather than chasing the growing tail forever.
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r", "events": events(4, 5), "hasMore": true
+            }),
+        );
+        let last = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": 3, "limit": 2, "replayUntilIdx": 4
+            }))
+            .await;
+        assert_eq!(last["success"], true);
+        assert_eq!(last["data"]["watermark"], 4);
+        assert_eq!(last["data"]["nextSinceIdx"], 4);
+        assert_eq!(last["data"]["hasMore"], false);
+        assert_eq!(last["data"]["events"].as_array().unwrap().len(), 1);
+        bridge.stop();
+    }
+
+    #[tokio::test]
     async fn transfer_control_commands() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-transfer").await;
