@@ -30,13 +30,40 @@ export function projectStreamingMarkdown(text: string, live: boolean): Streaming
 
 function projectTree(text: string, live: boolean, tree: Root): StreamingMarkdownBlock[] {
   const blocks = splitTree(text, live, tree);
-  return blocks.map(block => ({
+  // Definitions can change inline tokenization across block boundaries. Keep
+  // the existing isolated-block parsing for those documents rather than using
+  // context-dependent subtrees. Ordinary blocks reuse the already parsed tree.
+  const independent = blocks.length > 1 && blocks.length === tree.children.length && !hasDefinitions(tree);
+  return blocks.map((block, index) => ({
     ...block,
-    // Whole-document blocks (large tables/lists/reference definitions) were
-    // already parsed above. Reuse the mdast instead of doing the costly pass twice.
-    document: parseFutureMarkdown(block.content, blocks.length === 1 ? tree : undefined),
+    document: parseFutureMarkdown(
+      block.content,
+      blocks.length === 1 ? tree : independent ? { type: "root", children: [tree.children[index]!] } : undefined,
+      { cache: !block.live },
+    ),
     parsed: true,
   }));
+}
+
+interface DefinitionNode {
+  type: string;
+  children?: DefinitionNode[];
+}
+
+function hasDefinitions(root: DefinitionNode): boolean {
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === "definition" || node.type === "footnoteDefinition")
+      return true;
+    // Definitions are flow nodes, never children of headings/table cells or
+    // other inline content. Only descend into containers that can hold them.
+    if (node.type === "root" || node.type === "blockquote" || node.type === "list" || node.type === "listItem") {
+      for (const child of node.children ?? [])
+        stack.push(child);
+    }
+  }
+  return false;
 }
 
 interface TableCheckpoint {
@@ -70,15 +97,31 @@ function tableCheckpoint(text: string, blocks: StreamingMarkdownBlock[], tree: R
  */
 export function createStreamingMarkdownProjector() {
   let previous: TableCheckpoint | null = null;
+  let latest: { text: string; blocks: StreamingMarkdownBlock[] } | null = null;
   return (text: string, live: boolean): StreamingMarkdownBlock[] => {
+    // Retain only the current version, not every intermediate live document in
+    // the shared 512-entry cache. Finalization needs flags, not another parse.
+    if (latest?.text === text) {
+      const last = latest.blocks.length - 1;
+      const blocks = latest.blocks.map((block, index) => {
+        const nextLive = live && index === last;
+        return block.live === nextLive ? block : { ...block, live: nextLive };
+      });
+      latest = { text, blocks };
+      return blocks;
+    }
+    const blocks = project(text, live);
+    latest = { text, blocks };
+    return blocks;
+  };
+
+  function project(text: string, live: boolean): StreamingMarkdownBlock[] {
     if (previous && text.startsWith(previous.text)) {
-      if (text === previous.text)
-        return [{ ...previous.block, live }];
       const fragment = previous.header + text.slice(previous.tailStart);
       const tree = streamingMarkdownProcessor.parse(fragment) as Root;
       const sourceTable = tree.children.length === 1 ? tree.children[0] : undefined;
       if (sourceTable?.type === "table" && sourceTable.children.length > 1) {
-        const document = parseFutureMarkdown(fragment, tree);
+        const document = parseFutureMarkdown(fragment, tree, { cache: !live });
         const table = document.nodes[0];
         const lastRowOffset = sourceTable.children[sourceTable.children.length - 1]?.position?.start.offset;
         if (document.nodes.length === 1 && table?.type === "table"
@@ -110,7 +153,7 @@ export function createStreamingMarkdownProjector() {
     const blocks = projectTree(text, live, tree);
     previous = tableCheckpoint(text, blocks, tree);
     return blocks;
-  };
+  }
 }
 
 /** Cheap and lossless provisional rendering, including worker failure recovery. */

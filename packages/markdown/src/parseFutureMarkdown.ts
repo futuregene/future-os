@@ -55,12 +55,17 @@ interface ParseContext {
   definitions: Map<string, Definition>;
 }
 
-/** Optional mdast must have been parsed from exactly `raw` with the same plugins.
- * Streaming workers already parse it for source boundaries; reuse that tree
- * rather than parsing a large mutable block twice. Existing callers omit it.
+/** Optional mdast must describe `raw` with the same plugins; positions are not
+ * consumed by conversion. Workers can reuse whole trees or independent block
+ * subtrees. Ephemeral live versions opt out of the cross-instance static cache.
  */
-export function parseFutureMarkdown(raw: string, parsedTree?: Root): FutureMarkdownDocument {
-  const cached = parseCache.get(raw);
+export function parseFutureMarkdown(
+  raw: string,
+  parsedTree?: Root,
+  options?: { cache?: boolean },
+): FutureMarkdownDocument {
+  const cache = options?.cache !== false;
+  const cached = cache ? parseCache.get(raw) : undefined;
   if (cached) {
     // LRU touch.
     parseCache.delete(raw);
@@ -77,11 +82,13 @@ export function parseFutureMarkdown(raw: string, parsedTree?: Root): FutureMarkd
     : tree.children.flatMap((node) => blockToFutureNode(node, context));
   const references = collectReferences(nodes);
   const document = { nodes, raw, references };
-  if (parseCache.size >= PARSE_CACHE_MAX) {
-    const oldest = parseCache.keys().next().value;
-    if (oldest !== undefined) parseCache.delete(oldest);
+  if (cache) {
+    if (parseCache.size >= PARSE_CACHE_MAX) {
+      const oldest = parseCache.keys().next().value;
+      if (oldest !== undefined) parseCache.delete(oldest);
+    }
+    parseCache.set(raw, document);
   }
-  parseCache.set(raw, document);
   return document;
 }
 

@@ -108,3 +108,46 @@ npx vite preview --host 127.0.0.1 --port 5190 --outDir benchmark-dist
 单根目录的纯输出阶段消除 100% 的多余目录请求；不将此请求数变化宣称为 CPU、磁盘吞吐或 FPS 百分比。对于展开目录，实际一次 refresh 会读取根及展开目录，但多目录倍率未在这个 fixture 中实测。
 
 新增测试 `features/filetree/FileTreePanel.streaming.test.tsx` 先在基线上复现 60 次非预期调用，再在修复后通过；另验证 tool_end/tool_result/agent_end/error 仍触发刷新、空读取复用 snapshot。保留现有 2 秒刷新合并和手动刷新行为，避免为省请求而漏掉真正工具操作的文件变化。本轮 desktop 类型检查、lint 通过，全量测试为 106 个文件、915 个测试通过。
+
+## 后续优化：长列表/代码的 live 缓存与混合文档首开
+
+基线：`3a66814e`（PR #571）。按用户要求，不做本机部署验收，不安装/重启 desktop，也不操作正在运行的 Agent。
+
+### 已确认原因与改动
+
+1. `parseFutureMarkdown` 的 512 条静态 LRU 原先也收录每个 live 版本。对于一个持续变长的列表/代码块，旧版本几乎不会再用，却一直持有完整渲染树。新增显式 `{ cache: false }` 选项；worker 的可变块不进入静态缓存。静态默认缓存及已关闭的稳定块行为不变。
+2. worker 现在只保留最新投影。相同文本的 live→settled→live 只调整 live 标记，所有文档类型都不再为此解析一次；不再只对单表有效。
+3. 普通混合文档初次解析已有完整 mdast，原来又逐块从字符串重解析。现在直接转换对应子树。引用/脚注定义会影响跨块 tokenization，因此含这些上下文的分块保留原来的独立解析路径；不会为了快而改变已有渲染语义。
+4. 定义检查只在确实需要复用多块子树时运行，并只下探能包含定义的 flow container；单个长列表/代码块不额外遍历整棵树。
+
+### 测量结果与边界
+
+脚本：`desktop/scripts/profile-streaming-worker.mjs`；最终成对汇总：`streaming-worker-memory-profile.json`。
+
+测量在独立 Node v26.4.0 进程中执行实际生产 worker bundle（无 DOM），80 次追加后显式 GC。只保留最新回包，不把所有回包留在基准数组中。以下是 JS 保留堆和 worker 计算时间，不含消息结构化克隆、React 或原生 WebView。
+
+| 输入 | 80 次追加后的保留堆：前→后 | 相同文本结束/恢复计算中位数：前→后 |
+|---|---:|---:|
+| 56,579 字符、800 项列表 | **78.171→1.159MiB（约 -98.5%）** | **240.561→0.003ms** |
+| 52,508 字符、1500 行代码 | **8.776→0.674MiB（约 -92.3%）** | **18.286→0.004ms** |
+| 10,852 字符、481 块混合文档 | 0.709→0.531MiB | **57.151→0.027ms** |
+
+混合文档首个投影本次为 313.229→112.869ms；对应进程 CPU 为 453→203ms。冷启动只采一个样本，不能当作稳定 p95 或普遍首开加速比例。确定性收益是复用整文解析得到的 481 个子树，而不是再执行 481 次块解析。
+
+**不宣称持续追加整体变快**：本次混合文档追加中位数为 53.240→53.255ms，几乎不变；代码为 14.608→15.507ms，增加约 0.9ms，CPU 中位数同为 16ms；列表首个投影也从 341.335 变为 361.562ms。相同文本复用和旧 live 版本释放才是本轮主要收益。此前试验的墙钟时间随机器负载显著变化，完整说明及最终成对数据保留在 JSON 中。
+
+采样堆高水位不是 OS 峰值/RSS，也不是持续采样的真实 peak；本轮不承诺整个 app 的峰值内存降幅。静态缓存仍是 512 条上限，没有扩大为新的全局内存管理机制。
+
+### 回归与复现
+
+`streamingMarkdownCache.test.ts` 在改动前有 5 个失败断言，确认 live 缓存污染、结束时重复解析及普通块重复 parse；改动后通过。另逐字符对比混合语法，oracle 显式绕过缓存，避免误复用 candidate 结果而掩盖渲染差异。本轮 desktop 与共享 Markdown 包类型检查、desktop lint 通过；desktop 全量 107 个文件、928 个测试通过。
+
+在 desktop 中先构建，再执行（每条为独立进程）：
+
+```powershell
+node --expose-gc scripts/profile-streaming-worker.mjs list candidate
+node --expose-gc scripts/profile-streaming-worker.mjs mixed candidate
+node --expose-gc scripts/profile-streaming-worker.mjs code candidate
+```
+
+第三个可选参数是另一份生产构建的 assets 目录，例如 `... list baseline <baseline>/desktop/dist/assets`，可在同一测试窗口成对重跑。脚本输出所有追加和收尾样本以及进程 CPU 计数；Windows CPU 计数粒度较粗，不能把返回的 0 解释为真实零 CPU 消耗。
