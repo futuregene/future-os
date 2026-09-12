@@ -92,7 +92,12 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
         // failures must not count toward the give-up budget.
         workerFailuresRef.current = 0;
         const latest = event.data.id === latestIdRef.current;
-        if (latest) {
+        // A worker slower than incoming pushes may NEVER return the latest
+        // id. Its parsed prefix still advances stable block boundaries; append
+        // the unparsed suffix provisionally instead of rejecting all progress
+        // and re-parsing an ever-growing tail on the UI thread. Replaced text
+        // is not a compatible prefix and must not resurrect old boundaries.
+        if (textRef.current.startsWith(event.data.text)) {
           setProjection({ blocks: event.data.blocks, text: event.data.text });
         }
         const queued = queuedRef.current;
@@ -140,6 +145,9 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
   useEffect(() => () => {
     workerRef.current?.terminate();
     workerRef.current = null;
+    // StrictMode replays setup after cleanup. A terminated worker cannot
+    // finish the old request, so the replacement must start idle.
+    activeRef.current = false;
     queuedRef.current = null;
   }, []);
 

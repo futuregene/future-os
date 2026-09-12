@@ -1,6 +1,7 @@
 import type { StreamingMarkdownWorkerResponse } from "./streamingMarkdown.worker";
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, createElement, StrictMode } from "react";
+import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 import * as streamingMarkdownBlocks from "./streamingMarkdownBlocks";
@@ -70,6 +71,24 @@ describe("useStreamingMarkdownBlocks", () => {
     h.unmount();
   });
 
+  it("starts work after StrictMode replays effect setup and cleanup", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    function Probe() {
+      useStreamingMarkdownBlocks("A", true);
+      return null;
+    }
+    try {
+      act(() => root.render(createElement(StrictMode, null, createElement(Probe))));
+      expect(FakeWorker.instances).toHaveLength(2);
+      expect(FakeWorker.instances[0]!.terminated).toBe(true);
+      expect(FakeWorker.instances[1]!.posted).toHaveLength(1);
+    }
+    finally {
+      act(() => root.unmount());
+    }
+  });
+
   it("creates a worker and posts the initial request", () => {
     const h = renderHook(() => useStreamingMarkdownBlocks("A", true));
     expect(FakeWorker.instances).toHaveLength(1);
@@ -124,6 +143,51 @@ describe("useStreamingMarkdownBlocks", () => {
       { id: 1, live: true, text: "A" },
       { id: 2, live: true, text: "AB" },
     ]);
+    h.unmount();
+  });
+
+  it("makes block progress when every worker response trails the token stream", () => {
+    let text = "first\n\n";
+    const h = renderHook(() => useStreamingMarkdownBlocks(text, true));
+    const worker = FakeWorker.instances[0]!;
+    for (let step = 0; step < 5; step++) {
+      const request = worker.posted[worker.posted.length - 1]!;
+      // Tokens arrive faster than the worker can split the previous snapshot.
+      text += `paragraph ${step}\n\n`;
+      h.rerender();
+      respond(worker, {
+        id: request.id,
+        text: request.text,
+        blocks: streamingMarkdownBlocks.splitStreamingMarkdown(request.text, true),
+      });
+    }
+    // Prefix-compatible responses are useful progress, not obsolete work:
+    // only the unparsed suffix should remain in the mutable final block.
+    expect(h.current.length).toBeGreaterThan(1);
+    expect(h.current.map(block => block.content).join("")).toBe(text);
+    expect(h.current[0]).toEqual({ content: "first\n\n", start: 0, live: false });
+    h.unmount();
+  });
+
+  it("does not apply a delayed response from text that was replaced", () => {
+    let text = "old\n\nparagraph";
+    const h = renderHook(() => useStreamingMarkdownBlocks(text, true));
+    const worker = FakeWorker.instances[0]!;
+    text = "new\n\nparagraph";
+    h.rerender();
+    respond(worker, {
+      id: 1,
+      text: "old\n\nparagraph",
+      blocks: streamingMarkdownBlocks.splitStreamingMarkdown("old\n\nparagraph", true),
+    });
+    expect(h.current).toEqual([{ content: text, live: true, start: 0 }]);
+    respond(worker, {
+      id: 2,
+      text,
+      blocks: streamingMarkdownBlocks.splitStreamingMarkdown(text, true),
+    });
+    expect(h.current.length).toBe(2);
+    expect(h.current.map(block => block.content).join("")).toBe(text);
     h.unmount();
   });
 
