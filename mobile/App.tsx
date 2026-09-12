@@ -5,7 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ChatScreen } from "./src/features/chat/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
-import { RemoteProvider, useRemote } from "./src/remote/RemoteContext";
+import { RemoteProvider, useRemoteControls as useRemote } from "./src/remote/RemoteContext";
 import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
 import { useShareIntake } from "./src/share/useShareIntake";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";

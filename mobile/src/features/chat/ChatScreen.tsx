@@ -16,7 +16,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { TimelineCard } from "../../components/TimelineCard";
 import { ErrorBanner } from "../../components/ErrorBanner";
-import { useRemote } from "../../remote/RemoteContext";
+import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { modelReference, type TimelineItem } from "../../remote/types";
 import { colors, radius, spacing } from "../../theme/tokens";
 import { useComposerDraft } from "./useComposerDraft";
@@ -47,7 +47,8 @@ function TimelineFlexSpacer() {
 export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
-  const { closeConversation } = remote;
+  const controls = useRemoteControls();
+  const { closeConversation, decideApproval: submitApproval } = remote;
   const insets = useSafeAreaInsets();
 
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
@@ -122,18 +123,23 @@ export function ChatScreen() {
       setApprovalSubmitting(id);
       setApprovalError(null);
       try {
-        await remote.decideApproval(id, decision);
+        await submitApproval(id, decision);
       } catch {
         setApprovalError({ id, message: t("approval.submitFailed") });
       } finally {
         setApprovalSubmitting(null);
       }
     },
-    [remote, t],
+    [submitApproval, t],
   );
 
   const scroll = useChatScroll(remote.selectedSessionId, transcriptItems.length);
   const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
+  const sendFromComposer = useCallback(async () => {
+    if (!message.trim() && attachments.length === 0) return;
+    scrollToLatest();
+    await send();
+  }, [attachments, message, scrollToLatest, send]);
   const {
     showLoadOlderHint,
     pagingActive,
@@ -379,14 +385,10 @@ export function ChatScreen() {
             setAttachments={setAttachments}
             supportsImages={supportsImages}
             activeModelLabel={activeModelLabel}
-            remote={remote}
+            remote={controls}
             t={t}
             openAttachmentMenu={openAttachmentMenu}
-            send={async () => {
-              if (!message.trim() && attachments.length === 0) return;
-              scrollToLatest();
-              await send();
-            }}
+            send={sendFromComposer}
             atLatest={atLatest}
             scrollToLatest={scrollToLatest}
             showOffline={showOffline}

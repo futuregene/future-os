@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { AppState } from "react-native";
 import { getPendingShare } from "future-share-intent";
 import { showToast } from "../../features/chat/utils";
-import { useRemote } from "../../remote/RemoteContext";
+import { useRemoteControls as useRemote } from "../../remote/RemoteContext";
 import {
   loadSessionDraft,
   NEW_CONVERSATION_DRAFT_KEY,
@@ -25,7 +25,7 @@ jest.mock("../../features/chat/utils", () => ({ showToast: jest.fn() }));
 jest.mock("../../share/shareInbox", () => ({
   markShareLanded: jest.fn(),
 }));
-jest.mock("../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
+jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: jest.fn() }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));

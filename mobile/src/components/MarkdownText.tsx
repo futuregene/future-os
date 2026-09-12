@@ -1,13 +1,13 @@
-import type { InlineNode, ListItemNode, MarkdownNode } from "@future-os/markdown";
+import type { InlineNode, ListItemNode, MarkdownNode, TableNode } from "@future-os/markdown";
 import type { ReactNode } from "react";
 import {
   basename,
   classifyMarkdownTarget,
   localFilePath,
-  parseFutureMarkdown,
+  createStreamingMarkdownParser,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
-import { useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Alert, Image, Linking, StyleSheet, Text, View } from "react-native";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
@@ -16,6 +16,7 @@ interface MarkdownTextProps {
   /** Message links can fetch local files; file previews never nest previews. */
   mode?: "message" | "file-preview";
   text: string;
+  streaming?: boolean;
   /** Route local-file markdown links/images to the caller's preview flow. */
   onOpenFile?(path: string): void;
 }
@@ -200,44 +201,15 @@ function renderBlock(
     case "table":
       return (
         <View key={key} style={[styles.table, isLast ? styles.noBottom : null]}>
-          <View style={[styles.tableRow, styles.tableHead]}>
-            {node.headers.map((header, columnIndex) => (
-              <Text
-                key={`${key}:h${columnIndex}`}
-                selectable
-                style={[
-                  styles.th,
-                  columnIndex > 0 ? styles.cellBorderLeft : null,
-                  { textAlign: node.alignments[columnIndex] ?? "left" },
-                ]}
-              >
-                {renderInline(header, openTarget, `${key}:h${columnIndex}`)}
-              </Text>
-            ))}
-          </View>
+          <MarkdownTableRow cells={node.headers} alignments={node.alignments} openTarget={openTarget} header />
           {node.rows.map((row, rowIndex) => (
-            <View
-              key={`${key}:r${rowIndex}`}
-              style={[
-                styles.tableRow,
-                styles.tableBodyRow,
-                rowIndex % 2 === 1 ? styles.tableRowZebra : null,
-              ]}
-            >
-              {row.map((cell, columnIndex) => (
-                <Text
-                  key={`${key}:r${rowIndex}:c${columnIndex}`}
-                  selectable
-                  style={[
-                    styles.td,
-                    columnIndex > 0 ? styles.cellBorderLeft : null,
-                    { textAlign: node.alignments[columnIndex] ?? "left" },
-                  ]}
-                >
-                  {renderInline(cell, openTarget, `${key}:r${rowIndex}:c${columnIndex}`)}
-                </Text>
-              ))}
-            </View>
+            <MarkdownTableRow
+              key={rowIndex}
+              cells={row}
+              alignments={node.alignments}
+              openTarget={openTarget}
+              striped={rowIndex % 2 === 1}
+            />
           ))}
         </View>
       );
@@ -272,10 +244,41 @@ function renderBlocks(
   );
 }
 
-export function MarkdownText({ text, onOpenFile, mode = "message" }: MarkdownTextProps) {
+const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, openTarget, header = false, striped = false }: {
+  cells: InlineNode[][];
+  alignments: TableNode["alignments"];
+  openTarget: OpenTarget;
+  header?: boolean;
+  striped?: boolean;
+}) {
+  return (
+    <View style={[styles.tableRow, header ? styles.tableHead : styles.tableBodyRow, striped && styles.tableRowZebra]}>
+      {cells.map((cell, index) => (
+        <Text key={index} selectable style={[
+          header ? styles.th : styles.td,
+          index > 0 ? styles.cellBorderLeft : null,
+          { textAlign: alignments[index] ?? "left" },
+        ]}>
+          {renderInline(cell, openTarget, `cell${index}`)}
+        </Text>
+      ))}
+    </View>
+  );
+});
+
+const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast }: {
+  node: MarkdownNode;
+  openTarget: OpenTarget;
+  isLast: boolean;
+}) {
+  return renderBlock(node, openTarget, "block", isLast);
+});
+
+export function MarkdownText({ text, onOpenFile, mode = "message", streaming = false }: MarkdownTextProps) {
   const { t } = useTranslation();
-  const document = parseFutureMarkdown(text);
-  const openTarget: OpenTarget = rawTarget => {
+  const [project] = useState(createStreamingMarkdownParser);
+  const document = useMemo(() => project(text, streaming), [project, text, streaming]);
+  const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
       if (mode === "file-preview") {
@@ -289,8 +292,10 @@ export function MarkdownText({ text, onOpenFile, mode = "message" }: MarkdownTex
     void Linking.openURL(target.url).catch(() => {
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
-  };
-  return <View>{renderBlocks(document.nodes, openTarget, "markdown")}</View>;
+  }, [mode, onOpenFile, t]);
+  return <View>{document.nodes.map((node, index) => (
+    <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1} />
+  ))}</View>;
 }
 
 const styles = StyleSheet.create({

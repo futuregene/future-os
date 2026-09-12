@@ -14,7 +14,7 @@ test("only the approval which failed receives the error", () => {
   const props = {
     message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
     supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
-    remote: { draft: false, desktopOnline: true, connectionPresentation: { customerState: "connected" }, models: [], modelId: "model", timeline: { streaming: false } },
+    remote: { draft: false, desktopOnline: true, connectionPresentation: { customerState: "connected" }, models: [], modelId: "model", streaming: false },
     openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
     showOffline: false, pendingApprovals: ["a", "b"].map(id => ({
       id, kind: "approval", payload: { approval_request_id: id },
@@ -29,6 +29,25 @@ test("only the approval which failed receives the error", () => {
     expect(cards).toHaveLength(2);
     expect(cards[0]!.props.error).toBe("failed");
     expect(cards[1]!.props.error).toBeNull();
+
+    // Transcript text updates recreate the filtered array, not the approval
+    // objects. They must not re-render the input/docked cards 100 times.
+    const card = PendingApprovalCard as jest.Mock;
+    const initialCalls = card.mock.calls.length;
+    for (let i = 0; i < 100; i++) {
+      act(() => renderer!.update(createElement(ComposerDock, {
+        ...props, pendingApprovals: [...props.pendingApprovals],
+      })));
+    }
+    expect(card).toHaveBeenCalledTimes(initialCalls);
+
+    const decide = jest.fn(async () => {});
+    act(() => renderer!.update(createElement(ComposerDock, {
+      ...props, decideApproval: decide, remote: { ...props.remote, streaming: true },
+    })));
+    expect(card).toHaveBeenCalledTimes(initialCalls + 2);
+    act(() => renderer!.root.findAllByType(PendingApprovalCard)[0]!.props.onDecision("approved"));
+    expect(decide).toHaveBeenCalledWith("a", "approved");
   } finally {
     act(() => renderer!.unmount());
   }

@@ -72,3 +72,22 @@ Deterministic regressions use actual Mobile hooks/sync/replay code with scripted
 - A warm conversation's ten-exchange display window stays bounded through an immediate restart, with older history still reachable by pagination.
 
 Local validation: Mobile typecheck and ESLint passed; 50 suites / 718 tests passed. One initial full run hit an unchanged SessionList beforeEach 5-second timeout; both its isolated rerun and subsequent full runs passed without changing timeout settings. No physical device, emulator frame-rate measurement, production service restart, or model request was used. Markdown incremental rendering and fine-grained Context subscriptions remain separate optimization work.
+
+## Follow-up: incremental Markdown and render isolation (no physical device)
+
+Mobile now uses a shared streaming parser with one current checkpoint per message/segment. It retains completed top-level nodes, reparses the mutable tail, and incrementally reparses the last GFM table row while retaining completed rows and header/alignment objects. Transient fragments bypass the shared settled-document cache. Replacement, finalization, bracket-bearing source (conservative reference-definition safety), and unsupported checkpoint shapes use canonical full parsing. A large single paragraph/list/code block can still require parsing that entire mutable block; this is not a claim of constant-time parsing for every Markdown input.
+
+`MarkdownText` memoizes completed blocks and table rows. Remote control state is separated from transcript state while preserving `useRemote` for transcript consumers. Navigation and share intake subscribe only to controls. The composer receives stable control state/callbacks and compares approval item identities, so ordinary text commits do not redraw it, but changed streaming state, callbacks and approval content remain observable.
+
+The shared parser's 28 tests include character-by-character equivalence to canonical parsing across 21 mixed Markdown fixtures, immutable block/row identity, replacement/reference/finalization handling, cache isolation, deep-nesting fallback and two bounded-work loads. One isolated Node/Vitest run on Windows measured initial content plus 100 appends:
+
+| Load | Full-parser input characters | Incremental input characters | Full parse elapsed | Incremental elapsed |
+|---|---:|---:|---:|---:|
+| 200 stable paragraphs plus growing tail | 721,544 | 12,544 | 2,337 ms | 49 ms |
+| 200-row table plus appended rows | 516,367 | 10,598 | 3,081 ms | 74 ms |
+
+Both paths bypass settled-document caching for this comparison; full parsing uses the canonical parser, incremental parsing uses actual production code. The character-count assertions are deterministic. Timings are single-run host observations, not phone FPS, p95 latency, rendering time, or a universal speedup guarantee.
+
+React test-renderer checks show 100 transcript commits with no additional control-consumer renders; streaming start/end still render controls. A composer test similarly checks that 100 unchanged approval-array reconstructions do not redraw its docked cards, while new callbacks and streaming state do. Incrementally rendered and finalized Markdown matches ordinary rendering.
+
+Validation: Mobile typecheck/ESLint and **51 suites / 720 tests** passed; Desktop typecheck/ESLint/Stylelint and **106 files / 937 tests** passed; the shared Markdown package typecheck passed. Android and iOS production Expo exports both succeeded, including Hermes bytecode generation. No native application build/install, physical-device test, emulator frame-rate measurement, or service restart was performed.
