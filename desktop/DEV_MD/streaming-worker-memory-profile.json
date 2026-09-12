@@ -1,0 +1,82 @@
+{
+  "date": "2026-09-12",
+  "baselineRevision": "3a66814e",
+  "environment": "Windows x64, Node v26.4.0 --expose-gc, actual Vite production worker bundle executed in a DOM-free vm context",
+  "script": "desktop/scripts/profile-streaming-worker.mjs",
+  "scope": "Worker computation and retained JS heap only; excludes structured-clone transport, React, native WebView, OS sleep and network recovery. No desktop deployment or Agent calls.",
+  "method": "Each case runs in a fresh process. Baseline and candidate run adjacently for each identical fixture. Measure the first projection, 80 source appends, then 10 identical-text live/settled transitions. GC before heap baseline and after appends; retain only the latest response. Durations below are milliseconds; heap values are MiB. Summary values rounded to 3 decimals.",
+  "baselineBundle": "streamingMarkdown.worker-Cij7RHTX.js",
+  "candidateBundle": "streamingMarkdown.worker-FyN2ZbRp.js",
+  "candidateRevision": "7ab5bfa3 (before shared cache-parameter reconciliation)",
+  "postMergeVerification": {
+    "revision": "4345f3e0",
+    "workerBundle": "streamingMarkdown.worker-D6ORSHp0.js",
+    "note": "Reuse origin/main's boolean cache parameter instead of the candidate options object; rerun production worker and all three fixtures. This is a candidate-only verification, not a new baseline/candidate ratio. Small mixed-document heap varies with runtime/JIT and is not a claimed memory improvement.",
+    "results": [
+      { "fixture": "list", "updates": 80, "firstParseMs": 319.212, "appendMedianMs": 243.904, "unchangedTextMedianMs": 0.004, "retainedAfterAppendsMiB": 1.146, "sampledHeapHighWaterMiB": 175.795 },
+      { "fixture": "mixed", "updates": 80, "firstParseMs": 100.587, "appendMedianMs": 48.975, "unchangedTextMedianMs": 0.022, "retainedAfterAppendsMiB": 1.126, "sampledHeapHighWaterMiB": 99.605 },
+      { "fixture": "code", "updates": 80, "firstParseMs": 45.979, "appendMedianMs": 14.168, "unchangedTextMedianMs": 0.003, "retainedAfterAppendsMiB": 0.677, "sampledHeapHighWaterMiB": 56.559 }
+    ]
+  },
+  "results": [
+    {
+      "fixture": "list", "initialChars": 56579, "updates": 80,
+      "baseline": {
+        "firstParseMs": 341.335, "firstParseCpuMs": 640,
+        "appendMedianMs": 274.610, "appendMaxMs": 498.602, "appendMedianCpuMs": 343,
+        "unchangedTextMedianMs": 240.561,
+        "retainedAfterAppendsMiB": 78.171, "sampledHeapHighWaterMiB": 386.862,
+        "unchangedTextMs": [337.113, 259.509, 236.927, 240.561, 237.661, 237.321, 227.076, 235.782, 246.889, 242.094]
+      },
+      "candidate": {
+        "firstParseMs": 361.562, "firstParseCpuMs": 688,
+        "appendMedianMs": 259.989, "appendMaxMs": 289.044, "appendMedianCpuMs": 328,
+        "unchangedTextMedianMs": 0.003,
+        "retainedAfterAppendsMiB": 1.159, "sampledHeapHighWaterMiB": 168.936,
+        "unchangedTextMs": [0.113, 0.009, 0.003, 0.002, 0.002, 0.002, 0.002, 0.002, 0.004, 0.005]
+      }
+    },
+    {
+      "fixture": "mixed", "initialChars": 10852, "updates": 80,
+      "baseline": {
+        "firstParseMs": 313.229, "firstParseCpuMs": 453,
+        "appendMedianMs": 53.240, "appendMaxMs": 77.878, "appendMedianCpuMs": 63,
+        "unchangedTextMedianMs": 57.151,
+        "retainedAfterAppendsMiB": 0.709, "sampledHeapHighWaterMiB": 104.179,
+        "unchangedTextMs": [77.886, 57.151, 61.526, 60.155, 49.532, 50.842, 52.788, 58.645, 50.061, 47.456]
+      },
+      "candidate": {
+        "firstParseMs": 112.869, "firstParseCpuMs": 203,
+        "appendMedianMs": 53.255, "appendMaxMs": 70.379, "appendMedianCpuMs": 63,
+        "unchangedTextMedianMs": 0.027,
+        "retainedAfterAppendsMiB": 0.531, "sampledHeapHighWaterMiB": 98.150,
+        "unchangedTextMs": [0.151, 0.031, 0.040, 0.027, 0.020, 0.023, 0.032, 0.014, 0.012, 0.013]
+      }
+    },
+    {
+      "fixture": "code", "initialChars": 52508, "updates": 80,
+      "baseline": {
+        "firstParseMs": 42.902, "firstParseCpuMs": 47,
+        "appendMedianMs": 14.608, "appendMaxMs": 26.154, "appendMedianCpuMs": 16,
+        "unchangedTextMedianMs": 18.286,
+        "retainedAfterAppendsMiB": 8.776, "sampledHeapHighWaterMiB": 63.901,
+        "unchangedTextMs": [32.476, 22.551, 18.286, 18.391, 17.818, 19.307, 15.972, 15.258, 13.136, 14.802]
+      },
+      "candidate": {
+        "firstParseMs": 41.463, "firstParseCpuMs": 94,
+        "appendMedianMs": 15.507, "appendMaxMs": 25.415, "appendMedianCpuMs": 16,
+        "unchangedTextMedianMs": 0.004,
+        "retainedAfterAppendsMiB": 0.674, "sampledHeapHighWaterMiB": 53.494,
+        "unchangedTextMs": [0.121, 0.012, 0.004, 0.003, 0.002, 0.002, 0.002, 0.002, 0.006, 0.008]
+      }
+    }
+  ],
+  "interpretation": [
+    "Primary robust result: retained heap after 80 live list versions fell about 98.5%, code versions about 92.3%. This is retained JS heap, not total app RSS or native peak memory.",
+    "Identical-text finalization invokes no parser after the change. Very small timings are worker computation, not end-to-end UI response; Windows CPU accounting is too coarse to resolve them.",
+    "The mixed fixture contains 481 ordinary root blocks. Cold parsing changes from one full parse plus 481 block parses to one full parse with subtree conversion; the observed first-projection improvement is a single cold sample, not a latency percentile.",
+    "No general append-throughput speedup is claimed: mixed append median is essentially unchanged, and code append wall median increased about 0.9ms while median process CPU remained 16ms. List cold wall time also increased about 20ms in this pair.",
+    "Earlier unpaired timing trials varied substantially with machine load. Additional paired trials confirmed list retention around 78.15-78.17MiB baseline versus 1.15-1.17MiB candidate, and code around 8.76-8.78MiB versus 0.66-0.68MiB. Their wall-time ratios were not used as headline gains.",
+    "Sampled heap high-water is measured after each request, not continuously, so it is not a true peak measurement. Static 512-entry cache policy remains unchanged."
+  ]
+}

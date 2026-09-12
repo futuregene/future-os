@@ -55,9 +55,9 @@ interface ParseContext {
   definitions: Map<string, Definition>;
 }
 
-/** Optional mdast must have been parsed from exactly `raw` with the same plugins.
- * Streaming workers already parse it for source boundaries; reuse that tree
- * rather than parsing a large mutable block twice. Existing callers omit it.
+/** Optional mdast must describe `raw` with the same plugins; positions are not
+ * consumed by conversion. Workers can reuse whole trees or independent block
+ * subtrees. Ephemeral live versions opt out of the cross-instance static cache.
  */
 export function parseFutureMarkdown(raw: string, parsedTree?: Root, cache = true): FutureMarkdownDocument {
   // Mutable streaming fragments must not fill the shared LRU with obsolete
