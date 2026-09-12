@@ -23,7 +23,6 @@ interface ConversationControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
   selectedRef: MutableRefObject<string>;
   syncEngineRef: MutableRefObject<SyncEngine | null>;
-  hydrateAttachmentsRef: MutableRefObject<(sessionId: string) => Promise<void>>;
   conversationEpochRef: MutableRefObject<number>;
   models: RemoteModel[];
   setSelectedSessionId: Dispatch<SetStateAction<string>>;
@@ -44,7 +43,6 @@ export function useConversationController({
   clientRef,
   selectedRef,
   syncEngineRef,
-  hydrateAttachmentsRef,
   conversationEpochRef,
   models,
   setSelectedSessionId,
@@ -69,7 +67,9 @@ export function useConversationController({
       const client = clientRef.current;
       if (!client) return;
       setOpeningSession(true);
-      conversationEpochRef.current += 1;
+      const epoch = ++conversationEpochRef.current;
+      const isCurrent = () => conversationEpochRef.current === epoch
+        && selectedRef.current === sessionId && clientRef.current === client;
       prepareTimelineOpen(sessionId);
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
@@ -81,26 +81,26 @@ export function useConversationController({
         return next;
       });
       try {
-        const state = await client.requestRetry<RemoteSessionState>(
-          { type: "get_state", sessionId },
-          sessionId,
-        );
-        const currentModel = state.data.model ?? "";
+        const engine = syncEngineRef.current;
+        const state = engine
+          ? await engine.open(sessionId)
+          : (await client.requestRetry<RemoteSessionState>({ type: "get_state", sessionId }, sessionId)).data;
+        if (!isCurrent()) return;
+        const currentModel = state.model ?? "";
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
-        setThinkingLevelState(state.data.thinkingLevel ?? "off");
+        setThinkingLevelState(state.thinkingLevel ?? "off");
       } catch (nextError) {
-        recordError(nextError);
+        if (isCurrent()) recordError(nextError);
       } finally {
-        setOpeningSession(false);
+        if (isCurrent()) setOpeningSession(false);
       }
-      syncEngineRef.current?.reconcile(sessionId, "open");
-      void hydrateAttachmentsRef.current(sessionId);
+      // The engine's history request includes attachments. An extra hydration
+      // here doubled history reads on warm opens and raced the paging cursor.
     },
     [
       clientRef,
       conversationEpochRef,
-      hydrateAttachmentsRef,
       models,
       prepareTimelineOpen,
       recordError,
@@ -114,7 +114,16 @@ export function useConversationController({
 
   const newConversation = useCallback(
     async (mode: "chat" | "workspace" = "chat", workspaceId = "") => {
+      const epoch = ++conversationEpochRef.current;
+      setOpeningSession(false);
+      setSelectedSessionId("");
+      selectedRef.current = "";
+      setDraft(true);
+      setDraftMode(mode);
+      setDraftWorkspaceId(workspaceId);
+      ensureDraftTimeline();
       const [lastModel, lastThinking] = await Promise.all([loadLastModel(), loadLastThinking()]);
+      if (conversationEpochRef.current !== epoch || selectedRef.current !== "") return;
       const defaultOption = models.find(model => model.isDefault);
       const defaultModel =
         (lastModel && models.some(model => modelReference(model) === lastModel)
@@ -122,13 +131,6 @@ export function useConversationController({
           : null) ??
         (defaultOption ? modelReference(defaultOption) : null) ??
         (models[0] ? modelReference(models[0]) : "");
-      conversationEpochRef.current += 1;
-      setSelectedSessionId("");
-      selectedRef.current = "";
-      setDraft(true);
-      setDraftMode(mode);
-      setDraftWorkspaceId(workspaceId);
-      ensureDraftTimeline();
       setModelId(defaultModel);
       setThinkingLevelState((lastThinking as ThinkingLevel | null) ?? "off");
     },
@@ -189,18 +191,19 @@ export function useConversationController({
 
   const setModel = useCallback(
     async (nextModelId: string) => {
+      const client = clientRef.current;
+      const sessionId = selectedRef.current;
       setModelId(nextModelId);
       await saveLastModel(nextModelId);
-      const client = clientRef.current;
-      if (client && selectedRef.current) {
+      if (client && clientRef.current === client && sessionId) {
         await client.request(
           {
             type: "set_model",
-            sessionId: selectedRef.current,
+            sessionId,
             modelId: nextModelId,
             providerId: modelProviderFromReference(nextModelId),
           },
-          selectedRef.current,
+          sessionId,
         );
       }
     },
@@ -209,13 +212,14 @@ export function useConversationController({
 
   const setThinkingLevel = useCallback(
     async (level: ThinkingLevel) => {
+      const client = clientRef.current;
+      const sessionId = selectedRef.current;
       setThinkingLevelState(level);
       await saveLastThinking(level);
-      const client = clientRef.current;
-      if (client && selectedRef.current) {
+      if (client && clientRef.current === client && sessionId) {
         await client.request(
-          { type: "set_thinking_level", sessionId: selectedRef.current, level },
-          selectedRef.current,
+          { type: "set_thinking_level", sessionId, level },
+          sessionId,
         );
       }
     },
