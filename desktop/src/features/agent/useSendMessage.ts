@@ -42,6 +42,8 @@ export function useSendMessage({
   onThreadActivity,
 }: UseSendMessageInput) {
   const sendGenerationRef = useRef(0);
+  // Object identity identifies this send even before createRun completes.
+  const localSendRef = useRef<{ runId: string | null } | null>(null);
 
   const handleSend = useCallback(async (payload: ComposerSendPayload) => {
     if (!thread)
@@ -58,6 +60,8 @@ export function useSendMessage({
       return;
     }
     sendingRef.current = true;
+    const localSend = { runId: null as string | null };
+    localSendRef.current = localSend;
 
     const sendGeneration = sendGenerationRef.current + 1;
     sendGenerationRef.current = sendGeneration;
@@ -65,7 +69,21 @@ export function useSendMessage({
 
     try {
       await runSendPipeline(
-        { isCurrentSend, modelId, onThreadActivity, refreshRecentRun, setMessages, setRecentRun, thinkingLevel, thread },
+        {
+          isCurrentSend,
+          modelId,
+          onThreadActivity,
+          refreshRecentRun,
+          setMessages,
+          thinkingLevel,
+          thread,
+          setRecentRun: (run) => {
+            if (!isCurrentSend())
+              return;
+            localSend.runId = run.id;
+            setRecentRun(run);
+          },
+        },
         payload,
       );
     }
@@ -81,8 +99,10 @@ export function useSendMessage({
     finally {
       // Release the in-flight lock — but only if a newer send/thread switch
       // hasn't already taken over (it owns the flag then).
-      if (isCurrentSend())
+      if (isCurrentSend()) {
         sendingRef.current = false;
+        localSendRef.current = null;
+      }
     }
   }, [activeRunId, modelId, onThreadActivity, refreshRecentRun, sendingRef, setMessages, setRecentRun, thinkingLevel, thread]);
 
@@ -97,6 +117,7 @@ export function useSendMessage({
     return () => {
       sendGenerationRef.current += 1;
       sendingRef.current = false;
+      localSendRef.current = null;
     };
   }, [sendingRef]);
 
@@ -109,7 +130,8 @@ export function useSendMessage({
   const abandonSend = useCallback(() => {
     sendGenerationRef.current += 1;
     sendingRef.current = false;
+    localSendRef.current = null;
   }, [sendingRef]);
 
-  return { handleSend, abandonSend };
+  return { handleSend, abandonSend, localSendRef };
 }

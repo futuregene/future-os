@@ -5,7 +5,7 @@ import type {
 } from "../../integrations/storage/threadStore";
 import { matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef } from "react";
-import { abortRun, getLatestRun } from "../../integrations/storage/threadStore";
+import { abortRun, getRun } from "../../integrations/storage/threadStore";
 import { usePolling } from "../../lib/usePolling";
 import { useRunReattach } from "./useRunReattach";
 import { useSendMessage } from "./useSendMessage";
@@ -95,7 +95,7 @@ export function useAgentThreadState({
     ? (recentRun?.startedAt ?? recentRun?.createdAt ?? null)
     : null;
 
-  const { handleSend, abandonSend } = useSendMessage({
+  const { handleSend, abandonSend, localSendRef } = useSendMessage({
     thread,
     modelId,
     thinkingLevel,
@@ -140,13 +140,16 @@ export function useAgentThreadState({
   // and immediately when the window becomes visible/focused again, so a run
   // that finished while hidden unsticks the moment the user returns.
   const reconcileHungSend = useCallback(async () => {
-    if (!threadId || !sendingRef.current)
+    const localSend = localSendRef.current;
+    if (!threadId || !sendingRef.current || !localSend?.runId)
       return;
-    const latest = await getLatestRun(threadId).catch(() => null);
+    const latest = await getRun(localSend.runId).catch(() => null);
     // Re-check after the await: the send may have settled or been abandoned
     // while the read was in flight.
     if (
       !latest
+      || localSendRef.current !== localSend
+      || latest.id !== localSend.runId
       || writerRef.current !== setMessages
       || latest.threadId !== threadId
       || !sendingRef.current
@@ -157,7 +160,7 @@ export function useAgentThreadState({
     abandonSend();
     setRecentRun(latest);
     void reloadMessagesQuiet(threadId, true);
-  }, [abandonSend, reloadMessagesQuiet, sendingRef, setRecentRun, setMessages, threadId]);
+  }, [abandonSend, localSendRef, reloadMessagesQuiet, sendingRef, setRecentRun, setMessages, threadId]);
 
   usePolling(
     () => {

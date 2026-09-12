@@ -195,6 +195,8 @@ export async function runSendPipeline(
     let settledElsewhere = false;
     if (currentRun && matchesSettledRun(currentRun.status)) {
       if (currentRun.status === "cancelled") {
+        if (isCurrentSend())
+          setRecentRun(currentRun);
         const partial = reply.content.trim();
         if (partial) {
           // Persist the partial reply regardless of whether this view still owns
@@ -328,6 +330,32 @@ export async function runSendPipeline(
     const message = errorMessage(error);
     if (run) {
       const currentRun = await loadCurrentRun(run.id);
+      // A failed attach/IPC is not a failed run. The backend may have already
+      // reconciled RunGone against a durable success or user cancellation.
+      if (currentRun && (currentRun.status === "completed" || currentRun.status === "cancelled")) {
+        const events = await safeListRunEvents(run.id);
+        if (isCurrentSend()) {
+          setRecentRun(currentRun);
+          patchMessage(setMessages, pendingId, (previous) => {
+            const rendered = deriveRenderFields(events, previous.content);
+            const stopped = currentRun.status === "cancelled";
+            return {
+              ...rendered,
+              id: clientId("local_assistant"),
+              status: "complete",
+              thinkingActive: false,
+              reconnecting: undefined,
+              stopped,
+              terminationNotice: stopped ? userStoppedNotice() : undefined,
+              terminationTitle: undefined,
+              runError: undefined,
+              durationMs: runDurationMs(currentRun, runStartAnchorMs),
+            };
+          });
+          onThreadActivity();
+        }
+        return;
+      }
       if (!currentRun || !matchesSettledRun(currentRun.status)) {
         await updateRunStatusSafe(run.id, "failed", message);
       }

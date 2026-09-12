@@ -1,34 +1,22 @@
 import type { StreamingMarkdownWorkerRequest, StreamingMarkdownWorkerResponse } from "./streamingMarkdown.worker";
 import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
+import { plainStreamingMarkdown, projectStreamingMarkdown } from "./streamingMarkdownBlocks";
 
-/**
- * Consecutive off-thread parse failures tolerated before this component gives up
- * on the worker and parses synchronously. The counter resets on every successful
- * response, so an intermittent failure (memory pressure, a worker killed under a
- * multi-hundred-KB block) keeps using the off-thread parser.
- *
- * Latching on the FIRST failure is what makes a transient hiccup permanent: the
- * synchronous fallback re-parses the whole accumulated block on the UI thread,
- * which for a high-throughput reasoning model is ~100ms per push at up to 60
- * pushes/s — the chat stops responding while the Agent keeps streaming fine.
- */
 const MAX_WORKER_FAILURES = 3;
+// A dead worker must not turn a large reply into an unbounded UI-thread parse.
+const SYNC_FALLBACK_MAX_CHARS = 8192;
 
-/**
- * Never let a parser throw escape into the render tree. Pathologically nested
- * markdown (a long reasoning reply is full of nested lists/quotes) can exhaust
- * the parser's stack; degrading to one undivided block shows slightly worse
- * placement instead of unmounting the conversation.
- */
-function safeSplitStreamingMarkdown(text: string, live: boolean): StreamingMarkdownBlock[] {
-  try {
-    return splitStreamingMarkdown(text, live);
+function fallbackBlocks(text: string, live: boolean): StreamingMarkdownBlock[] {
+  if (text.length <= SYNC_FALLBACK_MAX_CHARS) {
+    try {
+      return projectStreamingMarkdown(text, live);
+    }
+    catch {
+      // Preserve the source as text if parsing itself fails.
+    }
   }
-  catch {
-    return [{ content: text, live, start: 0 }];
-  }
+  return plainStreamingMarkdown(text, live);
 }
 
 interface Projection {
@@ -37,32 +25,40 @@ interface Projection {
 }
 
 function provisionalProjection(current: Projection, text: string, live: boolean): StreamingMarkdownBlock[] {
-  if (current.text === text)
-    return current.blocks;
   if (!text.startsWith(current.text) || current.blocks.length === 0)
-    return [{ content: text, live, start: 0 }];
-
-  const suffix = text.slice(current.text.length);
+    return plainStreamingMarkdown(text, live);
   const blocks = current.blocks.slice();
   const tail = blocks[blocks.length - 1]!;
+  const suffix = text.slice(current.text.length);
+  if (!suffix && tail.live === live)
+    return current.blocks;
+  // Display every incoming character immediately without reparsing the growing
+  // table/list/paragraph on the UI thread. The next worker result incorporates
+  // this literal suffix into its proper Markdown structure.
   blocks[blocks.length - 1] = {
     ...tail,
     content: tail.content + suffix,
     live,
+    document: suffix && tail.document
+      ? {
+          ...tail.document,
+          raw: tail.content + suffix,
+          nodes: [...tail.document.nodes, { type: "paragraph", children: [{ type: "text", text: suffix }] }],
+        }
+      : tail.document,
   };
   return blocks;
 }
 
-/**
- * Parse streaming block boundaries off the UI thread. At most one request runs
- * and one latest request waits; intermediate projections are superseded.
- */
+/** One parse in flight plus one latest request; never parse a live tail in render. */
 export function useStreamingMarkdownBlocks(text: string, live: boolean): StreamingMarkdownBlock[] {
   const streamedRef = useRef(live);
   streamedRef.current ||= live;
   const shouldProject = streamedRef.current;
   const [projection, setProjection] = useState<Projection>(() => ({
-    blocks: shouldProject ? safeSplitStreamingMarkdown(text, live) : [],
+    blocks: shouldProject
+      ? typeof Worker === "undefined" ? fallbackBlocks(text, live) : plainStreamingMarkdown(text, live)
+      : [],
     text,
   }));
   const workerRef = useRef<Worker | null>(null);
@@ -76,77 +72,95 @@ export function useStreamingMarkdownBlocks(text: string, live: boolean): Streami
   textRef.current = text;
 
   useEffect(() => {
-    if (!shouldProject || typeof Worker === "undefined" || workerFailuresRef.current >= MAX_WORKER_FAILURES) {
-      if (shouldProject)
-        setProjection({ blocks: safeSplitStreamingMarkdown(text, live), text });
+    if (!shouldProject)
+      return;
+    if (typeof Worker === "undefined" || workerFailuresRef.current >= MAX_WORKER_FAILURES) {
+      setProjection({ blocks: fallbackBlocks(text, live), text });
       return;
     }
 
+    const fail = () => {
+      workerFailuresRef.current += 1;
+      activeRef.current = false;
+      queuedRef.current = null;
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      const currentText = textRef.current;
+      setProjection({ blocks: fallbackBlocks(currentText, liveRef.current), text: currentText });
+    };
+    const post = (worker: Worker, request: StreamingMarkdownWorkerRequest) => {
+      activeRef.current = true;
+      try {
+        worker.postMessage(request);
+      }
+      catch {
+        fail();
+      }
+    };
+
     let worker = workerRef.current;
     if (!worker) {
-      worker = new Worker(new URL("./streamingMarkdown.worker.ts", import.meta.url), { type: "module" });
+      try {
+        worker = new Worker(new URL("./streamingMarkdown.worker.ts", import.meta.url), { type: "module" });
+      }
+      catch {
+        fail();
+        return;
+      }
       workerRef.current = worker;
+      const created = worker;
       worker.onmessage = (event: MessageEvent<StreamingMarkdownWorkerResponse>) => {
+        if (workerRef.current !== created)
+          return;
         activeRef.current = false;
-        // A response proves the off-thread parser works, so earlier transient
-        // failures must not count toward the give-up budget.
         workerFailuresRef.current = 0;
         const latest = event.data.id === latestIdRef.current;
-        // A worker slower than incoming pushes may NEVER return the latest
-        // id. Its parsed prefix still advances stable block boundaries; append
-        // the unparsed suffix provisionally instead of rejecting all progress
-        // and re-parsing an ever-growing tail on the UI thread. Replaced text
-        // is not a compatible prefix and must not resurrect old boundaries.
+        // An older compatible prefix still advances block boundaries; rejecting
+        // all non-latest responses would starve a parser slower than the stream.
         if (textRef.current.startsWith(event.data.text)) {
-          setProjection({ blocks: event.data.blocks, text: event.data.text });
+          setProjection((previous) => {
+            const byStart = new Map(previous.blocks.map(block => [block.start, block]));
+            return {
+              text: event.data.text,
+              blocks: event.data.blocks.map((block) => {
+                const old = byStart.get(block.start);
+                // Structured cloning creates fresh ASTs for unchanged blocks.
+                // Preserve their object identity so memoized renderers can skip.
+                return old?.parsed && old.content === block.content && old.live === block.live
+                  ? old
+                  : block;
+              }),
+            };
+          });
         }
         const queued = queuedRef.current;
         queuedRef.current = null;
         if (queued) {
-          activeRef.current = true;
-          workerRef.current?.postMessage(queued);
+          post(created, queued);
         }
         else if (latest && !liveRef.current) {
-          // A completed segment keeps its final block projection in React state;
-          // it no longer needs a dedicated worker for the rest of the thread's
-          // lifetime. A later transition back to live lazily creates a new one.
-          workerRef.current?.terminate();
+          created.terminate();
           workerRef.current = null;
         }
       };
-      worker.onerror = () => {
-        workerFailuresRef.current += 1;
-        activeRef.current = false;
-        queuedRef.current = null;
-        workerRef.current?.terminate();
-        workerRef.current = null;
-        const currentText = textRef.current;
-        setProjection({
-          blocks: safeSplitStreamingMarkdown(currentText, liveRef.current),
-          text: currentText,
-        });
+      const handleFailure = () => {
+        if (workerRef.current === created)
+          fail();
       };
+      worker.onerror = handleFailure;
+      worker.onmessageerror = handleFailure;
     }
 
-    const request: StreamingMarkdownWorkerRequest = {
-      id: ++latestIdRef.current,
-      live,
-      text,
-    };
-    if (activeRef.current) {
+    const request = { id: ++latestIdRef.current, live, text };
+    if (activeRef.current)
       queuedRef.current = request;
-    }
-    else {
-      activeRef.current = true;
-      worker.postMessage(request);
-    }
+    else
+      post(worker, request);
   }, [live, shouldProject, text]);
 
   useEffect(() => () => {
     workerRef.current?.terminate();
     workerRef.current = null;
-    // StrictMode replays setup after cleanup. A terminated worker cannot
-    // finish the old request, so the replacement must start idle.
     activeRef.current = false;
     queuedRef.current = null;
   }, []);

@@ -203,15 +203,19 @@ export function useThreadMessages({
 
   const refreshRecentRun = useCallback(
     async (targetThreadId: string, _targetWorkspaceId?: string | null) => {
-      if (!aliveRef.current || sourceRef.current.version !== source.version)
+      // First session binding preserves the send owner. Allow that send's
+      // captured callback to start a fresh read, but invalidate a read already
+      // in flight when the source changes.
+      if (!aliveRef.current || sourceRef.current.owner !== source.owner)
         return;
+      const version = sourceRef.current.version;
       const generation = ++recentRunGenRef.current;
       try {
         // One row, not the thread's whole run history. Invoked on push events
         // (thread-runtime-updated terminal / remote-activity) and loads — there is
         // no longer a periodic timer driving it.
         const latestRun = await getLatestRun(targetThreadId);
-        if (!aliveRef.current || sourceRef.current.version !== source.version || generation !== recentRunGenRef.current) {
+        if (!aliveRef.current || sourceRef.current.version !== version || generation !== recentRunGenRef.current) {
           return;
         }
         // Mirror the in-flight run for the load path (see activeRunRef).
@@ -228,7 +232,7 @@ export function useThreadMessages({
         // Run-status refresh is best-effort.
       }
     },
-    [source.version, setRecentRun],
+    [source.owner, setRecentRun],
   );
 
   // Reconstruct the thread's messages from the agent Agent transcript

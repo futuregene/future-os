@@ -55,7 +55,11 @@ interface ParseContext {
   definitions: Map<string, Definition>;
 }
 
-export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
+/** Optional mdast must have been parsed from exactly `raw` with the same plugins.
+ * Streaming workers already parse it for source boundaries; reuse that tree
+ * rather than parsing a large mutable block twice. Existing callers omit it.
+ */
+export function parseFutureMarkdown(raw: string, parsedTree?: Root): FutureMarkdownDocument {
   const cached = parseCache.get(raw);
   if (cached) {
     // LRU touch.
@@ -63,7 +67,7 @@ export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
     parseCache.set(raw, cached);
     return cached;
   }
-  const tree = parseMdast(raw);
+  const tree = parsedTree ?? parseMdast(raw);
   const context = createParseContext(tree);
   // Bound both conversion and downstream recursive renderers. Inspect the AST
   // iteratively so hostile nesting cannot overflow this guard itself. Preserve

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Streaming Markdown benchmark</title></head>
+  <body>
+    <h1>Streaming Markdown benchmark</h1>
+    <p>Synthetic, local-only GFM table. Baseline uses the original single-block synchronous renderer (boundary-worker overhead excluded).</p>
+    <label>Rows <input id="rows" type="number" value="1000"></label>
+    <button id="baseline">Run baseline</button>
+    <button id="worker">Run worker renderer</button>
+    <pre id="result">Ready</pre>
+    <div id="render-root"></div>
+    <script type="module" src="./streaming-markdown-benchmark.tsx"></script>
+  </body>
+</html>

@@ -63,6 +63,12 @@ async function projectRunForLivePreview(
   if (!shouldApply())
     return null;
 
+  // A reset (or LRU eviction) during the IPC read invalidates its cursor.
+  // Never ingest that tail into a new empty projector: its prefix would be
+  // permanently missing even though subsequent sequence numbers look valid.
+  if (cached && liveProjectionCache.get(runId) !== cached)
+    return projectRunForLivePreview(runId, shouldApply);
+
   if (cached && events.length > 0 && events[0]!.sequence <= since) {
     // Sequence regressed under us — the agent realigned mid-stream (e.g. its
     // fallback restarted the event log for a new run). The incremental tail is

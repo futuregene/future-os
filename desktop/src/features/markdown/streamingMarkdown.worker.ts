@@ -1,5 +1,5 @@
 import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
-import { splitStreamingMarkdown } from "./streamingMarkdownBlocks";
+import { createStreamingMarkdownProjector } from "./streamingMarkdownBlocks";
 
 export interface StreamingMarkdownWorkerRequest {
   id: number;
@@ -18,10 +18,12 @@ const workerScope = globalThis as unknown as {
   postMessage: (message: StreamingMarkdownWorkerResponse) => void;
 };
 
+const project = createStreamingMarkdownProjector();
+
 workerScope.onmessage = (event: MessageEvent<StreamingMarkdownWorkerRequest>) => {
   const { id, live, text } = event.data;
   const response: StreamingMarkdownWorkerResponse = {
-    blocks: splitStreamingMarkdown(text, live),
+    blocks: project(text, live),
     id,
     text,
   };
