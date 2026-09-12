@@ -103,7 +103,12 @@ interface RemoteContextValue {
   continueRun(sessionId: string, runId: string): Promise<void>;
 }
 
-const RemoteContext = createContext<RemoteContextValue | null>(null);
+type TimelineContextValue = Pick<RemoteContextValue,
+  "timeline" | "timelinePending" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline"
+>;
+export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue> & { streaming: boolean };
+const RemoteContext = createContext<RemoteControls | null>(null);
+const RemoteTimelineContext = createContext<TimelineContextValue | null>(null);
 
 /** Composes the remote domain controllers and preserves the public useRemote API. */
 export function RemoteProvider({ children }: PropsWithChildren) {
@@ -302,7 +307,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [agentAvailable, desktopOnline, error, phase, presence?.disconnected],
   );
 
-  const value = useMemo<RemoteContextValue>(
+  const streaming = timeline.streaming;
+  const timelineValue = useMemo<TimelineContextValue>(() => ({
+    timeline, timelinePending, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
+  }), [timeline, timelinePending, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
+  const value = useMemo<RemoteControls>(
     () => ({
       phase,
       error,
@@ -319,11 +328,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedSessionId,
       selectedTitle,
       draft,
-      timeline,
-      timelinePending,
-      timelineError,
-      canLoadOlderTimeline,
-      loadingOlderTimeline,
+      streaming,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -395,11 +400,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       cachedAttachment,
       downloadAttachment,
       sessions,
-      timeline,
-      timelineError,
-      timelinePending,
-      canLoadOlderTimeline,
-      loadingOlderTimeline,
+      streaming,
       unreadSessions,
       workspaces,
       setModel,
@@ -414,11 +415,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ],
   );
 
-  return <RemoteContext.Provider value={value}>{children}</RemoteContext.Provider>;
+  return <RemoteContext.Provider value={value}>
+    <RemoteTimelineContext.Provider value={timelineValue}>{children}</RemoteTimelineContext.Provider>
+  </RemoteContext.Provider>;
 }
 
-export function useRemote(): RemoteContextValue {
+/** Navigation and controls should not subscribe to every streamed text delta. */
+export function useRemoteControls(): RemoteControls {
   const value = useContext(RemoteContext);
   if (!value) throw new Error("useRemote must be used inside RemoteProvider");
   return value;
+}
+
+/** Compatibility surface for consumers that actually render the transcript. */
+export function useRemote(): RemoteContextValue {
+  const controls = useRemoteControls();
+  const timeline = useContext(RemoteTimelineContext);
+  if (!timeline) throw new Error("useRemote must be used inside RemoteProvider");
+  return useMemo(() => ({ ...controls, ...timeline }), [controls, timeline]);
 }

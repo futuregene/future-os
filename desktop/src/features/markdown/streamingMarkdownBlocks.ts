@@ -39,7 +39,7 @@ function projectTree(text: string, live: boolean, tree: Root): StreamingMarkdown
     document: parseFutureMarkdown(
       block.content,
       blocks.length === 1 ? tree : independent ? { type: "root", children: [tree.children[index]!] } : undefined,
-      { cache: !block.live },
+      !block.live,
     ),
     parsed: true,
   }));
@@ -121,7 +121,7 @@ export function createStreamingMarkdownProjector() {
       const tree = streamingMarkdownProcessor.parse(fragment) as Root;
       const sourceTable = tree.children.length === 1 ? tree.children[0] : undefined;
       if (sourceTable?.type === "table" && sourceTable.children.length > 1) {
-        const document = parseFutureMarkdown(fragment, tree, { cache: !live });
+        const document = parseFutureMarkdown(fragment, tree, !live);
         const table = document.nodes[0];
         const lastRowOffset = sourceTable.children[sourceTable.children.length - 1]?.position?.start.offset;
         if (document.nodes.length === 1 && table?.type === "table"

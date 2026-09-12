@@ -526,7 +526,7 @@ function SegmentBlock({
   onOpenFile?(path: string): void;
 }) {
   if (segment.kind === "text") {
-    return <MarkdownText text={segment.text} onOpenFile={onOpenFile} />;
+    return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }
   if (segment.kind === "thinking") {
     return <ThinkingRow streaming={streaming} text={segment.text} />;
@@ -641,7 +641,7 @@ function TimelineCardView({
               ))}
             </View>
           ) : item.text.trim().length > 0 ? (
-            <MarkdownText text={item.text} onOpenFile={onOpenFile} />
+            <MarkdownText text={item.text} onOpenFile={onOpenFile} streaming={item.streaming} />
           ) : null}
           {terminationNotice ? (
             <View style={styles.terminationNotice}>

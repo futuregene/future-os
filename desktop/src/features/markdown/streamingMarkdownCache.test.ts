@@ -53,7 +53,7 @@ describe("streaming Markdown cache ownership", () => {
       const text = source.slice(0, length);
       const actual = project(text, true).map(block => block.document);
       // Bypass the cache so the oracle cannot reuse a candidate's cached AST.
-      const expected = splitStreamingMarkdown(text, true).map(block => parseFutureMarkdown(block.content, undefined, { cache: false }));
+      const expected = splitStreamingMarkdown(text, true).map(block => parseFutureMarkdown(block.content, undefined, false));
       expect(actual).toEqual(expected);
     }
   });
@@ -64,7 +64,7 @@ describe("streaming Markdown cache ownership", () => {
     "[outside][id]\n\n[id]: https://example.com\n\nTail",
     "# Heading\n\n\\[\nx^2 + y^2\n\\]\n\n> quoted\n\n- [x] task",
   ])("preserves existing block rendering for definitions and mixed syntax: %s", (text) => {
-    const expected = splitStreamingMarkdown(text, true).map(block => parseFutureMarkdown(block.content, undefined, { cache: false }));
+    const expected = splitStreamingMarkdown(text, true).map(block => parseFutureMarkdown(block.content, undefined, false));
     const actual = createStreamingMarkdownProjector()(text, true).map(block => block.document);
     expect(actual).toEqual(expected);
   });
