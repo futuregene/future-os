@@ -55,3 +55,20 @@ The unchanged Windows failures comprise three path assertions; sixteen `git_revi
 ## Remaining validation boundary
 
 No real-phone failing request trace was captured in this session. These results establish the reproduced history/replay defects and their automated fixes, not a claim that every mobile connection failure is resolved. Installing updated Mobile and Desktop builds is required to exercise both fixes on a physical device.
+
+## Follow-up: switching and foreground synchronization (no physical device)
+
+The next Mobile-only change shares the opening `get_state` promise between model controls and the sync engine, removes the redundant opening attachment-history fetch, and rejects obsolete navigation responses. Model/thinking commands capture the intended session before asynchronous preference writes. Draft preference loading cannot navigate over a newer selection.
+
+Only the selected conversation performs history/replay/projection work. Hidden text events do not create timeline lanes, while title, terminal and approval notifications still update the catalog. Reopening always refreshes durable history and the active prefix, so a task that finished or requested approval while hidden is recovered. Reconnect restarts visible lanes, and replay checks lane validity before and after each page. An already-issued request may finish or time out; no subsequent pages are issued for the obsolete lane. This does **not** change the wildcard transport subscription or eliminate its incoming JSON decode cost.
+
+Deterministic regressions use actual Mobile hooks/sync/replay code with scripted RPC promises and fake timers:
+
+- With a simulated 350 ms state response and 350 ms history response, the opening state is requested once, history once, and history commits at 700 ms. This verifies two sequential round trips rather than the previous duplicate-state dependency; it is not a phone rendering benchmark.
+- 100 hidden sessions receiving 10,000 text deltas cause zero history/replay requests and no new timeline allocations. Opening one of them loads its latest durable state.
+- Reconnect with multiple cached lanes refreshes only the selected lane; reopening an idle hidden session refreshes its completed history.
+- Late A success/failure cannot overwrite B's model or clear B's pending state. Deferred preference saves cannot send A's command to B.
+- Hidden/replaced replay stops at the in-flight page; approvals are restored when opened; live events arriving during an open do not enqueue a duplicate opening read.
+- A warm conversation's ten-exchange display window stays bounded through an immediate restart, with older history still reachable by pagination.
+
+Local validation: Mobile typecheck and ESLint passed; 50 suites / 718 tests passed. One initial full run hit an unchanged SessionList beforeEach 5-second timeout; both its isolated rerun and subsequent full runs passed without changing timeout settings. No physical device, emulator frame-rate measurement, production service restart, or model request was used. Markdown incremental rendering and fine-grained Context subscriptions remain separate optimization work.

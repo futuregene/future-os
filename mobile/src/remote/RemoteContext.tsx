@@ -158,7 +158,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
-    hydrateAttachmentsRef,
     reconcileSession,
     handleEvent,
     applySessionStreaming,
@@ -187,6 +186,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     void refreshWorkspaces();
   }, [refreshSessions, refreshWorkspaces]);
   const resetConversation = useCallback(() => {
+    conversationEpochRef.current += 1;
     selectedRef.current = "";
     setSelectedSessionId("");
     setDraft(false);
@@ -248,7 +248,6 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     clientRef,
     selectedRef,
     syncEngineRef,
-    hydrateAttachmentsRef,
     conversationEpochRef,
     models,
     setSelectedSessionId,
