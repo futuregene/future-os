@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build && node scripts/check-streaming-worker.mjs",
+    "build": "vite build && node scripts/stabilize-dist-mtimes.mjs && node scripts/check-streaming-worker.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\" && npm run typecheck",
     "test": "vitest run",
