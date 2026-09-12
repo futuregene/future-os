@@ -48,9 +48,9 @@ export function FileTreePanel({
   const listScrollbar = useFloatingScrollbar();
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-refresh when the agent completes a write/edit/shell tool so newly
-  // created or modified files appear without manual intervention. Debounced:
-  // at most one refresh per 2 s — the event fires every poll tick (220 ms).
+  // Auto-refresh on tool lifecycle/termination so newly created or modified
+  // files appear without manual intervention. Coalesce bursts to at most one
+  // refresh per 2s; text/thinking-only stream updates do not invalidate the tree.
   const { refresh: refreshTree } = tree;
   useEffect(() => {
     const unsubscribe = onFutureEvent("file-tree-refresh", () => {
