@@ -5,7 +5,6 @@ type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
 type PageResult = false | string[];
 type Transaction = {
   sessionId: string;
-  deadline: number;
   expectedIds: string[] | null;
   failed: boolean;
   committed: boolean;
@@ -13,7 +12,6 @@ type Transaction = {
   layoutObserved: boolean;
 };
 
-const MIN_HINT_MS = 1_500;
 // Native VirtualizedList mounts rows in 32ms batches. Two JS animation frames
 // alone can fall entirely between those batches. Require a quiet layout window
 // after the requested ids are committed AND a native layout has been observed.
@@ -21,8 +19,8 @@ const LAYOUT_QUIET_MS = 100;
 
 /**
  * A gesture starts at most one page transaction. Network completion, React
- * commit and native layout are distinct barriers; the minimum display timer
- * starts at collision and runs concurrently with all three.
+ * commit and native layout are distinct barriers. Completion follows those
+ * barriers, not a fixed spinner duration that delays the next deliberate page.
  */
 export function useTimelinePaging(
   sessionId: string,
@@ -44,6 +42,7 @@ export function useTimelinePaging(
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gestureRef = useRef({ active: false, used: false });
   const idsRef = useRef(new Set<string>());
+  const itemsRef = useRef(items);
   const checkRef = useRef<() => void>(() => undefined);
 
   const cancelTimer = useCallback(() => {
@@ -64,7 +63,7 @@ export function useTimelinePaging(
       if (tx.expectedIds.length === 0) tx.layoutObserved = true;
     }
     if (!tx.layoutObserved) return;
-    const remaining = Math.max(tx.deadline, tx.lastLayout + LAYOUT_QUIET_MS) - Date.now();
+    const remaining = tx.lastLayout + LAYOUT_QUIET_MS - Date.now();
     if (remaining > 0) {
       timerRef.current = setTimeout(() => checkRef.current(), remaining);
       return;
@@ -87,16 +86,21 @@ export function useTimelinePaging(
   }, [sessionId, cancelTimer]);
 
   useLayoutEffect(() => {
-    idsRef.current = new Set(items.map(item => item.id));
-    check();
+    itemsRef.current = items;
+    // Text-only streaming changes the items array too. There is no reason to
+    // rebuild a large identity index when no page transaction is waiting.
+    if (transactionRef.current) {
+      idsRef.current = new Set(items.map(item => item.id));
+      check();
+    }
   }, [items, check, sessionId]);
 
   const loadOlder = useCallback(() => {
     if (!canLoadOlder || loadingOlder || transactionRef.current) return;
-    const previousIds = idsRef.current;
+    const previousIds = new Set(itemsRef.current.map(item => item.id));
+    idsRef.current = previousIds;
     const tx: Transaction = {
       sessionId,
-      deadline: Date.now() + MIN_HINT_MS,
       expectedIds: null,
       failed: false,
       committed: false,
@@ -134,9 +138,13 @@ export function useTimelinePaging(
       const gesture = gestureRef.current;
       if (!gesture.active || gesture.used) return;
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      // One page of look-ahead during a deliberate gesture, at most one
+      // viewport (600 layout points). The gesture/transaction guards prevent
+      // programmatic scrolling or momentum from cascading through history.
+      const lookAhead = Math.max(8, Math.min(layoutMeasurement.height, 600));
       if (
         contentSize.height > 0 &&
-        contentOffset.y + layoutMeasurement.height >= contentSize.height - 8
+        contentOffset.y + layoutMeasurement.height >= contentSize.height - lookAhead
       )
         loadOlder();
     },
