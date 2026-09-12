@@ -307,6 +307,30 @@ describe("runSendPipeline stream/failure edges", () => {
     expect(assistant?.terminationNotice).toContain("Please try again later");
   });
 
+  it.each(["completed", "cancelled"] as const)("honors a durable %s run after a late attach error", async (status) => {
+    vi.mocked(getRun).mockResolvedValue(storedRun({ status, endedAt: 2_000 }));
+    vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("Future Agent run ended before the stream attached"));
+    vi.mocked(listRunEvents).mockResolvedValue([{
+      id: "durable-text",
+      runId: "run-1",
+      sequence: 0,
+      eventType: "text_chunk",
+      payload: JSON.stringify({ text: "durable answer" }),
+      createdAt: 1000,
+    }]);
+    const setMessages = vi.fn();
+    const deps = makeDeps(setMessages);
+    await runSendPipeline(deps, { content: "hello", attachments: [] });
+    expect(updateRunStatus).not.toHaveBeenCalled();
+    expect(deps.setRecentRun).toHaveBeenLastCalledWith(expect.objectContaining({ status }));
+    expect(foldMessages(setMessages).slice(-1)[0]).toMatchObject({
+      status: "complete",
+      stopped: status === "cancelled",
+      content: "durable answer",
+      runError: undefined,
+    });
+  });
+
   it("skips the status write in the failure path when the run already settled", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun({ status: "failed", endedAt: 2_000 }));
     vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("late failure"));

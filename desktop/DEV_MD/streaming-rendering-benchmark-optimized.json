@@ -1,0 +1,67 @@
+{
+  "date": "2026-09-12",
+  "baselineCommit": "c5e87eec",
+  "candidate": "desktop-stream-fixes with incremental single-table worker projector",
+  "environment": "Windows x64, HeadlessChrome 153.0.0.0, document.visibilityState=visible, Vite production build, same browser process",
+  "fixture": "scripts/streaming-markdown-benchmark.html",
+  "method": "Fresh document context, 1000 and 2000 rows; baseline then worker for each size; initial render excluded, five appended rows measured. Same Markdown inputs in each baseline/worker pair. Samples rounded to 0.1 ms. Baseline excludes its old boundary-worker overhead.",
+  "metrics": {
+    "pushMs": "Synchronous incoming-text flushSync(render) wall time",
+    "formatReadyMs": "Expected table row count committed, then next animation frame; excludes explicit 20ms observation delay",
+    "maxTimerDelayMs": "Largest excess delay of a 10ms heartbeat in each sample",
+    "renderMs": "Omitted: React Profiler is disabled in production"
+  },
+  "results": [
+    {
+      "mode": "baseline", "rows": 1000, "chars": 53934,
+      "median": { "pushMs": 133.9, "formatReadyMs": 134.8, "maxTimerDelayMs": 126.7 },
+      "samples": [
+        { "pushMs": 133.9, "formatReadyMs": 161.5, "maxTimerDelayMs": 148.2 },
+        { "pushMs": 134.0, "formatReadyMs": 134.8, "maxTimerDelayMs": 126.7 },
+        { "pushMs": 137.1, "formatReadyMs": 138.9, "maxTimerDelayMs": 127.4 },
+        { "pushMs": 117.2, "formatReadyMs": 118.7, "maxTimerDelayMs": 107.4 },
+        { "pushMs": 117.4, "formatReadyMs": 118.4, "maxTimerDelayMs": 107.6 }
+      ]
+    },
+    {
+      "mode": "worker", "rows": 1000, "chars": 53934,
+      "median": { "pushMs": 2.5, "formatReadyMs": 13.4, "maxTimerDelayMs": 1.0 },
+      "samples": [
+        { "pushMs": 3.0, "formatReadyMs": 26.8, "maxTimerDelayMs": 11.4 },
+        { "pushMs": 3.0, "formatReadyMs": 10.2, "maxTimerDelayMs": 2.6 },
+        { "pushMs": 2.2, "formatReadyMs": 12.7, "maxTimerDelayMs": 0.8 },
+        { "pushMs": 2.5, "formatReadyMs": 13.4, "maxTimerDelayMs": 1.0 },
+        { "pushMs": 2.2, "formatReadyMs": 13.5, "maxTimerDelayMs": 0.9 }
+      ]
+    },
+    {
+      "mode": "baseline", "rows": 2000, "chars": 108934,
+      "median": { "pushMs": 597.7, "formatReadyMs": 608.9, "maxTimerDelayMs": 592.4 },
+      "samples": [
+        { "pushMs": 597.7, "formatReadyMs": 631.2, "maxTimerDelayMs": 621.3 },
+        { "pushMs": 602.1, "formatReadyMs": 621.8, "maxTimerDelayMs": 592.4 },
+        { "pushMs": 552.0, "formatReadyMs": 553.1, "maxTimerDelayMs": 542.3 },
+        { "pushMs": 606.9, "formatReadyMs": 608.9, "maxTimerDelayMs": 597.1 },
+        { "pushMs": 584.1, "formatReadyMs": 586.4, "maxTimerDelayMs": 574.3 }
+      ]
+    },
+    {
+      "mode": "worker", "rows": 2000, "chars": 108934,
+      "median": { "pushMs": 5.4, "formatReadyMs": 24.2, "maxTimerDelayMs": 6.2 },
+      "samples": [
+        { "pushMs": 3.7, "formatReadyMs": 43.6, "maxTimerDelayMs": 27.3 },
+        { "pushMs": 3.7, "formatReadyMs": 14.3, "maxTimerDelayMs": 7.2 },
+        { "pushMs": 5.4, "formatReadyMs": 24.2, "maxTimerDelayMs": 5.9 },
+        { "pushMs": 8.8, "formatReadyMs": 25.7, "maxTimerDelayMs": 6.2 },
+        { "pushMs": 8.0, "formatReadyMs": 20.8, "maxTimerDelayMs": 2.8 }
+      ]
+    }
+  ],
+  "interpretation": [
+    "Same-run formatting-ready median improved by 90.1% for 54KB and 96.0% for 109KB; maximum samples fell from 161.5 to 26.8ms and 631.2 to 43.6ms respectively.",
+    "Compare baseline and worker within this run. Absolute baseline timing differs from the earlier trial, so cross-run ratios are not used.",
+    "The earlier full-reparse worker regression is preserved in streaming-rendering-benchmark.json, not overwritten.",
+    "Benefit is for append-only single GFM tables. Document replacement, extra top-level blocks and Future-reference contexts use the complete parser. Initial table parsing is not accelerated by the row checkpoint.",
+    "This is a five-update synthetic browser experiment, not native Tauri latency, a production percentile, a memory benchmark or proof of acceleration for every Markdown construct."
+  ]
+}

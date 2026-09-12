@@ -5,7 +5,12 @@ import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "../../test/renderHook";
 import * as streamingMarkdownBlocks from "./streamingMarkdownBlocks";
-import { useStreamingMarkdownBlocks } from "./useStreamingMarkdownBlocks";
+import { useStreamingMarkdownBlocks as useProjectedBlocks } from "./useStreamingMarkdownBlocks";
+
+// Boundary assertions stay independent of the worker's additional AST payload.
+function useStreamingMarkdownBlocks(text: string, live: boolean) {
+  return useProjectedBlocks(text, live).map(({ content, live, start }) => ({ content, live, start }));
+}
 
 interface PostedRequest {
   id: number;
@@ -57,6 +62,54 @@ function fail(worker: FakeWorker) {
 }
 
 describe("useStreamingMarkdownBlocks", () => {
+  it("does not parse a large live block on mount or while the worker is behind", () => {
+    const parser = vi.spyOn(streamingMarkdownBlocks, "projectStreamingMarkdown");
+    let text = `| A | B |\n| - | - |\n${"| x | y |\n".repeat(2000)}`;
+    const h = renderHook(() => useProjectedBlocks(text, true));
+    expect(parser).not.toHaveBeenCalled();
+    expect(h.current[0]?.document?.raw).toBe(text);
+    text += "| next | row |";
+    h.rerender();
+    expect(parser).not.toHaveBeenCalled();
+    expect(h.current.map(block => block.content).join("")).toBe(text);
+    h.unmount();
+    parser.mockRestore();
+  });
+
+  it("upgrades provisional text to parsed AST and retains stable block identities", () => {
+    let text = "**first**\n\nsecond";
+    const h = renderHook(() => useProjectedBlocks(text, true));
+    const worker = FakeWorker.instances[0]!;
+    respond(worker, { id: 1, text, blocks: streamingMarkdownBlocks.projectStreamingMarkdown(text, true) });
+    const stable = h.current[0];
+    expect(stable?.parsed).toBe(true);
+    expect(stable?.document?.nodes[0]).toMatchObject({ children: [{ type: "strong" }] });
+    text += " growing";
+    h.rerender();
+    respond(worker, { id: 2, text, blocks: streamingMarkdownBlocks.projectStreamingMarkdown(text, true) });
+    expect(h.current[0]).toBe(stable);
+    h.unmount();
+  });
+
+  it.each(["constructor", "postMessage"] as const)("degrades safely on a synchronous %s failure", (stage) => {
+    vi.stubGlobal("Worker", class extends FakeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (stage === "constructor")
+          throw new DOMException("Worker blocked", "SecurityError");
+      }
+
+      override postMessage(_request: PostedRequest) {
+        throw new DOMException("Cannot clone request", "DataCloneError");
+      }
+    });
+    const text = "large source ".repeat(2000);
+    const h = renderHook(() => useProjectedBlocks(text, true));
+    expect(h.current[0]?.document?.raw).toBe(text);
+    expect(h.current[0]?.document?.nodes).toEqual([{ type: "paragraph", children: [{ type: "text", text }] }]);
+    h.unmount();
+  });
+
   it("returns a single static block for a never-live thread", () => {
     const h = renderHook(() => useStreamingMarkdownBlocks("hello", false));
     expect(h.current).toEqual([{ content: "hello", live: false, start: 0 }]);
@@ -282,7 +335,7 @@ describe("useStreamingMarkdownBlocks", () => {
 
   it("degrades to a single block when the parser throws", () => {
     vi.stubGlobal("Worker", undefined);
-    const boom = vi.spyOn(streamingMarkdownBlocks, "splitStreamingMarkdown")
+    const boom = vi.spyOn(streamingMarkdownBlocks, "projectStreamingMarkdown")
       .mockImplementation(() => {
         throw new RangeError("Maximum call stack size exceeded");
       });

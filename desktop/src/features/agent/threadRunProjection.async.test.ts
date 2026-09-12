@@ -10,6 +10,7 @@ import {
   loadCurrentRun,
   mergeStreamingPreview,
   recoverAbortedTurns,
+  resetRunProjection,
   safeListRunEvents,
   updatePendingMessageFromRunEvents,
   upsertStreamingPreview,
@@ -193,6 +194,25 @@ describe("upsertStreamingPreview", () => {
     const { setMessages } = collect([userMessage("u1")]);
     await expect(upsertStreamingPreview("r-err", null, setMessages)).resolves.toBeUndefined();
   });
+});
+
+it("rebuilds the prefix if a reset invalidates an in-flight incremental read", async () => {
+  const runId = "reset-during-read";
+  listRunEventsSince.mockResolvedValue(textEvents(runId, "PREFIX"));
+  await buildStreamingPreview(runId);
+  let resolve!: (events: StoredRunEvent[]) => void;
+  listRunEventsSince.mockReturnValueOnce(new Promise<StoredRunEvent[]>((r) => {
+    resolve = r;
+  }));
+  const pending = buildStreamingPreview(runId);
+  expect(listRunEventsSince).toHaveBeenLastCalledWith(runId, 0);
+  resetRunProjection(runId);
+  resolve(textEvents(runId, "TAIL", 1));
+  listRunEventsSince.mockImplementation(async (_id: string, since: number) => since < 0
+    ? [...textEvents(runId, "PREFIX"), ...textEvents(runId, "TAIL", 1)]
+    : []);
+  expect((await pending)?.content).toBe("PREFIXTAIL");
+  expect((await buildStreamingPreview(runId))?.content).toBe("PREFIXTAIL");
 });
 
 describe("buildStreamingPreview", () => {
