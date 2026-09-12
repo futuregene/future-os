@@ -1,6 +1,6 @@
-import { emptyTimeline } from "../timeline";
+import { emptyTimeline, timelineFromEntries } from "../timeline";
 import { SyncEngine, type ReplayResult } from "../syncEngine";
-import type { StreamEvent } from "../types";
+import type { HistoryEntry, StreamEvent } from "../types";
 
 /** Deterministic run id generator. */
 let seq = 0;
@@ -648,6 +648,81 @@ describe("SyncEngine", () => {
     await new Promise((resolve) => setTimeout(resolve, 650));
     expect(h.textOf("s1")).toBe("abc");
     expect(h.timelineOf("s1").streaming).toBe(false);
+  });
+
+  test.each(["open", "reconnect"] as const)(
+    "%s preserves turn order when cached replies become durable during another run",
+    async reason => {
+      const h = new Harness("r1");
+      const firstPrompt: HistoryEntry = {
+        id: "u1", kind: "user", role: "user", createdAtMs: 1, runId: "r1",
+        blocks: [{ kind: "text", text: "first question" }],
+      };
+      h.history = timelineFromEntries([firstPrompt]);
+      h.journal.add(agentStart("r1"));
+      h.journal.add(textChunk("r1", 1, "first reply"));
+      h.journal.add(agentEnd("r1", 2));
+      try {
+        await h.engine.open("s");
+        await h.settle();
+        expect(h.timelineOf("s").items.map(item => item.id)).toEqual(["m_u1", "assistant:r1"]);
+
+        // While the phone is away, r1 is persisted with its entry id and a
+        // second prompt starts. Reopening must not append the cached r1 reply
+        // after u2 just because its live id differs from the durable entry id.
+        h.active("r2");
+        h.history = timelineFromEntries([
+          firstPrompt,
+          {
+            id: "a1", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r1",
+            blocks: [{ kind: "text", text: "first reply" }],
+          },
+          {
+            id: "u2", kind: "user", role: "user", createdAtMs: 3, runId: "r2",
+            blocks: [{ kind: "text", text: "second question" }],
+            metadata: { attachments: [{ path: "/photo.jpg", name: "photo.jpg", kind: "image" }] },
+          },
+        ]);
+        // The replay endpoint returns only the requested run.
+        h.journal.events = [agentStart("r2"), textChunk("r2", 1, "second reply")];
+        for (let reopen = 0; reopen < 2; reopen += 1) {
+          h.engine.restart("s", reason);
+          await h.settle();
+          expect(h.timelineOf("s").items.map(item => item.id)).toEqual([
+            "m_u1", "m_a1", "m_u2", "assistant:r2",
+          ]);
+          expect(h.timelineOf("s").items[2]).toMatchObject({
+            role: "user", text: "second question", attachments: [{ name: "photo.jpg" }],
+          });
+          expect(h.timelineOf("s").streaming).toBe(true);
+        }
+      } finally {
+        h.engine.clear();
+      }
+    },
+  );
+
+  test("history dedup requires both role and run identity, not matching text", async () => {
+    const h = new Harness();
+    h.history.items = [
+      { id: "u1", kind: "message", role: "user", text: "same", runId: "r1" },
+      { id: "a1", kind: "message", role: "assistant", text: "same", runId: "r1" },
+      { id: "u2", kind: "message", role: "user", text: "same", runId: "r2" },
+    ];
+    try {
+      h.engine.mutate("s", live => ({
+        ...live,
+        items: [{ id: "assistant:r2", kind: "message", role: "assistant", text: "same", runId: "r2" }],
+      }));
+      await h.settle();
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.timelineOf("s").items.map(item => item.id)).toEqual([
+        "u1", "a1", "u2", "assistant:r2",
+      ]);
+    } finally {
+      h.engine.clear();
+    }
   });
 
   test("full reconcile drops a live user mirror duplicating a durable prompt", async () => {

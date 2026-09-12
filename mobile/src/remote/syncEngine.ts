@@ -657,20 +657,23 @@ export class SyncEngine {
  * Build the full-reconcile base: durable history is the settled truth; fold in
  * the live cache's items that history doesn't carry and that aren't part of
  * the active run (optimistic bubbles, notices, approval cards) so they survive
- * the rebuild. Live user messages that duplicate a history prompt are dropped.
+ * the rebuild. Live messages already represented by a durable message of the
+ * same role and run are dropped, even when their live and entry ids differ.
  */
 function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
   const historyIds = new Set(history.items.map((item) => item.id));
-  const historyUserRuns = new Set(
-    history.items
-      .filter((item) => item.kind === "message" && item.role === "user")
-      .map((item) => item.runId)
-      .filter(Boolean),
+  const historyMessageRuns = new Set(
+    history.items.flatMap((item) =>
+      item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
+    ),
   );
   // Keep only transient items the durable history does not carry: optimistic bubbles, notices,
-  // approval cards, and live user mirrors of prompts not yet durable. The
-  // active run's *assistant* items are dropped by fullReconcile's stripRunItems
+  // approval cards, and live user mirrors of prompts not yet durable.
+  // Settled assistant mirrors have live ids (assistant:<run>) rather than
+  // durable entry ids (m_<entry>). Drop them by role + run identity too, or a
+  // warm open appends an old reply between the newest prompt and its reply.
+  // The active run's *assistant* items are dropped by fullReconcile's stripRunItems
   // (the replay rebuilds them). Cached durable rows outside the new window
   // remain reachable through paging and must not be appended after its tail.
   const folded = live.items.filter((item) => {
@@ -678,9 +681,8 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     if (historyIds.has(item.id)) return false;
     if (
       item.kind === "message" &&
-      item.role === "user" &&
       !!item.runId &&
-      historyUserRuns.has(item.runId)
+      historyMessageRuns.has(`${item.role}:${item.runId}`)
     ) {
       return false;
     }
