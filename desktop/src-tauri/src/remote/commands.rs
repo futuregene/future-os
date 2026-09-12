@@ -194,10 +194,18 @@ async fn handle_command_singleflight(
     if !handshake.access_current() {
         return;
     }
-    let command_id = serde_json::from_slice::<IncomingCmd>(&msg.payload)
-        .ok()
-        .map(|cmd| cmd.id)
-        .filter(|id| !id.is_empty());
+    let command = serde_json::from_slice::<IncomingCmd>(&msg.payload).ok();
+    // Chunk reads are already idempotent against the bounded immutable cache.
+    // Do not retain a second copy of every chunk in the ten-minute command
+    // reply cache. They still pass the normal handshake/access checks below.
+    if command
+        .as_ref()
+        .is_some_and(|cmd| cmd.cmd_type == "get_read_chunk")
+    {
+        handle_command(client, msg, handshake).await;
+        return;
+    }
+    let command_id = command.map(|cmd| cmd.id).filter(|id| !id.is_empty());
     let Some(command_id) = command_id else {
         handle_command(client, msg, handshake).await;
         return;
@@ -623,6 +631,17 @@ fn encode_reply_payload(body: &Value) -> Vec<u8> {
 
 fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
     let plain = serde_json::to_vec(body).expect("a response Value always serializes");
+    // Enforce the decoded JSON budget too: compressing a larger reply would
+    // still be rejected by Mobile's decompression guard. Negotiated read pages
+    // reach here as small chunks; legacy/other oversized replies fail explicitly
+    // rather than being dropped by NATS and making the client time out.
+    if plain.len() > 1024 * 1024 {
+        return serde_json::to_vec(&json!({
+            "type": "response", "success": false, "data": null,
+            "error": "remote_reply_too_large"
+        }))
+        .expect("size error serializes");
+    }
     if !gzip_enabled || plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
         return plain;
     }
@@ -662,6 +681,18 @@ mod tests {
     use super::*;
     use flate2::read::GzDecoder;
     use std::io::Read;
+
+    #[test]
+    fn oversized_reply_is_an_explicit_bounded_error_even_with_gzip() {
+        let body = json!({"success": true, "data": "x".repeat(2 * 1024 * 1024)});
+        for gzip in [false, true] {
+            let bytes = encode_reply_payload_with_gzip(&body, gzip);
+            assert!(bytes.len() < 1024);
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["success"], false);
+            assert_eq!(value["error"], "remote_reply_too_large");
+        }
+    }
 
     #[test]
     fn model_identity_keeps_raw_slashes_and_distinguishes_providers() {
@@ -1582,6 +1613,80 @@ mod bridge_tests {
             .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
             .await;
         assert_eq!(reply["success"], json!(false));
+        bridge.stop();
+    }
+
+    #[tokio::test]
+    async fn oversized_reads_cross_the_real_reply_path_without_losing_history_or_projection() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("large-read-pages").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        let large = "中文".repeat(200_000);
+        agent.script_typed_for("get_events_since", &session, json!({
+            "runId": "r", "events": [], "truncated": true,
+            "projection": {"runId": "r", "cursor": 20, "events": [{"type": "text_chunk", "idx": 20, "data": large}]}
+        }));
+        let legacy = bridge.call(json!({"id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "r", "sinceIdx": -1})).await;
+        assert_eq!(legacy["success"], false);
+        assert_eq!(legacy["error"], "remote_reply_too_large");
+
+        agent.script_typed_for("get_events_since", &session, json!({
+            "runId": "r", "events": [], "truncated": true,
+            "projection": {"runId": "r", "cursor": 20, "events": [{"type": "text_chunk", "idx": 20, "data": large}]}
+        }));
+        let mut page = bridge.call(json!({"id": unique("cmd"), "type": "get_events_since", "sessionId": session, "runId": "r", "sinceIdx": -1, "chunkedRead": true})).await;
+        // The live source changes while the phone reads: pages must still be
+        // from the original immutable snapshot, not a mixture of generations.
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({"runId": "r", "events": []}),
+        );
+        let mut bytes = Vec::new();
+        loop {
+            assert_eq!(page["success"], true);
+            assert!(serde_json::to_vec(&page).unwrap().len() < 512 * 1024);
+            let part = &page["data"]["readChunk"];
+            bytes.extend(
+                URL_SAFE_NO_PAD
+                    .decode(part["data"].as_str().unwrap())
+                    .unwrap(),
+            );
+            if part["nextOffset"] == part["totalBytes"] {
+                break;
+            }
+            page = bridge.call(json!({"id": unique("cmd"), "type": "get_read_chunk", "sessionId": session, "runId": "r", "replyId": part["id"], "offset": part["nextOffset"]})).await;
+        }
+        let restored: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored["projection"]["cursor"], 20);
+        assert_eq!(restored["projection"]["events"][0]["data"], large);
+
+        let mut entries = vec![
+            json!({"id":"u", "kind":"user", "role":"user", "blocks":[{"kind":"text", "text":"question"}]}),
+        ];
+        entries.extend((0..12).map(|i| json!({"id":format!("a{i}"), "kind":"assistant", "role":"assistant", "runId":"r", "blocks":[{"kind":"text", "text":"x".repeat(100*1024)}]})));
+        agent.set_session_entries(&session, json!({"entries": entries}));
+        let mut page = bridge.call(json!({"id":unique("cmd"), "type":"get_session_entries", "sessionId":session, "before":i64::MAX, "limit":10, "chunkedRead":true})).await;
+        let mut bytes = Vec::new();
+        loop {
+            assert_eq!(page["success"], true);
+            let part = &page["data"]["readChunk"];
+            bytes.extend(
+                URL_SAFE_NO_PAD
+                    .decode(part["data"].as_str().unwrap())
+                    .unwrap(),
+            );
+            if part["nextOffset"] == part["totalBytes"] {
+                break;
+            }
+            page = bridge.call(json!({"id":unique("cmd"), "type":"get_read_chunk", "sessionId":session, "replyId":part["id"], "offset":part["nextOffset"]})).await;
+        }
+        let restored: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored["entries"].as_array().unwrap().len(), 13);
+        assert_eq!(restored["entries"][0]["id"], "u");
+        assert_eq!(restored["entries"][12]["id"], "a11");
         bridge.stop();
     }
 

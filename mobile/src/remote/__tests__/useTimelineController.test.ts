@@ -104,6 +104,35 @@ describe("useTimelineController", () => {
     await flush();
   }
 
+  test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
+    request.mockImplementation(async (command: { type: string; sessionId: string }) => ({ data: command.type === "get_state" ? {} : {
+      entries: [userEntry(command.sessionId, "history")], hasMore: true, nextOffset: 10,
+    } }));
+    options.selectedSessionId = "s0";
+    render();
+    for (let i = 0; i < 12; i++) {
+      const id = `s${i}`;
+      options.selectedSessionId = id;
+      options.selectedRef.current = id;
+      await act(async () => {
+        result.current.prepareTimelineOpen(id);
+        renderer!.update(createElement(Harness));
+        await result.current.syncEngineRef.current!.open(id);
+      });
+      await flush();
+    }
+    expect(result.current.syncEngineRef.current!.timelineFor("s0")).toBeNull();
+    options.selectedSessionId = "s0";
+    options.selectedRef.current = "s0";
+    act(() => { result.current.prepareTimelineOpen("s0"); renderer!.update(createElement(Harness)); });
+    expect(result.current.timelinePending).toBe(true);
+    expect(result.current.canLoadOlderTimeline).toBe(false);
+    await act(async () => { await result.current.syncEngineRef.current!.open("s0"); });
+    await flush();
+    expect(result.current.timelinePending).toBe(false);
+    expect(result.current.canLoadOlderTimeline).toBe(true);
+  });
+
   test("slow active-run replay does not trigger the 15-second history timeout", async () => {
     jest.useFakeTimers();
     options.selectedSessionId = "s1";
@@ -714,7 +743,7 @@ describe("useTimelineController", () => {
         "[remote] session timeline sync failed",
         expect.objectContaining({
           stage: "history",
-          error: expect.objectContaining({ message: "stale_history_load" }),
+          error: expect.objectContaining({ message: "stale_sync_lane" }),
         }),
       );
       errorSpy.mockRestore();

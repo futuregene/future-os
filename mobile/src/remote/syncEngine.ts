@@ -112,6 +112,8 @@ interface ReconcileRequest {
 
 interface SessionLane {
   sessionId: string;
+  lastUsed: number;
+  cachedBytes?: number;
   generation: number;
   chain: Promise<void>;
   cursor: RunCursor;
@@ -134,6 +136,7 @@ export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
   private subscribers = new Set<(commit: Commit) => void>();
   private generation = 0;
+  private cacheClock = 0;
   private deps: SyncDeps;
   private liveFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private liveFlushLanes = new Set<SessionLane>();
@@ -217,6 +220,8 @@ export class SyncEngine {
     if (previous?.retryTimer) clearTimeout(previous.retryTimer);
     const lane: SessionLane = {
       sessionId,
+      lastUsed: ++this.cacheClock,
+      cachedBytes: previous?.cachedBytes,
       generation: this.generation,
       chain: Promise.resolve(),
       cursor: previous ? new Map(previous.cursor) : newCursor(),
@@ -254,6 +259,33 @@ export class SyncEngine {
     return this.lanes.get(sessionId)?.timeline?.streaming ?? false;
   }
 
+  /** Evict inactive cached conversations as a unit (timeline, cursor, queued
+   * work and retry). Called on navigation, not every streaming frame. The
+   * selected session and optimistic draft are never truncated to meet a cache
+   * budget; a single large active session is an explicit exception. */
+  pruneCache(selected: string, maxSessions = 8, maxBytes = 16 * 1024 * 1024): string[] {
+    const lanes = [...this.lanes.values()].filter(lane => lane.sessionId !== "");
+    let bytes = 0;
+    for (const lane of lanes) {
+      lane.cachedBytes ??= JSON.stringify(lane.timeline).length * 2 + lane.cursor.size * 64;
+      bytes += lane.cachedBytes;
+    }
+    let count = lanes.length;
+    const evicted: string[] = [];
+    for (const lane of lanes.filter(lane => lane.sessionId !== selected).sort((a, b) => a.lastUsed - b.lastUsed)) {
+      if (count <= maxSessions && bytes <= maxBytes) break;
+      if (lane.retryTimer) clearTimeout(lane.retryTimer);
+      this.liveFlushLanes.delete(lane);
+      lane.ops = [];
+      lane.replayQueue = [];
+      this.lanes.delete(lane.sessionId);
+      bytes -= lane.cachedBytes ?? 0;
+      count--;
+      evicted.push(lane.sessionId);
+    }
+    return evicted;
+  }
+
   /** Drop all lanes (unpair / credentials cleared). */
   clear(): void {
     this.generation += 1;
@@ -271,6 +303,7 @@ export class SyncEngine {
     if (!lane) {
       lane = {
         sessionId,
+        lastUsed: ++this.cacheClock,
         generation: this.generation,
         chain: Promise.resolve(),
         cursor: newCursor(),
@@ -603,6 +636,7 @@ export class SyncEngine {
   }
 
   private commit(lane: SessionLane): void {
+    lane.cachedBytes = undefined;
     if (!lane.timeline || !this.isCurrent(lane)) return;
     for (const fn of this.subscribers) {
       fn({ sessionId: lane.sessionId, timeline: lane.timeline, cursor: lane.cursor });

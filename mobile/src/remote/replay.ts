@@ -1,4 +1,5 @@
 import type { RemoteClient } from "./client";
+import { requestReadPage } from "./readPages";
 import type { ReplayEventWire } from "./timeline";
 
 export interface EventsData {
@@ -42,7 +43,7 @@ export async function fetchEventsSince(
     // keep issuing pages or accumulating a replay nobody is displaying.
     if (!isCurrent()) throw new Error("stale_sync_lane");
     const page = (
-      await client.requestRetry<EventsPage>(
+      await requestReadPage<EventsPage>(client,
         {
           type: "get_events_since",
           sessionId,
@@ -52,6 +53,7 @@ export async function fetchEventsSince(
           ...(watermark === undefined ? {} : { replayUntilIdx: watermark }),
         },
         sessionId,
+        isCurrent,
       )
     ).data;
     if (!isCurrent()) throw new Error("stale_sync_lane");

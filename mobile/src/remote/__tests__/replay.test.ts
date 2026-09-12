@@ -24,7 +24,7 @@ describe("fetchEventsSince", () => {
     expect(result.truncated).toBeUndefined();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith(
-      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, offset: 0 },
+      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, offset: 0, chunkedRead: true },
       "s1",
     );
   });

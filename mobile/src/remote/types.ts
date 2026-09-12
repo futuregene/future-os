@@ -291,6 +291,8 @@ export interface RpcResponse<T = unknown> {
 }
 
 export interface RemoteCommand {
+  chunkedRead?: boolean;
+  replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;
   id?: string;

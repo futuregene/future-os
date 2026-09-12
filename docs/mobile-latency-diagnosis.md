@@ -91,3 +91,22 @@ Both paths bypass settled-document caching for this comparison; full parsing use
 React test-renderer checks show 100 transcript commits with no additional control-consumer renders; streaming start/end still render controls. A composer test similarly checks that 100 unchanged approval-array reconstructions do not redraw its docked cards, while new callbacks and streaming state do. Incrementally rendered and finalized Markdown matches ordinary rendering.
 
 Validation: Mobile typecheck/ESLint and **51 suites / 720 tests** passed; Desktop typecheck/ESLint/Stylelint and **107 files / 943 tests** passed; the shared Markdown package typecheck passed. Android and iOS production Expo exports both succeeded, including Hermes bytecode generation. No native application build/install, physical-device test, emulator frame-rate measurement, or service restart was performed.
+
+## Follow-up: oversized reads, cache budgets and refresh coalescing
+
+History/replay callers advertise `chunkedRead`. If a logical read result exceeds 512 KiB, Desktop retains an immutable JSON snapshot and returns 192 KiB binary slices encoded as base64url. Mobile checks the snapshot identity, exact offsets, chunk size, total length and current sync lane before reassembling and decoding the complete result. This preserves the existing history-page grouping and projection cursor: splitting one run into independently projected message pages could otherwise lose an overlapping assistant bubble. Ordinary replies and old Desktop replies remain compatible.
+
+Limits are explicit: 16 MiB per assembled read, 32 MiB of cached snapshot payloads, 120-second expiration, and ownership by bridge/session/run. Chunk requests pass the normal authentication/access checks but do not duplicate every chunk in the ten-minute command reply cache. Snapshots are pruned and cleared with transfer lifecycle maintenance. All final command replies additionally enforce a 1 MiB **uncompressed JSON** ceiling; unsupported/oversized results return an explicit error rather than relying on NATS to reject publication. This does not remove the Agent's existing gRPC limit or the existing per-entry presentation content caps. Data beyond the new read limit fails explicitly; it is not silently truncated by this transport.
+
+Mobile navigation now evicts least-recently-opened inactive conversation caches toward eight sessions / 16 MiB estimated serialized UTF-16 payload. Cursor state, retries, queued operations and the hook's corresponding timeline/paging/error records are removed together. The selected conversation and optimistic draft are protected; these are explicit exceptions rather than truncating content being read. Size estimates are cached until the timeline changes and evaluated on navigation, not on every streamed token; they are not exact JavaScript heap measurements.
+
+Concurrent session-list refreshes share one in-flight request and a trailing read when another event arrived during it. A 100-call burst test produces two requests, not 100, and ends with the fresh result. Client/epoch changes fence old responses.
+
+Validation on Windows:
+
+- Mobile typecheck and ESLint passed; **52 suites / 736 tests passed**. An unchanged SessionList beforeEach timeout on the first cold run passed on isolated and full reruns without relaxing its threshold.
+- Rust fmt and clippy (`--all-targets -- -D warnings`) passed. Four new Rust tests cover byte-exact Unicode snapshot reconstruction, ownership/offset/expiry/capacity, the final reply guard, and actual Desktop host/NATS-reply/Agent-mock paths for a large projection and a single 13-entry exchange.
+- Full Desktop library suite: **1,113 passed / 27 failed**. An unmodified `3034fcc0` run in the same worktree/environment produced **1,109 passed / the identical 27 failures**. The extra bridge-start timing case also passed in isolation. Binary tests passed; the existing doc test remains ignored. These Windows baseline failures were not hidden or skipped.
+- Android and iOS production Expo exports, including Hermes bytecode, succeeded.
+
+The tests also cover malformed/over-budget chunks, navigation cancellation, cache eviction followed by fresh reload, stale work completing after eviction, and old-client response compatibility. No physical-device performance claim is made. Updated Mobile and Desktop builds are both required for oversized-read chunking.
