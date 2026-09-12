@@ -215,10 +215,14 @@ export async function upsertStreamingPreview(
     const projection = await projectRunForLivePreview(runId, shouldApply);
     if (!projection)
       return;
-    const bubbleId = `stream_${runId}`;
     const content = projection.content.trim();
 
     setMessages((current) => {
+      // Switching back restores the local send's optimistic bubble from the
+      // warm cache. Take over that still-streaming row instead of treating its
+      // different UI id as evidence that this run has already settled.
+      const bubbleId = current.find(message => message.role === "assistant"
+        && message.runId === runId && message.status === "streaming")?.id ?? `stream_${runId}`;
       const base = streamingBubbleBase(current, runId, bubbleId, content);
       if (!base)
         return current;
