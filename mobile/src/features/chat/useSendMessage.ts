@@ -23,13 +23,14 @@ export function useSendMessage(
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>,
   setTransferProgress: (value: number | null) => void,
 ): SendMessageApi {
-  const send = async () => {
+  const { sendMessage } = remote;
+  const send = useCallback(async () => {
     const value = message.trim();
     if (!value && attachments.length === 0) return;
     const pendingAttachments = attachments;
     setTransferProgress(pendingAttachments.length ? 0 : null);
     try {
-      await remote.sendMessage(value, pendingAttachments, (done, total) =>
+      await sendMessage(value, pendingAttachments, (done, total) =>
         setTransferProgress(total > 0 ? done / total : null),
       );
       setMessage("");
@@ -43,7 +44,7 @@ export function useSendMessage(
     } finally {
       setTransferProgress(null);
     }
-  };
+  }, [attachments, message, sendMessage, setAttachments, setMessage, setTransferProgress, t]);
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {

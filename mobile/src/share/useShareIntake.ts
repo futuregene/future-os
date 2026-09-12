@@ -3,7 +3,7 @@ import { AppState } from "react-native";
 import { useTranslation } from "react-i18next";
 import { getPendingShare } from "future-share-intent";
 import { showToast } from "../features/chat/utils";
-import { useRemote } from "../remote/RemoteContext";
+import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import {
   loadSessionDraft,
   NEW_CONVERSATION_DRAFT_KEY,

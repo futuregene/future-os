@@ -9,6 +9,26 @@ jest.mock("react-i18next", () => ({
 }));
 
 describe("MarkdownText", () => {
+  test("incremental prose/table rendering and finalization match ordinary rendering", () => {
+    const source = "# Report\n\nA **paragraph**.\n\n| A | B |\n|---|---|\n| one | two |\n| three | four |\n\nDone.";
+    let streamed!: ReactTestRenderer;
+    let settled!: ReactTestRenderer;
+    act(() => { streamed = create(createElement(MarkdownText, { text: "", streaming: true })); });
+    try {
+      for (let length = 1; length <= source.length; length += 7) {
+        act(() => streamed.update(createElement(MarkdownText, { text: source.slice(0, length), streaming: true })));
+      }
+      act(() => {
+        streamed.update(createElement(MarkdownText, { text: source, streaming: false }));
+        settled = create(createElement(MarkdownText, { text: source }));
+      });
+      expect(streamed.toJSON()).toEqual(settled.toJSON());
+    } finally {
+      act(() => { streamed.unmount(); settled?.unmount(); });
+    }
+  });
+
+
   test("renders a bold local-file link without exposing markdown syntax", () => {
     let renderer: ReactTestRenderer | undefined;
     const onOpenFile = jest.fn();
