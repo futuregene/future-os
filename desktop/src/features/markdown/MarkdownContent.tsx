@@ -1,3 +1,4 @@
+import type { FutureMarkdownDocument } from "@future-os/markdown";
 import type { ReactNode } from "react";
 import type { StoredFile } from "../../integrations/storage/types";
 import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdownTypes";
@@ -21,6 +22,8 @@ import { useStreamingMarkdownBlocks } from "./useStreamingMarkdownBlocks";
 
 interface MarkdownContentProps {
   content: string;
+  /** Streaming workers supply the AST; static documents retain synchronous parsing. */
+  parsedDocument?: FutureMarkdownDocument;
   workspaceId?: string | null;
   /**
    * When set, renders in file-preview mode (see `PreviewMarkdownContext`): this
@@ -35,8 +38,8 @@ interface MarkdownContentProps {
   live?: boolean;
 }
 
-function MarkdownContentImpl({ content, workspaceId, basePath, live }: MarkdownContentProps) {
-  const document = useMemo(() => parseFutureMarkdown(content), [content]);
+function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, live }: MarkdownContentProps) {
+  const document = useMemo(() => parsedDocument ?? parseFutureMarkdown(content), [content, parsedDocument]);
   useFutureReferences(workspaceId, document.references);
 
   const body = (
@@ -86,6 +89,7 @@ export const StreamingMarkdownContent = memo(({
       {blocks.map(block => (
         <MarkdownContent
           content={block.content}
+          parsedDocument={block.document}
           key={block.start}
           live={block.live}
           workspaceId={workspaceId}

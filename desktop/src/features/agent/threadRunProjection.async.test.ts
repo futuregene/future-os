@@ -10,6 +10,7 @@ import {
   loadCurrentRun,
   mergeStreamingPreview,
   recoverAbortedTurns,
+  resetRunProjection,
   safeListRunEvents,
   updatePendingMessageFromRunEvents,
   upsertStreamingPreview,
@@ -195,6 +196,25 @@ describe("upsertStreamingPreview", () => {
   });
 });
 
+it("rebuilds the prefix if a reset invalidates an in-flight incremental read", async () => {
+  const runId = "reset-during-read";
+  listRunEventsSince.mockResolvedValue(textEvents(runId, "PREFIX"));
+  await buildStreamingPreview(runId);
+  let resolve!: (events: StoredRunEvent[]) => void;
+  listRunEventsSince.mockReturnValueOnce(new Promise<StoredRunEvent[]>((r) => {
+    resolve = r;
+  }));
+  const pending = buildStreamingPreview(runId);
+  expect(listRunEventsSince).toHaveBeenLastCalledWith(runId, 0);
+  resetRunProjection(runId);
+  resolve(textEvents(runId, "TAIL", 1));
+  listRunEventsSince.mockImplementation(async (_id: string, since: number) => since < 0
+    ? [...textEvents(runId, "PREFIX"), ...textEvents(runId, "TAIL", 1)]
+    : []);
+  expect((await pending)?.content).toBe("PREFIXTAIL");
+  expect((await buildStreamingPreview(runId))?.content).toBe("PREFIXTAIL");
+});
+
 describe("buildStreamingPreview", () => {
   it("returns null when nothing is renderable and a bubble otherwise", async () => {
     listRunEventsSince.mockResolvedValue([]);
@@ -211,6 +231,43 @@ describe("buildStreamingPreview", () => {
     ]));
     await buildStreamingPreview("r-tool");
     expect(emitFutureEvent).toHaveBeenCalledWith("file-tree-refresh", undefined);
+  });
+});
+
+describe("file-tree invalidation follows new tool events, not historical activity", () => {
+  it.each(["tool_end", "tool_result", "agent_end", "error"])("still refreshes on %s after text-only updates", async (eventType) => {
+    const runId = `tree-lifecycle-${eventType}`;
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["toolcall_start", { tool_id: "t1", tool_name: "shell" }],
+    ]));
+    await buildStreamingPreview(runId);
+    vi.mocked(emitFutureEvent).mockClear();
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["thinking_delta", { text: "reasoning" }],
+      ["text_chunk", { text: "answer" }],
+      ["toolcall_delta", { text: "arguments" }],
+    ], 1));
+    await buildStreamingPreview(runId);
+    expect(emitFutureEvent).not.toHaveBeenCalled();
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      [eventType, { tool_id: "t1", tool_name: "shell", text: "done", state: "cancelled" }],
+    ], 4));
+    await buildStreamingPreview(runId);
+    expect(emitFutureEvent).toHaveBeenCalledWith("file-tree-refresh", undefined);
+  });
+
+  it("reuses the cached snapshot on empty reads without another invalidation", async () => {
+    const runId = "tree-empty-read";
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["tool_start", { tool_id: "t1", tool_name: "write" }],
+    ]));
+    const before = await buildStreamingPreview(runId);
+    vi.mocked(emitFutureEvent).mockClear();
+    listRunEventsSince.mockResolvedValue([]);
+    const after = await buildStreamingPreview(runId);
+    expect(after?.segments).toBe(before?.segments);
+    expect(after?.activityItems).toBe(before?.activityItems);
+    expect(emitFutureEvent).not.toHaveBeenCalled();
   });
 });
 

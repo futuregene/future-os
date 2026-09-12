@@ -48,6 +48,7 @@ describe("useTimelineController", () => {
   }
 
   function render(): void {
+    if (options.selectedSessionId) options.selectedRef.current = options.selectedSessionId;
     act(() => {
       renderer = create(createElement(Harness));
     });
@@ -96,11 +97,69 @@ describe("useTimelineController", () => {
 
   /** Establish a session timeline by driving an "open" reconcile through the engine. */
   async function establish(sessionId = "s1"): Promise<void> {
+    options.selectedRef.current = sessionId;
     act(() => {
       result.current.reconcileSession(sessionId, "open");
     });
     await flush();
   }
+
+  test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
+    request.mockImplementation(async (command: { type: string; sessionId: string }) => ({ data: command.type === "get_state" ? {} : {
+      entries: [userEntry(command.sessionId, "history")], hasMore: true, nextOffset: 10,
+    } }));
+    options.selectedSessionId = "s0";
+    render();
+    for (let i = 0; i < 12; i++) {
+      const id = `s${i}`;
+      options.selectedSessionId = id;
+      options.selectedRef.current = id;
+      await act(async () => {
+        result.current.prepareTimelineOpen(id);
+        renderer!.update(createElement(Harness));
+        await result.current.syncEngineRef.current!.open(id);
+      });
+      await flush();
+    }
+    expect(result.current.syncEngineRef.current!.timelineFor("s0")).toBeNull();
+    options.selectedSessionId = "s0";
+    options.selectedRef.current = "s0";
+    act(() => { result.current.prepareTimelineOpen("s0"); renderer!.update(createElement(Harness)); });
+    expect(result.current.timelinePending).toBe(true);
+    expect(result.current.canLoadOlderTimeline).toBe(false);
+    await act(async () => { await result.current.syncEngineRef.current!.open("s0"); });
+    await flush();
+    expect(result.current.timelinePending).toBe(false);
+    expect(result.current.canLoadOlderTimeline).toBe(true);
+  });
+
+  test("slow active-run replay does not trigger the 15-second history timeout", async () => {
+    jest.useFakeTimers();
+    options.selectedSessionId = "s1";
+    options.selectedRef.current = "s1";
+    request.mockImplementation(async (command: { type: string }) => {
+      if (command.type === "get_state") return { data: { activeRun: { runId: "r" } } };
+      if (command.type === "get_session_entries") return { data: { entries: [userEntry("u", "readable history")] } };
+      await new Promise(resolve => setTimeout(resolve, 20_000));
+      return { data: { events: [] } };
+    });
+    try {
+      render();
+      await establish();
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timeline.items).toHaveLength(1);
+      await act(async () => { await jest.advanceTimersByTimeAsync(15_001); });
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timelineError).toBeNull();
+      expect(result.current.timeline.items[0]).toMatchObject({ id: "m_u", text: "readable history" });
+      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+      expect(result.current.timelineError).toBeNull();
+    } finally {
+      act(() => renderer!.unmount());
+      renderer = null;
+      jest.useRealTimers();
+    }
+  });
 
   test.each(["restart", "resend"])(
     "%s refreshes an idle session and keeps disjoint history reachable",
@@ -218,6 +277,21 @@ describe("useTimelineController", () => {
   });
 
   describe("handleEvent", () => {
+    test("background token bursts do not fetch history while status notifications stay live", async () => {
+      options.selectedSessionId = "front";
+      render();
+      for (let index = 0; index < 10_000; index++) {
+        result.current.handleEvent(evt("text_chunk", '{"text":"x"}', "r", index), `background-${index % 100}`);
+      }
+      for (const type of ["agent_end", "approval_request", "approval_decision"]) {
+        result.current.handleEvent(evt(type, "{}", "r"), "background-1");
+      }
+      await flush();
+      expect(request).not.toHaveBeenCalled();
+      expect(options.refreshSessions).toHaveBeenCalledTimes(3);
+      expect(result.current.syncEngineRef.current!.timelineFor("background-1")).toBeNull();
+    });
+
     test("ignores events with an empty session id", () => {
       render();
       result.current.handleEvent(evt("agent_start", "{}"), "");
@@ -265,6 +339,7 @@ describe("useTimelineController", () => {
     });
 
     test("user_message hydrates attachments for the session", () => {
+      options.selectedSessionId = "s1";
       render();
       const hydrate = jest.fn(async () => {});
       result.current.hydrateAttachmentsRef.current = hydrate;
@@ -371,6 +446,7 @@ describe("useTimelineController", () => {
     });
 
     test("hydrate merges durable attachments and swallows history failures", async () => {
+      options.selectedSessionId = "s1";
       render();
       const engine = result.current.syncEngineRef.current!;
       engine.mutate("s1", () => emptyTimeline());
@@ -498,7 +574,13 @@ describe("useTimelineController", () => {
       await flush();
       expect(result.current.timeline.items).toHaveLength(40);
 
-      act(() => result.current.prepareTimelineOpen("s1"));
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({
+        data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+      });
+      await act(async () => {
+        result.current.prepareTimelineOpen("s1");
+        await result.current.syncEngineRef.current!.open("s1");
+      });
       await flush();
 
       expect(
@@ -506,7 +588,7 @@ describe("useTimelineController", () => {
           .filter(item => item.kind === "message" && item.role === "user")
           .map(item => (item.kind === "message" ? item.text : "")),
       ).toEqual(Array.from({ length: 10 }, (_, index) => `user ${index + 11}`));
-      expect(result.current.canLoadOlderTimeline).toBe(false);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 
     test("timeout retains the cursor and retry returns the committed page identities", async () => {
@@ -585,6 +667,7 @@ describe("useTimelineController", () => {
 
   describe("engine deps", () => {
     test("requestGetState throws when the client is absent", async () => {
+      options.selectedSessionId = "s1";
       const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
       options.clientRef.current = null;
       render();
@@ -638,14 +721,14 @@ describe("useTimelineController", () => {
       expect(texts).toContain("replayed");
     });
 
-    test("fetchReplay throws when the client disappears before replay", async () => {
+    test("history from a replaced client is rejected before replay", async () => {
       const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
       options.selectedSessionId = "s1";
       request.mockImplementation(async (cmd: { type: string }) => {
         if (cmd.type === "get_state")
           return { success: true, data: { activeRun: { runId: "r1" } } };
         if (cmd.type === "get_session_entries") {
-          // Drop the client after history so fetchReplay sees null.
+          // Replacing the client invalidates this in-flight history page.
           options.clientRef.current = null;
           return {
             success: true,
@@ -659,7 +742,8 @@ describe("useTimelineController", () => {
       expect(errorSpy).toHaveBeenCalledWith(
         "[remote] session timeline sync failed",
         expect.objectContaining({
-          error: expect.objectContaining({ message: "not_connected" }),
+          stage: "history",
+          error: expect.objectContaining({ message: "stale_sync_lane" }),
         }),
       );
       errorSpy.mockRestore();

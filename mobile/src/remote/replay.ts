@@ -1,4 +1,5 @@
 import type { RemoteClient } from "./client";
+import { requestReadPage } from "./readPages";
 import type { ReplayEventWire } from "./timeline";
 
 export interface EventsData {
@@ -29,6 +30,7 @@ export async function fetchEventsSince(
   sessionId: string,
   runId: string,
   sinceIdx: number,
+  isCurrent: () => boolean = () => true,
 ): Promise<EventsData> {
   const events: ReplayEventWire[] = [];
   let projection: EventsData["projection"] = null;
@@ -37,8 +39,11 @@ export async function fetchEventsSince(
   let cursor = sinceIdx;
   let watermark: number | undefined;
   for (;;) {
+    // An in-flight request may finish, but a hidden/replaced lane must not
+    // keep issuing pages or accumulating a replay nobody is displaying.
+    if (!isCurrent()) throw new Error("stale_sync_lane");
     const page = (
-      await client.requestRetry<EventsPage>(
+      await requestReadPage<EventsPage>(client,
         {
           type: "get_events_since",
           sessionId,
@@ -48,8 +53,10 @@ export async function fetchEventsSince(
           ...(watermark === undefined ? {} : { replayUntilIdx: watermark }),
         },
         sessionId,
+        isCurrent,
       )
     ).data;
+    if (!isCurrent()) throw new Error("stale_sync_lane");
     if (watermark !== undefined && page.watermark !== watermark)
       throw new Error("replay_window_changed");
     events.push(...(page.events ?? []));

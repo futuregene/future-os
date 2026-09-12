@@ -68,9 +68,11 @@ export interface ReplayResult {
  * so a session's queue stays correct across client generations.
  */
 export interface SyncDeps {
+  /** Hidden sessions keep cached UI but defer expensive history/replay until opened. */
+  isSessionVisible?(sessionId: string): boolean;
   requestGetState(sessionId: string): Promise<RemoteSessionState>;
   requestHistory(sessionId: string): Promise<TimelineState>;
-  fetchReplay(sessionId: string, runId: string, sinceIdx: number): Promise<ReplayResult>;
+  fetchReplay(sessionId: string, runId: string, sinceIdx: number, isCurrent: () => boolean): Promise<ReplayResult>;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
 }
@@ -105,10 +107,13 @@ type Op = { kind: "event"; event: StreamEvent } | { kind: "mutate"; apply: Mutat
 interface ReconcileRequest {
   reason: ReconcileReason;
   runId?: string;
+  initialState?: Promise<RemoteSessionState>;
 }
 
 interface SessionLane {
   sessionId: string;
+  lastUsed: number;
+  cachedBytes?: number;
   generation: number;
   chain: Promise<void>;
   cursor: RunCursor;
@@ -116,6 +121,7 @@ interface SessionLane {
   ops: Op[];
   bufferedBytes: number;
   replayQueue: ReconcileRequest[];
+  reconciling?: ReconcileRequest;
   established: boolean;
   retryAttempt: number;
   retryNotBefore: number;
@@ -130,6 +136,7 @@ export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
   private subscribers = new Set<(commit: Commit) => void>();
   private generation = 0;
+  private cacheClock = 0;
   private deps: SyncDeps;
   private liveFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private liveFlushLanes = new Set<SessionLane>();
@@ -145,6 +152,7 @@ export class SyncEngine {
 
   /** Enqueue a live event for the session. Never throws. */
   event(sessionId: string, event: StreamEvent): void {
+    if (!this.isVisible(sessionId)) return;
     const lane = this.laneFor(sessionId);
     // First contact for a real session: establish the timeline from durable
     // history + a full replay so a mid-run join gets its prefix (H3), not just
@@ -172,22 +180,24 @@ export class SyncEngine {
 
   /** Enqueue a reconcile. Repeats of the same reason+run are folded. */
   reconcile(sessionId: string, reason: ReconcileReason, runId?: string): void {
+    if (!this.isVisible(sessionId)) return;
     this.enqueueReplay(this.laneFor(sessionId), { reason, runId });
   }
 
-  /** Reconcile every real lane (reconnect recovery). Lanes that never
+  /** Reconcile visible real lanes (all lanes when no visibility policy is set).
+   * Lanes that never
    * established (their first history load failed while the backend was down)
    * are included — this is exactly the case that must self-heal on recovery;
    * the draft lane ("") has no desktop state and is skipped by runReconcile. */
   reconcileAll(reason: ReconcileReason): void {
     for (const lane of this.lanes.values()) {
-      if (lane.sessionId !== "") this.enqueueReplay(lane, { reason });
+      if (lane.sessionId !== "" && this.isVisible(lane.sessionId)) this.enqueueReplay(lane, { reason });
     }
   }
 
   /**
    * Invalidate work that may still be awaiting an old transport generation and
-   * immediately rebuild every real lane from durable state. A reconnect must
+   * immediately rebuild visible real lanes from durable state. A reconnect must
    * not enqueue behind a request that was suspended with the previous socket.
    */
   restartAll(reason: ReconcileReason): void {
@@ -195,13 +205,23 @@ export class SyncEngine {
     for (const sessionId of sessionIds) this.restart(sessionId, reason);
   }
 
+  /** Share the opening state request with the model controls and start history
+   * immediately when it resolves, without waiting behind a previous open. */
+  open(sessionId: string): Promise<RemoteSessionState> {
+    const state = Promise.resolve().then(() => this.deps.requestGetState(sessionId));
+    this.restart(sessionId, "open", state);
+    return state;
+  }
+
   /** Immediately restart one lane, preserving its last committed UI snapshot. */
-  restart(sessionId: string, reason: ReconcileReason): void {
-    if (!sessionId) return;
+  restart(sessionId: string, reason: ReconcileReason, initialState?: Promise<RemoteSessionState>): void {
+    if (!sessionId || !this.isVisible(sessionId)) return;
     const previous = this.lanes.get(sessionId);
     if (previous?.retryTimer) clearTimeout(previous.retryTimer);
     const lane: SessionLane = {
       sessionId,
+      lastUsed: ++this.cacheClock,
+      cachedBytes: previous?.cachedBytes,
       generation: this.generation,
       chain: Promise.resolve(),
       cursor: previous ? new Map(previous.cursor) : newCursor(),
@@ -209,13 +229,13 @@ export class SyncEngine {
       ops: [],
       bufferedBytes: 0,
       replayQueue: [],
-      established: previous?.timeline != null,
+      established: previous?.established ?? false,
       retryAttempt: 0,
       retryNotBefore: 0,
       retryTimer: null,
     };
     this.lanes.set(sessionId, lane);
-    this.enqueueReplay(lane, { reason });
+    this.enqueueReplay(lane, { reason, initialState });
   }
 
   /** Apply a synchronous timeline mutation inside the lane. Never throws. */
@@ -239,6 +259,33 @@ export class SyncEngine {
     return this.lanes.get(sessionId)?.timeline?.streaming ?? false;
   }
 
+  /** Evict inactive cached conversations as a unit (timeline, cursor, queued
+   * work and retry). Called on navigation, not every streaming frame. The
+   * selected session and optimistic draft are never truncated to meet a cache
+   * budget; a single large active session is an explicit exception. */
+  pruneCache(selected: string, maxSessions = 8, maxBytes = 16 * 1024 * 1024): string[] {
+    const lanes = [...this.lanes.values()].filter(lane => lane.sessionId !== "");
+    let bytes = 0;
+    for (const lane of lanes) {
+      lane.cachedBytes ??= JSON.stringify(lane.timeline).length * 2 + lane.cursor.size * 64;
+      bytes += lane.cachedBytes;
+    }
+    let count = lanes.length;
+    const evicted: string[] = [];
+    for (const lane of lanes.filter(lane => lane.sessionId !== selected).sort((a, b) => a.lastUsed - b.lastUsed)) {
+      if (count <= maxSessions && bytes <= maxBytes) break;
+      if (lane.retryTimer) clearTimeout(lane.retryTimer);
+      this.liveFlushLanes.delete(lane);
+      lane.ops = [];
+      lane.replayQueue = [];
+      this.lanes.delete(lane.sessionId);
+      bytes -= lane.cachedBytes ?? 0;
+      count--;
+      evicted.push(lane.sessionId);
+    }
+    return evicted;
+  }
+
   /** Drop all lanes (unpair / credentials cleared). */
   clear(): void {
     this.generation += 1;
@@ -256,6 +303,7 @@ export class SyncEngine {
     if (!lane) {
       lane = {
         sessionId,
+        lastUsed: ++this.cacheClock,
         generation: this.generation,
         chain: Promise.resolve(),
         cursor: newCursor(),
@@ -287,9 +335,9 @@ export class SyncEngine {
   }
 
   private enqueueReplay(lane: SessionLane, request: ReconcileRequest): void {
-    const duplicate = lane.replayQueue.some(
-      (existing) => existing.reason === request.reason && existing.runId === request.runId,
-    );
+    const matches = (existing: ReconcileRequest) =>
+      existing.reason === request.reason && existing.runId === request.runId;
+    const duplicate = (lane.reconciling && matches(lane.reconciling)) || lane.replayQueue.some(matches);
     if (duplicate) return;
     if (lane.replayQueue.length >= MAX_REPLAY_QUEUE) return;
     lane.replayQueue.push(request);
@@ -314,7 +362,9 @@ export class SyncEngine {
     let justReconciledRun: string | null = null;
     const request = lane.replayQueue.shift();
     if (request) {
+      lane.reconciling = request;
       const failure = await this.runReconcile(lane, request);
+      lane.reconciling = undefined;
       if (!this.isCurrent(lane)) return;
       if (failure) {
         // Preserve both the reconcile instruction and every queued live op.
@@ -371,7 +421,12 @@ export class SyncEngine {
     let stage: SyncStage = "get_state";
     let targetRunId = request.runId ?? "";
     try {
-      const state = await this.deps.requestGetState(lane.sessionId);
+      // An opening state is consumed once. A failed reconcile must retry
+      // against fresh state, not keep reusing a rejected/stale promise.
+      const initialState = request.initialState;
+      delete request.initialState;
+      const state = await (initialState ?? this.deps.requestGetState(lane.sessionId));
+      if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
       const activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
       // just settled is no longer active) else the active run.
@@ -381,8 +436,17 @@ export class SyncEngine {
       if (full) {
         stage = "history";
         const history = await this.deps.requestHistory(lane.sessionId);
+        if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
         let base = mergeLiveInto(history, lane.timeline);
         if (targetRunId) {
+          // History is already readable. A cold open must not wait for every
+          // replay page before its first paint (or turn a slow replay into a
+          // history timeout). This preview does NOT establish the lane or
+          // advance its cursor; live ops still queue behind the full replay.
+          if (lane.timeline === null) {
+            lane.timeline = { ...base, streaming: !!activeRunId };
+            this.commit(lane);
+          }
           stage = "replay";
           base = stripRunItems(base, targetRunId);
           base = await this.replayInto(lane, base, targetRunId, -1);
@@ -431,7 +495,7 @@ export class SyncEngine {
     runId: string,
     since: number,
   ): Promise<TimelineState> {
-    const result = await this.deps.fetchReplay(lane.sessionId, runId, since);
+    const result = await this.deps.fetchReplay(lane.sessionId, runId, since, () => this.isCurrent(lane));
     if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
     if (result.projection?.events?.length) {
       let events = normalizeReplayEvents(result.projection.events);
@@ -558,27 +622,34 @@ export class SyncEngine {
 
   private isFullReplay(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
     if (
+      request.reason === "open" ||
       request.reason === "prefix" ||
       request.reason === "resend" ||
       request.reason === "reconnect"
     )
       return true;
-    // A lane with no committed timeline has no live baseline to top up — the
+    // A lane with no established timeline has no live baseline to top up — the
     // only way to build it is from durable history (idle sessions have no
     // active run for a tail reconcile to target).
-    if (lane.timeline === null) return true;
+    if (!lane.established || lane.timeline === null) return true;
     return !isPrefixComplete(lane.cursor, runId);
   }
 
   private commit(lane: SessionLane): void {
+    lane.cachedBytes = undefined;
     if (!lane.timeline || !this.isCurrent(lane)) return;
     for (const fn of this.subscribers) {
       fn({ sessionId: lane.sessionId, timeline: lane.timeline, cursor: lane.cursor });
     }
   }
 
+  private isVisible(sessionId: string): boolean {
+    return sessionId === "" || this.deps.isSessionVisible?.(sessionId) !== false;
+  }
+
   private isCurrent(lane: SessionLane): boolean {
-    return lane.generation === this.generation && this.lanes.get(lane.sessionId) === lane;
+    return lane.generation === this.generation && this.lanes.get(lane.sessionId) === lane
+      && this.isVisible(lane.sessionId);
   }
 }
 

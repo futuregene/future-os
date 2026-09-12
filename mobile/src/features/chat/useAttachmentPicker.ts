@@ -1,5 +1,5 @@
 import { ActionSheetIOS, Platform } from "react-native";
-import type { Dispatch, SetStateAction } from "react";
+import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import type { TFunction } from "i18next";
 import { pickAttachments, pickFromAlbum, takePhoto } from "../../remote/files";
@@ -18,34 +18,34 @@ export function useAttachmentPicker(
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>,
   t: TFunction,
 ): AttachmentPickerApi {
-  const chooseFiles = async () => {
+  const chooseFiles = useCallback(async () => {
     try {
       setAttachments(await pickAttachments(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
       showToast(t(`attachment.errors.${key}`));
     }
-  };
+  }, [attachments, setAttachments, t]);
 
-  const capturePhoto = async () => {
+  const capturePhoto = useCallback(async () => {
     try {
       setAttachments(await takePhoto(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
       showToast(t(`attachment.errors.${key}`));
     }
-  };
+  }, [attachments, setAttachments, t]);
 
-  const chooseFromAlbum = async () => {
+  const chooseFromAlbum = useCallback(async () => {
     try {
       setAttachments(await pickFromAlbum(attachments));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
       showToast(t(`attachment.errors.${key}`));
     }
-  };
+  }, [attachments, setAttachments, t]);
 
-  const openAttachmentMenu = () => {
+  const openAttachmentMenu = useCallback(() => {
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
         {
@@ -82,7 +82,7 @@ export function useAttachmentPicker(
         if (index === 2) deferPresentation(() => void chooseFiles());
       })
       .catch(() => showToast(t("attachment.errors.attachment_failed")));
-  };
+  }, [capturePhoto, chooseFiles, chooseFromAlbum, t]);
 
   return { chooseFiles, capturePhoto, chooseFromAlbum, openAttachmentMenu };
 }

@@ -54,6 +54,33 @@ describe("useSessionCatalog", () => {
     }
   });
 
+  test("100 concurrent refreshes share one request and one trailing freshness read", async () => {
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce({ data: { sessions: [session("latest")] } });
+    render();
+    let pending!: Promise<void>[];
+    act(() => { pending = Array.from({ length: 100 }, () => result.current.refreshSessions()); });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(new Set(pending).size).toBe(1);
+    await act(async () => { finish({ data: { sessions: [session("older")] } }); await Promise.all(pending); });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["latest"]);
+  });
+
+  test("a replaced client starts a fresh refresh without waiting for the old flight", async () => {
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    render();
+    let old!: Promise<void>;
+    act(() => { old = result.current.refreshSessions(); });
+    const nextRequest = jest.fn().mockResolvedValue({ data: { sessions: [session("new")] } });
+    clientRef.current = { requestRetry: nextRequest } as unknown as RemoteClient;
+    await act(async () => { await result.current.refreshSessions(); });
+    await act(async () => { finish({ data: { sessions: [session("old")] } }); await old; });
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["new"]);
+  });
+
   test("late pull cannot overwrite a more recent pushed sessions snapshot", async () => {
     render();
     let resolve!: (value: unknown) => void;

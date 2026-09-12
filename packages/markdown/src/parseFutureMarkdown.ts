@@ -55,15 +55,21 @@ interface ParseContext {
   definitions: Map<string, Definition>;
 }
 
-export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
-  const cached = parseCache.get(raw);
+/** Optional mdast must describe `raw` with the same plugins; positions are not
+ * consumed by conversion. Workers can reuse whole trees or independent block
+ * subtrees. Ephemeral live versions opt out of the cross-instance static cache.
+ */
+export function parseFutureMarkdown(raw: string, parsedTree?: Root, cache = true): FutureMarkdownDocument {
+  // Mutable streaming fragments must not fill the shared LRU with obsolete
+  // prefixes or evict settled messages. Ordinary callers retain caching.
+  const cached = cache ? parseCache.get(raw) : undefined;
   if (cached) {
     // LRU touch.
     parseCache.delete(raw);
     parseCache.set(raw, cached);
     return cached;
   }
-  const tree = parseMdast(raw);
+  const tree = parsedTree ?? parseMdast(raw);
   const context = createParseContext(tree);
   // Bound both conversion and downstream recursive renderers. Inspect the AST
   // iteratively so hostile nesting cannot overflow this guard itself. Preserve
@@ -73,11 +79,11 @@ export function parseFutureMarkdown(raw: string): FutureMarkdownDocument {
     : tree.children.flatMap((node) => blockToFutureNode(node, context));
   const references = collectReferences(nodes);
   const document = { nodes, raw, references };
-  if (parseCache.size >= PARSE_CACHE_MAX) {
+  if (cache && parseCache.size >= PARSE_CACHE_MAX) {
     const oldest = parseCache.keys().next().value;
     if (oldest !== undefined) parseCache.delete(oldest);
   }
-  parseCache.set(raw, document);
+  if (cache) parseCache.set(raw, document);
   return document;
 }
 
@@ -86,7 +92,7 @@ interface TreeNode {
   children?: TreeNode[];
 }
 
-function exceedsNestingLimit(tree: TreeNode): boolean {
+export function exceedsNestingLimit(tree: TreeNode): boolean {
   const stack = [{ node: tree, depth: 0 }];
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
@@ -98,7 +104,8 @@ function exceedsNestingLimit(tree: TreeNode): boolean {
   return false;
 }
 
-function parseMdast(raw: string): Root {
+/** Internal parser entry point shared with the incremental projector. */
+export function parseMdast(raw: string): Root {
   return markdownProcessor.parse(raw) as Root;
 }
 

@@ -24,7 +24,7 @@ describe("fetchEventsSince", () => {
     expect(result.truncated).toBeUndefined();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith(
-      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, offset: 0 },
+      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, offset: 0, chunkedRead: true },
       "s1",
     );
   });
@@ -90,6 +90,25 @@ test("new Desktop replay advances event cursors while pinning the first page wat
   const result = await fetchEventsSince(client, "s", "r", -1);
   expect(result.events?.map((e) => e.idx)).toEqual([4, 9]);
   expect(request.mock.calls[1][0]).toMatchObject({ sinceIdx: 4, offset: 0, replayUntilIdx: 9 });
+});
+
+test("a hidden or replaced lane stops after the in-flight page instead of draining the tail", async () => {
+  let visible = true;
+  let finish!: (value: { data: EventsPage }) => void;
+  const request = jest.fn(() => new Promise<{ data: EventsPage }>(resolve => { finish = resolve; }));
+  const client = { requestRetry: request } as unknown as RemoteClient;
+  const loading = fetchEventsSince(client, "s", "r", -1, () => visible);
+  const rejected = expect(loading).rejects.toThrow("stale_sync_lane");
+  visible = false;
+  finish({ data: { events: [event("a", 99)], hasMore: true, nextSinceIdx: 99, watermark: 9999 } });
+  await rejected;
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+test("an already obsolete replay does not issue any request", async () => {
+  const { client, request } = clientReturning([]);
+  await expect(fetchEventsSince(client, "s", "r", -1, () => false)).rejects.toThrow("stale_sync_lane");
+  expect(request).not.toHaveBeenCalled();
 });
 
 test("a changed replay window rejects the partial result so sync can retry from durable state", async () => {

@@ -4,6 +4,7 @@ pub(crate) mod business;
 pub(crate) mod catalog;
 pub(crate) mod files;
 pub(crate) mod pairing;
+mod read_pages;
 use crate::remote::services::{BusinessHost, ReplySink};
 struct DesktopHost;
 impl BusinessHost for DesktopHost {
@@ -12,7 +13,17 @@ impl BusinessHost for DesktopHost {
         command: crate::remote::protocol::IncomingCmd,
         reply: &'a dyn ReplySink,
     ) -> futures::future::BoxFuture<'a, ()> {
-        Box::pin(business::execute(command, reply))
+        Box::pin(async move {
+            if command.cmd_type == "get_read_chunk" {
+                match read_pages::read(&command) {
+                    Ok(data) => reply.send(true, data, None).await,
+                    Err(error) => reply.send(false, Value::Null, Some(error)).await,
+                }
+                return;
+            }
+            let paged = read_pages::PagedReply::new(&command, reply);
+            business::execute(command, &paged).await;
+        })
     }
 }
 pub(crate) fn host() -> &'static dyn RemoteHost {
@@ -91,9 +102,11 @@ impl FileHost for DesktopHost {
     }
     fn prune_transfers(&self) {
         files::prune_expired();
+        read_pages::prune();
     }
     fn clear_transfers(&self) {
         files::clear_transfers();
+        read_pages::clear();
     }
     fn clear_preview_cache(&self) {
         files::clear_preview_cache();

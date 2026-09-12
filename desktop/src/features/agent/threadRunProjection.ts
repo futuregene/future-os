@@ -38,6 +38,16 @@ const LIVE_PROJECTION_CACHE_MAX = 8;
 
 const liveProjectionCache = new Map<string, LiveProjectionEntry>();
 
+const FILE_TREE_INVALIDATING_EVENTS = new Set([
+  "toolcall_start",
+  "tool_start",
+  "tool_end",
+  "tool_result",
+  // An interrupted tool may have written files without emitting tool_end.
+  "agent_end",
+  "error",
+]);
+
 /**
  * Drop an incremental projector after the backend replaces its local event
  * log with an Agent projection snapshot. The next push rebuilds from the new
@@ -62,6 +72,12 @@ async function projectRunForLivePreview(
   let events = await listRunEventsSince(runId, since);
   if (!shouldApply())
     return null;
+
+  // A reset (or LRU eviction) during the IPC read invalidates its cursor.
+  // Never ingest that tail into a new empty projector: its prefix would be
+  // permanently missing even though subsequent sequence numbers look valid.
+  if (cached && liveProjectionCache.get(runId) !== cached)
+    return projectRunForLivePreview(runId, shouldApply);
 
   if (cached && events.length > 0 && events[0]!.sequence <= since) {
     // Sequence regressed under us — the agent realigned mid-stream (e.g. its
@@ -89,9 +105,17 @@ async function projectRunForLivePreview(
     liveProjectionCache.delete(oldest);
   }
 
-  entry.projection = entry.projector.ingest(events);
-  if (entry.projection.activityItems.length > 0)
+  const previousSequence = entry.projector.lastSequence;
+  const unseen = events.filter(event => event.sequence > previousSequence);
+  if (unseen.length > 0 || !entry.projection)
+    entry.projection = entry.projector.ingest(unseen);
+  // Historical tool activity stays in every snapshot. Text/thinking/argument
+  // deltas are not filesystem changes: invalidating on that history rescanned
+  // every expanded directory every 2s for the remainder of a long reply.
+  if (entry.projection.activityItems.length > 0
+    && unseen.some(event => FILE_TREE_INVALIDATING_EVENTS.has(event.eventType))) {
     emitFutureEvent("file-tree-refresh", undefined);
+  }
   return entry.projection;
 }
 

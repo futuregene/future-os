@@ -9,24 +9,24 @@ import {
   X,
 } from "lucide-react-native";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { memo, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
-import { useRemote } from "../../../remote/RemoteContext";
+import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, TimelineItem } from "../../../remote/types";
 import { chatTypography, colors, radius, spacing } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 
-type Remote = ReturnType<typeof useRemote>;
+type Remote = RemoteControls;
 
 type PendingApproval = Extract<TimelineItem, { kind: "approval" }>;
 
 const INPUT_MIN_HEIGHT = 46;
 const INPUT_MAX_HEIGHT = 160;
 
-export function ComposerDock({
+function ComposerDockView({
   message,
   setMessage,
   attachments,
@@ -159,7 +159,7 @@ export function ComposerDock({
             accessibilityLabel={t("chat.placeholder")}
             autoCapitalize="none"
             autoCorrect={false}
-            editable={remote.desktopOnline && !remote.timeline.streaming && !remote.busy}
+            editable={remote.desktopOnline && !remote.streaming && !remote.busy}
             multiline
             onContentSizeChange={event =>
               setInputHeight(
@@ -181,12 +181,12 @@ export function ComposerDock({
             <Pressable
               accessibilityLabel={t("attachment.add")}
               accessibilityRole="button"
-              disabled={remote.timeline.streaming || remote.busy || !remote.fileTransferSupported}
+              disabled={remote.streaming || remote.busy || !remote.fileTransferSupported}
               onPress={openAttachmentMenu}
               style={({ pressed }) => [
                 styles.attachmentButton,
                 pressed && styles.selectorTriggerPressed,
-                (remote.timeline.streaming || remote.busy || !remote.fileTransferSupported) &&
+                (remote.streaming || remote.busy || !remote.fileTransferSupported) &&
                   styles.controlDisabled,
               ]}
             >
@@ -196,12 +196,12 @@ export function ComposerDock({
               <Pressable
                 accessibilityLabel={t("chat.model")}
                 accessibilityRole="button"
-                disabled={remote.timeline.streaming}
+                disabled={remote.streaming}
                 onPress={() => setSelector("model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
                   pressed && styles.selectorTriggerPressed,
-                  remote.timeline.streaming && styles.controlDisabled,
+                  remote.streaming && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -212,12 +212,12 @@ export function ComposerDock({
               <Pressable
                 accessibilityLabel={t("chat.thinkingLevel")}
                 accessibilityRole="button"
-                disabled={remote.timeline.streaming}
+                disabled={remote.streaming}
                 onPress={() => setSelector("thinking")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
                   pressed && styles.selectorTriggerPressed,
-                  remote.timeline.streaming && styles.controlDisabled,
+                  remote.streaming && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -226,7 +226,7 @@ export function ComposerDock({
                 <ChevronDown color={colors.inkMuted} size={14} />
               </Pressable>
             </View>
-            {remote.timeline.streaming ? (
+            {remote.streaming ? (
               <Pressable
                 accessibilityLabel={t("chat.stop")}
                 accessibilityRole="button"
@@ -263,6 +263,17 @@ export function ComposerDock({
     </View>
   );
 }
+
+// Filtering the transcript yields a fresh approvals array on each text tick.
+// Compare its item identities, but never ignore changed callbacks or controls.
+export const ComposerDock = memo(ComposerDockView, (previous, next) => {
+  const { pendingApprovals: beforeApprovals, ...before } = previous;
+  const { pendingApprovals: afterApprovals, ...after } = next;
+  return beforeApprovals.length === afterApprovals.length
+    && beforeApprovals.every((item, index) => item === afterApprovals[index])
+    && Object.keys(before).length === Object.keys(after).length
+    && (Object.keys(before) as (keyof typeof before)[]).every(key => Object.is(before[key], after[key]));
+});
 
 const styles = StyleSheet.create({
   composerDock: {
