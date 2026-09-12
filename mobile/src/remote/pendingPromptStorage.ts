@@ -22,9 +22,13 @@ export interface PendingPrompt {
 const KEY = "futureos.remote.pending-prompt.v1";
 const enqueueOperation = createAsyncOperationQueue();
 
-async function loadPendingPromptDirect(): Promise<PendingPrompt | null> {
+function storageKey(pairId?: string): string {
+  return pairId ? `${KEY}.${pairId}` : KEY;
+}
+
+async function loadPendingPromptDirect(pairId?: string): Promise<PendingPrompt | null> {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
+    const raw = await AsyncStorage.getItem(storageKey(pairId));
     if (!raw) return null;
     const value = JSON.parse(raw) as Partial<PendingPrompt>;
     if (
@@ -55,23 +59,35 @@ async function loadPendingPromptDirect(): Promise<PendingPrompt | null> {
   }
 }
 
-export function loadPendingPrompt(): Promise<PendingPrompt | null> {
-  return enqueueOperation(loadPendingPromptDirect);
+export function loadPendingPrompt(pairId?: string): Promise<PendingPrompt | null> {
+  return enqueueOperation(async () => {
+    const current = await loadPendingPromptDirect(pairId);
+    if (current || !pairId) return current;
+    const legacy = await loadPendingPromptDirect();
+    if (legacy?.pairId !== pairId) return null;
+    await AsyncStorage.setItem(storageKey(pairId), JSON.stringify(legacy));
+    await AsyncStorage.removeItem(KEY);
+    return legacy;
+  });
 }
 
-export async function savePendingPrompt(prompt: PendingPrompt): Promise<void> {
-  await enqueueOperation(() => AsyncStorage.setItem(KEY, JSON.stringify(prompt)));
+export async function savePendingPrompt(prompt: PendingPrompt, pairId?: string): Promise<void> {
+  await enqueueOperation(() => AsyncStorage.setItem(storageKey(pairId), JSON.stringify(prompt)));
 }
 
-/** Drop all pending delivery state on unpair, including legacy records. */
-export async function discardPendingPrompt(): Promise<void> {
-  await enqueueOperation(() => AsyncStorage.removeItem(KEY));
+/** Drop this pair's pending delivery state without affecting other desktops. */
+export async function discardPendingPrompt(pairId?: string): Promise<void> {
+  await enqueueOperation(async () => {
+    await AsyncStorage.removeItem(storageKey(pairId));
+    if (pairId && (await loadPendingPromptDirect())?.pairId === pairId)
+      await AsyncStorage.removeItem(KEY);
+  });
 }
 
 /** Clear only the record this caller completed; a newer send must survive. */
-export async function clearPendingPrompt(commandId: string): Promise<void> {
+export async function clearPendingPrompt(commandId: string, pairId?: string): Promise<void> {
   await enqueueOperation(async () => {
-    const current = await loadPendingPromptDirect();
-    if (current?.commandId === commandId) await AsyncStorage.removeItem(KEY);
+    const current = await loadPendingPromptDirect(pairId);
+    if (current?.commandId === commandId) await AsyncStorage.removeItem(storageKey(pairId));
   });
 }

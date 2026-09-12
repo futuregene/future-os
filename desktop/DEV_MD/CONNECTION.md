@@ -74,6 +74,22 @@ flowchart LR
 | `GET /client/v1/remote/devices` | 列举账号配对 |
 | `DELETE /client/v1/remote/devices/:pair_id` | 按账号权限撤销指定配对 |
 
+### 2.2.1 移动端多 Desktop 配对（2026-09-12）
+
+移动端可保存多个 Desktop 的配对，在会话页顶部的桌面选择器或设置中进入列表，
+扫码添加其他 Desktop、切换当前 Desktop，或单独解除某个配对。每次只连接并操作
+当前选中的 Desktop，不汇总后台 Desktop 的会话。切换不发送解绑命令，也不撤销
+其他 Desktop 的凭证；重新配对同一 Desktop 则替换它自己的记录。
+
+这是“一手机对多 Desktop”，不是“一 Desktop 对多手机”。既有 Desktop/平台侧
+单个 pending/active 配对、一次性邀请、签名握手和按 pairId 授权的规则均保持不变。
+本次没有修改 future-server；多设备的真实平台/Android/iOS 联调仍需单独验证。
+
+移动端 SecureStore 使用按 Desktop 分项存储的双槽凭证，单一索引原子提交活动选择
+与凭证槽位；旧单配对记录在索引落盘后再清理。会话目录和时间线在切换时重置，
+普通草稿按 Desktop 隔离，待确认发送/续跑按 pairId 隔离；只有原配对能迁移和恢复
+旧版待确认操作。解绑和收到撤销通知只清理对应配对的数据。
+
 ### 2.3 消息、传输与权限
 
 下表中的所有消息主题都以 `p.{pairId}.` 为前缀；平台签发的角色权限还约束回复主题中的设备身份。

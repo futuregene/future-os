@@ -21,6 +21,8 @@ import {
   clearCredentials,
   clearPendingRevoke,
   loadCredentials,
+  loadPairedDesktops,
+  type PairedDesktop,
   loadPendingRevoke,
   saveCredentials,
   savePendingRevoke,
@@ -80,6 +82,10 @@ export function useRemoteConnection({
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
+  const [desktops, setDesktops] = useState<PairedDesktop[]>([]);
+  const refreshDesktops = useCallback(async () => {
+    setDesktops(await loadPairedDesktops());
+  }, []);
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const [desktopOnline, setDesktopOnline] = useState(false);
   const accessRef = useRef(0);
@@ -179,6 +185,19 @@ export function useRemoteConnection({
       const access = ++accessRef.current;
       const previous = clientRef.current;
       clientRef.current = null;
+      credentialsRef.current = null;
+      connectionReadyRef.current = false;
+      presenceStateRef.current = INITIAL_PRESENCE_STATE;
+      agentAvailableRef.current = undefined;
+      lastPresenceReceiptRef.current = 0;
+      setPresence(null);
+      setDesktopOnline(false);
+      setPhase("connecting");
+      if (catalogPairRef.current !== null && catalogPairRef.current !== nextCredentials.pairId) {
+        resetCatalog();
+        resetConversation();
+        resetTimeline();
+      }
       await previous?.close();
       if (access !== accessRef.current) return;
       // A successful pair must mean its credentials are durable. In
@@ -186,11 +205,8 @@ export function useRemoteConnection({
       // are still in flight and can be lost on immediate process suspension.
       await saveCredentials(nextCredentials);
       if (access !== accessRef.current) return;
-      if (catalogPairRef.current !== null && catalogPairRef.current !== nextCredentials.pairId) {
-        resetCatalog();
-        resetConversation();
-        resetTimeline();
-      }
+      await refreshDesktops();
+      if (access !== accessRef.current) return;
       catalogPairRef.current = nextCredentials.pairId;
       credentialsRef.current = nextCredentials;
       setCredentials(nextCredentials);
@@ -225,9 +241,9 @@ export function useRemoteConnection({
             credentialsRef.current = null;
             void clientRef.current?.close("Unpair");
             clientRef.current = null;
-            void clearCredentials();
-            void discardPendingPrompt();
-            void discardPendingContinuation();
+            void clearCredentials(nextCredentials.pairId).then(refreshDesktops).catch(recordError);
+            void discardPendingPrompt(nextCredentials.pairId);
+            void discardPendingContinuation(nextCredentials.pairId);
             setCredentials(null);
             setPresence(null);
             resetCatalog();
@@ -279,8 +295,8 @@ export function useRemoteConnection({
             setError(null);
           } else if (state === "revoked" || state === "unpaired") {
             credentialsRef.current = null;
-            void discardPendingPrompt();
-            void discardPendingContinuation();
+            void discardPendingPrompt(nextCredentials.pairId);
+            void discardPendingContinuation(nextCredentials.pairId);
             setPhase(state);
           } else if (state === "refreshing") setPhase("refreshing");
           else if (state === "failed") setPhase("failed");
@@ -314,6 +330,7 @@ export function useRemoteConnection({
       reconcileSession,
       recordError,
       recoverState,
+      refreshDesktops,
       resetCatalog,
       resetConversation,
       resetTimeline,
@@ -332,6 +349,7 @@ export function useRemoteConnection({
         void drainRevokes().catch(recordError);
         if (!active) return;
         const stored = await loadCredentials();
+        await refreshDesktops();
         if (!active || bootstrapAccess !== accessRef.current) return;
         if (!stored) {
           setPhase("unpaired");
@@ -351,7 +369,7 @@ export function useRemoteConnection({
       void clientRef.current?.close();
       clientRef.current = null;
     };
-  }, [clientRef, connect, drainRevokes, recordError]);
+  }, [clientRef, connect, drainRevokes, recordError, refreshDesktops]);
 
   const recoverLifecycle = useCallback(
     async (reason: "foreground" | "network-restored" | "network-changed") => {
@@ -475,10 +493,10 @@ export function useRemoteConnection({
 
   const pair = useCallback(
     async (code: string) => {
-      accessRef.current += 1;
       pairingAbortRef.current?.abort();
       const controller = new AbortController();
       pairingAbortRef.current = controller;
+      const previousPhase = phase;
       setPhase("claiming");
       setError(null);
       try {
@@ -488,12 +506,22 @@ export function useRemoteConnection({
       } catch (nextError) {
         if (controller.signal.aborted) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setPhase("unpaired");
+        setPhase(credentialsRef.current ? previousPhase : "unpaired");
         throw nextError;
       }
     },
-    [connect],
+    [connect, credentialsRef, phase],
   );
+
+  const switchDesktop = useCallback(async (desktopId: string) => {
+    pairingAbortRef.current?.abort();
+    const controller = new AbortController();
+    pairingAbortRef.current = controller;
+    const stored = await loadCredentials(desktopId);
+    if (controller.signal.aborted) return;
+    if (!stored) throw new Error("desktop_not_paired");
+    await connect(stored);
+  }, [connect]);
 
   const reconnect = useCallback(async () => {
     const stored = credentials ?? (await loadCredentials());
@@ -507,15 +535,16 @@ export function useRemoteConnection({
       const message = nextError instanceof Error ? nextError.message : String(nextError);
       if (message === "invalid_jwt") {
         credentialsRef.current = null;
-        await clearCredentials();
-        await discardPendingPrompt();
-        await discardPendingContinuation();
+        await clearCredentials(stored.pairId);
+        await refreshDesktops();
+        await discardPendingPrompt(stored.pairId);
+        await discardPendingContinuation(stored.pairId);
         setCredentials(null);
         setPhase("unpaired");
         setError(null);
       } else setError(message);
     }
-  }, [connect, credentials, credentialsRef]);
+  }, [connect, credentials, credentialsRef, refreshDesktops]);
 
   const unpair = useCallback(async () => {
     const unpairAccess = ++accessRef.current;
@@ -560,15 +589,28 @@ export function useRemoteConnection({
     } finally {
       if (current) await clearCredentials(current.pairId);
       else if (accessRef.current === unpairAccess) await clearCredentials();
-      await discardPendingPrompt();
-      await discardPendingContinuation();
+      await refreshDesktops();
+      await discardPendingPrompt(current?.pairId);
+      await discardPendingContinuation(current?.pairId);
       await closing;
     }
     if (current)
       void serverRevoke(current)
         .then(() => clearPendingRevoke(current.pairId))
         .catch(() => undefined);
-  }, [clientRef, credentials, credentialsRef, resetCatalog, resetConversation, resetTimeline]);
+  }, [clientRef, credentials, credentialsRef, refreshDesktops, resetCatalog, resetConversation, resetTimeline]);
+
+  const removeDesktop = useCallback(async (desktopId: string) => {
+    if (credentials?.expectedDesktopId === desktopId) return unpair();
+    const stored = await loadCredentials(desktopId);
+    if (!stored) return;
+    await savePendingRevoke(stored);
+    await clearCredentials(stored.pairId);
+    await discardPendingPrompt(stored.pairId);
+    await discardPendingContinuation(stored.pairId);
+    await refreshDesktops();
+    void drainRevokes().catch(recordError);
+  }, [credentials, drainRevokes, recordError, refreshDesktops, unpair]);
 
   const clearError = useCallback(() => setError(null), []);
 
@@ -576,6 +618,9 @@ export function useRemoteConnection({
     phase,
     error,
     credentials,
+    desktops,
+    switchDesktop,
+    removeDesktop,
     presence,
     desktopOnline,
     capabilities,

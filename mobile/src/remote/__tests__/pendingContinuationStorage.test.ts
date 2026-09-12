@@ -34,6 +34,24 @@ describe("pending continuation storage", () => {
     jest.clearAllMocks();
   });
 
+  it("keeps continuation receipts isolated across desktops", async () => {
+    const other = { ...pending, pairId: "pair-2", expectedDesktopId: "desktop-2" };
+    await savePendingContinuation(pending, pending.pairId);
+    await savePendingContinuation(other, other.pairId);
+    expect(await loadPendingContinuation(pending.pairId)).toEqual(pending);
+    expect(await loadPendingContinuation(other.pairId)).toEqual(other);
+    await clearPendingContinuation(pending.commandId, pending.pairId);
+    await discardPendingContinuation(pending.pairId);
+    expect(await loadPendingContinuation(other.pairId)).toEqual(other);
+  });
+
+  it("migrates a legacy continuation only for its own desktop", async () => {
+    await savePendingContinuation(pending);
+    expect(await loadPendingContinuation("another-pair")).toBeNull();
+    expect(await loadPendingContinuation(pending.pairId)).toEqual(pending);
+    expect(await loadPendingContinuation()).toBeNull();
+  });
+
   it("round trips the stable continuation identity", async () => {
     await savePendingContinuation(pending);
     await expect(loadPendingContinuation()).resolves.toEqual(pending);

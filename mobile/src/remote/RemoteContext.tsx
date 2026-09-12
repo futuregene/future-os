@@ -35,6 +35,9 @@ interface RemoteContextValue {
   phase: ConnectionPhase;
   error: string | null;
   credentials: RemoteCredentials | null;
+  desktops: import("./storage").PairedDesktop[];
+  switchDesktop(desktopId: string): Promise<void>;
+  removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
   desktopOnline: boolean;
   agentAvailable: boolean;
@@ -203,6 +206,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     phase,
     error,
     credentials,
+    desktops,
+    switchDesktop,
+    removeDesktop,
     presence,
     desktopOnline,
     capabilities,
@@ -316,6 +322,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       phase,
       error,
       credentials,
+      desktops,
+      switchDesktop,
+      removeDesktop,
       presence,
       desktopOnline,
       catalogSync,
@@ -369,6 +378,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       capabilities,
       fileTransferSupported,
       credentials,
+      desktops,
+      switchDesktop,
+      removeDesktop,
       closeConversation,
       clearError,
       connectionPresentation,

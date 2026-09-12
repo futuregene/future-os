@@ -6,11 +6,11 @@ import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import {
   loadSessionDraft,
-  NEW_CONVERSATION_DRAFT_KEY,
   saveSessionDraft,
 } from "../remote/draftStorage";
 import { prepareSharedAttachments } from "../remote/files";
 import { markShareLanded } from "./shareInbox";
+import { desktopDraftKey } from "../remote/desktopDraftKey";
 
 /**
  * Move content shared from another app into a new conversation's composer.
@@ -25,9 +25,14 @@ export function useShareIntake(): void {
   const remote = useRemote();
   const { t } = useTranslation();
   const readingRef = useRef(false);
+  const desktopRef = useRef(remote.credentials?.expectedDesktopId);
+  useEffect(() => {
+    desktopRef.current = remote.credentials?.expectedDesktopId;
+  }, [remote.credentials?.expectedDesktopId]);
 
   const intake = useCallback(async () => {
-    if (readingRef.current) return;
+    const desktopId = remote.credentials?.expectedDesktopId;
+    if (readingRef.current || !desktopId) return;
     readingRef.current = true;
     try {
       const share = await getPendingShare();
@@ -42,13 +47,15 @@ export function useShareIntake(): void {
       // state around: the composer already restores that slot on mount, so the
       // content is reviewable before the user sends it, and anything already
       // typed there is kept.
-      const existing = await loadSessionDraft(NEW_CONVERSATION_DRAFT_KEY);
-      await saveSessionDraft(NEW_CONVERSATION_DRAFT_KEY, {
+      const draftKey = desktopDraftKey(desktopId);
+      const existing = await loadSessionDraft(draftKey);
+      await saveSessionDraft(draftKey, {
         text: [existing?.text.trim(), text].filter(Boolean).join("\n\n"),
         attachments: [...(existing?.attachments ?? []), ...attachments],
       });
       // A share starts its own conversation rather than landing in whatever the
       // app happened to be showing; the previous composer keeps its draft.
+      if (desktopRef.current !== desktopId) return;
       await remote.newConversation("chat");
       // Tell the chat screen to re-read that draft (see shareInbox).
       markShareLanded();

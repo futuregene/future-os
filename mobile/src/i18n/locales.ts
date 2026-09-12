@@ -3,6 +3,14 @@ export const resources = {
     translation: {
       appName: "FutureOS",
       remote: "Phone Control",
+      desktops: {
+        title: "Paired desktops",
+        description: "Pair this phone with multiple desktops and select one to use. Each desktop still pairs with only one phone.",
+        desktop: "Desktop",
+        add: "Scan to add a desktop",
+        empty: "No paired desktops yet.",
+        switchFailed: "Could not update the desktop connection. Please try again.",
+      },
       pairing: {
         title: "Connect to your desktop",
         description:
@@ -72,7 +80,7 @@ export const resources = {
         new: "New conversation",
         refresh: "Refresh",
         unpair: "Unpair device",
-        unpairConfirm: "Unpair this phone? A new desktop QR code will be required.",
+        unpairConfirm: "Unpair this desktop? Other desktops will stay paired. To reconnect this desktop, scan a new QR code.",
         unnamed: "Untitled",
         pin: "Pin",
         unpin: "Unpin",
@@ -331,6 +339,14 @@ export const resources = {
     translation: {
       appName: "FutureOS",
       remote: "手机遥控",
+      desktops: {
+        title: "已配对的桌面端",
+        description: "一台手机可配对多个桌面端，选择后切换使用。每个桌面端仍只能配对一台手机。",
+        desktop: "桌面端",
+        add: "扫码添加桌面端",
+        empty: "尚未配对桌面端。",
+        switchFailed: "更新桌面端连接失败，请重试。",
+      },
       pairing: {
         title: "连接桌面端",
         description: "在 FutureOS 桌面端打开“手机遥控”，点击“配对并启动”，然后扫描二维码。",
@@ -394,7 +410,7 @@ export const resources = {
         new: "新对话",
         refresh: "刷新",
         unpair: "解除设备配对",
-        unpairConfirm: "确定解除这台手机的配对吗？之后需要重新扫描桌面二维码。",
+        unpairConfirm: "确定解除与这台桌面端的配对吗？其他桌面端的配对不受影响。再次连接此桌面端需要重新扫码。",
         unnamed: "未命名",
         pin: "置顶",
         unpin: "取消置顶",

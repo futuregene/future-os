@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_PROMPT_MESSAGE_BYTES, randomId, utf8Bytes } from "./codec";
 import { isTransientNatsRequestError, type RemoteClient } from "./client";
 import { clearSessionDraftIfMatches } from "./draftStorage";
+import { desktopDraftKey } from "./desktopDraftKey";
 import { uploadAttachments } from "./files";
 import {
   clearPendingContinuation,
@@ -194,6 +195,7 @@ export function usePromptOutbox({
   const sendingRef = useRef(false);
   const pendingRecoveryRef = useRef<Promise<void> | null>(null);
   const continuationInFlightRef = useRef<{
+    client: RemoteClient;
     sessionId: string;
     sourceRunId: string;
     promise: Promise<void>;
@@ -234,7 +236,7 @@ export function usePromptOutbox({
       const candidate = {
         pairId: credentials.pairId,
         expectedDesktopId: credentials.expectedDesktopId,
-        draftKey: targetSessionId || "draft:new",
+        draftKey: desktopDraftKey(credentials.expectedDesktopId, targetSessionId),
         sessionId: targetSessionId,
         text,
         attachments,
@@ -250,10 +252,10 @@ export function usePromptOutbox({
       sendingRef.current = true;
       setSending(true);
       try {
-        let pending = await loadPendingPrompt();
+        let pending = await loadPendingPrompt(credentials.pairId);
         assertCurrentPairing();
         if (pending && !pendingMatchesCredentials(pending, credentials)) {
-          await clearPendingPrompt(pending.commandId);
+          await clearPendingPrompt(pending.commandId, credentials.pairId);
           pending = null;
         }
         let checkReceipt = false;
@@ -266,7 +268,7 @@ export function usePromptOutbox({
               : null;
             assertCurrentPairing();
             if (previousReceipt) await clearSessionDraftIfMatches(pending.draftKey, pending);
-            await clearPendingPrompt(pending.commandId);
+            await clearPendingPrompt(pending.commandId, credentials.pairId);
           }
           assertCurrentPairing();
           pending = {
@@ -276,11 +278,11 @@ export function usePromptOutbox({
             ...candidate,
             createdAt: Date.now(),
           };
-          await savePendingPrompt(pending);
+          await savePendingPrompt(pending, credentials.pairId);
         }
         if (pending.bridgeInstanceId !== client.accessIdentity) {
           pending = { ...pending, bridgeInstanceId: client.accessIdentity };
-          await savePendingPrompt(pending);
+          await savePendingPrompt(pending, credentials.pairId);
         }
         try {
           const response = await deliverPendingPrompt(
@@ -291,8 +293,9 @@ export function usePromptOutbox({
             assertCurrentPairing,
             onUploadProgress,
           );
-          await clearPendingPrompt(pending.commandId);
+          await clearPendingPrompt(pending.commandId, credentials.pairId);
           await clearSessionDraftIfMatches(pending.draftKey, pending);
+          assertCurrentPairing();
           const nextSessionId = response.sessionId || targetSessionId;
           engine?.mutate(nextSessionId, (timeline) =>
             commitAcknowledgedUserMessage(timeline ?? emptyTimeline(), {
@@ -327,8 +330,8 @@ export function usePromptOutbox({
             if (stillViewingSentDraft) void refreshSessions();
           }
         } catch (sendError) {
-          if (!isTransientNatsRequestError(sendError)) {
-            await clearPendingPrompt(pending.commandId);
+          if (clientRef.current === client && !isTransientNatsRequestError(sendError)) {
+            await clearPendingPrompt(pending.commandId, credentials.pairId);
           }
           throw sendError;
         }
@@ -379,10 +382,10 @@ export function usePromptOutbox({
     sendingRef.current = true;
     setSending(true);
     const recovery = (async () => {
-      const pending = await loadPendingPrompt();
+      const pending = await loadPendingPrompt(credentials.pairId);
       if (!pending) return;
       if (!pendingMatchesCredentials(pending, credentials)) {
-        await clearPendingPrompt(pending.commandId);
+        await clearPendingPrompt(pending.commandId, credentials.pairId);
         return;
       }
       try {
@@ -396,13 +399,15 @@ export function usePromptOutbox({
           true,
         );
         assertCurrentPairing();
-        await clearPendingPrompt(pending.commandId);
+        await clearPendingPrompt(pending.commandId, credentials.pairId);
         await clearSessionDraftIfMatches(pending.draftKey, pending);
+        assertCurrentPairing();
         void refreshSessions();
         reconcileSession(receipt.sessionId, "reconnect");
       } catch (recoveryError) {
+        if (clientRef.current !== client) return;
         if (!isTransientNatsRequestError(recoveryError)) {
-          await clearPendingPrompt(pending.commandId);
+          await clearPendingPrompt(pending.commandId, credentials.pairId);
           if (!(
             recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
           ))
@@ -427,27 +432,29 @@ export function usePromptOutbox({
 
   const continueRun = useCallback(
     async (sessionId: string, runId: string) => {
+      const client = clientRef.current;
+      const credentials = credentialsRef.current;
+      if (!client || !credentials) throw new Error("not_connected");
       const inFlight = continuationInFlightRef.current;
       if (inFlight) {
-        if (inFlight.sessionId === sessionId && inFlight.sourceRunId === runId) {
+        if (inFlight.client === client && inFlight.sessionId === sessionId && inFlight.sourceRunId === runId) {
           return inFlight.promise;
         }
         await inFlight.promise;
       }
 
       const operation = (async () => {
-        const client = clientRef.current;
-        const credentials = credentialsRef.current;
-        if (!client || !credentials) throw new Error("not_connected");
-        let pending = await loadPendingContinuation();
+        if (clientRef.current !== client || credentialsRef.current?.pairId !== credentials.pairId)
+          throw new Error("pairing_changed");
+        let pending = await loadPendingContinuation(credentials.pairId);
         if (pending && !pendingMatchesCredentials(pending, credentials)) {
-          await discardPendingContinuation();
+          await discardPendingContinuation(credentials.pairId);
           pending = null;
         }
         let checkReceipt = pending !== null;
         if (pending && (pending.sessionId !== sessionId || pending.sourceRunId !== runId)) {
           if (promptReceiptSupported) await pendingPromptReceipt(client, pending.commandId);
-          await clearPendingContinuation(pending.commandId);
+          await clearPendingContinuation(pending.commandId, credentials.pairId);
           pending = null;
           checkReceipt = false;
         }
@@ -462,24 +469,25 @@ export function usePromptOutbox({
             sourceRunId: runId,
             createdAt: Date.now(),
           } satisfies PendingContinuation;
-          await savePendingContinuation(pending);
+          await savePendingContinuation(pending, credentials.pairId);
         }
         if (pending.bridgeInstanceId !== client.accessIdentity) {
           pending = { ...pending, bridgeInstanceId: client.accessIdentity };
-          await savePendingContinuation(pending);
+          await savePendingContinuation(pending, credentials.pairId);
         }
         try {
           await deliverPendingContinuation(client, pending, checkReceipt, promptReceiptSupported);
-          await clearPendingContinuation(pending.commandId);
+          await clearPendingContinuation(pending.commandId, credentials.pairId);
         } catch (continueError) {
           if (!isTransientNatsRequestError(continueError)) {
-            await clearPendingContinuation(pending.commandId);
+            await clearPendingContinuation(pending.commandId, credentials.pairId);
           }
           throw continueError;
         }
       })();
 
       continuationInFlightRef.current = {
+        client,
         sessionId,
         sourceRunId: runId,
         promise: operation,
@@ -499,10 +507,10 @@ export function usePromptOutbox({
     const client = clientRef.current;
     const credentials = credentialsRef.current;
     if (!client || !credentials || continuationInFlightRef.current) return;
-    const pending = await loadPendingContinuation();
+    const pending = await loadPendingContinuation(credentials.pairId);
     if (!pending || continuationInFlightRef.current) return;
     if (!pendingMatchesCredentials(pending, credentials)) {
-      await discardPendingContinuation();
+      await discardPendingContinuation(credentials.pairId);
       return;
     }
 
@@ -517,12 +525,13 @@ export function usePromptOutbox({
         );
         if (clientRef.current !== client || credentialsRef.current?.pairId !== pending.pairId)
           return;
-        await clearPendingContinuation(pending.commandId);
+        await clearPendingContinuation(pending.commandId, credentials.pairId);
         void refreshSessions();
         reconcileSession(receipt.sessionId || pending.sessionId, "reconnect", receipt.runId);
       } catch (recoveryError) {
+        if (clientRef.current !== client) return;
         if (!isTransientNatsRequestError(recoveryError)) {
-          await clearPendingContinuation(pending.commandId);
+          await clearPendingContinuation(pending.commandId, credentials.pairId);
           if (!(
             recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
           ))
@@ -532,6 +541,7 @@ export function usePromptOutbox({
     })();
 
     continuationInFlightRef.current = {
+      client,
       sessionId: pending.sessionId,
       sourceRunId: pending.sourceRunId,
       promise: operation,

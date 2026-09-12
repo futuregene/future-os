@@ -3,6 +3,7 @@ import {
   Folder,
   LogOut,
   MessageCircle,
+  Monitor,
   Plus,
   Settings,
   Unplug,
@@ -49,7 +50,7 @@ function deferPresentation(action: () => void): void {
   setTimeout(action, Platform.OS === "ios" ? 350 : 0);
 }
 
-export function SessionsScreen() {
+export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void }) {
   const { t } = useTranslation();
   const remote = useRemote();
   const { width } = useWindowDimensions();
@@ -323,6 +324,18 @@ export function SessionsScreen() {
   return (
     <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
       <View style={styles.page}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("desktops.title")}
+          onPress={onManageDesktops}
+          style={styles.desktopSelector}
+        >
+          <Monitor color={colors.inkSoft} size={16} />
+          <Text numberOfLines={1} style={styles.desktopIdentity}>
+            {remote.credentials?.expectedDesktopId}
+          </Text>
+          <ChevronDown color={colors.inkSoft} size={16} />
+        </Pressable>
         <View style={styles.topbar}>
           <View style={styles.tabs}>
             <Pressable
@@ -483,6 +496,14 @@ export function SessionsScreen() {
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
               </View>
+              <Button
+                label={t("desktops.title")}
+                onPress={() => {
+                  setSettingsOpen(false);
+                  onManageDesktops();
+                }}
+                variant="secondary"
+              />
               <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
               <View style={styles.tierDropdown}>
                 <Pressable
@@ -579,6 +600,8 @@ export function SessionsScreen() {
 }
 
 const styles = StyleSheet.create({
+  desktopSelector: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm },
+  desktopIdentity: { flex: 1, color: colors.inkSoft, fontSize: 12 },
   safe: { flex: 1, backgroundColor: colors.surface },
   page: { flex: 1, backgroundColor: colors.surface },
   topbar: {
