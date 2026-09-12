@@ -94,9 +94,23 @@ fn load_project_context(cwd: &str) -> String {
     String::new()
 }
 
-/// Abort every live session (SIGINT / profile-timer shutdown path).
+/// Transport crates that log per-frame / per-poll detail at DEBUG. Raising the
+/// root level to `debug` for `--verbose` would otherwise bury the Agent's own
+/// logs under every HTTP/2 frame h2 sends; pin them to WARN so only their
+/// failures show up. `RUST_LOG` still overrides this filter entirely.
+const NOISY_TRANSPORT_TARGETS: &[&str] = &["h2", "tonic", "tower"];
+
 fn default_log_filter(verbose: bool) -> tracing_subscriber::EnvFilter {
-    tracing_subscriber::EnvFilter::new(if verbose { "debug" } else { "info" })
+    if !verbose {
+        return tracing_subscriber::EnvFilter::new("info");
+    }
+    let mut directives = vec!["debug".to_owned()];
+    directives.extend(
+        NOISY_TRANSPORT_TARGETS
+            .iter()
+            .map(|target| format!("{target}=warn")),
+    );
+    tracing_subscriber::EnvFilter::new(directives.join(","))
 }
 
 #[cfg(test)]
@@ -109,6 +123,12 @@ fn verbose_default_filter_enables_grpc_debug_events() {
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             assert_eq!(tracing::enabled!(tracing::Level::DEBUG), verbose);
+            // The transport crates stay quiet even in verbose mode; the
+            // `enabled!` macro requires a literal target, so assert one by one.
+            assert!(!tracing::enabled!(target: "h2", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "tonic", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "tower", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "h2", tracing::Level::WARN));
         });
     }
 }
@@ -143,6 +163,7 @@ fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
     assert_eq!(parse_tcp_bind("[::1]:1234").unwrap(), ("::1".into(), 1234));
 }
 
+/// Abort every live session (SIGINT / profile-timer shutdown path).
 fn abort_all_sessions(sessions: &SessionsMap) {
     for s in sessions.read().values() {
         let session = s.read();
