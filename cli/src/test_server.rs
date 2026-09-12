@@ -38,6 +38,8 @@ pub struct MockAgent {
     pub events: Vec<StreamEvent>,
     /// Emit a stream-level error after the canned events.
     pub stream_error_after: bool,
+    /// Leave the stream silent but open after canned events.
+    pub stream_hang_after: bool,
     /// Fail the stream_events RPC itself with this Status.
     pub stream_status_error: Option<tonic::Status>,
     /// Every command received, in arrival order.
@@ -119,6 +121,11 @@ impl FutureAgent for MockAgent {
         if self.stream_error_after {
             let err = stream::once(async { Err(tonic::Status::internal("mid-stream boom")) });
             return Ok(tonic::Response::new(Box::pin(canned.chain(err))));
+        }
+        if self.stream_hang_after {
+            return Ok(tonic::Response::new(Box::pin(
+                canned.chain(stream::pending()),
+            )));
         }
         Ok(tonic::Response::new(Box::pin(canned)))
     }

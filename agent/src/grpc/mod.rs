@@ -66,7 +66,11 @@ async fn serve_tcp_with(
     let grpc_service = FutureAgentService { state };
 
     // Start gRPC server
-    let grpc_addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let ip = host
+        .parse::<std::net::IpAddr>()
+        .map_err(|error| anyhow::anyhow!("invalid gRPC bind IP {host:?}: {error}"))?;
+    let grpc_addr = SocketAddr::new(ip, port);
 
     // Raise the message-size limits above tonic's 4MB default. Image bytes no
     // longer cross the wire (the agent reads them from the path), but a large
@@ -156,6 +160,33 @@ fn nonempty(value: String) -> Option<String> {
     }
 }
 
+/// Commands that clients issue as routine background traffic — cursor replays,
+/// panel/list reloads and the probes behind them — rather than in response to a
+/// user action. One desktop refresh cycle alone sends a dozen of them (the
+/// context panel polls every 1.5 s while a run is live, re-reading every run's
+/// tool calls), so they would drown out the commands a `--verbose` reader
+/// actually wants. They log at TRACE instead of DEBUG; `RUST_LOG=trace` (or
+/// `future_agent::grpc=trace`) still surfaces every request.
+const BACKGROUND_COMMANDS: &[&str] = &[
+    // Cursor replays and health probes.
+    "get_events_since",
+    "get_session_events_since",
+    "list_streaming_sessions",
+    // Panel / catalog reloads.
+    "get_commands",
+    "get_session_entries",
+    "get_state",
+    "get_tool_output",
+    "list_models",
+    "list_providers",
+    "list_tool_calls",
+    "refresh_skills",
+];
+
+fn is_background_command(command: &str) -> bool {
+    BACKGROUND_COMMANDS.contains(&command)
+}
+
 #[tonic::async_trait]
 impl proto::future_agent_server::FutureAgent for FutureAgentService {
     type StreamEventsStream =
@@ -165,23 +196,45 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
+        if cmd
+            .sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox"))
+        {
+            return Err(tonic::Status::invalid_argument(
+                "sandbox tier must be off, manual, or sandbox",
+            ));
+        }
 
         // Log requests in verbose mode
         if self.state.verbose {
-            tracing::debug!(
-                "[grpc] {} session={} msg={:.80}",
-                cmd.r#type,
-                if cmd.session_id.is_empty() {
-                    "-"
-                } else {
-                    &cmd.session_id
-                },
-                if cmd.message.is_empty() {
-                    "-"
-                } else {
-                    &cmd.message
-                }
-            );
+            let session = if cmd.session_id.is_empty() {
+                "-"
+            } else {
+                &cmd.session_id
+            };
+            let message = if cmd.message.is_empty() {
+                "-"
+            } else {
+                &cmd.message
+            };
+            // `tracing::event!` needs a *constant* level, so the two levels
+            // must be separate macro invocations.
+            if is_background_command(&cmd.r#type) {
+                tracing::trace!(
+                    "[grpc] {} session={} msg={:.80}",
+                    cmd.r#type,
+                    session,
+                    message
+                );
+            } else {
+                tracing::debug!(
+                    "[grpc] {} session={} msg={:.80}",
+                    cmd.r#type,
+                    session,
+                    message
+                );
+            }
         }
 
         // Convert proto command to internal command
@@ -1077,6 +1130,80 @@ mod tests {
         assert_eq!(nonempty("x".to_string()), Some("x".to_string()));
     }
 
+    /// `--verbose` (a DEBUG filter) keeps user-intent commands in the request
+    /// log but drops background refresh traffic to TRACE, so the log stays
+    /// readable while `RUST_LOG=trace` can still surface every request.
+    #[test]
+    fn verbose_logs_background_commands_at_trace_only() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
+            .with_writer(move || writer.clone())
+            .finish();
+
+        let service = FutureAgentService {
+            state: grpc_app_state(true), // verbose logging branch
+        };
+        let refresh = proto::RpcCommand {
+            id: "cmd-refresh".to_string(),
+            r#type: "list_tool_calls".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let real = proto::RpcCommand {
+            id: "cmd-real".to_string(),
+            r#type: "get_agent_info".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+
+        // The subscriber must be the thread's default for the whole run, so
+        // drive the runtime inside `with_default` instead of using
+        // `#[tokio::test]` (whose runtime owns the test thread).
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let _ = service.execute_command(tonic::Request::new(refresh)).await;
+                let _ = service.execute_command(tonic::Request::new(real)).await;
+            });
+        });
+
+        let bytes = capture.0.lock().unwrap();
+        let log = String::from_utf8_lossy(&bytes);
+        assert!(log.contains("[grpc] get_agent_info"), "{log}");
+        assert!(!log.contains("[grpc] list_tool_calls"), "{log}");
+    }
+
+    /// Every name in the background set is a real command, so a typo cannot
+    /// silently turn a would-be-DEBUG line into dead TRACE-only code.
+    #[test]
+    fn background_commands_are_all_known_commands() {
+        for command in BACKGROUND_COMMANDS {
+            assert!(is_background_command(command), "{command}");
+            assert!(future_rpc::command_policy::command_policy(command).is_some());
+        }
+        assert!(!is_background_command("prompt"));
+        assert!(!is_background_command("abort"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn serve_with_shutdown_completes_cleanly() {
         let state = grpc_app_state(false);
@@ -1092,6 +1219,26 @@ mod tests {
             .expect("server shuts down promptly")
             .expect("server task did not panic")
             .expect("clean shutdown is Ok");
+    }
+
+    #[tokio::test]
+    async fn invalid_sandbox_policy_is_rejected_at_wire_boundary() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        for tier in ["strict", "Sandbox", ""] {
+            let cmd = proto::RpcCommand {
+                r#type: "set_sandbox_policy".into(),
+                session_id: "default".into(),
+                sandbox_policy: Some(proto::SandboxPolicy { tier: tier.into() }),
+                ..Default::default()
+            };
+            let error = service
+                .execute_command(tonic::Request::new(cmd))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -166,6 +166,18 @@ pub fn compose_turn_envelope(goal: &Goal, todo: &Todo, prev: Option<&RunRecord>)
 
     // Instruction.
     out.push_str(&format!("TODO {}: {}\n", todo.id, todo.text));
+    let writer = todo
+        .claimed_by
+        .as_deref()
+        .or(todo.owner.as_deref())
+        .unwrap_or("");
+    let scopes = crate::agents::workspace_guard::todo_workspaces(goal, writer, todo);
+    if !scopes.is_empty() {
+        out.push_str(&format!(
+            "Declared write set (coordination contract, not a filesystem sandbox): {}\nStay within these paths, including logs/caches; if additional writes are needed, stop and ask the supervisor to revise the plan.\n",
+            scopes.join(", ")
+        ));
+    }
 
     if let Some(acceptance) = &todo.acceptance {
         out.push_str(&format!(
@@ -298,6 +310,26 @@ mod tests {
     }
 
     #[test]
+    fn envelope_includes_the_task_write_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut goal = Goal::new("g", "work", dir.path().to_str().unwrap());
+        let mut todo = Todo::advancement("t", "write report");
+        todo.required_write_scope = vec!["papers/a.md".into()];
+        goal.add(todo);
+        let message = compose_turn_message(&goal, goal.todo("t").unwrap(), None);
+        assert!(message.contains("Declared write set"));
+        assert!(message.contains(
+            &dir.path()
+                .canonicalize()
+                .unwrap()
+                .join("papers/a.md")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(message.contains("stop and ask the supervisor"));
+    }
+
+    #[test]
     fn envelope_includes_resolved_gate_decisions() {
         let mut g = Goal::new("g1", "o", "/tmp");
         g.add(Todo::user_gate("G1", "Approve X", &["T2"]));
@@ -313,6 +345,7 @@ mod tests {
         let mut g = Goal::new("g1", "o", "/tmp");
         g.add(Todo::advancement("T1", "Work"));
         let prev = RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "T0".to_string(),
             run_id: "run-1".to_string(),
@@ -416,6 +449,7 @@ mod tests {
         validation: Option<crate::state::TaskValidation>,
     ) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: format!("run-{todo_id}"),

@@ -275,7 +275,7 @@ export function useMessagePaging({
       }
       if (mayContainThreadSearch(outside[index]!, query)) {
         preserveViewport();
-        setWindowStartId(all[0]?.id ?? null);
+        setWindowStartId(outside[index]!.id);
         break;
       }
     }

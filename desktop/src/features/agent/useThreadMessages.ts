@@ -72,7 +72,7 @@ const LOADING_INDICATOR_MIN_MS = 200;
  * instance: every state and listener here belongs to exactly one thread, and
  * writers from a conversation the user switched away from are torn down with
  * their instance — no cross-thread guarding is needed. The races left are
- * within this one thread (see `messagesGenRef`).
+ * within this one thread (see `reconcileThreadHistory`'s request-time baseline).
  */
 export function useThreadMessages({
   threadId,
@@ -81,7 +81,6 @@ export function useThreadMessages({
   agentSessionId,
 }: UseThreadMessagesInput) {
   const normalizedAgentSessionId = agentSessionId?.trim() || null;
-  const messagesGenRef = useRef(0);
   const recentRunGenRef = useRef(0);
   const activeRunRef = useRef<{ runId: string | null; startedAt: number | null }>({ runId: null, startedAt: null });
   // AgentThread is keyed by thread id and therefore remounts on every switch.
@@ -149,7 +148,6 @@ export function useThreadMessages({
   const setMessages: Dispatch<SetStateAction<AgentMessage[]>> = useCallback((value) => {
     if (!aliveRef.current || sourceRef.current.owner !== source.owner)
       return;
-    messagesGenRef.current += 1;
     const next = typeof value === "function" ? value(messagesRef.current) : value;
     messagesRef.current = next;
     setMessagesState(next);
@@ -384,7 +382,11 @@ export function useThreadMessages({
       setBlockingLoad(false);
       return;
     }
-    void reloadMessagesQuiet(threadId);
+    // A remount may restore a streaming snapshot whose run finished while
+    // another thread was open. Revalidate that cache, including terminal
+    // status; the request-time baseline still protects writes made during
+    // this read. Otherwise there is no active-run transition to settle it.
+    void reloadMessagesQuiet(threadId, true);
   }, [reloadMessagesQuiet, threadId, workspaceId]);
 
   const loadOlderHistory = useCallback(
@@ -645,7 +647,6 @@ export function useThreadMessages({
           next[existing] = message;
           return next;
         });
-        messagesGenRef.current += 1;
         return;
       }
       if (detail.eventType !== "user_message")
@@ -664,8 +665,6 @@ export function useThreadMessages({
         return;
       }
       setMessages(prev => upsertUserMessage(prev, user));
-      // Record this live write for callers that fence asynchronous updates.
-      messagesGenRef.current += 1;
     };
     window.addEventListener("future:agent-event", handler);
     return () => window.removeEventListener("future:agent-event", handler);
@@ -702,6 +701,5 @@ export function useThreadMessages({
     refreshRecentRun,
     setMessages,
     setRecentRun,
-    messagesGenRef,
   };
 }

@@ -6,7 +6,7 @@
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
-	install install-cli install-desktop install-skills uninstall package-desktop clean setup
+	install install-cli install-desktop install-skills update-skills uninstall package-desktop clean setup
 
 # ─── Version ────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (scripts/version.mjs); exported
@@ -92,9 +92,11 @@ endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
 # Symlink the built-in skill bundles (skills/builtin/*, incl. future-loop)
-# into the agent's skills directory (orphaned links are pruned).
+# into the agent's skills directory (orphaned links are pruned). Uses the
+# submodule commits already checked out, so `make install` needs no network;
+# `make update-skills` pulls the submodule's remote first.
 install-skills:
-	git submodule update --init --remote skills
+	git submodule update --init skills
 ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\agent\skills" mkdir "$(USERPROFILE)\.future\agent\skills"
 	@for /d %%d in (skills\builtin\*) do @( \
@@ -120,6 +122,12 @@ else
 	done
 endif
 
+# Refresh the built-in skill bundles from the submodule's remote (the only
+# skills step that needs the network), then install them.
+update-skills:
+	git submodule update --init --remote skills
+	$(MAKE) install-skills
+
 # ─── Build ──────────────────────────────────────────────────────────────────
 
 build: build-cli build-desktop
@@ -129,20 +137,14 @@ build-cli:
 
 # Workspace install: shared packages, desktop, and mobile are npm workspaces, so all
 # deps hoist to the root node_modules and one `npm install` at the repo root
-# installs everything. Run it when any manifest is newer than the install stamp
-# (on Windows npm install is idempotent — just run it).
-ifeq ($(OS),windows)
+# installs everything. Run it only when a manifest is newer than npm's own
+# install stamp — scripts/npm-install-if-needed.mjs checks the whole tree, so the
+# workspace the callers name is informational only (npm install is one global
+# operation). cmd/make has no usable mtime test, so Windows used to run a full
+# `npm install` on every build.
 define npm-install-if-needed
-	@npm install --silent
+	@node scripts/npm-install-if-needed.mjs
 endef
-else
-define npm-install-if-needed
-	@if [ ! -f "node_modules/.package-lock.json" ] || [ "package.json" -nt "node_modules/.package-lock.json" ] || [ "$(1)/package.json" -nt "node_modules/.package-lock.json" ]; then \
-		echo "  npm install (workspace)"; \
-		npm install; \
-	fi
-endef
-endif
 
 # Stage the unified `future` CLI as the Tauri sidecar (externalBin).
 desktop-sidecars: build-cli
@@ -305,21 +307,21 @@ ifeq ($(OS),windows)
 	@if not exist profile-results mkdir profile-results
 	@where blondie >NUL 2>NUL || (echo. & echo  blondie is required for CPU profiling on Windows. & echo  Install: cargo install blondie --features inferno & echo  CPU profiling also requires administrator privileges. & exit /b 1)
 	@echo Starting profile run (port 50052, 90s)...
-	set "PROFILE_DURATION=90" && powershell -ExecutionPolicy Bypass -File scripts/agent-profile-bench.ps1
+	set "PROFILE_DURATION=90" && python scripts/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/agent-profile-bench.ps1
 else
 	@mkdir -p profile-results
 	@echo "Starting profile run (port 50052, 90s)..."
-	PROFILE_DURATION=90 bash scripts/agent-profile-bench.sh
+	PROFILE_DURATION=90 python3 scripts/profile-isolated.py bash scripts/agent-profile-bench.sh
 	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
 endif
 
 # Quick CPU profile: run agent N seconds. Usage: make profile-quick PROFILE_SECS=30
 profile-quick: profile-agent-build
 ifeq ($(OS),windows)
-	powershell -ExecutionPolicy Bypass -File scripts/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
+	python scripts/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
 else
 	@mkdir -p profile-results
-	./target/release/future-agent \
+	python3 scripts/profile-isolated.py ./target/release/future-agent \
 		--grpc-addr 127.0.0.1:50052 \
 		--profile profile-results/quick-profile.svg \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
@@ -339,7 +341,7 @@ else
 		--config 'profile.release.debug="line-tables-only"' --config 'profile.release.strip="none"'
 	@mkdir -p profile-results
 endif
-	./target/release/future-agent$(EXE_SUFFIX) \
+	$(if $(filter windows,$(OS)),python,python3) scripts/profile-isolated.py ./target/release/future-agent$(EXE_SUFFIX) \
 		--grpc-addr 127.0.0.1:50052 \
 		--profile-heap profile-results/heap-profile.json \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
@@ -393,6 +395,7 @@ help:
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto                      Regenerate wire code (packages/rpc future.proto + channels feishu_ws)"
 	@echo "  install / install-cli / install-desktop / install-skills   Install to $(PREFIX)"
+	@echo "  update-skills                       Pull the skills submodule's remote, then install skills"
 	@echo "  setup                               Bootstrap a fresh clone (JS deps + skills + sidecar)"
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"
 	@echo "  package-desktop                     Package desktop bundles"

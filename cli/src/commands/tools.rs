@@ -311,7 +311,14 @@ fn translate_error(tool_name: &str, raw_message: &str) -> Option<ErrorTranslatio
     }
     for (key, description, action, retryable) in ERROR_TRANSLATIONS {
         if let Some(pattern) = key.strip_prefix("_default|") {
-            if lower.contains(&pattern.to_lowercase()) {
+            let matches = if pattern.bytes().all(|b| b.is_ascii_digit()) {
+                lower
+                    .split(|c: char| c.is_whitespace() || ",:=()[]".contains(c))
+                    .any(|token| token == pattern)
+            } else {
+                lower.contains(&pattern.to_lowercase())
+            };
+            if matches {
                 return Some(ErrorTranslation {
                     description,
                     action,
@@ -335,9 +342,13 @@ pub async fn load_api_key() -> Result<String, String> {
 
     let not_logged_in = "Not logged in. Run \"future auth login\" first, or set the FUTURE_API_KEY environment variable.";
     let read_result: Result<String, String> = async {
-        let raw = tokio::fs::read_to_string(auth_file())
-            .await
-            .map_err(|e| e.to_string())?;
+        let raw = tokio::fs::read_to_string(auth_file()).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                not_logged_in.to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
         let auth: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
         if !is_record(&auth) {
             return Err("auth.json must be a JSON object".to_string());
@@ -370,9 +381,6 @@ pub async fn load_api_key() -> Result<String, String> {
                 if !test_key.is_empty() {
                     return Ok(test_key);
                 }
-            }
-            if msg.contains("No such file or directory") {
-                return Err(not_logged_in.to_string());
             }
             Err(msg)
         }
@@ -513,18 +521,18 @@ async fn format_tool_result(
     tool_name: &str,
     result: &CallToolResponse,
     output_path: Option<&str>,
-) -> String {
+) -> Result<String, String> {
     let Some(sc) = &result.structured_content else {
-        return result.text.clone();
+        return Ok(result.text.clone());
     };
-    match tool_name {
+    Ok(match tool_name {
         "search_paper" => format_search_paper(sc),
         "get_paper" => format_get_paper(sc),
         "web_search" => format_web_search(sc),
         "fetch_url" => format_fetch_url(sc),
         "read_image" => format_read_image(sc),
         "parse_doc" => format_parse_doc(sc),
-        "image_gen" | "image_edit" => format_image_result(tool_name, sc, output_path).await,
+        "image_gen" | "image_edit" => format_image_result(tool_name, sc, output_path).await?,
         _ => {
             if result.text.is_empty() {
                 serde_json::to_string_pretty(sc).unwrap_or_default()
@@ -532,7 +540,7 @@ async fn format_tool_result(
                 result.text.clone()
             }
         }
-    }
+    })
 }
 
 // ── search_paper ────────────────────────────────────────────────────────────
@@ -767,7 +775,11 @@ fn image_output_dir() -> PathBuf {
 }
 
 /// `formatImageResult(toolName, sc, outputPath)`.
-async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&str>) -> String {
+async fn format_image_result(
+    tool_name: &str,
+    sc: &Value,
+    output_path: Option<&str>,
+) -> Result<String, String> {
     let images = sc.get("images");
     let prompt = str_of(sc.get("prompt"));
     let size = {
@@ -827,7 +839,7 @@ async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&s
         }
     }
     if image_list.is_empty() {
-        return parts.join("\n");
+        return Ok(parts.join("\n"));
     }
 
     let now_ms = std::time::SystemTime::now()
@@ -847,15 +859,13 @@ async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&s
                 if image_list.len() == 1 {
                     Path::new(output_path).to_path_buf()
                 } else {
-                    let dot = output_path.rfind('.');
-                    match dot {
-                        Some(dot) if dot > 0 => {
-                            let base = &output_path[..dot];
-                            let suffix = &output_path[dot..];
-                            Path::new(&format!("{base}_{}{suffix}", i + 1)).to_path_buf()
-                        }
-                        _ => Path::new(&format!("{output_path}_{}.{ext}", i + 1)).to_path_buf(),
-                    }
+                    let path = Path::new(output_path);
+                    let stem = path
+                        .file_stem()
+                        .ok_or("--output must name a file")?
+                        .to_string_lossy();
+                    let suffix = path.extension().and_then(|s| s.to_str()).unwrap_or(ext);
+                    path.with_file_name(format!("{stem}_{}.{suffix}", i + 1))
                 }
             }
             None => {
@@ -868,14 +878,20 @@ async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&s
             }
         };
 
-        // `fsMkdirForPath` — recursive mkdir, errors ignored. The computed
-        // file_path always has a parent (a file name is always appended).
-        let _ =
-            tokio::fs::create_dir_all(file_path.parent().expect("file path has a parent")).await;
-        // `writeFile(path, Buffer.from(b64, "base64"))`
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
-            let _ = tokio::fs::write(&file_path, bytes).await;
+        if file_path.file_name().is_none() {
+            return Err("--output must name a file".into());
         }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("Invalid image base64: {e}"))?;
+        if let Some(parent) = file_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Cannot create image directory: {e}"))?;
+        }
+        tokio::fs::write(&file_path, bytes)
+            .await
+            .map_err(|e| format!("Cannot save image {}: {e}", file_path.display()))?;
         paths.push(file_path.display().to_string());
     }
 
@@ -888,7 +904,7 @@ async fn format_image_result(tool_name: &str, sc: &Value, output_path: Option<&s
         }
     }
 
-    parts.join("\n")
+    Ok(parts.join("\n"))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1362,7 +1378,11 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
     let timeout_ms: Option<u64> = if timeout_sec > 0 {
-        Some((timeout_sec * 1000) as u64)
+        Some(
+            (timeout_sec as u64)
+                .checked_mul(1000)
+                .ok_or("--timeout is too large")?,
+        )
     } else if matches!(tool_name, "image_gen" | "image_edit") {
         Some(600_000)
     } else {
@@ -1377,8 +1397,20 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
         tool_args = parse_tool_args(&String::from_utf8_lossy(&stdin_bytes))?;
     }
 
-    // Tool arguments: --key value.
+    if let Some(i) = args.iter().position(|arg| arg == "--args") {
+        if stdin_flag {
+            return Err("Use either --args or --stdin, not both".into());
+        }
+        let value = args
+            .get(i + 1)
+            .filter(|v| !v.starts_with("--"))
+            .ok_or("--args requires a JSON object")?;
+        tool_args = parse_tool_args(value)?;
+    }
+
+    // Tool arguments: --key value (explicit flags override the JSON object).
     const KNOWN_FLAGS: &[&str] = &[
+        "--args",
         "--stdin",
         "--input",
         "--mask",
@@ -1498,6 +1530,7 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
             }
         }
 
+        int_range("max_results_per_query", 1, 20, out)?;
         int_range("n", 1, 10, out)?;
         int_range("count", 1, 50, out)?;
         int_min("max_k", 1, out)?;
@@ -1585,7 +1618,7 @@ async fn tools_call(args: &[String], out: &Output) -> Result<(), String> {
             out.log(&result.text);
         }
     } else {
-        out.log(&format_tool_result(tool_name, &result, output_path.as_deref()).await);
+        out.log(&format_tool_result(tool_name, &result, output_path.as_deref()).await?);
     }
 
     Ok(())
@@ -1820,7 +1853,9 @@ mod tests {
             "size": "1024x1024",
             "quality": "medium",
         });
-        let result = format_image_result("image_gen", &sc, Some(out_path.to_str().unwrap())).await;
+        let result = format_image_result("image_gen", &sc, Some(out_path.to_str().unwrap()))
+            .await
+            .unwrap();
         assert!(
             result.starts_with(
                 "[Image generated: 1024x1024 medium png]\nPrompt: a red fox\n\nSaved: "
@@ -1838,7 +1873,9 @@ mod tests {
         let sc = json!({
             "images": [{"b64_json": b64, "format": "png"}, {"b64_json": b64, "format": "jpeg"}],
         });
-        let result = format_image_result("image_gen", &sc, Some(out_path.to_str().unwrap())).await;
+        let result = format_image_result("image_gen", &sc, Some(out_path.to_str().unwrap()))
+            .await
+            .unwrap();
         // Multi-image with an --output path: suffix before the OUTPUT path's
         // extension (TS quirk — `suffix = outputPath.slice(dot)`, the image
         // format's extension only applies when the output path has none).
@@ -1859,9 +1896,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn image_output_parent_dots_and_write_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dir.v2").join("image");
+        let sc = json!({"images":[{"b64_json":"aGk="},{"b64_json":"aGk="}]});
+        format_image_result("image_gen", &sc, path.to_str())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("dir.v2/image_1.png")).unwrap(),
+            b"hi"
+        );
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert!(
+            format_image_result("image_gen", &sc, blocked.join("out.png").to_str())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_overflow_and_paper_limit_are_rejected() {
+        for args in [
+            vec![
+                "image_gen",
+                "--prompt",
+                "x",
+                "--timeout",
+                "9223372036854775807",
+            ],
+            vec![
+                "search_paper",
+                "--queries",
+                "[\"x\"]",
+                "--max_results_per_query",
+                "21",
+            ],
+        ] {
+            let (out, _) = Output::memory();
+            assert!(tools(
+                "call",
+                &args.into_iter().map(str::to_string).collect::<Vec<_>>(),
+                &out
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn format_image_result_no_images_returns_header() {
         let sc = json!({"prompt": "x"});
-        let result = format_image_result("image_edit", &sc, None).await;
+        let result = format_image_result("image_edit", &sc, None).await.unwrap();
         assert_eq!(result, "[Image edited: unknown unknown png]\nPrompt: x");
     }
 
@@ -1901,6 +1988,17 @@ mod tests {
 
     #[test]
     fn translate_error_tool_specific_and_default() {
+        for message in [
+            "token budget 1401 exceeded",
+            "port 4403 unavailable",
+            "x401 invalid",
+            "count 1429",
+        ] {
+            assert!(
+                translate_error("web_search", message).is_none(),
+                "{message}"
+            );
+        }
         // Tool-specific pattern wins.
         let t = translate_error("image_gen", "azure_image_transport_failed: boom").unwrap();
         assert!(t.retryable);
@@ -2041,24 +2139,34 @@ mod tests {
         };
         // No structured content → raw text.
         assert_eq!(
-            format_tool_result("web_search", &make("plain", None), None).await,
+            format_tool_result("web_search", &make("plain", None), None)
+                .await
+                .unwrap(),
             "plain"
         );
         // Known tools route to their renderer.
         assert_eq!(
-            format_tool_result("web_search", &make("", Some(json!({"query": "q"}))), None).await,
+            format_tool_result("web_search", &make("", Some(json!({"query": "q"}))), None)
+                .await
+                .unwrap(),
             "## Search Results: \"q\"\n\nNo results found."
         );
         assert_eq!(
-            format_tool_result("read_image", &make("", Some(json!({"answer": "A"}))), None).await,
+            format_tool_result("read_image", &make("", Some(json!({"answer": "A"}))), None)
+                .await
+                .unwrap(),
             "A"
         );
         // Unknown tool: structured content pretty-printed when text is empty…
-        let out = format_tool_result("mystery", &make("", Some(json!({"a": 1}))), None).await;
+        let out = format_tool_result("mystery", &make("", Some(json!({"a": 1}))), None)
+            .await
+            .unwrap();
         assert!(out.contains("\"a\": 1"), "out: {out}");
         // …and text preferred when present.
         assert_eq!(
-            format_tool_result("mystery", &make("txt", Some(json!({"a": 1}))), None).await,
+            format_tool_result("mystery", &make("txt", Some(json!({"a": 1}))), None)
+                .await
+                .unwrap(),
             "txt"
         );
     }
@@ -2533,11 +2641,12 @@ mod tests {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
         let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"img");
-        let sc = json!({"images": [{"base64": b64}]});
-        // A root output path has no parent → mkdir skipped, write fails
-        // silently, and the header still prints.
-        let out = format_image_result("image_gen", &sc, Some("/")).await;
-        assert!(out.contains("[Image generated"), "{out}");
+        let sc = json!({"images": [{"b64_json": b64}]});
+        for path in ["/", ""] {
+            assert!(format_image_result("image_gen", &sc, Some(path))
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test]
@@ -2729,8 +2838,8 @@ mod tests {
                 "parse_doc".to_string(),
                 "--input".to_string(),
                 doc.path().to_str().unwrap().to_string(),
-                "--file_type".to_string(),
-                "PDF".to_string(),
+                "--args".to_string(),
+                r#"{"file_type":"PDF"}"#.to_string(),
             ],
             &out,
         )
@@ -2745,7 +2854,11 @@ mod tests {
             .expect("call");
         assert!(call.contains("doc_b64"), "call: {call}");
         assert!(call.contains("UERG"), "base64 of PDF: {call}");
-        assert!(call.contains("file_type"), "call: {call}");
+        assert!(call.contains(r#""file_type":"pdf""#), "call: {call}");
+        assert!(
+            !call.contains(r#""args":{"#),
+            "arguments must not be nested: {call}"
+        );
 
         // image_edit: input → image_b64, mask → mask_b64.
         let requests2 = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3180,7 +3293,7 @@ mod tests {
                 {"b64_json": b64},
             ],
         });
-        let result = format_image_result("image_edit", &sc, None).await;
+        let result = format_image_result("image_edit", &sc, None).await.unwrap();
         assert!(
             result.contains("[Image edited: unknown unknown png]"),
             "got: {result}"
@@ -3190,7 +3303,7 @@ mod tests {
 
         // Header prompt line + empty images → no save section.
         let sc = json!({"size": "1x1", "quality": "hd", "format": "png", "prompt": "a fox"});
-        let result = format_image_result("image_gen", &sc, None).await;
+        let result = format_image_result("image_gen", &sc, None).await.unwrap();
         assert!(
             result.contains("[Image generated: 1x1 hd png]"),
             "got: {result}"
@@ -3202,20 +3315,20 @@ mod tests {
         // `path_N.ext`. (/tmp is dot-free; tempfile dirs are not.)
         let out = format!("/tmp/futurecli-noext-{}", std::process::id());
         let sc = json!({"images": [{"b64_json": b64}, {"b64_json": b64, "format": "jpeg"}]});
-        let result = format_image_result("image_gen", &sc, Some(&out)).await;
+        let result = format_image_result("image_gen", &sc, Some(&out))
+            .await
+            .unwrap();
         assert!(result.contains("noext-"), "got: {result}");
         assert!(result.contains("_1.png"), "got: {result}");
         assert!(result.contains("_2.jpg"), "got: {result}");
         let _ = std::fs::remove_file(format!("{out}_1.png"));
         let _ = std::fs::remove_file(format!("{out}_2.jpg"));
 
-        // Default image dir + multi-image suffixes (_1/_2) with bad b64
-        // skipped silently (write fails, path still listed).
         let sc = json!({"images": [{"b64_json": "!!bad!!"}, {"b64_json": b64}]});
-        let result = format_image_result("image_gen", &sc, None).await;
-        assert!(result.contains("future-image-"), "got: {result}");
-        assert!(result.contains("_1.png"), "got: {result}");
-        assert!(result.contains("_2.png"), "got: {result}");
+        assert!(format_image_result("image_gen", &sc, None)
+            .await
+            .unwrap_err()
+            .contains("base64"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

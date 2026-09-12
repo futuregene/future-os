@@ -59,7 +59,7 @@ pub fn quote_windows_command_line_argument(value: &str) -> String {
     if value.is_empty() {
         return "\"\"".to_string();
     }
-    if !value.contains([' ', '"']) {
+    if !value.chars().any(|c| c.is_whitespace() || c == '"') {
         return value.to_string();
     }
 
@@ -107,6 +107,8 @@ mod tests {
 
     #[test]
     fn quotes_argv_values_using_windows_rules() {
+        assert_eq!(quote_windows_command_line_argument("a\tb"), "\"a\tb\"");
+        assert_eq!(quote_windows_command_line_argument("a\nb"), "\"a\nb\"");
         assert_eq!(
             quote_windows_command_line_argument("--no-first-run"),
             "--no-first-run"

@@ -17,6 +17,7 @@ fn now() -> SystemTime {
 
 fn run_record(turn: u32, todo_id: &str, state: &str) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn,
         todo_id: todo_id.to_string(),
         run_id: format!("run-{turn}"),

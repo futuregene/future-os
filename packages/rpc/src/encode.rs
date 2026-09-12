@@ -402,12 +402,15 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
                     duration_ms: data.duration_ms,
                     output_tokens: data.usage.map(|usage| usage.output_tokens),
                     reason: data.reason,
+                    truncation_json: data.truncation.map(|v| v.to_string()),
                 })
             }),
         "tool_start" => serde_json::from_value::<crate::event_payloads::ToolStartData>(value)
             .ok()
             .map(|data| {
                 Kind::ToolStart(proto::ToolStart {
+                    phase: data.phase,
+                    tc_index: data.tc_index,
                     tool_id: data.tool_id,
                     tool_name: data.tool_name,
                     tool_args: data
@@ -420,6 +423,7 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
             .ok()
             .map(|data| {
                 Kind::ToolDelta(proto::ToolDelta {
+                    snapshot: data.snapshot,
                     tool_id: data.tool_id,
                     text: data.text,
                     tc_index: data.tc_index,
@@ -460,6 +464,7 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
             .map(|data| {
                 Kind::Usage(proto::UsageEvent {
                     usage: Some(usage_to_proto(&data.usage)),
+                    stop_reason: data.stop_reason,
                 })
             }),
         "error" => serde_json::from_value::<crate::event_payloads::ErrorEventData>(value)
@@ -478,6 +483,8 @@ fn usage_to_proto(usage: &crate::event_payloads::UsageData) -> proto::UsageInfo 
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         credit_cost: usage.credit_cost,
+        reasoning_tokens: usage.reasoning_tokens,
+        provider_metadata_json: usage.provider_metadata.as_ref().map(|v| v.to_string()),
     }
 }
 

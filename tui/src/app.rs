@@ -158,6 +158,7 @@ pub enum OverlayKind {
 /// Who requested the model list (different overlays are built).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelsPurpose {
+    Autocomplete,
     /// `/model` selector.
     Selector,
     /// `/scoped-models` configuration.
@@ -167,6 +168,7 @@ pub enum ModelsPurpose {
 /// Who requested the session list (different overlays are built).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionsPurpose {
+    Autocomplete,
     Browse,
     Tree,
 }
@@ -847,7 +849,8 @@ impl<T: TerminalIo> App<T> {
         };
         self.ac_manager
             .register(Box::new(FilePathProvider::new(Some(cwd))));
-        self.ac_manager.register(Box::new(AttachmentProvider));
+        self.ac_manager
+            .register(Box::new(AttachmentProvider::default()));
 
         // Register global keybindings (actions route through UiCmd).
         let tx = self.op_tx.clone();
@@ -990,17 +993,25 @@ impl<T: TerminalIo> App<T> {
                 Err(_) => self.apply_refresh_error(),
             },
             UiCmd::ModelsLoaded { result, purpose } => match result {
-                Ok(models) => match purpose {
-                    ModelsPurpose::Selector => self.show_model_selector_overlay(models),
-                    ModelsPurpose::Scoped => self.show_scoped_models_overlay(models),
-                },
+                Ok(models) => {
+                    self.cached_models = models.iter().map(|m| m.full_id()).collect();
+                    match purpose {
+                        ModelsPurpose::Selector => self.show_model_selector_overlay(models),
+                        ModelsPurpose::Scoped => self.show_scoped_models_overlay(models),
+                        ModelsPurpose::Autocomplete => self.query_autocomplete_cached(),
+                    }
+                }
                 Err(err) => self.add_system_message(format!("Failed to load models: {err}")),
             },
             UiCmd::SessionsLoaded { result, purpose } => match result {
-                Ok(sessions) => match purpose {
-                    SessionsPurpose::Browse => self.show_sessions_overlay(sessions),
-                    SessionsPurpose::Tree => self.show_tree_overlay(sessions),
-                },
+                Ok(sessions) => {
+                    self.cached_sessions = sessions.iter().map(|s| s.id.clone()).collect();
+                    match purpose {
+                        SessionsPurpose::Browse => self.show_sessions_overlay(sessions),
+                        SessionsPurpose::Tree => self.show_tree_overlay(sessions),
+                        SessionsPurpose::Autocomplete => self.query_autocomplete_cached(),
+                    }
+                }
                 Err(err) => self.add_system_message(format!("Failed to load sessions: {err}")),
             },
             UiCmd::ForkMessagesLoaded(result) => match result {
@@ -1395,8 +1406,8 @@ impl<T: TerminalIo> App<T> {
         if let Some(d) = self.ac_query_deadline {
             if now >= d {
                 self.ac_query_deadline = None;
-                if let Some((text, cursor)) = self.pending_ac_query.take() {
-                    self.ac_manager.query(&text, cursor);
+                if self.pending_ac_query.take().is_some() {
+                    self.trigger_autocomplete();
                 }
             }
         }
@@ -2313,13 +2324,43 @@ impl<T: TerminalIo> App<T> {
             self.autocomplete.hide();
             return;
         }
-        self.pending_ac_query = Some((value.to_string(), value.len()));
+        self.pending_ac_query = Some((value.to_string(), self.input.cursor_byte()));
         self.ac_query_deadline = Some(Instant::now() + Duration::from_millis(20));
     }
 
     fn trigger_autocomplete(&mut self) {
+        let text = self.input.get_value();
+        if text.starts_with("/model ") && self.cached_models.is_empty() {
+            let client = self.client.clone();
+            let tx = self.op_tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(UiCmd::ModelsLoaded {
+                    result: client.list_models().await,
+                    purpose: ModelsPurpose::Autocomplete,
+                });
+            });
+        } else if ["/fork ", "/clone ", "/sessions "]
+            .iter()
+            .any(|p| text.starts_with(p))
+            && self.cached_sessions.is_empty()
+        {
+            let client = self.client.clone();
+            let tx = self.op_tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(UiCmd::SessionsLoaded {
+                    result: client.list_sessions().await,
+                    purpose: SessionsPurpose::Autocomplete,
+                });
+            });
+        }
+        self.query_autocomplete_cached();
+    }
+
+    fn query_autocomplete_cached(&mut self) {
+        self.ac_manager
+            .update_state(&self.state.cwd, &self.cached_models, &self.cached_sessions);
         let text = self.input.get_value().to_string();
-        let cursor = self.input.cursor();
+        let cursor = self.input.cursor_byte();
         self.ac_manager.query_immediate(&text, cursor);
     }
 
@@ -2329,23 +2370,21 @@ impl<T: TerminalIo> App<T> {
         let ctx = self.ac_manager.active_context().cloned();
         if let Some(ctx) = ctx {
             let token = &ctx.token;
-            if !token.is_empty() {
+            {
                 // Replace only the token portion, preserving the prefix.
                 let before = &ctx.text[..ctx.token_start];
                 let after = &ctx.text[ctx.token_start + token.len()..];
                 let mut value = item.value.clone();
                 let max_overlap = before.len().min(value.len());
                 for len in (1..=max_overlap).rev() {
-                    if before.ends_with(&value[..len]) {
+                    if value.is_char_boundary(len) && before.ends_with(&value[..len]) {
                         value = value[len..].to_string();
                         break;
                     }
                 }
                 let combined = format!("{before}{value}{after}");
-                let cursor = before.len() + value.len();
+                let cursor = before.encode_utf16().count() + value.encode_utf16().count();
                 self.input.set_value(&combined, Some(cursor));
-            } else {
-                self.input.set_value(&item.value, None);
             }
         } else {
             self.input.set_value(&item.value, None);
@@ -2861,7 +2900,8 @@ impl<T: TerminalIo> App<T> {
             return;
         }
         // Group sessions by cwd, build tree from parent_session_id.
-        let mut grouped: HashMap<String, Vec<SessionSummary>> = HashMap::new();
+        let mut grouped: std::collections::BTreeMap<String, Vec<SessionSummary>> =
+            std::collections::BTreeMap::new();
         for s in &sessions {
             let cwd = if s.cwd.is_empty() { "" } else { s.cwd.as_str() };
             grouped.entry(cwd.to_string()).or_default().push(s.clone());
@@ -8798,6 +8838,57 @@ mod tests {
         // Overlay spilling past the terminal width → the slice safeguard.
         let truncated = App::<FakeTerminal>::composite_line_at("abcdef", "XY", 5, 5, 6);
         assert!(visible_width(&truncated) <= 6);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autocomplete_unicode_middle_selection_preserves_suffix_and_cursor() {
+        use crate::components::autocomplete::{AutocompleteContext, AutocompleteProvider};
+        struct FixedProvider;
+        impl AutocompleteProvider for FixedProvider {
+            fn name(&self) -> &str {
+                "fixed"
+            }
+            fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext> {
+                Some(AutocompleteContext {
+                    text: text.into(),
+                    cursor_pos,
+                    token: "x".into(),
+                    token_start: 2,
+                })
+            }
+            fn get_completions(&self, _: &AutocompleteContext) -> Vec<AutocompleteItem> {
+                vec![AutocompleteItem {
+                    value: "中文.md".into(),
+                    label: "中文.md".into(),
+                    description: None,
+                }]
+            }
+        }
+        let (mut app, mut rx) = make_app(100, 30);
+        app.ac_manager.destroy();
+        app.ac_manager.register(Box::new(FixedProvider));
+        app.input.set_value("a x tail", Some(3));
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+        app.apply_autocomplete_selection();
+        assert_eq!(app.input.get_value(), "a 中文.md tail");
+        assert_eq!(app.input.cursor(), 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn autocomplete_cache_result_reaches_the_registered_provider() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.input.set_value("/model ", None);
+        app.handle_cmd(UiCmd::ModelsLoaded {
+            result: Ok(sample_models()),
+            purpose: ModelsPurpose::Autocomplete,
+        });
+        pump(&mut app, &mut rx).await;
+        assert!(app.autocomplete.is_visible());
+        assert!(app.autocomplete.get_selected_item().is_some());
+        app.apply_autocomplete_selection();
+        assert!(app.input.get_value().starts_with("/model "));
+        assert!(!app.input.get_value().contains("/model /model"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -444,7 +444,10 @@ impl BrowserSession for ChromiumSession {
                     let y = b.get("y").and_then(Value::as_f64).unwrap_or(0.0);
                     let w = b.get("width").and_then(Value::as_f64).unwrap_or(0.0);
                     let h = b.get("height").and_then(Value::as_f64).unwrap_or(0.0);
-                    ((x + w / 2.0).round() as i64, (y + h / 2.0).round() as i64)
+                    (
+                        (x + w / 2.0 + 0.5).floor() as i64,
+                        (y + h / 2.0 + 0.5).floor() as i64,
+                    )
                 }
                 None => (0, 0),
             };
@@ -489,7 +492,6 @@ impl BrowserSession for ChromiumSession {
         }})()"#
             );
             let meta: Value = self.evaluate_expression(&ps.session, &meta_script).await;
-            let meta_href = meta.get("href").and_then(Value::as_str).map(str::to_string);
             let meta_has_submitter = meta
                 .get("hasSubmitter")
                 .and_then(Value::as_bool)
@@ -556,18 +558,10 @@ impl BrowserSession for ChromiumSession {
                 );
             }
 
-            if !nav_result.did_navigate && meta_href.is_some() && !event_state.0 {
-                nav_result = wait_for_explicit_navigation(
-                    &ps.session,
-                    meta_href.as_deref().unwrap(),
-                    &nav_deadline,
-                )
-                .await
-                .unwrap_or(NavigationResult {
-                    did_navigate: false,
-                    ..Default::default()
-                });
-            } else if !nav_result.did_navigate && meta_has_submitter && !event_state.1 {
+            // A click can open another tab, start a download, or navigate
+            // slowly. Never synthesize Page.navigate from an anchor's href:
+            // absence of a lifecycle event is not proof its default action failed.
+            if !nav_result.did_navigate && meta_has_submitter && !event_state.1 {
                 let submit_script = format!(
                     r#"(() => {{
             const el = document.querySelector({selector_json});
@@ -1228,7 +1222,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn click_href_fallback_drives_explicit_navigation() {
+    async fn click_href_does_not_synthesize_navigation_when_native_action_is_unobserved() {
         let mock = MockCdp::start().await;
         mock.state.lock().unwrap().click_meta =
             json!({"href": "http://fallback/", "hasSubmitter": false});
@@ -1237,11 +1231,9 @@ mod tests {
             .click(&target("a.link"), ClickOptions::default())
             .await
             .unwrap();
-        assert!(result.did_navigate);
-        // The fallback issued a second Page.navigate to the href.
-        let navigations = mock.commands_of("Page.navigate");
-        assert_eq!(navigations.len(), 1);
-        assert_eq!(navigations[0]["url"], json!("http://fallback/"));
+        assert!(!result.did_navigate);
+        // _blank/download/slow native navigation must not navigate this tab too.
+        assert!(mock.commands_of("Page.navigate").is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

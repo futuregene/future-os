@@ -14,6 +14,7 @@ use future_loop::state::{Goal, RunRecord, Todo};
 
 fn record(recorded_at: u64, source: &str, tools: bool, evidence: bool) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: "T1".into(),
         run_id: "run-1".into(),

@@ -29,7 +29,7 @@ const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
 
 /// Owned, movable SID bytes. The backing allocation never moves when this
 /// wrapper moves, so pointers handed to synchronous Win32 calls remain stable.
-pub(crate) struct OwnedSid(Vec<u8>);
+pub(crate) struct OwnedSid(Vec<u32>);
 
 impl OwnedSid {
     pub(crate) fn as_psid(&self) -> PSID {
@@ -258,7 +258,9 @@ fn current_user_sid(token: HANDLE) -> io::Result<OwnedSid> {
     if bytes == 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut storage = vec![0u8; bytes as usize];
+    // TOKEN_USER contains a pointer; SID's DWORD alignment alone is not enough
+    // on 64-bit Windows. The query buffer needs machine-word alignment.
+    let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
     if unsafe {
         GetTokenInformation(
             token,
@@ -350,7 +352,7 @@ fn everyone_sid() -> io::Result<OwnedSid> {
     if bytes == 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut storage = vec![0u8; bytes as usize];
+    let mut storage = vec![0u32; (bytes as usize).div_ceil(std::mem::size_of::<u32>())];
     if unsafe {
         CreateWellKnownSid(
             WinWorldSid,
@@ -373,7 +375,7 @@ fn clone_sid(sid: PSID) -> io::Result<OwnedSid> {
         ));
     }
     let length = unsafe { GetLengthSid(sid) };
-    let mut bytes = vec![0u8; length as usize];
+    let mut bytes = vec![0u32; (length as usize).div_ceil(std::mem::size_of::<u32>())];
     if unsafe { CopySid(length, bytes.as_mut_ptr().cast(), sid) } == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -469,7 +471,12 @@ pub(crate) fn derive_capability_sid(name: &str) -> io::Result<OwnedSid> {
     for chunk in digest[..16].chunks_exact(4) {
         bytes.extend_from_slice(chunk);
     }
-    Ok(OwnedSid(bytes))
+    Ok(OwnedSid(
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("four-byte SID word")))
+            .collect(),
+    ))
 }
 
 #[cfg(test)]
@@ -486,14 +493,34 @@ mod tests {
     }
 
     #[test]
+    fn native_sid_buffers_are_valid_and_clone_byte_exact() {
+        let mut token = ptr::null_mut();
+        // Query only this test process's identity; no privileges are changed.
+        assert_ne!(
+            unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+            0,
+            "{}",
+            io::Error::last_os_error()
+        );
+        let token = HandleGuard(token);
+        for sid in [current_user_sid(token.0).unwrap(), everyone_sid().unwrap()] {
+            assert_ne!(unsafe { IsValidSid(sid.as_psid()) }, 0);
+            assert_eq!(sid.as_psid() as usize % std::mem::align_of::<u32>(), 0);
+            assert_eq!(clone_sid(sid.as_psid()).unwrap().0, sid.0);
+        }
+    }
+
+    #[test]
     fn capability_sid_is_stable_and_uses_account_domain_layout() {
         let first = derive_capability_sid("futureos.windows.one").unwrap();
         let same = derive_capability_sid("futureos.windows.one").unwrap();
         let other = derive_capability_sid("futureos.windows.two").unwrap();
         assert_eq!(first.0, same.0);
         assert_ne!(first.0, other.0);
-        assert_eq!(&first.0[..8], &[1, 5, 0, 0, 0, 0, 0, 5]);
-        assert_eq!(u32::from_le_bytes(first.0[8..12].try_into().unwrap()), 21);
-        assert_eq!(first.0.len(), 28);
+        let bytes: Vec<u8> = first.0.iter().flat_map(|word| word.to_ne_bytes()).collect();
+        assert_eq!(&bytes[..8], &[1, 5, 0, 0, 0, 0, 0, 5]);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 21);
+        assert_eq!(bytes.len(), 28);
+        assert_eq!(first.as_psid() as usize % std::mem::align_of::<u32>(), 0);
     }
 }

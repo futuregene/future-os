@@ -23,6 +23,7 @@ pub struct PolicyConfig {
 
 #[derive(Debug, Clone)]
 pub struct BehaviorConfig {
+    pub typing_indicator: bool,
     pub streaming: bool,
     pub resolve_sender_names: bool,
     pub max_image_mb: u64,
@@ -42,6 +43,7 @@ impl FeishuConfig {
                 require_mention: cfg.require_mention,
             },
             behavior: BehaviorConfig {
+                typing_indicator: cfg.typing_indicator,
                 streaming: cfg.streaming,
                 resolve_sender_names: cfg.resolve_sender_names,
                 max_image_mb: cfg.max_image_mb,

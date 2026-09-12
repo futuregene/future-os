@@ -300,29 +300,13 @@ pub(crate) fn hydrate_entry_projections(entry: &mut SessionEntry) {
     }
 }
 
-/// Truncate a string to max_vis visible columns. CJK characters count as 2,
-/// everything else as 1. Matches approximate terminal rendering width.
+/// Truncate a string to max_vis visible columns using Unicode scalar widths.
+/// This is an approximate preview, not a grapheme-aware terminal layout engine.
 pub fn truncate_visible(s: &str, max_vis: usize) -> String {
     let mut vis: usize = 0;
     let mut result = String::with_capacity(s.len());
     for ch in s.chars() {
-        let w = if ('\u{1100}'..='\u{115f}').contains(&ch)   // Hangul Jamo
-            || ('\u{2e80}'..='\u{a4cf}').contains(&ch)       // CJK radicals + Yi
-            || ('\u{ac00}'..='\u{d7a3}').contains(&ch)       // Hangul Syllables
-            || ('\u{f900}'..='\u{faff}').contains(&ch)       // CJK Compatibility
-            || ('\u{fe30}'..='\u{fe4f}').contains(&ch)       // CJK Compatibility Forms
-            || ('\u{ff00}'..='\u{ffef}').contains(&ch)       // Fullwidth Forms
-            || ('\u{1f300}'..='\u{1f5ff}').contains(&ch)     // Misc Symbols
-            || ('\u{1f900}'..='\u{1f9ff}').contains(&ch)     // Supplemental Symbols
-            || ('\u{1f600}'..='\u{1f64f}').contains(&ch)     // Emoticons
-            || ('\u{20000}'..='\u{2fffd}').contains(&ch)     // SIP
-            || ('\u{30000}'..='\u{3fffd}').contains(&ch)
-        // TIP
-        {
-            2
-        } else {
-            1
-        };
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
         if vis + w > max_vis {
             break;
         }
@@ -339,6 +323,13 @@ mod tests {
     use crate::session::run_journal::RUN_STATE_COMPLETED;
 
     // ─── truncate_visible ───────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_visible_handles_emoji_and_halfwidth_katakana() {
+        assert_eq!(truncate_visible("✅✅✅", 4), "✅✅");
+        assert_eq!(truncate_visible("a🚀b", 3), "a🚀");
+        assert_eq!(truncate_visible("ﾊﾝｶｸ", 4), "ﾊﾝｶｸ");
+    }
 
     #[test]
     fn truncate_visible_ascii() {

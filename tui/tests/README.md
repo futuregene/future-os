@@ -36,8 +36,24 @@ prefix-cache path) and 39 terminal-image cases (kitty/iTerm2 encoding incl.
 extraction/collection/deletion, hyperlink, image fallback, renderImage under
 all three capability modes).
 
-Re-recording the golden is only possible from the pre-retirement TS tree
-(`bun render-parity.ts <corpus>`); the committed golden is the reference.
+The historical golden originated in the pre-retirement TS tree
+(`bun render-parity.ts <corpus>`). It remains the reference except for these
+explicitly reviewed corrections (2026-09-11), not a blanket re-recording:
+
+- `markdown|list-code`: w18 BUG-4 fixes the inherited 60-column border at a
+  24-column width. The corrected four lines contain two 22-column borders
+  with two-column indentation, rather than split borders and ghost rows.
+  `list_code_borders_fit_content_width_without_spurious_rows` independently
+  checks widths 8/24/40/60/80 against this geometric requirement.
+- `chat|thinking-hidden`: baseline `fc81c016` already hides the placeholder
+  once answer content exists (`chat_area.rs`'s existing
+  `collapsed_thinking_placeholder_only_while_streaming` test). The corpus
+  supplies a completed answer, so the stale TS `Thinking...` placeholder was
+  corrected to the baseline's answer-only rendering; no behavior was changed
+  for this case by the bughunt patches.
+
+All other 95 recorded rows were verified byte-identical before editing these
+two entries. Future intentional changes must name their case and evidence.
 
 ## Encoding parity
 
@@ -65,6 +81,13 @@ serialization (which drops a trailing `.0`) cannot diverge from serde_json.
   paragraph adapter now restores the source slice's trailing whitespace.
 
 ## Accepted divergences (by design)
+
+- Overlay filters accept one Unicode scalar, including astral characters such
+  as emoji. The retired JS `key.length === 1` accidentally rejected surrogate
+  pairs; reproducing that UTF-16 limitation is not a correctness requirement.
+- Untrusted markdown controls (including numeric entities decoding to ESC/BEL)
+  are removed before terminal styling; preserving terminal injection is not a
+  parity requirement. Trusted internal image-protocol lines remain separate.
 
 - **Link reference definitions inside blockquotes/list items** keep their
   surrounding blank-line spacing only at the top level (pulldown-cmark

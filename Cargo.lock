@@ -864,6 +864,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "uuid",
  "walkdir",
  "windows-sys 0.59.0",

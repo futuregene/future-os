@@ -1,0 +1,26 @@
+{
+  "purpose": "w10-BUG-6 output-only correction of existing shipped catalog identities; no record additions/removals/reordering or other field changes",
+  "catalog_base_commit": "56384018",
+  "retrieval_date_utc": "2026-09-11",
+  "sources": {
+    "models.dev": {"url": "https://models.dev/api.json", "retrieved_at": "2026-09-11T07:44:34.408044+00:00", "sha256": "8e81989e7fcadcb5c619a23a741833cc2eda8517dd743cf1cf09ee94676e180e", "bytes": 4582446},
+    "openrouter": {"url": "https://openrouter.ai/api/v1/models", "retrieved_at": "2026-09-11T07:44:34.523340+00:00", "sha256": "5eb9172441b8d167ece5e7c1092c730244a27709e9e32c95a3c228a0bb39448e", "bytes": 726655},
+    "vercel-ai": {"url": "https://ai-gateway.vercel.sh/v1/models", "retrieved_at": "2026-09-11T07:44:29.886855+00:00", "sha256": "b93106518125c1bc4dac76f13cdf4d9bf8929da40d37797fc32b79620db771e9", "bytes": 381903}
+  },
+  "matching": "Exact (provider,id); openrouter and vercel-ai use their respective endpoints, all other providers use models.dev provider.models[id]. No cross-provider substitution, aliases, name matching or context-size inference.",
+  "output_rule": "Explicit non-language task type embedding/image/video/audio takes precedence. Otherwise use modalities.output, architecture.output_modalities, then architecture.modality output side. The 432 absent identities remain untouched/unclassified.",
+  "coverage": {"shipped": 3826, "matched_with_metadata": 3394, "matched_without_metadata": 0, "unmatched": 432, "already_text_default": 3236, "output_fields_added": 158, "non_chat_corrected": 110, "mixed_text_outputs_preserved": 48},
+  "changed_by_provider": {"alibaba": 5, "alibaba-cn": 5, "fastrouter": 1, "helicone": 5, "kilo": 3, "llmgateway": 1, "neon": 9, "novita-ai": 1, "openrouter": 5, "poe": 34, "vercel-ai": 89},
+  "non_chat_by_output": {"audio": 6, "image": 45, "video": 35, "embedding": 24},
+  "unmatched_file": "model-output-unmatched-20260911.json",
+  "raw_response_retention": "Response SHA256/size and inspected compact fields are recorded; full multi-megabyte responses are not committed. Current endpoints may change, so re-fetches are not the original snapshot.",
+  "samples": [
+    {"provider": "vercel-ai", "id": "bfl/flux-2-flex", "source_fields": {"type": "image", "modalities": {"input": ["text"], "output": ["image"]}}, "expected_output": ["image"]},
+    {"provider": "vercel-ai", "id": "google/veo-3.1-generate-001", "source_fields": {"type": "video", "modalities": {"input": ["text"], "output": ["video"]}}, "expected_output": ["video"]},
+    {"provider": "vercel-ai", "id": "voyage/voyage-3-large", "source_fields": {"type": "embedding", "modalities": {"input": ["text"], "output": ["text"]}}, "expected_output": ["embedding"]},
+    {"provider": "vercel-ai", "id": "openai/text-embedding-3-large", "source_fields": {"type": "embedding", "modalities": {"input": ["text"], "output": ["text"]}}, "expected_output": ["embedding"]},
+    {"provider": "poe", "id": "openai/sora-2", "source_fields": {"modalities": {"input": ["text", "image"], "output": ["video"]}}, "expected_output": ["video"]},
+    {"provider": "alibaba", "id": "qwen-omni-turbo", "source_fields": {"modalities": {"input": ["text", "image", "audio", "video"], "output": ["text", "audio"]}}, "expected_output": ["text", "audio"]},
+    {"provider": "openrouter", "id": "google/gemini-3-pro-image", "source_fields": {"architecture": {"modality": "text+image->text+image", "input_modalities": ["image", "text"], "output_modalities": ["image", "text"], "tokenizer": "Gemini", "instruct_type": null}}, "expected_output": ["image", "text"]}
+  ]
+}

@@ -21,10 +21,12 @@
  * `SafeLink`. The domain/extension checks keep the widened bare-path handling
  * from swallowing genuine remote links.
  *
- * The model writes the path from the write-tool result verbatim (wrapped in
- * angle brackets when it contains spaces, which remark strips before we see
- * it), so there is no percent-encoding step and thus no dropped-leading-slash
- * failure mode.
+ * This function receives the decoded href, after CommonMark escaping. Use
+ * forward slashes for drive paths; UNC backslashes must be Markdown-escaped
+ * (or expressed as file://server/share/path). Do not infer a network share
+ * from a single leading backslash: it also names a Windows drive-rooted path.
+ * Angle brackets delimit destinations containing spaces; they do not disable
+ * CommonMark backslash escaping.
  */
 export function localFilePath(href: string): string | null {
   const raw = href.trim();

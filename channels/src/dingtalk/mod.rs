@@ -12,7 +12,7 @@ pub mod dingtalk_ws;
 use crate::config::{AgentConfig, DingtalkChannelConfig};
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 const AGENT_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 const WEBSOCKET_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -35,6 +35,7 @@ impl DingtalkChannel {
         shutdown: Arc<tokio::sync::Notify>,
     ) -> Result<()> {
         let dt_cfg = config::DingtalkConfig {
+            sender_allowlist: ch_cfg.sender_allowlist.clone(),
             client_id: ch_cfg.client_id.clone(),
             client_secret: ch_cfg.client_secret.clone(),
             domain: ch_cfg.domain.clone(),
@@ -76,12 +77,7 @@ impl DingtalkChannel {
 
             let retry_delay = tokio::select! {
                 result = ws_client.connect_and_listen(move |event| {
-                    let b = b.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = b.handle_event(event).await {
-                            error!("DingTalk event error: {}", e);
-                        }
-                    });
+                    b.enqueue_event(event);
                 }) => match result {
                     Ok(()) => {
                         info!("DingTalk WebSocket closed cleanly, reconnecting...");
@@ -124,6 +120,7 @@ mod tests {
 
     fn ch_cfg(domain: &str) -> DingtalkChannelConfig {
         DingtalkChannelConfig {
+            sender_allowlist: vec!["*".into()],
             enabled: true,
             client_id: "id".into(),
             client_secret: "secret".into(),

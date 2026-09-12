@@ -75,6 +75,8 @@ const LOCAL_PATH_MARKERS: &[&str] = &[
     "/var/folders/",
     "/Volumes/",
     "/Users/",
+    "/home/",
+    "/root/",
     "/tmp/",
     "C:\\Users\\",
     "~/.ssh",
@@ -88,7 +90,7 @@ const SECRET_MARKERS: &[&str] = &[
     "BEGIN RSA PRIVATE KEY",
     "Authorization:",
     "authorization:",
-    "api_key=",
+    "api_key",
     "api-key=",
     "apikey=",
     "token=",
@@ -100,7 +102,7 @@ const SECRET_MARKERS: &[&str] = &[
     ".pem",
     "ak-",
     "sk-",
-    ".ssh/",
+    ".ssh",
 ];
 
 /// All markers used for both classification and redaction.
@@ -113,13 +115,7 @@ fn all_markers() -> Vec<&'static str> {
 /// Whether text exposes a private surface (local path, secret-like token, or
 /// a credential marker from the state-layer boundary scan).
 pub fn contains_private_surface(text: &str) -> bool {
-    if crate::state::boundary_scan_leaks(text)
-        .iter()
-        .any(|leak| !leak.is_empty())
-    {
-        return true;
-    }
-    all_markers().iter().any(|marker| text.contains(marker))
+    !private_ranges(text).is_empty()
 }
 
 /// Classify free text (LoopX privacy taxonomy). Empty / unknown content
@@ -143,10 +139,44 @@ pub fn redact(text: &str, level: PrivacyLevel) -> String {
         return text.to_string();
     }
     let mut out = text.to_string();
-    for marker in all_markers() {
-        out = out.replace(marker, PUBLIC_BACKFILL_REDACTION);
+    for (start, end) in private_ranges(text).into_iter().rev() {
+        out.replace_range(start..end, PUBLIC_BACKFILL_REDACTION);
     }
     out
+}
+
+// Classification and redaction must consume the same spans, without consulting
+// the current machine's HOME. Consume the path/token, not merely its prefix.
+fn private_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    for marker in all_markers() {
+        for (start, _) in text.match_indices(marker) {
+            if matches!(marker, "sk-" | "ak-")
+                && text[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let tail = start + marker.len();
+            let end = text[tail..]
+                .char_indices()
+                .find(|(_, c)| c.is_whitespace() || matches!(c, '\"' | '\'' | '<' | '>'))
+                .map_or(text.len(), |(offset, _)| tail + offset);
+            ranges.push((start, end));
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut().filter(|last| start <= last.1) {
+            last.1 = last.1.max(end);
+        } else {
+            merged.push((start, end));
+        }
+    }
+    merged
 }
 
 // ── Goal grading ───────────────────────────────────────────────────────────

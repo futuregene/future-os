@@ -78,14 +78,14 @@ fn next_action_text(goal: &Goal) -> String {
 /// Project-local state root: `<cwd>/.future/loop/` (run future-loop from the
 /// project dir, or override with FUTURE_LOOP_ROOT). All goal state stays
 /// inside the project.
-fn root_dir() -> String {
+pub(crate) fn root_dir() -> String {
     std::env::var("FUTURE_LOOP_ROOT").unwrap_or_else(|_| {
-        format!(
-            "{}/.future/loop",
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| ".".into())
-        )
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(".future")
+            .join("loop")
+            .to_string_lossy()
+            .into_owned()
     })
 }
 
@@ -717,7 +717,7 @@ fn build_cli_registry() -> CommandRegistry {
             ("--title T", "short title", "optional"),
             ("--task-repository R", "task repository label", "optional"),
             ("--continuation-policy P", "continuation policy", "optional"),
-            ("--required-write-scope P", "write scopes", "comma-separated"),
+            ("--required-write-scope P", "task write scopes", "comma-separated paths relative to goal cwd; overrides agent workspace for this task; omit for agent fallback"),
             ("--goal-bound", "goal-bound flag", "boolean"),
             ("--global-gate", "global gate flag", "boolean; a user_gate + global_gate implies goal_bound"),
             ("--note TEXT", "free-form note", "optional"),
@@ -1795,6 +1795,22 @@ fn looks_like_external_delivery(text: &str) -> bool {
             .any(|tok| DELIVERY_WORDS.contains(&tok))
 }
 
+/// Assignment may precede registration; warn rather than silently changing
+/// identity or forbidding the normal plan-then-onboard workflow.
+fn owner_assignment_warning(goal: &Goal, owner: &str) -> Option<String> {
+    if owner.is_empty() || goal.registered_agents.iter().any(|id| id == owner) {
+        return None;
+    }
+    let similar = goal
+        .registered_agents
+        .iter()
+        .find(|id| id.eq_ignore_ascii_case(owner));
+    Some(match similar {
+        Some(id) => format!("owner `{owner}` is not registered; IDs are case-sensitive. Did you mean `{id}`? Use `todo update --goal {} --todo-id T --owner {id}` or register the exact owner.", goal.goal_id),
+        None => format!("owner `{owner}` is not registered yet; only that exact case-sensitive ID can run this todo. Onboard `{owner}` or update --owner before dispatch.")
+    })
+}
+
 fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     let mut goal_id = None;
     let mut role = "agent".to_string();
@@ -1887,7 +1903,11 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         } else if k == "--gate-question" {
             gate_question = Some(v);
         } else if k == "--blocks" {
-            blocks = v.split(',').map(|s| s.to_string()).collect();
+            blocks = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         } else if k == "--priority" {
             priority = Some(v);
         } else if k == "--action-kind" {
@@ -1986,6 +2006,9 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     // Owner assignment: `--owner X` declares this todo is for agent X (see
     // `Todo::owner`). Optional — absent = shared pool.
     if let Some(aid) = &owner {
+        if let Some(warning) = owner_assignment_warning(&goal, aid) {
+            eprintln!("warning: {warning}");
+        }
         todo = todo.owned_by(aid);
     }
     // Apply --blocks for every task class (previously only user_gate/blocker
@@ -2087,7 +2110,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
     if !write_scopes.is_empty() {
         todo.required_write_scope = write_scopes;
     }
-    store.append(Event::TodoAdded {
+    store.append_todo_change(Event::TodoAdded {
         goal_id: goal_id.clone(),
         todo,
         ts: now_epoch(),
@@ -2148,19 +2171,9 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
         bail!("agent `{agent}` is not registered for goal {goal_id} — `{} agent register --goal {goal_id} --agent-id {agent}` first", prog());
     }
     let now = crate::state::now_epoch();
-    // P0-1 workspace guard: refuse (degrade to serial) when a peer holds a
-    // live lease in an overlapping declared workspace, unless --force.
-    let conflicts = crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
-    if !conflicts.is_empty() && !force {
-        bail!(
-            "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
-             degrade to serial: retry after the holder's lease expires, or pass --force",
-            crate::agents::workspace_guard::render_conflicts(&conflicts, now)
-        );
-    }
     // Existence + status gate (replayed state): unknown todos and done/
-    // superseded todos refuse before the atomic claim below. The atomic
-    // path itself only evaluates the lease chain.
+    // superseded todos refuse before the atomic claim below, which rechecks
+    // ownership, terminal status, leases and task write conflicts under lock.
     let t = goal
         .todo(&todo_id)
         .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found in goal {goal_id}"))?;
@@ -2172,43 +2185,15 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     // previously let concurrent `todo claim` processes all win the same
     // todo. Dead holders are reclaimed inside via the pid probe.
     let claimed = store
-        .try_claim_todo(&goal_id, &todo_id, &agent, lease_secs)?
+        .try_claim_todo_with_workspace(&goal_id, &todo_id, &agent, lease_secs, None, force)?
         .claimed;
     if !claimed {
         bail!("todo {todo_id} cannot be claimed: another agent holds a live lease");
     }
     let expires = now + lease_secs;
-    append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
     refresh_next_action(store, &goal_id)?;
     sync_compat(store, &goal_id)?;
     println!("todo {todo_id} claimed by {agent} until epoch {expires} ✔");
-    Ok(())
-}
-
-/// P0-1: append the advisory write-lock record after a successful claim by
-/// a workspace-declaring agent (empty declared set → no record, the guard
-/// is fail-open). `goal` must be the pre-claim replay carrying the
-/// claimer's profile; `forced` marks a claim that overrode a conflict.
-fn append_workspace_lock(
-    store: &mut Store,
-    goal_id: &str,
-    agent_id: &str,
-    todo_id: &str,
-    goal: &Goal,
-    forced: bool,
-) -> Result<()> {
-    let paths = crate::agents::workspace_guard::agent_workspaces(goal, agent_id);
-    if paths.is_empty() {
-        return Ok(());
-    }
-    store.append(Event::WorkspaceLockAcquired {
-        goal_id: goal_id.to_string(),
-        agent_id: agent_id.to_string(),
-        todo_id: todo_id.to_string(),
-        paths,
-        forced,
-        ts: crate::state::now_epoch(),
-    })?;
     Ok(())
 }
 
@@ -2448,8 +2433,10 @@ fn agent_list_rows(goal: &Goal, last_active: &HashMap<String, u64>, now: u64) ->
         .map(|aid| {
             let mut work: Vec<String> = Vec::new();
             for t in goal.todos.iter() {
-                if t.claimed_by.as_deref() == Some(aid.as_str())
+                if !matches!(t.status, TodoStatus::Done | TodoStatus::Superseded)
+                    && t.claimed_by.as_deref() == Some(aid.as_str())
                     && t.lease_expires_at.map(|e| e > now).unwrap_or(false)
+                    && t.holder_pid.is_none_or(crate::compat::pid_alive)
                 {
                     let left = t.lease_expires_at.unwrap().saturating_sub(now);
                     work.push(format!("{} (lease {} left)", t.id, human_dur(left)));
@@ -3026,6 +3013,20 @@ fn cmd_frontier(store: &Store, args: &[String]) -> Result<()> {
         fp.monitors_open,
         fp.monitors_due
     );
+    for assignment in &show.todo_assignments {
+        if let Some(owner) = assignment.owner.as_deref() {
+            println!(
+                "  todo {} owner={}{}",
+                assignment.todo_id,
+                owner,
+                if assignment.owner_registered == Some(false) {
+                    " (not registered; IDs are case-sensitive)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
     if show.outcome_segments.is_empty() {
         println!("  outcome_segments: (no runs yet)");
     } else {
@@ -3233,6 +3234,10 @@ fn print_status_json(store: &Store, goal_filter: Option<String>) -> Result<()> {
                 "status": status_label(t),
                 "priority": format!("{:?}", t.priority),
                 "blocks": t.blocked_by_gate.clone().unwrap_or_default(),
+                "owner": t.owner,
+                "claimed_by": t.claimed_by,
+                "lease_expires_at": t.lease_expires_at,
+                "holder_pid": t.holder_pid,
             })).collect::<Vec<_>>(),
         }));
     }
@@ -4499,6 +4504,7 @@ fn claim_selected_with_lease(
     packet: &mut crate::contract::ShouldRunPacket,
     agent_id: Option<&str>,
     lease_secs: u64,
+    force_workspace: bool,
 ) -> Result<Option<String>> {
     let mut todo_id_opt = None;
     for _ in 0..3 {
@@ -4513,7 +4519,14 @@ fn claim_selected_with_lease(
         match &agent_id {
             Some(aid) => {
                 if store
-                    .try_claim_todo(goal_id, &tid, aid, lease_secs)?
+                    .try_claim_todo_with_workspace(
+                        goal_id,
+                        &tid,
+                        aid,
+                        lease_secs,
+                        Some(std::process::id()),
+                        force_workspace,
+                    )?
                     .claimed
                 {
                     todo_id_opt = Some(tid);
@@ -4827,40 +4840,20 @@ async fn run_turns(
         // win the same todo; on contention, re-decide against the fresh
         // ledger and pick the next runnable todo (up to 3 re-decides).
         //
-        // P0-1 workspace guard: if a PEER agent holds a live lease in an
-        // overlapping declared workspace, degrade to serial — stop the run
-        // with a retry hint (the scheduler will relaunch later) unless the
-        // operator passed --force-workspace.
-        let mut forced_ws = false;
-        if let Some(aid) = agent_id {
-            let now = crate::state::now_epoch();
-            let conflicts =
-                crate::agents::workspace_guard::live_workspace_conflicts(&goal, aid, now);
-            if !conflicts.is_empty() && !force_workspace {
-                bail!(
-                    "workspace conflict — running would race a peer writing the same workspace:\n{}\
-                     degrade to serial: rerun after the holder's lease expires, \
-                     or pass --force-workspace",
-                    crate::agents::workspace_guard::render_conflicts(&conflicts, now)
-                );
-            }
-            forced_ws = !conflicts.is_empty() && force_workspace;
-        }
-        let Some(todo_id) =
-            claim_selected_with_lease(store, goal_id, &mut packet, agent_id, lease_secs)?
+        // Guard the actual selected task and append its write-set audit inside
+        // the atomic claim; a stale pre-claim workspace check races peer claims.
+        let Some(todo_id) = claim_selected_with_lease(
+            store,
+            goal_id,
+            &mut packet,
+            agent_id,
+            lease_secs,
+            force_workspace,
+        )?
         else {
             println!("   no selected todo; stopping");
             break;
         };
-        // P0-1: record the advisory write lock for the claimed todo (audit
-        // trail for agent list / history). Best-effort against the
-        // turn-start replay — profiles rarely change mid-turn.
-        if let Some(aid) = agent_id {
-            let goal = store
-                .replay(goal_id)?
-                .ok_or_else(|| goal_vanished_error(goal_id))?;
-            append_workspace_lock(store, goal_id, aid, &todo_id, &goal, forced_ws)?;
-        }
         let goal = store
             .replay(goal_id)?
             .ok_or_else(|| anyhow::anyhow!("goal {goal_id} not found (deleted while running?)"))?;
@@ -5868,20 +5861,6 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    // P0-1 workspace guard (claim only): checked before the mutable todo
-    // borrow below; same conflict semantics as `todo claim`.
-    if sub == "claim" {
-        let conflicts =
-            crate::agents::workspace_guard::live_workspace_conflicts(&goal, &agent, now);
-        if !conflicts.is_empty() && !force {
-            bail!(
-                "workspace conflict — claiming would race a peer writing the same workspace:\n{}\
-                 degrade to serial: retry after the holder's lease expires, or pass --force",
-                crate::agents::workspace_guard::render_conflicts(&conflicts, now)
-            );
-        }
-    }
-
     let todo_status_open = goal
         .todo(&todo_id)
         .ok_or_else(|| anyhow::anyhow!("todo {todo_id} not found"))?
@@ -5893,14 +5872,14 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                 bail!("task lease requires an open todo");
             }
             // Atomic claim (same TOCTOU-safe path as `todo claim`): check +
-            // append under one ledger lock; steals record TodoExpired first.
-            let outcome = store.try_claim_todo(&goal_id, &todo_id, &agent, lease_secs)?;
+            // append and workspace guard under one ledger lock.
+            let outcome = store.try_claim_todo_with_workspace(
+                &goal_id, &todo_id, &agent, lease_secs, None, force,
+            )?;
             if !outcome.claimed {
                 bail!("todo already has an active lease held by another agent");
             }
             let expires = now + crate::work_items::task_lease::normalize_ttl(lease_secs)?;
-            // P0-1: advisory workspace write lock (audit for agent list).
-            append_workspace_lock(store, &goal_id, &agent, &todo_id, &goal, force)?;
             let _ = sync_compat(store, &goal_id);
             println!(
                 "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
@@ -8602,6 +8581,11 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     if goal.todo(&todo_id).is_none() {
         anyhow::bail!("todo {todo_id} not found in goal {goal_id}");
     }
+    if let Some(owner) = owner.as_deref() {
+        if let Some(warning) = owner_assignment_warning(&goal, owner) {
+            eprintln!("warning: {warning}");
+        }
+    }
     if status.as_deref() == Some("done") {
         bail!(
             "todo update --status done is not allowed — use `todo complete --no-follow-up|--successor` \
@@ -8628,7 +8612,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
                 text
             }
         });
-    store.append(Event::TodoUpdated {
+    store.append_todo_change(Event::TodoUpdated {
         goal_id: goal_id.clone(),
         todo_id: todo_id.clone(),
         text: text.clone(),
@@ -8660,6 +8644,7 @@ mod coverage_tests {
 
     fn record(todo_id: &str) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: "run-1".to_string(),
@@ -9057,8 +9042,8 @@ mod coverage_tests {
         // No selection: the claim loop exits immediately, nothing claimed.
         let mut packet = decide_for(&g, SystemTime::now(), Some("racer"));
         packet.interaction_contract.agent_channel.selected_todo = None;
-        let r =
-            claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600).unwrap();
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600, false)
+            .unwrap();
         assert_eq!(r, None);
     }
 
@@ -9098,8 +9083,8 @@ mod coverage_tests {
         // Force a stale selection (as if t1 were free at decide time).
         packet.interaction_contract.agent_channel.selected_todo = Some("t1".to_string());
         packet.interaction_contract.mode = crate::contract::TurnMode::BoundedDelivery;
-        let r =
-            claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600).unwrap();
+        let r = claim_selected_with_lease(&mut store, "g", &mut packet, Some("racer"), 3600, false)
+            .unwrap();
         // The fresh decide filters other-claimed todos → mode change → stop.
         assert_eq!(r, None);
     }
@@ -9638,6 +9623,7 @@ mod cli_quirks_tests {
             mk(Event::RunRecorded {
                 goal_id: "g1".into(),
                 record: crate::state::RunRecord {
+                    agent_id: None,
                     turn: 3,
                     todo_id: "t2".into(),
                     run_id: "r1".into(),
@@ -10458,9 +10444,16 @@ mod residual_branch_tests {
     #[test]
     fn auto_register_workspaces_empty_cwd_declares_nothing() {
         assert!(auto_register_workspaces("").is_empty());
+        let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            auto_register_workspaces("/tmp/w"),
-            vec!["/tmp/w".to_string()]
+            auto_register_workspaces(dir.path().join("w").to_str().unwrap()),
+            vec![dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("w")
+                .to_string_lossy()
+                .into_owned()]
         );
     }
 
@@ -10499,6 +10492,7 @@ mod residual_branch_tests {
             })
             .unwrap();
         let run = crate::state::RunRecord {
+            agent_id: None,
             turn: 4,
             todo_id: "t1".into(),
             run_id: "run-1".into(),

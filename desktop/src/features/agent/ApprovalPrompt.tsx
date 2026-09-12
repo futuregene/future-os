@@ -130,6 +130,8 @@ export function ApprovalPrompt({
     }
     catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+    finally {
       setDeciding(null);
     }
   }, [approval, deciding, editorOpen, onDecision, pattern, saveSuggestion, t]);
@@ -148,6 +150,8 @@ export function ApprovalPrompt({
     }
     catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+    finally {
       setDeciding(null);
     }
   }, [approval, deciding, onDecision, saveSuggestion]);
@@ -156,6 +160,11 @@ export function ApprovalPrompt({
     function handleKeyDown(event: KeyboardEvent) {
       if (deciding)
         return;
+      if (event.key === "Escape" && editorOpen) {
+        event.preventDefault();
+        setEditorOpen(false);
+        return;
+      }
       if (isEditableTarget(event.target))
         return;
 
@@ -167,11 +176,7 @@ export function ApprovalPrompt({
 
       if (event.key === "Escape") {
         event.preventDefault();
-        // Esc closes the rule editor first, then rejects on a second press.
-        if (editorOpen) {
-          setEditorOpen(false);
-          return;
-        }
+        // With the editor closed, a second Escape rejects the request.
         void decide("rejected");
       }
     }

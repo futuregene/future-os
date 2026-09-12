@@ -37,8 +37,10 @@ pub struct AutocompleteContext {
 }
 
 pub trait AutocompleteProvider {
+    fn update_state(&mut self, _cwd: &str, _models: &[String], _sessions: &[String]) {}
     fn name(&self) -> &str;
     /// Return non-null context if this provider should handle the input.
+    /// `cursor_pos` and context token offsets are UTF-8 byte offsets.
     fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext>;
     /// Return completion items for the matched context.
     fn get_completions(&self, ctx: &AutocompleteContext) -> Vec<AutocompleteItem>;
@@ -78,6 +80,12 @@ impl AutocompleteManager {
     pub fn register(&mut self, provider: Box<dyn AutocompleteProvider>) -> usize {
         self.providers.push(provider);
         self.providers.len() - 1
+    }
+
+    pub fn update_state(&mut self, cwd: &str, models: &[String], sessions: &[String]) {
+        for provider in &mut self.providers {
+            provider.update_state(cwd, models, sessions);
+        }
     }
 
     pub fn unregister(&mut self, index: usize) {
@@ -178,6 +186,12 @@ impl SlashCommandProvider {
 }
 
 impl AutocompleteProvider for SlashCommandProvider {
+    fn update_state(&mut self, _cwd: &str, models: &[String], sessions: &[String]) {
+        let models = models.to_vec();
+        let sessions = sessions.to_vec();
+        self.get_models = Some(Box::new(move || models.clone()));
+        self.get_sessions = Some(Box::new(move || sessions.clone()));
+    }
     fn name(&self) -> &str {
         "slash-command"
     }
@@ -187,13 +201,17 @@ impl AutocompleteProvider for SlashCommandProvider {
             return None;
         }
 
-        match text.find(' ') {
+        let prefix = &text[..text.floor_char_boundary(cursor_pos.min(text.len()))];
+        if prefix.is_empty() {
+            return None;
+        }
+        match prefix.find(' ') {
             None => {
                 // Typing command name: /mod...
                 Some(AutocompleteContext {
                     text: text.to_string(),
                     cursor_pos,
-                    token: text[1..].to_string(),
+                    token: prefix[1..].to_string(),
                     token_start: 1,
                 })
             }
@@ -204,7 +222,7 @@ impl AutocompleteProvider for SlashCommandProvider {
                     .iter()
                     .find(|c| c.value[1..].to_lowercase() == cmd_name)?;
 
-                let arg = text[space_idx + 1..].to_string();
+                let arg = prefix[space_idx + 1..].to_string();
                 if cmd.takes_model_arg || cmd.takes_session_arg {
                     Some(AutocompleteContext {
                         text: text.to_string(),
@@ -220,7 +238,9 @@ impl AutocompleteProvider for SlashCommandProvider {
     }
 
     fn get_completions(&self, ctx: &AutocompleteContext) -> Vec<AutocompleteItem> {
-        let text = &ctx.text;
+        let text = &ctx.text[..ctx
+            .text
+            .floor_char_boundary(ctx.cursor_pos.min(ctx.text.len()))];
         match text.find(' ') {
             None => {
                 // Complete command name, sorted alphabetically
@@ -319,6 +339,11 @@ impl FilePathProvider {
 }
 
 impl AutocompleteProvider for FilePathProvider {
+    fn update_state(&mut self, cwd: &str, _models: &[String], _sessions: &[String]) {
+        if !cwd.is_empty() {
+            self.set_cwd(cwd);
+        }
+    }
     fn name(&self) -> &str {
         "file-path"
     }
@@ -333,7 +358,7 @@ impl AutocompleteProvider for FilePathProvider {
             return None;
         }
         // Detect file path patterns: starts with . or contains / at cursor
-        let prefix = &text[..cursor_pos.min(text.len())];
+        let prefix = &text[..text.floor_char_boundary(cursor_pos.min(text.len()))];
         // Look for the last path-like token
         let caps = path_token_re().captures(prefix)?;
         let full = caps.get(0)?;
@@ -439,15 +464,21 @@ fn at_token_re() -> &'static Regex {
 
 /// Attachment provider: triggered by "@" for fuzzy file search.
 /// Uses fd (when available) or falls back to find for fast fuzzy matching.
-pub struct AttachmentProvider;
+#[derive(Default)]
+pub struct AttachmentProvider {
+    cwd: Option<String>,
+}
 
 impl AutocompleteProvider for AttachmentProvider {
+    fn update_state(&mut self, cwd: &str, _models: &[String], _sessions: &[String]) {
+        self.cwd = (!cwd.is_empty()).then(|| cwd.to_string());
+    }
     fn name(&self) -> &str {
         "attachment"
     }
 
     fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext> {
-        let prefix = &text[..cursor_pos.min(text.len())];
+        let prefix = &text[..text.floor_char_boundary(cursor_pos.min(text.len()))];
         // Match "@" at word boundary, possibly followed by partial filename
         let caps = at_token_re().captures(prefix)?;
         let full = caps.get(0)?;
@@ -471,9 +502,20 @@ impl AutocompleteProvider for AttachmentProvider {
         let mut results: Vec<String> = Vec::new();
 
         // Try fd first (fast, respects .gitignore)
-        let fd = std::process::Command::new("fd")
-            .args(["--hidden", "--type", "f", "--max-results", "50", &pattern])
-            .output();
+        let mut command = std::process::Command::new("fd");
+        command.args([
+            "--hidden",
+            "--type",
+            "f",
+            "--max-results",
+            "50",
+            "--",
+            &pattern,
+        ]);
+        if let Some(cwd) = &self.cwd {
+            command.current_dir(cwd);
+        }
+        let fd = command.output();
         match fd {
             Ok(out) if out.status.success() => {
                 results = String::from_utf8_lossy(&out.stdout)
@@ -487,7 +529,11 @@ impl AutocompleteProvider for AttachmentProvider {
                 // fd not available — fall back to native find (POSIX).
                 // (TS also has a PowerShell branch for win32; the self-implemented
                 // backend targets POSIX first, windows-sys later.)
-                let find = std::process::Command::new("find")
+                let mut command = std::process::Command::new("find");
+                if let Some(cwd) = &self.cwd {
+                    command.current_dir(cwd);
+                }
+                let find = command
                     .args([
                         ".",
                         "-name",
@@ -1452,7 +1498,7 @@ mod tests {
 
     #[test]
     fn attachment_match_extracts_at_token() {
-        let provider = AttachmentProvider;
+        let provider = AttachmentProvider::default();
         assert_eq!(provider.name(), "attachment");
         let ctx = provider.r#match("@foo", 4).unwrap();
         assert_eq!(ctx.token, "foo");
@@ -1495,7 +1541,7 @@ mod tests {
         with_stubbed_path(
             &[("fd", "#!/bin/sh\nprintf 'src/main.rs\\nsrc/lib.rs\\n'")],
             || {
-                let provider = AttachmentProvider;
+                let provider = AttachmentProvider::default();
                 let ctx = AutocompleteContext {
                     text: "@src".into(),
                     cursor_pos: 4,
@@ -1519,7 +1565,7 @@ mod tests {
                 ("find", "#!/bin/sh\nprintf './a.rs\\n'"),
             ],
             || {
-                let provider = AttachmentProvider;
+                let provider = AttachmentProvider::default();
                 let ctx = AutocompleteContext {
                     text: "@a".into(),
                     cursor_pos: 2,
@@ -1539,7 +1585,7 @@ mod tests {
         with_stubbed_path(
             &[("fd", "#!/bin/sh\nexit 1"), ("find", "#!/bin/sh\nexit 1")],
             || {
-                let provider = AttachmentProvider;
+                let provider = AttachmentProvider::default();
                 let ctx = AutocompleteContext {
                     text: "@a".into(),
                     cursor_pos: 2,

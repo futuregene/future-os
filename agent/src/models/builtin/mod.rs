@@ -16,6 +16,10 @@ pub struct Model {
     pub base_url: String,
     pub reasoning: bool,
     pub input: Vec<String>,
+    // Catalogs generated before output metadata was retained assumed text.
+    // Keep those assets readable; explicit non-text/empty output is preserved.
+    #[serde(default = "default_output")]
+    pub output: Vec<String>,
     pub context_window: i32,
     pub max_tokens: i32,
     pub cost_input: f64,
@@ -26,6 +30,10 @@ pub struct Model {
     pub tlm_json: String,
     pub headers_json: String,
     pub hide: bool,
+}
+
+fn default_output() -> Vec<String> {
+    vec!["text".to_string()]
 }
 
 /// Returns the complete built-in model catalog.

@@ -696,6 +696,29 @@ pub struct RegistryEntry {
     pub created_at: u64,
 }
 
+fn valid_goal_id(id: &str) -> bool {
+    !id.is_empty()
+        && !matches!(id, "." | "..")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Safe read-path mapping for legacy or untrusted IDs. Writers reject unsafe
+/// IDs; readers must never traverse outside the state root either.
+pub(crate) fn goal_path_segment(id: &str) -> String {
+    if valid_goal_id(id) {
+        return id.to_string();
+    }
+    format!(
+        "%{}",
+        id.as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
 impl Store {
     pub fn open(root: &str) -> Result<Self> {
         let root = PathBuf::from(root);
@@ -705,10 +728,11 @@ impl Store {
     }
 
     pub fn goal_dir(&self, goal_id: &str) -> PathBuf {
-        self.root.join(format!("goals/{goal_id}"))
+        self.root.join("goals").join(goal_path_segment(goal_id))
     }
 
     fn ensure_goal_dir(&self, goal_id: &str) -> Result<PathBuf> {
+        anyhow::ensure!(valid_goal_id(goal_id), "goal id must be a nonempty filename component (ASCII letters, digits, '.', '_' or '-')");
         let dir = self.goal_dir(goal_id);
         fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -721,11 +745,15 @@ impl Store {
     }
 
     pub fn register(&mut self, goal: &Goal) -> Result<()> {
+        anyhow::ensure!(
+            valid_goal_id(&goal.goal_id),
+            "invalid goal id: must be a filename component"
+        );
         if !self.registered(&goal.goal_id) {
             self.registry.push(RegistryEntry {
                 goal_id: goal.goal_id.clone(),
                 objective: goal.objective.clone(),
-                cwd: goal.cwd.clone(),
+                cwd: crate::agents::workspace_guard::normalize_workspace_path(&goal.cwd),
                 status: "active".to_string(),
                 created_at: goal.created_at,
             });
@@ -789,8 +817,60 @@ impl Store {
             event,
         };
         let line = format!("{}\n", serde_json::to_string(&stored)?);
-        append_event_locked(dir.join(EVENTS_FILE), &line, &event_id).context("append event")?;
+        append_event_locked(dir.join(EVENTS_FILE), &line, &event_id, |_| Ok(()))
+            .context("append event")?;
         self.ensure_schema_stamp(&goal_id)?;
+        Ok(event_id)
+    }
+
+    /// Validate CLI dependency edits against the latest ledger under the append
+    /// lock. Raw append remains available for replay/import of legacy events.
+    pub fn append_todo_change(&mut self, event: Event) -> Result<String> {
+        let goal_id = event.goal_id();
+        let entry = self
+            .registry
+            .iter()
+            .find(|g| g.goal_id == goal_id)
+            .context("goal is not registered")?;
+        let dir = self.ensure_goal_dir(goal_id)?;
+        let from = self
+            .goal_schema_version(goal_id)
+            .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+        let event_id = derive_event_id(&event);
+        let stored = StoredEvent {
+            event_id: event_id.clone(),
+            producer: None,
+            source_ref: None,
+            source_section: None,
+            source_line: None,
+            privacy: None,
+            fencing_token: None,
+            event,
+        };
+        let line = format!("{}\n", serde_json::to_string(&stored)?);
+        append_event_locked(dir.join(EVENTS_FILE), &line, &event_id, |text| {
+            let mut goal = Goal::new(&entry.goal_id, &entry.objective, &entry.cwd);
+            for stored in parse_ledger(&dir, &from, text)? {
+                apply(&mut goal, stored.event);
+            }
+            let changed_id = match &stored.event {
+                Event::TodoAdded { todo, .. } => Some(todo.id.as_str()),
+                Event::TodoUpdated {
+                    todo_id,
+                    blocks: Some(_),
+                    ..
+                } => Some(todo_id.as_str()),
+                Event::TodoUpdated { .. } => None,
+                _ => bail!("expected a todo add/update event"),
+            };
+            apply(&mut goal, stored.event.clone());
+            if let Some(id) = changed_id {
+                crate::work_items::task_graph::validate_dependency_change(&goal, id)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            Ok(())
+        })?;
+        self.ensure_schema_stamp(&entry.goal_id)?;
         Ok(event_id)
     }
 
@@ -820,7 +900,36 @@ impl Store {
         agent_id: &str,
         lease_secs: u64,
     ) -> Result<AtomicClaimOutcome> {
-        use std::io::Write;
+        self.try_claim_todo_with_pid(goal_id, todo_id, agent_id, lease_secs, None)
+    }
+
+    /// Bind liveness only when the caller is the long-lived execution host.
+    /// Manual CLI claims have no host PID and remain valid until expiry.
+    pub fn try_claim_todo_with_pid(
+        &self,
+        goal_id: &str,
+        todo_id: &str,
+        agent_id: &str,
+        lease_secs: u64,
+        holder_pid: Option<u32>,
+    ) -> Result<AtomicClaimOutcome> {
+        self.try_claim_todo_with_workspace(
+            goal_id, todo_id, agent_id, lease_secs, holder_pid, false,
+        )
+    }
+
+    /// Workspace check, lease claim and effective-write-set audit share one lock.
+    /// Force bypasses workspace conflicts only, never ownership or lease checks.
+    pub fn try_claim_todo_with_workspace(
+        &self,
+        goal_id: &str,
+        todo_id: &str,
+        agent_id: &str,
+        lease_secs: u64,
+        holder_pid: Option<u32>,
+        force_workspace: bool,
+    ) -> Result<AtomicClaimOutcome> {
+        use std::io::{Read, Seek, SeekFrom, Write};
         let now = crate::state::now_epoch();
         // Normalize the TTL here (0 → default, >max → error) so every
         // caller gets identical expiry semantics to the non-atomic
@@ -836,42 +945,40 @@ impl Store {
             .open(&path)?;
         file.lock_exclusive()?;
         let result = (|| -> Result<AtomicClaimOutcome> {
-            let existing = fs::read_to_string(&path).unwrap_or_default();
-            // Reconstruct the current lease for this todo from the ledger
-            // (StoredEvent flattens the Event payload to top level).
-            let mut lease: Option<(String, u64, Option<u32>)> = None;
-            for line in existing.lines().filter(|l| !l.trim().is_empty()) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                    continue;
-                };
-                if v.get("todo_id").and_then(|t| t.as_str()) != Some(todo_id) {
-                    continue;
-                }
-                match v.get("kind").and_then(|k| k.as_str()).unwrap_or("") {
-                    "todo_claimed" => {
-                        let agent = v
-                            .get("agent_id")
-                            .and_then(|a| a.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let exp = v
-                            .get("lease_expires_at")
-                            .and_then(|e| e.as_u64())
-                            .unwrap_or(0);
-                        let pid = v
-                            .get("holder_pid")
-                            .and_then(|p| p.as_u64())
-                            .map(|p| p as u32);
-                        lease = Some((agent, exp, pid));
-                    }
-                    "todo_released" => lease = None,
-                    // Mirror replay (apply): an expiry record clears the
-                    // claim too, so a steal/expiry is honored by the atomic
-                    // claim path exactly like by projection replay.
-                    "todo_expired" => lease = None,
-                    _ => {}
-                }
+            // Use the canonical event fold under the claim lock. A separate
+            // partial parser drifted from replay (renewal, owner and completion).
+            let entry = self
+                .registry
+                .iter()
+                .find(|g| g.goal_id == goal_id)
+                .context("goal is not registered")?;
+            let mut goal = Goal::new(goal_id, &entry.objective, &entry.cwd);
+            let from = self
+                .goal_schema_version(goal_id)
+                .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
+            // Windows byte-range locks also exclude reads through a second
+            // handle in this process. Read the snapshot through the handle
+            // that owns the lock, then use the same canonical parser.
+            file.seek(SeekFrom::Start(0))?;
+            let mut text = String::new();
+            file.read_to_string(&mut text)?;
+            for stored in parse_ledger(&dir, &from, &text)? {
+                apply(&mut goal, stored.event);
             }
+            let todo = goal.todo(todo_id).context("unknown todo")?;
+            if matches!(todo.status, TodoStatus::Done | TodoStatus::Superseded)
+                || todo.owner.as_deref().is_some_and(|owner| owner != agent_id)
+            {
+                return Ok(AtomicClaimOutcome {
+                    claimed: false,
+                    stolen: false,
+                });
+            }
+            let lease = todo
+                .claimed_by
+                .clone()
+                .zip(todo.lease_expires_at)
+                .map(|(holder, expiry)| (holder, expiry, todo.holder_pid));
             if let Some((holder, exp, holder_pid)) = &lease {
                 if *exp > now && holder != agent_id {
                     // Lease liveness: a dead holder's claim is reclaimed
@@ -887,6 +994,27 @@ impl Store {
                     }
                 }
             }
+            if !Path::new(&goal.cwd).is_absolute()
+                && goal.todos.iter().any(|t| {
+                    (t.id == todo_id
+                        || (t.claimed_by.is_some()
+                            && t.lease_expires_at.is_some_and(|expiry| expiry > now)
+                            && !matches!(t.status, TodoStatus::Done | TodoStatus::Superseded)))
+                        && t.required_write_scope.iter().any(|scope| {
+                            !scope.trim().is_empty() && !Path::new(scope.trim()).is_absolute()
+                        })
+                })
+            {
+                bail!("cannot resolve relative task write scopes: legacy goal cwd is not absolute; recreate the goal with an absolute --cwd and re-declare its write scopes");
+            }
+            let conflicts = crate::agents::workspace_guard::todo_workspace_conflicts(
+                &goal, agent_id, todo, now,
+            );
+            if !conflicts.is_empty() && !force_workspace {
+                bail!("workspace conflict — claiming would race a peer writing the same workspace:\n{}degrade to serial: retry after the holder releases its lease; declare disjoint --required-write-scope paths (goal-relative), or override only with proven disjoint writes (--force-workspace for run, --force for claim)",
+                    crate::agents::workspace_guard::render_conflicts(&conflicts, now));
+            }
+            let paths = crate::agents::workspace_guard::todo_workspaces(&goal, agent_id, todo);
             // Steal when the prior lease belongs to another agent: a live
             // lease with a live holder already returned `claimed=false`
             // above, so reaching here means the lease lapsed or its holder
@@ -904,7 +1032,7 @@ impl Store {
                 todo_id: todo_id.to_string(),
                 agent_id: agent_id.to_string(),
                 lease_expires_at: expires_at,
-                holder_pid: Some(std::process::id()),
+                holder_pid,
                 ts: now,
             };
             let stored = StoredEvent {
@@ -917,7 +1045,28 @@ impl Store {
                 fencing_token: None,
                 event,
             };
-            let line = format!("{}\n", serde_json::to_string(&stored)?);
+            let mut line = format!("{}\n", serde_json::to_string(&stored)?);
+            if !paths.is_empty() {
+                let event = Event::WorkspaceLockAcquired {
+                    goal_id: goal_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    todo_id: todo_id.to_string(),
+                    paths,
+                    forced: !conflicts.is_empty() && force_workspace,
+                    ts: now,
+                };
+                let audit = StoredEvent {
+                    event_id: derive_event_id(&event),
+                    producer: None,
+                    source_ref: None,
+                    source_section: None,
+                    source_line: None,
+                    privacy: None,
+                    fencing_token: None,
+                    event,
+                };
+                line.push_str(&format!("{}\n", serde_json::to_string(&audit)?));
+            }
             file.write_all(line.as_bytes())?;
             Ok(AtomicClaimOutcome {
                 claimed: true,
@@ -1176,16 +1325,24 @@ fn append_locked(path: PathBuf, bytes: &[u8]) -> std::io::Result<()> {
 /// `StateEventConflictError`): the same event id with identical content is
 /// skipped (idempotent replay/backfill re-run); the same id with different
 /// content fails closed.
-fn append_event_locked(path: PathBuf, line: &str, event_id: &str) -> Result<()> {
-    use std::io::Write;
-    let file = fs::OpenOptions::new()
+fn append_event_locked(
+    path: PathBuf,
+    line: &str,
+    event_id: &str,
+    validate: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let mut file = fs::OpenOptions::new()
         .create(true)
         .read(true)
         .append(true)
         .open(&path)?;
     file.lock_exclusive()?;
     let result = (|| -> Result<()> {
-        let existing = fs::read_to_string(&path).unwrap_or_default();
+        // Read through the locked handle (required by Windows byte-range locks).
+        file.seek(SeekFrom::Start(0))?;
+        let mut existing = String::new();
+        file.read_to_string(&mut existing)?;
         let new_value: serde_json::Value = serde_json::from_str(line).context("serialize event")?;
         let new_fingerprint = event_fingerprint(&new_value);
         for existing_line in existing.lines().filter(|l| !l.trim().is_empty()) {
@@ -1202,8 +1359,8 @@ fn append_event_locked(path: PathBuf, line: &str, event_id: &str) -> Result<()> 
             }
             bail!("conflicting event_id `{event_id}` — same id, different content (StateEventConflictError)");
         }
-        let mut f = &file;
-        f.write_all(line.as_bytes())?;
+        validate(&existing)?;
+        file.write_all(line.as_bytes())?;
         Ok(())
     })();
     let _ = FileExt::unlock(&file);
@@ -1275,6 +1432,10 @@ fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path).unwrap_or_default();
+    parse_ledger(dir, from_schema, &text)
+}
+
+fn parse_ledger(dir: &Path, from_schema: &str, text: &str) -> Result<Vec<StoredEvent>> {
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out: Vec<StoredEvent> = vec![];
     let mut skipped: Vec<(usize, String)> = vec![];

@@ -26,6 +26,13 @@ const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 30;
 static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+// Keep the pool (and blocking client's internal runtime) alive across refresh
+// threads. Initialize only inside fetch_future_models' dedicated thread, never
+// on a Tokio worker. Credentials and URLs remain per-request so auth/provider
+// changes take effect without rebuilding the client.
+static FUTURE_MODELS_HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
+    std::sync::LazyLock::new(reqwest::blocking::Client::new);
+
 /// In-process cache so background refreshes take effect immediately on the
 /// next `Registry::new()` call (GUI polls every 10s), without waiting for
 /// the file cache to be read back from disk.
@@ -280,7 +287,7 @@ fn fetch_future_models(api_key: &str, base_url: &str) -> Option<Vec<Model>> {
 
     std::thread::spawn(move || {
         let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-        let response = reqwest::blocking::Client::new()
+        let response = FUTURE_MODELS_HTTP_CLIENT
             .get(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .timeout(std::time::Duration::from_secs(10))
@@ -443,7 +450,11 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         })
         .unwrap_or_else(|| (vec!["text".to_string()], vec!["text".to_string()]));
 
-    let context_window = entry.context_length.map(|v| v as i32).unwrap_or(128000);
+    let context_window = entry
+        .context_length
+        .and_then(|v| i32::try_from(v).ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(128000);
     let max_tokens = entry
         .max_tokens
         .filter(|value| *value > 0)
@@ -961,6 +972,24 @@ mod tests {
     // ─── convert_future_model (via public interface) ───────────────────────
 
     #[test]
+    fn context_window_conversion_rejects_overflow_and_nonpositive_values() {
+        for (value, expected) in [
+            (0, 128000),
+            (-1, 128000),
+            (3_000_000_000_i64, 128000),
+            (64_000, 64_000),
+        ] {
+            let entry: FutureModelEntry =
+                serde_json::from_value(serde_json::json!({"id":"bounds", "context_length":value}))
+                    .unwrap();
+            assert_eq!(
+                convert_future_model(entry, "https://example.invalid").context_window,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn convert_model_reasoning_detection() {
         let entry = FutureModelEntry {
             id: "test-model".to_string(),
@@ -1164,6 +1193,59 @@ mod tests {
 
         // Connection refused → None (no server listening here).
         assert!(fetch_future_models("k", "http://127.0.0.1:1").is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_future_models_reuses_connection_with_current_credentials() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            // Accept exactly one socket: both refreshes must use it, even
+            // though fetch_future_models runs each request on a new thread.
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut socket = BufReader::new(socket);
+            for key in ["first-key", "rotated-key"] {
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(socket.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    request.push_str(&line);
+                }
+                assert!(request.starts_with("GET /api/v1/models HTTP/1.1\r\n"));
+                assert!(request.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("authorization")
+                            && value.trim() == format!("Bearer {key}")
+                    })
+                }));
+                let body = r#"{"data":[{"id":"reused-model"}]}"#;
+                write!(
+                    socket.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+
+        // Calling from a Tokio runtime also checks that the blocking client's
+        // lazy initialization remains inside the dedicated fetch thread.
+        let first = fetch_future_models("first-key", &format!("{base}/api"));
+        let second = fetch_future_models("rotated-key", &format!("{base}/api"));
+        server.join().unwrap();
+        for models in [first, second] {
+            let models = models.expect("refresh succeeds on the shared connection");
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].id, "reused-model");
+        }
     }
 
     #[test]

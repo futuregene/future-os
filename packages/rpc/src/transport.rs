@@ -283,7 +283,6 @@ async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
         )
     })?;
     std::fs::create_dir_all(parent)?;
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     let metadata = std::fs::metadata(parent)?;
     if metadata.uid() != unsafe { libc::geteuid() } {
         return Err(io::Error::new(
@@ -294,6 +293,8 @@ async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
             ),
         ));
     }
+    // Validate ownership before mutating an existing directory's permissions.
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
     if let Ok(metadata) = std::fs::symlink_metadata(&path) {
         if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
@@ -470,6 +471,25 @@ mod tests {
         assert_eq!(
             connection_plan(Some("http://127.0.0.1:50051")),
             vec![AgentEndpoint::Tcp("http://127.0.0.1:50051".into())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreign_socket_directory_is_rejected_before_chmod() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::path::Path::new("/");
+        if std::fs::metadata(root).unwrap().uid() == unsafe { libc::geteuid() } {
+            return; // root cannot use this unprivileged fixture
+        }
+        let result = bind_local_at(root.join("future-ownership-test.sock")).await;
+        let error = match result {
+            Err(e) => e,
+            Ok(_) => panic!("foreign directory accepted"),
+        };
+        assert!(
+            error.to_string().contains("not owned by the current user"),
+            "{error}"
         );
     }
 

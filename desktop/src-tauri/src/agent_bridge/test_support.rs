@@ -449,6 +449,9 @@ impl TestHome {
         let lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // Old ambient-runtime observers must be gone BEFORE publishing the new
+        // HOME and creating its schema, not later when mock_agent is acquired.
+        super::observer::cancel_all_observers();
         let dir = std::env::temp_dir().join(format!(
             "futureos-bridge-test-{}-{}-{}",
             std::process::id(),

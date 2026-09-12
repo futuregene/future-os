@@ -564,13 +564,15 @@ pub(crate) fn new_chat_thread_input() -> crate::store::CreateThreadInput {
 /// Model ids from the agent catalogue are only unique inside their provider.
 /// The Agent RPC accepts a single qualified `provider/model` value, so normalize
 /// new mobile commands and keep legacy already-qualified callers working.
+/// Current clients qualify the entire raw catalogue ID, including slashes;
+/// a slash alone is not evidence that the selected provider is already present.
 pub(crate) fn qualified_model_id(model_id: &str, provider_id: &str) -> Option<String> {
     let model_id = model_id.trim();
     if model_id.is_empty() {
         return None;
     }
     let provider_id = provider_id.trim();
-    if provider_id.is_empty() || model_id.contains('/') {
+    if provider_id.is_empty() || model_id.starts_with(&format!("{provider_id}/")) {
         Some(model_id.to_string())
     } else {
         Some(format!("{provider_id}/{model_id}"))

@@ -9,7 +9,7 @@ import {
 } from "../files";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "../storage";
 import { emptyTimeline } from "../timeline";
-import type { DownloadInfo, HistoryAttachment, RemoteModel, RemoteSessionState } from "../types";
+import { modelReference, type DownloadInfo, type HistoryAttachment, type RemoteModel, type RemoteSessionState } from "../types";
 import type { SyncEngine } from "../syncEngine";
 import { useConversationController } from "../useConversationController";
 
@@ -111,6 +111,7 @@ async function mountController(opts: MountOpts = {}) {
   const setUnreadSessions = jest.fn();
   const setApprovalTierState = jest.fn();
   const ensureDraftTimeline = jest.fn();
+  const prepareTimelineOpen = jest.fn();
   const recordError = jest.fn();
   const removeSession = opts.removeSession ?? jest.fn(async () => true);
   const removeWorkspace = opts.removeWorkspace ?? jest.fn(async () => true);
@@ -133,6 +134,7 @@ async function mountController(opts: MountOpts = {}) {
       setUnreadSessions,
       setApprovalTierState,
       ensureDraftTimeline,
+      prepareTimelineOpen,
       recordError,
       removeSession,
       removeWorkspace,
@@ -161,6 +163,7 @@ async function mountController(opts: MountOpts = {}) {
     setUnreadSessions,
     setApprovalTierState,
     ensureDraftTimeline,
+    prepareTimelineOpen,
     recordError,
     removeSession,
     closeConversation,
@@ -199,6 +202,7 @@ describe("selectSession", () => {
       await current(h).selectSession("s1");
     });
     expect(h.setSelectedSessionId).toHaveBeenCalledWith("s1");
+    expect(h.prepareTimelineOpen).toHaveBeenCalledWith("s1");
     expect(h.setDraft).toHaveBeenCalledWith(false);
     expect(current(h).modelId).toBe("openai/gpt-4");
     expect(current(h).thinkingLevel).toBe("high");
@@ -352,6 +356,22 @@ describe("attachment helpers", () => {
 });
 
 describe("command dispatchers", () => {
+  it("sends distinct qualified identities for two providers sharing a slash-containing id", async () => {
+    const catalog = [
+      model("deepseek/deepseek-v4-flash", "deepseek"),
+      model("deepseek/deepseek-v4-flash", "ambient"),
+    ];
+    const h = await mountController({ selected: "s1", models: catalog });
+    for (const selected of catalog) {
+      await act(async () => current(h).setModel(modelReference(selected)));
+    }
+    expect(h.request.mock.calls.map(([command]) => command.modelId)).toEqual([
+      "deepseek/deepseek/deepseek-v4-flash",
+      "ambient/deepseek/deepseek-v4-flash",
+    ]);
+    expect(h.request.mock.calls.map(([command]) => command.providerId)).toEqual(["deepseek", "ambient"]);
+  });
+
   it("abort is a no-op without a client or session", async () => {
     const h = await mountController({});
     await act(async () => {

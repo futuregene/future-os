@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+#[derive(Clone)]
+pub(super) struct ApprovalRoute {
+    pub session_id: String,
+    pub chat_id: String,
+    pub chat_type: String,
+}
+
+pub(super) type ApprovalRoutes = Arc<RwLock<HashMap<String, ApprovalRoute>>>;
+
 /// Run the prompt → stream → respond loop.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_prompt_loop(
@@ -28,12 +37,22 @@ pub(super) async fn run_prompt_loop(
     prompt_lock: &tokio::sync::Mutex<()>,
     gen_counter: &AtomicU64,
     ack_reaction_id: Option<String>,
+    approval_routing: Option<(&ApprovalRoutes, ApprovalRoute)>,
+    arrival_generation: Option<u64>,
 ) -> Result<()> {
     // Hold the per-chat lock through atomic supersede + start + attach,
     // but not while consuming the stream. This closes the attach race while
     // still letting a newer message interrupt an ongoing response.
     let (expected_run_id, my_gen, mut stream) = {
         let _guard = prompt_lock.lock().await;
+        if arrival_generation
+            .is_some_and(|generation| generation != gen_counter.load(Ordering::SeqCst))
+        {
+            if let Some(ref rid) = ack_reaction_id {
+                let _ = feishu.remove_reaction(feishu_msg_id, rid).await;
+            }
+            return Ok(());
+        }
 
         // Agent performs active abort + queued replacement atomically.
         let mut client = agent.read().await.clone();
@@ -71,7 +90,8 @@ pub(super) async fn run_prompt_loop(
             .await?;
 
         // Bump generation — we're now the latest active stream
-        let my_gen = gen_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let my_gen =
+            arrival_generation.unwrap_or_else(|| gen_counter.fetch_add(1, Ordering::SeqCst) + 1);
         (expected_run_id, my_gen, stream)
     };
     // Lock released here — streaming happens concurrently with other prompts
@@ -101,12 +121,29 @@ pub(super) async fn run_prompt_loop(
         () => {
             if gen_counter.load(Ordering::SeqCst) != my_gen {
                 info!("[STREAM] gen={} superseded, stopping", my_gen);
+                if let Some(ref rid) = ack_reaction_id {
+                    let _ = feishu.remove_reaction(feishu_msg_id, rid).await;
+                }
+                if let Some(ref cid) = cardkit_card_id {
+                    card_seq += 1;
+                    let _ = feishu.set_card_streaming_mode(cid, false, card_seq).await;
+                }
                 return Ok(());
             }
         };
     }
 
-    while let Some(event) = stream.message().await? {
+    let mut terminal_handled = false;
+    let mut stream_failure = None;
+    loop {
+        let event = match stream.message().await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(error) => {
+                stream_failure = Some(error);
+                break;
+            }
+        };
         check_superseded!();
 
         let parsed = match AgentClient::parse_event(event) {
@@ -132,7 +169,7 @@ pub(super) async fn run_prompt_loop(
                 last_was_content = false;
                 stream_text.push_str(&text);
                 // Create card on first visible content
-                if !card_ready && !stream_text.trim().is_empty() {
+                if streaming && !card_ready && !stream_text.trim().is_empty() {
                     card_ready = true;
                     let (stream_card, _) = card::streaming_card("");
                     let ck_card = card::to_cardkit_format(&stream_card);
@@ -255,7 +292,7 @@ pub(super) async fn run_prompt_loop(
                 text: result,
             }) => {
                 last_was_content = false;
-                if let Some(ref cid) = cardkit_card_id {
+                {
                     let (tool_name, old_entry) = {
                         let entry = tool_running.remove(&tool_id);
                         let name = entry
@@ -285,13 +322,20 @@ pub(super) async fn run_prompt_loop(
                         stream_text = stream_text.replace(old, &new_entry);
                     }
                     needs_flush = true;
-                    if last_flush.elapsed() >= flush_interval {
-                        card_seq += 1;
-                        let _ = feishu
-                            .update_card_element(cid, streaming_element_id, &stream_text, card_seq)
-                            .await;
-                        last_flush = Instant::now();
-                        needs_flush = false;
+                    if let Some(ref cid) = cardkit_card_id {
+                        if last_flush.elapsed() >= flush_interval {
+                            card_seq += 1;
+                            let _ = feishu
+                                .update_card_element(
+                                    cid,
+                                    streaming_element_id,
+                                    &stream_text,
+                                    card_seq,
+                                )
+                                .await;
+                            last_flush = Instant::now();
+                            needs_flush = false;
+                        }
                     }
                 }
             }
@@ -326,6 +370,14 @@ pub(super) async fn run_prompt_loop(
                         .update_cardkit_card(cid, &ck_complete, card_seq)
                         .await;
                     cardkit_card_id = None;
+                }
+                // Bind approval IDs to the originating chat/session rather than
+                // looking up whichever session the chat happens to use later.
+                if let Some((routes, route)) = &approval_routing {
+                    routes
+                        .write()
+                        .await
+                        .insert(approval_request_id.clone(), route.clone());
                 }
                 // Send approval card with Approve/Reject buttons
                 let action_preview = if let serde_json::Value::String(s) = &requested_action {
@@ -386,6 +438,16 @@ pub(super) async fn run_prompt_loop(
                 let _ = feishu.react_to_message(feishu_msg_id, "DONE").await;
 
                 let was_cancelled = state.as_deref() == Some("cancelled");
+                if error.is_some() {
+                    if let Some(ref cid) = cardkit_card_id {
+                        card_seq += 1;
+                        let _ = feishu.set_card_streaming_mode(cid, false, card_seq).await;
+                        card_seq += 1;
+                        let complete =
+                            card::to_cardkit_format(&card::complete_card("", &stream_text));
+                        let _ = feishu.update_cardkit_card(cid, &complete, card_seq).await;
+                    }
+                }
                 if let Some(err) = error {
                     // "interrupted"/cancelled is expected when a newer message
                     // aborts this stream — don't show an error card, just let the
@@ -426,6 +488,7 @@ pub(super) async fn run_prompt_loop(
                             .await?;
                     }
                 }
+                terminal_handled = true;
                 break;
             }
             Some(AgentEvent::Error(err)) => {
@@ -434,17 +497,41 @@ pub(super) async fn run_prompt_loop(
                     let _ = feishu.remove_reaction(feishu_msg_id, rid).await;
                 }
                 let _ = feishu.react_to_message(feishu_msg_id, "DONE").await;
+                if let Some(ref cid) = cardkit_card_id {
+                    card_seq += 1;
+                    let _ = feishu.set_card_streaming_mode(cid, false, card_seq).await;
+                    card_seq += 1;
+                    let complete = card::to_cardkit_format(&card::complete_card("", &stream_text));
+                    let _ = feishu.update_cardkit_card(cid, &complete, card_seq).await;
+                }
                 info!("[REPLY] error=\"{}\"", err);
                 let err_card = card::error_card(&err);
                 feishu
                     .reply_message(feishu_msg_id, "interactive", &card::card_content(&err_card))
                     .await?;
+                terminal_handled = true;
                 break;
             }
             None => {}
         }
     }
 
+    if !terminal_handled {
+        // A transport error/EOF has no AgentEnd to perform presentation cleanup.
+        if let Some(ref rid) = ack_reaction_id {
+            let _ = feishu.remove_reaction(feishu_msg_id, rid).await;
+        }
+        if let Some(ref cid) = cardkit_card_id {
+            card_seq += 1;
+            let _ = feishu.set_card_streaming_mode(cid, false, card_seq).await;
+            card_seq += 1;
+            let complete = card::to_cardkit_format(&card::complete_card("", &stream_text));
+            let _ = feishu.update_cardkit_card(cid, &complete, card_seq).await;
+        }
+    }
+    if let Some(error) = stream_failure {
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -659,6 +746,8 @@ mod tests {
             &lock,
             &gen,
             ack,
+            None,
+            None,
         )
         .await
     }
@@ -668,6 +757,99 @@ mod tests {
             .iter()
             .map(|r| r.body_string())
             .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_arrival_task_never_submits_a_superseding_prompt() {
+        let (env, grpc) = setup(vec![]).await;
+        let lock = tokio::sync::Mutex::new(());
+        let generation = AtomicU64::new(2);
+        run_prompt_loop(
+            &env.feishu,
+            &env.agent,
+            "sess",
+            "om_user",
+            "old",
+            &[],
+            true,
+            &lock,
+            &generation,
+            Some("rid_1".into()),
+            None,
+            Some(1),
+        )
+        .await
+        .unwrap();
+        assert!(ts::recorded_of(&grpc, "prompt").is_empty());
+        assert_eq!(
+            bodies(&env.http, "/im/v1/messages/om_user/reactions/rid_1").len(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_first_completion_and_nonstreaming_thinking() {
+        let events = vec![
+            ts::ev(
+                "",
+                0,
+                "tool_start",
+                r#"{"tool_id":"t","tool_name":"shell"}"#,
+            ),
+            ts::ev("", 1, "tool_end", r#"{"tool_id":"t","text":"ok"}"#),
+            ts::ev("", 2, "thinking_delta", r#"{"text":"thought"}"#),
+            ts::ev("", 3, "text_chunk", r#"{"text":"answer"}"#),
+            ts::ev("", 4, "agent_end", r#"{"state":"completed"}"#),
+        ];
+        let (env, _) = setup(events).await;
+        drive(&env, false, None).await.unwrap();
+        assert!(bodies(&env.http, "/cardkit/v1/cards").is_empty());
+        let replies = bodies(&env.http, "/im/v1/messages/om_user/reply").join("\n");
+        assert!(replies.contains("completed"));
+        assert!(!replies.contains("Running tool"));
+        assert!(replies.contains("thought"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abrupt_stream_end_cleans_card_and_reaction() {
+        for fail in [false, true] {
+            let mut state = MockState::default();
+            state.events = vec![ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#)];
+            if fail {
+                state.stream_mid_error_after = Some(1);
+            }
+            let (env, _) = setup_with(state, feishu_routes()).await;
+            let result = drive(&env, true, Some("rid_1".into())).await;
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(
+                bodies(&env.http, "/cardkit/v1/cards/card_1/settings").len(),
+                1
+            );
+            assert_eq!(
+                bodies(&env.http, "/im/v1/messages/om_user/reactions/rid_1").len(),
+                1
+            );
+            assert!(bodies(&env.http, "/cardkit/v1/cards/card_1")
+                .iter()
+                .any(|body| body.contains("partial")));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn error_finalizes_existing_stream_card() {
+        let (env, _) = setup(vec![
+            ts::ev("", 0, "text_chunk", r#"{"text":"partial"}"#),
+            ts::ev("", 1, "error", r#"{"error":"failed"}"#),
+        ])
+        .await;
+        drive(&env, true, None).await.unwrap();
+        assert_eq!(
+            bodies(&env.http, "/cardkit/v1/cards/card_1/settings").len(),
+            1
+        );
+        assert!(bodies(&env.http, "/cardkit/v1/cards/card_1")
+            .iter()
+            .any(|b| b.contains("partial")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -936,6 +1118,8 @@ mod tests {
             &lock,
             gen_ref,
             None,
+            None,
+            None,
         );
         let bump = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -943,13 +1127,13 @@ mod tests {
         };
         let (r, _) = tokio::join!(drive, bump);
         r.unwrap();
-        // Stopped before AgentEnd → no DONE reaction, no finalize.
+        // Supersession is not completion, but streaming mode must be cleared.
         // (join instead of .any(): the closure would never run when the
         // request log is empty, leaving an uncovered region.)
         let reactions = bodies(&env.http, "/im/v1/messages/om_user/reactions");
         assert!(!reactions.join("\n").contains("DONE"));
         let settings = ts::requests_to(&env.http, "/cardkit/v1/cards/card_1/settings");
-        assert!(settings.is_empty());
+        assert_eq!(settings.len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1036,6 +1220,8 @@ mod tests {
             &lock,
             &gen,
             None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1071,6 +1257,8 @@ mod tests {
             false,
             &lock,
             &gen,
+            None,
+            None,
             None,
         )
         .await

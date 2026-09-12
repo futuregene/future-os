@@ -21,7 +21,14 @@ use crate::state::{Goal, TaskClass, Todo, TodoStatus};
 
 /// reference URL-encodes spaces (%20) in anchor values.
 fn url_encode(s: &str) -> String {
-    s.replace(' ', "%20").replace('+', "%2B")
+    s.replace('%', "%25")
+        .replace(' ', "%20")
+        .replace('+', "%2B")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D")
+        .replace('\t', "%09")
+        .replace('<', "%3C")
+        .replace('>', "%3E")
 }
 
 /// RFC3339-ish timestamp matching reference (e.g. 2026-08-05T11:03:14+08:00).
@@ -205,7 +212,11 @@ pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecor
     let sign = if z.starts_with('-') { "-" } else { "" };
     let (hh, mm) = digits.split_at(2);
     let offset = format!("{sign}{hh}-{mm}");
-    let ts = format!("{}-{offset}", now.format("%Y-%m-%dT%H-%M-%S"));
+    let ts = format!(
+        "{}-{offset}-{}",
+        now.format("%Y-%m-%dT%H-%M-%S"),
+        uuid::Uuid::new_v4().simple()
+    );
 
     let json_payload = json!({
         "goal_id": goal_id,
@@ -213,6 +224,7 @@ pub fn write_run(goal_dir: &Path, goal_id: &str, record: &crate::state::RunRecor
         "turn": record.turn,
         "todo_id": record.todo_id,
         "run_id": record.run_id,
+        "agent_id": record.agent_id,
         "terminal_state": record.terminal_state,
         "tools": record.tools,
         "tokens_in": record.tokens_in_delta,
@@ -376,7 +388,7 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
         line.push_str(" action_kind=goal_decision");
     }
     if let Some(rw) = &t.resume_when_text {
-        line.push_str(&format!(" resume_when={rw}"));
+        line.push_str(&format!(" resume_when={}", url_encode(rw)));
     }
     // G-12: monitor metadata in the anchor (target / policy / cadence).
     if let Some(target) = &t.monitor_target {
@@ -389,7 +401,7 @@ fn todo_line(t: &Todo, _history: &[crate::state::RunRecord]) -> String {
         line.push_str(&format!(" cadence={cadence}"));
     }
     if let Some(note) = &t.note {
-        line.push_str(&format!(" note={note}"));
+        line.push_str(&format!(" note={}", url_encode(note)));
     }
     if t.goal_bound {
         line.push_str(" goal_bound=true");

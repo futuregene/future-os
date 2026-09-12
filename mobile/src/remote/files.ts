@@ -573,10 +573,14 @@ export async function uploadAttachments(
     const file = new File(attachment.localUri);
     const handle = file.open(FileMode.ReadOnly);
     try {
+      if (!Number.isSafeInteger(init.data.chunkBytes) || init.data.chunkBytes <= 0)
+        throw new Error("invalid_upload_chunk_size");
       let index = 0;
       while ((handle.offset ?? 0) < attachment.transferSize) {
         const remaining = attachment.transferSize - (handle.offset ?? 0);
         const bytes = handle.readBytes(Math.min(init.data.chunkBytes, remaining));
+        if (bytes.byteLength === 0)
+          throw new Error("attachment_read_stalled");
         await withTransferRetry(
           () => client.uploadChunk(init.data.uploadId, index, bytes),
           undefined,

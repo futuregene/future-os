@@ -36,10 +36,13 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   // (the download command itself still settles in the background).
   const mountedRef = useRef(true);
   const unlistenRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => {
-    mountedRef.current = false;
-    unlistenRef.current?.();
-    unlistenRef.current = null;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      unlistenRef.current?.();
+      unlistenRef.current = null;
+    };
   }, []);
 
   async function handleCheck() {
@@ -66,30 +69,34 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
     setDownloading(true);
     setProgress(0);
     setInstallError(null);
-    // Listen for streamed progress before kicking off the download.
-    const unlisten = await listen<DownloadProgress>("app-update-progress", (event) => {
-      const { downloaded, total } = event.payload;
-      if (total > 0)
-        setProgress(Math.min(100, Math.round((downloaded / total) * 100)));
-    });
-    // Unmounted while subscribing — don't leak the listener.
-    if (!mountedRef.current) {
-      unlisten();
-      return;
-    }
-    unlistenRef.current = unlisten;
     try {
+      // Subscribe before installing; subscription failures must also release
+      // the downloading state rather than becoming unhandled rejections.
+      const unlisten = await listen<DownloadProgress>("app-update-progress", (event) => {
+        const { downloaded, total } = event.payload;
+        if (total > 0 && mountedRef.current)
+          setProgress(Math.min(100, Math.round((downloaded / total) * 100)));
+      });
+      if (!mountedRef.current) {
+        unlisten();
+        return;
+      }
+      unlistenRef.current = unlisten;
       await invokeCommand("install_app_update");
-      setProgress(100);
-      setInstalled(true);
+      if (mountedRef.current) {
+        setProgress(100);
+        setInstalled(true);
+      }
     }
     catch (error) {
-      setInstallError(errorMessage(error));
+      if (mountedRef.current)
+        setInstallError(errorMessage(error));
     }
     finally {
-      unlisten();
+      unlistenRef.current?.();
       unlistenRef.current = null;
-      setDownloading(false);
+      if (mountedRef.current)
+        setDownloading(false);
     }
   }
 

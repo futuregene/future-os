@@ -23,6 +23,28 @@ interface HistoryPagingState {
   loading: boolean;
 }
 
+function latestTimelineWindow(timeline: TimelineState, userExchangeCount: number): TimelineState {
+  let remaining = userExchangeCount;
+  let start = 0;
+  for (let index = timeline.items.length - 1; index >= 0; index -= 1) {
+    const item = timeline.items[index];
+    if (item?.kind !== "message" || item.role !== "user") continue;
+    remaining -= 1;
+    if (remaining === 0) {
+      start = index;
+      break;
+    }
+  }
+  if (remaining > 0 || start === 0) return timeline;
+  const items = timeline.items.slice(start);
+  const visibleIds = new Set(items.map(item => item.id));
+  return {
+    ...timeline,
+    items,
+    durableItemIds: new Set([...(timeline.durableItemIds ?? [])].filter(id => visibleIds.has(id))),
+  };
+}
+
 function prependHistoryPage(live: TimelineState, older: TimelineState): TimelineState {
   const liveIds = new Set(live.items.map(item => item.id));
   const olderItems = older.items.filter(item => !liveIds.has(item.id));
@@ -212,7 +234,7 @@ export function useTimelineController({
     const sessionId = selectedRef.current;
     const current = historyPagingRef.current[sessionId];
     const client = clientRef.current;
-    if (!sessionId || !client || !current?.hasMore || current.loading) return;
+    if (!sessionId || !client || !current?.hasMore || current.loading) return false;
 
     const loading = { ...current, loading: true };
     historyPagingRef.current[sessionId] = loading;
@@ -227,6 +249,9 @@ export function useTimelineController({
         },
         sessionId,
       );
+      // Reopening/reconciling may have replaced this cursor while the request
+      // was in flight. Never install an old page into that new paging window.
+      if (historyPagingRef.current[sessionId] !== loading) return false;
       const entries = response.data.entries ?? [];
       const nextBefore = response.data.nextOffset ?? 0;
       if (response.data.hasMore && (nextBefore <= 0 || nextBefore >= current.nextBefore)) {
@@ -241,7 +266,11 @@ export function useTimelineController({
       setHistoryPaging(previous => ({ ...previous, [sessionId]: next }));
       const older = timelineFromEntries(entries);
       syncEngineRef.current?.mutate(sessionId, live => prependHistoryPage(live, older));
+      // The sync lane may still be busy. The view waits until these exact
+      // message ids reach its committed data before declaring paging complete.
+      return older.items.map(item => item.id);
     } catch (error) {
+      if (historyPagingRef.current[sessionId] !== loading) return false;
       const failed = { ...current, loading: false };
       historyPagingRef.current[sessionId] = failed;
       setHistoryPaging(previous => ({ ...previous, [sessionId]: failed }));
@@ -250,8 +279,29 @@ export function useTimelineController({
         before: current.nextBefore,
         error: diagnosticError(error),
       });
+      return false;
     }
   }, [clientRef, selectedRef]);
+
+  const prepareTimelineOpen = useCallback((sessionId: string) => {
+    const cached = timelinesRef.current[sessionId];
+    if (!cached) return;
+    const windowed = latestTimelineWindow(cached, HISTORY_PAGE_USER_EXCHANGES);
+    if (windowed === cached) return;
+
+    // A reopened conversation may have many explicitly paged rows in memory.
+    // Keep cache warmth, but restore the same bounded first-render window as a
+    // cold open; the authoritative tail reconcile below will restore its cursor.
+    const nextTimelines = { ...timelinesRef.current, [sessionId]: windowed };
+    timelinesRef.current = nextTimelines;
+    setTimelines(nextTimelines);
+    syncEngineRef.current?.mutate(sessionId, () => windowed);
+
+    const nextPaging = { ...historyPagingRef.current };
+    delete nextPaging[sessionId];
+    historyPagingRef.current = nextPaging;
+    setHistoryPaging(nextPaging);
+  }, []);
 
   useEffect(() => {
     const engine = new SyncEngine({
@@ -373,7 +423,10 @@ export function useTimelineController({
         sessionId,
         timeoutMs: TIMELINE_LOAD_TIMEOUT_MS,
       });
-      setTimelineErrors(previous => ({ ...previous, [sessionId]: "timeout" }));
+      setTimelineErrors(previous => ({
+        ...previous,
+        [sessionId]: "timeout",
+      }));
     }, TIMELINE_LOAD_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [selectedRef, selectedSessionId, timelineError, timelinePending]);
@@ -409,6 +462,7 @@ export function useTimelineController({
     canLoadOlderTimeline: selectedHistoryPaging?.hasMore ?? false,
     loadingOlderTimeline: selectedHistoryPaging?.loading ?? false,
     loadOlderTimeline,
+    prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
     hydrateAttachmentsRef,

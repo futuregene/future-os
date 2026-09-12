@@ -292,7 +292,9 @@ pub mod image_content {
         /// Remote image URL (HTTP/HTTPS).
         #[prost(string, tag = "10")]
         Url(::prost::alloc::string::String),
-        /// Base64-encoded image data.
+        /// Complete data URI, including MIME type: data:image/png;base64,<encoded bytes>.
+        /// Despite the historical field name, bare base64 bytes are not a valid
+        /// image_url reference. First-party clients send this complete URI.
         #[prost(string, tag = "11")]
         Base64(::prost::alloc::string::String),
     }
@@ -401,6 +403,8 @@ pub struct SessionEntriesResponse {
 pub struct PromptAck {
     #[prost(string, tag = "1")]
     pub run_id: ::prost::alloc::string::String,
+    /// Valid for running/existing acknowledgments. A queued run has not acquired
+    /// an execution epoch yet and carries 0; inspect accepted_state first.
     #[prost(uint64, tag = "2")]
     pub run_epoch: u64,
     /// "existing" | "running" | "queued".
@@ -713,6 +717,9 @@ pub struct AgentEnd {
     /// "incomplete" when the stream was truncated.
     #[prost(string, optional, tag = "5")]
     pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// Original structured truncation diagnostics, encoded as JSON.
+    #[prost(string, optional, tag = "6")]
+    pub truncation_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolStart {
@@ -724,6 +731,11 @@ pub struct ToolStart {
     /// mirroring the wire).
     #[prost(string, tag = "3")]
     pub tool_args: ::prost::alloc::string::String,
+    /// "input" while arguments stream, "execution" when the tool starts.
+    #[prost(string, optional, tag = "4")]
+    pub phase: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(int32, optional, tag = "5")]
+    pub tc_index: ::core::option::Option<i32>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolDelta {
@@ -735,6 +747,9 @@ pub struct ToolDelta {
     /// Tool-call index within the assistant message, when > 0.
     #[prost(int32, optional, tag = "3")]
     pub tc_index: ::core::option::Option<i32>,
+    /// True means text replaces the current argument buffer, not an append.
+    #[prost(bool, optional, tag = "4")]
+    pub snapshot: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ToolEnd {
@@ -769,12 +784,14 @@ pub struct ApprovalDecisionEvent {
     #[prost(string, tag = "4")]
     pub note: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UsageEvent {
     #[prost(message, optional, tag = "1")]
     pub usage: ::core::option::Option<UsageInfo>,
+    #[prost(string, optional, tag = "2")]
+    pub stop_reason: ::core::option::Option<::prost::alloc::string::String>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UsageInfo {
     #[prost(int64, tag = "1")]
     pub prompt_tokens: i64,
@@ -789,6 +806,10 @@ pub struct UsageInfo {
     /// Provider-reported cost, when present.
     #[prost(double, optional, tag = "6")]
     pub credit_cost: ::core::option::Option<f64>,
+    #[prost(int64, optional, tag = "7")]
+    pub reasoning_tokens: ::core::option::Option<i64>,
+    #[prost(string, optional, tag = "8")]
+    pub provider_metadata_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ErrorEvent {

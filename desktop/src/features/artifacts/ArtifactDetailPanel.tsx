@@ -126,19 +126,24 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
   }
 
   async function handleExport() {
-    const destinationPath = await save({
-      defaultPath: artifactFileName(artifact),
-      title: t("detail.exportTitle"),
-    });
-    if (!destinationPath)
-      return;
+    try {
+      const destinationPath = await save({
+        defaultPath: artifactFileName(artifact),
+        title: t("detail.exportTitle"),
+      });
+      if (!destinationPath)
+        return;
 
-    await runAction("export", () =>
-      exportArtifactFile({
-        content: artifact.path ? null : artifact.content ?? filePreview?.content ?? null,
-        destinationPath,
-        sourcePath: artifact.path ?? null,
-      }));
+      await runAction("export", () =>
+        exportArtifactFile({
+          content: artifact.path ? null : artifact.content ?? filePreview?.content ?? null,
+          destinationPath,
+          sourcePath: artifact.path ?? null,
+        }));
+    }
+    catch (nextError) {
+      setError(errorMessage(nextError));
+    }
   }
 
   return (

@@ -340,6 +340,10 @@ mod tests {
         let lock = lock_file(&store, "g", "watch.lock").unwrap();
         lock.lock_exclusive().unwrap();
         assert!(running(&store, "g"));
+        // Other parallel tests spawn subprocesses. A concurrent fork may briefly
+        // inherit this file description, so drop alone need not release flock
+        // before the next assertion. Explicitly release the test-owned lock.
+        FileExt::unlock(&lock).unwrap();
         drop(lock);
         assert!(!running(&store, "g"));
     }

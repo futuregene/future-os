@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
+import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
 
 /** A UI-only product mode, intentionally independent from platform environment. */
@@ -15,6 +16,7 @@ export function CommunityEditionSection({
   const { t } = useTranslation("settings");
   const [selected, setSelected] = useState(communityEdition);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelected(communityEdition);
@@ -24,8 +26,12 @@ export function CommunityEditionSection({
     if (selected === communityEdition)
       return;
     setSaving(true);
+    setError(null);
     try {
       await onChangeCommunityEdition(selected);
+    }
+    catch (reason) {
+      setError(errorMessage(reason));
     }
     finally {
       setSaving(false);
@@ -35,6 +41,7 @@ export function CommunityEditionSection({
   return (
     <SettingsSection>
       <div className="space-y-3 rounded-lg border border-line-soft p-4">
+        {error ? <p role="alert" className="text-xs text-danger">{error}</p> : null}
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-sm font-medium text-ink">{t("reset.communityEdition")}</div>

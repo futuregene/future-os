@@ -47,7 +47,8 @@ with defaults, both channels disabled).
     "enabled": false,
     "client_id": "",
     "client_secret": "",
-    "domain": "api.dingtalk.com"
+    "domain": "api.dingtalk.com",
+    "sender_allowlist": []                // sender IDs; empty denies all, ["*"] trusts all
   }
 }
 ```
@@ -77,8 +78,8 @@ with defaults, both channels disabled).
 | `group_allowlist` | `[]` | Allowed chat_ids; `["*"]` allows all groups. |
 | `require_mention` | `true` | In groups, only reply when the bot is mentioned. |
 | `streaming` | `true` | Stream replies (CardKit card streaming). |
-| `resolve_sender_names` | `true` | Resolve sender display names. |
-| `max_image_mb` | `10` | Max inbound image size in MiB. |
+| `resolve_sender_names` | `true` | Resolve authorized senders' display names for diagnostic logging. |
+| `max_image_mb` | `10` | Maximum downloaded attachment size in MiB (images and files); enforced while reading the response, even without Content-Length. |
 | `typing_indicator` | `false` | Show a typing indicator. |
 
 > Per-group overrides are possible at runtime (e.g. disable a specific chat);
@@ -91,8 +92,15 @@ with defaults, both channels disabled).
 | `enabled` | `false` | Start the DingTalk bridge. |
 | `client_id` / `client_secret` | empty | DingTalk app credentials. |
 | `domain` | `api.dingtalk.com` | API domain. |
+| `sender_allowlist` | `[]` | Authorized sender IDs in both DMs and groups. Empty denies every sender, including slash commands; `["*"]` explicitly trusts everyone who can reach the bot. |
+
+**Upgrade note:** previously configured DingTalk bridges must populate `sender_allowlist` before receiving prompts. Group membership alone does not authorize access to the agent.
 
 ## Runtime behavior
+
+- Feishu model/thinking/permission defaults initialize new sessions; an explicit `/model` or `/effort` selection is retained for subsequent messages.
+- Approval buttons are bound to their originating chat and session, including threads. After a bridge restart, old unbound cards report that delivery failed; they do not approve whichever session is currently selected.
+- Arrival order is preserved during per-conversation setup; a delayed older task cannot supersede a newer message. Streaming replies do not hold the ingress queue. Each conversation buffers at most 128 incoming events; overflow is rejected with a channel warning instead of allocating unlimited tasks/memory. A transport ACK is not confirmation that an overloaded event was executed; retry after the backlog clears.
 
 - Fresh channel sessions do not independently enable a desktop sandbox policy.
   Restrict who can drive the bot; default `all` is not approval-on-by-default.

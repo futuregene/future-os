@@ -75,6 +75,7 @@ fn replay(root: &str) -> Goal {
 
 fn run_record(turn: u32) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn,
         todo_id: "t".into(),
         run_id: format!("r{turn}"),

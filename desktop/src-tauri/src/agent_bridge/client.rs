@@ -406,7 +406,8 @@ pub(super) fn add_session_rule_command(
 
 /// A file attached to a prompt, as passed from the frontend. Files are
 /// referenced by their original absolute path — never copied. Images carry no
-/// data here; `encode_attachments` reads the bytes and fills `base64`.
+/// data here; only attachment paths cross RPC. The agent reads and encodes
+/// image bytes as data URIs when it constructs the model request.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInput {
@@ -858,6 +859,12 @@ mod tests {
         assert_eq!(cmd.requested_run_id, "run-1");
         assert!(cmd.client_request_id.starts_with("desktop_"));
         assert_eq!(cmd.attachments.len(), 2);
+        assert!(
+            cmd.images.is_empty(),
+            "desktop never sends raw Base64 image content"
+        );
+        assert_eq!(cmd.attachments[0].path, "/tmp/a.png");
+        assert_eq!(cmd.attachments[0].kind, "image");
         assert_eq!(cmd.attachments[0].thumbnail, "/tmp/thumb.png");
         assert_eq!(
             cmd.attachments[1].thumbnail, "",

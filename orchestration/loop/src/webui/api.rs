@@ -182,6 +182,11 @@ fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
             }
         }
     }
+    for id in goal.history.iter().filter_map(|r| r.agent_id.as_ref()) {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
     ids.sort();
     ids.into_iter()
         .map(|id| {
@@ -205,7 +210,7 @@ fn agent_views(goal: &Goal, now: u64) -> Vec<AgentView> {
             for r in goal
                 .history
                 .iter()
-                .filter(|r| r.run_id.starts_with(&format!("{id}-")))
+                .filter(|r| r.agent_id.as_deref() == Some(id.as_str()))
             {
                 runs += 1;
                 tokens_in += r.tokens_in_delta;
@@ -895,6 +900,7 @@ mod tests {
         cost: f64,
     ) -> RunRecord {
         RunRecord {
+            agent_id: Some("a1".into()),
             turn: 1,
             todo_id: todo_id.to_string(),
             run_id: run_id.to_string(),
@@ -987,6 +993,49 @@ mod tests {
             )
             .unwrap();
         (store, dir, "g1".to_string())
+    }
+
+    #[test]
+    fn worker_cost_attribution_survives_completion_reassignment_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().to_string_lossy()).unwrap();
+        store.register(&Goal::new("g", "objective", ".")).unwrap();
+        let ts = now_epoch();
+        store
+            .append(crate::store::Event::GoalStarted {
+                goal_id: "g".into(),
+                ts,
+            })
+            .unwrap();
+        let mut todo = Todo::advancement("t", "task");
+        todo.owner = Some("someone-else".into());
+        todo.complete(true, vec![]);
+        store
+            .append(crate::store::Event::TodoAdded {
+                goal_id: "g".into(),
+                todo,
+                ts,
+            })
+            .unwrap();
+        let a = rec("t", "run_aabbcc", ts, FailureKind::None, 1.0);
+        let mut b = rec("t", "run_ddeeff", ts, FailureKind::None, 2.0);
+        b.agent_id = Some("worker-b".into());
+        let mut legacy_json = serde_json::to_value(&a).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("agent_id");
+        legacy_json["run_id"] = "a1-legacy-not-proof".into();
+        let legacy: RunRecord = serde_json::from_value(legacy_json).unwrap();
+        assert!(legacy.agent_id.is_none());
+        for run in [&a, &b, &legacy] {
+            store.append_run("g", run).unwrap();
+        }
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(goal.todo("t").unwrap().claimed_by.is_none());
+        let agents = agent_views(&goal, ts);
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].id, "a1");
+        assert_eq!((agents[0].runs, agents[0].cost), (1, 1.0));
+        assert_eq!(agents[1].id, "worker-b");
+        assert_eq!((agents[1].runs, agents[1].cost), (1, 2.0));
     }
 
     #[test]

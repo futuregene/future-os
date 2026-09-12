@@ -5,7 +5,7 @@ import { uploadAttachments } from "../files";
 import { loadPendingContinuation, savePendingContinuation } from "../pendingContinuationStorage";
 import { loadPendingPrompt, savePendingPrompt } from "../pendingPromptStorage";
 import { emptyTimeline } from "../timeline";
-import type { ConnectionPhase, MobileAttachment, RemoteCredentials } from "../types";
+import { modelReference, type ConnectionPhase, type MobileAttachment, type RemoteCredentials } from "../types";
 import type { SyncEngine } from "../syncEngine";
 import { usePromptOutbox } from "../usePromptOutbox";
 
@@ -242,6 +242,7 @@ describe("usePromptOutbox sendMessage", () => {
     draft?: boolean;
     draftMode?: "chat" | "workspace";
     draftWorkspaceId?: string;
+    modelId?: string;
     fileTransferSupported?: boolean;
     promptReceiptSupported?: boolean;
     engine?: SyncEngine | null;
@@ -279,7 +280,7 @@ describe("usePromptOutbox sendMessage", () => {
         draft: opts.draft ?? true,
         draftMode: opts.draftMode ?? "chat",
         draftWorkspaceId: opts.draftWorkspaceId ?? "",
-        modelId: "provider/model",
+        modelId: opts.modelId ?? "provider/model",
         thinkingLevel: "medium",
         fileTransferSupported: opts.fileTransferSupported ?? true,
         promptReceiptSupported: opts.promptReceiptSupported ?? true,
@@ -318,6 +319,16 @@ describe("usePromptOutbox sendMessage", () => {
       recordError,
     };
   }
+
+  it.each(["deepseek", "ambient"])("preserves the selected %s provider on the first prompt", async provider => {
+    const modelId = modelReference({ provider, id: "deepseek/deepseek-v4-flash" });
+    const h = await mountSend({ modelId });
+    await act(async () => h.result.sendMessage("hello"));
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt", modelId: `${provider}/deepseek/deepseek-v4-flash`, providerId: provider }),
+      "session-1",
+    );
+  });
 
   it("ignores an empty send with no attachments", async () => {
     const h = await mountSend();
@@ -439,6 +450,9 @@ describe("usePromptOutbox sendMessage", () => {
       expect.objectContaining({ type: "prompt", attachments: [{ uploadId: "u1" }] }),
       "session-1",
     );
+    const prompt = h.requestRetry.mock.calls.find(([command]) => command.type === "prompt")![0];
+    expect(prompt.images).toBeUndefined();
+    expect(prompt.attachments).toEqual([{ uploadId: "u1" }]);
     const engine = h.syncEngineRef.current as unknown as { mutate: jest.Mock };
     expect(engine.mutate).toHaveBeenCalled();
   });

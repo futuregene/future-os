@@ -4,6 +4,8 @@
 //! cases; `Cli::parse_from` is fed a synthetic argv whose program name is
 //! always `future-agent`, so help/error text matches the standalone binary.
 
+mod shutdown;
+
 use crate::{Engine, EngineConfig, Manager, ModelRegistry};
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -94,10 +96,85 @@ fn load_project_context(cwd: &str) -> String {
     String::new()
 }
 
+/// Transport crates that log per-frame / per-handshake detail at DEBUG. Raising
+/// the root level to `debug` for `--verbose` would otherwise bury the Agent's
+/// own logs under every HTTP/2 frame h2 sends and every TLS record rustls
+/// processes; pin them to WARN so only their failures show up. `RUST_LOG` still
+/// overrides this filter entirely.
+const NOISY_TRANSPORT_TARGETS: &[&str] = &["h2", "rustls", "tonic", "tower"];
+
+fn default_log_filter(verbose: bool) -> tracing_subscriber::EnvFilter {
+    if !verbose {
+        return tracing_subscriber::EnvFilter::new("info");
+    }
+    let mut directives = vec!["debug".to_owned()];
+    directives.extend(
+        NOISY_TRANSPORT_TARGETS
+            .iter()
+            .map(|target| format!("{target}=warn")),
+    );
+    tracing_subscriber::EnvFilter::new(directives.join(","))
+}
+
+#[cfg(test)]
+#[test]
+fn verbose_default_filter_enables_grpc_debug_events() {
+    for verbose in [false, true] {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(default_log_filter(verbose))
+            .with_writer(std::io::sink)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(tracing::enabled!(tracing::Level::DEBUG), verbose);
+            // The transport crates stay quiet even in verbose mode; the
+            // `enabled!` macro requires a literal target, so assert one by one.
+            assert!(!tracing::enabled!(target: "h2", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "rustls", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "tonic", tracing::Level::DEBUG));
+            assert!(!tracing::enabled!(target: "tower", tracing::Level::DEBUG));
+            assert!(tracing::enabled!(target: "h2", tracing::Level::WARN));
+        });
+    }
+}
+
+fn parse_tcp_bind(addr: &str) -> Result<(String, u16)> {
+    let address = if addr.starts_with(':') && !addr[1..].contains(':') {
+        format!("127.0.0.1{addr}")
+    } else if !addr.contains(':') {
+        format!("127.0.0.1:{addr}")
+    } else {
+        addr.to_owned()
+    };
+    let socket: std::net::SocketAddr = address.parse().with_context(|| {
+        format!("invalid --grpc-addr {addr:?}: expected IP:port (bracket IPv6 addresses)")
+    })?;
+    Ok((socket.ip().to_string(), socket.port()))
+}
+
+#[cfg(test)]
+#[test]
+fn tcp_bind_rejects_invalid_ports_and_accepts_bracketed_ipv6() {
+    for value in [
+        "localhost:1234",
+        "127.0.0.1:70000",
+        "0.0.0.0:",
+        "abc",
+        "::1:1234",
+    ] {
+        assert!(parse_tcp_bind(value).is_err(), "{value}");
+    }
+    assert_eq!(parse_tcp_bind(":1234").unwrap(), ("127.0.0.1".into(), 1234));
+    assert_eq!(parse_tcp_bind("[::1]:1234").unwrap(), ("::1".into(), 1234));
+}
+
 /// Abort every live session (SIGINT / profile-timer shutdown path).
 fn abort_all_sessions(sessions: &SessionsMap) {
     for s in sessions.read().values() {
-        s.read().abort();
+        let session = s.read();
+        session.abort();
+        session
+            .approval_gate
+            .cancel_session(&session.session_id, "Agent is shutting down.");
     }
 }
 
@@ -267,9 +344,14 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         }
         return Ok(());
     }
+    // Environment hydration must precede the signal thread as well as Tokio's
+    // worker threads: mutating the process environment is only sound here.
+    crate::sandbox::hydrate_from_login_shell();
+    // Outlive runtime destruction, profiler output, and Windows ACE cleanup.
+    let (_shutdown_guard, shutdown_request) = shutdown::ShutdownGuard::start()?;
     run_agent_lifecycle(
         cleanup_windows_sandbox_on_startup,
-        || run(cli),
+        || run(cli, shutdown_request),
         cleanup_windows_sandbox_on_exit,
     )
 }
@@ -314,7 +396,7 @@ fn profiler_fail_at(stage: &str) -> bool {
 }
 
 /// The full agent entry point — the former `main()` body.
-pub(crate) fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli, shutdown_request: shutdown::ShutdownRequest) -> Result<()> {
     // Resolve profile path early (before the runtime starts).
     // --profile-seconds alone implies CPU profiling with a default path —
     // but NOT when --profile-heap is set: running the CPU sampler during a
@@ -387,18 +469,12 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         );
     }
 
-    // Load the user's login-shell PATH/env BEFORE spawning any threads or the
-    // tokio runtime — set_var is only sound while single-threaded. Fixes
-    // "command not found" for user-installed tools (nvm/Homebrew/npm-global)
-    // when the agent is launched from a GUI with a minimal inherited PATH.
-    crate::sandbox::hydrate_from_login_shell();
-
     // Initialise tracing with timestamps. The console layer keeps ANSI colors;
     // the optional file layer writes through LogMirror, which shares one
     // mutexed File with the raw streaming prints (eprint_log!) — so the log
     // file ends up identical to the console output, minus ANSI colors.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| default_log_filter(cli.verbose));
 
     let console_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
@@ -459,7 +535,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
         .enable_all()
         .thread_stack_size(2 * 1024 * 1024)
         .build()?
-        .block_on(async_main(model_registry, cli));
+        .block_on(async_main(model_registry, cli, shutdown_request));
 
     // Write profiling flamegraph on shutdown (after the runtime drops,
     // so all async tasks have settled).  ProfilerGuard stops sampling on
@@ -518,6 +594,7 @@ pub(crate) fn run(cli: Cli) -> Result<()> {
 async fn async_main(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cli: Cli,
+    shutdown_request: shutdown::ShutdownRequest,
 ) -> Result<()> {
     let cwd = crate::utils::home_dir().to_string_lossy().to_string();
 
@@ -635,14 +712,13 @@ async fn async_main(
         .as_ref()
         .map(crate::models::effective_max_tokens);
 
-    // Build engine config from settings and model config
+    // Build engine config from settings and model config. The turn limit is
+    // opt-in: an absent or non-positive `maxTurns` is passed through as-is and
+    // means unlimited (see `Loop::run_streaming_with_messages`), matching
+    // `DEFAULT_MAX_TURNS` — no hidden floor is imposed here.
     let config = EngineConfig {
         cwd: cwd.clone(),
-        max_turns: if settings.max_turns > 0 {
-            settings.max_turns
-        } else {
-            50
-        },
+        max_turns: settings.max_turns,
         thinking_level: "high".to_string(),
         compaction_reserve_tokens: settings.compaction_reserve_tokens(),
         compaction_keep_recent_tokens: settings.compaction_keep_recent_tokens(),
@@ -665,18 +741,7 @@ async fn async_main(
 
     // Native per-user IPC is the default. Supplying --grpc-addr explicitly
     // opts into TCP compatibility mode.
-    let tcp_bind = cli.grpc_addr.as_deref().map(|addr| {
-        if let Some(port_str) = addr.strip_prefix(':') {
-            ("127.0.0.1".to_string(), port_str.parse().unwrap_or(50051))
-        } else if let Some((host, port)) = addr.rsplit_once(':') {
-            (host.to_string(), port.parse::<u16>().unwrap_or(50051))
-        } else {
-            match addr.parse::<u16>() {
-                Ok(port) => ("127.0.0.1".to_string(), port),
-                Err(_) => ("127.0.0.1".to_string(), 50051),
-            }
-        }
-    });
+    let tcp_bind = cli.grpc_addr.as_deref().map(parse_tcp_bind).transpose()?;
     // Discover skills (global user-level dirs only — project/cwd-relative
     // skill dirs are intentionally not scanned).
     let skill_dirs = crate::global_skill_dirs();
@@ -755,8 +820,8 @@ async fn async_main(
         loop_template,
     };
 
-    // Ctrl+C: set the shutting_down flag so new prompts are rejected, then
-    // abort in-flight streams and exit immediately.
+    // Ctrl+C: reject new prompts and abort in-flight streams. The independent
+    // signal thread remains alive if session locks or runtime teardown stall.
     let shutting_down = app_state.shutting_down.clone();
     let sessions = app_state.sessions.clone();
 
@@ -798,13 +863,15 @@ async fn async_main(
 
     tokio::select! {
         result = server => result?,
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("SIGINT received — aborting active streams, exiting immediately");
+        signal = shutdown_request => {
+            signal.context("Ctrl-C listener stopped unexpectedly")?
+                .context("Could not listen for Ctrl-C")?;
             shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
 
             // Interrupt in-flight runs so the process exits promptly instead
             // of waiting for a long LLM stream to finish on its own.
             abort_all_sessions(&sessions);
+            tracing::info!("Ctrl-C received — press Ctrl-C again to force exit");
         }
         _ = profile_rx => {
             // profile timer handled inside the future

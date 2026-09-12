@@ -8,15 +8,34 @@ SCRIPT_DIR="${SCRIPT_PATH%/*}"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MOBILE_DIR="$ROOT_DIR/mobile"
 
-ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+HOST_OS="$(uname -s)"
+case "$HOST_OS" in
+  Darwin) DEFAULT_ANDROID_HOME="$HOME/Library/Android/sdk" ;;
+  Linux) DEFAULT_ANDROID_HOME="$HOME/Android/Sdk" ;;
+  *) echo "Unsupported Android development host: $HOST_OS" >&2; exit 1 ;;
+esac
+ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$DEFAULT_ANDROID_HOME}}"
 ANDROID_SDK_ROOT="$ANDROID_HOME"
 
+case "$(uname -m)" in
+  arm64|aarch64) ABI="arm64-v8a" ;;
+  x86_64|amd64) ABI="x86_64" ;;
+  *) echo "Unsupported Android emulator architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 AVD_NAME="FutureOS"
-SYSTEM_IMAGE="system-images;android-36.1;google_apis;arm64-v8a"
+SYSTEM_IMAGE="system-images;android-36.1;google_apis;$ABI"
 API_LEVEL="36"
 BUILD_TOOLS_VERSION="36.0.0"
 
-JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 17 2>/dev/null || echo '')}"
+if [[ -z "${JAVA_HOME:-}" ]]; then
+  if [[ "$HOST_OS" == "Darwin" ]]; then
+    JAVA_HOME="$(/usr/libexec/java_home -v 17 2>/dev/null || echo '')"
+  elif command -v javac >/dev/null 2>&1; then
+    JAVAC_PATH="$(readlink -f "$(command -v javac)")"
+    JAVA_HOME="${JAVAC_PATH%/bin/javac}"
+  fi
+fi
+JAVA_HOME="${JAVA_HOME:-}"
 
 MODE="${1:-dev}"
 REBUILD_PREBUILD="${REBUILD_PREBUILD:-0}"

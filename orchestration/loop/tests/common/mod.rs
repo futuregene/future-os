@@ -118,6 +118,7 @@ pub fn open_store(cr: &CliRoot) -> future_loop::store::Store {
 /// A run record for seeding runs.jsonl / RunRecorded events.
 pub fn run_record(todo_id: &str, state: &str, recorded_at: u64) -> future_loop::state::RunRecord {
     future_loop::state::RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: todo_id.to_string(),
         run_id: format!("run-{todo_id}-{recorded_at}"),

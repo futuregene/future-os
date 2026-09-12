@@ -150,6 +150,17 @@ fn assemble_assistant_content(
     content
 }
 
+fn clear_unfinished_provider_identity(tool: &mut AgentToolCall) {
+    if let Some(metadata) = tool
+        .provider_metadata
+        .get_mut("openai")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        metadata.remove("id");
+        metadata.remove("item_id");
+    }
+}
+
 fn push_finalized_tool_call(
     tool_calls: &mut Vec<AgentToolCall>,
     order: &mut Vec<AssistantBlockOrder>,
@@ -625,6 +636,7 @@ impl Loop {
             let mut output_started = false;
             let mut was_outputting = false;
             let mut stream_error = None;
+            let mut interrupted_during_stream = false;
             let mut model_stream_failed = false;
             // Set when the LLM layer reports a failure or the stream reaches
             // EOF without a terminal event. Silence alone is not truncation.
@@ -645,6 +657,7 @@ impl Loop {
                 {
                     Some(Some(event)) => event,
                     None => {
+                        interrupted_during_stream = true;
                         stream_error = Some(anyhow!("interrupted"));
                         break;
                     }
@@ -656,6 +669,24 @@ impl Loop {
                         break;
                     }
                 };
+                // Provider indices must never directly control unbounded vector
+                // allocation (including usize::MAX + 1 overflow).
+                if matches!(&model_event,
+                    ModelStreamEvent::ToolInputStart { index, .. }
+                    | ModelStreamEvent::ToolInputDelta { index, .. }
+                    | ModelStreamEvent::ToolInputEnd { index, .. } if *index >= 256)
+                {
+                    let message =
+                        "provider tool index exceeds the 256-call response limit".to_string();
+                    on_event(RunEvent::Model(ModelStreamEvent::Error {
+                        message: message.clone(),
+                    }));
+                    stream_error = Some(anyhow::anyhow!(message));
+                    model_stream_failed = true;
+                    stream_truncated = true;
+                    truncation_detected_by = Some("invalid_tool_index");
+                    break;
+                }
                 // HTTP headers alone do not mean recovery. Wait for real model
                 // progress; EOF cleanup/usage events must not clear the hint.
                 if reconnecting
@@ -916,7 +947,8 @@ impl Loop {
                             self.process_usage_event(usage, &mut total_usage);
                         }
                         for tc_opt in current_tool_calls.iter_mut() {
-                            if let Some(tc) = tc_opt.take() {
+                            if let Some(mut tc) = tc_opt.take() {
+                                clear_unfinished_provider_identity(&mut tc);
                                 push_finalized_tool_call(
                                     &mut agent_tool_calls,
                                     &mut assistant_block_order,
@@ -960,7 +992,8 @@ impl Loop {
             drop(rx);
 
             for tc_opt in current_tool_calls.iter_mut() {
-                if let Some(tc) = tc_opt.take() {
+                if let Some(mut tc) = tc_opt.take() {
+                    clear_unfinished_provider_identity(&mut tc);
                     push_finalized_tool_call(&mut agent_tool_calls, &mut assistant_block_order, tc);
                 }
             }
@@ -1038,7 +1071,8 @@ impl Loop {
             // can pick stream end over the interrupt channel). Both land on
             // the same partial-assistant exit; the single-line closure keeps
             // the test-unreproducible race edge off its own line.
-            let interrupted_after_stream = self.is_interrupted()
+            let interrupted_after_stream = interrupted_during_stream
+                || self.is_interrupted()
                 || interrupt_rx
                     .as_mut()
                     .is_some_and(|irx| irx.try_recv().is_ok());
@@ -1112,14 +1146,36 @@ impl Loop {
                 continue;
             }
             if stream_error.is_some() || interrupted_after_stream {
+                let reason = if interrupted_after_stream {
+                    "interrupt"
+                } else if disconnected {
+                    "connection interruption (retries exhausted)"
+                } else {
+                    "provider stream error"
+                };
                 build_partial_assistant(
                     &mut messages,
                     &assistant_block_order,
                     &reasoning_blocks,
                     &text_blocks,
                     &agent_tool_calls,
-                    "interrupt",
+                    reason,
                 );
+                for tc in &agent_tool_calls {
+                    let output = format!(
+                        "[Tool execution cancelled — {} was not executed due to {reason}]",
+                        tc.name
+                    );
+                    on_event(RunEvent::ToolExecutionFinished {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: output.clone(),
+                        error: Some(output),
+                        exit_code: None,
+                        is_soft_fail: None,
+                        target_path: None,
+                    });
+                }
                 if model_stream_failed {
                     self.stream_incomplete
                         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1918,6 +1974,57 @@ mod tests {
     // ── run_streaming_with_messages ─────────────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
+    async fn run_rejects_provider_controlled_allocation_indices() {
+        for event in [
+            ModelStreamEvent::ToolInputDelta {
+                index: usize::MAX,
+                id: "bad-index".into(),
+                delta: "{}".into(),
+                snapshot: false,
+            },
+            ModelStreamEvent::ToolInputDelta {
+                index: 256,
+                id: "bad-index".into(),
+                delta: "{}".into(),
+                snapshot: true,
+            },
+        ] {
+            let provider = ScriptedProvider::new(vec![Script::Events(vec![event])]);
+            let loop_ = Loop::new(provider, "mock");
+            let errors = Arc::new(parking_lot::Mutex::new(Vec::new()));
+            let captured = errors.clone();
+            let (_, messages) = loop_
+                .run_streaming_with_messages(
+                    user_messages("hi"),
+                    &StreamContext::default(),
+                    |_| {},
+                    move |event| {
+                        if let RunEvent::Model(ModelStreamEvent::Error { message }) = event {
+                            captured.lock().push(message);
+                        }
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            // This API reports stream failures through events and retains the
+            // partial transcript; it does not return Err for provider errors.
+            assert!(errors
+                .lock()
+                .iter()
+                .any(|message| message.contains("tool index")));
+            assert_eq!(messages.len(), 1, "invalid tools must not enter history");
+            assert!(loop_
+                .stream_incomplete
+                .load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(
+                loop_.stream_truncation.lock().as_ref().unwrap().detected_by,
+                "invalid_tool_index"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn run_streams_simple_text_reply() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![
             ev_text("Hello"),
@@ -2311,6 +2418,44 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("turn limit"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_with_zero_max_turns_is_unlimited() {
+        // `max_turns = 0` (also the absent-setting default) means unlimited.
+        // Run well past the 50 the startup path used to hard-code, so a
+        // reintroduced floor fails here instead of only in production.
+        const ROUNDS: usize = 55;
+        let mut scripts: Vec<_> = (0..ROUNDS)
+            .map(|i| {
+                Script::Events(vec![
+                    ev_toolcall_start(0, &format!("c{i}"), "echo", "{}"),
+                    ev_toolcall_end(),
+                    ev_stop(),
+                ])
+            })
+            .collect();
+        scripts.push(Script::Events(vec![ev_text("done"), ev_stop()]));
+        let provider = ScriptedProvider::new(scripts);
+        let loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(crate::types::AgentConfig {
+                max_turns: 0,
+                ..Default::default()
+            });
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("loop"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "done");
+        // user + (assistant tool_calls + tool result) per round + final assistant
+        assert_eq!(messages.len(), 2 + ROUNDS * 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4055,6 +4200,76 @@ mod tests {
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
         let (text, _) = runner.await.unwrap().unwrap();
         assert_eq!(text, "");
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn interrupted_open_tool_does_not_replay_provider_owned_identity() {
+        let mut start = ev_toolcall_start(0, "c1", "echo", "{}");
+        if let ModelStreamEvent::ToolInputStart {
+            provider_metadata, ..
+        } = &mut start
+        {
+            provider_metadata.insert(
+                "openai".into(),
+                serde_json::json!({"id":"fc-pending", "item_id":"fc-pending", "other":"keep"}),
+            );
+        }
+        let provider = ScriptedProvider::new(vec![Script::PartialThenStall(vec![start])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tx.send(()).await.unwrap();
+        });
+        let (_, history) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                |_| {},
+                |_| {},
+                Some(rx),
+            )
+            .await
+            .unwrap();
+        let calls = history[1].tool_calls();
+        let metadata = &calls[0].provider_metadata["openai"];
+        assert!(metadata.get("id").is_none());
+        assert!(metadata.get("item_id").is_none());
+        assert_eq!(metadata["other"], "keep");
+        assert!(history[2].text().contains("due to interrupt"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn exhausted_retry_reports_connection_reason_for_unexecuted_tools() {
+        let provider = ScriptedProvider::new(
+            (0..6)
+                .map(|_| {
+                    Script::Events(vec![
+                        ev_toolcall_start(0, "c1", "echo", "{}"),
+                        ev_disconnect(),
+                    ])
+                })
+                .collect(),
+        );
+        let loop_ = Loop::new(provider, "mock");
+        let ends = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let out = ends.clone();
+        let (_, history) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                |_| {},
+                move |event| {
+                    if let RunEvent::ToolExecutionFinished { output, .. } = event {
+                        out.lock().push(output);
+                    }
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(history.last().unwrap().text().contains("retries exhausted"));
+        assert!(ends.lock().last().unwrap().contains("retries exhausted"));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

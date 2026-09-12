@@ -121,12 +121,12 @@ describe("useMessagePaging", () => {
     container.remove();
   });
 
-  it("expands all cached history only when search can match outside the window", async () => {
+  it("expands only as far as the earliest matching cached message", async () => {
     const { container, h } = setup();
     await act(async () => h.current.prepareSearch("missing", new AbortController().signal));
     expect(h.current.visibleMessages[0]?.id).toBe("u5");
-    await act(async () => h.current.prepareSearch("u1", new AbortController().signal));
-    expect(h.current.visibleMessages[0]?.id).toBe("u1");
+    await act(async () => h.current.prepareSearch("u3", new AbortController().signal));
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
     expect(h.current.coolingDown).toBe(false);
     expect(h.current.showLoadOlderHint).toBe(false);
     expect(container.style.overflowY).toBe("");

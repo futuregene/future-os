@@ -283,7 +283,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "fork" => session_lifecycle::cmd_fork(state, &session, &cmd, id),
         "get_last_assistant_text" => observability::handle_get_last_assistant_text(&session, id),
         "set_session_name" => settings::handle_set_session_name(&session, &cmd, id),
-        "abort_retry" => run_control::handle_abort_retry(&session, id),
+        "abort_retry" => run_control::handle_abort_retry(state, &session, id),
         "cycle_model" => settings::handle_cycle_model(state, &session, id),
         "cycle_thinking_level" => settings::handle_cycle_thinking_level(&session, id),
         "clone" => session_lifecycle::cmd_clone(state, &session, &cmd, id),

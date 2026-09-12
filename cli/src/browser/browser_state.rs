@@ -33,7 +33,28 @@ pub async fn load_browser_config() -> Result<BrowserConfig, BrowserError> {
     }
 }
 
-/// `saveBrowserConfig(config)`.
+/// Lock the read/modify/write transaction across CLI processes. Drop releases
+/// the OS lock, including on errors/cancellation; keep it off the async executor.
+pub async fn lock_browser_config() -> Result<std::fs::File, BrowserError> {
+    let dir = browser_dir();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join("config.lock"))?;
+        file.lock()?;
+        Ok::<_, std::io::Error>(file)
+    })
+    .await
+    .map_err(|e| invalid_browser_config_error(e.to_string()))?
+    .map_err(|e| invalid_browser_config_error(e.to_string()))
+}
+
+/// Atomically publish a complete config. Read/modify/write callers must hold
+/// `lock_browser_config` from before their read through this write.
 pub async fn save_browser_config(config: &BrowserConfig) -> Result<(), BrowserError> {
     tokio::fs::create_dir_all(browser_dir())
         .await
@@ -45,9 +66,17 @@ pub async fn save_browser_config(config: &BrowserConfig) -> Result<(), BrowserEr
         "{}\n",
         serde_json::to_string_pretty(&value).expect("config json serializes")
     );
-    tokio::fs::write(browser_dir().join("config.json"), text)
-        .await
-        .map_err(|e| invalid_browser_config_error(format!("{e}")))
+    // No await between writing and publishing: cancellation must not release
+    // the caller's transaction lock while a detached writer is still running.
+    let dir = browser_dir();
+    (|| {
+        use std::io::Write;
+        let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
+        temp.write_all(text.as_bytes())?;
+        temp.persist(dir.join("config.json")).map_err(|e| e.error)?;
+        Ok::<_, std::io::Error>(())
+    })()
+    .map_err(|e| invalid_browser_config_error(e.to_string()))
 }
 
 /// `defaultBrowserConfig()`.
@@ -342,6 +371,41 @@ fn validate_refs_map(value: Option<&Value>) -> Result<Option<Map<String, Value>>
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_config_transactions_retain_every_update() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            dir.path().as_os_str().to_os_string(),
+        )]);
+        save_browser_config(&default_browser_config())
+            .await
+            .unwrap();
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..20 {
+            tasks.spawn(async move {
+                let _transaction = lock_browser_config().await.unwrap();
+                let mut config = load_browser_config().await.unwrap();
+                config
+                    .refs
+                    .get_or_insert_with(Map::new)
+                    .insert(format!("a{index}"), json!(format!("#e{index}")));
+                tokio::task::yield_now().await;
+                save_browser_config(&config).await.unwrap();
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        assert_eq!(load_browser_config().await.unwrap().refs.unwrap().len(), 20);
+        assert_eq!(
+            std::fs::read_dir(browser_dir()).unwrap().count(),
+            2,
+            "only config and stable lock remain"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

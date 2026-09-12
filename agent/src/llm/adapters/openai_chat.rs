@@ -434,7 +434,7 @@ fn finish(
     usage: Option<Usage>,
 ) -> Result<Vec<ModelStreamEvent>> {
     if state.finished {
-        return Ok(Vec::new());
+        return Ok(usage.map(ModelStreamEvent::Usage).into_iter().collect());
     }
     let mut events = Vec::new();
     if state.reasoning_open {
@@ -1073,5 +1073,13 @@ mod tests {
         assert!(finish(&mut state, FinishReason::Stop, None)
             .unwrap()
             .is_empty());
+        let usage = Usage {
+            prompt_tokens: 123,
+            ..Default::default()
+        };
+        let events = finish(&mut state, FinishReason::Stop, Some(usage)).unwrap();
+        assert!(
+            matches!(events.as_slice(), [ModelStreamEvent::Usage(usage)] if usage.prompt_tokens == 123)
+        );
     }
 }

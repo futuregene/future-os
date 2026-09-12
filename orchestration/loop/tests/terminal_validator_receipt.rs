@@ -43,6 +43,7 @@ fn store_with_validator_todo(root: &str) -> (Store, String, String) {
 
 fn run_record(todo_id: &str, passed: bool) -> RunRecord {
     RunRecord {
+        agent_id: None,
         turn: 1,
         todo_id: todo_id.to_string(),
         run_id: "r1".into(),

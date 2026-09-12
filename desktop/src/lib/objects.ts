@@ -16,5 +16,6 @@ export function singleLine(value: string): string {
 /** Single-line, then hard-truncate to `max` characters with an ellipsis. */
 export function truncate(value: string, max: number): string {
   const compact = singleLine(value);
-  return compact.length > max ? `${compact.slice(0, max)}...` : compact;
+  const characters = Array.from(compact);
+  return characters.length > max ? `${characters.slice(0, max).join("")}...` : compact;
 }

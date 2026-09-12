@@ -17,6 +17,11 @@ describe("singleLine", () => {
 });
 
 describe("truncate", () => {
+  it("never splits a non-BMP character at the title boundary", () => {
+    const prefix = "a".repeat(27);
+    expect(truncate(`${prefix}\u{1F600}tail`, 28)).toBe(`${prefix}\u{1F600}...`);
+    expect(truncate(`${prefix}\u{1F600}`, 28)).toBe(`${prefix}\u{1F600}`);
+  });
   it("truncates beyond max with an ellipsis", () => {
     expect(truncate("hello world", 5)).toBe("hello...");
   });

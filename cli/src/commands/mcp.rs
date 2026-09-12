@@ -500,6 +500,10 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_error_without_code_says_unknown() {
+        // point_platform_at writes auth.json: isolate it and hold the same lock
+        // as configure/auth tests instead of overwriting their live fixtures.
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::sse(
             "/api/v1/mcp",
             "data: {\"error\":{\"message\":\"no code here\"}}\n",

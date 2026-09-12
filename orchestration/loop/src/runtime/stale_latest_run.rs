@@ -63,6 +63,7 @@ mod tests {
 
     fn run(recorded_at: u64) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: 1,
             todo_id: "t1".to_string(),
             run_id: "r1".to_string(),

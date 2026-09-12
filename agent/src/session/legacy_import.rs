@@ -19,7 +19,8 @@ struct Source {
 fn source_unreadable(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
-        std::io::ErrorKind::PermissionDenied
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::PermissionDenied
             | std::io::ErrorKind::InvalidData
             | std::io::ErrorKind::IsADirectory
             | std::io::ErrorKind::NotADirectory
@@ -47,6 +48,52 @@ struct InvalidSource {
     file: String,
     line: usize,
     kind: &'static str,
+}
+
+fn revalidate_sources(sources: &[Source]) -> std::result::Result<(), InvalidSource> {
+    for source in sources.iter().filter(|source| source.problem.is_none()) {
+        let kind = match std::fs::read(&source.path) {
+            Ok(bytes) if bytes == source.bytes => continue,
+            Ok(_) => "source_changed",
+            Err(_) => "source_unreadable",
+        };
+        return Err(InvalidSource {
+            file: source
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            line: 0,
+            kind,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn second_read_source_changes_are_classified_without_importing_stale_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.jsonl");
+    std::fs::write(&path, "initial").unwrap();
+    let source = read_source(path.clone()).unwrap();
+    std::fs::write(&path, "changed").unwrap();
+    assert_eq!(
+        revalidate_sources(std::slice::from_ref(&source))
+            .unwrap_err()
+            .kind,
+        "source_changed"
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        revalidate_sources(&[source]).unwrap_err().kind,
+        "source_unreadable"
+    );
+    assert_eq!(
+        read_source(path).unwrap().problem,
+        Some("source_unreadable")
+    );
 }
 
 struct Import {
@@ -199,16 +246,11 @@ impl SqliteStore {
                 hash.update(&source.bytes);
             }
             let fingerprint = format!("{:x}", hash.finalize());
-            let parsed = parse_sources(&sources, &id);
-            // No source is ever opened for writing, even for a truncated tail.
-            for source in &sources {
-                if source.problem.is_some() {
-                    continue;
-                }
-                if std::fs::read(&source.path)? != source.bytes {
-                    bail!("legacy source changed during import");
-                }
-            }
+            // Source races are per-session failures, like parse failures; they
+            // must neither import an inconsistent snapshot nor prevent all
+            // unrelated sessions from starting. Destination storage errors still
+            // propagate from the transaction below.
+            let parsed = revalidate_sources(&sources).and_then(|()| parse_sources(&sources, &id));
             self.db.call(move |db| {
                 let tx = db.transaction()?;
                 let parsed = if tx.query_row("SELECT id FROM sessions WHERE id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.is_some() {

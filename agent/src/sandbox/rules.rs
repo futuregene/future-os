@@ -156,7 +156,12 @@ impl PathRule {
             Matcher::Subtree { lexical, canonical } => {
                 paths::path_within(path, lexical) || paths::path_within(path, canonical)
             }
-            Matcher::Glob { regex, .. } => regex.is_match(&path.to_string_lossy()),
+            Matcher::Glob { regex, .. } => {
+                let path = path.to_string_lossy();
+                #[cfg(windows)]
+                let path = path.replace('\\', "/");
+                regex.is_match(&path)
+            }
         }
     }
 
@@ -195,25 +200,23 @@ fn compile_matcher(abs_pattern: &str) -> Matcher {
     }
     // Canonicalize the leading non-glob prefix (symlink-correct), keep the
     // globbed remainder verbatim, then compile to an anchored regex.
-    let segments: Vec<&str> = abs_pattern.split('/').collect();
-    let mut prefix = PathBuf::from("/");
-    let mut split_at = segments.len();
-    for (idx, seg) in segments.iter().enumerate() {
-        if has_glob(seg) {
-            split_at = idx;
-            break;
-        }
-        if !seg.is_empty() {
-            prefix.push(seg);
+    let mut prefix = PathBuf::new();
+    let mut rest = PathBuf::new();
+    let mut glob_started = false;
+    for component in Path::new(abs_pattern).components() {
+        glob_started |= has_glob(&component.as_os_str().to_string_lossy());
+        if glob_started {
+            rest.push(component.as_os_str());
+        } else {
+            prefix.push(component.as_os_str());
         }
     }
-    let canon_prefix = paths::canonicalize_lenient(&prefix);
-    let rest = segments[split_at..].join("/");
-    let full = format!(
-        "{}/{}",
-        canon_prefix.to_string_lossy().trim_end_matches('/'),
-        rest
-    );
+    let full = paths::canonicalize_lenient(&prefix)
+        .join(rest)
+        .to_string_lossy()
+        .into_owned();
+    #[cfg(windows)]
+    let full = full.replace('\\', "/");
     Matcher::Glob {
         pattern: full.clone(),
         regex: build_glob_regex(&full),
@@ -226,18 +229,16 @@ fn compile_matcher(abs_pattern: &str) -> Matcher {
 /// the builder can only fail on a regex-crate regression.
 fn build_glob_regex(glob: &str) -> Regex {
     let mut re = String::from("^");
-    let bytes = glob.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
+    let mut chars = glob.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             '*' => {
-                if i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
                     re.push_str(".*");
-                    i += 2;
                     // Collapse `/**/` so `a/**/b` also matches `a/b`.
-                    if i < bytes.len() && bytes[i] as char == '/' {
-                        i += 1;
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
                     }
                     continue;
                 }
@@ -250,11 +251,10 @@ fn build_glob_regex(glob: &str) -> Regex {
             }
             _ => re.push(c),
         }
-        i += 1;
     }
     re.push('$');
     RegexBuilder::new(&re)
-        .case_insensitive(cfg!(target_os = "macos"))
+        .case_insensitive(cfg!(any(target_os = "macos", windows)))
         .build()
         .expect("glob regex is built from escaped literals only")
 }
@@ -279,14 +279,47 @@ struct RawRule {
 /// `None` (and lets the caller log/skip the layer) when the file is missing or
 /// malformed — never fails the run, never fails open.
 pub fn parse_rule_file(contents: &str, workspace: &Path) -> Option<Vec<PathRule>> {
+    parse_rule_file_diagnostics(contents, workspace, &mut Vec::new())
+}
+
+fn parse_rule_file_diagnostics(
+    contents: &str,
+    workspace: &Path,
+    errors: &mut Vec<String>,
+) -> Option<Vec<PathRule>> {
     let parsed: RuleFile = serde_json::from_str(contents).ok()?;
     let rules = parsed
         .rules
         .into_iter()
-        .filter_map(|raw| {
+        .enumerate()
+        .filter_map(|(index, raw)| {
+            let access = raw
+                .access
+                .as_deref()
+                .unwrap_or("both")
+                .trim()
+                .to_ascii_lowercase();
+            let action = raw
+                .action
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            if raw.path.as_ref().is_none_or(|p| p.is_empty())
+                || !matches!(access.as_str(), "read" | "write" | "both")
+                || Decision::parse(&action).is_none()
+            {
+                let error = format!(
+                    "approval rule {} ignored: missing path or invalid access/action",
+                    index + 1
+                );
+                tracing::warn!("{error}");
+                errors.push(error);
+                return None;
+            }
             let path = raw.path?;
-            let decision = Decision::parse(raw.action.as_deref().unwrap_or(""))?;
-            let access = Access::parse(raw.access.as_deref().unwrap_or("both"));
+            let decision = Decision::parse(&action)?;
+            let access = Access::parse(&access);
             Some(PathRule::new(
                 &absolutize(workspace, &path),
                 access,
@@ -300,8 +333,16 @@ pub fn parse_rule_file(contents: &str, workspace: &Path) -> Option<Vec<PathRule>
 /// Load and parse a rule file from disk. Missing file → empty (no rules).
 /// Present-but-broken → `Err` with the reason (caller logs + skips the layer).
 pub fn load_rule_file(path: &Path, workspace: &Path) -> Result<Vec<PathRule>, String> {
+    load_rule_file_diagnostics(path, workspace, &mut Vec::new())
+}
+
+fn load_rule_file_diagnostics(
+    path: &Path,
+    workspace: &Path,
+    errors: &mut Vec<String>,
+) -> Result<Vec<PathRule>, String> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => parse_rule_file(&contents, workspace)
+        Ok(contents) => parse_rule_file_diagnostics(&contents, workspace, errors)
             .ok_or_else(|| format!("malformed rule file: {}", path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(error) => Err(format!("unreadable rule file {}: {error}", path.display())),
@@ -529,24 +570,29 @@ impl RuleSet {
         let workspace = paths::canonicalize_lenient(workspace);
 
         let mut resolution_errors = Vec::new();
-        let workspace_rules =
-            match load_rule_file(&workspace.join(".future/approval_rule.json"), &workspace) {
-                Ok(rules) => rules,
-                Err(error) => {
-                    tracing::warn!("{error}");
-                    resolution_errors.push(error);
-                    vec![]
-                }
-            };
+        let workspace_rules = match load_rule_file_diagnostics(
+            &workspace.join(".future/approval_rule.json"),
+            &workspace,
+            &mut resolution_errors,
+        ) {
+            Ok(rules) => rules,
+            Err(error) => {
+                tracing::warn!("{error}");
+                resolution_errors.push(error);
+                vec![]
+            }
+        };
         let user_rules = match user_rule_file {
-            Some(file) => match load_rule_file(file, &workspace) {
-                Ok(rules) => rules,
-                Err(error) => {
-                    tracing::warn!("{error}");
-                    resolution_errors.push(error);
-                    vec![]
+            Some(file) => {
+                match load_rule_file_diagnostics(file, &workspace, &mut resolution_errors) {
+                    Ok(rules) => rules,
+                    Err(error) => {
+                        tracing::warn!("{error}");
+                        resolution_errors.push(error);
+                        vec![]
+                    }
                 }
-            },
+            }
             None => vec![],
         };
 
@@ -726,6 +772,48 @@ mod tests {
         let dir = crate::test_support::unique_temp_path("rules");
         std::fs::create_dir_all(&dir).unwrap();
         paths::canonicalize_lenient(&dir)
+    }
+
+    #[test]
+    fn invalid_rule_fields_are_diagnosed_without_losing_valid_rules() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join(".future")).unwrap();
+        std::fs::write(
+            root.path().join(".future/approval_rule.json"),
+            r#"{"rules":[
+            {"path":"read-only","access":"READ","action":"deny "},
+            {"path":"typo","access":"raed","action":"deny"},
+            {"path":"typo2","action":"dney"}
+        ]}"#,
+        )
+        .unwrap();
+        let rules = RuleSet::resolve_isolated(root.path());
+        let path = paths::canonicalize_lenient(root.path()).join("read-only");
+        assert_eq!(rules.evaluate(&path, Op::Read), Decision::Deny);
+        assert_eq!(rules.evaluate(&path, Op::Write), Decision::Allow);
+        assert_eq!(rules.resolution_errors.len(), 2);
+    }
+
+    #[test]
+    fn unicode_workspace_and_rule_globs_preserve_secret_guards() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = paths::canonicalize_lenient(root.path()).join("项目-é");
+        std::fs::create_dir_all(workspace.join(".future")).unwrap();
+        std::fs::write(
+            workspace.join(".future/approval_rule.json"),
+            r#"{"rules":[{"path":"日志/*.log","action":"deny"}]}"#,
+        )
+        .unwrap();
+        let set = RuleSet::resolve_isolated(&workspace);
+        let secret = workspace.join("certs/server.key");
+        assert!(set.is_secret_path(&secret));
+        assert_eq!(set.evaluate(&secret, Op::Read), Decision::Ask);
+        assert_eq!(set.evaluate(&secret, Op::Write), Decision::Ask);
+        assert_eq!(
+            set.evaluate(&workspace.join("日志/今日.log"), Op::Write),
+            Decision::Deny
+        );
+        assert!(build_glob_regex("/项目/?.key").is_match("/项目/密.key"));
     }
 
     #[test]

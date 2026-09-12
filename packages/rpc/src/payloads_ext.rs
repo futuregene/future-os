@@ -45,6 +45,8 @@ impl RunAcceptedState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunAck {
     pub run_id: String,
+    /// Meaningful only for running/existing; queued has no execution epoch
+    /// and uses 0. Always inspect accepted_state before using this as a fence.
     pub run_epoch: u64,
     pub accepted_state: RunAcceptedState,
     #[serde(skip_serializing_if = "Option::is_none")]

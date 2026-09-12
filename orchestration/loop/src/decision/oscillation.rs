@@ -112,11 +112,14 @@ fn alternating_suffix_len(signatures: &[RunSignature]) -> usize {
 /// observing only delivery records with `recorded_at > since` (`since` is
 /// the last replan-ACK timestamp, 0 when the goal never ACKed).
 pub fn detect(history: &[RunRecord], since: u64) -> Option<OscillationReport> {
-    let signatures: Vec<(u64, RunSignature)> = history
+    let mut signatures: Vec<(u64, RunSignature)> = history
         .iter()
         .filter(|r| r.recorded_at > since)
         .filter_map(|r| signature_of(r).map(|s| (r.recorded_at, s)))
         .collect();
+    // Timestamps are captured before append's lock; concurrent writers can
+    // land in a different ledger order. Observe outcomes chronologically.
+    signatures.sort_by_key(|(ts, _)| *ts);
     let len = alternating_suffix_len(&signatures.iter().map(|(_, s)| *s).collect::<Vec<_>>());
     if len < OSCILLATION_PATTERN_LEN {
         return None;
@@ -153,6 +156,7 @@ mod tests {
 
     fn record(ts: u64, terminal_state: &str, validation_ok: Option<bool>) -> RunRecord {
         RunRecord {
+            agent_id: None,
             turn: ts as u32,
             todo_id: "t".to_string(),
             run_id: format!("run-{ts}"),
@@ -232,6 +236,14 @@ mod tests {
         // A same-symbol pair resets the suffix regardless of what led it.
         assert_eq!(alternating_suffix_len(&[A, V, A, V, V]), 1);
         assert_eq!(alternating_suffix_len(&[V, V, A, V, A]), 4);
+    }
+
+    #[test]
+    fn append_order_cannot_fabricate_timestamp_order_oscillation() {
+        let history = vec![accepted(50), rejected(10), accepted(40), rejected(20)];
+        assert!(detect(&history, 0).is_none());
+        let history = vec![accepted(30), rejected(40), accepted(10), rejected(20)];
+        assert_eq!(detect(&history, 0).unwrap().newest_recorded_at, 40);
     }
 
     #[test]

@@ -231,7 +231,8 @@ fn try_claim_todo_lease_reconstruction() {
             .unwrap()
             .claimed
     );
-    // A garbage line in the ledger is skipped during reconstruction.
+    // Atomic claim uses the same canonical reader as replay: malformed state
+    // must fail closed, not append a claim after ignoring unknown ownership.
     let events_path = store.goal_dir("g1").join("events.jsonl");
     std::fs::OpenOptions::new()
         .append(true)
@@ -239,7 +240,10 @@ fn try_claim_todo_lease_reconstruction() {
         .unwrap()
         .write_all(b"{not json\n")
         .unwrap();
-    assert!(store.try_claim_todo("g1", "t1", "dave", 3600).is_ok());
+    let before = std::fs::read(&events_path).unwrap();
+    assert!(store.try_claim_todo("g1", "t1", "dave", 3600).is_err());
+    assert!(store.replay("g1").is_err());
+    assert_eq!(std::fs::read(&events_path).unwrap(), before);
 }
 
 // ── schema version normalization ───────────────────────────────────────────

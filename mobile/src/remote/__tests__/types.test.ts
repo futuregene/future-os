@@ -5,9 +5,16 @@ describe("model reference helpers", () => {
     expect(modelReference({ id: "gpt-5", provider: "openai" })).toBe("openai/gpt-5");
   });
 
-  test("modelReference leaves an already-scoped id and provider-less ids alone", () => {
-    expect(modelReference({ id: "openai/gpt-5", provider: "openai" })).toBe("openai/gpt-5");
+  test("modelReference does not confuse a provider-looking raw id with a qualified reference", () => {
+    expect(modelReference({ id: "openai/gpt-5", provider: "openai" })).toBe("openai/openai/gpt-5");
+    expect(modelReference({ id: "openrouter/auto", provider: "openrouter" })).toBe("openrouter/openrouter/auto");
     expect(modelReference({ id: "gpt-5" })).toBe("gpt-5");
+  });
+
+  test("two providers sharing one raw id retain distinct identities", () => {
+    const id = "deepseek/deepseek-v4-flash";
+    expect(modelReference({ id, provider: "deepseek" })).toBe("deepseek/deepseek/deepseek-v4-flash");
+    expect(modelReference({ id, provider: "ambient" })).toBe("ambient/deepseek/deepseek-v4-flash");
   });
 
   test("modelProviderFromReference extracts the provider segment", () => {

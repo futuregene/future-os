@@ -35,12 +35,14 @@ fn now_id() -> String {
 /// Port of `RunClient` — fire-and-forget one-shot gRPC calls.
 pub struct RunClient {
     addr: String,
+    stream_idle_timeout: Duration,
 }
 
 impl RunClient {
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),
+            stream_idle_timeout: Duration::from_secs(300),
         }
     }
 
@@ -340,11 +342,9 @@ impl RunClient {
 
     /// `streamEvents(sessionId, onText?, verbose)` — subscribe to the event
     /// stream for a session and accumulate text/events until `agent_end`,
-    /// the server closes the stream, or the 5-minute wall clock expires.
-    ///
-    /// The TS client cancels the stream on `agent_end` / timeout and resolves
-    /// with what it has; stream errors after the run started are treated the
-    /// same way (best-effort parity — the deadline dominates in practice).
+    /// or the server closes the stream. Five minutes without any event is
+    /// an error, as are transport failures. This is an inactivity watchdog,
+    /// not an overall deadline: healthy long-running streams remain supported.
     #[allow(clippy::type_complexity)]
     pub async fn stream_events(
         &self,
@@ -402,12 +402,13 @@ impl RunClient {
         let mut events: Vec<Value> = Vec::new();
         let mut text = String::new();
         loop {
-            let message = match stream.message().await {
+            let message = match tokio::time::timeout(self.stream_idle_timeout, stream.message())
+                .await
+                .map_err(|_| "Event stream timed out waiting for an event".to_string())?
+            {
                 Ok(Some(event)) => event,
-                // Stream end (Ok(None)) or a mid-stream error: the TS resolves
-                // with accumulated events in both cases (deadline / end).
                 Ok(None) => break,
-                Err(_) => break,
+                Err(status) => return Err(format!("Event stream failed: {status}")),
             };
             // Route to a single run when the caller targets one: skip events
             // from any other run. An empty run_id is treated as a match so a
@@ -1448,7 +1449,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_events_mid_stream_error_resolves_partial() {
+    async fn silent_event_stream_times_out_instead_of_hanging() {
+        let addr = spawn_mock(MockAgent {
+            stream_hang_after: true,
+            ..Default::default()
+        })
+        .await;
+        let mut client = RunClient::new(&addr);
+        client.stream_idle_timeout = Duration::from_millis(50);
+        let (out, _) = Output::memory();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.stream_events("s1", None, false, &out),
+        )
+        .await;
+        assert!(result
+            .expect("idle stream must terminate")
+            .unwrap_err()
+            .contains("timed out waiting"));
+    }
+
+    #[tokio::test]
+    async fn stream_events_mid_stream_error_is_reported() {
         let agent = MockAgent {
             events: vec![stream_event("text_chunk", "{\"text\":\"a\"}")],
             stream_error_after: true,
@@ -1457,9 +1479,11 @@ mod tests {
         let addr = spawn_mock(agent).await;
         let client = RunClient::new(&addr);
         let (out, _) = Output::memory();
-        let (events, text) = client.stream_events("s1", None, false, &out).await.unwrap();
-        assert_eq!(text, "a");
-        assert_eq!(events.len(), 1);
+        let error = client
+            .stream_events("s1", None, false, &out)
+            .await
+            .unwrap_err();
+        assert!(error.contains("Event stream failed"), "{error}");
     }
 
     #[tokio::test]

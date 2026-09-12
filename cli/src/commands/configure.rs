@@ -531,7 +531,22 @@ mod tests {
         ]);
         let (out, captured) = Output::memory();
 
+        let seeded = tokio::fs::read_to_string(&auth_path).await.unwrap();
+        assert!(
+            seeded.contains("future-key"),
+            "seed replaced before configure: len={}, keys={:?}, path_stable={}",
+            seeded.len(),
+            serde_json::from_str::<Value>(&seeded)
+                .ok()
+                .and_then(|v| v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())),
+            future_agent::config::providers::auth_json_path() == auth_path
+        );
         configure_with(&mut prompt, &out).await.unwrap();
+        assert_eq!(
+            future_agent::config::providers::auth_json_path(),
+            auth_path,
+            "HOME changed despite env lock"
+        );
         assert_eq!(prompt.secret_reads, 1);
 
         let models: Value = serde_json::from_str(

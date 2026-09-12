@@ -66,7 +66,7 @@ interface RemoteContextValue {
   refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
-  loadOlderTimeline(): Promise<void>;
+  loadOlderTimeline(): Promise<false | string[]>;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(
@@ -155,6 +155,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     canLoadOlderTimeline,
     loadingOlderTimeline,
     loadOlderTimeline,
+    prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
     hydrateAttachmentsRef,
@@ -257,6 +258,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     setUnreadSessions,
     setApprovalTierState,
     ensureDraftTimeline,
+    prepareTimelineOpen,
     recordError,
     removeSession,
     removeWorkspace,
@@ -287,7 +289,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     recordError,
   });
   const selectedTitle =
-    sessions.find((session) => session.sessionId === selectedSessionId)?.title ?? "";
+    sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
   const agentAvailable = presence?.agentAvailable !== false;
   const connectionPresentation = useMemo(
     () =>

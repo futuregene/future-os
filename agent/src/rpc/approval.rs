@@ -70,6 +70,7 @@ impl ApprovalGate {
             if let Some(raw_permissions) = arguments
                 .get("additional_permissions")
                 .or_else(|| arguments.get("additionalPermissions"))
+                .filter(|value| !value.is_null())
             {
                 let permissions = match serde_json::from_value::<AdditionalPermissions>(
                     raw_permissions.clone(),
@@ -712,130 +713,16 @@ fn path_save_suggestion(path: &Path, op: Op, workspace: &Path) -> Option<serde_j
     }))
 }
 
-/// Programs that only read (no filesystem writes, no arbitrary exec).
-const READONLY_PROGRAMS: &[&str] = &[
-    "cat", "ls", "pwd", "echo", "printf", "find", "grep", "egrep", "fgrep", "rg", "ag", "head",
-    "tail", "wc", "sort", "uniq", "cut", "tr", "nl", "fold", "column", "file", "stat", "du", "df",
-    "date", "whoami", "hostname", "id", "uname", "env", "printenv", "which", "type", "dirname",
-    "basename", "realpath", "readlink", "tree", "diff", "cmp", "comm", "less", "more", "true",
-    "false", "test", "seq", "yes",
-];
-
-/// Read-only PowerShell cmdlets and their built-in aliases (Windows). Compared
-/// lower-cased since PowerShell resolves command names case-insensitively. The
-/// aliases `ls`/`cat`/`pwd`/`echo`/`type`/`sort` already resolve via
-/// READONLY_PROGRAMS. Deliberately excludes anything that writes (Set-/Add-/
-/// New-/Remove-/Out-File) or runs arbitrary code (Invoke-/Start-/ForEach-Object/
-/// Where-Object — the latter also need a `{ … }` block, which is rejected).
-const WINDOWS_READONLY_PROGRAMS: &[&str] = &[
-    "get-childitem",
-    "gci",
-    "dir",
-    "get-content",
-    "gc",
-    "get-location",
-    "gl",
-    "get-item",
-    "gi",
-    "get-itemproperty",
-    "get-command",
-    "gcm",
-    "get-date",
-    "get-help",
-    "select-string",
-    "sls",
-    "select-object",
-    "select",
-    "sort-object",
-    "measure-object",
-    "measure",
-    "write-output",
-    "write-host",
-    "format-table",
-    "ft",
-    "format-list",
-    "fl",
-    "out-string",
-    "test-path",
-    "resolve-path",
-    "split-path",
-    "compare-object",
-    "findstr",
-    "where",
-];
-
-/// git subcommands that don't mutate the repo or working tree.
-const GIT_READONLY: &[&str] = &[
-    "status",
-    "log",
-    "diff",
-    "show",
-    "branch",
-    "tag",
-    "describe",
-    "blame",
-    "shortlog",
-    "ls-files",
-    "ls-tree",
-    "rev-parse",
-    "rev-list",
-    "remote",
-    "reflog",
-    "cat-file",
-    "grep",
-];
-
-/// Read-only shell whitelist for the Manual tier: known-safe commands auto-run,
-/// everything else asks. Conservative — anything with shell operators that could
-/// write, chain, background, or substitute falls through to "ask". Covers both
-/// POSIX shells and PowerShell (see WINDOWS_READONLY_PROGRAMS); the operator
-/// guard below (`{`, `` ` ``, `;`, …) also blocks PowerShell script blocks and
-/// subexpressions.
+/// Manual-tier exemptions are deliberately limited to literal introspection.
+/// A program basename does not prove safety: env executes programs, git and
+/// text utilities have write/exec options, and even read-only commands can read
+/// secrets. Do not try to infer paths from shell syntax; file reads should use
+/// the path-aware read tool or ask for approval. OS-wrapped shells and explicit
+/// full-permission sessions retain their existing policy.
 fn shell_auto_allow(command: &str) -> bool {
-    let cmd = command.trim();
-    if cmd.is_empty() {
-        return false;
-    }
-    // Reject write / exec / chain / substitution operators outright. `&` also
-    // catches `&&` and backgrounding; `` ` `` and `$(` catch substitution;
-    // `{`/`(` catch PowerShell script blocks and subexpressions.
-    const DANGEROUS: &[char] = &['>', '<', '`', ';', '&', '\n', '(', '{'];
-    if cmd.contains("$(") || cmd.chars().any(|c| DANGEROUS.contains(&c)) {
-        return false;
-    }
-    cmd.split('|').all(|seg| segment_is_read_only(seg.trim()))
-}
-
-/// Whether a single pipe segment invokes only a read-only program.
-fn segment_is_read_only(seg: &str) -> bool {
-    let mut words = seg.split_whitespace();
-    let Some(prog) = words.next() else {
-        return false;
-    };
-    // Reduce a leading path to its basename — tolerant of both separators
-    // (`/bin/ls`, `C:\Windows\System32\findstr.exe`), a `.exe` suffix, and
-    // case (PowerShell and Windows resolve command names case-insensitively).
-    let base = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
-    let base = base
-        .strip_suffix(".exe")
-        .or_else(|| base.strip_suffix(".EXE"))
-        .unwrap_or(base);
-    let prog = base.to_ascii_lowercase();
-    match prog.as_str() {
-        "git" => {
-            // First non-flag token is the subcommand; it must be read-only.
-            let sub = words.find(|w| !w.starts_with('-'));
-            matches!(sub, Some(s) if GIT_READONLY.contains(&s))
-        }
-        "find" => {
-            // find only reads unless it mutates or executes.
-            !seg.contains("-exec")
-                && !seg.contains("-delete")
-                && !seg.contains("-fprint")
-                && !seg.contains("-ok")
-        }
-        other => READONLY_PROGRAMS.contains(&other) || WINDOWS_READONLY_PROGRAMS.contains(&other),
-    }
+    // pwd is a shell builtin (PowerShell's built-in Get-Location alias), not
+    // a PATH lookup. Even plain `ls` can resolve to a workspace-planted binary.
+    command.trim() == "pwd"
 }
 
 /// Approval card for a shell command that isn't auto-allowed (Manual tier).
@@ -937,12 +824,15 @@ fn linux_diagnostic_path(line: &str) -> Option<String> {
 
 /// Shorten `$HOME` to `~` for display.
 fn shorten_home(path: &str) -> String {
-    match crate::utils::home_dir_opt() {
-        Some(home) if path.starts_with(home.to_string_lossy().as_ref()) => {
-            path.replacen(home.to_string_lossy().as_ref(), "~", 1)
+    if let Some(home) = crate::utils::home_dir_opt() {
+        if let Ok(rest) = std::path::Path::new(path).strip_prefix(home) {
+            return std::path::Path::new("~")
+                .join(rest)
+                .to_string_lossy()
+                .into_owned();
         }
-        _ => path.to_string(),
     }
+    path.to_string()
 }
 
 /// Card-friendly blocked paths (`$HOME` → `~`), for display only.
@@ -1084,14 +974,35 @@ mod tests {
     use crate::sandbox::SandboxPolicy;
 
     #[test]
-    fn shell_whitelist_allows_read_only_commands() {
-        assert!(shell_auto_allow("ls -la"));
-        assert!(shell_auto_allow("cat README.md"));
-        assert!(shell_auto_allow("git status"));
-        assert!(shell_auto_allow("git log --oneline"));
-        assert!(shell_auto_allow("grep -rn foo src | head -20"));
-        assert!(shell_auto_allow("/bin/ls"));
-        assert!(shell_auto_allow("find . -name '*.rs'"));
+    fn shell_whitelist_allows_only_literal_introspection() {
+        assert!(!shell_auto_allow("ls -la"));
+        assert!(shell_auto_allow("pwd"));
+        for command in [
+            "cat README.md",
+            "git status",
+            "git log --oneline",
+            "grep -rn foo src | head -20",
+            "/tmp/ls",
+            "find . -name '*.rs'",
+            "env sh evil.sh",
+            "cat ~/.ssh/id_rsa",
+            "cat /etc/shadow",
+            "cat $SECRET",
+            "head ../keys/key.pem",
+            "git branch -D main",
+            "git tag -d v1",
+            "git remote add evil url",
+            "git reflog expire --all",
+            "sort -o out in",
+            "uniq in out",
+            "find . -fls out",
+            "date -s 2020-01-01",
+            "hostname evil",
+            "yes",
+            "seq 999999999",
+        ] {
+            assert!(!shell_auto_allow(command), "must ask: {command}");
+        }
     }
 
     #[test]
@@ -1108,16 +1019,17 @@ mod tests {
     }
 
     #[test]
-    fn shell_whitelist_allows_read_only_powershell() {
-        // Cmdlets and aliases, case-insensitive, with Windows paths / .exe.
-        assert!(shell_auto_allow("Get-ChildItem"));
-        assert!(shell_auto_allow("get-content foo.txt"));
-        assert!(shell_auto_allow("Select-String -Pattern foo bar.txt"));
-        assert!(shell_auto_allow(
+    fn shell_whitelist_does_not_exempt_powershell_file_reads() {
+        assert!(!shell_auto_allow("Get-ChildItem"));
+        assert!(!shell_auto_allow("get-content foo.txt"));
+        assert!(!shell_auto_allow(
+            "Get-Content $env:USERPROFILE/.ssh/id_rsa"
+        ));
+        assert!(!shell_auto_allow("Select-String -Pattern foo bar.txt"));
+        assert!(!shell_auto_allow(
             "Get-ChildItem -Recurse | Select-String foo"
         ));
-        assert!(shell_auto_allow("gci | measure"));
-        assert!(shell_auto_allow(
+        assert!(!shell_auto_allow(
             r"C:\Windows\System32\findstr.exe foo bar.txt"
         ));
     }
@@ -1302,7 +1214,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let sandbox = enabled(&ws);
         let gate = ApprovalGate::default();
         let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "command": "ls -la" });
+        let args = serde_json::json!({ "command": "pwd" });
         assert!(gate
             .request(&b, "s", &ws, "shell", "t", &args, &sandbox)
             .is_none());
@@ -1439,14 +1351,14 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     // ─── shell_auto_allow ──────────────────────────────────────────────────
 
     #[test]
-    fn shell_auto_allow_read_only() {
-        assert!(shell_auto_allow("ls -la"));
-        assert!(shell_auto_allow("cat file.txt"));
-        assert!(shell_auto_allow("grep pattern file.txt"));
-        assert!(shell_auto_allow("head -5 file.txt"));
-        assert!(shell_auto_allow("git log"));
-        assert!(shell_auto_allow("git diff"));
-        assert!(shell_auto_allow("find . -name '*.rs'"));
+    fn shell_auto_allow_requires_approval_for_arbitrary_reads() {
+        assert!(!shell_auto_allow("ls -la"));
+        assert!(!shell_auto_allow("cat file.txt"));
+        assert!(!shell_auto_allow("grep pattern file.txt"));
+        assert!(!shell_auto_allow("head -5 file.txt"));
+        assert!(!shell_auto_allow("git log"));
+        assert!(!shell_auto_allow("git diff"));
+        assert!(!shell_auto_allow("find . -name '*.rs'"));
     }
 
     #[test]
@@ -1473,53 +1385,15 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
     }
 
     #[test]
-    fn shell_auto_allow_allows_read_only_pipes() {
-        assert!(shell_auto_allow("ls | grep file"));
-        assert!(shell_auto_allow("cat file | head -10"));
+    fn shell_auto_allow_requires_approval_for_pipes() {
+        assert!(!shell_auto_allow("ls | grep file"));
+        assert!(!shell_auto_allow("cat file | head -10"));
     }
 
     #[test]
     fn shell_auto_allow_empty_command() {
         assert!(!shell_auto_allow(""));
         assert!(!shell_auto_allow("   "));
-    }
-
-    // ─── segment_is_read_only ──────────────────────────────────────────────
-
-    #[test]
-    fn segment_is_read_only_basename() {
-        assert!(segment_is_read_only("ls"));
-        assert!(segment_is_read_only("/bin/ls"));
-        assert!(segment_is_read_only("/usr/bin/grep pattern"));
-    }
-
-    #[test]
-    fn segment_is_read_only_git_readonly() {
-        assert!(segment_is_read_only("git log"));
-        assert!(segment_is_read_only("git diff"));
-        assert!(segment_is_read_only("git status"));
-        assert!(segment_is_read_only("git show"));
-        assert!(segment_is_read_only("git branch"));
-    }
-
-    #[test]
-    fn segment_is_read_only_git_not_readonly() {
-        assert!(!segment_is_read_only("git push"));
-        assert!(!segment_is_read_only("git commit"));
-        assert!(!segment_is_read_only("git checkout"));
-        assert!(!segment_is_read_only("git merge"));
-    }
-
-    #[test]
-    fn segment_is_read_only_find_without_exec() {
-        assert!(segment_is_read_only("find . -name '*.txt'"));
-        assert!(!segment_is_read_only("find . -name '*.txt' -exec rm {} +"));
-        assert!(!segment_is_read_only("find . -name '*.txt' -delete"));
-    }
-
-    #[test]
-    fn segment_is_read_only_empty() {
-        assert!(!segment_is_read_only(""));
     }
 
     // ─── command_summary ───────────────────────────────────────────────────
@@ -1584,6 +1458,9 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
 
     #[test]
     fn shorten_home_outside_home() {
+        let home = crate::utils::home_dir();
+        let sibling = format!("{}-sibling/file", home.display());
+        assert_eq!(shorten_home(&sibling), sibling);
         assert_eq!(shorten_home("/etc/hosts"), "/etc/hosts");
     }
 
@@ -1888,7 +1765,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             &ws,
             "shell",
             "t1",
-            &serde_json::json!({"command": "ls -la"}),
+            &serde_json::json!({"command": "pwd"}),
             &sandbox,
         );
         assert!(result.is_none(), "read-only shell bypasses the prompt");
@@ -2573,13 +2450,26 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
             "shell",
             "tool",
             &serde_json::json!({
-                "command": "ls -la",
+                "command": "pwd",
                 "additional_permissions": {"write": []}
             }),
             &sandbox,
         );
-        // "ls -la" is read-only → auto-allowed without a prompt.
+        // pwd is a literal builtin → auto-allowed without a prompt.
         assert!(result.is_none());
+        let result = gate.request(
+            &broadcaster,
+            "session",
+            &ws,
+            "shell",
+            "tool",
+            &serde_json::json!({"command":"pwd", "additional_permissions":null}),
+            &sandbox,
+        );
+        assert!(
+            result.is_none(),
+            "null optional permissions must behave like absence"
+        );
     }
 
     #[test]

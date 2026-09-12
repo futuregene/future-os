@@ -70,7 +70,10 @@ fn not_done(todo: &crate::state::Todo) -> bool {
 /// Derive the terminal judgement from goal state. Pure; deterministic.
 /// `terminal` ⇔ `Goal::is_terminal()` (the same sources, enumerated).
 pub fn terminal_judgement(goal: &Goal) -> TerminalJudgement {
-    let now = std::time::SystemTime::now();
+    terminal_judgement_at(goal, std::time::SystemTime::now())
+}
+
+pub fn terminal_judgement_at(goal: &Goal, now: std::time::SystemTime) -> TerminalJudgement {
     let mut gaps: Vec<TerminalGap> = vec![];
 
     for todo in &goal.todos {
@@ -135,7 +138,20 @@ pub fn terminal_judgement(goal: &Goal) -> TerminalJudgement {
         });
     }
 
-    let closure_proof = goal.todo_summary().terminal_closure_proof;
+    for todo in goal.unvalidated_deliveries() {
+        gaps.push(TerminalGap {
+            kind: "unvalidated_delivery".to_string(),
+            todo_id: Some(todo.id.clone()),
+            gap_id: None,
+            description: format!(
+                "todo {} has no passed validation or verified delivery",
+                todo.id
+            ),
+            satisfied: false,
+        });
+    }
+
+    let closure_proof = goal.todo_summary_at(now).terminal_closure_proof;
     TerminalJudgement {
         schema_version: TERMINAL_JUDGEMENT_SCHEMA_VERSION.to_string(),
         terminal: gaps.is_empty(),

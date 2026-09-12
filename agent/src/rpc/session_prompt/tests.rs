@@ -336,6 +336,7 @@ fn reconcile_run_identity_keeps_existing_ids_and_falls_back_to_last_assistant() 
 
 struct ScriptedProvider {
     scripts: std::sync::Mutex<std::collections::VecDeque<Script>>,
+    requests: std::sync::Mutex<Vec<ModelRequest>>,
 }
 
 enum Script {
@@ -351,6 +352,7 @@ impl ScriptedProvider {
     fn new(scripts: Vec<Script>) -> Arc<Self> {
         Arc::new(Self {
             scripts: std::sync::Mutex::new(scripts.into()),
+            requests: std::sync::Mutex::new(Vec::new()),
         })
     }
 }
@@ -361,6 +363,7 @@ impl LLMProvider for ScriptedProvider {
         &self,
         request: ModelRequest,
     ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+        self.requests.lock().unwrap().push(request.clone());
         if request
             .system_prompt
             .contains("context summarization agent")
@@ -1614,6 +1617,71 @@ async fn prompt_workspace_permission_routes_through_approval_gate() {
 }
 
 // ── coverage batch 24: per-line residuals ─────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn queued_run_prompt_uses_accepted_model_and_thinking() {
+    let provider = ScriptedProvider::new(vec![text_turn("done")]);
+    let fixture = run_fixture(provider.clone(), "frozen-prompt");
+    let mut session = fixture.session;
+    session.model = "provider/frozen-model".into();
+    session.thinking_level = "medium".into();
+    session.auto_compaction = false;
+    let held = session.runtime.begin(Some("held"), None).unwrap();
+    session
+        .enqueue_prompt(
+            "queued",
+            &[],
+            &[],
+            None,
+            "queued-request",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    session.model = "provider/new-model".into();
+    session.thinking_level = "high".into();
+    session.runtime.begin_finalizing(&held);
+    session.runtime.finish(&held);
+    session.start_next_scheduled().unwrap();
+    wait_for_run_end(&session).await;
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].system_prompt.contains("provider/frozen-model"));
+    assert!(requests[0].system_prompt.contains("Thinking level: medium"));
+    assert!(!requests[0].system_prompt.contains("provider/new-model"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn enqueue_prompt_defers_until_scheduler_completion_delivery() {
+    let fixture = run_fixture(
+        ScriptedProvider::new(vec![text_turn("x")]),
+        "handoff-window",
+    );
+    let mut session = fixture.session;
+    session
+        .scheduler
+        .accept(
+            "old-request",
+            Some("old-run"),
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+            serde_json::json!({}),
+        )
+        .unwrap();
+    session.scheduler.start_next(1).unwrap();
+    assert!(session.runtime.snapshot().is_none());
+    assert!(!session.runtime.has_owned_task());
+    let ack = session
+        .enqueue_prompt(
+            "hi",
+            &[],
+            &[],
+            None,
+            "new-request",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+    assert_eq!(ack.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(session.scheduler.queued().len(), 1);
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn enqueue_prompt_defers_when_control_idle_but_task_slot_held() {

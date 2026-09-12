@@ -349,17 +349,14 @@ impl EventBatchWriter {
         } else {
             (None, None)
         };
+        // The bounded queue applies backpressure, not data loss. A transient
+        // full queue is not a storage failure: wait for the dedicated writer
+        // (which never acquires broadcaster/session locks) to make space.
+        // As at a durable boundary, actual writer failure remains fail-closed.
         self.sender
-            .try_send(EventWriteCommand::Append { event, reply })
-            .map_err(|error| {
-                let message = match error {
-                    std::sync::mpsc::TrySendError::Full(_) => {
-                        "event persistence queue is full".to_string()
-                    }
-                    std::sync::mpsc::TrySendError::Disconnected(_) => {
-                        "event persistence worker is unavailable".to_string()
-                    }
-                };
+            .send(EventWriteCommand::Append { event, reply })
+            .map_err(|_| {
+                let message = "event persistence worker is unavailable".to_string();
                 self.health.fail(message.clone());
                 anyhow::anyhow!(message)
             })?;
@@ -1148,6 +1145,9 @@ fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEvent) {
                     // The folded segment represents every source event through
                     // this cursor, so live resume starts strictly after it.
                     previous.idx = event.idx;
+                    previous.event_id = event.event_id.clone();
+                    previous.timestamp = event.timestamp.clone();
+                    previous.run_sequence = event.run_sequence;
                     return;
                 }
             }
@@ -1762,6 +1762,52 @@ mod tests {
         let text: serde_json::Value = serde_json::from_str(&snapshot.events[3].data).unwrap();
         assert_eq!(thinking["text"], "ab");
         assert_eq!(text["text"], "hello world");
+        for event in [&snapshot.events[1], &snapshot.events[3]] {
+            assert!(
+                event.event_id.ends_with(&format!(":{}", event.idx)),
+                "{event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transient_full_event_queue_backpressures_without_failing_health() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let health = std::sync::Arc::new(EventJournalHealth::default());
+        let writer = std::sync::Arc::new(EventBatchWriter {
+            sender,
+            thread: None,
+            health: health.clone(),
+            commits: Default::default(),
+        });
+        writer
+            .sender
+            .send(EventWriteCommand::Append {
+                event: serde_json::json!({"n":1}),
+                reply: None,
+            })
+            .unwrap();
+        let copy = writer.clone();
+        let (done, completed) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            done.send(copy.append(serde_json::json!({"n":2}), false))
+                .unwrap();
+        });
+        let early = completed.recv_timeout(std::time::Duration::from_millis(50));
+        let first = receiver.recv().unwrap();
+        let result = match early {
+            Ok(result) => result,
+            Err(_) => completed
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+        };
+        thread.join().unwrap();
+        let second = receiver.try_recv();
+        drop(receiver); // make the test writer's Drop nonblocking
+        assert!(result.is_ok());
+        assert!(health.error().is_none());
+        assert!(matches!(first, EventWriteCommand::Append { event, .. } if event["n"] == 1));
+        assert!(matches!(second, Ok(EventWriteCommand::Append { event, .. }) if event["n"] == 2));
     }
 
     #[test]

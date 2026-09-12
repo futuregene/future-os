@@ -126,11 +126,11 @@ pub fn monitor_cadence_secs(value: &str) -> Option<u64> {
     if unit.starts_with('s') {
         Some(count)
     } else if unit.starts_with('m') {
-        Some(count * 60)
+        count.checked_mul(60)
     } else if unit.starts_with('h') {
-        Some(count * 3600)
+        count.checked_mul(3600)
     } else if unit.starts_with('d') {
-        Some(count * 86400)
+        count.checked_mul(86400)
     } else {
         None
     }
@@ -261,6 +261,7 @@ pub fn merge_host_update_failure(
             result.push(f);
         }
     }
+    result.truncate(SCHEDULER_HOST_UPDATE_FAILURE_CACHE_LIMIT);
     result.reverse();
     result
 }
@@ -324,7 +325,13 @@ pub fn normalize_scheduler_state(
     if state.progression_minutes.iter().any(|m| *m <= 0) {
         return None;
     }
-    Some(state.clone())
+    let mut state = state.clone();
+    let excess = state
+        .host_update_failures
+        .len()
+        .saturating_sub(SCHEDULER_HOST_UPDATE_FAILURE_CACHE_LIMIT);
+    state.host_update_failures.drain(..excess);
+    Some(state)
 }
 
 /// Build a validated scheduler state (reference `build_scheduler_state`).

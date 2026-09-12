@@ -156,6 +156,7 @@ function jsonStringEnd(line: string, start: number): number | null {
 }
 
 function numberEnd(line: string, start: number): number | null {
+  if (isWordCharacter(line[start - 1])) return null;
   let index = start;
   if (line[index] === "-") index += 1;
 
@@ -176,7 +177,7 @@ function numberEnd(line: string, start: number): number | null {
     index += line[index + 1] === "+" || line[index + 1] === "-" ? 2 : 1;
     while (isDigit(line[index])) index += 1;
   }
-  return index;
+  return isWordCharacter(line[index]) ? null : index;
 }
 
 function literalEnd(line: string, start: number): number | null {

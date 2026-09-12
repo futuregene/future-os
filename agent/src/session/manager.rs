@@ -1172,6 +1172,54 @@ mod tests {
     /// the orphaned assistant even when it is NOT the last entry, and insert
     /// placeholder tool responses so the conversation stays API-valid.
     #[test]
+    fn load_reattaches_late_real_tool_result_without_duplicate_placeholder() {
+        let (dir, manager) = temp_manager("late-tool-result");
+        let assistant = SessionEntry::new_assistant(
+            serde_json::json!("reading"),
+            vec![ToolCall {
+                id: "late-call".into(),
+                call_type: "function".into(),
+                function: crate::types::ToolCallFn {
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                },
+            }],
+        );
+        let real = SessionEntry::new_tool("late-call", "real result");
+        let real_id = real.id.clone();
+        let session = Session::snapshot(
+            "late-session".into(),
+            "/tmp".into(),
+            "mock".into(),
+            "late".into(),
+            String::new(),
+            vec![
+                SessionEntry::new_user("user", serde_json::json!("question")),
+                SessionEntry::run_started("old-run", 1),
+                assistant,
+                SessionEntry::run_terminal("old-run", "cancelled", 0, 0, None),
+                real,
+            ],
+        );
+        manager.save(&session).unwrap();
+        let loaded = manager.load("late-session").unwrap();
+        let tools: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_TOOL)
+            .collect();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].id, real_id);
+        let a = loaded
+            .entries
+            .iter()
+            .position(|e| e.entry_type == ENTRY_TYPE_ASSISTANT)
+            .unwrap();
+        assert_eq!(loaded.entries[a + 1].id, real_id);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn repair_dangling_tool_calls_finds_orphan_after_restart() {
         let (dir, manager) = temp_manager("repair-orphan-restart");
         let session = Session::snapshot(

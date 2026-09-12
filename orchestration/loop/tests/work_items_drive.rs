@@ -267,9 +267,8 @@ fn operator_inbox_kinds() {
         ),
         Some(OperatorAttentionKind::DirectMention)
     );
-    // Scope semantics (as implemented, mirroring the reference): in
-    // configured_chat_all a message WITHOUT any mention is dropped; in
-    // addressed_only a bare question still counts (the '?' heuristic).
+    // Addressed-only requires a mention; configured-chat-all may classify
+    // an unaddressed question. Ordinary statements are not attention items.
     assert_eq!(
         operator_inbox_attention_kind(
             &inbox_event("random chatter", false, false),
@@ -291,16 +290,16 @@ fn operator_inbox_kinds() {
             &inbox_event("is this on?", false, false),
             "operator",
             "configured_chat_all"
-        ),
-        None
-    );
-    assert_eq!(
-        operator_inbox_attention_kind(
-            &inbox_event("is this on?", false, false),
-            "operator",
-            "addressed_only"
         ),
         Some(OperatorAttentionKind::DirectQuestion)
+    );
+    assert_eq!(
+        operator_inbox_attention_kind(
+            &inbox_event("is this on?", false, false),
+            "operator",
+            "addressed_only"
+        ),
+        None
     );
     // Unverified reply flag without verification → not a reply.
     assert_eq!(

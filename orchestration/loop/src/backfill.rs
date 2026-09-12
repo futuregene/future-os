@@ -46,7 +46,15 @@ pub struct MarkdownTodoRecord {
 
 /// URL-decode the subset reference uses in anchors (%20 → ' ', %2B → '+').
 fn url_decode(value: &str) -> String {
-    value.replace("%20", " ").replace("%2B", "+")
+    value
+        .replace("%20", " ")
+        .replace("%2B", "+")
+        .replace("%0A", "\n")
+        .replace("%0D", "\r")
+        .replace("%09", "\t")
+        .replace("%3C", "<")
+        .replace("%3E", ">")
+        .replace("%25", "%")
 }
 
 fn heading_role(heading: &str) -> Option<&'static str> {
@@ -417,7 +425,7 @@ pub fn active_state_markdown(cwd: &str, goal_id: &str) -> Result<String> {
         .join(".future")
         .join("loop")
         .join("goals")
-        .join(goal_id)
+        .join(crate::store::goal_path_segment(goal_id))
         .join("ACTIVE_GOAL_STATE.md");
     std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))
 }

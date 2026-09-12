@@ -664,6 +664,27 @@ mod tests {
     use std::io::Read;
 
     #[test]
+    fn model_identity_keeps_raw_slashes_and_distinguishes_providers() {
+        for provider in ["one", "two"] {
+            assert_eq!(
+                qualified_model_id("family/model", provider),
+                Some(format!("{provider}/family/model"))
+            );
+            let qualified = format!("{provider}/family/model");
+            assert_eq!(qualified_model_id(&qualified, provider), Some(qualified));
+        }
+        assert_eq!(
+            qualified_model_id("openrouter/openrouter/auto", "openrouter").as_deref(),
+            Some("openrouter/openrouter/auto")
+        );
+        assert_eq!(
+            qualified_model_id("p/model", "").as_deref(),
+            Some("p/model")
+        );
+        assert_eq!(qualified_model_id("", "p"), None);
+    }
+
+    #[test]
     fn remote_json_gzip_is_automatic_thresholded_and_standard() {
         let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
         let plain = serde_json::to_vec(&body).unwrap();

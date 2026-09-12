@@ -8,8 +8,17 @@ use crate::state::{Goal, TaskClass, Todo};
 
 /// The runnable advancement frontier for an identity, priority-sorted
 /// (P0 before P1 before P2 — LoopX sorts the frontier).
+#[cfg(test)]
 pub(crate) fn sorted_runnable<'a>(goal: &'a Goal, agent_id: Option<&'a str>) -> Vec<&'a Todo> {
-    let mut runnable: Vec<&Todo> = goal.runnable_advancement_for(agent_id).collect();
+    sorted_runnable_at(goal, agent_id, SystemTime::now())
+}
+
+pub(crate) fn sorted_runnable_at<'a>(
+    goal: &'a Goal,
+    agent_id: Option<&'a str>,
+    now: SystemTime,
+) -> Vec<&'a Todo> {
+    let mut runnable: Vec<&Todo> = goal.runnable_advancement_for_at(agent_id, now).collect();
     runnable.sort_by_key(|t| t.priority);
     runnable
 }
@@ -17,7 +26,11 @@ pub(crate) fn sorted_runnable<'a>(goal: &'a Goal, agent_id: Option<&'a str>) -> 
 /// Work lane: the monitor lane when any monitor is open, else the
 /// advancement-task lane.
 pub(crate) fn lane(goal: &Goal) -> &'static str {
-    if goal.open_of(TaskClass::Monitor).next().is_some() {
+    lane_at(goal, SystemTime::now())
+}
+
+pub(crate) fn lane_at(goal: &Goal, now: SystemTime) -> &'static str {
+    if goal.open_of_at(TaskClass::Monitor, now).next().is_some() {
         "monitor"
     } else {
         "advancement_task"
@@ -27,23 +40,31 @@ pub(crate) fn lane(goal: &Goal) -> &'static str {
 /// Compose the frontier projection snapshot: replan pressure plus the
 /// runnable-frontier and monitor counts.
 pub(crate) fn frontier_projection(goal: &Goal, replan_required: bool) -> FrontierProjection {
+    frontier_projection_at(goal, replan_required, SystemTime::now())
+}
+
+pub(crate) fn frontier_projection_at(
+    goal: &Goal,
+    replan_required: bool,
+    now: SystemTime,
+) -> FrontierProjection {
     // Owner-aware pending count: the naive `runnable_advancement().count()`
     // is the shared-pool (agent_id=None) frontier and so drops every
     // owner-scoped todo, reporting `unclaimed_advancement=0` while an
     // all-owner-scoped goal still has real work waiting on its owners.
-    let (claimable, owner_scoped) = goal.pending_advancement_owner_aware();
+    let (claimable, owner_scoped) = goal.pending_advancement_owner_aware_at(now);
     FrontierProjection {
         replan_required,
         current_agent_advancement: goal
-            .runnable_advancement()
+            .runnable_advancement_for_at(None, now)
             .filter(|t| t.failed_attempts > 0)
             .count(),
         unclaimed_advancement: claimable.len() + owner_scoped.len(),
         acceptance_gaps: goal.unsatisfied_gaps().len(),
-        monitors_open: goal.open_monitors().count(),
+        monitors_open: goal.open_monitors_at(now).count(),
         monitors_due: goal
-            .open_monitors()
-            .filter(|m| m.resume_when.is_some_and(|d| d <= SystemTime::now()))
+            .open_monitors_at(now)
+            .filter(|m| m.resume_when.is_some_and(|d| d <= now))
             .count(),
     }
 }

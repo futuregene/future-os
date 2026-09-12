@@ -21,6 +21,11 @@ param(
     [int]$Port = 50052
 )
 
+if ($env:FUTURE_PROFILE_ISOLATED -ne '1') {
+    & python "$PSScriptRoot/profile-isolated.py" powershell -ExecutionPolicy Bypass -File $PSCommandPath -Duration $Duration -Port $Port
+    exit $LASTEXITCODE
+}
+
 # Environment variable overrides (Match bash script behaviour)
 if ($env:PROFILE_DURATION) { $Duration = [int]$env:PROFILE_DURATION }
 if ($env:PROFILE_PORT)     { $Port     = [int]$env:PROFILE_PORT }

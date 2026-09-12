@@ -184,33 +184,37 @@ pub fn builtin_models_shared() -> std::sync::Arc<Vec<Model>> {
 pub fn builtin_models() -> Vec<Model> {
     builtin::init_builtin_models()
         .into_iter()
-        .map(|m| Model {
-            id: m.id,
-            name: m.name,
-            provider: m.provider,
-            api: m.api,
-            base_url: m.base_url,
-            api_key: String::new(),
-            reasoning: m.reasoning,
-            input: m.input,
-            output: vec!["text".to_string()],
-            context_window: m.context_window,
-            max_tokens: m.max_tokens,
-            cost: Cost {
-                input: m.cost_input,
-                output: m.cost_output,
-                cache_read: m.cost_cache_read,
-                cache_write: m.cost_cache_write,
-            },
-            compat: serde_json::from_str(&m.compat_json).unwrap_or_default(),
-            thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
-            headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
-            hide: m.hide,
-            description: None,
-            description_en: None,
-            recommended: false,
-        })
+        .map(model_from_builtin)
         .collect()
+}
+
+fn model_from_builtin(m: builtin::Model) -> Model {
+    Model {
+        id: m.id,
+        name: m.name,
+        provider: m.provider,
+        api: m.api,
+        base_url: m.base_url,
+        api_key: String::new(),
+        reasoning: m.reasoning,
+        input: m.input,
+        output: m.output,
+        context_window: m.context_window,
+        max_tokens: m.max_tokens,
+        cost: Cost {
+            input: m.cost_input,
+            output: m.cost_output,
+            cache_read: m.cost_cache_read,
+            cache_write: m.cost_cache_write,
+        },
+        compat: serde_json::from_str(&m.compat_json).unwrap_or_default(),
+        thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
+        headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
+        hide: m.hide,
+        description: None,
+        description_en: None,
+        recommended: false,
+    }
 }
 
 /// Whether the resolved model advertises image input (catalog `input`
@@ -269,7 +273,11 @@ pub fn get_default_model() -> Option<String> {
 /// re-deserialising the model catalog on every GUI poll.
 pub fn get_default_model_with(registry: &Registry) -> Option<String> {
     let auth = &registry.auth_store;
-    let all = registry.all_models();
+    let all: Vec<_> = registry
+        .all_models()
+        .into_iter()
+        .filter(|model| model.output.iter().any(|kind| kind == "text"))
+        .collect();
 
     // A user-chosen global default (set by the onboarding model-picker) wins over
     // every heuristic below. Read fresh from disk so a `set_default_model` change
@@ -307,6 +315,7 @@ pub fn get_default_model_with(registry: &Registry) -> Option<String> {
         registry
             .all_models()
             .into_iter()
+            .filter(|model| model.output.iter().any(|kind| kind == "text"))
             .find(|m| !m.api_key.is_empty() || auth.get(&m.provider).is_some())
             .map(|m| format!("{}/{}", m.provider, m.id))
     })
@@ -370,7 +379,7 @@ fn load_user_models_with_overrides(
                 context_window: model
                     .context_window
                     .or_else(|| model.limit.as_ref().and_then(|l| l.context))
-                    .unwrap_or(128000),
+                    .unwrap_or(0),
                 max_tokens: model
                     .max_tokens
                     .or_else(|| model.limit.as_ref().and_then(|l| l.output))
@@ -583,7 +592,7 @@ fn find_best_builtin_match<'a>(user_model: &Model, builtins: &'a [Model]) -> Opt
 /// - `thinking_level_map` — same as compat
 /// - `reasoning` — preserve the user's value (defaults to true at load time)
 /// - `input` — fill from builtin when empty
-/// - `context_window` — fill when == 128000 (default)
+/// - `context_window` — fill only when omitted (0); explicit 128000 is a real limit
 /// - `max_tokens` — fill when == 0
 /// - `cost` — fill each field when == 0.0
 /// - `headers` — merge from builtin
@@ -591,7 +600,12 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
     for user_model in user_models.iter_mut() {
         let best = match find_best_builtin_match(user_model, builtins) {
             Some(b) => b,
-            None => continue,
+            None => {
+                if user_model.context_window == 0 {
+                    user_model.context_window = 128000;
+                }
+                continue;
+            }
         };
 
         // input: fill from builtin if user didn't specify
@@ -599,10 +613,13 @@ fn enrich_user_models(user_models: &mut [Model], builtins: &[Model]) {
             user_model.input = best.input.clone();
         }
 
-        // context_window: fill if still at default (0 from Default, or
-        // 128000 from load_user_models_with_overrides fallback).
-        if user_model.context_window == 0 || user_model.context_window == 128000 {
-            user_model.context_window = best.context_window;
+        // Keep absence distinct from every valid explicit limit, including 128k.
+        if user_model.context_window == 0 {
+            user_model.context_window = if best.context_window > 0 {
+                best.context_window
+            } else {
+                128000
+            };
         }
 
         // max_tokens: fill if user didn't specify
@@ -956,19 +973,17 @@ impl Registry {
 
     /// Resolve a model ID to a Model (checks user first, then builtin)
     pub fn resolve(&self, id: &str) -> Option<Model> {
-        // Handle "provider/model" format
-        if let Some((_provider, _model_id)) = id.split_once('/') {
-            let full_id = id.to_string();
-            return self
-                .user
-                .iter()
-                .chain(self.builtin.iter())
-                .find(|m| format!("{}/{}", m.provider, m.id) == full_id)
-                .cloned()
-                .map(|mut m| {
-                    self.apply_override(&mut m);
-                    m
-                });
+        // Prefer an exact qualified identity. Model IDs may themselves contain
+        // slashes, so a failed qualified lookup must still try the bare ID.
+        if let Some(mut model) = self
+            .user
+            .iter()
+            .chain(self.builtin.iter())
+            .find(|m| format!("{}/{}", m.provider, m.id) == id)
+            .cloned()
+        {
+            self.apply_override(&mut model);
+            return Some(model);
         }
         // Check user models first by exact ID
         if let Some(mut m) = self.user.iter().find(|m| m.id == id).cloned() {
@@ -1379,7 +1394,7 @@ mod tests {
             provider: "custom-provider".to_string(),
             // Explicit false must survive even when the builtin supports thinking.
             input: vec!["text".to_string()],
-            context_window: 64000,
+            context_window: 128000,
             max_tokens: 8192,
             cost: Cost {
                 input: 0.5,
@@ -1399,7 +1414,7 @@ mod tests {
         );
         // User-provided values preserved
         assert_eq!(user.input, vec!["text"]);
-        assert_eq!(user.context_window, 64000);
+        assert_eq!(user.context_window, 128000);
         assert_eq!(user.max_tokens, 8192);
         assert_eq!(user.cost.input, 0.5);
         assert_eq!(user.cost.output, 1.0);
@@ -1609,6 +1624,44 @@ mod tests {
     // ─── builtin_models / user_models_path / settings_path / get_default_model ──
 
     #[test]
+    fn builtin_output_metadata_survives_conversion_and_filters_replacements() {
+        let _home = crate::test_support::TestHome::new();
+        let mut template = serde_json::to_value(super::builtin::init_builtin_models().remove(0))
+            .expect("catalog entry serializes");
+        template.as_object_mut().unwrap().remove("output");
+        let legacy = serde_json::from_value(template.clone()).unwrap();
+        assert_eq!(super::model_from_builtin(legacy).output, ["text"]);
+
+        let mut models = Vec::new();
+        for (id, output) in [
+            ("a-image", vec!["image"]),
+            ("b-embedding", vec!["embedding"]),
+            ("c-empty", vec![]),
+            ("z-chat", vec!["text", "image"]),
+        ] {
+            template["id"] = serde_json::json!(id);
+            template["provider"] = serde_json::json!("fixture");
+            template["output"] = serde_json::json!(output);
+            let entry = serde_json::from_value(template.clone()).unwrap();
+            let mut model = super::model_from_builtin(entry);
+            assert_eq!(model.output, output);
+            model.api_key = "fixture-key".into();
+            models.push(model);
+        }
+        let registry = Registry {
+            builtin: std::sync::Arc::new(models),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
+        };
+        assert_eq!(
+            registry.replacement_model("fixture/removed").as_deref(),
+            Some("fixture/z-chat"),
+            "non-text models sorting before chat must not become replacements"
+        );
+    }
+
+    #[test]
     fn builtin_models_returns_nonempty() {
         let models = super::builtin_models();
         assert!(!models.is_empty(), "builtin models should not be empty");
@@ -1657,6 +1710,38 @@ mod tests {
         let resolved = reg.resolve(&first.id);
         assert!(resolved.is_some());
         assert_eq!(resolved.unwrap().id, first.id);
+    }
+
+    #[test]
+    fn resolver_preserves_qualified_provider_identity_and_bare_slash_ids() {
+        let model = |provider: &str, id: &str| Model {
+            provider: provider.into(),
+            id: id.into(),
+            ..Default::default()
+        };
+        let registry = Registry {
+            builtin: std::sync::Arc::new(vec![]),
+            user: vec![
+                model("first", "family/model"),
+                model("second", "family/model"),
+                model("special", "unique/slash"),
+            ],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
+        };
+        assert_eq!(
+            registry.resolve("first/family/model").unwrap().provider,
+            "first"
+        );
+        assert_eq!(
+            registry.resolve("second/family/model").unwrap().provider,
+            "second"
+        );
+        assert_eq!(
+            registry.resolve("unique/slash").unwrap().provider,
+            "special"
+        );
+        assert!(registry.resolve("missing/slash").is_none());
     }
 
     #[test]
@@ -2124,8 +2209,11 @@ mod tests {
         // Serialize against future.rs tests and start from cold caches so the
         // disk seed below is the only catalog source.
         let _cache_guard = super::future::future_models_test_lock();
-        super::future::reset_future_caches_for_tests();
         let home = crate::test_support::TestHome::new();
+        // Acquiring HOME can wait behind other registry tests. Reset only AFTER
+        // that wait: those tests may populate the cache while owning the old
+        // HOME, otherwise our supposedly cold registry reads their catalog.
+        super::future::reset_future_caches_for_tests();
         // Auth present (dead base URL — no network) + a disk-cached catalog
         // entry whose ID matches no builtin → pushed into the registry.
         let auth_path = home.auth_path();

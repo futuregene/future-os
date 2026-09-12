@@ -265,7 +265,9 @@ impl ServerSession {
             }
         }
         if self.runtime.snapshot().is_none() {
-            if self.runtime.has_owned_task() {
+            if self.runtime.has_owned_task() || self.scheduler.active().is_some() {
+                // Completion delivery can lag behind BOTH control and task-slot
+                // cleanup. Only the completion worker releases scheduler.active.
                 // The prior run has finalized its control lease but its task
                 // monitor still owns the slot. Keep both the request and its
                 // accepted execution snapshot queued; the completion wake will
@@ -423,6 +425,9 @@ impl ServerSession {
         let run_model = accepted_settings
             .map(|settings| settings.model.clone())
             .unwrap_or_else(|| self.model.clone());
+        let run_thinking_level = accepted_settings
+            .map(|settings| settings.thinking_level.clone())
+            .unwrap_or_else(|| self.thinking_level.clone());
         let run_auto_compaction = accepted_settings
             .map(|settings| settings.auto_compaction)
             .unwrap_or(self.auto_compaction);
@@ -449,7 +454,12 @@ impl ServerSession {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
             self.wire_auto_compaction(&mut run_loop, run_auto_compaction, &run_model);
-            let system_prompt = self.build_system_prompt(&run_cwd, run_loop.tools.clone());
+            let system_prompt = self.build_system_prompt(
+                &run_cwd,
+                run_loop.tools.clone(),
+                &run_model,
+                &run_thinking_level,
+            );
             run_loop.system_prompt = system_prompt.clone();
             run_loop.config.system_prompt = system_prompt.clone();
             (system_prompt, run_loop.verbose, run_loop)
@@ -475,7 +485,12 @@ impl ServerSession {
                 .update_thinking(&self.thinking_level, thinking_budget);
             self.swap_token_counters_into_loop(&mut shared);
             self.wire_auto_compaction(&mut shared, run_auto_compaction, &run_model);
-            let system_prompt = self.build_system_prompt(&run_cwd, shared.tools.clone());
+            let system_prompt = self.build_system_prompt(
+                &run_cwd,
+                shared.tools.clone(),
+                &run_model,
+                &run_thinking_level,
+            );
             shared.system_prompt = system_prompt.clone();
             shared.config.system_prompt = system_prompt.clone();
 
@@ -1247,7 +1262,13 @@ impl ServerSession {
         *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
-    fn build_system_prompt(&self, cwd: &str, tools: Vec<crate::types::AgentTool>) -> String {
+    fn build_system_prompt(
+        &self,
+        cwd: &str,
+        tools: Vec<crate::types::AgentTool>,
+        model: &str,
+        thinking_level: &str,
+    ) -> String {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         // Discover skills so they appear in the system prompt's <available_skills> block.
@@ -1285,8 +1306,8 @@ impl ServerSession {
             agent_content,
             memory_content,
             session_id: self.session_id.clone(),
-            model: self.model.clone(),
-            thinking_level: self.thinking_level.clone(),
+            model: model.to_owned(),
+            thinking_level: thinking_level.to_owned(),
             prompt_guidelines: vec![
                 // The write-via-shell prohibition is platform-neutral, but its
                 // examples must name the redirection forms the host's shell

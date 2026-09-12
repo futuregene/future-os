@@ -878,6 +878,16 @@ fn fork_creates_new_session_from_entry_point() {
         ],
     );
 
+    let before = state.sessions.read().len();
+    let mut invalid = make_cmd("fork");
+    invalid.entry_id = "missing-point".into();
+    let rejected = parse_response(&handle_command_internal(&state, invalid));
+    assert_eq!(rejected["success"], false);
+    assert!(rejected["error"]
+        .as_str()
+        .unwrap()
+        .contains("Fork point not found"));
+    assert_eq!(state.sessions.read().len(), before);
     let mut cmd = make_cmd("fork");
     cmd.entry_id = entry_id;
     let resp = parse_response(&handle_command_internal(&state, cmd));

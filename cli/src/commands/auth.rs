@@ -10,7 +10,6 @@ use crate::output::Output;
 use crate::rpc::{grpc_addr, RunClient};
 use crate::utils::platform::get_platform_url;
 use crate::utils::string::trim_trailing_slash;
-use crate::utils::time::sleep;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -112,10 +111,18 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
     out.log("");
     out.log("Waiting for authorization...");
 
-    // `const startedAt = Date.now(); while (Date.now() - startedAt < device.expires_in * 1000)`
-    let started_at = now_ms();
-    while now_ms() - started_at < device.expires_in * 1000 {
-        sleep(device.interval * 1000).await;
+    // Monotonic elapsed time cannot underflow when the wall clock changes.
+    let started_at = std::time::Instant::now();
+    let expires_after = std::time::Duration::from_secs(device.expires_in);
+    started_at
+        .checked_add(expires_after)
+        .ok_or("Device authorization expiry is too large")?;
+    while started_at.elapsed() < expires_after {
+        let remaining = expires_after.saturating_sub(started_at.elapsed());
+        tokio::time::sleep(std::time::Duration::from_secs(device.interval).min(remaining)).await;
+        if started_at.elapsed() >= expires_after {
+            break;
+        }
         let response = try_fetch_post(
             &client,
             &format!("{platform_url}/client/v1/oauth/device/token"),
@@ -132,6 +139,9 @@ pub async fn login(platform_url_override: Option<String>, out: &Output) -> Resul
             // `response.ok` — token granted.
             let token: DeviceTokenResponse =
                 serde_json::from_value(body).map_err(|e| format!("Network error: {e}"))?;
+            if token.api_key.is_empty() {
+                return Err("Authorization response contained an empty API key".into());
+            }
             save_auth(&auth_data, &token, &platform_url, out).await?;
             out.log(&format!(
                 "Saved Future API key to {}",
@@ -331,9 +341,7 @@ pub fn strip_api_suffix(base_url: &str) -> String {
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────
 
-/// reqwest client — Node `fetch` has no default timeout and the device-code
-/// poll loop controls its own pacing; reqwest's 30s crate default only
-/// matters for a hung connection, which is acceptable.
+/// Requests set an explicit timeout covering both headers and body.
 fn http_client() -> reqwest::Client {
     reqwest::Client::new()
 }
@@ -348,6 +356,7 @@ async fn try_fetch_post(
 ) -> Result<reqwest::Response, String> {
     match client
         .post(url)
+        .timeout(std::time::Duration::from_secs(30))
         .header("Content-Type", "application/json")
         .body(body.to_string())
         .send()
@@ -510,7 +519,11 @@ pub fn get_future_auth_entry(auth_file: &Value) -> Option<FutureAuthEntry> {
     let obj = value.as_object()?;
     Some(FutureAuthEntry {
         type_: obj.get("type").and_then(Value::as_str).map(str::to_string),
-        key: obj.get("key").and_then(Value::as_str).map(str::to_string),
+        key: obj
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string),
         base_url: obj
             .get("base_url")
             .and_then(Value::as_str)
@@ -519,14 +532,6 @@ pub fn get_future_auth_entry(auth_file: &Value) -> Option<FutureAuthEntry> {
 }
 
 // ── Misc ──────────────────────────────────────────────────────────────────
-
-/// `Date.now()`.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 /// `openBrowser(url)` — spawn the platform opener detached with stdio
 /// ignored; resolves true when the process spawned.
@@ -901,6 +906,10 @@ mod tests {
 
     #[tokio::test]
     async fn get_future_auth_entry_edge_cases() {
+        assert!(get_future_auth_entry(&json!({"future":{"key":""}}))
+            .unwrap()
+            .key
+            .is_none());
         assert!(get_future_auth_entry(&json!({})).is_none());
         assert!(get_future_auth_entry(&json!({ "future": 5 })).is_none());
         assert!(get_future_auth_entry(&json!({ "future": null })).is_none());
@@ -932,6 +941,62 @@ mod tests {
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         dir
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn login_rejects_extreme_expiry_and_empty_granted_key() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let opener = fake_opener_dir();
+        let _env = EnvGuard::set(&[("PATH", opener.path().as_os_str().to_os_string())]);
+        for (expires, expected) in [(u64::MAX, "expiry is too large"), (60, "empty API key")] {
+            let device = json!({"device_code":"d","user_code":"U","verification_uri":"https://example.invalid","expires_in":expires,"interval":0}).to_string();
+            let base = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json("/client/v1/oauth/device/code", 200, &device),
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/token",
+                    200,
+                    r#"{"api_key":""}"#,
+                ),
+            ])
+            .await;
+            let (out, _) = Output::memory();
+            assert!(login(Some(base), &out)
+                .await
+                .unwrap_err()
+                .contains(expected));
+            assert!(
+                !auth_file().exists(),
+                "failed authorization must not create credentials"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_request_timeout_includes_response_body() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let response = try_fetch_post(
+            &http_client(),
+            &format!("http://{address}/auth"),
+            &json!({}),
+        )
+        .await
+        .unwrap();
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(35), response.bytes()).await;
+        server.abort();
+        assert!(result.expect("request timeout must cover body").is_err());
     }
 
     #[cfg(not(windows))]
