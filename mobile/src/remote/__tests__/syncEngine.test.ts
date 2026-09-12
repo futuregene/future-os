@@ -120,6 +120,51 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test("a projection snapshot retains its accumulator for the following live tail", async () => {
+    const h = new Harness("r");
+    h.projection = [agentStart("r"), textChunk("r", 1, "prefix")];
+    try {
+      h.engine.reconcile("s", "open");
+      await h.settle();
+      expect(h.textOf("s")).toBe("prefix");
+      h.projection = null;
+      h.engine.event("s", textChunk("r", 2, " tail"));
+      await h.settle();
+      expect(h.textOf("s")).toBe("prefix tail");
+    } finally { h.engine.clear(); }
+  });
+
+  test("restarting during a cooperative replay sees only committed cursors and drops old work", async () => {
+    jest.useFakeTimers();
+    let during = -2;
+    let calls = 0;
+    const engine = new SyncEngine({
+      requestGetState: async () => ({ activeRun: { runId: "r" } }),
+      requestHistory: async () => emptyTimeline(),
+      fetchReplay: async () => {
+        calls++;
+        if (calls === 1) {
+          setTimeout(() => {
+            during = engine.cursorFor("s").get("r")?.highWater ?? -1;
+            engine.restart("s", "reconnect");
+          }, 0);
+          return { events: [agentStart("r"), ...Array.from({ length: 10_000 }, (_, i) => textChunk("r", i + 1, "old"))].map(ev => ({ ...ev })) };
+        }
+        return { events: [agentStart("r"), textChunk("r", 1, "replacement")].map(ev => ({ ...ev })) };
+      },
+    });
+    try {
+      engine.reconcile("s", "open");
+      await jest.runAllTimersAsync();
+      expect(during).toBe(-1);
+      expect(engine.cursorFor("s").get("r")?.highWater).toBe(1);
+      expect(engine.timelineFor("s")?.items.find(item => item.kind === "message"))
+        .toMatchObject({ text: "replacement" });
+      expect(calls).toBe(2);
+    } finally { engine.clear(); jest.useRealTimers(); }
+  });
+
+
   test("publishes cold history before slow replay without claiming a complete prefix", async () => {
     jest.useFakeTimers();
     const history = emptyTimeline();
@@ -754,17 +799,21 @@ describe("SyncEngine", () => {
     expect(h.timelineOf("s1").items.map((i) => i.id)).toEqual(["h1", "h2", "notice-1"]);
   });
   test("live queue overflow converges from the durable journal without losing text", async () => {
+    jest.useFakeTimers();
     const run = nextRunId();
     const h = new Harness(run);
-    h.journal.add(agentStart(run));
-    h.engine.event("s1", agentStart(run));
-    for (let idx = 1; idx <= 4200; idx += 1) {
-      const event = textChunk(run, idx, "a");
-      h.journal.add(event);
-      h.engine.event("s1", event);
-    }
-    await h.settle();
-    expect(h.textOf("s1")).toBe("a".repeat(4200));
-    h.engine.clear();
+    try {
+      h.journal.add(agentStart(run));
+      h.engine.event("s1", agentStart(run));
+      for (let idx = 1; idx <= 4200; idx += 1) {
+        const event = textChunk(run, idx, "a");
+        h.journal.add(event);
+        h.engine.event("s1", event);
+      }
+      // Replay intentionally crosses task boundaries now; completion, not a
+      // 20ms wall-clock sleep, is the relevant assertion boundary.
+      await jest.runAllTimersAsync();
+      expect(h.textOf("s1")).toBe("a".repeat(4200));
+    } finally { h.engine.clear(); jest.useRealTimers(); }
   });
 });

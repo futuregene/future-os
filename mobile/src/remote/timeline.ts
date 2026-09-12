@@ -5,6 +5,8 @@
 export {
   appendUserMessage,
   applyStreamEvent,
+  applyStreamEvents,
+  applyReplayEvents,
   commitAcknowledgedUserMessage,
   emptyTimeline,
   markApprovalDecision,
