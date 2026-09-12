@@ -1101,6 +1101,9 @@ mod tests {
         let b = temp_dir("selftest");
         assert_ne!(a, b);
         let _guard = home_lock();
+        // Windows shells set no HOME, so the previous value may be absent and
+        // "restored" means "absent again".
+        let original = std::env::var("HOME").ok();
         let home = IsolatedHome::new("selftest");
         assert!(home.path.exists());
         assert_eq!(
@@ -1108,14 +1111,14 @@ mod tests {
             home.path.to_string_lossy().to_string()
         );
         drop(home);
-        // HOME restored.
-        assert_ne!(std::env::var("HOME").unwrap(), "");
+        // HOME restored to its previous state.
+        assert_eq!(std::env::var("HOME").ok(), original);
     }
 
     #[test]
     fn isolated_home_without_prior_home_removes_it() {
         let _guard = home_lock();
-        let original = std::env::var("HOME").expect("HOME set by test harness");
+        let original = std::env::var("HOME").ok();
         std::env::remove_var("HOME");
         let home = IsolatedHome::new("selftest-nohome");
         assert_eq!(
@@ -1125,6 +1128,8 @@ mod tests {
         drop(home);
         // No original → HOME is removed (not restored).
         assert!(std::env::var("HOME").is_err());
-        std::env::set_var("HOME", original);
+        if let Some(original) = original {
+            std::env::set_var("HOME", original);
+        }
     }
 }

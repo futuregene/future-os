@@ -799,9 +799,16 @@ fn unzip_command(zip_path: &Path, dest_dir: &Path) -> tokio::process::Command {
         "-NoProfile",
         "-Command",
         &format!(
-            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-            zip_path.to_string_lossy().replace('\'', "''"),
-            dest_dir.to_string_lossy().replace('\'', "''")
+            // `$ErrorActionPreference='Stop'` + try/catch are required: the
+            // Archive module reports a corrupt archive as a NON-terminating
+            // error (the message lands on stdout) and still exits 0, so the
+            // caller found an empty destination and blamed the package
+            // instead of the unzip.
+            "$ErrorActionPreference='Stop'; \
+             try {{ Expand-Archive -LiteralPath '{zip}' -DestinationPath '{dest}' -Force }} \
+             catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}",
+            zip = zip_path.to_string_lossy().replace('\'', "''"),
+            dest = dest_dir.to_string_lossy().replace('\'', "''")
         ),
     ]);
     cmd
@@ -2569,20 +2576,19 @@ mod tests {
         assert_eq!(read_skill_md_version(&path).await, Some("2.3".to_string()));
     }
 
+    // Needs a broken symlink, which Windows only allows with developer mode.
+    #[cfg(unix)]
     #[tokio::test]
     async fn flatten_single_subdir_vanishing_entry_is_ok() {
         let _guard = crate::test_env::lock_env().await;
         let dir = tempfile::tempdir().unwrap();
         // Single entry that is a BROKEN SYMLINK: metadata fails → Ok(()).
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(
-                dir.path().join("missing-target"),
-                dir.path().join("dangling"),
-            )
-            .unwrap();
-            flatten_single_subdir(dir.path()).await.unwrap();
-        }
+        std::os::unix::fs::symlink(
+            dir.path().join("missing-target"),
+            dir.path().join("dangling"),
+        )
+        .unwrap();
+        flatten_single_subdir(dir.path()).await.unwrap();
     }
 
     #[tokio::test]

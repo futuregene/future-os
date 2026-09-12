@@ -1347,7 +1347,11 @@ mod tests {
         let b = entries.iter().position(|e| e.id == last_id).unwrap();
         assert!(a < b, "recovery terminal must follow every accepted append");
         persistence.close().unwrap();
-        std::fs::remove_dir_all(dir).unwrap();
+        // Release the SQLite store before deleting: on Windows an open
+        // database file keeps its directory undeletable.
+        drop(persistence);
+        drop(manager);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

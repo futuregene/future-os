@@ -535,8 +535,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_failure_and_handshake_timeout() {
-        // Nothing listening → handshake fails fast.
-        let err = CdpConnection::connect("ws://127.0.0.1:1", 500)
+        // Nothing listening → the handshake fails. The budget tolerates hosts
+        // where a refused loopback connect reports back slowly (Windows can
+        // take ~2 s); the handshake-timeout branch is exercised below.
+        let err = CdpConnection::connect("ws://127.0.0.1:1", 5_000)
             .await
             .err()
             .unwrap();

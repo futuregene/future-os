@@ -63,13 +63,19 @@ fn embedded_agent_help() {
 
 #[test]
 fn embedded_agent_run_failure_is_exit_1() {
-    // Port 1 fails to serve → run_agent's error arm (agent logs go to
-    // stdout via tracing). Isolated HOME: this test and the logfile test
-    // below both spawn a real agent; without isolation they race on the
-    // user-level agent singleton lock and one of them flakes with an empty
-    // stdout (the lock is rejected before tracing init).
+    // A port that is already taken fails to bind on every platform, going
+    // through run_agent's error arm (agent logs go to stdout via tracing).
+    // Port 1 would not do: binding it is only privileged on POSIX, so Windows
+    // happily served there — and the agent that never exited stayed on
+    // 127.0.0.1:1 for the rest of the suite. Isolated HOME: this test and the
+    // logfile test below both spawn a real agent; without isolation they race
+    // on the user-level agent singleton lock and one of them flakes with an
+    // empty stdout (the lock is rejected before tracing init).
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("bind port");
+    let addr = format!("127.0.0.1:{}", taken.local_addr().unwrap().port());
     let home = tempfile::tempdir().expect("tempdir");
-    let (code, stdout, _) = future_with_home(&["agent", "--grpc-addr", "127.0.0.1:1"], home.path());
+    let (code, stdout, _) = future_with_home(&["agent", "--grpc-addr", &addr], home.path());
+    drop(taken);
     assert_eq!(code, Some(1));
     assert!(stdout.contains("exited with error"), "stdout: {stdout}");
 }
@@ -137,8 +143,15 @@ fn tools_call_reads_args_from_stdin() {
     use std::process::Stdio;
     // `tools call web_search --stdin` reads the JSON args from stdin; the
     // call then fails without an API key, but the stdin path executed.
+    // Isolated HOME + cleared key env: a developer machine that is logged in
+    // (or exports a key) would otherwise succeed and exit 0.
+    let home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
         .args(["tools", "call", "web_search", "--stdin"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env_remove("FUTURE_API_KEY")
+        .env_remove("FUTURE_API_TEST_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

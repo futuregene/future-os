@@ -2848,24 +2848,54 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn shell_timeout_kills_process_and_reports_partial_output() {
-        // Partial output is drained and reported after the kill.
-        let result = run_shell("echo partial-out; sleep 30", 1, false, "").await;
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("timed out"), "{error}");
-        assert!(error.contains("partial-out"), "{error}");
+        // Both platforms drain and report the partial output of a killed run;
+        // they differ in the return shape. Unix reports a timeout error;
+        // Windows returns the killed run's output with an `[exit: signal]`
+        // footer (see `windows_shell_reports_exit_status_and_timeout_kills_descendants`).
+        #[cfg(unix)]
+        {
+            let result = run_shell("echo partial-out; sleep 30", 1, false, "").await;
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("timed out"), "{error}");
+            assert!(error.contains("partial-out"), "{error}");
+        }
+        #[cfg(windows)]
+        {
+            let result = run_shell(
+                "Write-Output partial-out; Start-Sleep -Seconds 30",
+                1,
+                false,
+                "",
+            )
+            .await
+            .unwrap();
+            assert!(result.contains("partial-out"), "{result}");
+            assert!(result.contains("[exit: signal]"), "{result}");
+        }
 
         // No output at all → the shorter error form.
-        let result = run_shell("sleep 30", 1, false, "").await;
-        let error = result.unwrap_err().to_string();
+        #[cfg(unix)]
+        let silent = run_shell("sleep 30", 1, false, "").await;
+        #[cfg(windows)]
+        let silent = run_shell("Start-Sleep -Seconds 30", 1, false, "").await;
+        let error = silent.unwrap_err().to_string();
         assert!(error.contains("no output captured"), "{error}");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn shell_output_is_truncated_beyond_max_keep() {
-        // seq 1..120000 ≈ 670 KB > MAX_KEEP (500 KB).
-        let result = run_shell("seq 1 120000", 30, false, "").await.unwrap();
+        // Output ≈ 0.7-1 MB > MAX_KEEP (500 KB); the last line is the marker
+        // the tail must still carry.
+        #[cfg(unix)]
+        let (command, last_line) = ("seq 1 120000", "120000");
+        #[cfg(windows)]
+        let (command, last_line) = (
+            "cmd /c \"for /L %i in (1,1,40000) do @echo xxxxxxxxxxxxxxxxxx%i\"",
+            "40000",
+        );
+        let result = run_shell(command, 30, false, "").await.unwrap();
         assert!(result.contains("truncated"), "{result:.200}");
-        assert!(result.contains("120000"), "tail kept: {result:.200}");
+        assert!(result.contains(last_line), "tail kept: {result:.200}");
     }
 
     #[test]

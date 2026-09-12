@@ -1216,7 +1216,10 @@ mod tests {
             .position(|e| e.entry_type == ENTRY_TYPE_ASSISTANT)
             .unwrap();
         assert_eq!(loaded.entries[a + 1].id, real_id);
-        std::fs::remove_dir_all(dir).unwrap();
+        // The manager's SQLite store holds the database open; Windows refuses
+        // to delete a directory that still has an open file inside it.
+        drop(manager);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

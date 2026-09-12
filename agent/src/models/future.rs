@@ -148,7 +148,9 @@ fn future_models_cache_path() -> String {
 /// fallback arm is testable (a real host always resolves one).
 fn future_models_cache_path_in(home: Option<std::path::PathBuf>) -> String {
     home.map(|h| h.join(".future/agent/.future-models-cache.json"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/.future/agent/.future-models-cache.json"))
+        // No home to cache under: fall back to the platform temp directory
+        // (a hard-coded `/tmp` is not a real path on Windows).
+        .unwrap_or_else(|| std::env::temp_dir().join(".future/agent/.future-models-cache.json"))
         .to_string_lossy()
         .to_string()
 }
@@ -1434,13 +1436,22 @@ mod tests {
 
     #[test]
     fn cache_path_falls_back_to_tmp_without_home() {
+        // Joined with the platform separator, so the expectation is built the
+        // same way instead of hard-coding POSIX separators.
+        let tail = std::path::Path::new(".future/agent/.future-models-cache.json");
         assert_eq!(
             future_models_cache_path_in(None),
-            "/tmp/.future/agent/.future-models-cache.json"
+            std::env::temp_dir()
+                .join(tail)
+                .to_string_lossy()
+                .into_owned()
         );
         assert_eq!(
             future_models_cache_path_in(Some(std::path::PathBuf::from("/home/x"))),
-            "/home/x/.future/agent/.future-models-cache.json"
+            std::path::Path::new("/home/x")
+                .join(tail)
+                .to_string_lossy()
+                .into_owned()
         );
     }
 

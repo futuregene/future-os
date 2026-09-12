@@ -809,7 +809,7 @@ impl Authority {
 /// Prototype rule: absolute HOME paths and credential-ish tokens.
 pub fn boundary_scan_leaks(text: &str) -> Vec<String> {
     let mut leaks = vec![];
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::compat::home_dir();
     if !home.is_empty() && text.contains(&home) {
         leaks.push(format!("absolute home path leak: {home}"));
     }

@@ -272,6 +272,10 @@ mod tests {
         (code, stdout, stderr)
     }
 
+    // Unix-only: the simulated darwin/linux install creates real symlinks,
+    // which Windows only allows with developer mode. The win32 no-op install
+    // has its own `installs_builtins_without_links_on_windows` test.
+    #[cfg(unix)]
     #[tokio::test]
     async fn installs_builtins_and_creates_idempotent_macos_links() {
         let _guard = crate::test_env::lock_env().await;
@@ -323,6 +327,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn installs_builtins_and_creates_links_on_linux() {
         let _guard = crate::test_env::lock_env().await;
@@ -348,6 +353,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn links_future_when_sibling_agent_is_missing() {
         let _guard = crate::test_env::lock_env().await;
@@ -424,6 +430,9 @@ mod tests {
         assert!(stderr.contains("Run the standalone future executable"));
     }
 
+    // `init_command` takes the host platform: on Windows that is `win32`,
+    // which links nothing and therefore cannot fail this way.
+    #[cfg(unix)]
     #[tokio::test]
     async fn init_command_with_defaults_errors_on_test_binary() {
         let _guard = crate::test_env::lock_env().await;
@@ -451,6 +460,7 @@ mod tests {
         assert_eq!(out.exit_code(), 1);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn existing_symlink_to_other_target_is_repointed() {
         let _guard = crate::test_env::lock_env().await;
@@ -461,7 +471,6 @@ mod tests {
         // Stale symlink: future → some OTHER binary.
         let other = root.path().join("old-future");
         tokio::fs::write(&other, "").await.unwrap();
-        #[cfg(unix)]
         tokio::fs::symlink(&other, bin_dir.join("future"))
             .await
             .unwrap();

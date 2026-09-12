@@ -826,10 +826,18 @@ fn linux_diagnostic_path(line: &str) -> Option<String> {
 fn shorten_home(path: &str) -> String {
     if let Some(home) = crate::utils::home_dir_opt() {
         if let Ok(rest) = std::path::Path::new(path).strip_prefix(home) {
-            return std::path::Path::new("~")
-                .join(rest)
-                .to_string_lossy()
-                .into_owned();
+            // Windows renders the tail with `\`; the shortened form is card
+            // text and a saved-rule path, and tilde expansion accepts either
+            // separator, so it is normalized to `/` for stable rules.
+            #[cfg(windows)]
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            #[cfg(not(windows))]
+            let rest = rest.to_string_lossy().into_owned();
+            return if rest.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{rest}")
+            };
         }
     }
     path.to_string()

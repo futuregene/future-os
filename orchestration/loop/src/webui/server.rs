@@ -589,14 +589,20 @@ mod tests {
 
     #[test]
     fn route_reports_open_store_failure() {
-        // Root that doesn't exist → Store::open fails → 500 error response.
+        // A root that cannot be a store directory (a regular file) →
+        // Store::open fails → 500 error response. A bare non-existent path
+        // does not work as a fixture: on Windows `/nonexistent/...` is
+        // relative and the store simply creates it.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
         let r = route(
             &Request {
                 method: "GET".into(),
                 path: "/api/overview".into(),
                 query: String::new(),
             },
-            "/nonexistent/definitely/not/a/store",
+            blocker.to_str().unwrap(),
         );
         assert!(String::from_utf8_lossy(&r).contains("500 Internal Server Error"));
     }

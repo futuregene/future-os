@@ -318,14 +318,11 @@ mod tests {
         goal.add(todo);
         let message = compose_turn_message(&goal, goal.todo("t").unwrap(), None);
         assert!(message.contains("Declared write set"));
-        assert!(message.contains(
-            &dir.path()
-                .canonicalize()
-                .unwrap()
-                .join("papers/a.md")
-                .to_string_lossy()
-                .to_string()
-        ));
+        // The contract carries the path the guard resolves (canonicalized
+        // parent + relative tail), which is platform-spelled.
+        let resolved =
+            crate::agents::workspace_guard::normalize_workspace_path_at("papers/a.md", dir.path());
+        assert!(message.contains(&resolved), "{message}");
         assert!(message.contains("stop and ask the supervisor"));
     }
 

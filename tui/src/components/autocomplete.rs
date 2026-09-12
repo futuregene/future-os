@@ -377,10 +377,12 @@ impl AutocompleteProvider for FilePathProvider {
 
         // Resolve the partial path
         let resolved: PathBuf = if let Some(rest) = token.strip_prefix('~') {
-            let home = env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            // No home in the environment (Windows shells set no `HOME`, and
+            // both variables can be cleared) → expand to the root.
+            let home = crate::home::home_dir().unwrap_or_else(|| PathBuf::from("/"));
             // TS path.join(home, rest) concatenates; Rust's PathBuf::join
             // replaces on absolute rest — strip the leading '/'.
-            PathBuf::from(home).join(rest.trim_start_matches('/'))
+            home.join(rest.trim_start_matches('/'))
         } else {
             PathBuf::from(&self.cwd).join(token)
         };
@@ -440,10 +442,13 @@ impl AutocompleteProvider for FilePathProvider {
                 let full_str = full.display().to_string();
                 let mut display = full_str.clone();
                 if full_str.starts_with(&self.cwd) {
-                    display = full_str[self.cwd.len()..].to_string();
-                    if display.starts_with('/') {
-                        display = display[1..].to_string();
-                    }
+                    let rest = &full_str[self.cwd.len()..];
+                    // Separator-aware: Windows renders `\`, while a token that
+                    // already ended in `/` keeps that `/` in front.
+                    display = rest
+                        .strip_prefix(std::path::is_separator)
+                        .unwrap_or(rest)
+                        .to_string();
                 }
                 AutocompleteItem {
                     value: display.clone(),
@@ -1181,10 +1186,14 @@ mod tests {
 
     #[test]
     fn file_path_home_unset_falls_back_to_root() {
-        // `~` expansion with HOME unset → the "/"-fallback closure.
+        // `~` expansion with no home in the environment → the "/"-fallback
+        // closure. Both variables are cleared: Windows shells set no `HOME`
+        // and resolve the profile through `USERPROFILE` instead.
         let _g = crate::test_env::lock();
-        let old_home = env::var_os("HOME").expect("HOME set in test env");
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
         env::remove_var("HOME");
+        env::remove_var("USERPROFILE");
         let provider = FilePathProvider::new(Some("/tmp".into()));
         let ctx = AutocompleteContext {
             text: "~/x".into(),
@@ -1195,7 +1204,8 @@ mod tests {
         // Resolved to "/x" → parent "/" → read_dir ok or empty; the point
         // is the fallback arm ran.
         let _ = provider.get_completions(&ctx);
-        env::set_var("HOME", old_home);
+        restore_env_var("HOME", old_home);
+        restore_env_var("USERPROFILE", old_userprofile);
     }
 
     #[test]

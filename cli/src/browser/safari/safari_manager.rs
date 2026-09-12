@@ -235,8 +235,11 @@ mod tests {
     use super::*;
     use crate::test_server::{spawn_http, HttpRoute};
 
-    /// Reset the driver-path override after a test.
+    /// Reset the driver-path override after a test. Its users (the
+    /// safaridriver launch tests) are unix-only.
+    #[cfg(unix)]
     struct OverrideReset;
+    #[cfg(unix)]
     impl Drop for OverrideReset {
         fn drop(&mut self) {
             *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
@@ -258,6 +261,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn set_driver_override(path: &str) -> OverrideReset {
         *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some(path.to_string());
         OverrideReset

@@ -40,6 +40,7 @@ pub mod components;
 pub mod crash;
 pub mod help;
 pub mod help_screen;
+pub mod home;
 pub mod index;
 pub mod keybindings;
 pub mod keys;

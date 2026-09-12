@@ -16,15 +16,10 @@ use crate::state::Goal;
 
 pub const WORKSPACE_GUARD_SCHEMA_VERSION: &str = "agent_workspace_guard_v1";
 
-/// Expand a leading `~` to the user's home directory (HOME, else
-/// USERPROFILE on Windows). Anything else is returned unchanged.
+/// Expand a leading `~` to the user's home directory. Anything else is
+/// returned unchanged.
 fn expand_home(raw: &str) -> String {
-    expand_home_with(
-        raw,
-        std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_default(),
-    )
+    expand_home_with(raw, crate::compat::home_dir())
 }
 
 /// Deterministic core of [`expand_home`]: the home value is passed in so the
@@ -61,6 +56,28 @@ fn lexical_normalize(path: &std::path::Path) -> String {
     out.to_string_lossy().into_owned()
 }
 
+/// `std::fs::canonicalize` returns the Windows extended-length spelling
+/// (`\\?\C:\...`). Strip it: workspace paths are stored as plain strings and
+/// echoed back to users (ledger entries, `agent list`, conflict reports), and
+/// the verbatim form also disables the `.`/`..` and trailing-dot handling the
+/// rest of the guard relies on.
+#[cfg(windows)]
+fn ordinary_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    match rest.strip_prefix("UNC\\") {
+        Some(unc) => std::path::PathBuf::from(format!(r"\\{unc}")),
+        None => std::path::PathBuf::from(rest),
+    }
+}
+
+#[cfg(not(windows))]
+fn ordinary_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    path
+}
+
 /// Normalize a declared workspace path for storage: expand `~`, absolutize
 /// against the process cwd, canonicalize when the path exists (resolves
 /// symlinks such as /tmp → /private/tmp on macOS), otherwise fall back to
@@ -90,7 +107,7 @@ pub fn normalize_workspace_path_at(raw: &str, base: &std::path::Path) -> String 
         resolved.push(component.as_os_str());
         resolved = std::path::PathBuf::from(lexical_normalize(&resolved));
         if let Ok(canon) = resolved.canonicalize() {
-            resolved = canon;
+            resolved = ordinary_path(canon);
         }
     }
     resolved.to_string_lossy().into_owned()
@@ -318,21 +335,40 @@ mod tests {
     fn normalize_absolutizes_relative_paths_against_cwd() {
         let cwd = std::env::current_dir().unwrap();
         let got = normalize_workspace_path("sub/dir");
-        let canon = cwd.canonicalize().unwrap_or(cwd.clone());
-        assert_eq!(got, format!("{}/sub/dir", canon.to_string_lossy()));
+        // The cwd exists, so it is canonicalized first (symlinked parents of
+        // not-yet-created output files still resolve); the relative tail is
+        // then appended with the platform separator.
+        let path = std::path::Path::new(&got);
+        assert!(path.is_absolute(), "got: {got}");
+        assert!(path.ends_with("sub/dir"), "got: {got}");
+        assert!(
+            path.starts_with(normalize_workspace_path(&cwd.to_string_lossy())),
+            "got: {got}"
+        );
     }
 
     #[test]
     fn normalize_resolves_dot_components_lexically() {
-        // Path that cannot exist → lexical fallback resolves `a/./b` and `..`.
-        let got = normalize_workspace_path("/definitely/not/here/./x/../y");
-        assert_eq!(got, "/definitely/not/here/y");
+        // Path that cannot exist → lexical fallback resolves `.` and `..`
+        // (no symlink rewriting for a non-existent tail).
+        #[cfg(windows)]
+        let (raw, expected) = (
+            r"C:\definitely\not\here\.\x\..\y",
+            r"C:\definitely\not\here\y",
+        );
+        #[cfg(not(windows))]
+        let (raw, expected) = ("/definitely/not/here/./x/../y", "/definitely/not/here/y");
+        assert_eq!(normalize_workspace_path(raw), expected);
     }
 
     #[test]
     fn lexical_normalize_handles_curdir_and_leading_parentdir() {
         assert_eq!(lexical_normalize(std::path::Path::new("./foo")), "foo");
-        assert_eq!(lexical_normalize(std::path::Path::new("../foo")), "../foo");
+        // Component-wise comparison: the rendered separator is the platform's.
+        assert_eq!(
+            std::path::Path::new(&lexical_normalize(std::path::Path::new("../foo"))),
+            std::path::Path::new("../foo")
+        );
         assert_eq!(lexical_normalize(std::path::Path::new("a/../b")), "b");
     }
 
@@ -352,7 +388,10 @@ mod tests {
         // `expand_home_handles_tilde_and_empty_home`.
         let got = normalize_workspace_path("~/some-workspace");
         assert!(!got.contains('~'), "tilde must expand: {got}");
-        assert!(got.ends_with("/some-workspace"), "got: {got}");
+        assert!(
+            std::path::Path::new(&got).ends_with("some-workspace"),
+            "got: {got}"
+        );
     }
 
     // ── overlap semantics ────────────────────────────────────────────────

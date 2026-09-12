@@ -2653,7 +2653,7 @@ impl<T: TerminalIo> App<T> {
                     // becomes a path component). The agent trims its side;
                     // the TUI must too, or the footer shows the dirty path.
                     let mut resolved = arg.trim().to_string();
-                    let homedir = dirs::home_dir().unwrap_or_default();
+                    let homedir = crate::home::home_dir_or_default();
                     if resolved == "~" {
                         resolved = homedir.display().to_string();
                     } else if let Some(rest) = resolved.strip_prefix("~/") {
@@ -4050,8 +4050,7 @@ impl<T: TerminalIo> App<T> {
         if std::env::var("PI_DEBUG_REDRAW").as_deref() != Ok("1") {
             return;
         }
-        let log_path = dirs::home_dir()
-            .unwrap_or_default()
+        let log_path = crate::home::home_dir_or_default()
             .join(".future")
             .join("tui")
             .join("debug.log");
@@ -5699,6 +5698,26 @@ mod tests {
         );
     }
 
+    /// Pump until the overlay stack is empty (same budget as pump_until_msg):
+    /// a closing overlay is delivered through the command channel.
+    async fn pump_until_no_overlay(
+        app: &mut App<FakeTerminal>,
+        op_rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+    ) {
+        let mut cleared = false;
+        for _ in 0..1200 {
+            while let Ok(cmd) = op_rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if app.overlay_stack.is_empty() {
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(cleared, "timed out waiting for the overlay to close");
+    }
+
     /// Pump until an overlay is on the stack (same budget as pump_until_msg).
     async fn pump_until_overlay(
         app: &mut App<FakeTerminal>,
@@ -6015,10 +6034,9 @@ mod tests {
                 description: None,
             },
         });
-        pump(&mut app, &mut rx).await; // switch flow fails against dead client
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to switch session")));
+        // Switch flow fails against the dead client; the failure is async, so
+        // wait for the message instead of a fixed pump window.
+        pump_until_msg(&mut app, &mut rx, "Failed to switch session").await;
 
         // ForkSelected → ForkDone spawn chain (fails against dead client).
         app.handle_cmd(UiCmd::ForkSelected {
@@ -6028,10 +6046,7 @@ mod tests {
                 description: None,
             },
         });
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to fork")));
+        pump_until_msg(&mut app, &mut rx, "Failed to fork").await;
 
         // ForkDone direct: cancelled, ok-not-cancelled, err.
         app.handle_cmd(UiCmd::ForkDone {
@@ -6098,10 +6113,7 @@ mod tests {
             label: "gpt".into(),
             description: None,
         }));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to set model")));
+        pump_until_msg(&mut app, &mut rx, "Failed to set model").await;
 
         // PromptAck: queued ack binds run; err (non-transport) adds message;
         // err (transport) doesn't.
@@ -6406,10 +6418,9 @@ mod tests {
         app.handle_key_action(KeyAction::CycleThinking);
         pump(&mut app, &mut rx).await;
 
-        // ShowSessions spawns a load.
+        // ShowSessions spawns a load (async: wait for the failure message).
         app.handle_key_action(KeyAction::ShowSessions);
-        pump(&mut app, &mut rx).await;
-        assert!(last_system(&app).contains("Failed to load sessions"));
+        pump_until_msg(&mut app, &mut rx, "Failed to load sessions").await;
 
         // Interrupt while streaming → abort spawn + stopped marker.
         app.state.streaming = true;
@@ -6563,15 +6574,9 @@ mod tests {
 
         // /model with arg (dead client → fails), and selector path.
         app.handle_cmd(UiCmd::Submit("/model sonnet".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to set model")));
+        pump_until_msg(&mut app, &mut rx, "Failed to set model").await;
         app.handle_cmd(UiCmd::Submit("/model".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to load models")));
+        pump_until_msg(&mut app, &mut rx, "Failed to load models").await;
 
         // /model while streaming → refused.
         app.state.streaming = true;
@@ -6583,10 +6588,7 @@ mod tests {
         app.handle_cmd(UiCmd::Submit("/name".into()));
         assert!(last_system(&app).contains("Usage: /name"));
         app.handle_cmd(UiCmd::Submit("/name my session".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to set session name")));
+        pump_until_msg(&mut app, &mut rx, "Failed to set session name").await;
 
         // /cwd with no arg is not a command — it becomes a prompt.
         let before = app.chat.plain_messages().len();
@@ -6594,10 +6596,7 @@ mod tests {
         assert!(app.chat.plain_messages().len() > before);
         app.state.streaming = false; // the prompt above set it
         app.handle_cmd(UiCmd::Submit("/cwd /tmp".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to change directory")));
+        pump_until_msg(&mut app, &mut rx, "Failed to change directory").await;
         app.handle_cmd(UiCmd::Submit("/cwd ~".into()));
         pump(&mut app, &mut rx).await;
         app.handle_cmd(UiCmd::Submit("/cwd ~/sub".into()));
@@ -6614,24 +6613,15 @@ mod tests {
         app.handle_cmd(UiCmd::Submit("/approve".into()));
         app.handle_cmd(UiCmd::Submit("/reject".into()));
         app.handle_cmd(UiCmd::Submit("/approve req-1".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to approve")));
+        pump_until_msg(&mut app, &mut rx, "Failed to approve").await;
         app.handle_cmd(UiCmd::Submit("/reject req-2".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to reject")));
+        pump_until_msg(&mut app, &mut rx, "Failed to reject").await;
 
         // /cancel with and without arg.
         app.handle_cmd(UiCmd::Submit("/cancel".into()));
         assert!(last_system(&app).contains("Usage: /cancel"));
         app.handle_cmd(UiCmd::Submit("/cancel run-9".into()));
-        pump(&mut app, &mut rx).await;
-        assert!(system_messages(&app)
-            .iter()
-            .any(|m| m.contains("Failed to cancel queued run")));
+        pump_until_msg(&mut app, &mut rx, "Failed to cancel queued run").await;
 
         // Unknown slash command → falls through to a prompt.
         app.handle_cmd(UiCmd::Submit("/not-a-command".into()));
@@ -6998,6 +6988,12 @@ mod tests {
         /// Scripted get_state responses, popped front-to-back (agent-restart
         /// scenarios); the built-in default replies once it drains.
         state_script: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+        /// While this is `false` the mock answers `list_models` with a
+        /// failure — a deterministic "agent not up yet" for the connect-retry
+        /// test. (TCP refusal timing is not portable: Windows can hold the
+        /// SYNs sent to a just-closed port until the next listener binds,
+        /// which made the retry setup connect on its very first attempt.)
+        not_ready: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
     #[tonic::async_trait]
@@ -7048,6 +7044,21 @@ mod tests {
                         }));
                     }
                 }
+            }
+            if cmd.r#type == "list_models"
+                && self
+                    .not_ready
+                    .as_ref()
+                    .is_some_and(|ready| !ready.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: false,
+                    error: "agent starting".into(),
+                    ..Default::default()
+                }));
             }
             let fail = self.fail.contains(&cmd.r#type);
             let data = match cmd.r#type.as_str() {
@@ -7602,28 +7613,28 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn wait_for_agent_retries_until_agent_appears() {
-        // The mock binds 1.3 s late: the first try_connects fail (showing
-        // the retry message) before the agent answers.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        let addr_str = format!("127.0.0.1:{}", addr.port());
+        // The mock rejects `list_models` until 1.3 s in: the first
+        // try_connects fail (showing the retry message) before the agent
+        // answers. The readiness flip is mock-driven rather than a late TCP
+        // bind — a just-closed Windows port can hold connects until the next
+        // listener binds, which made the first attempt succeed and the retry
+        // path never run.
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mock = AppMockAgent {
+            not_ready: Some(ready.clone()),
+            ..Default::default()
+        };
+        let (addr_str, _seen) = spawn_app_mock_with(mock).await;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1300)).await;
-            // Spawn-and-forget: the outer task completes once the server is
-            // spawned (the serve future outlives it).
-            tokio::spawn(
-                Server::builder()
-                    .add_service(FutureAgentServer::new(AppMockAgent::default()))
-                    .serve(addr),
-            );
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
         });
         let (mut app, mut rx) = make_app_at(&addr_str, &CliOptions::default());
         app.start(mpsc::unbounded_channel().0).await.unwrap();
         assert!(app.is_running());
         let joined = system_messages(&app).join("\n");
-        assert!(joined.contains("retrying every 1s"));
-        assert!(joined.contains("Connected to agent"));
+        assert!(joined.contains("retrying every 1s"), "{joined}");
+        assert!(joined.contains("Connected to agent"), "{joined}");
         pump(&mut app, &mut rx).await;
         app.stop();
     }
@@ -7913,8 +7924,13 @@ mod tests {
         assert!(parse_updated_at("2026-01-01 00:00:00") > 0);
         assert_eq!(parse_updated_at("garbage"), 0);
 
-        // normalize_path with a "." component.
-        assert_eq!(normalize_path("/tmp/./x"), "/tmp/x");
+        // normalize_path with a "." component (platform-spelled path).
+        let root = if cfg!(windows) { r"C:\tmp" } else { "/tmp" };
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            normalize_path(&format!("{root}{sep}.{sep}x")),
+            format!("{root}{sep}x")
+        );
 
         // FocusTarget::None drops key releases.
         app.focused = FocusTarget::None;
@@ -8007,8 +8023,7 @@ mod tests {
             purpose: SessionsPurpose::Browse,
         });
         app.handle_key("escape"); // → OverlayCancel through the channel
-        pump(&mut app, &mut rx).await;
-        assert!(app.overlay_stack.is_empty());
+        pump_until_no_overlay(&mut app, &mut rx).await;
 
         // apply_messages: tool message with an Error prefix.
         app.apply_messages(Ok(json_parse(
@@ -8136,8 +8151,11 @@ mod tests {
         app.input.handle_key("a"); // onChange (insert fires it)
         pump(&mut app, &mut rx).await;
 
-        // TerminalIo wrapper used by run_interactive.
-        let mut real = crate::terminal::Terminal::new().unwrap();
+        // TerminalIo wrapper used by run_interactive. Skipped where no console
+        // exists to build one from (redirected Windows runners).
+        let Some(mut real) = crate::terminal::terminal_or_skip() else {
+            return;
+        };
         crate::app::TerminalIo::set_exit_signal_callback(&mut real, None);
 
         // tool_start without args; usage without the usage key.

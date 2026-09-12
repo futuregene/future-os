@@ -483,8 +483,10 @@ mod tests {
     /// Connect error paths.
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_failures() {
-        // Refused → "connection failed".
-        let err = WebSocketTransport::connect("ws://127.0.0.1:1", 500)
+        // Refused → "connection failed". The budget has to tolerate hosts
+        // where a refused loopback connect reports back slowly (Windows can
+        // take ~2 s); the handshake-timeout branch is the second half below.
+        let err = WebSocketTransport::connect("ws://127.0.0.1:1", 5_000)
             .await
             .err()
             .map(|e| e.to_string());

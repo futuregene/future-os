@@ -326,7 +326,9 @@ fn scan_with_budget(
     ))
 }
 
-#[cfg(test)]
+// Glob patterns are matched against POSIX-spelled absolute paths (the Linux
+// helper's view of the filesystem), so the fixtures only hold on Unix hosts.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

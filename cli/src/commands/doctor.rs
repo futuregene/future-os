@@ -803,6 +803,10 @@ mod tests {
         assert!(!stdout.contains("All checks passed."));
     }
 
+    // The fake `future-agent` is a `#!/bin/sh` script: Windows can neither
+    // resolve it through PATHEXT nor execute it. Windows binary discovery is
+    // covered by the environment tests above.
+    #[cfg(unix)]
     #[tokio::test]
     async fn doctor_detects_agent_binary_not_running_as_issue() {
         let _guard = crate::test_env::lock_env().await;
@@ -844,6 +848,7 @@ mod tests {
         assert!(stdout.contains("v0.0.1"), "stdout: {stdout}");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn doctor_captures_partial_version_from_hanging_binary() {
         // execFile-parity: a binary that prints one line then never exits

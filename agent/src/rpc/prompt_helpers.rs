@@ -434,6 +434,7 @@ mod tests {
     use crate::agent::RunEvent;
     use crate::llm::schema::{FinishReason, ModelStreamEvent};
     use crate::types::{Attachment, ImageContent, Usage};
+    use std::path::PathBuf;
 
     fn project(event: RunEvent) -> (String, String) {
         let event = run_event_to_sse(event).expect("projected event");
@@ -692,14 +693,28 @@ mod tests {
 
     // ─── prepare_session_tool_call ─────────────────────────────────────────
 
+    /// A workspace path that is absolute on the host: a bare `/workspace` is
+    /// relative on Windows (no drive) and would be anchored to the cwd.
+    fn workspace() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\workspace")
+        } else {
+            PathBuf::from("/workspace")
+        }
+    }
+
     #[test]
     fn prepare_session_tool_call_normalizes_path() {
+        let cwd = workspace();
         let args = prepare_session_tool_call(
-            "/workspace",
+            cwd.to_str().unwrap(),
             "read",
             &serde_json::json!({"path": "relative.txt"}),
         );
-        assert!(args["path"].as_str().unwrap().contains("/workspace"));
+        let path = PathBuf::from(args["path"].as_str().unwrap());
+        assert!(path.is_absolute(), "{path:?}");
+        assert!(path.starts_with(&cwd), "{path:?}");
+        assert!(path.ends_with("relative.txt"), "{path:?}");
     }
 
     #[test]
@@ -712,22 +727,27 @@ mod tests {
 
     #[test]
     fn prepare_session_tool_call_string_arguments() {
+        let cwd = workspace();
         let args = prepare_session_tool_call(
-            "/workspace",
+            cwd.to_str().unwrap(),
             "read",
             &serde_json::json!("{\"path\": \"file.txt\"}"),
         );
-        assert!(args["path"].as_str().unwrap().contains("/workspace"));
+        let path = PathBuf::from(args["path"].as_str().unwrap());
+        assert!(path.starts_with(&cwd), "{path:?}");
+        assert!(path.ends_with("file.txt"), "{path:?}");
     }
 
     #[test]
     fn prepare_session_tool_call_absolute_path_unchanged() {
+        let cwd = workspace();
+        let absolute = workspace().join("absolute").join("path.txt");
         let args = prepare_session_tool_call(
-            "/workspace",
+            cwd.to_str().unwrap(),
             "read",
-            &serde_json::json!({"path": "/absolute/path.txt"}),
+            &serde_json::json!({"path": absolute.to_str().unwrap()}),
         );
-        assert_eq!(args["path"], "/absolute/path.txt");
+        assert_eq!(args["path"], absolute.to_str().unwrap());
     }
 
     // ─── approve_tool_path_if_present ──────────────────────────────────────
@@ -768,9 +788,12 @@ mod tests {
 
     #[test]
     fn rewrite_path_field_resolves_relative() {
+        let cwd = workspace();
         let mut args = serde_json::json!({"path": "subdir/file.txt"});
-        rewrite_path_field("/workspace", &mut args, "path");
-        assert!(args["path"].as_str().unwrap().contains("subdir/file.txt"));
+        rewrite_path_field(cwd.to_str().unwrap(), &mut args, "path");
+        let path = PathBuf::from(args["path"].as_str().unwrap());
+        assert!(path.starts_with(&cwd), "{path:?}");
+        assert!(path.ends_with("subdir/file.txt"), "{path:?}");
     }
 
     #[test]
@@ -790,8 +813,10 @@ mod tests {
 
     #[test]
     fn resolve_workspace_path_absolute() {
-        let resolved = resolve_workspace_path("/workspace", "/absolute/file.txt");
-        assert_eq!(resolved, "/absolute/file.txt");
+        let absolute = workspace().join("absolute").join("file.txt");
+        let resolved =
+            resolve_workspace_path(workspace().to_str().unwrap(), absolute.to_str().unwrap());
+        assert_eq!(resolved, absolute.to_str().unwrap());
     }
 
     #[test]

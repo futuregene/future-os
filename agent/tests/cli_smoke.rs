@@ -164,12 +164,17 @@ fn agent_starts_serves_and_shuts_down_via_profile_timer() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // The flamegraph was written on shutdown.
+    // The flamegraph was written on shutdown. Windows has no built-in CPU
+    // profiling (the agent logs that and still exits 0), so the file is only
+    // produced on hosts with the pprof backend.
+    #[cfg(unix)]
     assert!(
         profile.exists(),
         "profile output missing; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    #[cfg(not(unix))]
+    let _ = &profile;
 }
 
 #[test]
@@ -215,7 +220,8 @@ fn agent_grpc_addr_forms_and_profile_default_path() {
             "addr {addr}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        // Default flamegraph lands next to the process cwd.
+        // Default flamegraph lands next to the process cwd (pprof hosts only).
+        #[cfg(unix)]
         assert!(work.join("agent-profile.svg").exists(), "addr {addr}");
     }
 }

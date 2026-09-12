@@ -108,7 +108,9 @@ fn shell_argv(command: &str) -> Vec<String> {
     std::iter::once(program.to_string()).chain(args).collect()
 }
 
-#[cfg(test)]
+// Linux helper protocol semantics: the fixtures are POSIX absolute paths and
+// bwrap locations, which are only meaningful where the helper itself runs.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::sandbox::linux::probe::{BwrapIdentity, LinuxSandboxProbeCode};

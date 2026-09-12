@@ -33,7 +33,7 @@ pub fn install() {
         );
 
         // 3. Persist: append to ~/.future/tui/crash.log.
-        append_crash_log(dirs::home_dir(), &report);
+        append_crash_log(crate::home::home_dir(), &report);
 
         // 4. Human-readable note on stderr (terminal is restored by now).
         raw_write_stderr(

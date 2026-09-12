@@ -429,6 +429,9 @@ mod tests {
 
     // ── Dispatch routing into each command group ────────────────────
 
+    // On Windows the host platform is `win32`, so `init` links nothing and
+    // succeeds; the unix host reports the test binary as unusable.
+    #[cfg(unix)]
     #[tokio::test]
     async fn init_dispatch_reaches_command() {
         let _guard = crate::test_env::lock_env().await;

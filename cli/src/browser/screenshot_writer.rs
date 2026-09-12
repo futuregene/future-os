@@ -106,8 +106,16 @@ mod tests {
 
     #[test]
     fn generated_path_contains_no_colons() {
+        // The *file name* must avoid `:` (illegal in Windows names, where the
+        // expansion of a timestamp would otherwise be rejected); a drive
+        // letter in the absolute path is the host's own spelling.
         let path = resolve_screenshot_path(None);
-        assert!(!path.contains(':'));
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .expect("generated path has a file name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(!name.contains(':'), "{name}");
     }
 
     #[tokio::test]
