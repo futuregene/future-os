@@ -160,6 +160,18 @@ fn nonempty(value: String) -> Option<String> {
     }
 }
 
+/// Commands clients issue on a timer rather than in response to user intent:
+/// the session/run cursor replays and the "who is streaming" health probe.
+/// Under `--verbose` they would be the overwhelming majority of the request
+/// log, so they are logged at TRACE instead of DEBUG; `RUST_LOG` at
+/// `trace` (or `future_agent::grpc=trace`) still surfaces every poll.
+fn is_poller_command(command: &str) -> bool {
+    matches!(
+        command,
+        "get_events_since" | "get_session_events_since" | "list_streaming_sessions"
+    )
+}
+
 #[tonic::async_trait]
 impl proto::future_agent_server::FutureAgent for FutureAgentService {
     type StreamEventsStream =
@@ -181,20 +193,31 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
 
         // Log requests in verbose mode
         if self.state.verbose {
-            tracing::debug!(
-                "[grpc] {} session={} msg={:.80}",
-                cmd.r#type,
-                if cmd.session_id.is_empty() {
-                    "-"
-                } else {
-                    &cmd.session_id
-                },
-                if cmd.message.is_empty() {
-                    "-"
-                } else {
-                    &cmd.message
-                }
-            );
+            let session = if cmd.session_id.is_empty() {
+                "-"
+            } else {
+                &cmd.session_id
+            };
+            let message = if cmd.message.is_empty() {
+                "-"
+            } else {
+                &cmd.message
+            };
+            if is_poller_command(&cmd.r#type) {
+                tracing::trace!(
+                    "[grpc] {} session={} msg={:.80}",
+                    cmd.r#type,
+                    session,
+                    message
+                );
+            } else {
+                tracing::debug!(
+                    "[grpc] {} session={} msg={:.80}",
+                    cmd.r#type,
+                    session,
+                    message
+                );
+            }
         }
 
         // Convert proto command to internal command
@@ -1088,6 +1111,68 @@ mod tests {
     fn nonempty_maps_empty_to_none() {
         assert_eq!(nonempty(String::new()), None);
         assert_eq!(nonempty("x".to_string()), Some("x".to_string()));
+    }
+
+    /// `--verbose` (a DEBUG filter) keeps user-intent commands in the request
+    /// log but drops the poller heartbeats to TRACE, so the log stays readable
+    /// while `RUST_LOG=trace` can still surface every poll.
+    #[test]
+    fn verbose_logs_poller_commands_at_trace_only() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
+            .with_writer(move || writer.clone())
+            .finish();
+
+        let service = FutureAgentService {
+            state: grpc_app_state(true), // verbose logging branch
+        };
+        let poller = proto::RpcCommand {
+            id: "cmd-poller".to_string(),
+            r#type: "get_session_events_since".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+        let real = proto::RpcCommand {
+            id: "cmd-real".to_string(),
+            r#type: "get_agent_info".to_string(),
+            session_id: "default".to_string(),
+            ..Default::default()
+        };
+
+        // The subscriber must be the thread's default for the whole run, so
+        // drive the runtime inside `with_default` instead of using
+        // `#[tokio::test]` (whose runtime owns the test thread).
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                let _ = service.execute_command(tonic::Request::new(poller)).await;
+                let _ = service.execute_command(tonic::Request::new(real)).await;
+            });
+        });
+
+        let bytes = capture.0.lock().unwrap();
+        let log = String::from_utf8_lossy(&bytes);
+        assert!(log.contains("[grpc] get_agent_info"), "{log}");
+        assert!(!log.contains("[grpc] get_session_events_since"), "{log}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
