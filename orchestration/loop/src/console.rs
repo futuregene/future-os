@@ -2417,13 +2417,16 @@ struct AgentListRow {
 }
 
 /// Shorten a workspace path for the agent-list table: `$HOME` → `~`.
-/// Contract the home prefix to `~` for display. The tail is rendered with `/`
-/// separators on every platform (this is report text, not a path handed back
-/// to the OS).
 fn shorten_home(path: &str) -> String {
     let home = crate::compat::home_dir();
     if !home.is_empty() && path.starts_with(&home) {
-        return format!("~{}", path[home.len()..].replace('\\', "/"));
+        // Windows renders the tail with `\`; this is report text, so it is
+        // normalized to `/`.
+        #[cfg(windows)]
+        let rest = path[home.len()..].replace('\\', "/");
+        #[cfg(not(windows))]
+        let rest = path[home.len()..].to_string();
+        return format!("~{rest}");
     }
     path.to_string()
 }
