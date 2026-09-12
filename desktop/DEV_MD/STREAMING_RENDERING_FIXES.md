@@ -88,3 +88,23 @@ npx vite preview --host 127.0.0.1 --port 5190 --outDir benchmark-dist
 打开 `/scripts/streaming-markdown-benchmark.html`。前台保持可见；每种 rows 先测 baseline 再测 worker。再次测 baseline 前必须重新加载页面，避免共享 parser 的缓存命中污染基线。结果在页面及 console 中；生产模式的 React Profiler 数字为 0，应忽略，使用 push/formatReady/heartbeat 三项。完成后删除 `benchmark-dist`。
 
 原有审查及复现记录来自本任务会话；影响记录不意味着已安装新桌面程序或已合并到 main。
+
+## 后续优化：停止文字输出引起的无效目录扫描
+
+基线：合并后的 `11fabb04`（PR #570）。
+
+真实调用链：`projectRunForLivePreview` 在历史 activityItems 非空时无条件发出 `file-tree-refresh`；`FileTreePanel` 虽将事件合并到每 2 秒一次，但 `useFileTree.refresh` 仍会重读根目录及所有展开目录。因此一次工具操作后，后续纯文本/推理输出会一直触发目录读取，与实际文件变化无关。
+
+修复只依据**新摄入事件**决定失效：工具 start/end/result，以及可能包含中断写入的 agent_end/error。文字、推理、工具参数增量和空读取不再触发目录刷新。空增量读取同时复用已有投影 snapshot，而不是重新分配 segments/activityItems。
+
+验证使用真实 `FileTreePanel`、`useFileTree`、事件总线与 run projector，替换 IPC 为 spy 并使用虚拟时钟：
+
+| 场景 | 修复前 listDirectory 调用 | 修复后 |
+|---|---:|---:|
+| 初次打开 + 首个工具操作完成 | 2 | 2 |
+| 随后 120 秒，每 100ms 一个文本/推理更新，共 1200 次 | **60** | **0** |
+| 下一个工具完成后的刷新 | 1 | 1 |
+
+单根目录的纯输出阶段消除 100% 的多余目录请求；不将此请求数变化宣称为 CPU、磁盘吞吐或 FPS 百分比。对于展开目录，实际一次 refresh 会读取根及展开目录，但多目录倍率未在这个 fixture 中实测。
+
+新增测试 `features/filetree/FileTreePanel.streaming.test.tsx` 先在基线上复现 60 次非预期调用，再在修复后通过；另验证 tool_end/tool_result/agent_end/error 仍触发刷新、空读取复用 snapshot。保留现有 2 秒刷新合并和手动刷新行为，避免为省请求而漏掉真正工具操作的文件变化。本轮 desktop 类型检查、lint 通过，全量测试为 106 个文件、915 个测试通过。

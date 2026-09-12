@@ -234,6 +234,43 @@ describe("buildStreamingPreview", () => {
   });
 });
 
+describe("file-tree invalidation follows new tool events, not historical activity", () => {
+  it.each(["tool_end", "tool_result", "agent_end", "error"])("still refreshes on %s after text-only updates", async (eventType) => {
+    const runId = `tree-lifecycle-${eventType}`;
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["toolcall_start", { tool_id: "t1", tool_name: "shell" }],
+    ]));
+    await buildStreamingPreview(runId);
+    vi.mocked(emitFutureEvent).mockClear();
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["thinking_delta", { text: "reasoning" }],
+      ["text_chunk", { text: "answer" }],
+      ["toolcall_delta", { text: "arguments" }],
+    ], 1));
+    await buildStreamingPreview(runId);
+    expect(emitFutureEvent).not.toHaveBeenCalled();
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      [eventType, { tool_id: "t1", tool_name: "shell", text: "done", state: "cancelled" }],
+    ], 4));
+    await buildStreamingPreview(runId);
+    expect(emitFutureEvent).toHaveBeenCalledWith("file-tree-refresh", undefined);
+  });
+
+  it("reuses the cached snapshot on empty reads without another invalidation", async () => {
+    const runId = "tree-empty-read";
+    listRunEventsSince.mockResolvedValue(runEvents(runId, [
+      ["tool_start", { tool_id: "t1", tool_name: "write" }],
+    ]));
+    const before = await buildStreamingPreview(runId);
+    vi.mocked(emitFutureEvent).mockClear();
+    listRunEventsSince.mockResolvedValue([]);
+    const after = await buildStreamingPreview(runId);
+    expect(after?.segments).toBe(before?.segments);
+    expect(after?.activityItems).toBe(before?.activityItems);
+    expect(emitFutureEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe("updatePendingMessageFromRunEvents", () => {
   it("returns early when the send is stale", async () => {
     listRunEventsSince.mockResolvedValue(textEvents("r-p1", "text"));
