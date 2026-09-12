@@ -823,13 +823,19 @@ fn linux_diagnostic_path(line: &str) -> Option<String> {
 }
 
 /// Shorten `$HOME` to `~` for display.
+///
+/// The tail is rendered with `/` separators on every platform: the shortened
+/// form is card text (and a saved-rule path), and `expand_tilde` accepts
+/// either separator, so `~/Desktop/*` stays stable across hosts.
 fn shorten_home(path: &str) -> String {
     if let Some(home) = crate::utils::home_dir_opt() {
         if let Ok(rest) = std::path::Path::new(path).strip_prefix(home) {
-            return std::path::Path::new("~")
-                .join(rest)
-                .to_string_lossy()
-                .into_owned();
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            return if rest.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{rest}")
+            };
         }
     }
     path.to_string()

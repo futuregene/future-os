@@ -171,12 +171,21 @@ mod tests {
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("futureos-sandbox-paths-{name}-{stamp}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        // Canonicalize the way production does: `Path::canonicalize` returns
+        // the Windows extended-length spelling (`\\?\C:\...`), which
+        // `canonicalize_lenient` strips, so using it here would compare
+        // unlike roots in `path_within`.
+        canonicalize_lenient(&dir)
     }
 
     #[test]
     fn tilde_expands_to_real_home_not_workspace() {
-        let home = dirs::home_dir().unwrap();
+        // Hold the process-wide HOME lock and resolve the home the way
+        // production does. `dirs::home_dir()` reads the Windows token profile,
+        // which ignores the redirected HOME a parallel `TestHome` installs, so
+        // comparing the two there is flaky.
+        let _home_guard = crate::test_support::home_env_lock();
+        let home = crate::utils::home_dir_opt().unwrap();
         assert_eq!(expand_tilde("~/x.txt"), home.join("x.txt"));
         assert_eq!(expand_tilde("~"), home);
     }
@@ -237,7 +246,13 @@ mod tests {
     fn resolve_relative_against_base() {
         let base = temp_dir("base");
         assert_eq!(resolve_against(&base, "a/b.txt"), base.join("a/b.txt"));
-        assert_eq!(resolve_against(&base, "/abs/x"), PathBuf::from("/abs/x"));
+        // A platform-absolute path is returned untouched — on Windows that
+        // needs a drive prefix, otherwise the path is relative and anchored.
+        #[cfg(windows)]
+        let (input, expected) = (r"C:\abs\x", PathBuf::from(r"C:\abs\x"));
+        #[cfg(not(windows))]
+        let (input, expected) = ("/abs/x", PathBuf::from("/abs/x"));
+        assert_eq!(resolve_against(&base, input), expected);
     }
 
     #[test]

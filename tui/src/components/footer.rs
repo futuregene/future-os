@@ -108,7 +108,7 @@ impl Component for Footer {
 
         // PWD — uses default fg (245)
         if let Some(cwd) = &self.data.cwd {
-            let home = dirs::home_dir();
+            let home = crate::home::home_dir();
             let pwd = home
                 .as_deref()
                 .and_then(|home| std::path::Path::new(cwd).strip_prefix(home).ok())
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn home_prefix_without_component_boundary_is_not_abbreviated() {
         let _guard = crate::test_env::lock();
-        let home = dirs::home_dir().unwrap();
+        let home = crate::home::home_dir().unwrap();
         let cousin = std::path::PathBuf::from(format!("{}-other", home.display())).join("project");
         let line = render_footer(
             FooterData {
@@ -304,19 +304,27 @@ mod tests {
     #[test]
     fn renders_home_relative_cwd_with_tilde() {
         // Deterministic regardless of the ambient HOME: inject one under lock.
+        // It must be absolute for the host (a POSIX path is not absolute on
+        // Windows), and the abbreviation renders with the platform separator.
         let _guard = crate::test_env::lock();
         let old = env::var_os("HOME");
-        env::set_var("HOME", "/home/tester");
+        let sep = std::path::MAIN_SEPARATOR;
+        let home = if cfg!(windows) {
+            "C:\\home\\tester".to_string()
+        } else {
+            "/home/tester".to_string()
+        };
+        env::set_var("HOME", &home);
         let line = render_footer(
             FooterData {
-                cwd: Some("/home/tester/projects/foo".into()),
+                cwd: Some(format!("{home}{sep}projects{sep}foo")),
                 ..Default::default()
             },
             80,
         );
         restore_home(old);
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("~/projects/foo"));
+        assert!(text.contains(&format!("~{sep}projects{sep}foo")), "{text}");
     }
 
     #[test]

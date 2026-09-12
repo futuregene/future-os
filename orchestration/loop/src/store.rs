@@ -1431,8 +1431,49 @@ fn read_ledger(dir: &Path, from_schema: &str) -> Result<Vec<StoredEvent>> {
         write_read_diagnostics(dir, &[]);
         return Ok(vec![]);
     }
-    let text = fs::read_to_string(&path).unwrap_or_default();
+    let text = read_ledger_text(&path)?;
     parse_ledger(dir, from_schema, &text)
+}
+
+/// Read the ledger file, tolerating the transient lock a concurrent appender
+/// holds over it.
+///
+/// Windows byte-range locks are mandatory: while another process holds the
+/// claim/append lock, an unlocked read here fails with
+/// `ERROR_LOCK_VIOLATION`. That window is milliseconds wide, so retry briefly
+/// with backoff. A read that still fails is an error — silently replaying an
+/// EMPTY ledger made concurrent CLI runs report a registered agent as
+/// "not registered" and an existing todo as "unknown".
+fn read_ledger_text(path: &Path) -> Result<String> {
+    let mut delay = std::time::Duration::from_millis(5);
+    loop {
+        match fs::read_to_string(path) {
+            Ok(text) => return Ok(text),
+            // Removed between the existence check and the read → empty ledger.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(e) if retryable_read_lock(&e) && delay <= std::time::Duration::from_secs(1) => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(e) => return Err(e).context("read ledger"),
+        }
+    }
+}
+
+/// Is this read failure the transient lock a concurrent appender holds?
+/// Windows byte-range locks are mandatory (`ERROR_LOCK_VIOLATION`); POSIX
+/// `flock` is advisory, so an unlocked read never races there.
+fn retryable_read_lock(error: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        error.raw_os_error() == Some(ERROR_LOCK_VIOLATION)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn parse_ledger(dir: &Path, from_schema: &str, text: &str) -> Result<Vec<StoredEvent>> {

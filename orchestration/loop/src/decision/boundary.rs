@@ -46,8 +46,15 @@ mod tests {
 
     #[test]
     fn absolute_home_path_is_a_leak() {
-        let home = std::env::var("HOME").expect("HOME is set in every test environment");
-        let g = Goal::new("g", &format!("read {home}/secrets.txt"), "/tmp");
+        // Same resolution the scan uses (`$HOME`, else `USERPROFILE` on
+        // Windows shells).
+        let home = crate::compat::home_dir();
+        assert!(!home.is_empty(), "no home directory to scan against");
+        let g = Goal::new(
+            "g",
+            &format!("read {}{}secrets.txt", home, std::path::MAIN_SEPARATOR),
+            "/tmp",
+        );
         assert!(!boundary_snapshot(&g).public_safe);
     }
 }

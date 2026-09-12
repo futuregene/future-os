@@ -182,12 +182,15 @@ mod tests {
 
     #[test]
     fn plain_preparation_preserves_structured_argv() {
-        let prepared = PreparedShell::plain("printf 'a b'");
+        let command = "printf 'a b'";
+        let prepared = PreparedShell::plain(command);
         assert_eq!(prepared.boundary.backend, ShellBackend::Plain);
-        assert_eq!(
-            prepared.args.last().map(String::as_str),
-            Some("printf 'a b'")
-        );
+        // Plain preparation adds nothing to the platform shell invocation: on
+        // Unix the command is passed verbatim, on Windows it is carried in the
+        // encoded PowerShell payload `shell_invocation` builds.
+        let (program, args) = crate::sandbox::shell_invocation(command);
+        assert_eq!(prepared.program, program);
+        assert_eq!(prepared.args, args);
         assert!(prepared.env_delta.is_empty());
     }
 

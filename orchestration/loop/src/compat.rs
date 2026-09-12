@@ -88,9 +88,11 @@ pub fn write_active_state(goal_dir: &Path, goal: &Goal) -> Result<()> {
 //
 // The active-state markdown has a LoopX-compatible sidecar lock. Acquiring
 // writes OUR pid into the lock file; on conflict we read the holder's pid
-// and probe liveness (`kill -0`): a live holder is a hard error, a dead
-// holder or an empty lock older than [`EMPTY_LOCK_STALE_AFTER`] is a zombie
-// we clear and take over (O2: lock liveness self-heal).
+// and probe liveness (`kill -0`): a live holder is waited for up to
+// [`LIVE_HOLDER_WAIT`] (it holds the lock only for one projection write) and
+// then reported as a hard error; a dead holder or an empty lock older than
+// [`EMPTY_LOCK_STALE_AFTER`] is a zombie we clear and take over (O2: lock
+// liveness self-heal).
 
 /// How old an EMPTY (no pid) lock file must be before it counts as a zombie
 /// and is taken over. A fresh empty lock is either a writer that has not
@@ -101,7 +103,8 @@ pub const EMPTY_LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// Acquire the `ACTIVE_GOAL_STATE.md.lock` sidecar for `goal_dir`, writing
 /// this process's pid into the file. On success the caller owns the lock and
 /// MUST release it with [`release_active_state_lock`]; on failure a live
-/// holder or a fresh empty lock is reported with a descriptive error.
+/// holder that outlasted [`LIVE_HOLDER_WAIT`], or a fresh empty lock, is
+/// reported with a descriptive error.
 pub fn acquire_active_state_lock(goal_dir: &Path) -> Result<PathBuf> {
     acquire_active_state_lock_with(goal_dir, EMPTY_LOCK_STALE_AFTER)
 }
@@ -134,28 +137,49 @@ fn acquire_active_state_lock_with(goal_dir: &Path, empty_stale_after: Duration) 
     bail!("could not acquire ACTIVE_GOAL_STATE.md.lock (contended)")
 }
 
-/// Check an existing lock file: a live pid holder is a hard error; a dead
-/// holder or an empty lock past `empty_stale_after` is removed (zombie
-/// takeover). A fresh empty lock is refused.
+/// How long to wait for a live holder to release the lock before reporting it
+/// as held. The lock covers one projection write, so this only ever waits for
+/// a concurrent writer to finish.
+const LIVE_HOLDER_WAIT: Duration = Duration::from_millis(500);
+
+/// Poll interval while waiting for a live holder.
+const LIVE_HOLDER_POLL: Duration = Duration::from_millis(5);
+
+/// Check an existing lock file: a live pid holder is waited for up to
+/// [`LIVE_HOLDER_WAIT`] and then reported as held; a dead holder or an empty
+/// lock past `empty_stale_after` is removed (zombie takeover). A fresh empty
+/// lock is refused.
 fn probe_and_takeover(lock_path: &Path, empty_stale_after: Duration) -> Result<()> {
-    let raw = fs::read_to_string(lock_path).unwrap_or_default();
-    match raw.trim().parse::<u32>() {
-        Ok(pid) if pid_alive(pid) => {
-            bail!("ACTIVE_GOAL_STATE.md.lock held by pid {pid}")
-        }
-        Ok(_) => remove_lock_file(lock_path).context("remove dead-holder lock"),
-        Err(_) => {
-            // Empty / garbage content: stale only past the age threshold.
-            let mtime = fs::metadata(lock_path).and_then(|m| m.modified()).ok();
-            let stale = mtime.is_some_and(|t| t.elapsed().is_ok_and(|el| el > empty_stale_after));
-            if stale {
-                remove_lock_file(lock_path).context("remove stale empty lock")
-            } else {
-                bail!(
-                    "ACTIVE_GOAL_STATE.md.lock exists without a pid and is not stale (mtime {:?}); \
-                     refusing takeover until it ages past {empty_stale_after:?}",
-                    mtime
-                )
+    let deadline = std::time::Instant::now() + LIVE_HOLDER_WAIT;
+    loop {
+        let raw = match fs::read_to_string(lock_path) {
+            Ok(raw) => raw,
+            // Released between the caller's existence check and this read.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => String::new(),
+        };
+        match raw.trim().parse::<u32>() {
+            Ok(pid) if pid_alive(pid) => {
+                if std::time::Instant::now() >= deadline {
+                    bail!("ACTIVE_GOAL_STATE.md.lock held by pid {pid}")
+                }
+                std::thread::sleep(LIVE_HOLDER_POLL);
+            }
+            Ok(_) => return remove_lock_file(lock_path).context("remove dead-holder lock"),
+            Err(_) => {
+                // Empty / garbage content: stale only past the age threshold.
+                let mtime = fs::metadata(lock_path).and_then(|m| m.modified()).ok();
+                let stale =
+                    mtime.is_some_and(|t| t.elapsed().is_ok_and(|el| el > empty_stale_after));
+                return if stale {
+                    remove_lock_file(lock_path).context("remove stale empty lock")
+                } else {
+                    bail!(
+                        "ACTIVE_GOAL_STATE.md.lock exists without a pid and is not stale (mtime {:?}); \
+                         refusing takeover until it ages past {empty_stale_after:?}",
+                        mtime
+                    )
+                };
             }
         }
     }
@@ -177,10 +201,27 @@ pub fn release_active_state_lock(lock_path: &Path) {
     let _ = fs::remove_file(lock_path);
 }
 
+/// The user's home directory as a string (`""` when nothing resolves).
+///
+/// `$HOME` wins (POSIX, and a redirected/portable home), then `USERPROFILE` —
+/// Windows shells set no `HOME`, so a `$HOME`-only lookup silently disabled
+/// `~` shortening and absolute-home leak detection there. The platform profile
+/// API is not consulted: it observes neither variable, which would ignore a
+/// redirected home (and the isolated homes the tests install).
+pub fn home_dir() -> String {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_absolute() && !path.as_os_str().is_empty())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Is the process with this pid still alive? Unix probes with `kill -0`
-/// (no signal delivered). Non-unix platforms have no zero-cost probe here —
-/// conservatively report alive so a lock is never stolen from a possibly
-/// live holder (empty-lock aging still applies).
+/// (no signal delivered); Windows opens the process and reads its exit code.
+/// A process we may not query at all counts as alive — a lock is never stolen
+/// from a possibly live holder (empty-lock aging still applies).
 #[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {
     // SAFETY: signal 0 performs existence checking only; no signal is sent.
@@ -192,7 +233,37 @@ pub fn pid_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+/// Windows probe: a live process is one we can open and whose exit code is
+/// still `STILL_ACTIVE`. A pid whose process is gone (or was never there)
+/// fails `OpenProcess` with `ERROR_INVALID_PARAMETER`; `ERROR_ACCESS_DENIED`
+/// means it exists but is protected, which counts as alive.
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: OpenProcess returns an owned handle that is closed below; the
+    // exit-code buffer is a live local and every failure path is handled.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut exit_code = 0u32;
+        let alive =
+            GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == STILL_ACTIVE as u32;
+        CloseHandle(handle);
+        alive
+    }
+}
+
+/// Platforms with neither a signal probe nor a Win32 process handle: report
+/// alive so a lock is never stolen from a possibly live holder.
+#[cfg(not(any(unix, windows)))]
 pub fn pid_alive(_pid: u32) -> bool {
     true
 }
@@ -460,18 +531,29 @@ mod tests {
         assert!(lock_path(dir.path()).exists());
     }
 
+    /// Spawn a child and reap it — its pid is now guaranteed dead.
+    fn reaped_child_pid() -> u32 {
+        #[cfg(unix)]
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut child = child;
+        child.kill().unwrap();
+        child.wait().unwrap();
+        pid
+    }
+
     #[test]
     fn dead_holder_pid_is_taken_over() {
         let dir = tempfile::tempdir().unwrap();
-        // Spawn a child and reap it — its pid is now guaranteed dead.
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("sleep 30")
-            .spawn()
-            .unwrap();
-        let dead_pid = child.id();
-        child.kill().unwrap();
-        child.wait().unwrap();
+        let dead_pid = reaped_child_pid();
         std::fs::write(lock_path(dir.path()), format!("{dead_pid}\n")).unwrap();
         let lock = acquire_active_state_lock(dir.path()).unwrap();
         let content = std::fs::read_to_string(&lock).unwrap();

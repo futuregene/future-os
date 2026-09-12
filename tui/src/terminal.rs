@@ -56,7 +56,7 @@ fn kitty_response_re() -> &'static Regex {
 ///   `platform::RESIZE_SIGNAL` → resize, `platform::TERM_SIGNALS` → exit path.
 /// - `Timeout`: nothing happened within the deadline; run timer checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadWait {
+pub(crate) enum ReadWait {
     Input,
     Timeout,
     /// Constructed on Windows only (window-size events); POSIX reports
@@ -132,6 +132,44 @@ impl Default for Terminal {
 /// Backend::new is infallible, so the error path is otherwise untestable).
 #[cfg(test)]
 pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// A `Terminal` for tests that only need an instance. Windows refuses to build
+/// one without real console handles — the interactive TUI needs a console — so
+/// a redirected runner (an IDE, CI, an agent harness) cannot construct one and
+/// the test skips instead of failing. POSIX construction is infallible.
+#[cfg(all(test, windows))]
+pub(crate) fn terminal_or_skip() -> Option<Terminal> {
+    match Terminal::new() {
+        Ok(terminal) => Some(terminal),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn terminal_or_skip() -> Option<Terminal> {
+    Some(Terminal::new().unwrap())
+}
+
+/// Terminal platform backend for tests. See [`terminal_or_skip`] for why this
+/// can be unavailable on Windows.
+#[cfg(all(test, windows))]
+pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
+    match platform::Backend::new() {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
+    Some(platform::Backend::new().unwrap())
+}
 
 impl Terminal {
     pub fn new() -> io::Result<Self> {
@@ -754,7 +792,9 @@ mod tests {
 
     #[test]
     fn terminal_default_simple_methods_and_progress() {
-        let mut t = Terminal::default();
+        let Some(mut t) = terminal_or_skip() else {
+            return;
+        };
         t.hide_cursor();
         t.show_cursor();
         t.clear_line();
@@ -790,7 +830,9 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         std::env::set_var("PI_TUI_WRITE_LOG", "1");
         std::env::set_var("HOME", home.path());
-        let t = Terminal::new().unwrap();
+        let Some(t) = terminal_or_skip() else {
+            return;
+        };
         t.write("log-me");
         let log = std::fs::read_to_string(home.path().join(".future/tui/write.log")).unwrap();
         assert!(log.contains("log-me"));
@@ -819,6 +861,10 @@ mod tests {
         restore_env("FUTURE_TUI_TERM_PROBE", old);
     }
 
+    // The size fallbacks assume a backend that reports 0 (no tty): with a real
+    // console the backend reports the console's size and overrides COLUMNS/
+    // LINES. Same reason its PTY sibling is unix-only.
+    #[cfg(unix)]
     #[test]
     fn columns_rows_read_cached_size() {
         let _guard = crate::test_env::lock();
@@ -846,7 +892,9 @@ mod tests {
     #[test]
     fn drain_input_with_and_without_protocols() {
         let _g = terminal_test_lock();
-        let mut t = Terminal::new().unwrap();
+        let Some(mut t) = terminal_or_skip() else {
+            return;
+        };
         // No protocols active: returns once input is idle.
         t.drain_input(200, 5);
         // Protocols active: deactivation sequences are written, flags flip.
@@ -962,7 +1010,9 @@ mod tests {
     #[test]
     fn restore_terminal_for_exit_writes_teardown() {
         let _g = terminal_test_lock();
-        let backend = platform::Backend::new().unwrap();
+        let Some(backend) = backend_or_skip() else {
+            return;
+        };
         let kitty = AtomicBool::new(true);
         let mok = AtomicBool::new(true);
         let lock = Mutex::new(());

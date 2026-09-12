@@ -229,7 +229,9 @@ fn validate_path(path: &Path) -> Result<(), RequestError> {
     Ok(())
 }
 
-#[cfg(test)]
+// Linux helper protocol semantics: the fixtures are POSIX absolute paths and
+// bwrap locations, which are only meaningful where the helper itself runs.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

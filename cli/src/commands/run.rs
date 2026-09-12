@@ -435,11 +435,17 @@ mod tests {
 
     #[test]
     fn normalize_abs_resolves_curdir_segments() {
-        let out = normalize_abs(std::path::PathBuf::from("/a/b/../c"));
-        assert_eq!(out, "/a/c");
+        // Platform-spelled: the normalized path is joined with the host
+        // separator (and a bare `/a` is not absolute on Windows).
+        let root = if cfg!(windows) { r"C:\a" } else { "/a" };
+        let sep = std::path::MAIN_SEPARATOR;
+        let out = normalize_abs(std::path::PathBuf::from(format!(
+            "{root}{sep}b{sep}..{sep}c"
+        )));
+        assert_eq!(out, format!("{root}{sep}c"));
         // A leading ./ produces an actual CurDir component.
         let out = normalize_abs(std::path::PathBuf::from("./rel/path"));
-        assert_eq!(out, "rel/path");
+        assert_eq!(out, format!("rel{sep}path"));
     }
 
     #[test]
@@ -510,9 +516,21 @@ mod tests {
 
     #[test]
     fn absolute_path_normalization() {
-        assert_eq!(absolute_path("/a/b/../c"), "/a/c");
-        assert_eq!(absolute_path("/a/./b"), "/a/b");
-        assert_eq!(absolute_path("/a//b"), "/a/b");
+        // Platform-spelled: normalization joins with the host separator.
+        let root = if cfg!(windows) { r"C:\a" } else { "/a" };
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            absolute_path(&format!("{root}{sep}b{sep}..{sep}c")),
+            format!("{root}{sep}c")
+        );
+        assert_eq!(
+            absolute_path(&format!("{root}{sep}.{sep}b")),
+            format!("{root}{sep}b")
+        );
+        assert_eq!(
+            absolute_path(&format!("{root}{sep}{sep}b")),
+            format!("{root}{sep}b")
+        );
     }
 
     #[test]

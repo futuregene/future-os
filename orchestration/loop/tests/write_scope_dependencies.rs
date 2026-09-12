@@ -1,5 +1,7 @@
 //! Real CLI and concurrent-process regressions; no live agent or model calls.
-use future_loop::agents::workspace_guard::{live_workspace_conflicts, normalize_workspace_path_at};
+use future_loop::agents::workspace_guard::{
+    live_workspace_conflicts, normalize_workspace_path, normalize_workspace_path_at,
+};
 use future_loop::state::{Goal, Todo};
 use future_loop::store::{Event, Store};
 use std::process::{Command, Output};
@@ -375,8 +377,13 @@ fn four_workers_with_relative_disjoint_scopes_claim_without_force() {
     for (paths, forced) in audits {
         assert!(!forced);
         assert_eq!(paths.len(), 1);
-        assert!(std::path::Path::new(&paths[0])
-            .starts_with(f.dir.path().join("project").canonicalize().unwrap()));
+        // The audited path is the guard's normalized form of the goal-relative
+        // scope (canonicalized parent + relative tail, platform-spelled).
+        assert!(
+            std::path::Path::new(&paths[0]).starts_with(normalize_workspace_path(
+                &f.dir.path().join("project").to_string_lossy()
+            ))
+        );
     }
 }
 

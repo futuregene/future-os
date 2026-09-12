@@ -100,10 +100,7 @@ fn default_grpc_addr() -> String {
     future_rpc::transport::AUTO_ENDPOINT.into()
 }
 fn default_cwd() -> String {
-    dirs::home_dir()
-        .unwrap_or(PathBuf::from("/tmp"))
-        .to_string_lossy()
-        .into_owned()
+    home_dir().to_string_lossy().into_owned()
 }
 fn default_model() -> String {
     "future/deepseek-v4-pro".into()
@@ -201,13 +198,22 @@ impl Default for FeishuChannelConfig {
     }
 }
 
-/// Home directory via the `dirs` crate (cross-platform): on Windows it
-/// resolves `USERPROFILE` (`C:\Users\<user>`), on POSIX `$HOME`. The old
-/// `$HOME`-only lookup fell back to a literal `~` directory on Windows
-/// (cmd/PowerShell set no `HOME`), silently writing the config into a
-/// `~` folder next to the working directory.
-fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or(PathBuf::from("~"))
+/// Home directory for channel data and config.
+///
+/// The environment wins over the platform profile: `$HOME` (POSIX, and a
+/// redirected portable home), then `USERPROFILE` (Windows shells set no
+/// `HOME`), then `dirs::home_dir()`. Windows `dirs` reads the token profile,
+/// which observes neither variable — a `$HOME`-only lookup fell back to the
+/// real profile (or a literal `~` directory next to the cwd, silently writing
+/// the config there) and an isolated test home never took effect.
+pub(crate) fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .into_iter()
+        .chain(std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("~"))
 }
 
 #[cfg(test)]

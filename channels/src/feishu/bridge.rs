@@ -1207,10 +1207,9 @@ impl Bridge {
 }
 
 /// Base dir for channel data (files etc.), anchored at the user's home
-/// directory via `dirs` (cross-platform: `USERPROFILE` on Windows, `$HOME`
-/// on POSIX).
+/// directory (see [`crate::config::home_dir`] for the resolution order).
 fn dirs_next_path() -> std::path::PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".future")
+    crate::config::home_dir().join(".future")
 }
 
 /// Save a downloaded file to {base_dir}/files/{filename}.

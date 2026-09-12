@@ -72,6 +72,9 @@ static BROWSER_LAUNCHER_OVERRIDE: std::sync::Mutex<Option<Option<(String, String
 /// can reap the `fake_chrome.py` processes they launch (those `serve_forever()`
 /// fakes otherwise leak as orphans across repeated test runs).
 #[cfg(test)]
+// Recorded from the not-windows spawn path and drained by the unix-only
+// test cleanup guard, so on Windows nothing references it.
+#[cfg(all(test, not(windows)))]
 static SPAWNED_BROWSER_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 /// `findBrowserLauncher`, honoring the test override.
@@ -2033,11 +2036,29 @@ mod tests {
     #[tokio::test]
     async fn wait_for_saved_endpoint_timeout_and_reachable() {
         let (_g, _e, _d) = isolated_home().await;
-        // Nothing reachable at the saved endpoint → bounded timeout error.
-        let err = wait_for_saved_endpoint("http://127.0.0.1:1", 50)
+        // Bound but never answering stands in for "nothing reachable": the
+        // probe's connect succeeds and the request times out, so the endpoint
+        // is unreachable on every host. (Probing the default 127.0.0.1:9222
+        // is not hermetic — a Chrome with DevTools open answers it — and a
+        // closed port can take seconds to refuse on Windows.)
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_endpoint = format!("http://127.0.0.1:{}", dead.local_addr().unwrap().port());
+        save_browser_config(&BrowserConfig {
+            version: 2,
+            connection: BrowserConnectionConfig::Cdp {
+                browser_kind: "chromium".to_string(),
+                endpoint: dead_endpoint.clone(),
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let err = wait_for_saved_endpoint("http://unused/", 50)
             .await
             .unwrap_err();
         assert!(err.contains("not reachable after auto-start"), "{err}");
+        assert!(err.contains(&dead_endpoint), "{err}");
+        drop(dead);
 
         // Saved endpoint reachable → returned immediately.
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(

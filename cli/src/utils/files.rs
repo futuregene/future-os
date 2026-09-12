@@ -114,9 +114,18 @@ mod tests {
     async fn which_finds_shell() {
         // `which` reads PATH — serialize against tests that repoint it.
         let _guard = crate::test_env::lock_env().await;
-        let found = which("sh").await;
-        assert!(found.is_some(), "`which sh` should resolve on this host");
-        assert!(found.as_deref().unwrap_or("").contains("sh"));
+        // The host shell: `sh` on POSIX, `cmd` on Windows.
+        let (name, expected) = if cfg!(windows) {
+            ("cmd", "cmd")
+        } else {
+            ("sh", "sh")
+        };
+        let found = which(name).await;
+        assert!(
+            found.is_some(),
+            "`which {name}` should resolve on this host"
+        );
+        assert!(found.as_deref().unwrap_or("").contains(expected));
     }
 
     #[tokio::test]

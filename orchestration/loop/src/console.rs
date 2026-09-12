@@ -2417,10 +2417,13 @@ struct AgentListRow {
 }
 
 /// Shorten a workspace path for the agent-list table: `$HOME` → `~`.
+/// Contract the home prefix to `~` for display. The tail is rendered with `/`
+/// separators on every platform (this is report text, not a path handed back
+/// to the OS).
 fn shorten_home(path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::compat::home_dir();
     if !home.is_empty() && path.starts_with(&home) {
-        return format!("~{}", &path[home.len()..]);
+        return format!("~{}", path[home.len()..].replace('\\', "/"));
     }
     path.to_string()
 }
@@ -9221,7 +9224,12 @@ mod coverage_tests {
         std::env::set_var("FUTURE_LOOP_ROOT", "/tmp/loop-root-dir-test");
         assert_eq!(root_dir(), "/tmp/loop-root-dir-test");
         std::env::remove_var("FUTURE_LOOP_ROOT");
-        assert!(root_dir().ends_with("/.future/loop"), "{}", root_dir());
+        // Component-wise: the cwd-relative root uses the platform separator.
+        assert!(
+            std::path::Path::new(&root_dir()).ends_with(".future/loop"),
+            "{}",
+            root_dir()
+        );
     }
 
     #[test]
@@ -9473,8 +9481,17 @@ mod cli_quirks_tests {
 
     #[test]
     fn shorten_home_contracts_the_home_prefix() {
-        let home = std::env::var("HOME").expect("HOME is set in the test environment");
-        assert_eq!(shorten_home(&format!("{home}/sub/dir")), "~/sub/dir");
+        // Same resolution the shortening uses; the tail is joined with the
+        // platform separator but always rendered with `/`.
+        let home = crate::compat::home_dir();
+        assert!(!home.is_empty(), "no home directory to shorten against");
+        assert_eq!(
+            shorten_home(&format!(
+                "{home}{sep}sub{sep}dir",
+                sep = std::path::MAIN_SEPARATOR
+            )),
+            "~/sub/dir"
+        );
         // A path outside HOME is returned unchanged.
         assert_eq!(shorten_home("/definitely/not/home"), "/definitely/not/home");
     }
@@ -9916,10 +9933,22 @@ mod workspace_guard_cli_tests {
             .collect()
     }
 
+    /// An absolute, non-existent workspace path (a bare `/...` is relative on
+    /// Windows and would be anchored to the cwd instead).
+    fn client_fixture(name: &str) -> String {
+        if cfg!(windows) {
+            format!(r"C:\definitely\not\here\{name}")
+        } else {
+            format!("/definitely/not/here/{name}")
+        }
+    }
+
     #[test]
     fn register_and_onboard_workspace_roundtrip_through_replay() {
         let mut store = tmp_store("declare");
         open_goal(&mut store, "g1", &[]);
+        let wt1 = client_fixture("wt1");
+        let wt2 = client_fixture("wt2");
         cmd_agent(
             &mut store,
             &[
@@ -9928,19 +9957,19 @@ mod workspace_guard_cli_tests {
                 "--agent-id".to_string(),
                 "a1".to_string(),
                 "--workspace".to_string(),
-                "/definitely/not/here/wt1".to_string(),
+                wt1.clone(),
             ],
         )
         .unwrap();
-        onboard(&mut store, "g1", "a2", "/definitely/not/here/wt2");
+        onboard(&mut store, "g1", "a2", &wt2);
         let goal = store.replay("g1").unwrap().unwrap();
         assert_eq!(
             crate::agents::workspace_guard::agent_workspaces(&goal, "a1"),
-            vec!["/definitely/not/here/wt1".to_string()]
+            vec![wt1]
         );
         assert_eq!(
             crate::agents::workspace_guard::agent_workspaces(&goal, "a2"),
-            vec!["/definitely/not/here/wt2".to_string()]
+            vec![wt2]
         );
     }
 
@@ -10447,13 +10476,10 @@ mod residual_branch_tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             auto_register_workspaces(dir.path().join("w").to_str().unwrap()),
-            vec![dir
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join("w")
-                .to_string_lossy()
-                .into_owned()]
+            vec![crate::agents::workspace_guard::normalize_workspace_path_at(
+                "w",
+                dir.path()
+            )]
         );
     }
 

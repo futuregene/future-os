@@ -335,7 +335,7 @@ pub(crate) fn expand_globs(
     super::glob_scan::scan(patterns, phase, cancelled).map_err(LinuxSandboxPlanError::GlobScan)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn expand_glob(pattern: &str) -> Result<Vec<PathBuf>, LinuxSandboxPlanError> {
     Ok(expand_globs(&[pattern.into()], "test", &|| false)?
         .remove(pattern)
@@ -471,7 +471,9 @@ fn normalize_exact(paths: &mut Vec<PathBuf>) {
     paths.dedup();
 }
 
-#[cfg(test)]
+// Linux helper protocol semantics: the fixtures are POSIX absolute paths and
+// glob expansions the helper performs on the host filesystem.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::sandbox::rules::{RuleLayerSnapshot, RuleSetSnapshot};
