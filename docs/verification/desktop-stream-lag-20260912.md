@@ -98,3 +98,25 @@ node scripts/check-streaming-worker.mjs D:/future-os/desktop/dist/assets
 关键永久回归用例位于 `desktop/src/features/markdown/useStreamingMarkdownBlocks.test.ts`。临时浏览器入口、数据库统计脚本和 CDP 读取脚本已清理，测试 Vite 服务已停止；没有留下模型任务或付费后台任务。
 
 下一步：将修复构建为 desktop 可执行文件，在用户方便重启 desktop 时复测同样的长推理/工具调用场景；若仍有卡顿，再同步记录 agent idx、desktop 读游标和 WebView long-task 时间，定位剩余链路。
+
+## 补充：运行中 A → B → A 后冻结
+
+2026-09-12 同一调查会话中，用户补充了明确的会话切换步骤。以已包含 #564 的 `84fb84ab` 为基线，独立分支 `claude/desktop-reattach-stall` 复现并修复了另外两个状态恢复问题，**不依赖 Markdown、输出速度或事件缓冲容量**。
+
+1. **A 仍在运行**：`threadMessageCache` 恢复了本地发送创建的 `pending-*` 流式气泡。`upsertStreamingPreview` 固定使用 `stream_<runId>` 查找气泡，`streamingBubbleBase` 看到另一个 UI id 的同 run 消息就当作已持久化的结束消息，从而拒绝每次更新。修复为按同 run 的 `streaming` 消息接管原 id，保留 DOM 身份和后续增量刷新。
+2. **A 已在后台结束**：初次历史刷新未启用终态校准，`reconcileThreadHistory` 无条件保留缓存的 streaming 消息。新组件一开始读到的 recentRun 已是 terminal，不会再发生 active → terminal 转换来触发结束刷新。修复为初次加载时允许权威历史校准缓存；请求期间发生的新写入仍受原有 request-time baseline 保护。
+
+复现入口：
+
+```powershell
+cd desktop
+npx vitest run src/features/agent/useRunReattach.switch.test.tsx
+```
+
+测试使用真实 `useThreadMessages`、`useRunReattach`、投影器、缓存和 reconciliation；仅替换存储 IPC 与 Tauri 事件传输。通过 React keyed 挂载/卸载执行 A → B → A。原代码的两个初始用例均失败：切回后仍显示 `before switch`，后台完成后仍是 `streaming`。修复后验证：
+
+- 接收离开期间的增量，切回后继续接收新事件；连续两次切换仍保持单个原 id 气泡。
+- A 的内容不进入 B。
+- 后台 `completed`、`failed`、`cancelled` 三种状态都能结束缓存的 streaming 状态。
+
+本轮最终检查：102 个测试文件 / 877 个测试、ESLint、TypeScript、生产构建、worker smoke 全部通过。属于前端集成复现与实现者自检，尚非安装版 WebView2 的点击端到端验证；没有修改真实数据库、调用付费模型、重启 agent 或替换用户正在运行的 desktop。
