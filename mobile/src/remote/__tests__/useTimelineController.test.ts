@@ -48,6 +48,7 @@ describe("useTimelineController", () => {
   }
 
   function render(): void {
+    if (options.selectedSessionId) options.selectedRef.current = options.selectedSessionId;
     act(() => {
       renderer = create(createElement(Harness));
     });
@@ -96,6 +97,7 @@ describe("useTimelineController", () => {
 
   /** Establish a session timeline by driving an "open" reconcile through the engine. */
   async function establish(sessionId = "s1"): Promise<void> {
+    options.selectedRef.current = sessionId;
     act(() => {
       result.current.reconcileSession(sessionId, "open");
     });
@@ -246,6 +248,21 @@ describe("useTimelineController", () => {
   });
 
   describe("handleEvent", () => {
+    test("background token bursts do not fetch history while status notifications stay live", async () => {
+      options.selectedSessionId = "front";
+      render();
+      for (let index = 0; index < 10_000; index++) {
+        result.current.handleEvent(evt("text_chunk", '{"text":"x"}', "r", index), `background-${index % 100}`);
+      }
+      for (const type of ["agent_end", "approval_request", "approval_decision"]) {
+        result.current.handleEvent(evt(type, "{}", "r"), "background-1");
+      }
+      await flush();
+      expect(request).not.toHaveBeenCalled();
+      expect(options.refreshSessions).toHaveBeenCalledTimes(3);
+      expect(result.current.syncEngineRef.current!.timelineFor("background-1")).toBeNull();
+    });
+
     test("ignores events with an empty session id", () => {
       render();
       result.current.handleEvent(evt("agent_start", "{}"), "");
@@ -293,6 +310,7 @@ describe("useTimelineController", () => {
     });
 
     test("user_message hydrates attachments for the session", () => {
+      options.selectedSessionId = "s1";
       render();
       const hydrate = jest.fn(async () => {});
       result.current.hydrateAttachmentsRef.current = hydrate;
@@ -399,6 +417,7 @@ describe("useTimelineController", () => {
     });
 
     test("hydrate merges durable attachments and swallows history failures", async () => {
+      options.selectedSessionId = "s1";
       render();
       const engine = result.current.syncEngineRef.current!;
       engine.mutate("s1", () => emptyTimeline());
@@ -526,7 +545,13 @@ describe("useTimelineController", () => {
       await flush();
       expect(result.current.timeline.items).toHaveLength(40);
 
-      act(() => result.current.prepareTimelineOpen("s1"));
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({
+        data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+      });
+      await act(async () => {
+        result.current.prepareTimelineOpen("s1");
+        await result.current.syncEngineRef.current!.open("s1");
+      });
       await flush();
 
       expect(
@@ -534,7 +559,7 @@ describe("useTimelineController", () => {
           .filter(item => item.kind === "message" && item.role === "user")
           .map(item => (item.kind === "message" ? item.text : "")),
       ).toEqual(Array.from({ length: 10 }, (_, index) => `user ${index + 11}`));
-      expect(result.current.canLoadOlderTimeline).toBe(false);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 
     test("timeout retains the cursor and retry returns the committed page identities", async () => {
@@ -613,6 +638,7 @@ describe("useTimelineController", () => {
 
   describe("engine deps", () => {
     test("requestGetState throws when the client is absent", async () => {
+      options.selectedSessionId = "s1";
       const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
       options.clientRef.current = null;
       render();
@@ -666,14 +692,14 @@ describe("useTimelineController", () => {
       expect(texts).toContain("replayed");
     });
 
-    test("fetchReplay throws when the client disappears before replay", async () => {
+    test("history from a replaced client is rejected before replay", async () => {
       const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
       options.selectedSessionId = "s1";
       request.mockImplementation(async (cmd: { type: string }) => {
         if (cmd.type === "get_state")
           return { success: true, data: { activeRun: { runId: "r1" } } };
         if (cmd.type === "get_session_entries") {
-          // Drop the client after history so fetchReplay sees null.
+          // Replacing the client invalidates this in-flight history page.
           options.clientRef.current = null;
           return {
             success: true,
@@ -687,7 +713,8 @@ describe("useTimelineController", () => {
       expect(errorSpy).toHaveBeenCalledWith(
         "[remote] session timeline sync failed",
         expect.objectContaining({
-          error: expect.objectContaining({ message: "not_connected" }),
+          stage: "history",
+          error: expect.objectContaining({ message: "stale_history_load" }),
         }),
       );
       errorSpy.mockRestore();

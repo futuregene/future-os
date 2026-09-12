@@ -120,6 +120,7 @@ export function useTimelineController({
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
+  const historyEpochRef = useRef(0);
   const [historyPaging, setHistoryPaging] = useState<Record<string, HistoryPagingState>>({});
   const hydrateAttachmentsRef = useRef<(sessionId: string) => Promise<void>>(async () => undefined);
 
@@ -162,6 +163,14 @@ export function useTimelineController({
         }
         return;
       }
+      if (sid !== selectedRef.current) {
+        // Background conversations need catalog/unread/approval status, not
+        // token projection or eager history/replay. Opening reloads durable
+        // history and the active prefix, including any deferred approvals.
+        if (["agent_end", "approval_request", "approval_decision"].includes(event.type))
+          void refreshSessions();
+        return;
+      }
       if (event.type === "user_message") void hydrateAttachmentsRef.current(sid);
       if (event.type === "approval_decision") {
         try {
@@ -191,13 +200,14 @@ export function useTimelineController({
       syncEngineRef.current?.event(sid, event);
       if (event.type === "agent_end") void refreshSessions();
     },
-    [reconcileSession, refreshModels, refreshSessions, setTitleOverrides],
+    [reconcileSession, refreshModels, refreshSessions, selectedRef, setTitleOverrides],
   );
 
   const loadHistory = useCallback(
     async (sessionId: string): Promise<TimelineState> => {
       const client = clientRef.current;
       if (!client) return emptyTimeline();
+      const epoch = historyEpochRef.current;
       const retained = historyPagingRef.current[sessionId];
       const response = await client.requestRetry<EntriesData>(
         {
@@ -208,13 +218,14 @@ export function useTimelineController({
         },
         sessionId,
       );
+      if (epoch !== historyEpochRef.current || clientRef.current !== client || selectedRef.current !== sessionId)
+        throw new Error("stale_history_load");
       const entries = response.data.entries ?? [];
       const nextBefore = response.data.nextOffset ?? 0;
       const latest = timelineFromEntries(entries);
-      const history = retainOlderHistoryPrefix(
-        syncEngineRef.current?.timelineFor(sessionId) ?? null,
-        latest,
-      );
+      const history = retained
+        ? retainOlderHistoryPrefix(syncEngineRef.current?.timelineFor(sessionId) ?? null, latest)
+        : latest;
       // Only retain the cursor when the old prefix actually joined this page.
       // Otherwise the latest page starts a new contiguous history window.
       const retainedOlderPages = history !== latest ? retained : null;
@@ -227,7 +238,7 @@ export function useTimelineController({
       setHistoryPaging(previous => ({ ...previous, [sessionId]: page }));
       return history;
     },
-    [clientRef],
+    [clientRef, selectedRef],
   );
 
   const loadOlderTimeline = useCallback(async () => {
@@ -284,6 +295,7 @@ export function useTimelineController({
   }, [clientRef, selectedRef]);
 
   const prepareTimelineOpen = useCallback((sessionId: string) => {
+    historyEpochRef.current += 1;
     const cached = timelinesRef.current[sessionId];
     if (!cached) return;
     const windowed = latestTimelineWindow(cached, HISTORY_PAGE_USER_EXCHANGES);
@@ -305,6 +317,7 @@ export function useTimelineController({
 
   useEffect(() => {
     const engine = new SyncEngine({
+      isSessionVisible: sessionId => sessionId === selectedRef.current,
       requestGetState: async sessionId => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
@@ -313,10 +326,11 @@ export function useTimelineController({
         ).data;
       },
       requestHistory: loadHistory,
-      fetchReplay: async (sessionId, runId, sinceIdx) => {
+      fetchReplay: async (sessionId, runId, sinceIdx, isCurrent) => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
-        const merged = await fetchEventsSince(client, sessionId, runId, sinceIdx);
+        const merged = await fetchEventsSince(client, sessionId, runId, sinceIdx,
+          () => clientRef.current === client && isCurrent());
         return { ...merged, events: merged.events ?? [] };
       },
       onFailure: failure => {
@@ -355,7 +369,7 @@ export function useTimelineController({
       syncEngineRef.current = null;
       engine.clear();
     };
-  }, [clientRef, loadHistory]);
+  }, [clientRef, loadHistory, selectedRef]);
 
   useEffect(() => {
     hydrateAttachmentsRef.current = async sessionId => {
@@ -389,6 +403,8 @@ export function useTimelineController({
   }, []);
 
   const resetTimeline = useCallback(() => {
+    historyEpochRef.current += 1;
+    timelinesRef.current = {};
     syncEngineRef.current?.clear();
     setTimelines({});
     setTimelineErrors({});

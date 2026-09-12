@@ -59,6 +59,7 @@ function model(id: string, provider?: string, extra: Partial<RemoteModel> = {}):
 
 function fakeEngine(): SyncEngine {
   return {
+    open: jest.fn(),
     reconcile: jest.fn(),
     mutate: jest.fn(
       (_sessionId: string, apply: (tl: ReturnType<typeof emptyTimeline>) => unknown) => {
@@ -100,9 +101,11 @@ async function mountController(opts: MountOpts = {}) {
   };
   const selectedRef = { current: opts.selected ?? "" };
   const syncEngineRef = { current: (opts.engine ?? null) as SyncEngine | null };
-  const hydrateAttachmentsRef = {
-    current: jest.fn(async () => {}) as (sessionId: string) => Promise<void>,
-  };
+  if (syncEngineRef.current && jest.isMockFunction(syncEngineRef.current.open)) {
+    (syncEngineRef.current.open as jest.Mock).mockImplementation(async (sessionId: string) =>
+      (await requestRetry({ type: "get_state", sessionId }, sessionId)).data,
+    );
+  }
   const conversationEpochRef = { current: 0 };
   const setSelectedSessionId = jest.fn();
   const setDraft = jest.fn();
@@ -124,7 +127,6 @@ async function mountController(opts: MountOpts = {}) {
       clientRef,
       selectedRef,
       syncEngineRef,
-      hydrateAttachmentsRef,
       conversationEpochRef,
       models: opts.models ?? [],
       setSelectedSessionId,
@@ -156,6 +158,7 @@ async function mountController(opts: MountOpts = {}) {
     clientRef,
     selectedRef,
     syncEngineRef,
+    conversationEpochRef,
     setSelectedSessionId,
     setDraft,
     setDraftMode,
@@ -178,6 +181,76 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedLoadLastModel.mockResolvedValue(null);
   mockedLoadLastThinking.mockResolvedValue(null);
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+describe("navigation races", () => {
+  it.each(["resolve", "reject"] as const)("an old A response (%s) cannot clear B's opening state", async outcome => {
+    const a = deferred<{ data: RemoteSessionState }>();
+    const b = deferred<{ data: RemoteSessionState }>();
+    const h = await mountController({ requestRetry: jest.fn().mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise) });
+    let openA!: Promise<void>;
+    let openB!: Promise<void>;
+    await act(async () => { openA = current(h).selectSession("a"); });
+    await act(async () => { openB = current(h).selectSession("b"); });
+    await act(async () => {
+      if (outcome === "resolve") a.resolve({ data: { model: "old", thinkingLevel: "high" } });
+      else a.reject(new Error("old connection"));
+      await openA;
+    });
+    expect(current(h).openingSession).toBe(true);
+    expect(current(h).modelId).toBe("");
+    expect(h.recordError).not.toHaveBeenCalled();
+    await act(async () => { b.resolve({ data: { model: "new", thinkingLevel: "off" } }); await openB; });
+    expect(current(h).modelId).toBe("new");
+    expect(current(h).openingSession).toBe(false);
+    act(() => h.renderer.unmount());
+  });
+
+  it("a late A state cannot overwrite an already-open B", async () => {
+    const a = deferred<{ data: RemoteSessionState }>();
+    const h = await mountController({ requestRetry: jest.fn().mockReturnValueOnce(a.promise).mockResolvedValueOnce({ data: { model: "b", thinkingLevel: "low" } }) });
+    let opening!: Promise<void>;
+    await act(async () => { opening = current(h).selectSession("a"); });
+    await act(async () => { await current(h).selectSession("b"); });
+    await act(async () => { a.resolve({ data: { model: "a", thinkingLevel: "high" } }); await opening; });
+    expect(current(h).modelId).toBe("b");
+    expect(current(h).thinkingLevel).toBe("low");
+    act(() => h.renderer.unmount());
+  });
+
+  it("slow draft preferences cannot navigate away from a subsequently opened session", async () => {
+    const preference = deferred<string | null>();
+    mockedLoadLastModel.mockReturnValueOnce(preference.promise);
+    const h = await mountController({ requestRetry: jest.fn().mockResolvedValue({ data: { model: "b" } }) });
+    let draft!: Promise<void>;
+    await act(async () => { draft = current(h).newConversation(); });
+    expect(h.selectedRef.current).toBe("");
+    await act(async () => { await current(h).selectSession("b"); });
+    await act(async () => { preference.resolve("old"); await draft; });
+    expect(h.selectedRef.current).toBe("b");
+    expect(current(h).modelId).toBe("b");
+    act(() => h.renderer.unmount());
+  });
+
+  it.each(["model", "thinking"] as const)("a slow %s preference write cannot send the command to another session", async setting => {
+    const saved = deferred<void>();
+    if (setting === "model") mockedSaveLastModel.mockReturnValueOnce(saved.promise);
+    else mockedSaveLastThinking.mockReturnValueOnce(saved.promise);
+    const h = await mountController({ selected: "a" });
+    let changing!: Promise<void>;
+    await act(async () => { changing = setting === "model" ? current(h).setModel("p/m") : current(h).setThinkingLevel("high"); });
+    h.selectedRef.current = "b";
+    await act(async () => { saved.resolve(); await changing; });
+    expect(h.request).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "a" }), "a");
+    act(() => h.renderer.unmount());
+  });
 });
 
 describe("selectSession", () => {
@@ -206,8 +279,8 @@ describe("selectSession", () => {
     expect(h.setDraft).toHaveBeenCalledWith(false);
     expect(current(h).modelId).toBe("openai/gpt-4");
     expect(current(h).thinkingLevel).toBe("high");
-    const engine = h.syncEngineRef.current as unknown as { reconcile: jest.Mock };
-    expect(engine.reconcile).toHaveBeenCalledWith("s1", "open");
+    const engine = h.syncEngineRef.current as unknown as { open: jest.Mock };
+    expect(engine.open).toHaveBeenCalledWith("s1");
   });
 
   it("keeps the raw model reference when no catalogue model matches", async () => {
@@ -248,8 +321,8 @@ describe("selectSession", () => {
       await current(h).selectSession("s1");
     });
     expect(h.recordError).toHaveBeenCalledWith(expect.objectContaining({ message: "offline" }));
-    const engine = h.syncEngineRef.current as unknown as { reconcile: jest.Mock };
-    expect(engine.reconcile).toHaveBeenCalledWith("s1", "open");
+    const engine = h.syncEngineRef.current as unknown as { open: jest.Mock };
+    expect(engine.open).toHaveBeenCalledWith("s1");
   });
 });
 
