@@ -111,10 +111,17 @@ jest.mock("expo-file-system", () => {
     create(): void {
       dirs.add(this.uri);
     }
-    list(): MockFile[] {
-      return Array.from(store.keys())
-        .filter(uri => uri.startsWith(`${this.uri}/`))
-        .map(uri => new MockFile(uri));
+    get name(): string { return this.uri.split("/").pop()!; }
+    list(): (MockFile | MockDirectory)[] {
+      const child = (uri: string) => uri.startsWith(`${this.uri}/`) && !uri.slice(this.uri.length + 1).includes("/");
+      return [
+        ...Array.from(store.keys()).filter(child).map(uri => new MockFile(uri)),
+        ...Array.from(dirs).filter(child).map(uri => new MockDirectory(uri)),
+      ];
+    }
+    delete(): void {
+      for (const uri of store.keys()) if (uri.startsWith(`${this.uri}/`)) store.delete(uri);
+      for (const uri of dirs) if (uri === this.uri || uri.startsWith(`${this.uri}/`)) dirs.delete(uri);
     }
   }
 
@@ -305,9 +312,99 @@ function animatedWebpBytes(): Uint8Array {
 beforeEach(() => {
   mockFS.__reset();
   jest.clearAllMocks();
+  let exportId = 0;
+  (Crypto.randomUUID as jest.Mock).mockImplementation(() => `export-${++exportId}`);
   setImageSize();
   mockedDigest.mockImplementation(async (_alg: unknown, data: Uint8Array) => {
     return new Uint8Array(createHash("sha256").update(Buffer.from(data)).digest());
+  });
+});
+
+describe("failed attachment batches", () => {
+  test.each(["files", "album", "share"])("cleans successful conversions after another %s item fails, including late results", async source => {
+    const good = fsFile("file:///good.jpg", { size: 100 });
+    const bad = fsFile("file:///bad.jpg", { size: 100 });
+    const converted = fsFile("file:///converted.jpg", { size: 50 });
+    const existing = attachment({ localUri: "file:///existing.jpg", temporary: true });
+    fsFile(existing.localUri, { size: 8 });
+    let finish!: (value: { uri: string; width: number; height: number }) => void;
+    mockedManipulate.mockImplementation((uri: string) => uri === bad.uri
+      ? Promise.reject(new Error("bad image"))
+      : new Promise(resolve => { finish = resolve; }));
+    mockFS.File.pickFileAsync.mockResolvedValue({ canceled: false, result: [good, bad] });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets: [{ uri: good.uri }, { uri: bad.uri }] });
+    const pending = source === "files" ? pickAttachments([existing])
+      : source === "album" ? pickFromAlbum([existing])
+      : prepareSharedAttachments([good, bad].map(file => ({ uri: file.uri, name: file.name, mimeType: "image/jpeg" })), [existing]);
+    const rejection = expect(pending).rejects.toThrow("attachment_image_decode");
+    for (let index = 0; index < 20; index++) await Promise.resolve();
+    finish({ uri: converted.uri, width: 100, height: 100 });
+    await rejection;
+    expect(converted.exists).toBe(false);
+    expect(good.exists).toBe(true);
+    expect(bad.exists).toBe(true);
+    expect(new mockFS.File(existing.localUri as never).exists).toBe(true);
+  });
+
+  test("removes an oversized converted output but not the original", async () => {
+    const source = fsFile("file:///photo.jpg", { size: 100 });
+    const converted = fsFile("file:///oversized.jpg", { size: 11 * 1024 * 1024 });
+    mockedManipulate.mockResolvedValue({ uri: converted.uri, width: 100, height: 100 });
+    await expect(prepareOne(source)).rejects.toThrow("attachment_compressed_too_large");
+    expect(source.exists).toBe(true);
+    expect(converted.exists).toBe(false);
+  });
+});
+
+describe("named export lifecycle", () => {
+  test("same-name handoffs keep separate URIs and do not overwrite a file held by another app", async () => {
+    const first = fsFile("file:///first.txt", { bytes: new Uint8Array([1]), modTime: 1 });
+    const second = fsFile("file:///second.txt", { bytes: new Uint8Array([2]), modTime: 1 });
+    const a = await namedExternalFile(first, "notes.txt");
+    const b = await namedExternalFile(second, "notes.txt");
+    expect(a.uri).not.toBe(b.uri);
+    expect(await a.bytes()).toEqual(new Uint8Array([1]));
+    expect(await b.bytes()).toEqual(new Uint8Array([2]));
+  });
+
+  test("prunes expired handoff copies, not their sources or a recent handoff", async () => {
+    const now = jest.spyOn(Date, "now").mockReturnValue(100_000);
+    try {
+      const source = fsFile("file:///original.txt", { bytes: new Uint8Array([1]) });
+      const old = await namedExternalFile(source, "notes.txt");
+      now.mockReturnValue(100_000 + 24 * 60 * 60 * 1000);
+      const fresh = await namedExternalFile(source, "notes.txt");
+      expect(old.exists).toBe(false);
+      expect(fresh.exists).toBe(true);
+      expect(source.exists).toBe(true);
+    } finally { now.mockRestore(); }
+  });
+
+  test("refuses capacity overflow rather than removing a recent OS handoff", async () => {
+    const source = fsFile("file:///large.txt", { size: 60 * 1024 * 1024 });
+    const exported = await namedExternalFile(source, "notes.txt");
+    await expect(namedExternalFile(source, "notes.txt")).rejects.toThrow("attachment_export_cache_full");
+    expect(exported.exists).toBe(true);
+    expect(source.exists).toBe(true);
+  });
+
+  test("also bounds tiny or empty exports by entry count", async () => {
+    const source = fsFile("file:///empty.txt", { size: 0 });
+    for (let index = 0; index < 128; index++) await namedExternalFile(source, "empty.txt");
+    await expect(namedExternalFile(source, "empty.txt")).rejects.toThrow("attachment_export_cache_full");
+    expect(new FS.Directory("/mock/cache/futureos-exports").list()).toHaveLength(128);
+  });
+
+  test("cleans a failed copy and the queue remains usable", async () => {
+    const source = fsFile("file:///a.txt", { bytes: new Uint8Array([1]) });
+    const copy = jest.spyOn(source, "copy").mockImplementation(async target => {
+      mockFS.__set((target as FS.File).uri, { size: 1 });
+      throw new Error("disk full");
+    });
+    await expect(namedExternalFile(source, "a.txt")).rejects.toThrow("disk full");
+    expect(new FS.Directory("/mock/cache/futureos-exports").list()).toEqual([]);
+    copy.mockRestore();
+    expect((await namedExternalFile(source, "a.txt")).exists).toBe(true);
   });
 });
 
@@ -965,7 +1062,7 @@ describe("download & preview cache", () => {
   test("uses the original name when materializing a file for the system share sheet", async () => {
     const source = fsFile(cacheUri(info), { bytes: new Uint8Array([1, 2, 3]) });
     const named = await namedExternalFile(source, "/workspace/results/experiment.csv");
-    expect(named.uri).toBe("/mock/cache/futureos-exports/experiment.csv");
+    expect(named.uri).toMatch(/\/futureos-exports\/\d+-export-1\/experiment\.csv$/);
     expect(await named.bytes()).toEqual(new Uint8Array([1, 2, 3]));
   });
 

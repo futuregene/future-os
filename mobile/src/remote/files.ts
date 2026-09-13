@@ -8,6 +8,7 @@ import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
 import { mobileFileType } from "./fileTypes";
 import { basename } from "./localPath";
+import { createAsyncOperationQueue } from "./asyncOperationQueue";
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
@@ -248,6 +249,7 @@ async function prepareFile(
   }
   const transfer = new File(converted.uri);
   if (transfer.size <= 0 || transfer.size > MAX_FILE_BYTES) {
+    try { if (transfer.uri !== file.uri && transfer.exists) transfer.delete(); } catch { /* best-effort cleanup */ }
     throw new Error("attachment_compressed_too_large");
   }
   return {
@@ -266,6 +268,22 @@ export function deleteTemporaryAttachment(attachment: MobileAttachment): void {
   if (!attachment.temporary) return;
   const file = new File(attachment.localUri);
   if (file.exists) file.delete();
+}
+
+async function prepareFiles(selected: { file: File; mimeType?: string | null }[]): Promise<MobileAttachment[]> {
+  // Wait for every conversion before rolling back. Promise.all rejects early,
+  // leaving both completed and subsequently completed temporary images orphaned.
+  const results = await Promise.allSettled(selected.map(({ file, mimeType }) => prepareFile(file, mimeType)));
+  const failure = results.find(result => result.status === "rejected");
+  if (failure?.status === "rejected") {
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        try { deleteTemporaryAttachment(result.value); } catch { /* preserve the original failure */ }
+      }
+    }
+    throw failure.reason;
+  }
+  return results.map(result => (result as PromiseFulfilledResult<MobileAttachment>).value);
 }
 
 function validateBatch(items: MobileAttachment[]): void {
@@ -290,9 +308,7 @@ export async function pickAttachments(existing: MobileAttachment[]): Promise<Mob
   // decode/re-encode. This keeps the product rule visible and avoids burning
   // phone CPU on a batch that cannot be sent.
   validateRawSelection(existing, selected);
-  const prepared = await Promise.all(
-    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
-  );
+  const prepared = await prepareFiles(selected);
   const combined = [...existing, ...prepared];
   validateBatch(combined);
   return combined;
@@ -310,9 +326,7 @@ export async function prepareSharedAttachments(
 ): Promise<MobileAttachment[]> {
   const selected = files.map(file => ({ file: new File(file.uri), mimeType: file.mimeType }));
   validateRawSelection(existing, selected);
-  const prepared = await Promise.all(
-    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
-  );
+  const prepared = await prepareFiles(selected);
   const named = prepared.map((attachment, index) => {
     const name = files[index]?.name || attachment.name;
     return {
@@ -366,9 +380,7 @@ async function prepareImagePickerAssets(
     mimeType: asset.mimeType ?? "image/jpeg",
   }));
   validateRawSelection(existing, selected);
-  const prepared = await Promise.all(
-    selected.map(({ file, mimeType }) => prepareFile(file, mimeType)),
-  );
+  const prepared = await prepareFiles(selected);
   const combined = [...existing, ...prepared];
   validateBatch(combined);
   return combined;
@@ -682,6 +694,11 @@ function cacheFile(info: DownloadInfo): File {
   return new File(directory, `${info.contentHash}${ext ? `.${ext}` : ""}`);
 }
 
+const MAX_EXPORT_CACHE_BYTES = 100 * 1024 * 1024;
+const MAX_EXPORT_CACHE_ENTRIES = 128;
+const EXPORT_RETAIN_MS = 24 * 60 * 60 * 1000;
+const enqueueExport = createAsyncOperationQueue();
+
 /**
  * The content-addressed cache deliberately uses its SHA-256 as the filename.
  * Before handing a file to the OS (share sheet / another app), materialize a
@@ -689,11 +706,39 @@ function cacheFile(info: DownloadInfo): File {
  * original attachment name rather than seeing the cache key.
  */
 export async function namedExternalFile(file: File, name: string): Promise<File> {
-  const directory = new Directory(Paths.cache, "futureos-exports");
-  if (!directory.exists) directory.create({ intermediates: true, idempotent: true });
-  const target = new File(directory, basename(name));
-  await file.copy(target, { overwrite: true });
-  return target;
+  return enqueueExport(async () => {
+    const root = new Directory(Paths.cache, "futureos-exports");
+    if (!root.exists) root.create({ intermediates: true, idempotent: true });
+    let retainedBytes = 0;
+    let retainedEntries = 0;
+    for (const entry of root.list()) {
+      const isDirectory = entry instanceof Directory;
+      const files = isDirectory ? entry.list().filter((item): item is File => item instanceof File) : [entry];
+      // Copying may preserve the source's mtime. Our directory timestamp records
+      // the handoff time instead, so a just-exported old document stays readable.
+      const created = isDirectory ? Number(/^(\d+)-/.exec(entry.name)?.[1]) : entry.modificationTime;
+      if (created != null && Number.isFinite(created) && Date.now() - created >= EXPORT_RETAIN_MS) {
+        entry.delete();
+      } else {
+        retainedBytes += files.reduce((sum, item) => sum + item.size, 0);
+        retainedEntries += 1;
+      }
+    }
+    // Never evict a recent OS handoff just to make space. Fail safely instead.
+    if (retainedBytes + file.size > MAX_EXPORT_CACHE_BYTES || retainedEntries >= MAX_EXPORT_CACHE_ENTRIES) {
+      throw new Error("attachment_export_cache_full");
+    }
+    const directory = new Directory(root.uri, `${Date.now()}-${Crypto.randomUUID()}`);
+    directory.create({ intermediates: true, idempotent: true });
+    try {
+      const target = new File(directory, basename(name));
+      await file.copy(target, { overwrite: true });
+      return target;
+    } catch (error) {
+      try { directory.delete(); } catch { /* preserve copy failure */ }
+      throw error;
+    }
+  });
 }
 
 function prunePreviewCache(requiredBytes: number): void {

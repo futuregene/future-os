@@ -6,6 +6,10 @@ plugins {
 group = 'cn.future_os'
 version = '1.0.0'
 
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+}
+
 android {
   namespace "cn.future_os.shareintent"
   defaultConfig {
