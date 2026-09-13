@@ -397,6 +397,31 @@ export function MentionEditor({
     placePill(range, buildPill(file));
   }
 
+  // Our paste/newline handlers prevent the native edit, so the browser does
+  // not reveal the new caret until the next typed character. Scroll only this
+  // editor (not its ancestors), and only far enough to expose the caret line.
+  function revealCaret(range: Range) {
+    const editor = editorRef.current;
+    if (!editor || editor.clientHeight === 0)
+      return;
+    const probe = range.cloneRange();
+    // An element-boundary caret can have no rectangle. The first
+    // rect of the next node locates the same line without inserting a marker or
+    // changing the live selection (important for contentEditable/IME).
+    const next = probe.startContainer.childNodes[probe.startOffset];
+    if (next)
+      probe.setEndAfter(next);
+    const caret = probe.getClientRects()[0];
+    if (!caret?.height)
+      return;
+    const top = editor.getBoundingClientRect().top + editor.clientTop;
+    const bottom = top + editor.clientHeight;
+    if (caret.top < top)
+      editor.scrollTop -= top - caret.top;
+    else if (caret.bottom > bottom)
+      editor.scrollTop += caret.bottom - bottom;
+  }
+
   function insertNewline() {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0)
@@ -405,12 +430,14 @@ export function MentionEditor({
     range.deleteContents();
     const newline = document.createTextNode("\n");
     range.insertNode(newline);
-    if (!newline.nextSibling) {
+    const next = newline.nextSibling;
+    if (!next || (next.nodeType === Node.TEXT_NODE && !next.textContent)) {
       // A bare trailing "\n" doesn't grow the box — the empty last line
-      // collapses. Park a zero-width space after it (with the caret before it)
-      // so the new line renders; serialize() strips ZWSPs on submit.
+      // collapses. insertNode can also split off an empty trailing text node.
+      // Park a zero-width space after the newline so the new line renders;
+      // serialize() strips ZWSPs on submit.
       const pad = document.createTextNode("\u200B");
-      newline.parentNode?.insertBefore(pad, null);
+      newline.parentNode?.insertBefore(pad, next);
       range.setStartBefore(pad);
     }
     else {
@@ -419,6 +446,7 @@ export function MentionEditor({
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    revealCaret(range);
     syncEmpty();
     onChange?.();
   }
@@ -517,10 +545,11 @@ export function MentionEditor({
     range.deleteContents();
     const node = document.createTextNode(text);
     range.insertNode(node);
-    range.setStartAfter(node);
+    range.setStart(node, node.length);
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    revealCaret(range);
     updateTrigger();
     syncEmpty();
     onChange?.();
