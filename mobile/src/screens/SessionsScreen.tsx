@@ -21,7 +21,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  useWindowDimensions,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -57,7 +56,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
   const Alert = useAppDialog(active);
   const { t } = useTranslation();
   const remote = useRemote();
-  const { width, fontScale } = useWindowDimensions();
   const selectedDesktopName =
     remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId)?.name ??
     remote.credentials?.expectedDesktopId ??
@@ -317,7 +315,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
         </Pressable>
           <View style={styles.topActions}>
             <ConnectionBadge
-              compact={width < 400 || fontScale > 1.2}
+              active={active}
               presentation={connection}
               onReconnect={() => void remote.reconnect()}
             />
