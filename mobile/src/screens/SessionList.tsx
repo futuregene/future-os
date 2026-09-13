@@ -80,13 +80,6 @@ export function SessionList({
     () => catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query),
     [remote.sessions, remote.workspaces, tab, collapsed, expanded, query],
   );
-  const hierarchical = rows.some(
-    row => row.kind === "session" && (row.hasChildren || row.depth > 0),
-  );
-  const hierarchicalWorkspaces = new Set(rows.flatMap(row =>
-    row.kind === "session" && (row.hasChildren || row.depth > 0)
-      ? [row.session.workspaceId ?? ""] : [],
-  ));
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
@@ -261,9 +254,6 @@ export function SessionList({
       );
     }
     const session = item.session;
-    const reserveExpander = tab === "workspace"
-      ? hierarchicalWorkspaces.has(session.workspaceId ?? "")
-      : hierarchical;
     const checked = selected.has(session.sessionId);
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
@@ -303,7 +293,9 @@ export function SessionList({
             )}
           </Pressable>
         ) : (
-          <View testID="session-expander-space" style={{ width: reserveExpander ? 44 : selecting ? 0 : 12 }} />
+          // Only descendants reserve a tree gutter; unrelated roots keep their
+          // compact inset even when another session gains or expands children.
+          <View testID="session-expander-space" style={{ width: item.depth > 0 ? 44 : selecting ? 0 : 12 }} />
         )}
         <Pressable
           accessibilityRole="button"
