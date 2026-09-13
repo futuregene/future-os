@@ -587,7 +587,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1407,7 +1407,8 @@ mod bridge_tests {
                 "file_download_v2",
                 "approval_tier_v1",
                 "continue_run_v1",
-                "prompt_receipt_v1"
+                "prompt_receipt_v1",
+                "session_files_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -1556,6 +1557,35 @@ mod bridge_tests {
             agent_session_id: Some(session.clone()),
         })
         .unwrap();
+        let cwd = crate::agent_bridge::workspace_path_for_thread(&thread.id).unwrap();
+        let file = std::path::Path::new(&cwd).join("mobile-file.txt");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(&file, "hello").unwrap();
+        let listing = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "list_session_files",
+                "sessionId": session, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(listing["success"], json!(true));
+        assert_eq!(
+            listing["data"]["rootPath"],
+            json!(std::path::Path::new(&cwd)
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy())
+        );
+        assert!(listing["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "mobile-file.txt" && entry["size"] == 5));
+        let missing = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "list_session_files", "sessionId": "missing-session"
+            }))
+            .await;
+        assert_eq!(missing["success"], json!(false));
         crate::store::create_run(crate::store::CreateRunInput {
             id: None,
             thread_id: thread.id.clone(),

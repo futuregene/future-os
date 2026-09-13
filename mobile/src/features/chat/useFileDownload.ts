@@ -47,7 +47,7 @@ export interface FileDownloadApi {
   fileAction: FileAction | null;
   setFileAction: (action: FileAction | null) => void;
   openAttachment: (attachment: HistoryAttachment) => Promise<void>;
-  openFileLink: (path: string) => Promise<void>;
+  openFileLink: (path: string, refresh?: boolean) => Promise<void>;
   downloadOriginal: (attachment: HistoryAttachment) => Promise<void>;
   openOrShare: (
     info: DownloadInfo,
@@ -638,7 +638,7 @@ export function useFileDownload(
   // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
   // anything else → open/save action sheet.
   const openFileLink = useCallback(
-    async (path: string) => {
+    async (path: string, refresh = false) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
       const fileType = mobileFileType(attachment.name);
       if (!fileType) {
@@ -658,7 +658,9 @@ export function useFileDownload(
       }
       try {
         const variant = fileType.route === "external" ? "original" : "preview";
-        let cachedPreview = remote.cachedAttachment(attachment, variant);
+        // Directory entries are mutable: revalidate their content identity,
+        // while still reusing the content-addressed download cache.
+        let cachedPreview = refresh ? null : remote.cachedAttachment(attachment, variant);
         const info =
           cachedPreview?.info ??
           (await remote.prepareAttachment(attachment, variant, handle.controller.signal, () =>

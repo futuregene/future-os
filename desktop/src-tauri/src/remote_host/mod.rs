@@ -5,6 +5,7 @@ pub(crate) mod catalog;
 pub(crate) mod files;
 pub(crate) mod pairing;
 mod read_pages;
+mod session_files;
 use crate::remote::services::{BusinessHost, ReplySink};
 struct DesktopHost;
 impl BusinessHost for DesktopHost {
