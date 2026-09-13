@@ -39,6 +39,10 @@ pub use cleanup::{
     ActiveRun,
 };
 pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
+// Test-only: lets a fake-HOME guard release pooled connections before deleting
+// its directory, since Windows cannot unlink an open database file.
+#[cfg(test)]
+pub(crate) use db::close_pool;
 pub use deletions::{
     acknowledge_agent_session_delete, is_agent_session_tombstoned,
     note_agent_session_delete_failure, pending_agent_session_deletes,
