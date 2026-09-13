@@ -92,9 +92,37 @@ export interface RunProjector {
    * (sequence <= lastSequence) are skipped, so overlapping batches are safe.
    */
   ingest: (events: RunEvent[]) => AssistantRunProjection;
+  /** Append in arrival order without rebuilding a render snapshot. */
+  append: (event: RunEvent) => void;
+  snapshot: () => AssistantRunProjection;
+  /** Independent mutable accumulator for cancellable/cooperative replay. */
+  fork: () => RunProjector;
+}
+
+interface ProjectorCheckpoint {
+  toolActivities: Map<string, ToolActivity>;
+  slots: Slot[];
+  slottedToolIds: Set<string>;
+  openTextIndex: number;
+  openThinkingIndex: number;
+  content: string;
+  thinking: boolean;
+  sawVisibleWork: boolean;
+  activeToolCallId: string | null;
+  usageOutputSum: number;
+  sawUsageEvent: boolean;
+  agentEndOutput: number;
+  truncated: boolean;
+  stopped: boolean;
+  reconnecting?: StreamRetryState;
+  lastSequence: number;
 }
 
 export function createRunProjector(options?: { preferEndTokens?: boolean }): RunProjector {
+  return createProjector(options);
+}
+
+function createProjector(options?: { preferEndTokens?: boolean }, initial?: ProjectorCheckpoint): RunProjector {
   const toolActivities = new Map<string, ToolActivity>();
   // Ordered timeline of the exchange. Text accumulates into the open text slot;
   // each tool call pins a slot at the point it started.
@@ -122,6 +150,27 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
   let stopped = false;
   let reconnecting: StreamRetryState | undefined;
   let lastSequence = -1;
+
+  if (initial) {
+    for (const [id, tool] of initial.toolActivities) toolActivities.set(id, { ...tool });
+    for (const slot of initial.slots) slots.push({ ...slot });
+    for (const id of initial.slottedToolIds) slottedToolIds.add(id);
+    const textSlot = slots[initial.openTextIndex];
+    const thinkingSlot = slots[initial.openThinkingIndex];
+    openText = textSlot?.type === "text" ? textSlot : null;
+    openThinking = thinkingSlot?.type === "thinking" ? thinkingSlot : null;
+    content = initial.content;
+    thinking = initial.thinking;
+    sawVisibleWork = initial.sawVisibleWork;
+    activeToolCallId = initial.activeToolCallId;
+    usageOutputSum = initial.usageOutputSum;
+    sawUsageEvent = initial.sawUsageEvent;
+    agentEndOutput = initial.agentEndOutput;
+    truncated = initial.truncated;
+    stopped = initial.stopped;
+    reconnecting = initial.reconnecting ? { ...initial.reconnecting } : undefined;
+    lastSequence = initial.lastSequence;
+  }
 
   function processEvent(event: RunEvent) {
     const payload = parseEventPayload(event.payload);
@@ -425,6 +474,21 @@ export function createRunProjector(options?: { preferEndTokens?: boolean }): Run
   }
 
   return {
+    append(event) {
+      // Same ordering/dedup semantics as ingest([event]), including an older
+      // event arriving after a newer one. Do not sort across arrival batches.
+      if (!(event.sequence <= lastSequence)) processEvent(event);
+      lastSequence = Math.max(lastSequence, event.sequence);
+    },
+    snapshot,
+    fork: () => createProjector(options, {
+      toolActivities, slots, slottedToolIds,
+      openTextIndex: openText ? slots.indexOf(openText) : -1,
+      openThinkingIndex: openThinking ? slots.indexOf(openThinking) : -1,
+      content, thinking, sawVisibleWork, activeToolCallId,
+      usageOutputSum, sawUsageEvent, agentEndOutput, truncated, stopped,
+      reconnecting, lastSequence,
+    }),
     get lastSequence() {
       return lastSequence;
     },

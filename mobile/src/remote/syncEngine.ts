@@ -37,10 +37,10 @@
 
 import {
   applyStreamEvent,
+  applyReplayEvents,
   emptyTimeline,
   normalizeReplayEvents,
   stripRunItems,
-  timelineFromProjection,
   upsertTruncationNotice,
   type ReplayEventWire,
   type TimelineState,
@@ -449,7 +449,10 @@ export class SyncEngine {
           }
           stage = "replay";
           base = stripRunItems(base, targetRunId);
-          base = await this.replayInto(lane, base, targetRunId, -1);
+          const replay = await this.replayInto(lane, base, targetRunId, -1);
+          if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
+          base = replay.timeline;
+          lane.cursor = replay.cursor;
         }
         lane.timeline = base;
         this.commit(lane);
@@ -478,8 +481,10 @@ export class SyncEngine {
   private async tailReconcile(lane: SessionLane, runId: string): Promise<void> {
     if (!runId || !lane.timeline) return;
     const since = cursorHighWater(lane.cursor, runId);
-    const base = await this.replayInto(lane, lane.timeline, runId, since);
-    lane.timeline = base;
+    const replay = await this.replayInto(lane, lane.timeline, runId, since);
+    if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
+    lane.cursor = replay.cursor;
+    lane.timeline = replay.timeline;
     this.commit(lane);
   }
 
@@ -494,9 +499,10 @@ export class SyncEngine {
     base: TimelineState,
     runId: string,
     since: number,
-  ): Promise<TimelineState> {
+  ): Promise<{ timeline: TimelineState; cursor: RunCursor }> {
     const result = await this.deps.fetchReplay(lane.sessionId, runId, since, () => this.isCurrent(lane));
     if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
+    const cursor = new Map(lane.cursor);
     if (result.projection?.events?.length) {
       let events = normalizeReplayEvents(result.projection.events);
       // A folded projection's run id rides on the envelope, not necessarily on
@@ -508,32 +514,33 @@ export class SyncEngine {
       events = events.map((ev) => (ev.runId ? ev : { ...ev, runId }));
       const cursorIdx =
         result.projection.cursor ?? events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
-      advanceCursor(lane.cursor, runId, cursorIdx, true);
       const stripped = stripRunItems(base, runId);
-      const projected = timelineFromProjection(events);
+      const projected = await applyReplayEvents(emptyTimeline(), events, { isCurrent: () => this.isCurrent(lane) });
+      advanceCursor(cursor, runId, cursorIdx, true);
       const settled = events.some((ev) => ev.type === "agent_end");
       return {
-        ...stripped,
-        items: [...stripped.items, ...projected.items],
-        streaming: !settled,
+        cursor,
+        timeline: {
+          ...stripped,
+          items: [...stripped.items, ...projected.items],
+          liveRuns: new Map([...(stripped.liveRuns ?? []), ...(projected.liveRuns ?? [])]),
+          seenEvents: new Set([...stripped.seenEvents, ...projected.seenEvents]),
+          currentRunId: projected.currentRunId,
+          streaming: !settled,
+        },
       };
     }
     const events = normalizeReplayEvents(result.events);
-    if (events.length === 0) return base;
-    let next = base;
-    if (since === -1) {
-      // Whole-run replay — supersede any partial items of the run.
-      next = stripRunItems(base, runId);
-    }
-    for (const ev of events) {
-      advanceCursor(lane.cursor, ev.runId ?? runId, ev.idx ?? -1, since === -1);
-      next = applyStreamEvent(next, ev);
-    }
+    if (events.length === 0) return { timeline: base, cursor };
+    let next = await applyReplayEvents(since === -1 ? stripRunItems(base, runId) : base, events, {
+      isCurrent: () => this.isCurrent(lane),
+      onEvent: ev => advanceCursor(cursor, ev.runId ?? runId, ev.idx ?? -1, since === -1),
+    });
     const settled = events.some((ev) => ev.type === "agent_end");
     if (result.truncated) next = { ...next, items: upsertTruncationNotice(next.items, runId) };
     // A settled replay overrides the live streaming flag; an empty replay
     // leaves it alone (the run may have ended between the fetch and now).
-    return { ...next, streaming: settled ? false : next.streaming };
+    return { timeline: { ...next, streaming: settled ? false : next.streaming }, cursor };
   }
 
   /**

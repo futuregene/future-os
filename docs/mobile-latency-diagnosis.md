@@ -110,3 +110,21 @@ Validation on Windows:
 - Android and iOS production Expo exports, including Hermes bytecode, succeeded.
 
 The tests also cover malformed/over-budget chunks, navigation cancellation, cache eviction followed by fresh reload, stale work completing after eviction, and old-client response compatibility. No physical-device performance claim is made. Updated Mobile and Desktop builds are both required for oversized-read chunking.
+
+## Follow-up: large replay folding and history look-ahead
+
+The Mobile replay reducer now owns one deduplication set per replay, rather than copying the growing set per event. Shared run projectors support arrival-ordered append without snapshot construction, explicit snapshots, and independent forks. Contiguous run events build one display snapshot; user/approval/error/notice and run boundaries flush it to preserve the single-event reducer's ordering. Existing `ingest` batch sorting/duplicate semantics remain unchanged.
+
+Replay folds cooperatively, yielding between slices after 512 events, approximately 256 KiB of event data, or an 8 ms work target. These checks occur between events: initial state forking, a single large payload and final snapshot construction are not preemptible, so 8 ms is not a guaranteed maximum task duration. The committed timeline/projector and cursor remain untouched while replay runs. A finished result installs its timeline and cursor together; cancellation/restart discards partial work. Projection snapshots retain their accumulator so subsequent live text appends to, rather than replaces, their prefix.
+
+History paging no longer waits for a fixed 1.5-second marker deadline. It still waits for requested IDs to commit, a native layout observation and the existing 100 ms quiet window, which can extend while layout keeps changing. Deliberate scrolling may request one page within one viewport of the history boundary (capped at 600 layout points). The existing transaction and per-gesture guards prevent programmatic scrolling/momentum from cascading through multiple pages. Idle text updates no longer rebuild the whole paging ID index.
+
+Validation uses real reducer/projector/hook implementations with synthetic events, not a physical device:
+
+- 10,000 / 50,000 / 100,000 text events (plus start/end) each produced one display snapshot and exact text/token totals. An independent timer ran before completion (after 1,024 events in the recorded run).
+- A 5,002-event comparison produced 5,002 snapshots with single-event folding versus one with batching. A recorded full-suite run measured 210 ms single-event, 15 ms synchronous batch, and 136 ms cooperative batch including timer scheduling. These are host observations, not phone latency or FPS, and no wall-clock ratio is a test gate.
+- Tests cover 300 interleaved tool calls, thinking, usage, compaction, approvals, errors, truncation, duplicates/out-of-order/untracked events, cancellation without mutating the committed prefix, restart without partial cursor publication, and projection-to-live-tail continuation.
+- Paging tests cover early one-page look-ahead, fast-page completion without the old cooldown, native-layout barriers, stale session completions, and 100 idle text updates across 1,000 rows without ID-index reads.
+- Mobile typecheck/ESLint and **53 suites / 752 tests** passed after syncing main; Desktop typecheck/ESLint/Stylelint and **109 files / 959 tests** passed. Shared thread-projection typecheck and Android/iOS production Hermes exports passed.
+
+This optimizes reconstruction after fetching replay, not the existing first full-tail read or retention of all fetched event pages. Block-level virtualization inside a giant message, data-source byte paging, and a bounded active-history window remain separate work. No native install or physical-device performance measurement was performed.

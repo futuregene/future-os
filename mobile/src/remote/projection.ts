@@ -203,7 +203,7 @@ export function mergeHistoryAttachments(
  * reducer reproduces the same transcript as if the run had streamed live.
  */
 export function timelineFromProjection(events: StreamEvent[]): TimelineState {
-  return events.reduce((state, event) => applyStreamEvent(state, event), emptyTimeline());
+  return applyStreamEvents(emptyTimeline(), events);
 }
 
 /**
@@ -299,14 +299,22 @@ function upsertItem(
  * settled duration) is layered on top of the projection snapshot.
  */
 export function applyStreamEvent(state: TimelineState, event: StreamEvent): TimelineState {
+  return applyEvent(state, event);
+}
+
+function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
+  seenEvents: Set<string>;
+  deferRunSnapshot: boolean;
+  data: Record<string, unknown>;
+}): TimelineState {
   if (event.type === "ping") return state;
   const runId = event.runId ?? state.currentRunId ?? undefined;
   const key = event.runId != null && event.idx != null ? `${event.runId}:${event.idx}` : null;
   if (key && state.seenEvents.has(key)) return state;
 
-  const seenEvents = new Set(state.seenEvents);
+  const seenEvents = batch?.seenEvents ?? new Set(state.seenEvents);
   if (key) seenEvents.add(key);
-  const data = eventData(event);
+  const data = batch?.data ?? eventData(event);
   let items = state.items;
   let streaming = state.streaming;
   let liveRuns = state.liveRuns;
@@ -399,7 +407,7 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
 
   // Run events flow through the shared projector.
   if (runEvents && isRunEvent(event.type)) {
-    const result = applyLiveEvent(state, runId, event, data);
+    const result = applyLiveEvent(state, runId, event, data, batch?.deferRunSnapshot);
     items = result.items;
     streaming = result.streaming;
     liveRuns = result.liveRuns;
@@ -413,6 +421,83 @@ export function applyStreamEvent(state: TimelineState, event: StreamEvent): Time
     streaming,
     liveRuns,
   };
+}
+
+/** A replay owns its dedup set and mutable projectors. Yielding/cancelling it
+ * must never mutate the still-visible committed timeline or its accumulators. */
+function createReplayBatch(initial: TimelineState) {
+  const seenEvents = new Set(initial.seenEvents);
+  const liveRuns = new Map<string, LiveRunState>();
+  for (const [id, run] of initial.liveRuns ?? []) {
+    liveRuns.set(id, { ...run, projector: run.projector.fork() });
+  }
+  let state: TimelineState = { ...initial, seenEvents, liveRuns };
+  let pending: { runId: string | undefined } | null = null;
+  const flush = () => {
+    if (!pending) return;
+    const run = state.liveRuns?.get(pending.runId ?? "__norun__");
+    if (run) {
+      const item = buildLiveAssistantItem(run, pending.runId, run.projector.snapshot(), run.durationMs);
+      state = { ...state, items: upsertItem(state.items, run.assistantId, () => item, () => item) };
+    }
+    pending = null;
+  };
+  return {
+    append(event: StreamEvent) {
+      if (event.type === "ping") return;
+      const key = event.runId != null && event.idx != null ? `${event.runId}:${event.idx}` : null;
+      if (key && seenEvents.has(key)) return;
+      const runId = event.runId ?? state.currentRunId ?? undefined;
+      const data = eventData(event);
+      const deferRunSnapshot = isRunEvent(event.type)
+        && !(event.type === "text_chunk" && data._truncated === true);
+      // Materialize before an approval/user/error/notice or another run so
+      // the same ordering and upsert semantics as single-event folding hold.
+      if (pending && (!deferRunSnapshot || pending.runId !== runId)) flush();
+      state = applyEvent(state, event, { seenEvents, deferRunSnapshot, data });
+      if (deferRunSnapshot) pending = { runId };
+    },
+    finish() { flush(); return state; },
+  };
+}
+
+/** Batch folding avoids a growing Set copy and render snapshot per event. */
+export function applyStreamEvents(initial: TimelineState, events: StreamEvent[]): TimelineState {
+  if (events.length === 0) return initial;
+  const batch = createReplayBatch(initial);
+  for (const event of events) batch.append(event);
+  return batch.finish();
+}
+
+/** Cooperatively fold a large replay without committing partial cursors or UI.
+ * Limits are checked between events; a single large payload/snapshot is not
+ * preemptible. Count/byte bounds also guarantee yields under a fake clock. */
+export async function applyReplayEvents(
+  initial: TimelineState,
+  events: StreamEvent[],
+  options: { isCurrent?: () => boolean; onEvent?: (event: StreamEvent) => void } = {},
+): Promise<TimelineState> {
+  const isCurrent = options.isCurrent ?? (() => true);
+  if (!isCurrent()) throw new Error("stale_sync_lane");
+  if (events.length === 0) return initial;
+  const batch = createReplayBatch(initial);
+  let index = 0;
+  while (index < events.length) {
+    if (!isCurrent()) throw new Error("stale_sync_lane");
+    const deadline = Date.now() + 8;
+    let count = 0;
+    let bytes = 0;
+    do {
+      const event = events[index++]!;
+      options.onEvent?.(event);
+      batch.append(event);
+      count++;
+      bytes += event.data.length * 2;
+    } while (index < events.length && count < 512 && bytes < 256 * 1024 && Date.now() < deadline);
+    if (index < events.length) await new Promise<void>(resolve => setTimeout(resolve, 0));
+  }
+  if (!isCurrent()) throw new Error("stale_sync_lane");
+  return batch.finish();
 }
 
 function isRunEvent(type: string): boolean {
@@ -443,6 +528,7 @@ function applyLiveEvent(
   runId: string | undefined,
   event: StreamEvent,
   data: Record<string, unknown>,
+  deferSnapshot = false,
 ): { items: TimelineItem[]; streaming: boolean; liveRuns: Map<string, LiveRunState> } {
   const liveRuns = state.liveRuns ?? new Map<string, LiveRunState>();
   const runKey = runId ?? "__norun__";
@@ -466,7 +552,9 @@ function applyLiveEvent(
   if (event.type !== "agent_end") acc.streaming = true;
 
   // Feed through the shared projector (agent_start is a no-op for it).
-  const projection = acc.projector.ingest([toRunEvent(runKey, event)]);
+  let projection: ReturnType<RunProjector["snapshot"]> | undefined;
+  if (deferSnapshot) acc.projector.append(toRunEvent(runKey, event));
+  else projection = acc.projector.ingest([toRunEvent(runKey, event)]);
 
   let durationMs = acc.durationMs;
   if (event.type === "agent_end") {
@@ -486,13 +574,11 @@ function applyLiveEvent(
     durationMs = runDurationMs(data) ?? (acc.startedAt ? Date.now() - acc.startedAt : undefined);
     acc.durationMs = durationMs;
   }
-  const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
-  const items = upsertItem(
-    state.items,
-    acc.assistantId,
-    () => assistantItem,
-    () => assistantItem,
-  );
+  let items = state.items;
+  if (projection) {
+    const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
+    items = upsertItem(items, acc.assistantId, () => assistantItem, () => assistantItem);
+  }
   return { items, streaming: acc.streaming, liveRuns };
 }
 
