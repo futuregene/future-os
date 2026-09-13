@@ -92,6 +92,9 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                         let page = prepare_backward_entries_page(&cmd.session_id, data);
                         reply(sink, true, page, None).await;
                     }
+                    Err(e) if missing_session(&e) => {
+                        reply(sink, true, empty_entries_page(), None).await
+                    }
                     Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
                 }
                 return;
@@ -106,6 +109,9 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                         None,
                     )
                     .await;
+                }
+                Err(e) if missing_session(&e) => {
+                    reply(sink, true, empty_entries_page(), None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
@@ -407,6 +413,10 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         }
         "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
             Ok(data) => reply(sink, true, data, None).await,
+            // A session the Agent no longer has carries no model or active run.
+            // Answer with empty state instead of a rejection so the phone's
+            // model controls fall back to their defaults. See `missing_session`.
+            Err(e) if missing_session(&e) => reply(sink, true, json!({}), None).await,
             Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
         },
         "list_models" | "get_available_models" => {
@@ -573,6 +583,25 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
             .await;
         }
     }
+}
+
+/// A session the Agent answers with `session not found` is a *missing identity*,
+/// not a transient failure: the thread is bound to a session id the Agent holds
+/// no transcript for — one created but never prompted (the Agent keeps such a
+/// row at `revision = -1` and refuses to list it), or one dropped by a restart.
+/// The desktop UI already answers such a thread with empty history and lets the
+/// prompt path recreate the session on the next send; the remote bridge must
+/// answer the phone identically. Forwarding the rejection instead pins the
+/// mobile timeline in its "loading messages" state forever, because a failed
+/// history page reads as "not loaded yet" and only schedules another retry.
+fn missing_session(error: &crate::AppError) -> bool {
+    error.to_string().contains("session not found")
+}
+
+/// The empty display-history page for a session the Agent no longer has, so
+/// paging terminates instead of retrying a dead identity.
+fn empty_entries_page() -> Value {
+    json!({"entries": [], "hasMore": false, "nextOffset": 0})
 }
 
 async fn reply(sink: &dyn ReplySink, success: bool, data: Value, error: Option<&str>) {
