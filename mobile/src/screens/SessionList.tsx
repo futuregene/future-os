@@ -33,7 +33,7 @@ import { deferPresentation } from "../features/chat/utils";
 import { useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 import { catalogRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 
@@ -268,7 +268,7 @@ export function SessionList({
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
     return (
-      <View style={[styles.row, { marginLeft: item.depth * 16 }, checked && styles.selected]}>
+      <View style={[styles.row, { marginLeft: Math.min(item.depth, 3) * 12 }, checked && styles.selected]}>
         {selecting ? (
           <Pressable
             accessibilityRole="checkbox"
@@ -317,7 +317,7 @@ export function SessionList({
           }}
           style={({ pressed }) => [styles.sessionBody, pressed && styles.pressed]}
         >
-          <Text numberOfLines={1} style={[styles.title, unread && styles.unreadTitle]}>
+          <Text numberOfLines={2} style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
           {session.pinned && <Pin size={13} color={colors.accent} />}
@@ -340,7 +340,7 @@ export function SessionList({
             accessibilityLabel={t("sessions.actions", {
               title: session.title || t("sessions.unnamed"),
             })}
-            disabled={!remote.desktopOnline}
+            disabled={!remote.desktopOnline || deleting}
             onPress={() => onMenu(session)}
             style={styles.iconButton}
           >
@@ -469,8 +469,8 @@ const styles = StyleSheet.create({
   tools: {
     flexDirection: "row",
     gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingHorizontal: layout.gutter,
+    paddingBottom: spacing.md,
   },
   search: {
     flex: 1,
@@ -499,12 +499,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.lineSoft,
   },
-  list: { paddingHorizontal: spacing.sm, paddingBottom: 84 },
+  list: { paddingHorizontal: layout.gutter, paddingTop: spacing.xs, paddingBottom: 96 },
   empty: {
     flexGrow: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: layout.gutter,
+    paddingVertical: spacing.xl,
+    paddingBottom: 96,
   },
   noResults: { color: colors.inkMuted, fontSize: 14 },
   workspace: {
@@ -514,8 +516,8 @@ const styles = StyleSheet.create({
     paddingRight: spacing.xs,
     backgroundColor: colors.canvas,
     borderRadius: radius.md,
-    marginTop: spacing.xs,
-    marginBottom: 2,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
   },
   workspaceBody: {
     flex: 1,
@@ -529,18 +531,19 @@ const styles = StyleSheet.create({
   },
   workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
   count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
-  row: { minHeight: 44, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
+  row: { minHeight: 60, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   sessionBody: {
     flex: 1,
     minWidth: 0,
-    minHeight: 44,
+    minHeight: 60,
+    paddingVertical: spacing.md,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
     borderRadius: radius.md,
   },
-  title: { flex: 1, color: colors.ink, fontSize: 14, lineHeight: 20 },
+  title: { flex: 1, color: colors.ink, fontSize: 15, lineHeight: 22 },
   unreadTitle: { fontWeight: "600" },
   pressed: { backgroundColor: colors.surfaceSubtle },
   selected: { backgroundColor: colors.accentSoft },
@@ -557,10 +560,15 @@ const styles = StyleSheet.create({
   dot: { width: 7, height: 7, borderRadius: radius.pill },
   selectionBar: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: spacing.sm,
+    marginHorizontal: layout.gutter,
+    marginBottom: spacing.sm,
     paddingLeft: spacing.md,
     paddingRight: spacing.xs,
+    borderRadius: radius.md,
+    backgroundColor: colors.accentSoft,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.lineSoft,
   },
@@ -571,6 +579,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
   },
-  actionText: { color: colors.accent, fontSize: 13, fontWeight: "600" },
+  actionText: { flexShrink: 1, color: colors.accent, fontSize: 13, fontWeight: "600" },
   disabled: { opacity: 0.4 },
 });

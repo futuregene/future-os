@@ -1,17 +1,17 @@
-import { Check } from "lucide-react-native";
+import { Check, X } from "lucide-react-native";
 import {
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableWithoutFeedback,
   View,
 } from "react-native";
 import type { TFunction } from "i18next";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useRemote } from "../../../remote/RemoteContext";
 import { modelReference, type ThinkingLevel } from "../../../remote/types";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
 type Remote = ReturnType<typeof useRemote>;
 
@@ -30,25 +30,40 @@ export function ModelSelectorSheet({
 }) {
   return (
     <Modal
-      animationType="fade"
+      animationType="slide"
       onRequestClose={() => setSelector(null)}
       transparent
       visible={selector !== null}
     >
-      <TouchableWithoutFeedback onPress={() => setSelector(null)}>
-        <View style={styles.selectorOverlay}>
-          <TouchableWithoutFeedback>
-            <View style={styles.selectorMenu}>
-              <Text style={styles.selectorTitle}>
-                {selector === "model" ? t("chat.model") : t("chat.thinkingLevel")}
-              </Text>
-              <ScrollView bounces={false}>
+        <SafeAreaView style={styles.selectorOverlay}>
+          <Pressable
+            accessible={false}
+            onPress={() => setSelector(null)}
+            style={StyleSheet.absoluteFill}
+          />
+            <View accessibilityViewIsModal style={styles.selectorMenu}>
+              <View style={styles.selectorHeader}>
+                <Text accessibilityRole="header" style={styles.selectorTitle}>
+                  {selector === "model" ? t("chat.model") : t("chat.thinkingLevel")}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("common.close")}
+                  onPress={() => setSelector(null)}
+                  style={({ pressed }) => [styles.closeButton, pressed && styles.selectorOptionPressed]}
+                >
+                  <X color={colors.inkSoft} size={20} />
+                </Pressable>
+              </View>
+              <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
                 {selector === "model"
                   ? remote.models.map(model => {
                       const selected = modelReference(model) === remote.modelId;
                       return (
                         <Pressable
                           key={`${model.provider ?? ""}/${model.id}`}
+                          accessibilityRole="radio"
+                          accessibilityState={{ checked: selected }}
                           onPress={() => {
                             setSelector(null);
                             void remote.setModel(modelReference(model));
@@ -60,7 +75,7 @@ export function ModelSelectorSheet({
                           ]}
                         >
                           <View style={styles.selectorOptionCopy}>
-                            <Text numberOfLines={1} style={styles.selectorOptionLabel}>
+                            <Text style={styles.selectorOptionLabel}>
                               {model.label || model.id}
                             </Text>
                             {model.provider ? (
@@ -78,6 +93,8 @@ export function ModelSelectorSheet({
                       return (
                         <Pressable
                           key={level}
+                          accessibilityRole="radio"
+                          accessibilityState={{ checked: selected }}
                           onPress={() => {
                             setSelector(null);
                             void remote.setThinkingLevel(level);
@@ -95,9 +112,7 @@ export function ModelSelectorSheet({
                     })}
               </ScrollView>
             </View>
-          </TouchableWithoutFeedback>
-        </View>
-      </TouchableWithoutFeedback>
+        </SafeAreaView>
     </Modal>
   );
 }
@@ -106,26 +121,31 @@ const styles = StyleSheet.create({
   selectorOverlay: {
     flex: 1,
     justifyContent: "flex-end",
-    padding: spacing.md,
-    paddingBottom: spacing.xl,
+    padding: layout.gutter,
     backgroundColor: colors.overlay,
   },
   selectorMenu: {
-    maxHeight: "60%",
+    width: "100%",
+    maxWidth: layout.formMaxWidth,
+    alignSelf: "center",
+    maxHeight: "85%",
     overflow: "hidden",
     padding: spacing.sm,
-    borderRadius: radius.lg,
+    borderRadius: radius.xl,
     backgroundColor: colors.surface,
   },
+  selectorHeader: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
+  closeButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
+  options: { gap: spacing.xs, paddingBottom: spacing.sm },
   selectorTitle: {
-    paddingHorizontal: spacing.sm,
+    flex: 1,
     paddingVertical: spacing.sm,
-    color: colors.inkMuted,
-    fontSize: 12,
+    color: colors.inkStrong,
+    fontSize: 18,
     fontWeight: "700",
   },
   selectorOption: {
-    minHeight: 50,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
@@ -136,6 +156,6 @@ const styles = StyleSheet.create({
   selectorOptionSelected: { backgroundColor: colors.accentSoft },
   selectorOptionPressed: { opacity: 0.72 },
   selectorOptionCopy: { minWidth: 0, flex: 1 },
-  selectorOptionLabel: { color: colors.ink, fontSize: 14, fontWeight: "600" },
-  selectorOptionMeta: { marginTop: 2, color: colors.inkMuted, fontSize: 11 },
+  selectorOptionLabel: { flexShrink: 1, color: colors.ink, fontSize: 15, fontWeight: "600" },
+  selectorOptionMeta: { marginTop: 2, color: colors.inkMuted, fontSize: 12 },
 });

@@ -18,7 +18,7 @@ import { TimelineCard } from "../../components/TimelineCard";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { modelReference, type TimelineItem } from "../../remote/types";
-import { colors, radius, spacing } from "../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { useComposerDraft } from "./useComposerDraft";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useFileDownload } from "./useFileDownload";
@@ -262,7 +262,7 @@ export function ChatScreen() {
       : 0;
 
   return (
-    <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
+    <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.keyboard}
@@ -334,6 +334,8 @@ export function ChatScreen() {
               )
             }
             maintainVisibleContentPosition={scroll.maintainVisibleContentPosition}
+            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+            keyboardShouldPersistTaps="handled"
             automaticallyAdjustContentInsets={false}
             contentInsetAdjustmentBehavior="never"
             automaticallyAdjustKeyboardInsets={false}
@@ -462,7 +464,7 @@ export function ChatScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.surface },
-  keyboard: { flex: 1, backgroundColor: colors.surface },
+  keyboard: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: colors.surface },
   chatContent: { flex: 1, minHeight: 0 },
   timelineList: { flex: 1, minHeight: 0 },
   // `inverted` flips the visual axis. A flexible physical header consumes only
@@ -471,7 +473,7 @@ const styles = StyleSheet.create({
   // to zero once message rows overflow the viewport.
   timeline: {
     flexGrow: 1,
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: layout.gutter,
     paddingVertical: spacing.sm,
   },
   timelineFlexSpacer: { flexGrow: 1 },
@@ -488,6 +490,8 @@ const styles = StyleSheet.create({
   },
   historyError: { color: colors.inkMuted, fontSize: 14, textAlign: "center" },
   retryButton: {
+    minHeight: layout.touchTarget,
+    justifyContent: "center",
     backgroundColor: colors.accent,
     borderRadius: radius.pill,
     paddingHorizontal: spacing.lg,
@@ -497,6 +501,7 @@ const styles = StyleSheet.create({
   retryLabel: { color: colors.surface, fontSize: 14, fontWeight: "600" },
   itemGap: { height: spacing.md },
   loadOlder: {
+    minHeight: layout.touchTarget,
     position: "absolute",
     top: spacing.sm,
     alignSelf: "center",

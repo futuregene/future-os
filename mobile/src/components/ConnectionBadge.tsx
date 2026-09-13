@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import type { ConnectionPresentation } from "../remote/connectionPresentation";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 
 export function ConnectionBadge({
   presentation,
@@ -28,10 +28,11 @@ export function ConnectionBadge({
       accessibilityRole={reconnectable ? "button" : undefined}
       disabled={!reconnectable}
       onPress={reconnectable ? onReconnect : undefined}
-      style={[
+      style={({ pressed }) => [
         styles.badge,
         connected ? styles.connected : connecting ? styles.connecting : styles.disconnected,
         compact && styles.compact,
+        pressed && reconnectable && styles.pressed,
       ]}
     >
       <View
@@ -46,6 +47,7 @@ export function ConnectionBadge({
       />
       {!compact && (
         <Text
+          numberOfLines={1}
           style={[
             styles.label,
             connected
@@ -64,6 +66,9 @@ export function ConnectionBadge({
 
 const styles = StyleSheet.create({
   badge: {
+    minHeight: layout.touchTarget,
+    maxWidth: 180,
+    flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -79,15 +84,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
     borderColor: colors.lineSoft,
   },
-  connected: { backgroundColor: colors.infoSoft, borderColor: colors.infoLine },
+  pressed: { opacity: 0.7 },
+  connected: { backgroundColor: colors.successSoft, borderColor: colors.successLine },
   connecting: { backgroundColor: colors.warningSoft, borderColor: colors.warningLine },
   disconnected: { backgroundColor: colors.dangerSoft, borderColor: colors.dangerLine },
   dot: { width: 7, height: 7, borderRadius: 4 },
-  connectedDot: { backgroundColor: colors.info },
+  connectedDot: { backgroundColor: colors.success },
   connectingDot: { backgroundColor: colors.warning },
   disconnectedDot: { backgroundColor: colors.danger },
-  label: { fontSize: 12, fontWeight: "600" },
-  connectedLabel: { color: colors.info },
+  label: { flexShrink: 1, fontSize: 12, fontWeight: "600" },
+  connectedLabel: { color: colors.success },
   connectingLabel: { color: colors.warning },
   disconnectedLabel: { color: colors.danger },
 });

@@ -3,6 +3,15 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ComposerDock } from "../components/ComposerDock";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import { resources } from "../../../i18n/locales";
+import { StyleSheet, View } from "react-native";
+
+let mockDimensions = { width: 390, height: 844, scale: 1, fontScale: 1 };
+jest.mock("react-native", () => {
+  const actual = jest.requireActual("react-native");
+  return new Proxy(actual, {
+    get: (target, key) => key === "useWindowDimensions" ? () => mockDimensions : Reflect.get(target, key),
+  });
+});
 
 jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Paperclip", "Send", "Square", "X"].map(name => [name, () => null])));
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
@@ -50,6 +59,42 @@ test("only the approval which failed receives the error", () => {
     expect(decide).toHaveBeenCalledWith("a", "approved");
   } finally {
     act(() => renderer!.unmount());
+  }
+});
+
+test.each([
+  [320, 1, true], [375, 1, true], [390, 1, false], [430, 1, false], [820, 1, false], [430, 1.6, true],
+])("composer adapts at width %i / font scale %f without shrinking send or attachment targets", (width, fontScale, stacked) => {
+  mockDimensions = { width, fontScale, height: 844, scale: 1 };
+  const send = jest.fn(async () => {});
+  const setSelector = jest.fn();
+  const props = {
+    message: "Hello", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "A very long model label", t: (key: string) => key,
+    remote: { draft: true, desktopOnline: true, connectionPresentation: { customerState: "connected" }, models: [], modelId: "model", thinkingLevel: "high", streaming: false, fileTransferSupported: true },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    showOffline: false, pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector,
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  try {
+    const button = (label: string) => tree!.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+    for (const label of ["chat.send", "attachment.add"]) {
+      const control = button(label);
+      expect(StyleSheet.flatten(control.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
+    }
+    const selectors = tree!.root.findAllByType(View).find(node =>
+      StyleSheet.flatten(node.props.style)?.flexBasis === "100%",
+    );
+    expect(Boolean(selectors)).toBe(stacked);
+    act(() => button("chat.model: A very long model label").props.onPress());
+    expect(setSelector).toHaveBeenCalledWith("model");
+    act(() => button("chat.send").props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally {
+    act(() => tree!.unmount());
+    mockDimensions = { width: 390, height: 844, scale: 1, fontScale: 1 };
   }
 });
 

@@ -14,7 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import type { PreviewState } from "../useFileDownload";
 import type { ActiveDownload } from "../utils";
 
@@ -50,6 +50,8 @@ export function PreviewModal({
           </Text>
           <Pressable
             accessibilityLabel={t("attachment.save")}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
             disabled={activeDownload !== null}
             onPress={() => {
               if (preview) {
@@ -64,7 +66,7 @@ export function PreviewModal({
               <Download color={colors.ink} size={21} />
             )}
           </Pressable>
-          <Pressable accessibilityLabel={t("common.close")} onPress={closePreview}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closePreview} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
             <X color={colors.ink} size={22} />
           </Pressable>
         </View>
@@ -103,7 +105,7 @@ export function PreviewModal({
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
   previewHeader: {
-    minHeight: 52,
+    minHeight: 60,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
@@ -111,7 +113,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.lineSoft,
   },
-  previewTitle: { flex: 1, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
+  iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
+  pressed: { backgroundColor: colors.surfaceSubtle },
+  previewTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
   previewImage: { flex: 1, width: "100%", height: "100%", backgroundColor: colors.surfaceSubtle },
   previewMarkdown: { padding: spacing.lg },
   previewTruncated: {

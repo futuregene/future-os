@@ -1,29 +1,29 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import type { TFunction } from "i18next";
-import { Clipboard, ScanLine } from "lucide-react-native";
+import { ArrowLeft, Clipboard, ScanLine } from "lucide-react-native";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
   AppState,
+  BackHandler,
   Keyboard,
-  KeyboardAvoidingView,
   Linking,
   Modal,
-  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableWithoutFeedback,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
+import { DialogSurface } from "../components/DialogSurface";
 import { pairingCodeFromQr } from "../remote/codec";
 import { RemoteApiError } from "../remote/connectionState";
 import { useRemote } from "../remote/RemoteContext";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 import { VERSION } from "../version.generated";
 
 function pairingErrorMessage(error: unknown, t: TFunction): string {
@@ -76,6 +76,15 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
   const [manualCode, setManualCode] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!onBack) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!scanning) onBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onBack, scanning]);
 
   useEffect(
     () => () => {
@@ -169,15 +178,26 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
   }, [doPair, manualCode, showToast, t]);
 
   return (
-    <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+    <SafeAreaView style={styles.safe}>
         <View style={styles.page}>
+          {onBack && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("common.back")}
+              disabled={scanning}
+              onPress={onBack}
+              style={({ pressed }) => [styles.backButton, pressed && styles.manualPressed]}
+            >
+              <ArrowLeft color={colors.ink} size={22} />
+            </Pressable>
+          )}
+          <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.copy}>
-            <Text style={styles.title}>{t("pairing.title")}</Text>
+            <Text accessibilityRole="header" style={styles.title}>{t("pairing.title")}</Text>
             <Text style={styles.description}>{t("pairing.description")}</Text>
           </View>
 
-          <View style={styles.scanner}>
+          <View style={[styles.scanner, !permission?.granted && styles.permissionScanner]}>
             {!permission ? (
               <ActivityIndicator color={colors.accent} />
             ) : !permission.granted ? (
@@ -197,7 +217,7 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
               <>
                 <CameraView
                   barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                  onBarcodeScanned={handleScan}
+                  onBarcodeScanned={manualOpen || scanning ? undefined : handleScan}
                   style={StyleSheet.absoluteFill}
                 />
                 <View pointerEvents="none" style={styles.scanFrame}>
@@ -217,10 +237,11 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
           )}
 
           <View style={styles.footer}>
-            {onBack && <Button disabled={scanning} label={t("chat.cancel")} onPress={onBack} variant="secondary" />}
             {onManageDesktops && <Button disabled={scanning} label={t("desktops.title")} onPress={onManageDesktops} variant="secondary" />}
             <Pressable
               accessibilityRole="button"
+              accessibilityLabel={t("pairing.manual")}
+              accessibilityState={{ disabled: scanning }}
               disabled={scanning}
               onPress={() => {
                 setManualCode("");
@@ -235,6 +256,8 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
             <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
           </View>
 
+          </ScrollView>
+
           {toastMessage && (
             <View accessibilityRole="alert" style={styles.toast}>
               <Text style={styles.toastText}>{toastMessage}</Text>
@@ -243,17 +266,16 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
 
           <Modal
             animationType="fade"
-            onRequestClose={() => setManualOpen(false)}
+            onRequestClose={() => { if (!scanning) setManualOpen(false); }}
             transparent
             visible={manualOpen}
           >
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
-              style={styles.overlay}
-            >
-              <View style={styles.dialog}>
+            <DialogSurface>
                 <Text style={styles.dialogTitle}>{t("pairing.manual")}</Text>
                 <TextInput
+                  accessibilityLabel={t("pairing.manual")}
+                  returnKeyType="go"
+                  onSubmitEditing={() => { if (!scanning) void handleManualSubmit(); }}
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoFocus
@@ -284,25 +306,25 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
                     />
                   </View>
                 </View>
-              </View>
-            </KeyboardAvoidingView>
+            </DialogSurface>
           </Modal>
         </View>
-      </TouchableWithoutFeedback>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.canvas },
-  page: { flex: 1, paddingHorizontal: spacing.xl, paddingTop: spacing.xl },
+  page: { flex: 1, width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", paddingHorizontal: layout.gutter },
+  scroll: { flexGrow: 1, paddingTop: spacing.lg, paddingBottom: spacing.lg },
+  backButton: { width: layout.touchTarget, height: layout.touchTarget, marginTop: spacing.sm, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   copy: { marginBottom: spacing.xl },
   title: { color: colors.inkStrong, fontSize: 28, fontWeight: "700", letterSpacing: -0.5 },
   description: { color: colors.inkSoft, fontSize: 16, lineHeight: 24, marginTop: spacing.md },
   scanner: {
-    flex: 1,
-    maxHeight: 430,
-    minHeight: 300,
+    width: "100%",
+    minHeight: 280,
+    aspectRatio: 1,
     overflow: "hidden",
     borderRadius: radius.lg,
     borderWidth: 1,
@@ -311,6 +333,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  permissionScanner: { aspectRatio: undefined },
   permission: { padding: spacing.xl, alignItems: "center", gap: spacing.lg },
   permissionText: { color: colors.inkSoft, fontSize: 15, lineHeight: 22, textAlign: "center" },
   scanFrame: {
@@ -321,14 +344,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(15, 23, 42, 0.16)",
   },
   scanBox: {
-    width: 224,
-    height: 224,
+    width: "68%",
+    maxWidth: 280,
+    aspectRatio: 1,
     borderWidth: 3,
     borderColor: colors.surface,
     borderRadius: radius.lg,
   },
   scanHint: {
     marginTop: spacing.lg,
+    paddingHorizontal: spacing.md,
+    textAlign: "center",
     color: colors.surface,
     fontSize: 15,
     fontWeight: "600",
@@ -336,6 +362,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 4,
   },
   manualButton: {
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -348,8 +375,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   manualPressed: { backgroundColor: colors.surfaceSubtle },
-  manualLabel: { color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
-  footer: { marginTop: "auto" },
+  manualLabel: { flexShrink: 1, textAlign: "center", color: colors.inkSoft, fontSize: 15, fontWeight: "600" },
+  footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.sm },
   version: {
     color: colors.inkMuted,
     fontSize: 12,
@@ -384,21 +411,6 @@ const styles = StyleSheet.create({
     borderColor: colors.dangerLine,
   },
   revokedText: { color: colors.danger, fontSize: 14, fontWeight: "600", textAlign: "center" },
-  overlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: colors.overlay,
-  },
-  dialog: {
-    width: "100%",
-    maxWidth: 420,
-    padding: spacing.xl,
-    gap: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
   dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   codeInput: {
     minHeight: 48,
