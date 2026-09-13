@@ -34,11 +34,11 @@ import type { RemoteSession } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { catalogRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
+import { useSessionListScroll } from "./useSessionListScroll";
 
 // Keep navigation state when the screen unmounts to open a conversation.
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
-const offsets = { chat: 0, workspace: 0 };
 
 export function SessionList({
   tab,
@@ -55,6 +55,9 @@ export function SessionList({
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
+  const { listRef, initialOffset, onLayout, onContentSizeChange, onScrollBeginDrag, onScroll } =
+    useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
   const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
   const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
@@ -500,14 +503,16 @@ export function SessionList({
         )}
       </View>
       <FlatList
-        key={query.trim() ? "search" : tab}
+        key={query.trim() ? `${listKey}:search` : listKey}
         data={rows}
         renderItem={renderRow}
         keyExtractor={row => row.key}
-        contentOffset={{ x: 0, y: query.trim() ? 0 : offsets[tab] }}
-        onScroll={event => {
-          if (!query.trim()) offsets[tab] = event.nativeEvent.contentOffset.y;
-        }}
+        ref={listRef}
+        contentOffset={initialOffset}
+        onLayout={onLayout}
+        onContentSizeChange={onContentSizeChange}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScroll={onScroll}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"

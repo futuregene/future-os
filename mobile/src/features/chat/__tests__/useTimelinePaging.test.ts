@@ -36,7 +36,7 @@ describe("paging transaction", () => {
   };
   const collide = () =>
     act(() => {
-      current.onScrollBeginDrag();
+      current.onScrollBeginDrag(scrollEvent(0));
       current.onScroll(scrollEvent(1400));
     });
   beforeEach(() => {
@@ -75,7 +75,7 @@ describe("paging transaction", () => {
 
   test("a deliberate gesture prefetches at most one page within a bounded look-ahead", () => {
     act(() => {
-      current.onScrollBeginDrag();
+      current.onScrollBeginDrag(scrollEvent(0));
       current.onScroll(scrollEvent(799));
     });
     expect(request).not.toHaveBeenCalled();
@@ -84,6 +84,18 @@ describe("paging transaction", () => {
       current.onScroll(scrollEvent(1000));
       current.onScroll(scrollEvent(1400));
     });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  test("a drag at a clamped edge starts paging without another scroll event", () => {
+    act(() => current.onScrollBeginDrag(scrollEvent(1400)));
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  test("a short page can be explicitly loaded without any native scroll events", () => {
+    act(() => current.loadOlder());
+    expect(request).toHaveBeenCalledTimes(1);
+    act(() => current.loadOlder());
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -156,7 +168,7 @@ describe("paging transaction", () => {
     expect(request).toHaveBeenCalledTimes(1);
     // Another deliberate drag at the clamped edge can load again.
     act(() => {
-      current.onScrollBeginDrag();
+      current.onScrollBeginDrag(scrollEvent(0));
       current.onScrollEndDrag(scrollEvent(1400));
     });
     expect(request).toHaveBeenCalledTimes(2);
