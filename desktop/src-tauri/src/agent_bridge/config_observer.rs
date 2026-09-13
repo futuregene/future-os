@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+#[cfg(feature = "gui")]
 use tauri::Emitter;
 
 use super::connect_agent;
@@ -17,7 +18,7 @@ pub fn spawn_provider_config_observer() {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    tauri::async_runtime::spawn(run());
+    crate::runtime::spawn(run());
 }
 
 async fn run() {
@@ -87,6 +88,7 @@ async fn observe_once(
         }
         *last_revision = Some(revision);
         let data = payload.to_string();
+        #[cfg(feature = "gui")]
         if let Some(handle) = crate::APP_HANDLE.get() {
             let _ = handle.emit("provider-config-changed", &payload);
         }

@@ -23,7 +23,7 @@ pub fn spawn_session_events_observer() {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    tauri::async_runtime::spawn(run());
+    crate::runtime::spawn(run());
 }
 
 async fn run() {

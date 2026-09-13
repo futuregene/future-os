@@ -8,6 +8,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-env=FUTURE_VERSION={version}");
     println!("cargo:rerun-if-env-changed=FUTURE_VERSION");
 
+    #[cfg(feature = "gui")]
+    build_gui()?;
+
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+fn build_gui() -> Result<(), Box<dyn std::error::Error>> {
     ensure_placeholder_sidecars_for_non_release_builds()?;
     // Tauri embeds its default common-controls v6 manifest only into the bin
     // (via `resource.lib` + `rustc-link-arg-bins`), which leaves `cargo test`
@@ -34,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) before any test runs. We therefore
 /// disable Tauri's bin-only manifest above and provide the same dependency here
 /// for all targets (bin, lib, lib-test, integration tests) with no duplication.
+#[cfg(feature = "gui")]
 fn embed_common_controls_manifest() -> Result<(), Box<dyn std::error::Error>> {
     let target = std::env::var("TARGET")?;
     if !target.contains("windows") {
@@ -66,6 +75,7 @@ fn embed_common_controls_manifest() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 fn ensure_placeholder_sidecars_for_non_release_builds() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("PROFILE").ok().as_deref() == Some("release") {
         return Ok(());
