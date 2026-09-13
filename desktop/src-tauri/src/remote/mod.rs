@@ -4762,9 +4762,25 @@ mod runtime_tests {
             SUPERVISOR.state.lock().unwrap().is_none(),
             "suspend stopped the bridge"
         );
-        let offline =
-            await_publish(&mut tap, "p.pair_suspend.presence", Duration::from_secs(5)).await;
-        assert_eq!(offline.json()["disconnected"], json!(true));
+        // stop_runtime also publishes a generic offline packet. Its spawned
+        // send can win the race against the explicit system-sleep notice.
+        // Require the actual notice rather than assuming broker arrival order.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let offline =
+                    await_publish(&mut tap, "p.pair_suspend.presence", Duration::from_secs(5))
+                        .await;
+                let data = offline.json();
+                if data["disconnected"] == true {
+                    assert_eq!(data["online"], false);
+                    assert_eq!(data["reason"], "system_sleep");
+                    break;
+                }
+                assert_eq!(data["online"], false);
+            }
+        })
+        .await
+        .expect("system-sleep disconnect notice");
 
         // Not requested to run: suspend (and its disconnect notice) is a no-op.
         SUPERVISOR.start_requested.store(false, Ordering::Release);
