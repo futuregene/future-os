@@ -46,7 +46,7 @@
 
 Ctrl+C 在登录、启动、配对和运行阶段均可取消；Unix 另处理 SIGTERM/SIGHUP。退出先使远程入口失效，再有界清理自己启动的 Agent，外部 Agent 保持运行，已保存的登录/配对不删除。运行时检测本地账号/平台变化后关闭入口；平台明确拒绝续期授权时停止，不将其当网络错误无限重试。SSH 断开不承诺继续运行，长期运行由用户显式选择 tmux 或服务托管。
 
-默认构建同时支持 GUI 与无头入口；`cargo build --release --no-default-features` 提供不链接 Tauri/GTK/WebKit 的服务器构建（仍需匹配的 `future` CLI 提供 Agent）。这不是另一套 Remote SDK 或独立的远程协议实现。手机、平台环境和版本必须匹配。运行说明见 [手机远程指南](../../docs/wiki/zh/Remote.md)。
+默认构建同时支持 GUI 与无头入口；`cargo build --release --no-default-features` 提供不链接 Tauri/GTK/WebKit 的服务器构建（仍需匹配的 `future` CLI 提供 Agent）。这不是另一套 Remote SDK 或独立的远程协议实现。手机、平台环境和版本必须匹配。运行说明见 [Desktop 无头模式使用指南](../../docs/desktop-headless.zh-CN.md)（[English](../../docs/desktop-headless.md)）。
 
 ## 2. 现有接线、协议与信任边界
 

@@ -21,35 +21,13 @@ code or endpoint.
 
 ## Headless Desktop over SSH
 
-Run the Desktop executable directly in your terminal (`futureos.exe` on Windows):
+Run `futureos --headless` to open phone remote access in the foreground without
+starting the desktop UI. When needed, it prints a browser login QR followed by a
+pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
+are reused. Ctrl+C closes the entry and exits; the process does not daemonize.
 
-```bash
-./futureos --headless
-```
-
-No `--pair --qr` is needed: QR codes and text links appear when required. The process stays in the foreground; it does not daemonize.
-
-1. **Not signed in to the platform:** the terminal shows a login QR, authorization URL and user code. Scan with your phone camera/browser, sign in to Future OS and authorize the server. No browser or inbound callback port is needed on the server.
-2. **No phone pairing:** once the entry is ready, a second QR appears. Scan this one with **Add device / Scan in the Future OS app**, or paste the complete pairing link into the app.
-3. **Valid login and pairing already saved:** reuse them and connect with the existing phone. Startup does not generate a replacement invitation. Authorization failures and expired invitations are reported explicitly.
-
-Use `--no-qr` for links only; narrow terminals also fall back to links. `--re-pair` explicitly replaces the saved phone pairing; reserve it for changing phones or deliberately re-pairing, not ordinary network outages.
-
-**Ctrl+C closes remote access and exits**, preserving login and completed pairing. An Agent started by this Desktop is stopped too, interrupting its active conversations; an independently running Agent is left alone. Unix also handles SIGTERM/SIGHUP. Exiting is not unpairing.
-
-GUI and headless Desktop cannot own the same data directory concurrently. Initial login/pairing requires an interactive terminal; authorization links are not written to redirected logs. If you later use another user or systemd, keep the same account, HOME and credentials directory. Run as an ordinary user, not root. Continuity after SSH disconnect is not promised; explicitly use tmux or a service manager if you need it.
-
-### Server build without graphical dependencies
-
-The default Desktop build supports `--headless` but still links GUI system libraries. For a Linux server without GTK/WebKit, build the same backend without the GUI feature, from the repository root:
-
-```bash
-cargo build --release --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
-```
-
-The executable is `desktop/src-tauri/target/release/futureos` (or under your `CARGO_TARGET_DIR`). Place a matching `future` CLI beside it or on PATH so Desktop can start the local Agent, or run `future agent` separately first. A missing Agent is an error, not permission to bypass platform login. Build channels and mobile production/test environments must still match; `--release` optimization alone does not determine the platform channel.
-
-This build needs no window, WebView or X11/Wayland session. It is not a separate remote service product: it uses Desktop's storage, approvals and mobile protocol.
+See the [Headless Desktop guide](../../desktop-headless.md) for complete startup
+steps, options, GUI-free server builds, Agent lifetime and troubleshooting.
 
 ## What you can do
 
