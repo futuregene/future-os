@@ -1093,7 +1093,7 @@ mod bridge_tests {
     #![allow(clippy::await_holding_lock)]
     use super::super::test_support::{
         await_publish, ensure_mock_agent, init_store, jwt, mock_agent_lock, nats_connect,
-        nats_connect_once, now_secs, unique, FakeNats, HomeGuard,
+        nats_connect_once, now_secs, unique, wait_until, FakeNats, HomeGuard,
     };
     use super::*;
     use crate::remote_host::files as transfer;
@@ -2907,11 +2907,12 @@ mod bridge_tests {
         // A critical subscription is generation-local. The loop exits so the
         // single runtime supervisor can apply its 10-minute recovery budget.
         nats.kill();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            handle.is_finished(),
-            "supervisor must observe the dead task"
-        );
+        wait_until(
+            "supervisor must observe the dead task",
+            Duration::from_secs(5),
+            || handle.is_finished(),
+        )
+        .await;
     }
 
     #[tokio::test]

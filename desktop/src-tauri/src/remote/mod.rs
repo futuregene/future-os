@@ -2890,8 +2890,8 @@ mod contract_tests {
 #[cfg(test)]
 mod runtime_tests {
     use super::test_support::{
-        await_publish, init_store, jwt, nats_connect, nats_connect_once, now_secs, sign_in, unique,
-        FakeNats, HomeGuard, MockPlatform,
+        await_publish, await_publish_matching, init_store, jwt, nats_connect, nats_connect_once,
+        now_secs, sign_in, unique, FakeNats, HomeGuard, MockPlatform,
     };
     use super::*;
     use serde_json::json;
@@ -3581,11 +3581,14 @@ mod runtime_tests {
         assert_eq!(started.reason, None);
 
         let mut tap = nats.tap();
-        // The presence heartbeat and both catalog snapshots flow.
-        let presence = await_publish(
+        // The presence heartbeat and both catalog snapshots flow. Match on the
+        // payload: `SUPERVISOR.state` is process-global and tests run in
+        // parallel, so a concurrent test can publish a notice to this subject.
+        let presence = await_publish_matching(
             &mut tap,
             &format!("p.{}.presence", started.pair_id),
             Duration::from_secs(5),
+            |published| published.json()["online"] == json!(true),
         )
         .await;
         assert_eq!(presence.json()["online"], json!(true));
@@ -3641,12 +3644,15 @@ mod runtime_tests {
         let polled = status();
         assert!(polled.pairing_code.is_some());
 
-        // stop() publishes offline presence and clears the state.
+        // stop() publishes offline presence and clears the state. Match on the
+        // payload: the heartbeat publishes `online: true` to this same subject,
+        // so a subject-only wait can return that heartbeat instead.
         stop();
-        let offline = await_publish(
+        let offline = await_publish_matching(
             &mut tap,
             &format!("p.{}.presence", started.pair_id),
             Duration::from_secs(5),
+            |published| published.json()["online"] == json!(false),
         )
         .await;
         assert_eq!(offline.json()["online"], json!(false));
@@ -4236,10 +4242,11 @@ mod runtime_tests {
         let mut tap = nats.tap();
         let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_hb".into());
 
-        let presence = await_publish(
+        let presence = await_publish_matching(
             &mut tap,
             &format!("p.{pair}.presence"),
             Duration::from_secs(5),
+            |published| published.json()["online"] == json!(true),
         )
         .await;
         assert_eq!(presence.json()["online"], json!(true));
@@ -4620,8 +4627,15 @@ mod runtime_tests {
             SUPERVISOR.state.lock().unwrap().is_none(),
             "suspend stopped the bridge"
         );
-        let offline =
-            await_publish(&mut tap, "p.pair_suspend.presence", Duration::from_secs(5)).await;
+        let offline = await_publish_matching(
+            &mut tap,
+            "p.pair_suspend.presence",
+            Duration::from_secs(5),
+            // The disconnect notice specifically: `SUPERVISOR.state` is shared,
+            // so a parallel test can publish a differently-shaped notice here.
+            |published| published.json()["disconnected"] == json!(true),
+        )
+        .await;
         assert_eq!(offline.json()["disconnected"], json!(true));
 
         // Not requested to run: suspend (and its disconnect notice) is a no-op.
@@ -4942,10 +4956,11 @@ mod runtime_tests {
 
         notify_mobile_unpair().await;
 
-        let published = await_publish(
+        let published = await_publish_matching(
             &mut tap,
             "p.pair_unpair_notice.presence",
             Duration::from_secs(5),
+            |published| published.json()["unpaired"] == json!(true),
         )
         .await;
         let body = published.json();

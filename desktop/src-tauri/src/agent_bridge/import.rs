@@ -841,24 +841,32 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let saved = std::env::var("HOME").ok();
-        std::env::set_var("HOME", "/Users/fake-home");
+        // The fake home must be platform-absolute: `home_dir_from` rejects a
+        // drive-less `/Users/...` on Windows as non-absolute and falls back to
+        // the real USERPROFILE, which would silently defeat the override.
+        let fake_home = std::env::temp_dir()
+            .join("futureos-fake-home")
+            .to_string_lossy()
+            .replace('\\', "/");
+        std::env::set_var("HOME", &fake_home);
 
         assert!(!is_desktop_chat_cwd(""));
         assert!(is_desktop_chat_cwd("~/.future/workspaces/chat/abc"));
         assert!(!is_desktop_chat_cwd("/tmp/.future/workspaces/chat/abc"));
         // Expanded home (forward slashes) matches.
-        assert!(is_desktop_chat_cwd(
-            "/Users/fake-home/.future/workspaces/chat/abc"
-        ));
+        assert!(is_desktop_chat_cwd(&format!(
+            "{fake_home}/.future/workspaces/chat/abc"
+        )));
         // Windows separators normalize to the same suffix.
-        assert!(is_desktop_chat_cwd(
-            r"/Users/fake-home\.future\workspaces\chat\abc"
-        ));
+        assert!(is_desktop_chat_cwd(&format!(
+            "{}/.future/workspaces/chat/abc",
+            fake_home.replace('/', "\\")
+        )));
         // Expanded home under a NON-chat directory → falls through to false
         // (covers the `if let Some(home)` close brace).
-        assert!(!is_desktop_chat_cwd(
-            "/Users/fake-home/.future/workspaces/other/abc"
-        ));
+        assert!(!is_desktop_chat_cwd(&format!(
+            "{fake_home}/.future/workspaces/other/abc"
+        )));
 
         super::super::test_support::restore_home(saved);
     }

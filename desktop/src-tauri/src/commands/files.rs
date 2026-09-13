@@ -11,9 +11,14 @@ use std::{
 /// Resolve `path` to an absolute, symlink/`..`-collapsed form even when the
 /// target doesn't exist yet (e.g. an export destination): canonicalize the
 /// nearest existing ancestor, then re-append the missing tail.
+///
+/// The result is normalized with [`ordinary_path`] because
+/// `Path::canonicalize` returns the Windows extended-length spelling
+/// (`\\?\D:\...`), and this value is shown to the user and sent to the OS
+/// opener.
 fn best_effort_canonical(path: &Path) -> PathBuf {
     if let Ok(canonical) = path.canonicalize() {
-        return canonical;
+        return ordinary_path(&canonical);
     }
     let mut existing = path;
     let mut tail: Vec<OsString> = Vec::new();
@@ -28,11 +33,28 @@ fn best_effort_canonical(path: &Path) -> PathBuf {
     }
     let mut base = existing
         .canonicalize()
+        .map(|canonical| ordinary_path(&canonical))
         .unwrap_or_else(|_| existing.to_path_buf());
     for name in tail.into_iter().rev() {
         base.push(name);
     }
     base
+}
+
+/// Strip the Windows extended-length prefix (`\\?\D:\...` → `D:\...`,
+/// `\\?\UNC\server\share` → `\\server\share`) that `Path::canonicalize`
+/// returns. These paths reach the webview and the OS opener, which should see
+/// the spelling every Windows tool prints. Purely textual, so it is a no-op for
+/// POSIX paths and on the Windows paths that were never canonicalized.
+fn ordinary_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
 }
 
 /// Reject file access to FutureOS's own credential files. These commands are
@@ -66,7 +88,14 @@ pub(crate) fn ensure_path_allowed(path: &Path) -> Result<(), crate::AppError> {
 /// (`~/.future/agent/` or `~/.future/agent-app/`), `remote_pairing.json` at the
 /// `~/.future` root, or `channels/config.json`. Scoped so a user's own file that
 /// merely shares the name (e.g. a workspace `models.json`) stays readable.
+///
+/// `future_dir` may arrive in either spelling: the comparisons normalize it with
+/// [`ordinary_path`], because a Windows `canonicalize` base carries `\\?\` while
+/// `resolved` (via [`best_effort_canonical`]) does not — a mismatch there would
+/// silently stop blocking the credentials.
 fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
+    let future_dir = ordinary_path(future_dir);
+    let future_dir = future_dir.as_path();
     let name = resolved
         .file_name()
         .and_then(|name| name.to_str())
@@ -81,7 +110,7 @@ fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
     if name == "config.json" {
         let channels_dir = future_dir.join("channels");
         let channels_dir = channels_dir.canonicalize().unwrap_or(channels_dir);
-        if resolved.parent() == Some(channels_dir.as_path()) {
+        if resolved.parent() == Some(ordinary_path(&channels_dir).as_path()) {
             return true;
         }
     }
@@ -92,7 +121,7 @@ fn is_protected_credential(future_dir: &Path, resolved: &Path) -> bool {
     ["agent", "agent-app"].iter().any(|dir| {
         let cred_dir = future_dir.join(dir);
         let cred_dir = cred_dir.canonicalize().unwrap_or(cred_dir);
-        resolved.parent() == Some(cred_dir.as_path())
+        resolved.parent() == Some(ordinary_path(&cred_dir).as_path())
     })
 }
 
@@ -883,10 +912,23 @@ mod tests {
         let missing_tail = root.join("a/c/d.txt");
         let resolved = best_effort_canonical(&missing_tail);
         assert!(resolved.ends_with("a/c/d.txt"));
+        // Windows `canonicalize` returns the `\\?\` extended-length spelling;
+        // the webview and the OS opener must never see it.
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
+        assert!(!existing.to_string_lossy().starts_with(r"\\?\"));
 
-        // A path whose ancestor never exists falls back to the input verbatim.
+        // A ghost path still climbs to an existing filesystem root (`/` on
+        // POSIX, the current drive's root on Windows), so it resolves rather
+        // than falling back. The no-existing-ancestor arm is covered by
+        // `canonical_falls_back_for_a_path_with_no_existing_ancestor`.
         let ghost = Path::new("/definitely/not/here/x/y/z.txt");
-        assert_eq!(best_effort_canonical(ghost), ghost);
+        let ghost_resolved = best_effort_canonical(ghost);
+        assert!(ghost_resolved.ends_with("x/y/z.txt"));
+        assert!(!ghost_resolved.to_string_lossy().starts_with(r"\\?\"));
+        // On a POSIX host the root is the nearest existing ancestor, so the
+        // input is reconstructed character-for-character.
+        #[cfg(not(windows))]
+        assert_eq!(ghost_resolved, ghost);
     }
 
     #[test]

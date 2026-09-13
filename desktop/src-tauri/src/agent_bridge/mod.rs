@@ -1578,10 +1578,13 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
     // Determine workspace type.
     let is_chat = {
         let cwd_normalized = cwd.replace('\\', "/");
-        let chat_dir = format!(
-            "{}/.future/workspaces/chat/",
-            crate::home_dir().unwrap_or_default()
-        );
+        // Normalize the home separators too: `cwd_normalized` is forward-slash
+        // but a Windows home is not, and comparing the two spellings would
+        // route a chat cwd into the project-workspace branch (where the
+        // directory has to already exist). See `is_desktop_chat_cwd`, which
+        // normalizes the same way.
+        let home = crate::home_dir().unwrap_or_default().replace('\\', "/");
+        let chat_dir = format!("{}/.future/workspaces/chat/", home.trim_end_matches('/'));
         cwd_normalized.starts_with(&chat_dir) || cwd_normalized == chat_dir.trim_end_matches('/')
     };
 
