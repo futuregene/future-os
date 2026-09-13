@@ -1,15 +1,7 @@
-import { IS_RELEASE } from "../version.generated";
-
-export const DEVELOPMENT_PLATFORM_URL = "https://test.future-os.cn";
-export const PRODUCTION_PLATFORM_URL = "https://future-os.cn";
-
-// Channel policy mirrors the desktop (desktop/src-tauri/src/build_info.rs +
-// future_platform.rs): a release build (plain `X.Y.Z`) is production-locked,
-// every other build (`0.0.2-<hash>…`) targets the test environment. The flag is
-// derived from the version string by scripts/version.mjs — NOT from `__DEV__` —
-// so a local Gradle release build is still a dev-channel package and must reach
-// the test host (the production host has remote control disabled).
-export const PLATFORM_URL = IS_RELEASE ? PRODUCTION_PLATFORM_URL : DEVELOPMENT_PLATFORM_URL;
+// The invitation selects the platform for each desktop, independently of the
+// APK's release channel. Keep a first-party allowlist: scanning a QR must not
+// make the app send pairing requests to arbitrary servers.
+const TRUSTED_PLATFORM_ORIGINS = ["https://future-os.cn", "https://test.future-os.cn"];
 
 /**
  * NATS WebSocket scheme of an endpoint URL — `wss`, `ws`, or unrecognized.
@@ -27,11 +19,13 @@ export function natsWsUrlScheme(url: string): "wss" | "ws" | "other" {
 export function isExpectedClaimUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    const expected = new URL(PLATFORM_URL);
     return (
-      parsed.protocol === "https:" &&
-      parsed.host === expected.host &&
-      parsed.pathname.endsWith("/client/v1/remote/pair/claim")
+      TRUSTED_PLATFORM_ORIGINS.includes(parsed.origin) &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.pathname === "/client/v1/remote/pair/claim" &&
+      parsed.search === "" &&
+      parsed.hash === ""
     );
   } catch {
     return false;

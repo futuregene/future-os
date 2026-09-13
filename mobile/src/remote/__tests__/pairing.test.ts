@@ -8,28 +8,20 @@ import {
   serverRevoke,
 } from "../pairing";
 import type { RemoteCredentials } from "../types";
-import { isExpectedClaimUrl, natsWsUrlScheme } from "../../config/environment";
 import { loadDeviceId, saveDeviceId } from "../storage";
 
 jest.mock("expo-device", () => ({ __esModule: true, modelName: "iPhone 15" }));
 jest.mock("react-native", () => ({ __esModule: true, Platform: { OS: "ios" } }));
-jest.mock("../../config/environment", () => ({
-  __esModule: true,
-  isExpectedClaimUrl: jest.fn(),
-  natsWsUrlScheme: jest.fn(),
-}));
 jest.mock("../storage", () => ({
   __esModule: true,
   loadDeviceId: jest.fn(),
   saveDeviceId: jest.fn(),
 }));
 
-const mockedIsExpectedClaimUrl = isExpectedClaimUrl as jest.Mock;
-const mockedNatsWsUrlScheme = natsWsUrlScheme as jest.Mock;
 const mockedLoadDeviceId = loadDeviceId as jest.Mock;
 const mockedSaveDeviceId = saveDeviceId as jest.Mock;
 
-const CLAIM_URL = "https://example.com/client/v1/remote/pair/claim";
+const CLAIM_URL = "https://future-os.cn/client/v1/remote/pair/claim";
 
 function base64Url(value: unknown): string {
   return globalThis
@@ -39,12 +31,12 @@ function base64Url(value: unknown): string {
     .replace(/=+$/, "");
 }
 
-function pairingCode(exp = 1_800_000_000): string {
-  return base64Url({ v: 2, nonce: "nonce_1", claim_url: CLAIM_URL, exp });
+function pairingCode(exp = 1_800_000_000, claimUrl = CLAIM_URL): string {
+  return base64Url({ v: 2, nonce: "nonce_1", claim_url: claimUrl, exp });
 }
 
-function invitation(): string {
-  return `futureos://remote/pair?v=2&code=${pairingCode()}&desktopId=desktop_1&desktopKey=UABC&secureKey=${"A".repeat(43)}&secret=${"A".repeat(43)}`;
+function invitation(claimUrl = CLAIM_URL): string {
+  return `futureos://remote/pair?v=2&code=${pairingCode(undefined, claimUrl)}&desktopId=desktop_1&desktopKey=UABC&secureKey=${"A".repeat(43)}&secret=${"A".repeat(43)}`;
 }
 
 function jwt(exp = 1_800_000_000): string {
@@ -82,8 +74,6 @@ function lastFetchBody(): Record<string, unknown> {
 describe("claimPairingCode", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedIsExpectedClaimUrl.mockReturnValue(true);
-    mockedNatsWsUrlScheme.mockReturnValue("wss");
     mockedLoadDeviceId.mockResolvedValue(null);
     globalThis.fetch = jest.fn().mockResolvedValue(
       jsonResponse({
@@ -102,7 +92,7 @@ describe("claimPairingCode", () => {
       deviceId: expect.stringMatching(/^dev_[0-9a-f]{32}$/),
       refreshToken: "refresh_1",
       natsWsUrl: "wss://nats.example",
-      tokenUrl: "https://example.com/client/v1/remote/auth/token",
+      tokenUrl: "https://future-os.cn/client/v1/remote/auth/token",
       expectedDesktopId: "desktop_1",
       expectedDesktopPublicKey: "UABC",
     });
@@ -137,13 +127,26 @@ describe("claimPairingCode", () => {
     await expect(claimPairingCode(bad)).rejects.toThrow("invalid_pairing_code");
   });
 
-  test("rejects a claim URL from an unexpected host", async () => {
-    mockedIsExpectedClaimUrl.mockReturnValue(false);
-    await expect(claimPairingCode(invitation())).rejects.toThrow("unexpected_pairing_host");
+  test.each(["future-os.cn", "test.future-os.cn"])("uses the QR's %s platform for claim, refresh and revoke", async host => {
+    const platform = `https://${host}/client/v1/remote`;
+    const credentials = await claimPairingCode(invitation(`${platform}/pair/claim`));
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(`${platform}/pair/claim`, expect.anything());
+    expect(credentials.tokenUrl).toBe(`${platform}/auth/token`);
+    await refreshCredentials(credentials);
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(`${platform}/auth/token`, expect.anything());
+    await serverRevoke(credentials);
+    expect(globalThis.fetch).toHaveBeenLastCalledWith(`${platform}/pair/revoke`, expect.anything());
+  });
+
+  test("rejects a claim URL from an untrusted host before making a request", async () => {
+    await expect(claimPairingCode(invitation("https://example.com/client/v1/remote/pair/claim")))
+      .rejects.toThrow("unexpected_pairing_host");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockedSaveDeviceId).not.toHaveBeenCalled();
   });
 
   test("rejects a non-wss NATS endpoint", async () => {
-    mockedNatsWsUrlScheme.mockReturnValue("ws");
+    globalThis.fetch = jest.fn().mockResolvedValue(jsonResponse({ nats_ws_url: "ws://nats.example" }));
     await expect(claimPairingCode(invitation())).rejects.toThrow("nats_ws_not_tls");
   });
 
@@ -163,7 +166,6 @@ describe("claimPairingCode", () => {
 describe("refreshCredentials", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedNatsWsUrlScheme.mockReturnValue("wss");
   });
 
   test("rotates the JWT and NATS endpoint", async () => {
@@ -189,7 +191,6 @@ describe("refreshCredentials", () => {
   });
 
   test("rejects a non-wss refreshed endpoint", async () => {
-    mockedNatsWsUrlScheme.mockReturnValue("ws");
     globalThis.fetch = jest
       .fn()
       .mockResolvedValue(jsonResponse({ user_jwt: jwt(), nats_ws_url: "ws://nats.example" }));
@@ -200,7 +201,6 @@ describe("refreshCredentials", () => {
 describe("ensureFreshCredentials", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockedNatsWsUrlScheme.mockReturnValue("wss");
   });
 
   test("fails loudly on a corrupt JWT instead of looping a refresh", async () => {
