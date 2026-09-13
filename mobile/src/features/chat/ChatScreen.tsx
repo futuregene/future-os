@@ -343,6 +343,25 @@ export function ChatScreen() {
               keyExtractor={item => item.id}
               ListHeaderComponent={invertedTranscriptItems.length > 0 ? TimelineFlexSpacer : null}
               ListHeaderComponentStyle={styles.timelineFlexSpacer}
+              // The footer is the visual top of this inverted list. Keep an
+              // explicit entry point even when a byte-limited page is too short
+              // to generate native scroll/drag events (notably on Android).
+              ListFooterComponent={
+                remote.canLoadOlderTimeline || showLoadOlderHint ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={pagingActive || remote.loadingOlderTimeline}
+                    accessibilityState={{ busy: pagingActive || remote.loadingOlderTimeline, disabled: pagingActive || remote.loadingOlderTimeline }}
+                    onPress={loadOlder}
+                    style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
+                  >
+                    <History color={colors.inkMuted} size={14} />
+                    <Text style={styles.loadOlderLabel}>
+                      {pagingFailed ? t("common.retry") : t("chat.loadOlder")}
+                    </Text>
+                  </Pressable>
+                ) : null
+              }
               ListEmptyComponent={
                 remote.timelineError ? (
                   <View style={styles.loadingState}>
@@ -379,9 +398,9 @@ export function ChatScreen() {
                 scroll.onLayout();
                 onListLayout();
               }}
-              onScrollBeginDrag={() => {
+              onScrollBeginDrag={event => {
                 scroll.onScrollBeginDrag();
-                onScrollBeginDrag();
+                onScrollBeginDrag(event);
               }}
               onMomentumScrollEnd={onMomentumScrollEnd}
               onScroll={onPagedScroll}
@@ -395,21 +414,6 @@ export function ChatScreen() {
               windowSize={7}
               ItemSeparatorComponent={TimelineItemGap}
             />
-
-            {showLoadOlderHint && (
-              <Pressable
-                accessibilityRole="button"
-                disabled={pagingActive}
-                accessibilityState={{ busy: pagingActive, disabled: pagingActive }}
-                onPress={loadOlder}
-                style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
-              >
-                <History color={colors.inkMuted} size={14} />
-                <Text style={styles.loadOlderLabel}>
-                  {pagingFailed ? t("common.retry") : t("chat.loadOlder")}
-                </Text>
-              </Pressable>
-            )}
 
             <ComposerDock
               message={message}
@@ -545,10 +549,8 @@ const styles = StyleSheet.create({
   itemGap: { height: spacing.md },
   loadOlder: {
     minHeight: layout.touchTarget,
-    position: "absolute",
-    top: spacing.sm,
+    marginVertical: spacing.sm,
     alignSelf: "center",
-    zIndex: 2,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
