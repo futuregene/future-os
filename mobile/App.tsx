@@ -5,6 +5,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ChatScreen } from "./src/features/chat/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
+import { DesktopsScreen } from "./src/screens/DesktopsScreen";
 import { RemoteProvider, useRemoteControls as useRemote } from "./src/remote/RemoteContext";
 import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
 import { useShareIntake } from "./src/share/useShareIntake";
@@ -40,6 +41,8 @@ function EnterTransition({ fromRight, children }: PropsWithChildren<{ fromRight:
 
 function AppContent() {
   const remote = useRemote();
+  const [screen, setScreen] = useState<"main" | "desktops" | "pair">("main");
+  const showDesktops = () => setScreen("desktops");
   useUpdateReminder();
   useShareIntake();
   // A share stages its payload in the composer draft; when the app is already
@@ -54,23 +57,25 @@ function AppContent() {
       </View>
     );
   }
+  if (screen === "desktops") return <DesktopsScreen onBack={() => setScreen("main")} onAdd={() => setScreen("pair")} />;
+  if (screen === "pair") return <PairingScreen onBack={showDesktops} onPaired={() => setScreen("main")} />;
   // A revoked device (M1) has no usable credentials even though they're still
   // stored — route to the pairing screen so the user can re-pair.
   if (remote.phase === "revoked") {
     return (
       <EnterTransition fromRight={false}>
-        <PairingScreen revoked />
+        <PairingScreen revoked onManageDesktops={showDesktops} />
       </EnterTransition>
     );
   }
-  if (!remote.credentials) return <PairingScreen />;
+  if (!remote.credentials) return <PairingScreen onManageDesktops={remote.desktops.length ? showDesktops : undefined} />;
   const inChat = Boolean(remote.selectedSessionId || remote.draft);
   return (
     <EnterTransition
-      key={inChat ? `chat:${shareRevision}` : "sessions"}
+      key={`${remote.credentials.pairId}:${inChat ? `chat:${shareRevision}` : "sessions"}`}
       fromRight={inChat}
     >
-      {inChat ? <ChatScreen /> : <SessionsScreen />}
+      {inChat ? <ChatScreen /> : <SessionsScreen onManageDesktops={showDesktops} />}
     </EnterTransition>
   );
 }

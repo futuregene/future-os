@@ -57,62 +57,146 @@ async function deleteCredentialFields(): Promise<void> {
   );
 }
 
-export async function loadCredentials(): Promise<RemoteCredentials | null> {
+async function loadLegacyCredentials(): Promise<RemoteCredentials | null> {
+  const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
+  if (commit === "cleared") return null;
+  if (commit !== null && commit !== "a" && commit !== "b")
+    throw new Error("invalid_credential_commit");
+  const entries = await Promise.all(
+    Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
+      field,
+      await SecureStore.getItemAsync(commit ? key + "." + commit : key, secureOptions),
+    ]),
+  );
+  if (entries.every(([, value]) => value == null)) return null;
+  const deviceId = await loadDeviceId();
+  if (entries.some(([, value]) => !value) || !deviceId) {
+    await deleteCredentialFields();
+    return null;
+  }
+  return {
+    ...Object.fromEntries(entries),
+    deviceId,
+  } as unknown as RemoteCredentials;
+}
+
+export interface PairedDesktop {
+  desktopId: string;
+  pairId: string;
+}
+
+interface DesktopEntry extends PairedDesktop {
+  slot: "a" | "b";
+}
+interface DesktopRegistry {
+  activeDesktopId: string | null;
+  desktops: DesktopEntry[];
+}
+const DESKTOP_REGISTRY_KEY = "futureos.remote.desktops.v3";
+
+function desktopFieldKey(desktopId: string, field: string, slot: string): string {
+  // SecureStore keys accept only alphanumeric characters, '.', '-' and '_'.
+  const encoded = Array.from(desktopId, (char) => char.codePointAt(0)!.toString(16)).join("-");
+  return `futureos.remote.desktop.v3.${encoded}.${field}.${slot}`;
+}
+
+async function commitRegistry(registry: DesktopRegistry): Promise<void> {
+  await SecureStore.setItemAsync(DESKTOP_REGISTRY_KEY, JSON.stringify(registry), secureOptions);
+}
+
+async function writeDesktop(
+  registry: DesktopRegistry,
+  credentials: RemoteCredentials,
+): Promise<void> {
+  const { deviceId, expectedDesktopId: desktopId } = credentials;
+  const storedDeviceId = await loadDeviceId();
+  if (storedDeviceId && storedDeviceId !== deviceId)
+    throw new Error("credential_device_mismatch");
+  if (!storedDeviceId) await saveDeviceId(deviceId);
+  const previous = registry.desktops.find((entry) => entry.desktopId === desktopId);
+  const slot = previous?.slot === "a" ? "b" : "a";
+  const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof CREDENTIAL_KEYS)[];
+  await settleWrites(fields.map((field) => SecureStore.setItemAsync(
+    desktopFieldKey(desktopId, field, slot), credentials[field], secureOptions,
+  )));
+  const entry: DesktopEntry = { desktopId, pairId: credentials.pairId, slot };
+  // One commit switches the complete bundle and active selection together.
+  await commitRegistry({
+    activeDesktopId: desktopId,
+    desktops: previous
+      ? registry.desktops.map((item) => item.desktopId === desktopId ? entry : item)
+      : [...registry.desktops, entry],
+  });
+}
+
+async function readRegistry(): Promise<DesktopRegistry> {
+  const raw = await SecureStore.getItemAsync(DESKTOP_REGISTRY_KEY, secureOptions);
+  if (raw !== null) {
+    const parsed = JSON.parse(raw) as DesktopRegistry;
+    if (!parsed || !Array.isArray(parsed.desktops) ||
+      !parsed.desktops.every((entry) => entry && typeof entry.desktopId === "string" &&
+        entry.desktopId && typeof entry.pairId === "string" && entry.pairId &&
+        (entry.slot === "a" || entry.slot === "b")) ||
+      new Set(parsed.desktops.map((entry) => entry.desktopId)).size !== parsed.desktops.length ||
+      (parsed.activeDesktopId !== null &&
+        !parsed.desktops.some((entry) => entry.desktopId === parsed.activeDesktopId)))
+      throw new Error("invalid_desktop_registry");
+    return parsed;
+  }
+  const registry: DesktopRegistry = { activeDesktopId: null, desktops: [] };
+  const legacy = await loadLegacyCredentials();
+  if (legacy) await writeDesktop(registry, legacy);
+  else await commitRegistry(registry);
+  // Never destroy the old bundle until the new registry is durable. The
+  // registry is authoritative thereafter, so old credentials cannot resurrect.
+  await deleteCredentialFields();
+  return legacy ? readRegistry() : registry;
+}
+
+export async function loadPairedDesktops(): Promise<PairedDesktop[]> {
+  return enqueueCredentialOperation(async () =>
+    (await readRegistry()).desktops.map(({ desktopId, pairId }) => ({ desktopId, pairId })),
+  );
+}
+
+export async function loadCredentials(desktopId?: string): Promise<RemoteCredentials | null> {
   return enqueueCredentialOperation(async () => {
-    const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
-    if (commit === "cleared") return null;
-    if (commit !== null && commit !== "a" && commit !== "b")
-      throw new Error("invalid_credential_commit");
-    const entries = await Promise.all(
-      Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
-        field,
-        await SecureStore.getItemAsync(commit ? key + "." + commit : key, secureOptions),
-      ]),
-    );
-    if (entries.every(([, value]) => value == null)) return null;
+    const registry = await readRegistry();
+    const entry = registry.desktops.find((item) =>
+      item.desktopId === (desktopId ?? registry.activeDesktopId));
+    if (!entry) return null;
+    const fields = await Promise.all(Object.keys(CREDENTIAL_KEYS).map(async (field) => [
+      field, await SecureStore.getItemAsync(desktopFieldKey(entry.desktopId, field, entry.slot), secureOptions),
+    ]));
     const deviceId = await loadDeviceId();
-    if (entries.some(([, value]) => !value) || !deviceId) {
-      await deleteCredentialFields();
-      return null;
-    }
-    return {
-      ...Object.fromEntries(entries),
-      deviceId,
-    } as unknown as RemoteCredentials;
+    if (!deviceId || fields.some(([, value]) => !value)) throw new Error("incomplete_desktop_credentials");
+    const credentials = { ...Object.fromEntries(fields), deviceId } as unknown as RemoteCredentials;
+    if (credentials.pairId !== entry.pairId || credentials.expectedDesktopId !== entry.desktopId)
+      throw new Error("desktop_credential_mismatch");
+    return credentials;
   });
 }
 
 export async function saveCredentials(credentials: RemoteCredentials): Promise<void> {
-  return enqueueCredentialOperation(async () => {
-    const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
-    const slot = commit === "a" ? "b" : "a";
-    const { deviceId, ...rest } = credentials;
-    // Identity is installation-scoped and must never rotate with a pairing.
-    const storedDeviceId = await loadDeviceId();
-    if (storedDeviceId && storedDeviceId !== deviceId)
-      throw new Error("credential_device_mismatch");
-    if (!storedDeviceId) await saveDeviceId(deviceId);
-    const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof rest)[];
-    await settleWrites(
-      fields.map((field) =>
-        SecureStore.setItemAsync(CREDENTIAL_KEYS[field] + "." + slot, rest[field], secureOptions),
-      ),
-    );
-    // Only this single write makes the complete new bundle visible. A failed
-    // write or process exit leaves the previously committed slot readable.
-    await SecureStore.setItemAsync(CREDENTIAL_COMMIT_KEY, slot, secureOptions);
-  });
+  return enqueueCredentialOperation(async () => writeDesktop(await readRegistry(), credentials));
 }
 
+/** Remove only the matching pair (or the active desktop), never other desktops. */
 export async function clearCredentials(expectedPairId?: string): Promise<void> {
   return enqueueCredentialOperation(async () => {
-    if (expectedPairId) {
-      const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
-      const key = CREDENTIAL_KEYS.pairId + (commit === "a" || commit === "b" ? `.${commit}` : "");
-      const pairId = await SecureStore.getItemAsync(key, secureOptions);
-      if (pairId && pairId !== expectedPairId) return;
-    }
-    await deleteCredentialFields();
+    const registry = await readRegistry();
+    const entry = registry.desktops.find((item) => expectedPairId
+      ? item.pairId === expectedPairId : item.desktopId === registry.activeDesktopId);
+    if (!entry) return;
+    await commitRegistry({
+      activeDesktopId: registry.activeDesktopId === entry.desktopId ? null : registry.activeDesktopId,
+      desktops: registry.desktops.filter((item) => item !== entry),
+    });
+    await settleWrites(Object.keys(CREDENTIAL_KEYS).flatMap((field) =>
+      ["a", "b"].map((slot) => SecureStore.deleteItemAsync(
+        desktopFieldKey(entry.desktopId, field, slot), secureOptions,
+      )),
+    ));
   });
 }
 

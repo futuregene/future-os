@@ -15,6 +15,7 @@ import {
   clearCredentials,
   clearPendingRevoke,
   loadCredentials,
+  loadPairedDesktops,
   loadPendingRevoke,
   saveCredentials,
   savePendingRevoke,
@@ -34,6 +35,7 @@ jest.mock("../storage", () => ({
   clearCredentials: jest.fn(async () => {}),
   clearPendingRevoke: jest.fn(async () => {}),
   loadCredentials: jest.fn(async () => null),
+  loadPairedDesktops: jest.fn(async () => []),
   loadPendingRevoke: jest.fn(async () => null),
   saveCredentials: jest.fn(async () => {}),
   savePendingRevoke: jest.fn(async () => {}),
@@ -250,6 +252,7 @@ describe("useRemoteConnection", () => {
     renderer = null;
     cast<jest.Mock>(loadPendingRevoke).mockResolvedValue(null);
     cast<jest.Mock>(loadCredentials).mockResolvedValue(null);
+    cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([]);
     cast<jest.Mock>(claimPairingCode).mockResolvedValue(credentials);
     cast<jest.Mock>(Network.getNetworkStateAsync).mockResolvedValue(wifiState);
     cast<{ currentState: string }>(AppState).currentState = "active";
@@ -263,6 +266,129 @@ describe("useRemoteConnection", () => {
     // The presentation depth is process-global; a failed assertion mid-test
     // must not leak a held connection into the next one.
     endNativePresentation();
+  });
+
+  describe("multiple desktops", () => {
+    const second = { ...credentials, pairId: "pair-2", expectedDesktopId: "desktop-2" };
+    const desktops = [credentials, second].map((item) => ({
+      desktopId: item.expectedDesktopId, pairId: item.pairId,
+    }));
+
+    beforeEach(() => {
+      cast<jest.Mock>(loadCredentials).mockImplementation(async (id?: string) =>
+        id === second.expectedDesktopId ? second : credentials);
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(desktops);
+    });
+
+    test("switches saved desktops without claiming or revoking a pair", async () => {
+      render();
+      await flush();
+      const first = client();
+      act(() => {
+        first.callbacks.onPresence({ ...presence, lastHeartbeatTs: Date.now() });
+        first.callbacks.onFeatures(["file_transfer_v1"]);
+      });
+      await act(async () => result.current.switchDesktop(second.expectedDesktopId));
+      expect(loadCredentials).toHaveBeenCalledWith(second.expectedDesktopId);
+      expect(result.current.credentials).toEqual(second);
+      expect(result.current.desktops).toEqual(desktops);
+      expect(first.close).toHaveBeenCalled();
+      expect(first.request).not.toHaveBeenCalledWith({ type: "unpair" });
+      expect(claimPairingCode).not.toHaveBeenCalled();
+      expect(serverRevoke).not.toHaveBeenCalled();
+      expect(result.current.presence).toBeNull();
+      expect(result.current.desktopOnline).toBe(false);
+      expect(result.current.capabilities.size).toBe(0);
+      expect(options.resetCatalog).toHaveBeenCalled();
+      expect(options.resetConversation).toHaveBeenCalled();
+      expect(options.resetTimeline).toHaveBeenCalled();
+      act(() => {
+        first.callbacks.onPresence({ ...presence, unpaired: true });
+        first.callbacks.onSessions([presenceSession("old")]);
+      });
+      await first.callbacks.onCredentials({ ...credentials, userJwt: "late" });
+      expect(clearCredentials).not.toHaveBeenCalled();
+      expect(options.applySessionSnapshot).not.toHaveBeenCalled();
+      expect(result.current.credentials).toEqual(second);
+      expect(saveCredentials).not.toHaveBeenCalledWith(expect.objectContaining({ userJwt: "late" }));
+    });
+
+    test("adding a desktop does not unpair the previous desktop", async () => {
+      render();
+      await flush();
+      cast<jest.Mock>(claimPairingCode).mockResolvedValue(second);
+      await act(async () => result.current.pair("second-qr"));
+      expect(result.current.credentials).toEqual(second);
+      expect(result.current.desktops).toEqual(desktops);
+      expect(clearCredentials).not.toHaveBeenCalled();
+      expect(serverRevoke).not.toHaveBeenCalled();
+    });
+
+    test("a failed QR claim leaves the previous connection usable", async () => {
+      render();
+      await flush();
+      const first = client();
+      cast<jest.Mock>(claimPairingCode).mockRejectedValueOnce(new Error("invalid_pairing_code"));
+      await act(async () => {
+        await expect(result.current.pair("bad-qr")).rejects.toThrow("invalid_pairing_code");
+      });
+      expect(result.current.phase).toBe("ready");
+      expect(result.current.credentials).toEqual(credentials);
+      expect(first.close).not.toHaveBeenCalled();
+      act(() => first.callbacks.onSessions([presenceSession("still-connected")]));
+      expect(options.applySessionSnapshot).toHaveBeenCalled();
+    });
+
+    test("desktop unpair notices clear only their own pair", async () => {
+      render();
+      await flush();
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([desktops[1]]);
+      act(() => client().callbacks.onPresence({ ...presence, unpaired: true }));
+      await flush();
+      expect(clearCredentials).toHaveBeenCalledWith(credentials.pairId);
+      expect(discardPendingPrompt).toHaveBeenCalledWith(credentials.pairId);
+      expect(discardPendingContinuation).toHaveBeenCalledWith(credentials.pairId);
+      expect(result.current.desktops).toEqual([desktops[1]]);
+    });
+
+    test("removing an inactive desktop leaves the active connection alone", async () => {
+      render();
+      await flush();
+      const first = client();
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([desktops[0]]);
+      await act(async () => result.current.removeDesktop(second.expectedDesktopId));
+      expect(savePendingRevoke).toHaveBeenCalledWith(second);
+      expect(clearCredentials).toHaveBeenCalledWith(second.pairId);
+      expect(discardPendingPrompt).toHaveBeenCalledWith(second.pairId);
+      expect(first.close).not.toHaveBeenCalled();
+      expect(result.current.credentials).toEqual(credentials);
+      expect(result.current.desktops).toEqual([desktops[0]]);
+    });
+
+    test("a failed saved-desktop lookup leaves the active connection usable", async () => {
+      render();
+      await flush();
+      const first = client();
+      cast<jest.Mock>(loadCredentials).mockRejectedValueOnce(new Error("disk error"));
+      await act(async () => {
+        await expect(result.current.switchDesktop(second.expectedDesktopId)).rejects.toThrow("disk error");
+      });
+      act(() => first.callbacks.onSessions([presenceSession("still-connected")]));
+      expect(options.applySessionSnapshot).toHaveBeenCalled();
+      expect(first.close).not.toHaveBeenCalled();
+    });
+
+    test("local unpair preserves the other saved desktop", async () => {
+      render();
+      await flush();
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([desktops[1]]);
+      await act(async () => result.current.unpair());
+      expect(clearCredentials).toHaveBeenCalledWith(credentials.pairId);
+      expect(serverRevoke).toHaveBeenCalledWith(credentials);
+      expect(result.current.desktops).toEqual([desktops[1]]);
+      await act(async () => result.current.switchDesktop(second.expectedDesktopId));
+      expect(result.current.credentials).toEqual(second);
+    });
   });
 
   describe("mount lifecycle", () => {

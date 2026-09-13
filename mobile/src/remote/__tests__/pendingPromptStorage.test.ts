@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   clearPendingPrompt,
+  discardPendingPrompt,
   loadPendingPrompt,
   savePendingPrompt,
   type PendingPrompt,
@@ -42,6 +43,25 @@ describe("pending prompt storage", () => {
   beforeEach(() => {
     mockData.clear();
     jest.clearAllMocks();
+  });
+
+  test("keeps pending prompts isolated across desktops", async () => {
+    const other = { ...pending, pairId: "pair-2", expectedDesktopId: "desktop-2" };
+    await savePendingPrompt(pending, pending.pairId);
+    await savePendingPrompt(other, other.pairId);
+    expect(await loadPendingPrompt(pending.pairId)).toEqual(pending);
+    expect(await loadPendingPrompt(other.pairId)).toEqual(other);
+    await clearPendingPrompt(pending.commandId, pending.pairId);
+    expect(await loadPendingPrompt(other.pairId)).toEqual(other);
+    await discardPendingPrompt(pending.pairId);
+    expect(await loadPendingPrompt(other.pairId)).toEqual(other);
+  });
+
+  test("migrates a legacy prompt only for its own desktop", async () => {
+    await savePendingPrompt(pending);
+    expect(await loadPendingPrompt("another-pair")).toBeNull();
+    expect(await loadPendingPrompt(pending.pairId)).toEqual(pending);
+    expect(await loadPendingPrompt()).toBeNull();
   });
 
   test("round-trips a staged prompt", async () => {

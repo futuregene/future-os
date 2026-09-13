@@ -6,13 +6,13 @@ import { showToast } from "../../features/chat/utils";
 import { useRemoteControls as useRemote } from "../../remote/RemoteContext";
 import {
   loadSessionDraft,
-  NEW_CONVERSATION_DRAFT_KEY,
   saveSessionDraft,
 } from "../../remote/draftStorage";
 import { prepareSharedAttachments } from "../../remote/files";
 import { markShareLanded } from "../shareInbox";
 import type { MobileAttachment } from "../../remote/types";
 import { useShareIntake } from "../useShareIntake";
+const NEW_CONVERSATION_DRAFT_KEY = "desktop:draft:new";
 
 jest.mock("future-share-intent", () => ({ getPendingShare: jest.fn() }));
 jest.mock("../../remote/draftStorage", () => ({
@@ -54,7 +54,7 @@ function attachment(name: string): MobileAttachment {
 let renderer: ReactTestRenderer | null = null;
 const newConversation = jest.fn(async () => {});
 
-function render(credentials: unknown = { pairId: "pair" }): void {
+function render(credentials: unknown = { pairId: "pair", expectedDesktopId: "desktop" }): void {
   mockedUseRemote.mockReturnValue({
     credentials,
     newConversation,

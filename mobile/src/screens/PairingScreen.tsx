@@ -60,13 +60,19 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
   return t("pairing.failed");
 }
 
-export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
+export function PairingScreen({ revoked = false, onPaired, onBack, onManageDesktops }: {
+  revoked?: boolean;
+  onPaired?(): void;
+  onBack?(): void;
+  onManageDesktops?(): void;
+}) {
   const { t } = useTranslation();
   const remote = useRemote();
   const [permission, requestPermission, getPermission] = useCameraPermissions();
   const scanLocked = useRef(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [manualCode, setManualCode] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -97,8 +103,10 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
   const doPair = useCallback(
     async (code: string) => {
       setManualError(null);
+      setScanning(true);
       try {
         await remote.pair(code);
+        onPaired?.();
       } catch (error) {
         const message = pairingErrorMessage(error, t);
         const record =
@@ -113,14 +121,16 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
         setManualError(message);
         showToast(message);
         throw error;
+      } finally {
+        setScanning(false);
       }
     },
-    [remote, showToast, t],
+    [remote, onPaired, showToast, t],
   );
 
   const handleScan = useCallback(
     async ({ data }: { data: string }) => {
-      if (scanLocked.current || remote.phase === "claiming") return;
+      if (scanLocked.current || scanning) return;
       const code = pairingCodeFromQr(data);
       if (!code) {
         showToast(t("pairing.invalid"));
@@ -129,13 +139,15 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
       scanLocked.current = true;
       try {
         await doPair(code);
+      } catch {
+        // doPair already presents the error; camera callbacks cannot await it.
       } finally {
         setTimeout(() => {
           scanLocked.current = false;
         }, 1200);
       }
     },
-    [doPair, remote.phase, showToast, t],
+    [doPair, scanning, showToast, t],
   );
 
   const handleManualSubmit = useCallback(async () => {
@@ -155,8 +167,6 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
       // error shown via manualError in doPair
     }
   }, [doPair, manualCode, showToast, t]);
-
-  const scanning = remote.phase === "claiming";
 
   return (
     <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
@@ -207,6 +217,8 @@ export function PairingScreen({ revoked = false }: { revoked?: boolean }) {
           )}
 
           <View style={styles.footer}>
+            {onBack && <Button disabled={scanning} label={t("chat.cancel")} onPress={onBack} variant="secondary" />}
+            {onManageDesktops && <Button disabled={scanning} label={t("desktops.title")} onPress={onManageDesktops} variant="secondary" />}
             <Pressable
               accessibilityRole="button"
               disabled={scanning}

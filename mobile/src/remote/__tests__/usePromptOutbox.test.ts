@@ -202,7 +202,7 @@ describe("usePromptOutbox recovery", () => {
     const { requestRetry, renderer } = await mountOutbox();
     expect(requestRetry).not.toHaveBeenCalled();
     expect(mockedUploadAttachments).not.toHaveBeenCalled();
-    await expect(loadPendingPrompt()).resolves.toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
     await act(async () => renderer.unmount());
   });
 
@@ -216,7 +216,7 @@ describe("usePromptOutbox recovery", () => {
       sourceRunId: "failed-run",
       createdAt: 2,
     });
-    await expect(loadPendingContinuation()).resolves.toMatchObject({ commandId: "continue-1" });
+    await expect(loadPendingContinuation(credentials.pairId)).resolves.toMatchObject({ commandId: "continue-1" });
     const { requestRetry, reconcileSession, refreshSessions, renderer } = await mountOutbox();
 
     expect(requestRetry).toHaveBeenCalledWith(
@@ -439,6 +439,23 @@ describe("usePromptOutbox sendMessage", () => {
     expect(h.requestRetry).not.toHaveBeenCalled();
   });
 
+  it("does not apply an old desktop's late prompt acknowledgement to the new timeline", async () => {
+    const response = deferred<{ data: ReturnType<typeof ack> }>();
+    const requestRetry = jest.fn(() => response.promise);
+    const engine = fakeEngine();
+    const h = await mountSend({ requestRetry, engine });
+    let sending!: Promise<void>;
+    act(() => { sending = h.result.sendMessage("for the first desktop"); });
+    const rejected = expect(sending).rejects.toThrow("pairing_changed");
+    await flush();
+    h.clientRef.current = null;
+    h.credentialsRef.current = { ...credentials, pairId: "second-pair", expectedDesktopId: "second-desktop" };
+    response.resolve({ data: ack() });
+    await act(async () => { await rejected; });
+    expect(engine.mutate).not.toHaveBeenCalled();
+    expect(h.setSelectedSessionId).not.toHaveBeenCalled();
+  });
+
   it("delivers a prompt with attachments and mutates the target timeline", async () => {
     mockedUploadAttachments.mockResolvedValue([{ ...attachment, uploadId: "u1" }]);
     const h = await mountSend({ engine: fakeEngine() });
@@ -482,7 +499,7 @@ describe("usePromptOutbox sendMessage", () => {
       { type: "get_prompt_receipt", promptId: "prompt-match" },
       "list",
     );
-    await expect(loadPendingPrompt()).resolves.toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
     const engine = h.syncEngineRef.current as unknown as { mutate: jest.Mock };
     expect(engine.mutate).toHaveBeenCalled();
   });
@@ -540,7 +557,7 @@ describe("usePromptOutbox sendMessage", () => {
       { type: "get_prompt_receipt", promptId: "prompt-old" },
       "list",
     );
-    await expect(loadPendingPrompt()).resolves.toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
   });
 
   it("switches to the new session when the ack returns a different id", async () => {
@@ -583,7 +600,7 @@ describe("usePromptOutbox sendMessage", () => {
     await act(async () => {
       await expect(h.result.sendMessage("hello")).rejects.toThrow("boom");
     });
-    await expect(loadPendingPrompt()).resolves.toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
   });
 });
 
@@ -662,7 +679,7 @@ describe("usePromptOutbox continueRun", () => {
       },
       "session-1",
     );
-    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await expect(loadPendingContinuation(credentials.pairId)).resolves.toBeNull();
   });
 
   it("returns the in-flight promise for a matching retry", async () => {
@@ -717,7 +734,7 @@ describe("usePromptOutbox continueRun", () => {
       { type: "get_prompt_receipt", promptId: "continue-old" },
       "list",
     );
-    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await expect(loadPendingContinuation(credentials.pairId)).resolves.toBeNull();
   });
 
   it("clears the continuation and rethrows a non-transient failure", async () => {
@@ -726,10 +743,10 @@ describe("usePromptOutbox continueRun", () => {
     });
     const h = await mountContinue(requestRetry);
     await expect(h.result.continueRun("session-1", "run-1")).rejects.toThrow("boom");
-    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await expect(loadPendingContinuation(credentials.pairId)).resolves.toBeNull();
   });
 
-  it("discards a continuation from a different pairing without sending it", async () => {
+  it("preserves a continuation from a different pairing without sending it", async () => {
     await savePendingContinuation({
       version: 2,
       commandId: "continue-foreign",
@@ -748,7 +765,7 @@ describe("usePromptOutbox continueRun", () => {
       expect.objectContaining({ id: "continue-foreign" }),
       expect.anything(),
     );
-    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await expect(loadPendingContinuation("another-pair")).resolves.toMatchObject({ commandId: "continue-foreign" });
   });
 });
 
@@ -834,7 +851,7 @@ describe("usePromptOutbox recovery error handling", () => {
     });
     const h = await mountRecovery(requestRetry);
     expect(h.recordError).toHaveBeenCalledWith(expect.objectContaining({ message: "boom" }));
-    await expect(loadPendingPrompt()).resolves.toBeNull();
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
     await act(async () => h.renderer.unmount());
   });
 
@@ -855,7 +872,7 @@ describe("usePromptOutbox recovery error handling", () => {
     });
     const h = await mountRecovery(requestRetry);
     expect(h.recordError).toHaveBeenCalledWith(expect.objectContaining({ message: "boom" }));
-    await expect(loadPendingContinuation()).resolves.toBeNull();
+    await expect(loadPendingContinuation(credentials.pairId)).resolves.toBeNull();
     await act(async () => h.renderer.unmount());
   });
   it.each(["retired", undefined])(
