@@ -43,6 +43,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "gui")]
 use tauri::Emitter;
 use tokio::sync::oneshot;
 use tonic::Code;
@@ -162,7 +163,7 @@ pub(super) static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
 
 #[cfg(test)]
 type TestObserverTask = (
-    tauri::async_runtime::JoinHandle<()>,
+    crate::runtime::JoinHandle<()>,
     std::sync::mpsc::Receiver<()>,
 );
 #[cfg(test)]
@@ -289,7 +290,7 @@ static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 pub fn spawn_session_discovery() {
-    tauri::async_runtime::spawn(async move {
+    crate::runtime::spawn(async move {
         loop {
             tokio::time::sleep(discovery_interval()).await;
             #[cfg(test)]
@@ -584,7 +585,7 @@ fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: onesh
     // still acknowledges that the future (and its database work) is gone.
     #[cfg(test)]
     let completion = TestObserverCompletion(done);
-    let task = tauri::async_runtime::spawn(async move {
+    let task = crate::runtime::spawn(async move {
         #[cfg(test)]
         let _completion = completion;
         run_observer(&session_id, &shared, cancel).await;
@@ -802,6 +803,7 @@ async fn handle_event(
             state.session_cursor = event.session_idx;
         }
         let event_data = future_rpc::decode::event_data_json(&event);
+        #[cfg(feature = "gui")]
         if FORWARDED_EVENTS.contains(&event_type) {
             forward_settings_event(
                 crate::APP_HANDLE.get(),
@@ -903,6 +905,7 @@ async fn handle_event(
                     // treating them as gaps would force a pointless re-attach
                     // on every settings change.
                     let event_data = future_rpc::decode::event_data_json(&event);
+                    #[cfg(feature = "gui")]
                     if FORWARDED_EVENTS.contains(&event_type) {
                         forward_settings_event(
                             crate::APP_HANDLE.get(),
@@ -979,6 +982,7 @@ async fn handle_event(
     }
 
     record_message_activity(shared, state, &event).await;
+    #[cfg(feature = "gui")]
     if FORWARDED_EVENTS.contains(&event_type) {
         forward_settings_event(
             crate::APP_HANDLE.get(),
@@ -1105,6 +1109,7 @@ async fn observer_run(
 /// Forward a whitelisted event to the webview as `agent-event`. Both owner
 /// identities are injected so the frontend can reject stale listeners during
 /// a thread switch instead of trusting session identity alone.
+#[cfg(feature = "gui")]
 fn forward_settings_event<R: tauri::Runtime>(
     app_handle: Option<&tauri::AppHandle<R>>,
     session_id: &str,
@@ -1120,6 +1125,7 @@ fn forward_settings_event<R: tauri::Runtime>(
 /// Emit the enriched payload via an injectable `Emitter`. Generic over
 /// `Runtime` so unit tests can drive the emit body with a mock app handle
 /// (the process-global `APP_HANDLE` is `None` outside a running Tauri app).
+#[cfg(feature = "gui")]
 fn emit_settings_event<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     session_id: &str,
@@ -1879,6 +1885,7 @@ mod tests {
         assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn forward_settings_event_emits_or_skips_without_a_handle() {
         // No handle → no emit (the `if let Some` body is skipped).
@@ -2643,6 +2650,7 @@ mod tests {
         std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn emit_settings_event_emits_through_a_mock_handle() {
         let app = tauri::test::mock_builder()

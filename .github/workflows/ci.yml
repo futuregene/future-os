@@ -273,7 +273,9 @@ jobs:
       # ── desktop Tauri backend ──
       - name: clippy (desktop backend)
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+        run: |
+          cargo clippy --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+          cargo clippy --no-default-features --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
   # One matrix job split into four parallel groups, each paying only its own
@@ -409,6 +411,7 @@ jobs:
         run: |
           if [ "${{ matrix.desktop }}" = 'true' ]; then
             cargo test --manifest-path desktop/src-tauri/Cargo.toml
+            cargo test --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
           else
             cargo test ${{ matrix.packages }}
           fi
@@ -519,7 +522,9 @@ jobs:
 
       - name: cargo check (desktop Tauri backend)
         if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: |
+          cargo check --manifest-path desktop/src-tauri/Cargo.toml
+          cargo check --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
 
   # ─── Desktop: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,

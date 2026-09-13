@@ -42,9 +42,17 @@ fn pairing_path() -> Result<PathBuf, crate::AppError> {
 }
 
 pub fn load_creds() -> Option<PairingCreds> {
-    let path = pairing_path().ok()?;
-    let value = crate::config_io::read_json_object(&path).ok()?;
-    serde_json::from_value(value).ok()
+    load_creds_checked().ok().flatten()
+}
+
+/// Terminal startup must not turn corrupt saved credentials into a new pairing.
+pub(crate) fn load_creds_checked() -> Result<Option<PairingCreds>, crate::AppError> {
+    let path = pairing_path()?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let value = crate::config_io::read_json_object(&path)?;
+    Ok(Some(serde_json::from_value(value)?))
 }
 
 /// One-shot injected failure for `save_creds` (tests only): the credential
@@ -340,6 +348,19 @@ mod tests {
     }
 
     #[test]
+    fn platform_account_rejection_is_not_a_retryable_network_error() {
+        for status in [401, 403] {
+            let error = crate::AppError::Remote {
+                status,
+                code: None,
+                message: "rejected".into(),
+            };
+            assert_eq!(error_code(&error), Some("service_authorization"));
+            assert!(!is_invalid_or_revoked_error(&error));
+        }
+    }
+
+    #[test]
     fn classifies_error_codes_without_sniffing_messages() {
         // Offline / unreachable → network, regardless of the human message.
         assert_eq!(
@@ -425,9 +446,14 @@ mod http_tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_creds().is_none());
+        assert!(
+            load_creds_checked().is_err(),
+            "headless startup must not create a new invitation on corrupt data"
+        );
         // A valid JSON file that does not match the creds shape also → None.
         std::fs::write(&path, json!({ "unrelated": true }).to_string()).unwrap();
         assert!(load_creds().is_none());
+        assert!(load_creds_checked().is_err());
     }
 
     #[test]

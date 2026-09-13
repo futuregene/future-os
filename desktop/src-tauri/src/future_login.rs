@@ -1,11 +1,9 @@
-//! GUI-native FutureGene device-code OAuth (see desktop/ER.md §6.9).
+//! Desktop FutureGene device-code OAuth, shared by GUI and headless mode.
 //!
-//! Mirrors the CLI protocol (`cli/src/commands/auth.ts`) but is fully
-//! self-contained: it requests a device code, opens the verification page, then
-//! exchanges the device code for an API key which is written to the `future`
-//! entry of `~/.future/agent/auth.json` via [`crate::auth_store`]. Polling is
-//! driven by the frontend (one short request per call); this module is
-//! stateless.
+//! Requests a device code and optionally opens the verification page. On
+//! authorization the Agent durably commits the key in the `future` entry of
+//! its auth configuration. The caller (WebView or foreground terminal) owns
+//! polling and cancellation; this module is stateless.
 
 use std::time::Duration;
 
@@ -154,6 +152,11 @@ fn client() -> reqwest::Client {
 /// Device-code OAuth lives on the platform root (`{platform}/client/v1/...`),
 /// not the model API base — mirror the CLI (`cli/src/commands/auth.ts`).
 pub async fn start() -> Result<FutureLoginStart, AppError> {
+    start_with_browser(true).await
+}
+
+/// The same device authorization flow without launching a browser on an SSH host.
+pub(crate) async fn start_with_browser(open: bool) -> Result<FutureLoginStart, AppError> {
     let platform = crate::future_platform::current_platform_url();
     let response = client()
         .post(format!("{platform}/client/v1/oauth/device/code"))
@@ -206,7 +209,9 @@ pub async fn start() -> Result<FutureLoginStart, AppError> {
         .unwrap_or_else(|| verification.clone());
 
     // Best-effort: failure is fine, the dialog shows a copyable link.
-    open_browser(&verification);
+    if open {
+        open_browser(&verification);
+    }
 
     Ok(FutureLoginStart {
         user_code: device.user_code,
@@ -334,7 +339,11 @@ pub async fn fetch_profile() -> Result<FutureProfile, AppError> {
             error_message_from_body(response.json::<Value>().await.ok()).unwrap_or_else(|| {
                 format!("Account profile request failed (HTTP {})", status.as_u16())
             });
-        return Err(AppError::Message(message));
+        return Err(AppError::Remote {
+            status: status.as_u16(),
+            code: None,
+            message,
+        });
     }
 
     response
@@ -660,6 +669,21 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Not signed in"));
+    }
+
+    #[tokio::test]
+    async fn headless_start_returns_browser_authorization_without_writing_a_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-headless-start");
+        let body = r#"{"device_code":"private-device-code","user_code":"ABCD","verification_uri_complete":"https://example.com/device?code=ABCD","expires_in":300,"interval":2}"#;
+        let url = mock_http_server(vec![(200, "application/json", body.as_bytes().to_vec())]);
+        point_auth(&url);
+        let login = start_with_browser(false).await.unwrap();
+        assert_eq!(login.user_code, "ABCD");
+        assert_eq!(login.device_code, "private-device-code");
+        assert!(login
+            .verification_uri_complete
+            .starts_with("https://example.com/device?code=ABCD"));
+        assert!(future_api_key().is_err());
     }
 
     #[tokio::test]

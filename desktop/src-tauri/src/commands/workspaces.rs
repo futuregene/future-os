@@ -4,12 +4,12 @@
 
 use crate::{git_review, store};
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn list_workspaces() -> Result<Vec<store::WorkspaceRecord>, crate::AppError> {
     store::list_workspaces()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn create_workspace(
     input: store::CreateWorkspaceInput,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
@@ -18,7 +18,7 @@ pub fn create_workspace(
 
 /// Reports whether a user Workspace directory is a real git repo. Kept for the
 /// existing frontend call site; it no longer initialises anything (§14.3).
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn ensure_workspace_git(workspace_id: String) -> Result<bool, crate::AppError> {
     let workspace = store::get_workspace(&workspace_id)?
         .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
@@ -30,7 +30,7 @@ pub fn ensure_workspace_git(workspace_id: String) -> Result<bool, crate::AppErro
     )))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn get_or_create_chat_workspace(
     thread_id: String,
     title: Option<String>,
@@ -38,14 +38,14 @@ pub fn get_or_create_chat_workspace(
     store::get_or_create_chat_workspace(&thread_id, title)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn rename_workspace(
     input: store::RenameWorkspaceInput,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
     store::rename_workspace(input)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_workspace(
     workspace_id: String,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
@@ -85,6 +85,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn async_command_wrapper_rejects_malformed_body() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
