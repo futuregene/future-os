@@ -1,0 +1,65 @@
+import { createElement } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { ScrollView, Text } from "react-native";
+import { SkillPicker } from "../components/SkillPicker";
+
+jest.mock("lucide-react-native", () => ({ X: () => null }));
+jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh" } }) }));
+
+const skills = [{ name: "future-web", description: "Search pages", nameZh: "网页搜索", descriptionZh: "读取网页" }];
+const load = jest.fn(async () => skills);
+const onSelect = jest.fn();
+const onClose = jest.fn();
+const props = { query: "", supported: true, load, onSelect, onClose, maxHeight: 220 };
+let tree: ReactTestRenderer;
+const texts = () => tree.root.findAllByType(Text).map(node => node.props.children);
+beforeEach(() => { jest.clearAllMocks(); load.mockReset().mockResolvedValue(skills); });
+afterEach(() => { if (tree) act(() => tree.unmount()); });
+
+test("loads once per opening, searches locally and selects without dismissing keyboard", async () => {
+  await act(async () => { tree = create(createElement(SkillPicker, props)); });
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(texts()).toEqual(expect.arrayContaining(["网页搜索", "读取网页"]));
+  expect(tree.root.findByType(ScrollView).props.keyboardShouldPersistTaps).toBe("always");
+  await act(async () => { tree.update(createElement(SkillPicker, { ...props, query: "读取" })); });
+  expect(load).toHaveBeenCalledTimes(1);
+  const option = tree.root.findAll(node => node.props.accessibilityLabel === "/future-web · 网页搜索" && node.props.onPress)[0]!;
+  act(() => option.props.onPress());
+  expect(onSelect).toHaveBeenCalledWith("future-web");
+  const close = tree.root.findAll(node => node.props.accessibilityLabel === "skills.close" && node.props.onPress)[0]!;
+  act(() => close.props.onPress());
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await act(async () => { tree.update(createElement(SkillPicker, { ...props, query: "不存在" })); });
+  expect(texts()).toContain("skills.noResults");
+});
+
+test("distinguishes loading, failure with retry, and an empty installed catalogue", async () => {
+  let reject!: (reason: Error) => void;
+  load.mockImplementationOnce(() => new Promise((_, no) => { reject = no; }));
+  await act(async () => { tree = create(createElement(SkillPicker, props)); });
+  expect(texts()).toContain("skills.loading");
+  await act(async () => { reject(new Error("offline")); });
+  expect(texts()).toContain("skills.loadFailed");
+  load.mockResolvedValueOnce([]);
+  const retry = tree.root.findAll(node => node.props.accessibilityLabel === "common.retry" && node.props.onPress)[0]!;
+  await act(async () => { retry.props.onPress(); });
+  expect(load).toHaveBeenCalledTimes(2);
+  expect(texts()).toContain("skills.empty");
+});
+
+test("old desktops show an upgrade hint without making an unsupported request", async () => {
+  await act(async () => { tree = create(createElement(SkillPicker, { ...props, supported: false })); });
+  expect(load).not.toHaveBeenCalled();
+  expect(texts()).toContain("skills.updateDesktop");
+});
+
+test("late replies from a previous desktop cannot populate the new picker", async () => {
+  let resolve!: (value: typeof skills) => void;
+  load.mockImplementationOnce(() => new Promise(yes => { resolve = yes; }));
+  await act(async () => { tree = create(createElement(SkillPicker, { ...props, key: "desktop-a" })); });
+  load.mockResolvedValueOnce([]);
+  await act(async () => { tree.update(createElement(SkillPicker, { ...props, key: "desktop-b" })); });
+  await act(async () => { resolve(skills); });
+  expect(texts()).toContain("skills.empty");
+  expect(texts()).not.toContain("网页搜索");
+});

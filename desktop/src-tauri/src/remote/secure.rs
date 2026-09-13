@@ -355,7 +355,7 @@ fn confirmation(
     channel: &SharedChannel,
 ) -> Result<String, crate::AppError> {
     let body = json!({ "confirmed": true, "pairId": pair_id, "bridgeInstanceId": bridge,
-        "features": ["e2ee_v2", "file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1"],
+        "features": ["e2ee_v2", "file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1"],
         "presence": super::build_presence_payload(pair_id, bridge) });
     let payload = serde_json::to_vec(&body).map_err(error)?;
     Ok(URL_SAFE_NO_PAD.encode(
@@ -471,6 +471,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(confirm["confirmed"], true);
+        assert!(confirm["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("skills_v1")));
         let wire = channel.seal("ready", b"ready").unwrap();
         let (_, reply) = transport.open("ready", &wire).unwrap();
         Ok((channel, reply))

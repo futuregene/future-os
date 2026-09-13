@@ -1,6 +1,7 @@
-import { createElement, type ComponentProps } from "react";
+import { createElement, useState, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ComposerDock } from "../components/ComposerDock";
+import { SkillPicker } from "../components/SkillPicker";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import { resources } from "../../../i18n/locales";
 import { StyleSheet, Text, TextInput, View } from "react-native";
@@ -13,10 +14,11 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Paperclip", "Send", "Square", "X"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
+jest.mock("../components/SkillPicker", () => ({ SkillPicker: () => null }));
 
 test("only the approval which failed receives the error", () => {
   type Props = ComponentProps<typeof ComposerDock>;
@@ -80,7 +82,7 @@ test.each([
   act(() => { tree = create(createElement(ComposerDock, props)); });
   try {
     const button = (label: string) => tree!.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
-    for (const label of ["chat.send", "attachment.add"]) {
+    for (const label of ["chat.send", "attachment.add", "skills.choose"]) {
       const control = button(label);
       expect(StyleSheet.flatten(control.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
     }
@@ -89,15 +91,18 @@ test.each([
     );
     expect(selectors).toBeUndefined();
     expect(tree!.root.findAllByType(View).some(node => StyleSheet.flatten(node.props.style)?.flexWrap === "wrap")).toBe(false);
-    const model = button("chat.model: A very long model label");
+    const combined = width < 360 || fontScale > 1.2;
+    const model = button(combined ? "chat.modelSettings: A very long model label, thinking.high" : "chat.model: A very long model label");
     expect(StyleSheet.flatten(model.props.style({ pressed: false })).paddingHorizontal).toBe(8);
     expect(StyleSheet.flatten(tree!.root.findByType(TextInput).props.style).paddingHorizontal).toBe(16);
-    expect(model.findByType(Text).props.children).toBe("A very long model label");
-    expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
-    act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
-    expect(setSelector).toHaveBeenCalledWith("thinking");
-    act(() => button("chat.model: A very long model label").props.onPress());
-    expect(setSelector).toHaveBeenCalledWith("model");
+    expect(model.findByType(Text).props.children).toBe(combined ? "chat.modelSettings" : "A very long model label");
+    if (!combined) {
+      expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
+      act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
+      expect(setSelector).toHaveBeenCalledWith("thinking");
+    }
+    act(() => model.props.onPress());
+    expect(setSelector).toHaveBeenCalledWith(combined ? "settings" : "model");
     act(() => button("chat.send").props.onPress());
     expect(send).toHaveBeenCalledTimes(1);
   } finally {
@@ -154,6 +159,40 @@ test("composer grows with measured text, scrolls at its cap and shrinks when cle
     act(() => tree!.unmount());
     mockDimensions = { width: 390, height: 844, scale: 1, fontScale: 1 };
   }
+});
+
+test("slash button opens above the composer and skill selection edits without sending", () => {
+  const send = jest.fn();
+  const listSkills = jest.fn(async () => []);
+  const props = {
+    attachments: [], setAttachments: jest.fn(), supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: true, desktopOnline: true, connectionPresentation: { customerState: "connected" }, models: [], modelId: "model", streaming: false, capabilities: new Set(["skills_v1"]), listSkills },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    showOffline: false, pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(), keyboardHeight: 300,
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  function Harness() {
+    const [message, setMessage] = useState("Hello");
+    return createElement(ComposerDock, { ...props, message, setMessage });
+  }
+  let tree: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  try {
+    const button = () => tree!.root.findAll(node => node.props.accessibilityLabel === "skills.choose" && node.props.onPress)[0]!;
+    act(() => button().props.onPress());
+    const picker = tree!.root.findByType(SkillPicker);
+    expect(picker.props.supported).toBe(true);
+    expect(picker.props.load).toBe(listSkills);
+    expect(picker.props.query).toBe("");
+    expect(tree!.root.findByType(TextInput).props.value).toBe("Hello /");
+    act(() => picker.props.onSelect("future-web"));
+    expect(tree!.root.findByType(TextInput).props.value).toBe("Hello /future-web ");
+    expect(tree!.root.findAllByType(SkillPicker)).toHaveLength(0);
+    expect(send).not.toHaveBeenCalled();
+    act(() => tree!.update(createElement(ComposerDock, { ...props, message: "draft", setMessage: jest.fn(), remote: { ...props.remote, busy: true } })));
+    expect(button().props.disabled).toBe(true);
+    expect(tree!.root.findByType(TextInput).props.editable).toBe(false);
+  } finally { act(() => tree!.unmount()); }
 });
 
 test("both languages define the history retry label", () => {

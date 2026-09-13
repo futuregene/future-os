@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1508,7 +1508,8 @@ mod bridge_tests {
                 "approval_tier_v1",
                 "continue_run_v1",
                 "prompt_receipt_v1",
-                "session_files_v1"
+                "session_files_v1",
+                "skills_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2412,6 +2413,29 @@ mod bridge_tests {
         agent.script("list_models", false, json!(null), "no models");
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "list_models" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // Read the Agent's installed skills, not a mobile-local catalogue.
+        agent.script(
+            "get_commands",
+            true,
+            json!({ "commands": [
+            { "name": "research", "description": "Research", "nameZh": "研究", "source": "skill" },
+            { "name": "builtin", "source": "command" }
+        ] }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_skills" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(reply["data"]["skills"][0]["name"], "research");
+        assert_eq!(reply["data"]["skills"][0]["nameZh"], "研究");
+        agent.script("get_commands", false, json!(null), "skills unavailable");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_skills" }))
             .await;
         assert_eq!(reply["success"], json!(false));
 

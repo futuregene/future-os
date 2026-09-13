@@ -53,7 +53,7 @@ export function ChatScreen() {
   const insets = useSafeAreaInsets();
 
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
-  const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
+  const [selector, setSelector] = useState<"model" | "thinking" | "settings" | null>(null);
   const [showOffline, setShowOffline] = useState(false);
   const [filesSession, setFilesSession] = useState<string | null>(null);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
@@ -249,17 +249,13 @@ export function ChatScreen() {
     return () => subscription.remove();
   }, [goBack]);
 
-  // Keyboard compensation is Android-only: iOS already adapts via KAV padding,
-  // and stacking both would double-shift the composer. We subtract the bottom
-  // safe-area inset because SafeAreaView's bottom edge already lifts the content
-  // above the nav bar — without the subtraction the composer would float a
-  // nav-bar-height gap above the keyboard.
+  // Measure both platforms to bound skill suggestions above the keyboard.
+  // Only Android applies this as compensation below; iOS already uses KAV.
   useEffect(() => {
-    if (Platform.OS !== "android") return;
-    const showSub = Keyboard.addListener("keyboardDidShow", event =>
+    const showSub = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow", event =>
       setKeyboardHeight(event.endCoordinates.height),
     );
-    const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    const hideSub = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide", () => setKeyboardHeight(0));
     return () => {
       showSub.remove();
       hideSub.remove();
@@ -420,6 +416,8 @@ export function ChatScreen() {
             />
 
             <ComposerDock
+              key={`${conversationKey}:${remote.draft}:${remote.draftWorkspaceId}`}
+              keyboardHeight={keyboardHeight}
               message={message}
               setMessage={setMessage}
               attachments={attachments}

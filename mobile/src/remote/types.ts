@@ -97,6 +97,14 @@ export interface Presence {
   workspaces?: RemoteWorkspace[];
 }
 
+/** Installed skills discovered by the connected Agent (same catalogue as desktop). */
+export interface RemoteSkill {
+  name: string;
+  description: string;
+  nameZh?: string | null;
+  descriptionZh?: string | null;
+}
+
 export interface RemoteModel {
   id: string;
   label?: string;

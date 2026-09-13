@@ -425,6 +425,10 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        "list_skills" => match crate::agent_bridge::list_installed_skills().await {
+            Ok(skills) => reply(sink, true, json!({ "skills": skills }), None).await,
+            Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
+        },
         "set_model" => {
             reply_unit(
                 sink,

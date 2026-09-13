@@ -2,6 +2,16 @@ export const resources = {
   en: {
     translation: {
       appName: "FutureOS",
+      skills: {
+        title: "Skills",
+        choose: "Choose a skill",
+        close: "Close skill suggestions",
+        loading: "Loading skills…",
+        empty: "No skills installed on this desktop.",
+        noResults: "No matching skills. Keep typing or close suggestions.",
+        loadFailed: "Could not load skills. Please try again.",
+        updateDesktop: "Update FutureOS Desktop to browse skills. You can still type a skill command.",
+      },
       notifications: {
         channel: "Task completion",
         completed: "Task completed",
@@ -137,6 +147,7 @@ export const resources = {
         nonWorkspaceConversation: "Non-workspace conversation",
         contextLoading: "Loading conversation type…",
         placeholder: "Message FutureOS",
+        modelSettings: "Model settings",
         send: "Send",
         stop: "Stop",
         stopped: "Stop requested",
@@ -371,6 +382,16 @@ export const resources = {
   zh: {
     translation: {
       appName: "FutureOS",
+      skills: {
+        title: "技能",
+        choose: "选择技能",
+        close: "关闭技能候选",
+        loading: "正在加载技能…",
+        empty: "当前桌面尚未安装技能。",
+        noResults: "未找到匹配的技能，可继续输入或关闭候选。",
+        loadFailed: "技能加载失败，请重试。",
+        updateDesktop: "请更新 FutureOS 桌面端以浏览技能，仍可手动输入技能命令。",
+      },
       notifications: {
         channel: "任务完成提醒",
         completed: "任务已完成",
@@ -499,6 +520,7 @@ export const resources = {
         nonWorkspaceConversation: "非工作区会话",
         contextLoading: "正在加载会话类型…",
         placeholder: "给 FutureOS 发消息",
+        modelSettings: "模型设置",
         send: "发送",
         stop: "停止",
         stopped: "已请求停止",
