@@ -364,33 +364,6 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
             </Pressable>
           </View>
         </View>
-        <View style={styles.topbar}>
-          <View style={styles.tabs}>
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: tab === "workspace" }}
-              onPress={() => setTab("workspace")}
-              style={[styles.tab, tab === "workspace" && styles.tabActive]}
-            >
-              <Folder color={tab === "workspace" ? colors.ink : colors.inkMuted} size={16} />
-              <Text style={[styles.tabText, tab === "workspace" && styles.tabTextActive]}>
-                {t("sessions.workspace")}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: tab === "chat" }}
-              onPress={() => setTab("chat")}
-              style={[styles.tab, tab === "chat" && styles.tabActive]}
-            >
-              <MessageCircle color={tab === "chat" ? colors.ink : colors.inkMuted} size={16} />
-              <Text style={[styles.tabText, tab === "chat" && styles.tabTextActive]}>
-                {t("sessions.conversations")}
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-
         {remote.error && (
           <ErrorBanner
             message={remote.error}
@@ -405,6 +378,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
         <SessionList
           key={tab}
           tab={tab}
+          onTabChange={setTab}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
         />
@@ -639,37 +613,6 @@ const styles = StyleSheet.create({
   desktopIdentity: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15, fontWeight: "600" },
   safe: { flex: 1, backgroundColor: colors.surface },
   page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: colors.surface },
-  topbar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: layout.gutter,
-    paddingTop: spacing.xs,
-    marginBottom: spacing.md,
-  },
-  tabs: {
-    flex: 1,
-    flexDirection: "row",
-    gap: spacing.xs,
-    padding: spacing.xs,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  tab: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: spacing.sm,
-    minHeight: layout.touchTarget,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.sm,
-  },
-  tabActive: { backgroundColor: colors.surface },
-  tabText: { flexShrink: 1, textAlign: "center", color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
-  tabTextActive: { color: colors.accent, fontWeight: "700" },
   topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   settingsButton: {
     width: 44,

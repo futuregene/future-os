@@ -64,13 +64,12 @@ test("device header has real gutters and a non-shrinking touch target on a small
   expect(onManageDesktops).toHaveBeenCalledTimes(1);
 });
 
-test("tabs get their own full-width row instead of competing with header actions", () => {
-  const tabs = tree.root.findAll(node => node.props.accessibilityRole === "tab" && node.props.onPress);
-  expect(tabs).toHaveLength(2);
-  for (const tab of tabs) {
-    expect(StyleSheet.flatten(tab.props.style)).toMatchObject({ flex: 1, minHeight: 44, minWidth: 0 });
-  }
-  expect(tabs[0]!.parent!.findAllByType(ConnectionBadge)).toHaveLength(0);
+test("category switching is delegated to the list toolbar, without a separate tab row", () => {
+  expect(tree.root.findAll(node => node.props.accessibilityRole === "tab")).toHaveLength(0);
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  expect(tree.root.findByType(SessionList).props.tab).toBe("workspace");
+  act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+  expect(tree.root.findByType(SessionList).props.tab).toBe("chat");
 });
 
 test("tablet layout is centered and large text keeps the device badge compact", () => {
@@ -120,8 +119,7 @@ test("session ellipsis and long-press callback use the shared app action sheet",
 });
 
 test("new chat opens immediately, without an extra creation dialog", () => {
-  const chatTab = tree.root.findAll(node => node.props.accessibilityRole === "tab" && node.props.onPress)[1]!;
-  act(() => chatTab.props.onPress());
+  act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
   act(() => button("sessions.new").props.onPress());
   expect(mockRemote.newConversation).toHaveBeenCalledWith("chat");
 });
