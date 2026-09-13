@@ -481,6 +481,10 @@ impl Drop for TestHome {
             Some(prev) => std::env::set_var("HOME", prev),
             None => std::env::remove_var("HOME"),
         }
+        // Release pooled connections first: Windows cannot unlink a file that
+        // is still open, so deleting while the pool holds this home's database
+        // leaves the directory behind on every run.
+        crate::store::close_pool();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

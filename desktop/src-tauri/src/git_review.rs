@@ -595,7 +595,13 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
         // Backdate the file so `git status` doesn't re-hash it as racily-clean
         // (which rewrites the index and would make review fingerprints drift).
-        let file = std::fs::File::open(dir.join("a.txt")).unwrap();
+        // Opened for writing: `set_modified` needs FILE_WRITE_ATTRIBUTES, which
+        // a read-only handle does not carry on Windows (ACCESS_DENIED), even
+        // though the file is ours. Nothing is truncated by this handle.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("a.txt"))
+            .unwrap();
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
         file.set_modified(old).unwrap();
         run_git(&dir, &["add", "a.txt"]);
