@@ -1888,6 +1888,78 @@ mod bridge_tests {
         bridge.stop();
     }
 
+    /// A session the Agent no longer has (created but never prompted, or dropped
+    /// by a restart) must read as EMPTY history over the remote bridge, exactly
+    /// as the desktop UI already answers it. Forwarding the rejection instead
+    /// pins the phone's timeline in "loading messages" forever: a failed history
+    /// page only schedules a retry, and the tail page is the phone's first read.
+    #[tokio::test]
+    async fn a_missing_agent_session_reads_as_empty_history_and_state() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-missing-session").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("gone");
+        // The Agent's own wording for a session id it cannot resolve.
+        let missing = "session not found — pass a valid session_id (new_session creates one)";
+
+        for command in ["get_session_entries", "get_state"] {
+            for _ in 0..2 {
+                agent.script_for(command, &session, false, json!(null), missing);
+            }
+        }
+
+        // The tail page (what the phone opens with) is a success with no rows
+        // and a terminal cursor, so it shows "no messages" instead of retrying.
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": session,
+                "before": i64::MAX, "limit": 10
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["entries"], json!([]));
+        assert_eq!(reply["data"]["hasMore"], json!(false));
+        assert_eq!(reply["data"]["nextOffset"], json!(0));
+
+        // The forward (non-`before`) read answers the same way.
+        let reply = bridge
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
+            )
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"]["entries"], json!([]));
+        assert_eq!(reply["data"]["hasMore"], json!(false));
+
+        // `get_state` also bounds the sync lane: a rejection there fails the
+        // whole reconcile before history is ever requested.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_state", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(reply["data"], json!({}));
+
+        // Only the missing identity is special-cased; a genuine failure still
+        // surfaces to the client.
+        agent.script_for(
+            "get_session_entries",
+            &session,
+            false,
+            json!(null),
+            "agent exploded",
+        );
+        let reply = bridge
+            .call(
+                json!({ "id": unique("cmd"), "type": "get_session_entries", "sessionId": session }),
+            )
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert_eq!(reply["error"], json!("agent exploded"));
+
+        bridge.stop();
+    }
+
     #[tokio::test]
     async fn replay_continuations_keep_agent_has_more_and_stop_at_the_pinned_watermark() {
         let _lock = mock_agent_lock();
