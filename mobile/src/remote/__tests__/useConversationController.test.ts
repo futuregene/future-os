@@ -190,6 +190,35 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+describe("session file browsing", () => {
+  it("scopes chunked directory reads to the selected session", async () => {
+    const listing = { rootPath: "/work", path: "/work/sub", entries: [] };
+    const h = await mountController({ selected: "session-a", requestRetry: jest.fn().mockResolvedValue({ data: listing }) });
+    await expect(current(h).listSessionFiles("/work/sub")).resolves.toEqual(listing);
+    expect(h.requestRetry).toHaveBeenCalledWith({
+      type: "list_session_files", sessionId: "session-a", filePath: "/work/sub", chunkedRead: true,
+    }, "session-a");
+    act(() => h.renderer.unmount());
+  });
+
+  it("rejects a listing completed after switching sessions", async () => {
+    const pending = deferred<{ data: unknown }>();
+    const h = await mountController({ selected: "a", requestRetry: jest.fn().mockReturnValue(pending.promise) });
+    const result = current(h).listSessionFiles();
+    h.selectedRef.current = "b";
+    pending.resolve({ data: { rootPath: "/a", path: "/a", entries: [] } });
+    await expect(result).rejects.toThrow("stale_sync_lane");
+    act(() => h.renderer.unmount());
+  });
+
+  it("does not request a directory for an unsent draft", async () => {
+    const h = await mountController();
+    await expect(current(h).listSessionFiles()).rejects.toThrow("attachment_no_session");
+    expect(h.requestRetry).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+});
+
 describe("navigation races", () => {
   it.each(["resolve", "reject"] as const)("an old A response (%s) cannot clear B's opening state", async outcome => {
     const a = deferred<{ data: RemoteSessionState }>();

@@ -18,9 +18,9 @@ function chunkOf(value: unknown): Chunk | null {
   return chunk as Chunk;
 }
 
-/** Reassemble only negotiated history/replay reads. Each NATS reply remains
- * small; message grouping and projection cursors are interpreted only after the
- * immutable JSON snapshot is complete. Old desktops ignore chunkedRead.
+/** Reassemble negotiated history/replay/directory reads. Each NATS reply remains
+ * small; the caller interprets data only after the immutable JSON snapshot is
+ * complete. Old desktops ignore chunkedRead.
  */
 export async function requestReadPage<T>(
   client: RemoteClient,

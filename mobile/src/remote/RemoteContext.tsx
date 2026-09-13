@@ -29,6 +29,7 @@ import type {
   RemoteModel,
   RemoteSession,
   RemoteWorkspace,
+  SessionFileListing,
   ThinkingLevel,
 } from "./types";
 
@@ -79,6 +80,7 @@ interface RemoteContextValue {
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
   ): Promise<void>;
+  listSessionFiles(path?: string): Promise<SessionFileListing>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -248,6 +250,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     openingSession,
     selectSession,
     newConversation,
+    listSessionFiles,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,
@@ -360,6 +363,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       newConversation,
       closeConversation,
       sendMessage,
+      listSessionFiles,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,
@@ -413,6 +417,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       sendMessage,
       setSessionPinned,
+      listSessionFiles,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,

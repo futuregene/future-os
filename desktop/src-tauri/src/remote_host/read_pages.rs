@@ -128,7 +128,10 @@ impl<'a> PagedReply<'a> {
             enabled: cmd.chunked_read
                 && matches!(
                     cmd.cmd_type.as_str(),
-                    "get_session_entries" | "get_events_since" | "get_messages"
+                    "get_session_entries"
+                        | "get_events_since"
+                        | "get_messages"
+                        | "list_session_files"
                 ),
         }
     }

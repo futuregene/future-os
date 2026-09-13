@@ -27,6 +27,7 @@ import { useTimelinePaging } from "./useTimelinePaging";
 import { useRename } from "./useRename";
 import { useSendMessage } from "./useSendMessage";
 import { ChatTopBar } from "./components/ChatTopBar";
+import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
@@ -54,6 +55,13 @@ export function ChatScreen() {
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [showOffline, setShowOffline] = useState(false);
+  const [filesSession, setFilesSession] = useState<string | null>(null);
+  const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
+  const filesOpen = !remote.draft && filesSession === conversationKey;
+  const goBack = useCallback(() => {
+    if (filesOpen) setFilesSession(null);
+    else closeConversation();
+  }, [filesOpen, closeConversation]);
   // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
   // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
   // under edge-to-edge, so we inset the chat flex column by the measured
@@ -221,11 +229,11 @@ export function ChatScreen() {
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      closeConversation();
+      goBack();
       return true;
     });
     return () => subscription.remove();
-  }, [closeConversation]);
+  }, [goBack]);
 
   // Keyboard compensation is Android-only: iOS already adapts via KAV padding,
   // and stacking both would double-shift the composer. We subtract the bottom
@@ -272,8 +280,14 @@ export function ChatScreen() {
           draft={remote.draft}
           backLabel={t("common.back")}
           renameLabel={t("chat.rename")}
-          onBack={closeConversation}
+          onBack={goBack}
           onRename={rename.openRename}
+          filesLabel={t("files.title")}
+          filesOpen={filesOpen}
+          onFiles={() => {
+            Keyboard.dismiss();
+            setFilesSession(filesOpen ? null : conversationKey);
+          }}
         />
 
         {remote.error && (
@@ -291,116 +305,133 @@ export function ChatScreen() {
         <View
           style={[styles.chatContent, keyboardLift > 0 ? { paddingBottom: keyboardLift } : null]}
         >
-          {/* Inverted data puts latest at offset zero. Reading-mode native
-              anchoring handles subsequent row layout changes. */}
-          <FlatList
-            contentContainerStyle={[
-              styles.timeline,
-              {
-                // The scroll container is inverted, so logical top padding is
-                // rendered at the visual bottom. The composer itself now
-                // participates in flex layout; only its overlaid fade needs
-                // clearance inside the list.
-                paddingTop: COMPOSER_FADE_CLEARANCE + spacing.lg,
-              },
-              timelineItems.length === 0 && styles.emptyTimeline,
-            ]}
-            data={invertedTranscriptItems}
-            initialNumToRender={10}
-            inverted
-            key={remote.selectedSessionId || "draft"}
-            keyExtractor={item => item.id}
-            ListHeaderComponent={invertedTranscriptItems.length > 0 ? TimelineFlexSpacer : null}
-            ListHeaderComponentStyle={styles.timelineFlexSpacer}
-            ListEmptyComponent={
-              remote.timelineError ? (
-                <View style={styles.loadingState}>
-                  <Text style={styles.historyError}>{t("chat.historyLoadTimedOut")}</Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => void remote.retryTimeline()}
-                    style={({ pressed }) => [styles.retryButton, pressed && styles.retryPressed]}
-                  >
-                    <Text style={styles.retryLabel}>{t("common.retry")}</Text>
-                  </Pressable>
-                </View>
-              ) : loadingHistory ? (
-                <View style={styles.loadingState}>
-                  <ActivityIndicator color={colors.accent} />
-                  <Text style={styles.empty}>{t("chat.loadingHistory")}</Text>
-                </View>
-              ) : (
-                <Text style={styles.empty}>{t("chat.noHistory")}</Text>
-              )
-            }
-            maintainVisibleContentPosition={scroll.maintainVisibleContentPosition}
-            keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-            keyboardShouldPersistTaps="handled"
-            automaticallyAdjustContentInsets={false}
-            contentInsetAdjustmentBehavior="never"
-            automaticallyAdjustKeyboardInsets={false}
-            maxToRenderPerBatch={8}
-            onContentSizeChange={() => {
-              scroll.onContentSizeChange();
-              onContentSizeChange();
-            }}
-            onLayout={() => {
-              scroll.onLayout();
-              onListLayout();
-            }}
-            onScrollBeginDrag={() => {
-              scroll.onScrollBeginDrag();
-              onScrollBeginDrag();
-            }}
-            onMomentumScrollEnd={onMomentumScrollEnd}
-            onScroll={onPagedScroll}
-            onScrollEndDrag={onScrollEndDrag}
-            ref={listRef}
-            renderItem={renderTimelineItem}
-            scrollEventThrottle={16}
-            scrollIndicatorInsets={{ bottom: 0 }}
-            style={styles.timelineList}
-            updateCellsBatchingPeriod={32}
-            windowSize={7}
-            ItemSeparatorComponent={TimelineItemGap}
-          />
+          <View
+            style={styles.chatContent}
+            accessibilityElementsHidden={filesOpen}
+            importantForAccessibility={filesOpen ? "no-hide-descendants" : "auto"}
+          >
+            {/* Inverted data puts latest at offset zero. Reading-mode native
+                anchoring handles subsequent row layout changes. */}
+            <FlatList
+              contentContainerStyle={[
+                styles.timeline,
+                {
+                  // The scroll container is inverted, so logical top padding is
+                  // rendered at the visual bottom. The composer itself now
+                  // participates in flex layout; only its overlaid fade needs
+                  // clearance inside the list.
+                  paddingTop: COMPOSER_FADE_CLEARANCE + spacing.lg,
+                },
+                timelineItems.length === 0 && styles.emptyTimeline,
+              ]}
+              data={invertedTranscriptItems}
+              initialNumToRender={10}
+              inverted
+              key={remote.selectedSessionId || "draft"}
+              keyExtractor={item => item.id}
+              ListHeaderComponent={invertedTranscriptItems.length > 0 ? TimelineFlexSpacer : null}
+              ListHeaderComponentStyle={styles.timelineFlexSpacer}
+              ListEmptyComponent={
+                remote.timelineError ? (
+                  <View style={styles.loadingState}>
+                    <Text style={styles.historyError}>{t("chat.historyLoadTimedOut")}</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => void remote.retryTimeline()}
+                      style={({ pressed }) => [styles.retryButton, pressed && styles.retryPressed]}
+                    >
+                      <Text style={styles.retryLabel}>{t("common.retry")}</Text>
+                    </Pressable>
+                  </View>
+                ) : loadingHistory ? (
+                  <View style={styles.loadingState}>
+                    <ActivityIndicator color={colors.accent} />
+                    <Text style={styles.empty}>{t("chat.loadingHistory")}</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.empty}>{t("chat.noHistory")}</Text>
+                )
+              }
+              maintainVisibleContentPosition={scroll.maintainVisibleContentPosition}
+              keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustContentInsets={false}
+              contentInsetAdjustmentBehavior="never"
+              automaticallyAdjustKeyboardInsets={false}
+              maxToRenderPerBatch={8}
+              onContentSizeChange={() => {
+                scroll.onContentSizeChange();
+                onContentSizeChange();
+              }}
+              onLayout={() => {
+                scroll.onLayout();
+                onListLayout();
+              }}
+              onScrollBeginDrag={() => {
+                scroll.onScrollBeginDrag();
+                onScrollBeginDrag();
+              }}
+              onMomentumScrollEnd={onMomentumScrollEnd}
+              onScroll={onPagedScroll}
+              onScrollEndDrag={onScrollEndDrag}
+              ref={listRef}
+              renderItem={renderTimelineItem}
+              scrollEventThrottle={16}
+              scrollIndicatorInsets={{ bottom: 0 }}
+              style={styles.timelineList}
+              updateCellsBatchingPeriod={32}
+              windowSize={7}
+              ItemSeparatorComponent={TimelineItemGap}
+            />
 
-          {showLoadOlderHint && (
-            <Pressable
-              accessibilityRole="button"
-              disabled={pagingActive}
-              accessibilityState={{ busy: pagingActive, disabled: pagingActive }}
-              onPress={loadOlder}
-              style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
-            >
-              <History color={colors.inkMuted} size={14} />
-              <Text style={styles.loadOlderLabel}>
-                {pagingFailed ? t("common.retry") : t("chat.loadOlder")}
-              </Text>
-            </Pressable>
+            {showLoadOlderHint && (
+              <Pressable
+                accessibilityRole="button"
+                disabled={pagingActive}
+                accessibilityState={{ busy: pagingActive, disabled: pagingActive }}
+                onPress={loadOlder}
+                style={({ pressed }) => [styles.loadOlder, pressed && styles.loadOlderPressed]}
+              >
+                <History color={colors.inkMuted} size={14} />
+                <Text style={styles.loadOlderLabel}>
+                  {pagingFailed ? t("common.retry") : t("chat.loadOlder")}
+                </Text>
+              </Pressable>
+            )}
+
+            <ComposerDock
+              message={message}
+              setMessage={setMessage}
+              attachments={attachments}
+              setAttachments={setAttachments}
+              supportsImages={supportsImages}
+              activeModelLabel={activeModelLabel}
+              remote={controls}
+              t={t}
+              openAttachmentMenu={openAttachmentMenu}
+              send={sendFromComposer}
+              atLatest={atLatest}
+              scrollToLatest={scrollToLatest}
+              showOffline={showOffline}
+              pendingApprovals={pendingApprovals}
+              approvalSubmitting={approvalSubmitting}
+              approvalError={approvalError}
+              decideApproval={decideApproval}
+              selector={selector}
+              setSelector={setSelector}
+            />
+          </View>
+
+          {filesOpen && (
+            <SessionFilesPanel
+              key={conversationKey}
+              online={remote.desktopOnline}
+              supported={remote.capabilities.has("session_files_v1")}
+              isWorkspace={remote.sessions.find(session => session.sessionId === remote.selectedSessionId)?.mode === "workspace"}
+              listFiles={remote.listSessionFiles}
+              onOpenFile={path => fileDownload.openFileLink(path, true)}
+            />
           )}
-
-          <ComposerDock
-            message={message}
-            setMessage={setMessage}
-            attachments={attachments}
-            setAttachments={setAttachments}
-            supportsImages={supportsImages}
-            activeModelLabel={activeModelLabel}
-            remote={controls}
-            t={t}
-            openAttachmentMenu={openAttachmentMenu}
-            send={sendFromComposer}
-            atLatest={atLatest}
-            scrollToLatest={scrollToLatest}
-            showOffline={showOffline}
-            pendingApprovals={pendingApprovals}
-            approvalSubmitting={approvalSubmitting}
-            approvalError={approvalError}
-            decideApproval={decideApproval}
-            selector={selector}
-            setSelector={setSelector}
-          />
 
           {transferProgress != null && (
             <View pointerEvents="none" style={styles.transferTrack}>

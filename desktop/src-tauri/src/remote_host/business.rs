@@ -217,6 +217,17 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "upload_cancel" => reply_unit(sink, super::files::cancel_upload(&cmd.transfer_id)).await,
+        "list_session_files" => {
+            let result = tokio::task::spawn_blocking(move || {
+                super::session_files::list(&cmd.session_id, &cmd.file_path)
+            })
+            .await;
+            match result {
+                Ok(Ok(data)) => reply(sink, true, json!(data), None).await,
+                Ok(Err(error)) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "download_prepare" => {
             match super::files::prepare_download_variant(&cmd.session_id, &cmd.file_path, &cmd.mode)
                 .await
