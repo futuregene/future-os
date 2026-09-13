@@ -13,16 +13,24 @@ edition = "2021"
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+[features]
+default = ["gui"]
+gui = [
+    "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell",
+    "dep:tauri-plugin-updater", "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-single-instance", "dep:arboard", "dep:objc2",
+    "dep:block2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:zbus",
+]
 
-# The `test` feature is only needed to drive `#[tauri::command]` wrappers
-# through the real IPC deserialization path in unit tests (cov100 final-tauri):
-# the async wrapper's `CommandArg::from_command(..)?` error arm is attributed
-# to the `#[tauri::command]` attribute line and is only reachable by rejecting
-# a malformed invoke body via `tauri::test::get_ipc_response`.
 [dev-dependencies]
-tauri = { version = "2", features = ["protocol-asset", "test"] }
+tokio = { version = "1", features = ["test-util"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+# Tauri's `test` feature enables existing mock IPC tests. Keep it on the
+# optional dependency, not an unconditional dev-dependency: server tests must
+# compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
@@ -30,9 +38,9 @@ tauri = { version = "2", features = ["protocol-asset", "test"] }
 # tonic/prost versions must stay aligned with its workspace pins.
 future-rpc = { path = "../../packages/rpc" }
 future-remote-crypto = { path = "../../packages/remote-crypto" }
-tauri = { version = "2", features = ["protocol-asset"] }
-tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
+tauri = { version = "2", features = ["protocol-asset", "test"], optional = true }
+tauri-plugin-shell = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
@@ -40,12 +48,15 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 tonic = "0.12"
 prost = "0.13"
-tokio = { version = "1", features = ["time", "sync", "rt-multi-thread"] }
+tokio = { version = "1", features = ["time", "sync", "rt-multi-thread", "signal", "process"] }
+qrcode = { version = "0.14", default-features = false }
+terminal_size = "0.4"
+fs2 = "0.4"
 async-nats = "0.49"
 nkeys = "0.4"
 futures = "0.3"
-tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
 # System opener for paths/URLs (ShellExecuteW on Windows — never `cmd /C start`,
 # whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
 open = "5"
@@ -78,7 +89,7 @@ rand = "0.8"
 ignore = "0.4"
 fuzzy-matcher = "0.3"
 # Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
-arboard = { version = "3.6", default-features = false }
+arboard = { version = "3.6", default-features = false, optional = true }
 
 # Win32 API for the native window chrome: the high-quality taskbar icon (ICO
 # file loaded with proper multi-size support instead of Tauri's single-size GDI
@@ -95,6 +106,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    "Win32_System_Console",
 ] }
 
 # macOS sends these workspace notifications before sleep/power-off, giving the
@@ -102,13 +114,13 @@ windows = { version = "0.61", features = [
 # `NSApplication`/`NSImage` additionally back the Dock-icon fix for unbundled
 # runs (`set_macos_dock_icon` in lib.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-block2 = "0.6"
-objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSImage", "NSResponder", "NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", features = ["NSData", "NSNotification", "NSOperation", "NSString", "block2"] }
+objc2 = { version = "0.6", optional = true }
+block2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, features = ["NSApplication", "NSImage", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", optional = true, features = ["NSData", "NSNotification", "NSOperation", "NSString", "block2"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5.18", default-features = false, features = ["tokio"] }
+zbus = { version = "5.18", default-features = false, features = ["tokio"], optional = true }
 
 # Stripped symbols + no debug info: smaller desktop binary and less link/scan
 # I/O, negligible runtime cost for a Tauri shell. See ../../.cargo/config.toml.

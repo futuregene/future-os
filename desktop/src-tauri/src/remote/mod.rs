@@ -507,7 +507,7 @@ impl Supervisor {
         let (abort, registration) = futures::future::AbortHandle::new_pair();
         let done = Arc::new(AtomicBool::new(false));
         tasks.push((abort, done.clone()));
-        tauri::async_runtime::spawn(async move {
+        crate::runtime::spawn(async move {
             let _ = futures::future::Abortable::new(future, registration).await;
             done.store(true, Ordering::Release);
         });
@@ -1310,7 +1310,7 @@ fn spawn_revoke_cleanup() {
         if RUNNING.swap(true, Ordering::AcqRel) {
             return;
         }
-        tauri::async_runtime::spawn(async {
+        crate::runtime::spawn(async {
             loop {
                 if let Err(error) = pairing::retry_pending_revokes().await {
                     if let Some(line) = START_EPISODE.record("local", error) {
@@ -1332,7 +1332,7 @@ pub async fn unpair() -> Result<RemoteStatus, crate::AppError> {
         pairing::clear_creds()
     });
     if let Some((client, subject, payload)) = notice {
-        tauri::async_runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
+        crate::runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
     }
     // Stop is already effective even if local persistence fails. Keep the
     // credential on disk when queueing fails so a user retry can still revoke.
@@ -1409,7 +1409,7 @@ pub async fn stop_gracefully(reason: &str) -> RemoteStatus {
     let notice = mobile_disconnect_notice(reason);
     let status = stop();
     if let Some((client, subject, payload)) = notice {
-        tauri::async_runtime::spawn(async move {
+        crate::runtime::spawn(async move {
             send_mobile_disconnect_notice(client, subject, payload).await;
         });
     }
@@ -1575,7 +1575,7 @@ fn stop_runtime() -> RemoteStatus {
         }))
         .unwrap_or_default();
         if let Ok(Some(payload)) = state.security.seal(&subject, &plaintext) {
-            tauri::async_runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
+            crate::runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
         }
         abort_generation(state);
     }
@@ -2302,8 +2302,11 @@ fn spawn_credential_refresh(
             let _start_guard = SUPERVISOR.start_lock.lock().await;
             let refreshed = match pairing::refresh_bridge_jwt(creds).await {
                 Ok(creds) => creds,
-                Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
-                    // The pairing was revoked (web-side unpair, or this desktop
+                Err(error)
+                    if pairing::is_invalid_or_revoked_error(&error)
+                        || pairing::is_account_authorization_error(&error) =>
+                {
+                    // The pairing or its platform account authorization was revoked (web-side unpair, or this desktop
                     // re-paired elsewhere). Retrying forever would keep a
                     // zombie bridge that can never work again while the GUI
                     // shows "running": drop the dead credential, record why,
@@ -2322,12 +2325,22 @@ fn spawn_credential_refresh(
                     if !generation_active {
                         return;
                     }
-                    eprintln!("remote: pairing was revoked on the server [PA001]; stopping bridge");
-                    *SUPERVISOR.last_error_code.lock().unwrap() = Some("revoked".to_string());
+                    let revoked = pairing::is_invalid_or_revoked_error(&error);
+                    eprintln!("remote: platform rejected authorization; stopping bridge");
+                    *SUPERVISOR.last_error_code.lock().unwrap() = Some(
+                        if revoked {
+                            "revoked"
+                        } else {
+                            "service_authorization"
+                        }
+                        .to_string(),
+                    );
                     SUPERVISOR
                         .credential_refreshing
                         .store(false, Ordering::Release);
-                    let _ = pairing::clear_creds();
+                    if revoked {
+                        let _ = pairing::clear_creds();
+                    }
                     let _ = stop();
                     return;
                 }
@@ -3720,7 +3733,8 @@ mod runtime_tests {
         let polled = status();
         assert!(polled.pairing_code.is_none());
 
-        // stop() publishes offline presence and clears the state.
+        // An online heartbeat may already be queued before stop(). Wait for
+        // the offline packet, not merely the next packet on this subject.
         stop();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -4133,6 +4147,43 @@ mod runtime_tests {
             Some("revoked")
         );
         assert!(pairing::load_creds().is_none());
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_account_rejection_stops_without_deleting_pairing() {
+        let _home = HomeGuard::new("remote-refresh-account-rejected");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let creds = test_creds("pair_account", nats.url(), 30);
+        pairing::save_creds(&creds).unwrap();
+        platform.push(
+            "/client/v1/remote/auth/token",
+            401,
+            json!({"error":"unauthorized"}),
+        );
+        let state = fake_state(&nats, "pair_account").await;
+        let confirmed = state.pairing_confirmed.clone();
+        install_state(state);
+        let handshake =
+            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_account".into());
+        let task = spawn_credential_refresh(
+            "pair_account".into(),
+            commands::new_reply_slots(),
+            confirmed,
+            handshake,
+        );
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(SUPERVISOR.state.lock().unwrap().is_none());
+        assert_eq!(
+            SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
+            Some("service_authorization")
+        );
+        assert_eq!(pairing::load_creds().unwrap().pair_id, "pair_account");
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 

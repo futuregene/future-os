@@ -446,7 +446,7 @@ async fn handle_command(
         // requester can clear itself without waiting for token expiry.
         "unpair" => {
             reply(client, &msg, true, json!({}), None).await;
-            tauri::async_runtime::spawn(async move {
+            crate::runtime::spawn(async move {
                 if !handshake.access_current() {
                     return;
                 }
