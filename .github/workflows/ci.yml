@@ -72,6 +72,7 @@ jobs:
             # Aggregate: any workspace crate (or a shared build-graph file) —
             # drives the workspace-level fmt/clippy and cross-platform build.
             rust_workspace:
+              - 'packages/remote-crypto/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -102,6 +103,7 @@ jobs:
               - 'tui/**'
               - 'cli/**'
             rust_channels_rpc_loop:
+              - 'packages/remote-crypto/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -119,6 +121,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
             desktop_tauri:
+              - 'packages/remote-crypto/**'
               - 'desktop/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
@@ -134,6 +137,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
             mobile:
+              - 'packages/remote-crypto/tests/**'
               - 'mobile/**'
               - '!mobile/android/**'
               - '!mobile/ios/**'
@@ -322,7 +326,7 @@ jobs:
             desktop: 'false'
           - name: channels, rpc, loop
             filter: rust_channels_rpc_loop
-            packages: -p future-channel -p future-rpc -p future-loop
+            packages: -p future-channel -p future-rpc -p future-loop -p future-remote-crypto
             desktop: 'false'
           - name: desktop backend
             filter: desktop_tauri

@@ -21,7 +21,7 @@ test.each([[128, 2000], [1024, 1000], [64 * 1024, 100]])(
     }
     const elapsed = performance.now() - started;
     samples.sort((x, y) => x - y);
-    console.info("remote-e2ee-record-benchmark", JSON.stringify({ runtime: process.version, size, count, overheadBytes: 44,
+    console.warn("remote-e2ee-record-benchmark", JSON.stringify({ runtime: process.version, size, count, overheadBytes: 44,
       p50Ms: samples[Math.floor(count * .5)], p95Ms: samples[Math.floor(count * .95)], elapsedMs: elapsed }));
     sender.destroy(); receiver.destroy();
   },

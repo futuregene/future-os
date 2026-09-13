@@ -493,8 +493,14 @@ mod http_tests {
         let fields: std::collections::HashMap<_, _> = invitation.query_pairs().collect();
         assert_eq!(fields["code"], code);
         assert_eq!(fields["v"], "2");
-        assert_eq!(fields["secureKey"], creds.secure.as_ref().unwrap().public_key);
-        assert_eq!(fields["secret"], creds.secure.as_ref().unwrap().secret.as_deref().unwrap());
+        assert_eq!(
+            fields["secureKey"],
+            creds.secure.as_ref().unwrap().public_key
+        );
+        assert_eq!(
+            fields["secret"],
+            creds.secure.as_ref().unwrap().secret.as_deref().unwrap()
+        );
         assert!(creds.pair_id.starts_with("pair_mock-"));
         assert!(creds.desktop_id.starts_with("desktop_"));
         assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
@@ -512,8 +518,12 @@ mod http_tests {
         let body: Value = serde_json::from_str(&requests[0].2).unwrap();
         assert_eq!(body["desktop_id"], json!(creds.desktop_id));
         assert_eq!(body["desktop_name"], json!("FutureOS GUI"));
-        assert!(!requests[0].2.contains(creds.secure.as_ref().unwrap().secret.as_deref().unwrap()));
-        assert!(!requests[0].2.contains(&creds.secure.as_ref().unwrap().private_key));
+        assert!(!requests[0]
+            .2
+            .contains(creds.secure.as_ref().unwrap().secret.as_deref().unwrap()));
+        assert!(!requests[0]
+            .2
+            .contains(&creds.secure.as_ref().unwrap().private_key));
     }
 
     #[tokio::test]
