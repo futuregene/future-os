@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Alert, TextInput } from "react-native";
+import { Modal, Alert, FlatList, StyleSheet, Text, TextInput } from "react-native";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -79,6 +79,9 @@ const button = (label: string) =>
   tree.root.findAll(
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
   )[0]!;
+const sessionBody = (title: string) => tree.root.findAll(node =>
+  typeof node.props.onLongPress === "function" && typeof node.props.style === "function",
+).find(node => node.findAllByType(Text).some(text => text.props.children === title))!;
 beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
@@ -95,6 +98,14 @@ beforeEach(async () => {
 afterEach(() => {
   act(() => tree.unmount());
   jest.restoreAllMocks();
+});
+
+test("session titles use a compact single line without reducing touch targets", () => {
+  const title = tree.root.findAllByType(Text).find(node => node.props.children === "First")!;
+  expect(title.props.numberOfLines).toBe(1);
+  expect(title.props.ellipsizeMode).toBe("tail");
+  const body = sessionBody("First");
+  expect(StyleSheet.flatten(body.props.style({ pressed: false }))).toMatchObject({ minHeight: 44, paddingVertical: 8 });
 });
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
@@ -269,6 +280,23 @@ test("deleting a workspace confirms with its session count and calls the desktop
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("promoted workspace pins remain visible, openable and included in workspace selection", () => {
+  renderWorkspaceTab();
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "w1b" }));
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu })));
+  const rows = tree.root.findByType(FlatList).props.data;
+  expect(rows.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1", "w1a"]);
+  expect(rows[1].count).toBe(2);
+  act(() => button("Project").props.onPress());
+  expect(tree.root.findByType(FlatList).props.data.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1"]);
+  act(() => sessionBody("Follow-up").props.onPress());
+  expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
+  answerSheet(0);
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
 });
 
 test("a failed workspace delete surfaces the workspace error instead of the generic one", async () => {

@@ -292,7 +292,7 @@ export function SessionList({
           }}
           style={({ pressed }) => [styles.sessionBody, pressed && styles.pressed]}
         >
-          <Text numberOfLines={2} style={[styles.title, unread && styles.unreadTitle]}>
+          <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
           {session.pinned && <Pin size={13} color={colors.accent} />}
@@ -535,13 +535,13 @@ const styles = StyleSheet.create({
   },
   workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
   count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
-  row: { minHeight: 60, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
+  row: { minHeight: layout.touchTarget, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   sessionBody: {
     flex: 1,
     minWidth: 0,
-    minHeight: 60,
-    paddingVertical: spacing.md,
+    minHeight: layout.touchTarget,
+    paddingVertical: spacing.sm,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
