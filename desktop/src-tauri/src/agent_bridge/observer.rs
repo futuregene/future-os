@@ -490,6 +490,7 @@ struct ObserverState {
     session_cursor: i64,
     active_run: Option<String>,
     last_settled_run: Option<String>,
+    last_message_activity_ms: Option<i64>,
 }
 
 impl Default for ObserverState {
@@ -499,7 +500,81 @@ impl Default for ObserverState {
             session_cursor: -1,
             active_run: None,
             last_settled_run: None,
+            last_message_activity_ms: None,
         }
+    }
+}
+
+// Only message content/lifecycle affects recency, never settings or heartbeats.
+// A projection has no per-event timestamps, but a settled run carries an
+// authoritative start + duration. Do not substitute reconnect/receipt time.
+fn message_activity_timestamp(event: &crate::agent_proto::StreamEvent) -> Option<i64> {
+    if event.projection_snapshot {
+        let start = event
+            .snapshot_events
+            .iter()
+            .find(|e| e.r#type == "agent_start")?;
+        let end = event
+            .snapshot_events
+            .iter()
+            .find(|e| e.r#type == "agent_end")?;
+        let start: serde_json::Value =
+            serde_json::from_str(&future_rpc::decode::projected_event_data_json(start)).ok()?;
+        let end: serde_json::Value =
+            serde_json::from_str(&future_rpc::decode::projected_event_data_json(end)).ok()?;
+        let duration = end.get("duration_ms")?.as_i64()?;
+        return (duration >= 0)
+            .then_some(())
+            .and_then(|()| start.get("started_at_ms")?.as_i64()?.checked_add(duration));
+    }
+    if !matches!(
+        event.r#type.as_str(),
+        "user_message"
+            | "text_chunk"
+            | "thinking_delta"
+            | "tool_start"
+            | "tool_delta"
+            | "tool_end"
+            | "agent_end"
+            | "error"
+    ) {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
+async fn record_message_activity(
+    shared: &ObserverShared,
+    state: &mut ObserverState,
+    event: &crate::agent_proto::StreamEvent,
+) {
+    let Some(timestamp) = message_activity_timestamp(event) else {
+        return;
+    };
+    // Bound SQLite/catalog churn during token streaming. Prompts and terminals
+    // always flush, so a settled reply retains its exact final activity time.
+    if let Some(last) = state.last_message_activity_ms {
+        if timestamp <= last
+            || (timestamp.saturating_sub(last) < 1_000
+                && !event.projection_snapshot
+                && !matches!(
+                    event.r#type.as_str(),
+                    "user_message" | "agent_end" | "error"
+                ))
+        {
+            return;
+        }
+    }
+    let thread_id = shared.thread_id.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::store::record_thread_message_activity(&thread_id, timestamp)
+    })
+    .await
+    {
+        Ok(Ok(())) => state.last_message_activity_ms = Some(timestamp),
+        result => eprintln!("FutureOS could not record message activity: {result:?}"),
     }
 }
 
@@ -792,6 +867,7 @@ async fn handle_event(
                 note_run_settled(shared, state, run_id);
             }
         }
+        record_message_activity(shared, state, &event).await;
         // Mirror the snapshot AFTER the local replace has landed — a remote
         // client healing from this signal reads back the store we just wrote.
         // Folded events cannot be applied incrementally, so this goes out as a
@@ -905,6 +981,7 @@ async fn handle_event(
         note_run_settled(shared, state, run_id);
     }
 
+    record_message_activity(shared, state, &event).await;
     #[cfg(feature = "gui")]
     if FORWARDED_EVENTS.contains(&event_type) {
         forward_settings_event(
@@ -1200,6 +1277,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn message_activity_uses_source_time_and_ignores_settings_and_missing_timestamps() {
+        let mut event = stream_event("text_chunk", "run-time", 0);
+        assert_eq!(message_activity_timestamp(&event), None);
+        event.timestamp = "2026-09-13T12:00:00+08:00".into();
+        let expected = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+            .unwrap()
+            .timestamp_millis();
+        for kind in [
+            "user_message",
+            "text_chunk",
+            "thinking_delta",
+            "tool_end",
+            "agent_end",
+        ] {
+            event.r#type = kind.into();
+            assert_eq!(message_activity_timestamp(&event), Some(expected));
+        }
+        for kind in [
+            "model_changed",
+            "session_name_changed",
+            "usage",
+            "stream_retry",
+        ] {
+            event.r#type = kind.into();
+            assert_eq!(message_activity_timestamp(&event), None);
+        }
+        event.projection_snapshot = true;
+        event.snapshot_events = vec![
+            crate::agent_proto::ProjectedRunEvent {
+                r#type: "agent_start".into(),
+                data: r#"{"started_at_ms":1000}"#.into(),
+                ..Default::default()
+            },
+            crate::agent_proto::ProjectedRunEvent {
+                r#type: "agent_end".into(),
+                data: r#"{"duration_ms":2500}"#.into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(message_activity_timestamp(&event), Some(3500));
+        event.snapshot_events.pop();
+        assert_eq!(
+            message_activity_timestamp(&event),
+            None,
+            "an active snapshot has no reliable output time"
+        );
+    }
+
     fn session_event(event_type: &str, session_idx: i64) -> crate::agent_proto::StreamEvent {
         let mut event = stream_event(event_type, "", -1);
         event.session_idx = session_idx;
@@ -1371,6 +1497,91 @@ mod tests {
         break_home, mock_agent, restore_home, seed_thread, seed_workspace, Reply, StreamScript,
         TestHome,
     };
+
+    #[tokio::test]
+    async fn message_activity_advances_on_output_and_flushes_terminal_without_replay_bumps() {
+        let home = TestHome::new("observer-message-activity");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-activity"));
+        let _lease = lease_run("run-activity");
+        let shared = Arc::new(ObserverShared::new(&thread.id));
+        let mut state = ObserverState::default();
+        let base = crate::store::now_millis() + 2_000;
+        let event = |kind: &str, idx, ms| {
+            let mut event = stream_event(kind, "run-activity", idx);
+            event.timestamp = chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339();
+            event
+        };
+        let activity = || {
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .last_message_at
+        };
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut state,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(activity(), Some(base));
+        // Duplicate cursor, settings and rapid token deltas do not churn the DB.
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut state,
+                event("text_chunk", 0, base + 5_000)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut state,
+                event("model_changed", 1, base + 5_000)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut state,
+                event("text_chunk", 2, base + 500)
+            )
+            .await
+        );
+        assert_eq!(activity(), Some(base));
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut state,
+                event("agent_end", 3, base + 600)
+            )
+            .await
+        );
+        assert_eq!(activity(), Some(base + 600));
+        // A new observer replaying history uses source time, not receipt time.
+        let mut replay = ObserverState::default();
+        assert!(
+            handle_event(
+                "sess-activity",
+                &shared,
+                &mut replay,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(activity(), Some(base + 600));
+    }
 
     #[tokio::test]
     async fn ensure_observer_rejects_invalid_or_missing_owners() {
