@@ -2,6 +2,7 @@ import { Linking, Platform } from "react-native";
 import {
   buildChannel,
   checkAndroidUpdate,
+  checkForUpdate,
   checkIosUpdate,
   compareVersions,
   installUpdate,
@@ -32,6 +33,22 @@ const nightlyManifest = (run: number) => ({
       url: `https://dl.future-os.cn/nightly/0.0.2-${run}/FutureOS_0.0.2-${run}_android-universal.apk`,
     },
   },
+});
+
+test("update check aborts a stalled network request so later reminders can retry", async () => {
+  jest.useFakeTimers();
+  try {
+    const fetchFn = jest.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    }));
+    const check = checkForUpdate("1.0.0", fetchFn);
+    const assertion = expect(check).rejects.toThrow("aborted");
+    jest.advanceTimersByTime(15_000);
+    await assertion;
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 describe("build channel", () => {

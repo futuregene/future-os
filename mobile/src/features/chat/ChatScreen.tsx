@@ -69,6 +69,17 @@ export function ChatScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const title = remote.draft ? t("chat.new") : remote.selectedTitle || t("sessions.unnamed");
+  const selectedSession = remote.sessions.find(session => session.sessionId === remote.selectedSessionId);
+  const mode = remote.draft ? remote.draftMode : selectedSession?.mode;
+  const workspaceId = remote.draft ? remote.draftWorkspaceId : selectedSession?.workspaceId;
+  const workspace = remote.workspaces.find(item => item.id === workspaceId);
+  const contextLabel = mode === "workspace" || workspaceId
+    ? workspace?.name
+      ? t("chat.workspaceNamed", { name: workspace.name })
+      : t("chat.workspaceConversation")
+    : !remote.draft && !selectedSession
+      ? t("chat.contextLoading")
+      : t("chat.nonWorkspaceConversation");
   const activeModel = remote.models.find(model => modelReference(model) === remote.modelId);
   const activeModelLabel =
     activeModel?.label || activeModel?.id || remote.modelId || t("chat.model");
@@ -277,6 +288,7 @@ export function ChatScreen() {
       >
         <ChatTopBar
           title={title}
+          contextLabel={contextLabel}
           draft={remote.draft}
           backLabel={t("common.back")}
           renameLabel={t("chat.rename")}

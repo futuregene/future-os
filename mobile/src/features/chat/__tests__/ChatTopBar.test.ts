@@ -5,7 +5,7 @@ import { ChatTopBar } from "../components/ChatTopBar";
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", FolderOpen: "FolderOpen", Pencil: "Pencil" }));
 let tree: ReactTestRenderer;
 const props = {
-  title: "Session", draft: false, backLabel: "Back", renameLabel: "Rename",
+  title: "Session", contextLabel: "Non-workspace conversation", draft: false, backLabel: "Back", renameLabel: "Rename",
   filesLabel: "Files", filesOpen: false,
   onBack: jest.fn(), onRename: jest.fn(), onFiles: jest.fn(),
 };
@@ -26,7 +26,8 @@ test("existing sessions expose an accessible file toggle and retain back/rename 
   expect(props.onRename).toHaveBeenCalledTimes(1);
 });
 
-test("unsent drafts do not expose a file directory", () => {
-  act(() => { tree = create(createElement(ChatTopBar, { ...props, draft: true })); });
+test.each(["Non-workspace conversation", "Workspace · Research", "Workspace conversation"])("unsent drafts show %s before the first message", contextLabel => {
+  act(() => { tree = create(createElement(ChatTopBar, { ...props, draft: true, contextLabel })); });
   expect(button("Files")).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === contextLabel).length).toBeGreaterThan(0);
 });

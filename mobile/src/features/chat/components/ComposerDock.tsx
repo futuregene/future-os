@@ -69,7 +69,7 @@ function ComposerDockView({
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   const { width, height, fontScale } = useWindowDimensions();
-  const stackedToolbar = width < 380 || fontScale > 1.2;
+  const compactToolbar = width < 380 || fontScale > 1.2;
   const maxInputHeight = Math.max(INPUT_MIN_HEIGHT, Math.min(INPUT_MAX_HEIGHT, Math.floor(height * 0.3)));
   const inputHeight = message ? Math.max(INPUT_MIN_HEIGHT, Math.min(maxInputHeight, contentHeight)) : INPUT_MIN_HEIGHT;
   return (
@@ -195,8 +195,8 @@ function ComposerDockView({
               value={message}
             />
           </View>
-          <View style={[styles.composerToolbar, stackedToolbar && styles.composerToolbarStacked]}>
-            <View style={[styles.composerSelectors, stackedToolbar && styles.composerSelectorsStacked]}>
+          <View style={[styles.composerToolbar, compactToolbar && styles.composerToolbarCompact]}>
+            <View style={[styles.composerSelectors, compactToolbar && styles.composerSelectorsCompact]}>
               <Pressable
                 accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
                 accessibilityRole="button"
@@ -205,7 +205,8 @@ function ComposerDockView({
                 onPress={() => setSelector("model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
-                  stackedToolbar && styles.selectorTriggerStacked,
+                  styles.modelTrigger,
+                  compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
                   remote.streaming && styles.controlDisabled,
                 ]}
@@ -223,7 +224,8 @@ function ComposerDockView({
                 onPress={() => setSelector("thinking")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
-                  stackedToolbar && styles.selectorTriggerStacked,
+                  styles.thinkingTrigger,
+                  compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
                   remote.streaming && styles.controlDisabled,
                 ]}
@@ -414,16 +416,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.xs,
   },
-  composerToolbarStacked: { flexWrap: "wrap" },
-  composerSelectorsStacked: {
-    flexBasis: "100%",
-    flexGrow: 0,
-    justifyContent: "space-between",
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.lineSoft,
-    paddingBottom: spacing.xs,
-  },
-  selectorTriggerStacked: { flex: 1, maxWidth: "100%" },
+  // Keep both selectors visible alongside attachment/send even on a 320pt
+  // screen. Labels may ellipsize; controls never move to a third row.
+  composerToolbarCompact: { gap: 2, paddingHorizontal: spacing.xs },
+  composerSelectorsCompact: { gap: 2 },
+  selectorTriggerCompact: { paddingHorizontal: 2, gap: 1 },
+  modelTrigger: { flex: 1, maxWidth: 154 },
+  thinkingTrigger: { flexShrink: 0, maxWidth: "50%" },
   selectorTrigger: {
     minWidth: 0,
     maxWidth: 154,
