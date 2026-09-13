@@ -73,6 +73,6 @@ npm exec --yes --package=node-win-x64@24.21.0 -- node ../node_modules/jest/bin/j
 
 原生 IO 测试可用 `python scripts/test-mobile-share-io.py` 运行；复用 Java 17+，JDK 用 javac，仅有 JRE 时临时使用固定版本 Eclipse 编译器。JUnit/Hamcrest/编译器从 Maven Central 获取并校验固定摘要，临时目录退出即清理。Android 模块也声明了 JUnit 测试依赖，并新增路径限定的 `Mobile native IO` CI。它验证真实 Java 文件 IO，不冒充完整 APK/Kotlin/ContentResolver 集成测试。
 
-第二轮本地验证：Windows x64 / Node 24.21.0，TypeScript、ESLint 通过，Jest **81 个套件、1038 项测试通过**（新增 15 项）；Java 17.0.20.1 实际 IO 测试 **9 项通过**。测试依赖临时目录已自动清理。
+第二轮本地验证：Windows x64 / Node 24.21.0，TypeScript、ESLint 通过，Jest **81 个套件、1040 项测试通过**（本轮新增 15 项，包含同步至 `e026af6c` 的列表回归用例）；Java 17.0.20.1 实际 IO 测试 **9 项通过**。测试依赖临时目录已自动清理。
 
 第二轮仍未执行 Android/iOS 原生构建或真机测试；重点补验：恶意/超大 ContentProvider、分享权限失效、复制中磁盘满、断网期间 Desktop 改名、长时间持有导出 URI。未修改本地 `main` 的未合并提交。
