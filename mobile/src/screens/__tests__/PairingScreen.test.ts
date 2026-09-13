@@ -22,6 +22,7 @@ jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
 }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 
 let tree: ReactTestRenderer;
 const onBack = jest.fn();

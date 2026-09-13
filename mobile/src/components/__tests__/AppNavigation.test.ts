@@ -15,6 +15,19 @@ jest.mock("../../screens/PairingScreen", () => ({ PairingScreen: () => null }));
 jest.mock("../../share/ShareIntakeMenu", () => ({ ShareIntakeMenu: () => null }));
 jest.mock("../../share/shareInbox", () => ({ subscribeShareLanded: () => () => {}, shareLandedRevision: () => 0 }));
 jest.mock("../../update/useUpdateReminder", () => ({ useUpdateReminder: () => {} }));
+let mockLanguageReady = true;
+jest.mock("../../i18n/useSystemLanguage", () => ({ useSystemLanguage: () => mockLanguageReady }));
+
+test("waits for the saved language before mounting app screens", () => {
+  mockLanguageReady = false;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(0);
+  mockLanguageReady = true;
+  act(() => tree.update(createElement(App)));
+  expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(1);
+  act(() => tree.unmount());
+});
 
 test("opening and closing a chat retains the list instance and disables its background handlers", () => {
   jest.useFakeTimers();

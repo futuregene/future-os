@@ -25,6 +25,7 @@ import { RemoteApiError } from "../remote/connectionState";
 import { useRemote } from "../remote/RemoteContext";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { VERSION } from "../version.generated";
+import { LanguageSettings } from "../i18n/LanguageSettings";
 
 function pairingErrorMessage(error: unknown, t: TFunction): string {
   if (error instanceof RemoteApiError) {
@@ -253,6 +254,7 @@ export function PairingScreen({ revoked = false, onPaired, onBack, onManageDeskt
               <Clipboard color={colors.inkSoft} size={17} />
               <Text style={styles.manualLabel}>{t("pairing.manual")}</Text>
             </Pressable>
+            <LanguageSettings />
             <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
           </View>
 

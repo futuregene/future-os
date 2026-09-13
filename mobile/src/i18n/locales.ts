@@ -12,6 +12,13 @@ export const resources = {
         loadFailed: "Could not load skills. Please try again.",
         updateDesktop: "Update FutureOS Desktop to browse skills. You can still type a skill command.",
       },
+      language: {
+        title: "Language",
+        system: "Follow system",
+        zh: "中文",
+        en: "English",
+        saveFailed: "Could not save the language setting. Please try again.",
+      },
       notifications: {
         channel: "Task completion",
         completed: "Task completed",
@@ -391,6 +398,13 @@ export const resources = {
         noResults: "未找到匹配的技能，可继续输入或关闭候选。",
         loadFailed: "技能加载失败，请重试。",
         updateDesktop: "请更新 FutureOS 桌面端以浏览技能，仍可手动输入技能命令。",
+      },
+      language: {
+        title: "语言",
+        system: "跟随系统",
+        zh: "中文",
+        en: "English",
+        saveFailed: "无法保存语言设置，请重试。",
       },
       notifications: {
         channel: "任务完成提醒",
