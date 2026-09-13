@@ -293,8 +293,7 @@ test("promoted workspace pins remain visible, openable and included in workspace
   expect(tree.root.findByType(FlatList).props.data.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1"]);
   act(() => sessionBody("Follow-up").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
-  answerSheet(0);
-  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  pressWorkspaceMenu(1);
   expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
 });
