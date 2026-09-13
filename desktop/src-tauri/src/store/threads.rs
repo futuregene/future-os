@@ -302,15 +302,29 @@ pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::AppError> {
 }
 
 /// Record conversation activity. This is kept separate from `updated_at`:
-/// metadata changes such as a rename must not reorder the rail.
+/// metadata changes such as a rename must not reorder the rail. Original Agent
+/// timestamps make replay safe; an older event must never move activity back.
 pub(super) fn mark_thread_message_activity_in(
     conn: &Connection,
     thread_id: &str,
-    now: i64,
-) -> Result<(), crate::AppError> {
+    timestamp: i64,
+) -> Result<bool, crate::AppError> {
     const SQL: &str = "UPDATE threads SET last_message_at = ?1
-         WHERE id = ?2 AND status != 'deleted'";
-    conn.execute(SQL, params![now, thread_id])?;
+         WHERE id = ?2 AND status != 'deleted'
+           AND (last_message_at IS NULL OR last_message_at < ?1)";
+    Ok(conn.execute(SQL, params![timestamp, thread_id])? > 0)
+}
+
+/// Advance the shared desktop/mobile catalog on assistant output as well as
+/// user prompts. Opening, renaming and replay receipt time are not activity.
+pub fn record_thread_message_activity(
+    thread_id: &str,
+    timestamp: i64,
+) -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    if mark_thread_message_activity_in(&conn, thread_id, timestamp)? {
+        mark_catalog_dirty();
+    }
     Ok(())
 }
 
@@ -849,6 +863,49 @@ mod tests {
             thread.updated_at, 1,
             "opening does not become sidebar activity"
         );
+    }
+
+    #[test]
+    fn assistant_activity_reorders_threads_without_replay_or_metadata_bumps() {
+        let (_home, conn) = guarded_conn("threads_assistant_activity");
+        seed_two_threads(&conn);
+        conn.execute("UPDATE threads SET pinned = 0 WHERE id = 't1'", [])
+            .unwrap();
+        let ids = || {
+            list_threads()
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), ["t1", "t2"]);
+        record_thread_message_activity("t2", 500).unwrap();
+        assert_eq!(ids(), ["t2", "t1"], "assistant reply beats a newer prompt");
+        record_thread_message_activity("t2", 50).unwrap();
+        record_thread_message_activity("t2", 500).unwrap();
+        assert_eq!(
+            get_thread("t2").unwrap().unwrap().last_message_at,
+            Some(500)
+        );
+        rename_thread(RenameThreadInput {
+            thread_id: "t1".into(),
+            title: "Renamed".into(),
+        })
+        .unwrap();
+        mark_thread_opened("t1").unwrap();
+        assert_eq!(ids(), ["t2", "t1"]);
+        pin_thread(PinThreadInput {
+            thread_id: "t1".into(),
+            pinned: true,
+        })
+        .unwrap();
+        assert_eq!(ids(), ["t1", "t2"], "pins still win over activity");
+        record_thread_message_activity("t3", 900).unwrap();
+        assert_eq!(
+            get_thread("t3").unwrap().unwrap().last_message_at,
+            Some(400)
+        );
+        assert_eq!(get_thread("t2").unwrap().unwrap().updated_at, 1);
     }
 
     fn chat_input() -> CreateThreadInput {
