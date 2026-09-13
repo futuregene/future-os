@@ -68,6 +68,14 @@ test("a single short exchange exposes a clickable older-history footer before an
   expect(tree.root.findByType(FlatList).props.ListFooterComponent.props.disabled).toBe(false);
 });
 
+test("text selection cannot trigger Android focus-driven transcript scrolling", () => {
+  const list = tree.root.findByType(FlatList);
+  expect(list.props.inverted).toBe(true);
+  expect(list.props.scrollsChildToFocus).toBe(false);
+  // Do not solve selection jumps by disabling manual reading/scrolling.
+  expect(list.props.scrollEnabled).not.toBe(false);
+});
+
 test("no older-history footer when the history is exhausted", () => {
   mockRemote.canLoadOlderTimeline = false;
   act(() => tree.update(createElement(ChatScreen)));

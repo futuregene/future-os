@@ -15,6 +15,9 @@ import {
 import type { EntriesData, RemoteSessionState, StreamEvent } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+// An exchange can contain hundreds of tool steps. Keep the first paint small;
+// explicit older-history pulls can still amortize the round trip over ten turns.
+const HISTORY_TAIL_USER_EXCHANGES = 3;
 const HISTORY_PAGE_USER_EXCHANGES = 10;
 const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 
@@ -215,7 +218,7 @@ export function useTimelineController({
           type: "get_session_entries",
           sessionId,
           before: HISTORY_TAIL_CURSOR,
-          limit: HISTORY_PAGE_USER_EXCHANGES,
+          limit: HISTORY_TAIL_USER_EXCHANGES,
         },
         sessionId,
         () => epoch === historyEpochRef.current && clientRef.current === client && selectedRef.current === sessionId,
@@ -326,7 +329,7 @@ export function useTimelineController({
     pruneTimelines(sessionId);
     const cached = timelinesRef.current[sessionId];
     if (!cached) return;
-    const windowed = latestTimelineWindow(cached, HISTORY_PAGE_USER_EXCHANGES);
+    const windowed = latestTimelineWindow(cached, HISTORY_TAIL_USER_EXCHANGES);
     if (windowed === cached) return;
 
     // A reopened conversation may have many explicitly paged rows in memory.

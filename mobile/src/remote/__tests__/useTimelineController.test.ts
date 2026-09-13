@@ -482,7 +482,7 @@ describe("useTimelineController", () => {
         expect.objectContaining({
           type: "get_session_entries",
           before: Number.MAX_SAFE_INTEGER,
-          limit: 10,
+          limit: 3,
         }),
       );
       expect(result.current.canLoadOlderTimeline).toBe(true);
@@ -544,11 +544,11 @@ describe("useTimelineController", () => {
         .map(i => (i.kind === "message" ? i.text : ""));
       expect(reconciledTexts).toEqual(["older", "older answer", "latest", "reconciled answer"]);
       expect(request.mock.calls[4]?.[0]).toEqual(
-        expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 10 }),
+        expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 3 }),
       );
     });
 
-    test("reopening a warm timeline renders only the latest ten exchanges", async () => {
+    test("reopening a warm timeline renders only the latest three exchanges", async () => {
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       const exchanges = (start: number, end: number) =>
@@ -574,11 +574,16 @@ describe("useTimelineController", () => {
       await flush();
       expect(result.current.timeline.items).toHaveLength(40);
 
+      act(() => result.current.prepareTimelineOpen("s1"));
+      await flush();
+      // Cache warmth must not mount all previously paged tool-heavy turns while
+      // waiting for the new network request.
+      expect(result.current.timeline.items).toHaveLength(6);
+      expect(result.current.timeline.items[0]?.id).toBe("m_u18");
       request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({
-        data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+        data: { entries: exchanges(18, 20), hasMore: true, nextOffset: 34 },
       });
       await act(async () => {
-        result.current.prepareTimelineOpen("s1");
         await result.current.syncEngineRef.current!.open("s1");
       });
       await flush();
@@ -587,7 +592,7 @@ describe("useTimelineController", () => {
         result.current.timeline.items
           .filter(item => item.kind === "message" && item.role === "user")
           .map(item => (item.kind === "message" ? item.text : "")),
-      ).toEqual(Array.from({ length: 10 }, (_, index) => `user ${index + 11}`));
+      ).toEqual(["user 18", "user 19", "user 20"]);
       expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 
