@@ -1,0 +1,86 @@
+import { createElement, useLayoutEffect, useRef, useState } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { useSkillCompletion } from "../useSkillCompletion";
+
+let completion: ReturnType<typeof useSkillCompletion>;
+let message: string;
+const focus = jest.fn();
+function Harness({ initial = "", enabled = true }) {
+  const [text, setText] = useState(initial);
+  const input = useRef({ focus } as unknown as TextInput);
+  const result = useSkillCompletion(text, setText, enabled, input);
+  useLayoutEffect(() => { message = text; completion = result; });
+  return null;
+}
+let tree: ReactTestRenderer;
+afterEach(() => { act(() => tree.unmount()); jest.restoreAllMocks(); });
+function type(text: string, cursor = text.length) {
+  act(() => { completion.onChangeText(text); completion.onSelectionChange({ start: cursor, end: cursor }); });
+}
+
+test("typed and button slash use the same completion, preserving surrounding text", () => {
+  act(() => { tree = create(createElement(Harness, { initial: "你好 世界" })); });
+  act(() => completion.onSelectionChange({ start: 3, end: 3 }));
+  act(() => completion.insertSlash());
+  expect(message).toBe("你好 / 世界");
+  expect(completion.query?.query).toBe("");
+  expect(focus).toHaveBeenCalled();
+  act(() => completion.insertSlash());
+  expect(message).toBe("你好 / 世界");
+  type("你好 /研究 世界", 6);
+  expect(completion.query?.query).toBe("研究");
+  act(() => completion.select("future-web"));
+  expect(message).toBe("你好 /future-web 世界");
+  expect(completion.selection).toEqual({ start: 15, end: 15 });
+  expect(completion.query).toBeNull();
+});
+
+test("dismissal preserves draft; further typing or a button press reopens suggestions", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("/re");
+  expect(completion.query?.query).toBe("re");
+  act(() => completion.close());
+  expect(message).toBe("/re");
+  expect(completion.query).toBeNull();
+  act(() => completion.onSelectionChange({ start: 3, end: 3 }));
+  expect(completion.query).toBeNull();
+  type("/research");
+  expect(completion.query?.query).toBe("research");
+  act(() => completion.onBlur());
+  expect(completion.query).toBeNull();
+  act(() => completion.insertSlash());
+  expect(message).toBe("/research");
+  expect(completion.query).not.toBeNull();
+});
+
+test("disabled composer cannot insert or select skills", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.insertSlash());
+  expect(completion.query).not.toBeNull();
+  act(() => tree.update(createElement(Harness, { enabled: false })));
+  act(() => { completion.select("web"); completion.insertSlash(); });
+  expect(message).toBe("/");
+  expect(completion.query).toBeNull();
+});
+
+test("Android Back closes suggestions first; IME dismissal also closes them", () => {
+  let back!: Parameters<typeof BackHandler.addEventListener>[1];
+  let hide!: () => void;
+  const remove = jest.fn();
+  jest.spyOn(BackHandler, "addEventListener").mockImplementation((_, callback) => { back = callback; return { remove }; });
+  jest.spyOn(Keyboard, "addListener").mockImplementation((_, callback) => {
+    hide = callback as () => void;
+    return { remove } as unknown as ReturnType<typeof Keyboard.addListener>;
+  });
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.insertSlash());
+  act(() => { expect(back({ type: "hardwareBackPress", timeStamp: 1 })).toBe(true); });
+  expect(completion.query).toBeNull();
+  expect(message).toBe("/");
+  expect(remove).toHaveBeenCalled();
+  act(() => completion.insertSlash());
+  act(() => hide());
+  expect(completion.query).toBeNull();
+});

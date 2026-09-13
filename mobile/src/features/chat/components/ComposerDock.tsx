@@ -5,11 +5,12 @@ import {
   FileText,
   Paperclip,
   Send,
+  Slash,
   Square,
   X,
 } from "lucide-react-native";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
-import { memo, useState, type Dispatch, type SetStateAction } from "react";
+import { memo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
@@ -18,6 +19,8 @@ import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, TimelineItem } from "../../../remote/types";
 import { chatTypography, colors, layout, radius, spacing } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
+import { useSkillCompletion } from "../useSkillCompletion";
+import { SkillPicker } from "./SkillPicker";
 
 type Remote = RemoteControls;
 
@@ -46,6 +49,7 @@ function ComposerDockView({
   decideApproval,
   selector,
   setSelector,
+  keyboardHeight = 0,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -64,13 +68,19 @@ function ComposerDockView({
   approvalSubmitting: string | null;
   approvalError: { id: string; message: string } | null;
   decideApproval: (id: string, decision: "approved" | "rejected") => Promise<void>;
-  selector: "model" | "thinking" | null;
-  setSelector: (value: "model" | "thinking" | null) => void;
+  selector: "model" | "thinking" | "settings" | null;
+  setSelector: (value: "model" | "thinking" | "settings" | null) => void;
+  keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
-  const maxInputHeight = Math.max(INPUT_MIN_HEIGHT, Math.min(INPUT_MAX_HEIGHT, Math.floor(height * 0.3)));
+  const combinedSettings = width < 360 || fontScale > 1.2;
+  const editable = remote.desktopOnline && !remote.streaming && !remote.busy;
+  const inputRef = useRef<TextInput>(null);
+  const completion = useSkillCompletion(message, setMessage, editable && selector === null, inputRef);
+  const pickerHeight = Math.max(100, Math.min(240, (height - keyboardHeight - 100) * 0.5));
+  const maxInputHeight = Math.max(INPUT_MIN_HEIGHT, Math.min(completion.query ? 90 : INPUT_MAX_HEIGHT, Math.floor(height * 0.3)));
   const inputHeight = message ? Math.max(INPUT_MIN_HEIGHT, Math.min(maxInputHeight, contentHeight)) : INPUT_MIN_HEIGHT;
   return (
     <View style={styles.composerDock}>
@@ -115,6 +125,17 @@ function ComposerDockView({
         </View>
       ))}
       <View style={styles.composerArea}>
+        {completion.query && (
+          <SkillPicker
+            key={`${remote.credentials?.pairId}:${remote.presence?.bridgeInstanceId}:${remote.selectedSessionId}:${remote.draftWorkspaceId}`}
+            query={completion.query.query}
+            supported={remote.capabilities?.has("skills_v1") ?? false}
+            load={remote.listSkills}
+            onSelect={completion.select}
+            onClose={completion.close}
+            maxHeight={pickerHeight}
+          />
+        )}
         <View style={styles.composer}>
           {attachments.length > 0 && (
             <ScrollView
@@ -180,13 +201,18 @@ function ComposerDockView({
               </Text>
             </View>
             <TextInput
+              ref={inputRef}
+              selection={completion.inputSelection}
+              onSelectionChange={event => completion.onSelectionChange(event.nativeEvent.selection)}
+              onFocus={completion.onFocus}
+              onBlur={completion.onBlur}
               accessibilityLabel={t("chat.placeholder")}
               autoCapitalize="none"
               autoCorrect={false}
-              editable={remote.desktopOnline && !remote.streaming && !remote.busy}
+              editable={editable}
               multiline
               scrollEnabled={!!message && contentHeight > maxInputHeight}
-              onChangeText={setMessage}
+              onChangeText={completion.onChangeText}
               onSubmitEditing={() => void send()}
               placeholder={t("chat.placeholder")}
               placeholderTextColor={colors.inkMuted}
@@ -198,11 +224,11 @@ function ComposerDockView({
           <View style={[styles.composerToolbar, compactToolbar && styles.composerToolbarCompact]}>
             <View style={[styles.composerSelectors, compactToolbar && styles.composerSelectorsCompact]}>
               <Pressable
-                accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
+                accessibilityLabel={combinedSettings ? `${t("chat.modelSettings")}: ${activeModelLabel}, ${t(`thinking.${remote.thinkingLevel}`)}` : `${t("chat.model")}: ${activeModelLabel}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming }}
+                accessibilityState={{ expanded: selector === "model" || selector === "settings", disabled: remote.streaming }}
                 disabled={remote.streaming}
-                onPress={() => setSelector("model")}
+                onPress={() => setSelector(combinedSettings ? "settings" : "model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
                   styles.modelTrigger,
@@ -212,11 +238,11 @@ function ComposerDockView({
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
-                  {activeModelLabel}
+                  {combinedSettings ? t("chat.modelSettings") : activeModelLabel}
                 </Text>
                 <ChevronDown color={colors.inkMuted} size={14} />
               </Pressable>
-              <Pressable
+              {!combinedSettings && <Pressable
                 accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
                 accessibilityRole="button"
                 accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming }}
@@ -234,8 +260,22 @@ function ComposerDockView({
                   {t(`thinking.${remote.thinkingLevel}`)}
                 </Text>
                 <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>
+              </Pressable>}
             </View>
+            <Pressable
+              accessibilityLabel={t("skills.choose")}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: !!completion.query, disabled: !editable }}
+              disabled={!editable}
+              onPress={completion.insertSlash}
+              style={({ pressed }) => [
+                styles.attachmentButton,
+                (pressed || !!completion.query) && styles.selectorTriggerPressed,
+                !editable && styles.controlDisabled,
+              ]}
+            >
+              <Slash color={completion.query ? colors.accent : colors.inkSoft} size={18} />
+            </Pressable>
             <Pressable
               accessibilityLabel={t("attachment.add")}
               accessibilityRole="button"
@@ -416,9 +456,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.xs,
   },
-  // Keep both selectors visible alongside attachment/send even on a 320pt
-  // screen. Labels may ellipsize; controls never move to a third row.
-  // Narrow screens may truncate labels, never squeeze away their insets.
+  // Small screens / large type combine model and thinking into one settings
+  // entry so skill, attachment and send keep their full 44pt touch targets.
   // Toolbar 8 + trigger 8 matches the text/attachment inset of 16.
   composerToolbarCompact: { gap: spacing.xs },
   composerSelectorsCompact: { gap: spacing.xs },

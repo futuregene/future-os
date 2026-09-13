@@ -23,8 +23,8 @@ export function ModelSelectorSheet({
   remote,
   t,
 }: {
-  selector: "model" | "thinking" | null;
-  setSelector: (value: "model" | "thinking" | null) => void;
+  selector: "model" | "thinking" | "settings" | null;
+  setSelector: (value: "model" | "thinking" | "settings" | null) => void;
   remote: Remote;
   t: TFunction;
 }) {
@@ -44,7 +44,7 @@ export function ModelSelectorSheet({
             <View accessibilityViewIsModal style={styles.selectorMenu}>
               <View style={styles.selectorHeader}>
                 <Text accessibilityRole="header" style={styles.selectorTitle}>
-                  {selector === "model" ? t("chat.model") : t("chat.thinkingLevel")}
+                  {t(selector === "settings" ? "chat.modelSettings" : selector === "model" ? "chat.model" : "chat.thinkingLevel")}
                 </Text>
                 <Pressable
                   accessibilityRole="button"
@@ -56,8 +56,8 @@ export function ModelSelectorSheet({
                 </Pressable>
               </View>
               <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
-                {selector === "model"
-                  ? remote.models.map(model => {
+                {selector === "settings" && <Text accessibilityRole="header" style={styles.sectionTitle}>{t("chat.model")}</Text>}
+                {(selector === "model" || selector === "settings") && remote.models.map(model => {
                       const selected = modelReference(model) === remote.modelId;
                       return (
                         <Pressable
@@ -87,8 +87,9 @@ export function ModelSelectorSheet({
                           {selected ? <Check color={colors.accent} size={18} /> : null}
                         </Pressable>
                       );
-                    })
-                  : thinkingLevels.map(level => {
+                    })}
+                {selector === "settings" && <Text accessibilityRole="header" style={styles.sectionTitle}>{t("chat.thinkingLevel")}</Text>}
+                {(selector === "thinking" || selector === "settings") && thinkingLevels.map(level => {
                       const selected = level === remote.thinkingLevel;
                       return (
                         <Pressable
@@ -118,6 +119,7 @@ export function ModelSelectorSheet({
 }
 
 const styles = StyleSheet.create({
+  sectionTitle: { padding: spacing.md, color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
   selectorOverlay: {
     flex: 1,
     justifyContent: "flex-end",

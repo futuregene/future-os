@@ -17,6 +17,7 @@ import type {
   HistoryAttachment,
   RemoteModel,
   RemoteSessionState,
+  RemoteSkill,
   SessionFileListing,
   ThinkingLevel,
 } from "./types";
@@ -147,6 +148,18 @@ export function useConversationController({
       setSelectedSessionId,
     ],
   );
+
+  const listSkills = useCallback(async () => {
+    const client = clientRef.current;
+    const epoch = conversationEpochRef.current;
+    if (!client) throw new Error("skills_not_connected");
+    const response = await client.request<{ skills: RemoteSkill[] }>({ type: "list_skills" });
+    if (clientRef.current !== client || conversationEpochRef.current !== epoch) {
+      throw new Error("skills_context_changed");
+    }
+    if (!Array.isArray(response.data.skills)) throw new Error("skills_invalid_response");
+    return response.data.skills;
+  }, [clientRef, conversationEpochRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {
     const client = clientRef.current;
@@ -295,6 +308,7 @@ export function useConversationController({
     selectSession,
     newConversation,
     listSessionFiles,
+    listSkills,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,

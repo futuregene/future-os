@@ -190,6 +190,36 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+describe("installed skills", () => {
+  it("loads the connected Agent catalogue without requiring a saved session", async () => {
+    const skills = [{ name: "web", description: "Search" }];
+    const h = await mountController({ request: jest.fn(async () => ({ data: { skills } })) });
+    await expect(h.result.current!.listSkills()).resolves.toEqual(skills);
+    expect(h.request).toHaveBeenCalledWith({ type: "list_skills" });
+    act(() => h.renderer.unmount());
+  });
+
+  it("rejects late results after switching conversation or desktop", async () => {
+    for (const change of ["conversation", "desktop"]) {
+      let resolve!: (response: unknown) => void;
+      const h = await mountController({ request: jest.fn(() => new Promise(yes => { resolve = yes; })) });
+      const pending = h.result.current!.listSkills();
+      const rejected = expect(pending).rejects.toThrow("skills_context_changed");
+      if (change === "conversation") h.conversationEpochRef.current += 1;
+      else h.clientRef.current = null;
+      resolve({ data: { skills: [] } });
+      await rejected;
+      act(() => h.renderer.unmount());
+    }
+  });
+
+  it("does not mistake a malformed response for an empty skill list", async () => {
+    const h = await mountController({ request: jest.fn(async () => ({ data: {} })) });
+    await expect(h.result.current!.listSkills()).rejects.toThrow("skills_invalid_response");
+    act(() => h.renderer.unmount());
+  });
+});
+
 describe("session file browsing", () => {
   it("scopes chunked directory reads to the selected session", async () => {
     const listing = { rootPath: "/work", path: "/work/sub", entries: [] };
