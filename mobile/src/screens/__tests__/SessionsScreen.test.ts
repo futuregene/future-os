@@ -27,7 +27,7 @@ jest.mock("react-native", () => {
     get: (target, key) => key === "useWindowDimensions" ? () => mockDimensions : Reflect.get(target, key),
   });
 });
-jest.mock("../../remote/RemoteContext", () => ({ useRemote: () => mockRemote }));
+jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../SessionList", () => ({ SessionList: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));

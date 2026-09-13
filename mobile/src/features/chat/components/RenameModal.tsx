@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Modal, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
@@ -19,12 +20,25 @@ export function RenameModal({
   onClose: () => void;
   t: TFunction;
 }) {
+  const pending = useRef<(() => void) | null>(null);
+  const flush = () => {
+    const action = pending.current;
+    pending.current = null;
+    action?.();
+  };
+  const save = () => {
+    if (!renameValue.trim() || pending.current) return;
+    pending.current = () => void submitRename();
+    onClose();
+    if (Platform.OS !== "ios") setTimeout(flush, 0);
+  };
   return (
     <Modal
       animationType="fade"
       onRequestClose={onClose}
+      onDismiss={flush}
       transparent
-      visible={Platform.OS !== "ios" && renameOpen}
+      visible={renameOpen}
     >
       <DialogSurface>
           <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
@@ -32,7 +46,7 @@ export function RenameModal({
             autoFocus
             accessibilityLabel={t("chat.renameTitle")}
             onChangeText={setRenameValue}
-            onSubmitEditing={() => void submitRename()}
+            onSubmitEditing={save}
             placeholder={t("sessions.unnamed")}
             placeholderTextColor={colors.inkMuted}
             returnKeyType="done"
@@ -48,7 +62,7 @@ export function RenameModal({
                 compact
                 disabled={!renameValue.trim()}
                 label={t("chat.save")}
-                onPress={() => void submitRename()}
+                onPress={save}
               />
             </View>
           </View>
@@ -62,6 +76,8 @@ const styles = StyleSheet.create({
   nameInput: {
     minHeight: 48,
     paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: 15,
     color: colors.ink,
     borderWidth: 1,
     borderColor: colors.line,

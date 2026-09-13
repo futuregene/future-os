@@ -2,7 +2,6 @@ import { ArrowLeft, Check, Monitor, Pencil, Plus, Trash2 } from "lucide-react-na
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Alert,
   BackHandler,
   Keyboard,
   Modal,
@@ -16,6 +15,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { DialogSurface } from "../components/DialogSurface";
+import { useAppDialog } from "../components/useAppDialog";
 import { useRemoteControls } from "../remote/RemoteContext";
 import type { PairedDesktop } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
@@ -25,6 +25,7 @@ const renameDefault = (desktop: PairedDesktop) => desktop.name ?? desktop.deskto
 
 export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): void }) {
   const { t } = useTranslation();
+  const Alert = useAppDialog();
   const remote = useRemoteControls();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
@@ -88,6 +89,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
 
   return (
     <SafeAreaView style={styles.safe}>
+      {Alert.dialog}
       <View style={styles.column}>
         <View style={styles.topbar}>
           <Pressable

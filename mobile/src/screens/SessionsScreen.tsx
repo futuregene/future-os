@@ -14,18 +14,13 @@ import {
 } from "lucide-react-native";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
-  ActivityIndicator,
-  ActionSheetIOS,
-  Alert,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -35,7 +30,9 @@ import { ActionMenu } from "../components/ActionMenu";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { DialogSurface } from "../components/DialogSurface";
-import { useRemote } from "../remote/RemoteContext";
+import { useAppDialog } from "../components/useAppDialog";
+import { RenameModal } from "../features/chat/components/RenameModal";
+import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
 import { colors, layout, radius, spacing } from "../theme/tokens";
@@ -55,7 +52,8 @@ function deferPresentation(action: () => void): void {
   setTimeout(action, Platform.OS === "ios" ? 350 : 0);
 }
 
-export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void }) {
+export function SessionsScreen({ onManageDesktops, active = true }: { onManageDesktops(): void; active?: boolean }) {
+  const Alert = useAppDialog(active);
   const { t } = useTranslation();
   const remote = useRemote();
   const { width, fontScale } = useWindowDimensions();
@@ -78,20 +76,28 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const pendingNewConversationRef = useRef<(() => void) | null>(null);
-  const pendingManageDesktopsRef = useRef(false);
+  const pendingSettingsActionRef = useRef<(() => void) | null>(null);
+  const [wasActive, setWasActive] = useState(active);
+  if (wasActive !== active) {
+    setWasActive(active);
+    if (!active) {
+      setNewOpen(false);
+      setSettingsOpen(false);
+      setMenuSession(null);
+      setRenameTarget(null);
+    }
+  }
 
-  const manageDesktopsFromSettings = () => {
-    // On iOS let the modal release UIKit's presentation controller before
-    // replacing this screen with the device picker.
-    pendingManageDesktopsRef.current = Platform.OS === "ios";
+  const afterSettings = (action: () => void) => {
+    pendingSettingsActionRef.current = Platform.OS === "ios" ? action : null;
     setSettingsOpen(false);
-    if (Platform.OS !== "ios") deferPresentation(onManageDesktops);
+    if (Platform.OS !== "ios") deferPresentation(action);
   };
 
   const flushPendingManageDesktops = () => {
-    if (!pendingManageDesktopsRef.current) return;
-    pendingManageDesktopsRef.current = false;
-    onManageDesktops();
+    const action = pendingSettingsActionRef.current;
+    pendingSettingsActionRef.current = null;
+    action?.();
   };
 
   const openNew = () => {
@@ -145,36 +151,13 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
     try {
       await remote.setApprovalTier(tier);
     } catch {
-      Alert.alert(t("common.error"));
+      afterSettings(() => Alert.alert(t("common.error")));
     } finally {
       setApprovalSaving(false);
     }
   };
 
-  const openApprovalMenu = () => {
-    if (approvalDisabled) return;
-    const options = [...approvalTiers.map((tier) => t(`approvalTier.${tier}`)), t("chat.cancel")];
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: t("approvalTier.title"),
-          options,
-          cancelButtonIndex: approvalTiers.length,
-        },
-        (index) => {
-          const tier = approvalTiers[index];
-          if (tier) deferPresentation(() => void selectApprovalTier(tier));
-        },
-      );
-      return;
-    }
-    void showAndroidActionSheet(options, t("approvalTier.title"))
-      .then((index) => {
-        const tier = index === null ? undefined : approvalTiers[index];
-        if (tier) deferPresentation(() => void selectApprovalTier(tier));
-      })
-      .catch(() => Alert.alert(t("common.error")));
-  };
+
 
   const startConversation = () => {
     if (newMode === "workspace" && !workspaceId) return;
@@ -215,24 +198,6 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   };
 
   const openRename = (session: RemoteSession) => {
-    if (Platform.OS === "ios") {
-      Alert.prompt(
-        t("chat.renameTitle"),
-        undefined,
-        [
-          { text: t("chat.cancel"), style: "cancel" },
-          {
-            text: t("chat.save"),
-            onPress: (value?: string) => {
-              if (value?.trim()) void renameSession(session, value);
-            },
-          },
-        ],
-        "plain-text",
-        session.title || "",
-      );
-      return;
-    }
     setRenameTarget(session);
     setRenameValue(session.title || "");
   };
@@ -323,6 +288,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.page}>
+        {Alert.dialog}
         <ActionMenu
           title={menuSession?.title || t("sessions.unnamed")}
           visible={menuSession !== null}
@@ -378,6 +344,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
         <SessionList
           key={tab}
           tab={tab}
+          active={active}
           onTabChange={setTab}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
@@ -489,36 +456,23 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
               </View>
               <Button
                 label={t("desktops.title")}
-                onPress={manageDesktopsFromSettings}
+                onPress={() => afterSettings(onManageDesktops)}
                 variant="secondary"
               />
               <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
-              <View style={styles.tierDropdown}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: approvalDisabled }}
-                  disabled={approvalDisabled}
-                  onPress={openApprovalMenu}
-                  style={({ pressed }) => [
-                    styles.tierTrigger,
-                    approvalDisabled && styles.tierTriggerDisabled,
-                    pressed && !approvalDisabled && styles.pressed,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.tierTriggerText,
-                      approvalDisabled && styles.tierTriggerTextDisabled,
-                    ]}
+              <View style={styles.approvalOptions}>
+                {approvalTiers.map(tier => (
+                  <Pressable
+                    key={tier}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: remote.approvalTier === tier, disabled: approvalDisabled }}
+                    disabled={approvalDisabled}
+                    onPress={() => void selectApprovalTier(tier)}
+                    style={[styles.modeOption, remote.approvalTier === tier && styles.modeOptionActive, approvalDisabled && styles.tierTriggerDisabled]}
                   >
-                    {t(`approvalTier.${remote.approvalTier}`)}
-                  </Text>
-                  {approvalSaving ? (
-                    <ActivityIndicator color={colors.inkMuted} size={16} />
-                  ) : (
-                    <ChevronDown color={colors.inkMuted} size={18} />
-                  )}
-                </Pressable>
+                    <Text style={styles.modeOptionText}>{t(`approvalTier.${tier}`)}</Text>
+                  </Pressable>
+                ))}
               </View>
               <View style={styles.updateRow}>
                 <Text style={styles.updateVersion}>
@@ -528,58 +482,27 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                   compact
                   label={t("update.check")}
                   loading={checkingUpdate}
-                  onPress={() => void checkUpdate()}
+                  onPress={() => afterSettings(() => void checkUpdate())}
                   variant="secondary"
                 />
               </View>
               <Button
                 icon={<LogOut color={colors.danger} size={16} />}
                 label={t("sessions.unpair")}
-                onPress={confirmUnpair}
+                onPress={() => afterSettings(confirmUnpair)}
                 variant="danger"
               />
           </DialogSurface>
         </Modal>
 
-        <Modal
-          animationType="fade"
-          onRequestClose={() => setRenameTarget(null)}
-          transparent
-          visible={Platform.OS !== "ios" && renameTarget !== null}
-        >
-          <DialogSurface>
-              <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
-              <TextInput
-                autoFocus
-                accessibilityLabel={t("chat.renameTitle")}
-                onChangeText={setRenameValue}
-                onSubmitEditing={() => void submitRename()}
-                placeholder={t("sessions.unnamed")}
-                placeholderTextColor={colors.inkMuted}
-                returnKeyType="done"
-                style={styles.nameInput}
-                value={renameValue}
-              />
-              <View style={styles.dialogActions}>
-                <View style={styles.dialogAction}>
-                  <Button
-                    compact
-                    label={t("chat.cancel")}
-                    onPress={() => setRenameTarget(null)}
-                    variant="secondary"
-                  />
-                </View>
-                <View style={styles.dialogAction}>
-                  <Button
-                    compact
-                    disabled={!renameValue.trim()}
-                    label={t("chat.save")}
-                    onPress={() => void submitRename()}
-                  />
-                </View>
-              </View>
-          </DialogSurface>
-        </Modal>
+        <RenameModal
+          renameOpen={renameTarget !== null}
+          renameValue={renameValue}
+          setRenameValue={setRenameValue}
+          submitRename={submitRename}
+          onClose={() => setRenameTarget(null)}
+          t={t}
+        />
       </View>
     </SafeAreaView>
   );
@@ -721,32 +644,6 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   updateVersion: { color: colors.inkMuted, fontSize: 13 },
-  tierDropdown: { position: "relative", zIndex: 10 },
-  tierTrigger: {
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.md,
-  },
+  approvalOptions: { flexDirection: "row", gap: spacing.sm },
   tierTriggerDisabled: { backgroundColor: colors.surfaceSubtle, opacity: 0.55 },
-  tierTriggerText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
-  tierTriggerTextDisabled: { color: colors.inkMuted },
-  nameInput: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    color: colors.ink,
-    fontSize: 15,
-  },
-  dialogActions: { flexDirection: "row", gap: spacing.md },
-  dialogAction: { flex: 1 },
 });

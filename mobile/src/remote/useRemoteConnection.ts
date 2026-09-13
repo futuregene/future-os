@@ -2,7 +2,7 @@ import type { MutableRefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as Network from "expo-network";
 import { AppState, type AppStateStatus } from "react-native";
-import { RemoteClient } from "./client";
+import { RemoteClient, type RecoveryReason } from "./client";
 import type { ConnectionState } from "./connectionState";
 import { classifyError, RemoteApiError } from "./connectionState";
 import { NATIVE_PRESENTATION_GRACE_MS, nativePresentationInFlight } from "./nativePresentation";
@@ -37,6 +37,10 @@ import type {
   RemoteWorkspace,
   StreamEvent,
 } from "./types";
+
+// Avoid tearing down for a quick app switch / native activity transition.
+// This is not a background execution or push-notification guarantee.
+export const BACKGROUND_GRACE_MS = 5_000;
 
 interface RemoteConnectionOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -83,6 +87,7 @@ export function useRemoteConnection({
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<RemoteCredentials | null>(null);
   const [presence, setPresence] = useState<Presence | null>(null);
+  const latestPresenceRef = useRef<Presence | null>(null);
   const [desktops, setDesktops] = useState<PairedDesktop[]>([]);
   const refreshDesktops = useCallback(async () => {
     setDesktops(await loadPairedDesktops());
@@ -191,6 +196,7 @@ export function useRemoteConnection({
       presenceStateRef.current = INITIAL_PRESENCE_STATE;
       agentAvailableRef.current = undefined;
       lastPresenceReceiptRef.current = 0;
+      latestPresenceRef.current = null;
       setPresence(null);
       setDesktopOnline(false);
       setPhase("connecting");
@@ -260,6 +266,7 @@ export function useRemoteConnection({
           if (agentRecovered && connectionReadyRef.current)
             void recoverState(client).catch(recordError);
           lastPresenceReceiptRef.current = Date.now();
+          latestPresenceRef.current = nextPresence;
           setPresence(nextPresence);
           if (connectionReadyRef.current) {
             updateDesktopOnline(nextPresence, lastPresenceReceiptRef.current);
@@ -294,6 +301,9 @@ export function useRemoteConnection({
           if (state === "ready") {
             setPhase("ready");
             setError(null);
+            // Handshake presence arrives before ready; evaluate it now rather
+            // than leaving the UI disabled until the next heartbeat/timer.
+            updateDesktopOnline(latestPresenceRef.current, Date.now());
           } else if (state === "revoked" || state === "unpaired") {
             credentialsRef.current = null;
             void discardPendingPrompt(nextCredentials.pairId);
@@ -373,14 +383,14 @@ export function useRemoteConnection({
   }, [clientRef, connect, drainRevokes, recordError, refreshDesktops]);
 
   const recoverLifecycle = useCallback(
-    async (reason: "foreground" | "network-restored" | "network-changed" | "request-failure") => {
+    async (reason: RecoveryReason) => {
+      const client = clientRef.current;
       if (reason === "foreground") {
         const available = await refreshNetworkStateRef.current();
         if (!available) return;
       }
       void drainRevokes().catch(recordError);
-      const client = clientRef.current;
-      if (!client || !credentialsRef.current || networkAvailableRef.current === false) return;
+      if (!client || clientRef.current !== client || !credentialsRef.current || networkAvailableRef.current === false) return;
       try {
         const revision = recoveryRef.current.revision(client);
         await client.recoverNow(reason);
@@ -399,6 +409,7 @@ export function useRemoteConnection({
 
   useEffect(() => {
     let previous: AppStateStatus = AppState.currentState;
+    let backgrounded = previous === "background";
     let presentationTimer: ReturnType<typeof setTimeout> | null = null;
     const clearPresentationTimer = () => {
       if (presentationTimer) clearTimeout(presentationTimer);
@@ -408,22 +419,26 @@ export function useRemoteConnection({
       const returnedToForeground = next === "active" && previous !== "active";
       const enteredBackground = next === "background" && previous !== "background";
       previous = next;
-      if (enteredBackground && nativePresentationInFlight()) {
-        // A native picker paused the activity — not a real background. Keep the
-        // socket, but bound the grace: a flow the user never comes back from
-        // must not hold a live connection open indefinitely.
+      if (enteredBackground) {
+        backgrounded = true;
         clearPresentationTimer();
+        // Keep a picker/quick-switch connection alive. Do not depend on the
+        // picker promise still being pending at expiry: Android can deliver
+        // its result before delivering the resumed AppState event.
         presentationTimer = setTimeout(() => {
           presentationTimer = null;
-          if (AppState.currentState !== "active" && nativePresentationInFlight()) {
-            clientRef.current?.setAppActive(false);
-          }
-        }, NATIVE_PRESENTATION_GRACE_MS);
-      } else if (enteredBackground || returnedToForeground) {
+          if (previous !== "active") clientRef.current?.setAppActive(false);
+        }, nativePresentationInFlight() ? NATIVE_PRESENTATION_GRACE_MS : BACKGROUND_GRACE_MS);
+      } else if (returnedToForeground) {
         clearPresentationTimer();
-        clientRef.current?.setAppActive(next === "active");
+        // iOS alerts/control center emit inactive -> active without suspending
+        // the app. They must not restart history/catalogue sync or handshake.
+        if (backgrounded) {
+          backgrounded = false;
+          clientRef.current?.setAppActive(true);
+          void recoverLifecycle("foreground");
+        }
       }
-      if (returnedToForeground) void recoverLifecycle("foreground");
     });
     return () => {
       clearPresentationTimer();
@@ -492,7 +507,7 @@ export function useRemoteConnection({
         // the old traffic keys are gone. Recover without trusting an unsigned
         // presence beacon (or waiting for the next JWT refresh).
         if (AppState.currentState === "active" && Date.now() - lastPresenceReceiptRef.current >= PRESENCE_RECEIPT_STALE_MS) {
-          void recoverLifecycle("request-failure");
+          void recoverLifecycle("presence-stale");
         }
       } else setDesktopOnline(false);
     }, 10_000);

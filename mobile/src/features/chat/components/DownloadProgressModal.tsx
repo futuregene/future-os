@@ -1,6 +1,7 @@
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../../theme/tokens";
+import { DialogSurface } from "../../../components/DialogSurface";
 import { formatBytes, type ActiveDownload } from "../utils";
 
 export function DownloadProgressModal({
@@ -27,8 +28,7 @@ export function DownloadProgressModal({
       transparent
       visible={activeDownload !== null}
     >
-      <View style={styles.downloadOverlay}>
-        <View style={styles.downloadDialog}>
+      <DialogSurface>
           <Text style={styles.downloadTitle}>{t("attachment.downloadProgressTitle")}</Text>
           <Text numberOfLines={1} style={styles.downloadFileName}>
             {activeDownload?.fileName}
@@ -64,29 +64,13 @@ export function DownloadProgressModal({
           >
             <Text style={styles.downloadCancelText}>{t("chat.cancel")}</Text>
           </Pressable>
-        </View>
-      </View>
+      </DialogSurface>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  downloadOverlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: colors.overlay,
-  },
-  downloadDialog: {
-    width: "100%",
-    maxWidth: 360,
-    gap: spacing.md,
-    padding: spacing.xl,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
-  downloadTitle: { color: colors.inkStrong, fontSize: 17, fontWeight: "700" },
+  downloadTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   downloadFileName: { color: colors.ink, fontSize: 14, fontWeight: "600" },
   downloadPhase: { color: colors.inkMuted, fontSize: 13 },
   downloadTrack: {
@@ -100,6 +84,8 @@ const styles = StyleSheet.create({
   downloadBytes: { color: colors.inkMuted, fontSize: 12 },
   downloadPercent: { color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
   downloadCancel: {
+    minHeight: layout.touchTarget,
+    justifyContent: "center",
     alignSelf: "flex-end",
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,

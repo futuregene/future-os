@@ -2,10 +2,8 @@ import { File, FileMode, Directory, Paths } from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Crypto from "expo-crypto";
-import { Image, Platform } from "react-native";
-import { isPhotoPickerAvailable } from "future-native-ui";
+import { Image } from "react-native";
 import { withNativePresentation } from "./nativePresentation";
-import { startActivityAsync, ResultCode } from "expo-intent-launcher";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
 import { mobileFileType } from "./fileTypes";
@@ -333,7 +331,7 @@ export async function prepareSharedAttachments(
 }
 
 export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
-  const permission = await ImagePicker.requestCameraPermissionsAsync();
+  const permission = await withNativePresentation(() => ImagePicker.requestCameraPermissionsAsync());
   if (!permission.granted) throw new Error("attachment_camera_permission");
   const result = await withNativePresentation(() =>
     ImagePicker.launchCameraAsync({
@@ -378,46 +376,15 @@ export async function pickFromAlbum(existing: MobileAttachment[]): Promise<Mobil
     MAX_ATTACHMENTS - existing.length,
   );
   if (remaining <= 0) throw new Error("attachment_image_count");
-  if (Platform.OS === "android") {
-    // Open the phone's gallery, not Android's provider/document picker. Some
-    // OEMs advertise PickVisualMedia but offer no usable local albums there.
-    // ACTION_PICK grants access to the chosen photo without full-library access;
-    // galleries may return one photo at a time, and users can add more.
-    const result = await withNativePresentation(() =>
-      startActivityAsync("android.intent.action.PICK", {
-        data: "content://media/external/images/media",
-        type: "image/*",
-      }),
-    ).catch(() => {
-      // Devices without a gallery handler can still use the system photo picker.
-      if (isPhotoPickerAvailable()) return null;
-      throw new Error("attachment_album_unavailable");
-    });
-    if (result) {
-      if (result.resultCode !== ResultCode.Success || !result.data) return existing;
-      const source = new File(result.data);
-      const mimeType = source.type || mimeFor(source.name);
-      validateRawSelection(existing, [{ file: source, mimeType }]);
-      const format = imageFormat(source, mimeType);
-      if (!format) throw new Error("attachment_image_format");
-      const cached = new File(Paths.cache, `photo-${Crypto.randomUUID()}.${format}`);
-      try {
-        await source.copy(cached);
-        const prepared = await prepareFile(cached, mimeType);
-        if (prepared.localUri !== cached.uri) cached.delete();
-        return [...existing, { ...prepared, temporary: true }];
-      } catch (error) {
-        if (cached.exists) cached.delete();
-        throw error;
-      }
-    }
-  }
+  // Use PHPicker on iOS and Android's PickVisualMedia contract (including
+  // its system backport/fallback), not ACTION_PICK's arbitrary app resolver.
   // System photo pickers grant access to selected images, not the whole library.
   // Do not block them behind READ_MEDIA_IMAGES / full-album permission.
   const result = await withNativePresentation(() =>
     ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       allowsMultipleSelection: true,
+      allowsEditing: false,
       selectionLimit: remaining,
       legacy: false,
       defaultTab: "albums",

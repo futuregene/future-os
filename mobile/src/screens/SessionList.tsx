@@ -17,7 +17,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
-  Alert,
   BackHandler,
   FlatList,
   Pressable,
@@ -28,7 +27,8 @@ import {
 } from "react-native";
 import type { ReactNode } from "react";
 import { ActionMenu } from "../components/ActionMenu";
-import { useRemote } from "../remote/RemoteContext";
+import { useAppDialog } from "../components/useAppDialog";
+import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
@@ -42,16 +42,19 @@ let savedExpanded = new Set<string>();
 
 export function SessionList({
   tab,
+  active = true,
   onTabChange,
   empty,
   onMenu,
 }: {
   tab: "chat" | "workspace";
+  active?: boolean;
   onTabChange: (tab: "chat" | "workspace") => void;
   empty: ReactNode;
   onMenu: (session: RemoteSession) => void;
 }) {
   const remote = useRemote();
+  const Alert = useAppDialog(active);
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -59,6 +62,11 @@ export function SessionList({
   const { listRef, initialOffset, onLayout, onContentSizeChange, onScrollBeginDrag, onScroll } =
     useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
   const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
+  const [wasActive, setWasActive] = useState(active);
+  if (wasActive !== active) {
+    setWasActive(active);
+    if (!active) setMenuWorkspace(null);
+  }
   const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
   useEffect(() => {
@@ -75,13 +83,17 @@ export function SessionList({
   const hierarchical = rows.some(
     row => row.kind === "session" && (row.hasChildren || row.depth > 0),
   );
+  const hierarchicalWorkspaces = new Set(rows.flatMap(row =>
+    row.kind === "session" && (row.hasChildren || row.depth > 0)
+      ? [row.session.workspaceId ?? ""] : [],
+  ));
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
     visibleSessions.length > 0 && visibleSessions.every(session => selected.has(session.sessionId));
 
   useEffect(() => {
-    if (!selecting && !searching) return;
+    if (!active || (!selecting && !searching)) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       if (!deletingRef.current) {
         if (selecting) {
@@ -95,7 +107,7 @@ export function SessionList({
       return true;
     });
     return () => subscription.remove();
-  }, [selecting, searching]);
+  }, [active, selecting, searching]);
 
   const toggleSelection = (id: string) =>
     setSelected(current => {
@@ -249,6 +261,9 @@ export function SessionList({
       );
     }
     const session = item.session;
+    const reserveExpander = tab === "workspace"
+      ? hierarchicalWorkspaces.has(session.workspaceId ?? "")
+      : hierarchical;
     const checked = selected.has(session.sessionId);
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
@@ -288,7 +303,7 @@ export function SessionList({
             )}
           </Pressable>
         ) : (
-          <View style={{ width: hierarchical ? 44 : selecting ? 0 : 12 }} />
+          <View testID="session-expander-space" style={{ width: reserveExpander ? 44 : selecting ? 0 : 12 }} />
         )}
         <Pressable
           accessibilityRole="button"
@@ -339,6 +354,7 @@ export function SessionList({
 
   return (
     <View style={styles.container}>
+      {Alert.dialog}
       <ActionMenu
         title={menuWorkspace?.workspace.name || t("sessions.workspace")}
         visible={menuWorkspace !== null}

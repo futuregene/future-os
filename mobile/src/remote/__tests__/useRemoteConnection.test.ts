@@ -28,7 +28,7 @@ import type {
   RemoteSession,
   StreamEvent,
 } from "../types";
-import { useRemoteConnection } from "../useRemoteConnection";
+import { BACKGROUND_GRACE_MS, useRemoteConnection } from "../useRemoteConnection";
 
 jest.mock("../storage", () => ({
   __esModule: true,
@@ -489,6 +489,17 @@ describe("useRemoteConnection", () => {
       expect(result.current.presence).toBe(presence);
     });
 
+    test("handshake presence becomes usable as soon as ready arrives", async () => {
+      cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
+      render();
+      await flush();
+      act(() => client().callbacks.onConnectionState("reconnecting"));
+      act(() => client().callbacks.onPresence({ ...presence, lastHeartbeatTs: Date.now() / 1000 }));
+      expect(result.current.desktopOnline).toBe(false);
+      act(() => client().callbacks.onConnectionState("ready"));
+      expect(result.current.desktopOnline).toBe(true);
+    });
+
     test("onPresence before ready clears desktop online", async () => {
       await mountConnected();
       const c = client();
@@ -600,10 +611,39 @@ describe("useRemoteConnection", () => {
       await flush();
     }
 
-    test("background transition pauses the client", async () => {
+    test("an inactive-only native overlay does not resync a healthy connection", async () => {
       await mountConnected();
-      act(() => appStateListeners()[0]!("background"));
-      expect(client().setAppActive).toHaveBeenCalled();
+      const connected = client();
+      cast<jest.Mock>(options.refreshSessions).mockClear();
+      await act(async () => {
+        appStateListeners()[0]!("inactive");
+        appStateListeners()[0]!("active");
+        await flush();
+      });
+      expect(connected.recoverNow).not.toHaveBeenCalled();
+      expect(options.refreshSessions).not.toHaveBeenCalled();
+    });
+
+    test("missing encrypted heartbeats requests secure recovery, not just a broker ping", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        act(() => client().callbacks.onPresence({ ...presence, lastHeartbeatTs: Date.now() / 1000 }));
+        await act(async () => { await jest.advanceTimersByTimeAsync(20_000); });
+        expect(client().recoverNow).toHaveBeenCalledWith("presence-stale");
+      } finally { jest.useRealTimers(); }
+    });
+
+    test("real background releases the socket after the bounded quick-switch grace", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        client().setAppActive.mockClear();
+        act(() => appStateListeners()[0]!("background"));
+        expect(client().setAppActive).not.toHaveBeenCalled();
+        await act(async () => { await jest.advanceTimersByTimeAsync(BACKGROUND_GRACE_MS); });
+        expect(client().setAppActive).toHaveBeenCalledWith(false);
+      } finally { jest.useRealTimers(); }
     });
 
     test("a native picker's background transition keeps the connection", async () => {
@@ -639,13 +679,13 @@ describe("useRemoteConnection", () => {
       }
     });
 
-    test("an ordinary background transition arms no delayed teardown", async () => {
+    test("a quick app switch cancels the delayed teardown", async () => {
       jest.useFakeTimers();
       try {
         await mountConnected();
         client().setAppActive.mockClear();
         act(() => appStateListeners()[0]!("background"));
-        expect(client().setAppActive).toHaveBeenCalledWith(false);
+        expect(client().setAppActive).not.toHaveBeenCalled();
         // Returning to the app mid-flow clears the pending bound.
         act(() => appStateListeners()[0]!("active"));
         client().setAppActive.mockClear();
@@ -656,6 +696,19 @@ describe("useRemoteConnection", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+
+    test("a picker result delivered before resume cannot leave the socket alive forever", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        client().setAppActive.mockClear();
+        beginNativePresentation();
+        act(() => appStateListeners()[0]!("background"));
+        endNativePresentation();
+        await act(async () => { await jest.advanceTimersByTimeAsync(NATIVE_PRESENTATION_GRACE_MS); });
+        expect(client().setAppActive).toHaveBeenCalledWith(false);
+      } finally { jest.useRealTimers(); }
     });
 
     test("foreground recovery refreshes network and recovers the client", async () => {

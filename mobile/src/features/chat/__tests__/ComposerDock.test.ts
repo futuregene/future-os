@@ -89,7 +89,10 @@ test.each([
     );
     expect(selectors).toBeUndefined();
     expect(tree!.root.findAllByType(View).some(node => StyleSheet.flatten(node.props.style)?.flexWrap === "wrap")).toBe(false);
-    expect(button("chat.model: A very long model label").findByType(Text).props.children).toBe("A very long model label");
+    const model = button("chat.model: A very long model label");
+    expect(StyleSheet.flatten(model.props.style({ pressed: false })).paddingHorizontal).toBe(8);
+    expect(StyleSheet.flatten(tree!.root.findByType(TextInput).props.style).paddingHorizontal).toBe(16);
+    expect(model.findByType(Text).props.children).toBe("A very long model label");
     expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
     act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
     expect(setSelector).toHaveBeenCalledWith("thinking");

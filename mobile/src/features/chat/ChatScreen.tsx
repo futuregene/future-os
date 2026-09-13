@@ -60,7 +60,10 @@ export function ChatScreen() {
   const filesOpen = !remote.draft && filesSession === conversationKey;
   const goBack = useCallback(() => {
     if (filesOpen) setFilesSession(null);
-    else closeConversation();
+    else {
+      Keyboard.dismiss();
+      closeConversation();
+    }
   }, [filesOpen, closeConversation]);
   // Android edge-to-edge: the built-in KeyboardAvoidingView is a no-op here
   // (behavior is undefined on Android) and RN's KAV mis-measures the keyboard
@@ -86,7 +89,7 @@ export function ChatScreen() {
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
 
   const { message, setMessage, attachments, setAttachments } = useComposerDraft(remote, t);
-  const { openAttachmentMenu } = useAttachmentPicker(attachments, setAttachments, t);
+  const { openAttachmentMenu, attachmentMenu } = useAttachmentPicker(attachments, setAttachments, t);
   const fileDownload = useFileDownload(remote, t, setTransferProgress);
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
@@ -282,6 +285,7 @@ export function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {attachmentMenu}
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.keyboard}

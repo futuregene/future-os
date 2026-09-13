@@ -70,7 +70,7 @@ function fixture() {
     }
     throw new Error("plaintext business command");
   });
-  const connection = { request, close: async () => {} } as unknown as NatsConnection;
+  const connection = { request, close: async () => {}, flush: jest.fn(async () => {}), isClosed: () => false } as unknown as NatsConnection;
   const internal = client as unknown as {
     connection: NatsConnection; credentials: RemoteCredentials;
     performHandshake(connection: NatsConnection): Promise<unknown>;
@@ -82,6 +82,7 @@ function fixture() {
     loseConfirmation: () => { loseConfirmation = true; },
     corruptReply: () => { corruptReply = true; },
     serverChannel: () => serverChannel!,
+    restartDesktop: () => { serverChannel?.destroy(); serverChannel = undefined; },
   };
 }
 
@@ -114,6 +115,21 @@ test("reconnecting rotates traffic keys and rejects prior-channel replay", async
   const old = f.internal.secureChannels.get(f.connection)!.seal(subject, encode({ type: "get_presence" }));
   await f.pair();
   expect(() => f.serverChannel().open(subject, old)).toThrow("remote_secure_channel_invalid");
+  await f.client.close();
+});
+
+test("desktop traffic-key loss recovers through Noise IK even when the broker is still reachable", async () => {
+  const f = fixture();
+  await f.pair();
+  f.restartDesktop();
+  await f.connection.flush();
+  await expect(f.client.request({ type: "get_presence" })).rejects.toThrow();
+  // Only socket creation is replaced; handshake and record crypto are real.
+  const open = jest.spyOn(f.client, "open").mockImplementation(async () => { await f.pair(); });
+  await Promise.all([f.client.recoverNow("presence-stale"), f.client.recoverNow("presence-stale")]);
+  expect(open).toHaveBeenCalledTimes(1);
+  await expect(f.client.request({ type: "get_presence" })).resolves.toMatchObject({ success: true });
+  expect(f.callbacks.onCredentials).toHaveBeenCalledTimes(1);
   await f.client.close();
 });
 

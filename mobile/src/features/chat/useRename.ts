@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Platform } from "react-native";
+import { Alert } from "react-native";
 import type { TFunction } from "i18next";
 import { useRemote } from "../../remote/RemoteContext";
 
@@ -30,25 +30,6 @@ export function useRename(remote: Remote, t: TFunction): RenameApi {
 
   const openRename = () => {
     const currentTitle = remote.selectedTitle || "";
-    if (Platform.OS === "ios") {
-      Alert.prompt(
-        t("chat.renameTitle"),
-        undefined,
-        [
-          { text: t("chat.cancel"), style: "cancel" },
-          {
-            text: t("chat.save"),
-            onPress: (value?: string) => {
-              if (value?.trim()) void renameConversation(value);
-            },
-          },
-        ],
-        "plain-text",
-        currentTitle,
-      );
-      return;
-    }
-    // Android has no native React Native text-input alert.
     setRenameValue(currentTitle);
     setRenameOpen(true);
   };
