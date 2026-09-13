@@ -19,6 +19,26 @@ pub(super) struct Listing {
     entries: Vec<Entry>,
 }
 
+/// Windows `Path::canonicalize` returns the extended-length spelling
+/// (`\\?\D:\...`). The paired phone renders these paths verbatim, so that
+/// spelling would surface as the session directory instead of the `D:\...`
+/// every Windows tool prints. Normalize it at this boundary, mirroring the
+/// agent's sandbox path model (`agent/src/sandbox/paths.rs`);
+/// `\\?\UNC\server\share` becomes `\\server\share`.
+///
+/// Purely textual: a canonical POSIX path never carries the prefix, so this is
+/// a no-op off Windows.
+fn ordinary_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => rest.to_string(),
+        None => text.into_owned(),
+    }
+}
+
 pub(super) fn list(session_id: &str, requested: &str) -> Result<Listing, crate::AppError> {
     if session_id.is_empty() {
         return Err("A session is required.".to_string().into());
@@ -58,7 +78,7 @@ fn list_under_root(root: &Path, requested: &str) -> Result<Listing, crate::AppEr
         }
         entries.push(Entry {
             name: entry.file_name().to_string_lossy().into_owned(),
-            path: entry.path().to_string_lossy().into_owned(),
+            path: ordinary_path(&entry.path()),
             is_dir: meta.is_dir(),
             size: if meta.is_dir() { 0 } else { meta.len() },
         });
@@ -70,8 +90,8 @@ fn list_under_root(root: &Path, requested: &str) -> Result<Listing, crate::AppEr
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(Listing {
-        root_path: root.to_string_lossy().into_owned(),
-        path: path.to_string_lossy().into_owned(),
+        root_path: ordinary_path(&root),
+        path: ordinary_path(&path),
         entries,
     })
 }
@@ -79,6 +99,24 @@ fn list_under_root(root: &Path, requested: &str) -> Result<Listing, crate::AppEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_extended_length_prefix_is_normalized_away() {
+        // These are the spellings `Path::canonicalize` produces on Windows and
+        // the phone would otherwise render verbatim.
+        assert_eq!(
+            ordinary_path(Path::new(r"\\?\D:\future-os\src")),
+            r"D:\future-os\src"
+        );
+        assert_eq!(
+            ordinary_path(Path::new(r"\\?\UNC\server\share\dir")),
+            r"\\server\share\dir"
+        );
+        // Ordinary spellings are untouched: Windows paths that were never
+        // canonicalized, and every POSIX path.
+        assert_eq!(ordinary_path(Path::new(r"D:\future-os")), r"D:\future-os");
+        assert_eq!(ordinary_path(Path::new("/home/me/work")), "/home/me/work");
+    }
 
     #[test]
     fn lists_session_root_and_children_but_rejects_escapes() {
@@ -89,7 +127,21 @@ mod tests {
         std::fs::write(root.join("A.txt"), "a").unwrap();
         std::fs::write(root.join(".hidden"), "h").unwrap();
         let listing = list_under_root(&root, "").unwrap();
-        assert_eq!(listing.path, root.canonicalize().unwrap().to_string_lossy());
+        // The phone renders these strings verbatim, so a Windows `\\?\`
+        // extended-length prefix must never survive the boundary. Asserting the
+        // absence (rather than equality with `canonicalize`) is what makes this
+        // catch a regression: comparing two canonicalized spellings is
+        // self-consistent and would pass either way.
+        assert!(!listing.path.starts_with(r"\\?\"));
+        assert!(!listing.root_path.starts_with(r"\\?\"));
+        assert!(listing
+            .entries
+            .iter()
+            .all(|entry| !entry.path.starts_with(r"\\?\")));
+        assert_eq!(
+            Path::new(&listing.path).canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
         assert_eq!(
             listing
                 .entries
@@ -101,6 +153,8 @@ mod tests {
         assert!(listing.entries[0].is_dir);
         assert_eq!(listing.entries[3].size, 5);
         assert!(list_under_root(&root, "sub").unwrap().entries.is_empty());
+        // A directory opened from the listing round-trips: the phone sends the
+        // path it was shown (no extended-length prefix) back to this endpoint.
         assert!(list_under_root(&root, &listing.entries[0].path).is_ok());
         assert!(list_under_root(&root, "..").is_err());
         assert!(list_under_root(&root, &dir.path().to_string_lossy()).is_err());
