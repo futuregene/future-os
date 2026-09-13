@@ -18,6 +18,7 @@ jest.mock("../files", () => ({
   cachedPreviewForAttachment: jest.fn(),
   downloadPrepared: jest.fn(),
   rememberPreparedPreview: jest.fn(),
+  TransferCancelledError: class extends Error { constructor() { super("transfer_cancelled"); } },
 }));
 
 jest.mock("../storage", () => ({
@@ -456,14 +457,30 @@ describe("attachment helpers", () => {
       undefined,
       undefined,
     );
-    expect(mockedRememberPrepared).toHaveBeenCalledWith(historyAttachment, downloadInfo);
+    expect(mockedRememberPrepared).toHaveBeenCalledWith(h.clientRef.current, "s1", historyAttachment, downloadInfo);
   });
 
   it("cachedAttachment delegates to the cache", async () => {
     const cached = { info: downloadInfo, file: {} as never };
     mockedCachedPreview.mockReturnValue(cached as never);
-    const h = await mountController({});
+    const h = await mountController({ selected: "s1" });
     expect(current(h).cachedAttachment(historyAttachment)).toBe(cached);
+    expect(mockedCachedPreview).toHaveBeenCalledWith(h.clientRef.current, "s1", historyAttachment, "preview");
+  });
+
+  it.each(["desktop", "session", "epoch"])("discards a prepared attachment after changing %s", async change => {
+    const deferredInfo = deferred<DownloadInfo>();
+    mockedPrepareDownload.mockReturnValueOnce(deferredInfo.promise);
+    const h = await mountController({ selected: "s1" });
+    const pending = current(h).prepareAttachment(historyAttachment);
+    if (change === "desktop") h.clientRef.current = null;
+    else if (change === "session") h.selectedRef.current = "s2";
+    else h.conversationEpochRef.current += 1;
+    deferredInfo.resolve(downloadInfo);
+    await expect(pending).rejects.toThrow("transfer_cancelled");
+    expect(mockedRememberPrepared).not.toHaveBeenCalled();
+    expect(h.request).toHaveBeenCalledWith({ type: "download_cancel", transferId: downloadInfo.transferId }, "transfer");
+    act(() => h.renderer.unmount());
   });
 
   it("downloadAttachment throws without a client", async () => {
@@ -580,6 +597,30 @@ describe("command dispatchers", () => {
       await current(h).setApprovalTier("manual");
     });
     expect(h.setApprovalTierState).toHaveBeenCalledWith("manual");
+  });
+
+  it("does not apply a previous desktop's approval tier to the new desktop", async () => {
+    const response = deferred<{ data: { approvalTier: string } }>();
+    const h = await mountController({ request: jest.fn().mockReturnValue(response.promise) });
+    const pending = current(h).setApprovalTier("off");
+    h.clientRef.current = null;
+    response.resolve({ data: { approvalTier: "off" } });
+    await pending;
+    expect(h.setApprovalTierState).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
+  it("does not apply an old desktop's approval decision to a replacement timeline", async () => {
+    const response = deferred<{ data: object }>();
+    const h = await mountController({ selected: "s1", engine: fakeEngine(), request: jest.fn().mockReturnValue(response.promise) });
+    const pending = current(h).decideApproval("approval", "approved");
+    h.clientRef.current = null;
+    const replacement = fakeEngine();
+    h.syncEngineRef.current = replacement;
+    response.resolve({ data: {} });
+    await pending;
+    expect(replacement.mutate).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
   });
 
   it("deleteSession closes the conversation when removal succeeds", async () => {

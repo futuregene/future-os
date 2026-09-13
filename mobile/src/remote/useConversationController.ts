@@ -6,6 +6,7 @@ import {
   downloadPrepared,
   prepareDownload,
   rememberPreparedPreview,
+  TransferCancelledError,
 } from "./files";
 import type { SyncEngine } from "./syncEngine";
 import { requestReadPage } from "./readPages";
@@ -186,17 +187,26 @@ export function useConversationController({
       const client = clientRef.current;
       const sessionId = selectedRef.current;
       if (!client || !sessionId) throw new Error("attachment_no_session");
+      const epoch = conversationEpochRef.current;
       const info = await prepareDownload(client, sessionId, attachment, variant, signal, onWaiting);
-      rememberPreparedPreview(attachment, info);
+      if (clientRef.current !== client || selectedRef.current !== sessionId ||
+          conversationEpochRef.current !== epoch) {
+        void client.request({ type: "download_cancel", transferId: info.transferId }, "transfer").catch(() => undefined);
+        throw new TransferCancelledError();
+      }
+      rememberPreparedPreview(client, sessionId, attachment, info);
       return info;
     },
-    [clientRef, selectedRef],
+    [clientRef, selectedRef, conversationEpochRef],
   );
 
   const cachedAttachment = useCallback(
-    (attachment: HistoryAttachment, variant: "preview" | "original" = "preview") =>
-      cachedPreviewForAttachment(attachment, variant),
-    [],
+    (attachment: HistoryAttachment, variant: "preview" | "original" = "preview") => {
+      const client = clientRef.current;
+      const sessionId = selectedRef.current;
+      return client && sessionId ? cachedPreviewForAttachment(client, sessionId, attachment, variant) : null;
+    },
+    [clientRef, selectedRef],
   );
 
   const downloadAttachment = useCallback(
@@ -264,7 +274,7 @@ export function useConversationController({
         { type: "set_approval_tier", tier },
         "list",
       );
-      setApprovalTierState(response.data.approvalTier);
+      if (clientRef.current === client) setApprovalTierState(response.data.approvalTier);
     },
     [clientRef, setApprovalTierState],
   );
@@ -294,6 +304,7 @@ export function useConversationController({
         { type: "approval_decision", sessionId, entryId: id, mode: decision },
         sessionId,
       );
+      if (clientRef.current !== client) return;
       syncEngineRef.current?.mutate(sessionId, timeline =>
         markApprovalDecision(timeline, id, decision),
       );
