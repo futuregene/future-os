@@ -134,12 +134,20 @@ export async function checkAndroidUpdate(
   };
 }
 
-export function checkForUpdate(
+export async function checkForUpdate(
   currentVersion: string = VERSION,
   fetchFn: FetchLike = fetch,
 ): Promise<UpdateStatus> {
-  if (Platform.OS === "ios") return checkIosUpdate(currentVersion, fetchFn);
-  return checkAndroidUpdate(currentVersion, fetchFn);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const timedFetch: FetchLike = (input, init) => fetchFn(input, { ...init, signal: controller.signal });
+  try {
+    return await (Platform.OS === "ios"
+      ? checkIosUpdate(currentVersion, timedFetch)
+      : checkAndroidUpdate(currentVersion, timedFetch));
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function installUpdate(status: UpdateStatus): Promise<void> {

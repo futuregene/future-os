@@ -1,6 +1,7 @@
 import { CatalogVersionGate } from "./catalogVersion";
 import type {
   SnapshotVersion,
+  StreamEvent,
   ModelsData,
   RemoteModel,
   RemoteSession,
@@ -10,7 +11,7 @@ import type {
 } from "./types";
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { RemoteClient } from "./client";
-import { detectFinished, sortPinnedFirst } from "./sessionStatus";
+import { detectFinished, effectiveRunStatus, sortPinnedFirst } from "./sessionStatus";
 
 export type CatalogSyncState = Record<
   "sessions" | "workspaces" | "models" | "settings",
@@ -37,6 +38,7 @@ const MODEL_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000, 30_000] as const;
 export function useSessionCatalog(
   clientRef: MutableRefObject<RemoteClient | null>,
   selectedRef: MutableRefObject<string>,
+  onFinished?: (session: RemoteSession) => void,
 ) {
   const [catalogSync, setCatalogSync] = useState<CatalogSyncState>(INITIAL_SYNC);
   const markSync = useCallback(
@@ -57,10 +59,46 @@ export function useSessionCatalog(
   const authenticatedEpoch = useRef<string | undefined>(undefined);
   const catalogEpoch = useRef(0);
   const revisions = useRef({ sessions: 0, workspaces: 0, settings: 0 });
+  const sessionsRef = useRef<RemoteSession[]>([]);
   const lastStatusRef = useRef<Record<string, string | undefined>>({});
+  const liveRuns = useRef(new Map<string, string>());
+  const notifiedRuns = useRef(new Set<string>());
+  const rememberRun = useCallback((key: string) => {
+    notifiedRuns.current.add(key);
+    if (notifiedRuns.current.size > 512) notifiedRuns.current.delete(notifiedRuns.current.values().next().value!);
+  }, []);
+
+  // Live terminal events cover runs too short to appear as running in a
+  // catalogue snapshot. Historical replay does not call this entry point.
+  const observeRunEvent = useCallback((event: StreamEvent, sessionId: string) => {
+    if (!event.runId || !sessionId || (event.type !== "agent_start" && event.type !== "agent_end")) return;
+    const key = JSON.stringify([sessionId, event.runId]);
+    if (notifiedRuns.current.has(key)) return;
+    if (event.type === "agent_start") {
+      liveRuns.current.set(sessionId, key);
+      return;
+    }
+    if (event.type !== "agent_end") return;
+    let data: { state?: string; reason?: string; error?: unknown };
+    try { data = JSON.parse(event.data) as typeof data; } catch { return; }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return;
+    rememberRun(key);
+    liveRuns.current.set(sessionId, key);
+    const failed = Boolean(data.error) || data.reason === "incomplete"
+      || (data.state !== undefined && data.state !== "completed");
+    const status = data.state === "cancelled" ? "cancelled" : failed ? "failed" : "completed";
+    lastStatusRef.current[sessionId] = status;
+    if (status === "cancelled") return;
+    const session = sessionsRef.current.find(item => item.sessionId === sessionId);
+    onFinished?.({
+      sessionId, threadId: "", title: "", ...session, status, streaming: false,
+    });
+    if (sessionId !== selectedRef.current) {
+      setUnreadSessions(previous => new Set([...previous, sessionId]));
+    }
+  }, [onFinished, rememberRun, selectedRef]);
   const titleOverridesRef = useRef<Record<string, string>>({});
   const modelsRef = useRef<RemoteModel[]>([]);
-  const sessionsRef = useRef<RemoteSession[]>([]);
   const sessionRefreshRef = useRef<{
     client: RemoteClient; epoch: number; dirty: boolean; promise: Promise<void>;
   } | null>(null);
@@ -113,21 +151,36 @@ export function useSessionCatalog(
       }));
       const { finished, next } = detectFinished(
         lastStatusRef.current,
-        decorated,
-        selectedRef.current,
+        decorated.map(session => ({ ...session, status: effectiveRunStatus(session.status, session.streaming) })),
       );
       lastStatusRef.current = next;
       setSessions(decorated);
-      if (finished.length > 0) {
+      // Completion reminders include the open conversation. Only unread dots
+      // exclude it; watching a task is not a reason to silence its completion.
+      for (const id of finished) {
+        const session = decorated.find(item => item.sessionId === id);
+        const run = liveRuns.current.get(id);
+        if (session && (!run || !notifiedRuns.current.has(run))) {
+          if (run) rememberRun(run);
+          onFinished?.(session);
+        }
+      }
+      for (const session of decorated) {
+        if (!session.streaming && ["completed", "failed", "cancelled"].includes(session.status ?? "")) {
+          liveRuns.current.delete(session.sessionId);
+        }
+      }
+      const unread = finished.filter(id => id !== selectedRef.current);
+      if (unread.length > 0) {
         setUnreadSessions((prev) => {
           const nextUnread = new Set(prev);
-          for (const id of finished) nextUnread.add(id);
+          for (const id of unread) nextUnread.add(id);
           return nextUnread;
         });
       }
       return true;
     },
-    [selectedRef, markSync],
+    [selectedRef, markSync, onFinished, rememberRun],
   );
 
   const readSessions = useCallback(async () => {
@@ -314,6 +367,7 @@ export function useSessionCatalog(
     if (modelRecoveryRef.current.timer) clearTimeout(modelRecoveryRef.current.timer);
     modelRecoveryRef.current.timer = null;
     setSessions([]);
+    sessionsRef.current = [];
     setWorkspaces([]);
     setModels([]);
     setTitleOverrides({});
@@ -321,6 +375,8 @@ export function useSessionCatalog(
     // Clear the status baseline too — a stale running→completed comparison
     // after an unpair/re-pair would otherwise mark old sessions unread.
     lastStatusRef.current = {};
+    liveRuns.current.clear();
+    notifiedRuns.current.clear();
   }, []);
 
   const rename = useCallback(
@@ -442,6 +498,7 @@ export function useSessionCatalog(
     titleOverrides,
     setTitleOverrides,
     applySessionSnapshot,
+    observeRunEvent,
     refreshSessions,
     refreshModels,
     refreshSettings,

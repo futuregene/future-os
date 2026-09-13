@@ -63,8 +63,8 @@ test("only the approval which failed receives the error", () => {
 });
 
 test.each([
-  [320, 1, true], [375, 1, true], [390, 1, false], [430, 1, false], [820, 1, false], [430, 1.6, true],
-])("composer adapts at width %i / font scale %f without shrinking send or attachment targets", (width, fontScale, stacked) => {
+  [320, 1], [375, 1], [390, 1], [430, 1], [820, 1], [320, 1.6], [430, 1.6],
+])("composer keeps all controls on one toolbar at width %i / font scale %f", (width, fontScale) => {
   mockDimensions = { width, fontScale, height: 844, scale: 1 };
   const send = jest.fn(async () => {});
   const setSelector = jest.fn();
@@ -87,7 +87,12 @@ test.each([
     const selectors = tree!.root.findAllByType(View).find(node =>
       StyleSheet.flatten(node.props.style)?.flexBasis === "100%",
     );
-    expect(Boolean(selectors)).toBe(stacked);
+    expect(selectors).toBeUndefined();
+    expect(tree!.root.findAllByType(View).some(node => StyleSheet.flatten(node.props.style)?.flexWrap === "wrap")).toBe(false);
+    expect(button("chat.model: A very long model label").findByType(Text).props.children).toBe("A very long model label");
+    expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
+    act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
+    expect(setSelector).toHaveBeenCalledWith("thinking");
     act(() => button("chat.model: A very long model label").props.onPress());
     expect(setSelector).toHaveBeenCalledWith("model");
     act(() => button("chat.send").props.onPress());
