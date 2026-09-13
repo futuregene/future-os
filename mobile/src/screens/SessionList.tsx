@@ -42,16 +42,19 @@ const offsets = { chat: 0, workspace: 0 };
 
 export function SessionList({
   tab,
+  onTabChange,
   empty,
   onMenu,
 }: {
   tab: "chat" | "workspace";
+  onTabChange: (tab: "chat" | "workspace") => void;
   empty: ReactNode;
   onMenu: (session: RemoteSession) => void;
 }) {
   const remote = useRemote();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
   const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
@@ -75,16 +78,21 @@ export function SessionList({
     visibleSessions.length > 0 && visibleSessions.every(session => selected.has(session.sessionId));
 
   useEffect(() => {
-    if (!selecting) return;
+    if (!selecting && !searching) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       if (!deletingRef.current) {
-        setSelecting(false);
-        setSelected(new Set());
+        if (selecting) {
+          setSelecting(false);
+          setSelected(new Set());
+        } else {
+          setSearching(false);
+          setQuery("");
+        }
       }
       return true;
     });
     return () => subscription.remove();
-  }, [selecting]);
+  }, [selecting, searching]);
 
   const toggleSelection = (id: string) =>
     setSelected(current => {
@@ -357,92 +365,140 @@ export function SessionList({
           },
         ] : []}
       />
-      <View style={styles.tools}>
-        <View style={styles.search}>
-          <Search size={16} color={colors.inkMuted} />
-          <TextInput
-            accessibilityLabel={t("sessions.search")}
-            placeholder={t("sessions.search")}
-            placeholderTextColor={colors.inkMuted}
-            value={query}
-            onChangeText={setQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={styles.searchInput}
-          />
-          {!!query && (
+      <View testID="session-toolbar" style={styles.tools}>
+        {selecting ? (
+          <View style={styles.selectionBar}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={t("sessions.clearSearch")}
-              onPress={() => setQuery("")}
-              style={styles.iconButton}
+              accessibilityLabel={t(allSelected ? "sessions.deselectVisible" : "sessions.selectVisible")}
+              disabled={deleting || !remote.desktopOnline}
+              onPress={() =>
+                setSelected(current => {
+                  const next = new Set(current);
+                  for (const session of visibleSessions) {
+                    if (allSelected) next.delete(session.sessionId);
+                    else next.add(session.sessionId);
+                  }
+                  return next;
+                })
+              }
+              style={styles.selectAll}
             >
-              <X size={16} color={colors.inkMuted} />
+              <CheckCheck size={18} color={colors.accent} />
             </Pressable>
-          )}
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t(selecting ? "chat.cancel" : "sessions.select")}
-          accessibilityState={{ selected: selecting, disabled: deleting || !remote.desktopOnline }}
-          disabled={deleting || !remote.desktopOnline}
-          onPress={() => {
-            setSelecting(!selecting);
-            setSelected(new Set());
-          }}
-          style={[styles.manage, selecting && styles.selected]}
-        >
-          {selecting ? (
-            <X size={19} color={colors.accent} />
-          ) : (
-            <ListChecks size={19} color={colors.inkSoft} />
-          )}
-        </Pressable>
-      </View>
-      {selecting && (
-        <View style={styles.selectionBar}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t(
-              allSelected ? "sessions.deselectVisible" : "sessions.selectVisible",
-            )}
-            disabled={deleting || !remote.desktopOnline}
-            onPress={() =>
-              setSelected(current => {
-                const next = new Set(current);
-                for (const session of visibleSessions) {
-                  if (allSelected) next.delete(session.sessionId);
-                  else next.add(session.sessionId);
-                }
-                return next;
-              })
-            }
-            style={styles.selectAll}
-          >
-            <CheckCheck size={16} color={colors.accent} />
-            <Text style={styles.actionText}>
-              {t(allSelected ? "sessions.deselectVisible" : "sessions.selectVisible")}
+            <Text numberOfLines={1} style={styles.selectionCount}>
+              {t("sessions.selectedCount", { count: targets.length })}
             </Text>
-          </Pressable>
-          <Text style={styles.count}>{t("sessions.selectedCount", { count: targets.length })}</Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("sessions.deleteSelected")}
-            disabled={deleting || !targets.length || !remote.desktopOnline}
-            onPress={deleteSelected}
-            style={[
-              styles.iconButton,
-              (!targets.length || !remote.desktopOnline) && styles.disabled,
-            ]}
-          >
-            {deleting ? (
-              <ActivityIndicator size={16} color={colors.danger} />
-            ) : (
-              <Trash2 size={18} color={colors.danger} />
-            )}
-          </Pressable>
-        </View>
-      )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.deleteSelected")}
+              disabled={deleting || !targets.length || !remote.desktopOnline}
+              onPress={deleteSelected}
+              style={[
+                styles.iconButton,
+                (!targets.length || !remote.desktopOnline) && styles.disabled,
+              ]}
+            >
+              {deleting ? (
+                <ActivityIndicator size={16} color={colors.danger} />
+              ) : (
+                <Trash2 size={18} color={colors.danger} />
+              )}
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("chat.cancel")}
+              disabled={deleting}
+              onPress={() => {
+                setSelecting(false);
+                setSelected(new Set());
+              }}
+              style={[styles.iconButton, deleting && styles.disabled]}
+            >
+              <X size={19} color={colors.accent} />
+            </Pressable>
+          </View>
+        ) : searching ? (
+          <>
+            <View style={styles.search}>
+              <Search size={16} color={colors.inkMuted} />
+              <TextInput
+                accessibilityLabel={t("sessions.search")}
+                placeholder={t("sessions.search")}
+                placeholderTextColor={colors.inkMuted}
+                value={query}
+                onChangeText={setQuery}
+                autoFocus
+                returnKeyType="search"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={styles.searchInput}
+              />
+              {!!query && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("sessions.clearSearch")}
+                  onPress={() => setQuery("")}
+                  style={styles.iconButton}
+                >
+                  <X size={16} color={colors.inkMuted} />
+                </Pressable>
+              )}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("chat.cancel")}
+              onPress={() => {
+                setSearching(false);
+                setQuery("");
+              }}
+              style={styles.cancelSearch}
+            >
+              <Text style={styles.actionText}>{t("chat.cancel")}</Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <View style={styles.tabs}>
+              {(["workspace", "chat"] as const).map(value => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="tab"
+                  accessibilityLabel={t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                  accessibilityState={{ selected: tab === value }}
+                  onPress={() => onTabChange(value)}
+                  style={[styles.tab, tab === value && styles.tabActive]}
+                >
+                  <Text style={[styles.tabText, tab === value && styles.tabTextActive]}>
+                    {t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.search")}
+              onPress={() => setSearching(true)}
+              style={styles.manage}
+            >
+              <Search size={19} color={colors.inkSoft} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.select")}
+              accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
+              disabled={deleting || !remote.desktopOnline}
+              onPress={() => {
+                setSelecting(true);
+                setSelected(new Set());
+              }}
+              style={[styles.manage, (deleting || !remote.desktopOnline) && styles.disabled]}
+            >
+              <ListChecks size={19} color={colors.inkSoft} />
+            </Pressable>
+          </>
+        )}
+      </View>
       <FlatList
         key={query.trim() ? "search" : tab}
         data={rows}
@@ -471,11 +527,34 @@ export function SessionList({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   tools: {
+    minHeight: layout.touchTarget + spacing.xs * 2 + spacing.md,
     flexDirection: "row",
-    gap: spacing.sm,
+    alignItems: "center",
+    gap: spacing.xs,
     paddingHorizontal: layout.gutter,
     paddingBottom: spacing.md,
   },
+  tabs: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    padding: spacing.xs,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  tab: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: layout.touchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+  },
+  tabActive: { backgroundColor: colors.surface },
+  tabText: { textAlign: "center", color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
+  tabTextActive: { color: colors.accent, fontWeight: "700" },
+  cancelSearch: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   search: {
     flex: 1,
     minWidth: 0,
@@ -563,26 +642,20 @@ const styles = StyleSheet.create({
   checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
   dot: { width: 7, height: 7, borderRadius: radius.pill },
   selectionBar: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 52,
     flexDirection: "row",
-    flexWrap: "wrap",
     alignItems: "center",
-    gap: spacing.sm,
-    marginHorizontal: layout.gutter,
-    marginBottom: spacing.sm,
-    paddingLeft: spacing.md,
-    paddingRight: spacing.xs,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.xs,
     borderRadius: radius.md,
     backgroundColor: colors.accentSoft,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.lineSoft,
   },
-  selectAll: {
-    flex: 1,
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
+  selectAll: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  selectionCount: { flex: 1, minWidth: 0, color: colors.inkSoft, fontSize: 13, fontVariant: ["tabular-nums"] },
   actionText: { flexShrink: 1, color: colors.accent, fontSize: 13, fontWeight: "600" },
   disabled: { opacity: 0.4 },
 });

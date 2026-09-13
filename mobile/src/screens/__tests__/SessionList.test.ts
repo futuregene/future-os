@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Alert, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import { Modal, Alert, BackHandler, FlatList, StyleSheet, Text, TextInput } from "react-native";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -75,6 +75,7 @@ jest.mock("react-i18next", () => ({
 
 let tree: ReactTestRenderer;
 const onMenu = jest.fn();
+const onTabChange = jest.fn();
 const button = (label: string) =>
   tree.root.findAll(
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
@@ -89,7 +90,7 @@ beforeEach(async () => {
   mockRemote.newConversation.mockResolvedValue(undefined);
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await act(async () => {
-    tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu }));
+    tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
     // Let the persisted-folds read land inside act() so it cannot update the
     // tree after the test body has finished.
     await Promise.resolve();
@@ -112,17 +113,71 @@ test("explicit row action opens rename/pin/delete menu; offline management is di
   act(() => button("sessions.actions:First").props.onPress());
   expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
   mockRemote.desktopOnline = false;
-  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu })));
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
   expect(button("sessions.actions:First").props.disabled).toBe(true);
   expect(button("sessions.select").props.disabled).toBe(true);
 });
 
 test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
+  act(() => button("sessions.search").props.onPress());
   act(() => tree.root.findByType(TextInput).props.onChangeText("Child"));
   expect(button("sessions.actions:Child")).toBeDefined();
   act(() => button("sessions.clearSearch").props.onPress());
   expect(button("sessions.actions:Child")).toBeUndefined();
+});
+
+test("tabs, search and selection share one toolbar with full touch targets", () => {
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  const toolbar = tree.root.findByProps({ testID: "session-toolbar" });
+  const tabs = toolbar.findAll(node => node.props.accessibilityRole === "tab" && node.props.onPress);
+  expect(tabs).toHaveLength(2);
+  for (const tab of tabs) {
+    expect(StyleSheet.flatten(tab.props.style)).toMatchObject({ flex: 1, minHeight: 44, minWidth: 0 });
+  }
+  act(() => tabs[0]!.props.onPress());
+  expect(onTabChange).toHaveBeenCalledWith("workspace");
+  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search").length).toBeGreaterThan(0);
+  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select").length).toBeGreaterThan(0);
+});
+
+test("search replaces tabs in place and cancel clears the filter", () => {
+  act(() => button("sessions.search").props.onPress());
+  expect(tree.root.findAll(node => node.props.accessibilityRole === "tab")).toHaveLength(0);
+  expect(button("sessions.select")).toBeUndefined();
+  expect(tree.root.findByType(TextInput).props.autoFocus).toBe(true);
+  act(() => tree.root.findByType(TextInput).props.onChangeText("absent"));
+  expect(tree.root.findByType(FlatList).props.data).toHaveLength(0);
+  act(() => button("chat.cancel").props.onPress());
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  expect(button("sessions.conversations").props.accessibilityState.selected).toBe(true);
+  expect(tree.root.findByType(FlatList).props.data).not.toHaveLength(0);
+  act(() => button("sessions.search").props.onPress());
+  expect(tree.root.findByType(TextInput).props.value).toBe("");
+});
+
+test("selection replaces the toolbar and can be cancelled even after going offline", () => {
+  act(() => button("sessions.select").props.onPress());
+  expect(button("sessions.search")).toBeUndefined();
+  expect(button("sessions.conversations")).toBeUndefined();
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  act(() => button("First").props.onPress());
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  expect(button("chat.cancel").props.disabled).toBe(false);
+  expect(button("sessions.deleteSelected").props.disabled).toBe(true);
+  act(() => button("chat.cancel").props.onPress());
+  expect(button("sessions.conversations")).toBeDefined();
+});
+
+test("Android back closes search without leaving a hidden filter", () => {
+  const subscribe = jest.spyOn(BackHandler, "addEventListener");
+  act(() => button("sessions.search").props.onPress());
+  act(() => tree.root.findByType(TextInput).props.onChangeText("absent"));
+  const back = subscribe.mock.calls.at(-1)![1];
+  act(() => { expect(back({} as never)).toBe(true); });
+  expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
+  expect(tree.root.findByType(FlatList).props.data).not.toHaveLength(0);
 });
 
 test("cancelling deletion does not send any requests", () => {
@@ -200,7 +255,7 @@ function renderWorkspaceTab(): void {
     { sessionId: "c1", threadId: "tc1", title: "Chat", streaming: false },
   ];
   act(() => {
-    tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu }));
+    tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange }));
   });
 }
 
@@ -285,7 +340,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
 test("promoted workspace pins remain visible, openable and included in workspace selection", () => {
   renderWorkspaceTab();
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "w1b" }));
-  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu })));
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
   const rows = tree.root.findByType(FlatList).props.data;
   expect(rows.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1", "w1a"]);
   expect(rows[1].count).toBe(2);
