@@ -86,22 +86,30 @@ export function catalogRows(
     );
     return rows;
   }
+  const workspaceRoots = roots.filter(node => node.session.mode === "workspace");
   const groups = [...workspaces];
   // Retain sessions whose workspace disappeared rather than silently hiding them.
-  for (const node of roots) {
-    if (node.session.mode !== "workspace") continue;
+  for (const node of workspaceRoots) {
     const id = node.session.workspaceId ?? "";
     if (!groups.some(workspace => workspace.id === id)) groups.push({ id, name: id, path: "" });
+  }
+  const matchesWorkspace = (workspace: RemoteWorkspace): boolean =>
+    !!search && `${workspace.name} ${workspace.path}`.toLocaleLowerCase().includes(search);
+  // The catalog already supplies recency order. Keep that order among pins,
+  // but promote them (with their expandable children) above every workspace.
+  // Workspace folds must not hide these shortcuts.
+  for (const node of workspaceRoots) {
+    if (!node.session.pinned) continue;
+    const workspace = groups.find(group => group.id === (node.session.workspaceId ?? ""))!;
+    append([node], 0, matchesWorkspace(workspace));
   }
   const countNodes = (nodes: SessionNode[]): number =>
     nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
   for (const workspace of groups) {
-    const children = roots.filter(
-      node =>
-        node.session.mode === "workspace" && (node.session.workspaceId ?? "") === workspace.id,
+    const children = workspaceRoots.filter(
+      node => (node.session.workspaceId ?? "") === workspace.id,
     );
-    const workspaceMatches =
-      !!search && `${workspace.name} ${workspace.path}`.toLocaleLowerCase().includes(search);
+    const workspaceMatches = matchesWorkspace(workspace);
     const header: CatalogRow = {
       kind: "workspace",
       key: `workspace:${workspace.id}`,
@@ -110,7 +118,10 @@ export function catalogRows(
     };
     const start = rows.length;
     rows.push(header);
-    if (search || !collapsed.has(workspace.id)) append(children, 0, workspaceMatches);
+    // Counts and workspace actions still include promoted pins; display them
+    // only once, at the page top, rather than duplicating them in the group.
+    if (search || !collapsed.has(workspace.id))
+      append(children.filter(node => !node.session.pinned), 0, workspaceMatches);
     if (search && !workspaceMatches && rows.length === start + 1) rows.pop();
   }
   return rows;
