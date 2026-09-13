@@ -120,6 +120,61 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test.each(["open", "reconnect"] as const)("%s clears a run that finished while hidden and restores its footer", async reason => {
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "partial"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(true);
+      h.active("");
+      h.history = timelineFromEntries([
+        { id: "u", kind: "user", role: "user", createdAtMs: 1, runId: "r", blocks: [{ kind: "text", text: "question" }] },
+        { id: "a", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r", blocks: [{ kind: "text", text: "full reply" }], run: { durationMs: 4200, status: "completed" }, usage: { outputTokens: 32 } },
+      ]);
+      h.journal.events = []; // Finished replay may have been pruned.
+      h.engine.restart("s", reason);
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(false);
+      expect(h.timelineOf("s").items.filter(item => item.kind === "message" && item.role === "assistant"))
+        .toEqual([expect.objectContaining({ text: "full reply", durationMs: 4200, outputTokens: 32 })]);
+      expect(h.timelineOf("s").items.some(item => item.kind === "message" && item.streaming)).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
+  test("idle reopen recovers the cached run's missed terminal event before history catches up", async () => {
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.journal.add(evt("agent_end", "r", 2, JSON.stringify({ duration_ms: 5100, usage: { output_tokens: 30 } })));
+      h.engine.restart("s", "open");
+      await h.settle();
+      expect(h.engine.streamingFor("s")).toBe(false);
+      expect(h.timelineOf("s").items).toEqual([expect.objectContaining({ text: "reply", streaming: false, durationMs: 5100, outputTokens: 30 })]);
+    } finally { h.engine.clear(); }
+  });
+
+  test("warm history keeps known terminal stats until entry metadata catches up", async () => {
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    h.journal.add(evt("agent_end", "r", 2, JSON.stringify({ duration_ms: 5100, usage: { output_tokens: 30 } })));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.history.items = [{ id: "a", kind: "message", role: "assistant", runId: "r", text: "reply" }];
+      h.engine.restart("s", "open");
+      await h.settle();
+      expect(h.timelineOf("s").items).toEqual([expect.objectContaining({ id: "a", durationMs: 5100, outputTokens: 30 })]);
+    } finally { h.engine.clear(); }
+  });
+
   test("a projection snapshot retains its accumulator for the following live tail", async () => {
     const h = new Harness("r");
     h.projection = [agentStart("r"), textChunk("r", 1, "prefix")];

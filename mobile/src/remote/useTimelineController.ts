@@ -413,21 +413,14 @@ export function useTimelineController({
   }, [loadHistory]);
 
   const applySessionStreaming = useCallback((sessionId: string, streaming: boolean) => {
-    setTimelines(previous => {
-      const existing = previous[sessionId];
-      return existing && existing.streaming !== streaming
-        ? { ...previous, [sessionId]: { ...existing, streaming } }
-        : previous;
-    });
     const engine = syncEngineRef.current;
     if (!engine) return;
     const before = streamingRef.current[sessionId] ?? false;
     if (before === streaming) return;
-    streamingRef.current[sessionId] = streaming;
-    if (!streaming) {
-      const run = engine.timelineFor(sessionId)?.currentRunId;
-      engine.reconcile(sessionId, "snapshot-flip", run ?? undefined);
-    }
+    // Catalog snapshots are hints, not a second timeline writer. A delayed
+    // running snapshot must not resurrect the stop button after agent_end.
+    const run = !streaming ? engine.timelineFor(sessionId)?.currentRunId : undefined;
+    engine.reconcile(sessionId, "snapshot-flip", run ?? undefined);
   }, []);
 
   const resetTimeline = useCallback(() => {

@@ -8,20 +8,18 @@ import {
   ListChecks,
   MoreHorizontal,
   Pin,
+  Plus,
   Search,
   Trash2,
   X,
 } from "lucide-react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { showActionSheet as showAndroidActionSheet } from "future-native-ui";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   BackHandler,
   FlatList,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -29,7 +27,7 @@ import {
   View,
 } from "react-native";
 import type { ReactNode } from "react";
-import { deferPresentation } from "../features/chat/utils";
+import { ActionMenu } from "../components/ActionMenu";
 import { useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
@@ -54,6 +52,7 @@ export function SessionList({
   const remote = useRemote();
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
   const { collapsed, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   const [expanded, setExpanded] = useState(savedExpanded);
   useEffect(() => {
@@ -198,31 +197,7 @@ export function SessionList({
 
   const openWorkspaceMenu = (workspace: CatalogRow & { kind: "workspace" }) => {
     if (!remote.desktopOnline || deleting) return;
-    const options = [
-      t("sessions.selectWorkspaceSessions"),
-      t("sessions.deleteWorkspace"),
-      t("chat.cancel"),
-    ];
-    const title = workspace.workspace.name || t("sessions.workspace");
-    const handleSelection = (index: number | null) => {
-      if (index === 0) selectWorkspaceSessions(workspace.workspace.id);
-      if (index === 1) deferPresentation(() => confirmDeleteWorkspace(workspace));
-    };
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title,
-          options,
-          destructiveButtonIndex: 1,
-          cancelButtonIndex: 2,
-        },
-        handleSelection,
-      );
-      return;
-    }
-    void showAndroidActionSheet(options, title)
-      .then(handleSelection)
-      .catch(() => Alert.alert(t("common.error")));
+    setMenuWorkspace(workspace);
   };
 
   const renderRow = ({ item }: { item: CatalogRow }) => {
@@ -353,6 +328,35 @@ export function SessionList({
 
   return (
     <View style={styles.container}>
+      <ActionMenu
+        title={menuWorkspace?.workspace.name || t("sessions.workspace")}
+        visible={menuWorkspace !== null}
+        onClose={() => setMenuWorkspace(null)}
+        actions={menuWorkspace ? [
+          {
+            label: t("sessions.new"),
+            icon: <Plus size={18} color={colors.accent} />,
+            disabled: !remote.desktopOnline || deleting,
+            onPress: () => {
+              void remote.newConversation("workspace", menuWorkspace.workspace.id)
+                .catch(() => Alert.alert(t("common.error")));
+            },
+          },
+          {
+            label: t("sessions.selectWorkspaceSessions"),
+            icon: <ListChecks size={18} color={colors.inkSoft} />,
+            disabled: !remote.desktopOnline || deleting || menuWorkspace.count === 0,
+            onPress: () => selectWorkspaceSessions(menuWorkspace.workspace.id),
+          },
+          {
+            label: t("sessions.deleteWorkspace"),
+            icon: <Trash2 size={18} color={colors.danger} />,
+            destructive: true,
+            disabled: !remote.desktopOnline || deleting,
+            onPress: () => confirmDeleteWorkspace(menuWorkspace),
+          },
+        ] : []}
+      />
       <View style={styles.tools}>
         <View style={styles.search}>
           <Search size={16} color={colors.inkMuted} />

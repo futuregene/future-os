@@ -1,8 +1,10 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { ActionSheetIOS, Alert, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import { Modal, Alert, FlatList, StyleSheet, Text, TextInput } from "react-native";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
+import { ActionMenu } from "../../components/ActionMenu";
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
 const mockRemote: {
   sessions: RemoteSession[];
@@ -12,6 +14,7 @@ const mockRemote: {
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
   selectSession: jest.Mock;
+  newConversation: jest.Mock;
 } = {
   sessions: [
     { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
@@ -24,6 +27,7 @@ const mockRemote: {
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
   selectSession: jest.fn(),
+  newConversation: jest.fn(),
 };
 const mockStorage = new Map<string, string>();
 jest.mock("@react-native-async-storage/async-storage", () => ({
@@ -50,6 +54,7 @@ jest.mock("lucide-react-native", () =>
       "ListChecks",
       "MoreHorizontal",
       "Pin",
+      "Plus",
       "Search",
       "Trash2",
       "X",
@@ -81,6 +86,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
   mockRemote.deleteSession.mockResolvedValue(undefined);
+  mockRemote.newConversation.mockResolvedValue(undefined);
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await act(async () => {
     tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu }));
@@ -198,27 +204,14 @@ function renderWorkspaceTab(): void {
   });
 }
 
-/** Answer the next native action sheet with `index`; read the options it was
-given afterwards (the returned getter sees the values the sheet received). */
-function answerSheet(index: number): () => string[] {
-  let options: string[] = [];
-  jest
-    .spyOn(ActionSheetIOS, "showActionSheetWithOptions")
-    .mockImplementation((config, callback) => {
-      options = config.options as string[];
-      callback(index);
-    });
-  return () => options;
-}
-
-/** Press the workspace menu and run the iOS dismissal hop before the alert. */
+/** Select a real app sheet row and finish its iOS dismissal before navigation. */
 function pressWorkspaceMenu(index: number): void {
-  answerSheet(index);
   act(() => button("sessions.workspaceActions:Project").props.onPress());
-  // confirmDeleteWorkspace is deferred past UIKit's sheet dismissal (350ms).
-  act(() => {
-    jest.advanceTimersByTime(400);
-  });
+  const menu = tree.root.findByType(ActionMenu);
+  const label = menu.props.actions[index].label;
+  const modal = menu.findByType(Modal);
+  act(() => button(label).props.onPress());
+  act(() => modal.props.onDismiss());
 }
 
 function confirmAlert(): void {
@@ -228,22 +221,33 @@ function confirmAlert(): void {
 
 test("workspace menu offers the workspace actions and disables them offline", () => {
   renderWorkspaceTab();
-  const options = answerSheet(2); // cancel
   act(() => button("sessions.workspaceActions:Project").props.onPress());
-  expect(options()).toEqual([
+  expect(tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label)).toEqual([
+    "sessions.new",
     "sessions.selectWorkspaceSessions",
     "sessions.deleteWorkspace",
-    "chat.cancel",
   ]);
+  act(() => button("chat.cancel").props.onPress());
   mockRemote.desktopOnline = false;
   renderWorkspaceTab();
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
 });
 
+test("new conversation uses the selected workspace and waits for sheet dismissal", async () => {
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const modal = tree.root.findByType(ActionMenu).findByType(Modal);
+  act(() => button("sessions.new").props.onPress());
+  expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  await act(async () => { modal.props.onDismiss(); });
+  expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
+  act(() => modal.props.onDismiss());
+  expect(mockRemote.newConversation).toHaveBeenCalledTimes(1);
+});
+
 test("select all in a workspace selects nested sessions but not other chats", () => {
   renderWorkspaceTab();
-  answerSheet(0);
-  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  pressWorkspaceMenu(1);
   // Only the workspace's two sessions, nested one included — the count text
   // proves nothing else (e.g. the plain chat) was pulled in.
   expect(
@@ -261,7 +265,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockResolvedValue(undefined);
-    pressWorkspaceMenu(1);
+    pressWorkspaceMenu(2);
     expect(Alert.alert).toHaveBeenLastCalledWith(
       "sessions.deleteWorkspace",
       "sessions.deleteWorkspaceConfirm:Project",
@@ -289,8 +293,7 @@ test("promoted workspace pins remain visible, openable and included in workspace
   expect(tree.root.findByType(FlatList).props.data.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1"]);
   act(() => sessionBody("Follow-up").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
-  answerSheet(0);
-  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  pressWorkspaceMenu(1);
   expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
 });
@@ -300,7 +303,7 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockRejectedValue(new Error("offline"));
-    pressWorkspaceMenu(1);
+    pressWorkspaceMenu(2);
     await act(async () => {
       confirmAlert();
     });
