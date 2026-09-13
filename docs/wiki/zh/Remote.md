@@ -1,7 +1,7 @@
 # 手机远程
 
 FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在**桌面电脑**执行，
-不是在手机沙箱里执行。请保持电脑唤醒、桌面应用运行，并让两台设备联网。
+不是在手机沙箱里执行。请保持电脑唤醒、Desktop（图形或显式无头模式）运行，并让两台设备联网。
 
 ## 配对手机
 
@@ -13,6 +13,38 @@ FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在*
 
 生产版与测试版必须使用匹配的服务环境。其他环境签发的配对码会被拒绝；应使用匹配的
 构建，不要修改配对码或端点来绕过检查。
+
+## 通过 SSH 使用无头 Desktop
+
+在终端直接运行 Desktop 可执行程序（Windows 为 `futureos.exe`）：
+
+```bash
+./futureos --headless
+```
+
+无需 `--pair --qr`：默认按需展示二维码和文字链接，进程持续占用当前终端，不自动后台运行。
+
+1. **平台未登录**：打印登录二维码、授权网址和用户码。用手机系统相机/浏览器扫码，登录 Future OS 并授权服务器；服务器上不需要浏览器或回调端口。
+2. **手机未配对**：入口就绪后打印第二个二维码，使用 **Future OS App 的添加设备/扫码入口**扫描，或在 App 中粘贴完整配对链接。
+3. **已有有效登录和配对**：直接复用，等待原手机连接，不重新生成邀请。授权失败、邀请超时等错误会明确提示，不默默替换有效绑定。
+
+可选 `--no-qr` 只显示文字链接；终端过窄也会回退到链接。`--re-pair` 会明确替换原手机配对，只在换手机或确需重新配对时使用。普通网络故障不需要它。
+
+**Ctrl+C 关闭远程入口并退出**，登录和已完成配对保留。如果 Desktop 启动了 Agent，它也会停止，进行中的对话会中断；若使用原本独立运行的 Agent，则不会终止它。Unix 也响应 SIGTERM/SIGHUP。不要把退出当成解绑。
+
+同一数据目录不能同时运行 GUI 和无头 Desktop。首次登录/配对必须在交互终端完成，程序拒绝将授权链接写入重定向日志。若由其他用户或 systemd 运行，需要使用相同账号、HOME 和凭证目录；建议普通用户运行，不要为方便而使用 root。SSH 断开后不保证继续运行，确需保活可由用户显式使用 tmux 或系统服务托管。
+
+### 没有图形依赖的服务器构建
+
+默认 Desktop 构建支持 `--headless`，但仍链接 GUI 系统库。对于没有 GTK/WebKit 的 Linux 服务器，可从仓库根目录构建同一后端的无 GUI 版本：
+
+```bash
+cargo build --release --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
+```
+
+程序位于 `desktop/src-tauri/target/release/futureos`（设置了 `CARGO_TARGET_DIR` 时按该目录）。将匹配版本的 `future` CLI 放在它旁边或 PATH 中，Desktop 会按需启动本机 Agent；也可提前单独运行 `future agent`。未找到 Agent 时会报错，不会绕过平台登录。编译渠道与手机使用的生产/测试环境仍须匹配；`--release` 优化等级本身不决定平台渠道。
+
+无 GUI 版本不依赖窗口、WebView、X11/Wayland；它不是另一个远程服务产品，仍使用 Desktop 的存储、审批和手机协议。
 
 ## 可以做什么
 

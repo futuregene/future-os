@@ -1,4 +1,5 @@
-//! Desktop integration for the embedded remote controller; never a background service.
+//! Desktop integration for the embedded remote controller, shared by the GUI
+//! and the explicitly started foreground headless mode.
 pub(crate) mod availability;
 pub(crate) mod business;
 pub(crate) mod catalog;
