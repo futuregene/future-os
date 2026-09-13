@@ -20,6 +20,7 @@ describe("useSessionCatalog", () => {
   let clientRef: { current: RemoteClient | null };
   let selectedRef: { current: string };
   let request: jest.Mock;
+  let onFinished: jest.Mock;
   let result: { current: Catalog };
   let renderer: ReactTestRenderer | null;
 
@@ -27,6 +28,7 @@ describe("useSessionCatalog", () => {
     result.current = useSessionCatalog(
       clientRef as MutableRefObject<RemoteClient | null>,
       selectedRef as MutableRefObject<string>,
+      onFinished,
     );
     return null;
   }
@@ -39,6 +41,7 @@ describe("useSessionCatalog", () => {
 
   beforeEach(() => {
     request = jest.fn();
+    onFinished = jest.fn();
     clientRef = {
       current: { request, requestRetry: request } as unknown as RemoteClient,
     };
@@ -149,6 +152,77 @@ describe("useSessionCatalog", () => {
     });
     expect(close).toBe(false);
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["s1"]);
+  });
+
+  test("completion callbacks include the open session, deduplicate snapshots, and skip initial history/cancellation", () => {
+    render();
+    act(() => { result.current.applySessionSnapshot([session("s1", "completed")]); });
+    expect(onFinished).not.toHaveBeenCalled();
+    act(() => { result.current.applySessionSnapshot([session("s1", "running")]); });
+    act(() => { result.current.applySessionSnapshot([session("s1", "completed")]); });
+    act(() => { result.current.applySessionSnapshot([session("s1", "completed")]); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "s1", status: "completed" }));
+    expect(result.current.unreadSessions.size).toBe(0);
+    act(() => { result.current.applySessionSnapshot([session("s1", "running")]); });
+    act(() => { result.current.applySessionSnapshot([session("s1", "cancelled")]); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    act(() => { result.current.reset(); result.current.applySessionSnapshot([session("s1", "failed")]); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+  });
+
+  test("live completion covers fast runs and deduplicates the later snapshot and repeated terminal event", () => {
+    render();
+    const event = { type: "agent_end", data: "{}", runId: "r1", idx: 2 };
+    act(() => { result.current.observeRunEvent({ ...event, type: "agent_start" }, "s1"); });
+    act(() => { result.current.observeRunEvent(event, "s1"); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.applySessionSnapshot([session("s1", "running")]);
+      result.current.applySessionSnapshot([session("s1", "completed")]);
+      result.current.observeRunEvent(event, "s1");
+    });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    act(() => { result.current.observeRunEvent({ ...event, runId: "r2", data: '{"state":"cancelled"}' }, "s1"); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+  });
+
+  test("a snapshot arriving before the live terminal only reminds once; the next run still reminds", () => {
+    render();
+    const event = { type: "agent_start", data: "{}", runId: "r1" };
+    act(() => {
+      result.current.observeRunEvent(event, "s1");
+      result.current.applySessionSnapshot([session("s1", "running")]);
+      result.current.applySessionSnapshot([session("s1", "failed")]);
+      result.current.observeRunEvent({ ...event, type: "agent_end", data: '{"state":"failed"}' }, "s1");
+    });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.applySessionSnapshot([session("s1", "running")]);
+      result.current.applySessionSnapshot([session("s1", "completed")]);
+    });
+    expect(onFinished).toHaveBeenCalledTimes(2);
+  });
+
+  test.each(['{"state":"error"}', '{"state":"incomplete"}', '{"error":"failed to spawn"}', '{"reason":"incomplete"}'])("live failure payload %s is never announced as success", data => {
+    render();
+    act(() => { result.current.observeRunEvent({ type: "agent_end", data, runId: "r1" }, "s1"); });
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+  });
+
+  test("streaming-only running state is detected and reset prevents cross-desktop history alerts", () => {
+    render();
+    act(() => { result.current.applySessionSnapshot([{ ...session("s1"), streaming: true }]); });
+    act(() => { result.current.applySessionSnapshot([session("s1", "completed")]); });
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    act(() => {
+      result.current.observeRunEvent({ type: "agent_end", data: "{}", runId: "r1" }, "s1");
+      result.current.reset();
+      result.current.applySessionSnapshot([session("s1", "completed")]);
+    });
+    const count = onFinished.mock.calls.length;
+    act(() => { result.current.observeRunEvent({ type: "agent_end", data: "{}", runId: "r1" }, "s1"); });
+    expect(onFinished).toHaveBeenCalledTimes(count + 1);
   });
 
   test("returns the full catalogue surface on mount", () => {
