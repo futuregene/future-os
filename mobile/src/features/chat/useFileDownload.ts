@@ -157,11 +157,12 @@ export function useFileDownload(
     pendingDownloadHandleRef.current = null;
     const present = pendingDownloadModalRef.current;
     pendingDownloadModalRef.current = null;
-    present?.();
+    if (!handle?.controller.signal.aborted) present?.();
   }, []);
 
   const handoffDownloadModal = useCallback(
     (handle: DownloadHandle, present: () => void) => {
+      if (handle.controller.signal.aborted || activeDownloadRef.current !== handle) return;
       if (!handle.visible) {
         finishDownload(handle);
         present();
@@ -193,7 +194,7 @@ export function useFileDownload(
   );
 
   const cancelActiveDownload = useCallback(() => {
-    const handle = activeDownloadRef.current;
+    const handle = activeDownloadRef.current ?? pendingDownloadHandleRef.current;
     if (!handle) return;
     pendingDownloadModalRef.current = null;
     pendingDownloadHandleRef.current = null;
@@ -523,6 +524,7 @@ export function useFileDownload(
       try {
         const file = await fetchDownload(info, cachedFile, handle);
         if (!file) return;
+        if (handle.controller.signal.aborted) throw new TransferCancelledError();
         if (save && Platform.OS === "android") {
           updateDownload(handle, { phase: "saving" });
           const permission =
@@ -547,6 +549,7 @@ export function useFileDownload(
         if (!save && Platform.OS === "android") {
           updateDownload(handle, { phase: "opening" });
           const namedFile = await namedExternalFile(file, info.name);
+          if (handle.controller.signal.aborted) throw new TransferCancelledError();
           await openAndroidFile(namedFile.uri, openMimeType);
           return;
         }
@@ -556,6 +559,7 @@ export function useFileDownload(
         }
         updateDownload(handle, { phase: save ? "saving" : "opening" });
         const namedFile = await namedExternalFile(file, info.name);
+        if (handle.controller.signal.aborted) throw new TransferCancelledError();
         if (Platform.OS === "ios") {
           // UIActivityViewController cannot be presented reliably while the
           // React Native download Modal is still on screen. Dismiss it first
@@ -629,16 +633,18 @@ export function useFileDownload(
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
         handoffDownloadAlert(handle, t("attachment.downloadFailed"));
+      } finally {
+        finishDownload(handle);
       }
     },
-    [beginDownload, handoffDownloadAlert, openOrShare, remote, t, updateDownload],
+    [beginDownload, finishDownload, handoffDownloadAlert, openOrShare, remote, t, updateDownload],
   );
 
   // A local-file markdown link/image target: prepare, then dispatch by size and
   // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
   // anything else → open/save action sheet.
   const openFileLink = useCallback(
-    async (path: string, refresh = false) => {
+    async (path: string, refresh = true) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
       const fileType = mobileFileType(attachment.name);
       if (!fileType) {
@@ -658,8 +664,8 @@ export function useFileDownload(
       }
       try {
         const variant = fileType.route === "external" ? "original" : "preview";
-        // Directory entries are mutable: revalidate their content identity,
-        // while still reusing the content-addressed download cache.
+        // Directory entries and generated Markdown links are mutable:
+        // revalidate by default, reusing bytes only after content identity agrees.
         let cachedPreview = refresh ? null : remote.cachedAttachment(attachment, variant);
         const info =
           cachedPreview?.info ??
@@ -741,6 +747,8 @@ export function useFileDownload(
   useEffect(
     () => () => {
       activeDownloadRef.current?.controller.abort();
+      pendingDownloadHandleRef.current?.controller.abort();
+      activeDownloadRef.current = null;
       pendingDownloadModalRef.current = null;
       pendingDownloadHandleRef.current = null;
       pendingPreviewActionRef.current = null;

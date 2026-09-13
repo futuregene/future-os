@@ -859,6 +859,8 @@ describe("download & preview cache", () => {
     chunkBytes: 4,
   };
 
+  const cacheClient = mockClient() as unknown as RemoteClient;
+
   function cacheUri(i: DownloadInfo): string {
     return `/mock/cache/futureos-previews/${i.contentHash}.jpg`;
   }
@@ -969,21 +971,20 @@ describe("download & preview cache", () => {
 
   test("rememberPreparedPreview + cachedPreviewForAttachment round-trip", () => {
     const attachment: HistoryAttachment = { path: "/tmp/a.jpg", name: "a.jpg" };
-    expect(cachedPreviewForAttachment(attachment)).toBeNull();
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment)).toBeNull();
 
-    // No backing file yet — the remembered preview is pruned on first look.
-    rememberPreparedPreview(attachment, info);
-    expect(cachedPreviewForAttachment(attachment)).toBeNull();
+    // No backing file yet — the bounded metadata survives until download.
+    rememberPreparedPreview(cacheClient, "s1", attachment, info);
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment)).toBeNull();
 
-    // Re-remember once the backing file exists; the preview is then served.
-    rememberPreparedPreview(attachment, info);
+    // The completed download becomes reusable without another prepare RPC.
     mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
-    const preview = cachedPreviewForAttachment(attachment);
+    const preview = cachedPreviewForAttachment(cacheClient, "s1", attachment);
     expect(preview?.info).toBe(info);
 
-    // A pruned backing file drops the remembered preview again.
+    // A pruned backing file is still a cache miss.
     mockFS.__reset();
-    expect(cachedPreviewForAttachment(attachment)).toBeNull();
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment)).toBeNull();
   });
 
   test("keeps preview and original cache entries independent", () => {
@@ -994,14 +995,70 @@ describe("download & preview cache", () => {
       previewKind: "file",
       variant: "original",
     };
-    rememberPreparedPreview(attachment, info);
-    rememberPreparedPreview(attachment, original);
+    rememberPreparedPreview(cacheClient, "s1", attachment, info);
+    rememberPreparedPreview(cacheClient, "s1", attachment, original);
     mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
     mockFS.__set("/mock/cache/futureos-previews/original123.jpg", {
       bytes: new Uint8Array(8),
     });
-    expect(cachedPreviewForAttachment(attachment, "preview")?.info).toBe(info);
-    expect(cachedPreviewForAttachment(attachment, "original")?.info).toBe(original);
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment, "preview")?.info).toBe(info);
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment, "original")?.info).toBe(original);
+  });
+
+  test("identical paths cannot reuse another desktop or session's prepared metadata", () => {
+    const attachment = { path: "results/chart.jpg", name: "chart.jpg" };
+    const otherClient = mockClient() as unknown as RemoteClient;
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    rememberPreparedPreview(cacheClient, "s1", attachment, info);
+    expect(cachedPreviewForAttachment(cacheClient, "s1", attachment)?.info).toBe(info);
+    expect(cachedPreviewForAttachment(otherClient, "s1", attachment)).toBeNull();
+    expect(cachedPreviewForAttachment(cacheClient, "s2", attachment)).toBeNull();
+  });
+
+  test("bounds prepared metadata even while all files remain cached", () => {
+    const client = mockClient() as unknown as RemoteClient;
+    mockFS.__set(cacheUri(info), { bytes: new Uint8Array(8) });
+    for (let index = 0; index < 129; index++) {
+      rememberPreparedPreview(client, "s1", { path: `${index}.jpg`, name: "a.jpg" }, info);
+    }
+    expect(cachedPreviewForAttachment(client, "s1", { path: "0.jpg", name: "a.jpg" })).toBeNull();
+    expect(cachedPreviewForAttachment(client, "s1", { path: "128.jpg", name: "a.jpg" })).not.toBeNull();
+  });
+
+  test("an already-cancelled prepare does not start a desktop request", async () => {
+    const client = mockClient();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(prepareDownload(client as unknown as RemoteClient, "s1", {
+      path: "a.jpg", name: "a.jpg",
+    }, "preview", controller.signal)).rejects.toThrow("transfer_cancelled");
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  test("cancels a transfer created after the prepare caller has already cancelled", async () => {
+    const client = mockClient();
+    const controller = new AbortController();
+    let resolve!: (result: { data: DownloadInfo }) => void;
+    client.request.mockReturnValueOnce(new Promise(yes => { resolve = yes; }))
+      .mockResolvedValue({ data: {} });
+    const pending = prepareDownload(client as unknown as RemoteClient, "s1", {
+      path: "a.jpg", name: "a.jpg",
+    }, "preview", controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toThrow("transfer_cancelled");
+    resolve({ data: info });
+    await Promise.resolve();
+    expect(client.request).toHaveBeenCalledWith({ type: "download_cancel", transferId: "t1" }, "transfer");
+  });
+
+  test.each([0, -1, NaN, Infinity, 0.5])("rejects invalid download chunk size %s before any disk write", async chunkBytes => {
+    const client = mockClient();
+    client.request.mockResolvedValue({ data: {} });
+    await expect(downloadPrepared(client as unknown as RemoteClient, { ...info, chunkBytes }))
+      .rejects.toThrow("invalid_download_size");
+    expect(client.downloadChunk).not.toHaveBeenCalled();
+    expect(cachedDownload(info)).toBeNull();
+    expect(client.request).toHaveBeenCalledWith({ type: "download_cancel", transferId: "t1" }, "transfer");
   });
 
   test("downloadPrepared downloads, verifies size and hash, and cancels", async () => {

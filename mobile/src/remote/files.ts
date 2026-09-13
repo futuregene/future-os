@@ -19,7 +19,11 @@ export const MAX_IMAGES = 4;
 // (report 06 decision D1).
 export const MAX_IMAGE_EDGE = 1600;
 const MAX_PREVIEW_CACHE_BYTES = 100 * 1024 * 1024;
-const preparedDownloadIndex = new Map<string, DownloadInfo>();
+// A path (especially a relative Markdown link) is not a global identity.
+// Keep metadata scoped to its connected desktop and session; only verified
+// content-addressed bytes may be shared between desktops.
+const preparedDownloadIndex = new WeakMap<RemoteClient, Map<string, DownloadInfo>>();
+const MAX_PREPARED_PREVIEWS = 128;
 
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"]);
 const JPEG_OUTPUT_INPUTS = new Set(["jpg", "jpeg", "bmp", "heic", "heif"]);
@@ -594,6 +598,7 @@ export async function prepareDownload(
   signal?: AbortSignal,
   onWaiting?: () => void,
 ): Promise<DownloadInfo> {
+  throwIfCancelled(signal);
   const command = {
     id: `download_prepare_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`,
     type: "download_prepare",
@@ -606,10 +611,13 @@ export async function prepareDownload(
   for (const timeoutMs of PREPARE_RPC_TIMEOUTS_MS) {
     attempt += 1;
     try {
-      response = await abortable(
-        client.request<DownloadInfo>(command, sessionId, timeoutMs),
-        signal,
-      );
+      const request = client.request<DownloadInfo>(command, sessionId, timeoutMs);
+      // Cancellation releases the UI immediately, but the desktop may finish
+      // preparing later. Observe that reply and release its transfer as well.
+      void request.then(result => {
+        if (signal?.aborted) cancelDownload(client, result.data.transferId);
+      }, () => undefined);
+      response = await abortable(request, signal);
       break;
     } catch (error) {
       if (error instanceof TransferCancelledError) throw error;
@@ -640,12 +648,12 @@ export async function prepareDownload(
   return info;
 }
 
-function downloadSourceKey(attachment: HistoryAttachment, variant: "preview" | "original"): string {
+function downloadSourceKey(sessionId: string, attachment: HistoryAttachment, variant: "preview" | "original"): string {
   // The same desktop attachment path always produces the same prepared
   // preview while it remains in the session. Its content hash is only known
   // after desktop has resized/re-encoded the preview, so retain that resolved
   // key locally and avoid the prepare RPC on subsequent opens.
-  return `${attachment.path}\u0000${attachment.name}\u0000${variant}`;
+  return JSON.stringify([sessionId, attachment.path, attachment.name, variant]);
 }
 
 export interface CachedAttachmentPreview {
@@ -653,8 +661,18 @@ export interface CachedAttachmentPreview {
   file: File;
 }
 
-export function rememberPreparedPreview(attachment: HistoryAttachment, info: DownloadInfo): void {
-  preparedDownloadIndex.set(downloadSourceKey(attachment, info.variant), info);
+export function rememberPreparedPreview(
+  client: RemoteClient, sessionId: string, attachment: HistoryAttachment, info: DownloadInfo,
+): void {
+  let index = preparedDownloadIndex.get(client);
+  if (!index) {
+    index = new Map();
+    preparedDownloadIndex.set(client, index);
+  }
+  const key = downloadSourceKey(sessionId, attachment, info.variant);
+  index.delete(key);
+  index.set(key, info);
+  if (index.size > MAX_PREPARED_PREVIEWS) index.delete(index.keys().next().value!);
 }
 
 function cacheFile(info: DownloadInfo): File {
@@ -725,16 +743,17 @@ async function verifiedCachedDownload(
 }
 
 export function cachedPreviewForAttachment(
+  client: RemoteClient,
+  sessionId: string,
   attachment: HistoryAttachment,
   variant: "preview" | "original" = "preview",
 ): CachedAttachmentPreview | null {
-  const key = downloadSourceKey(attachment, variant);
-  const info = preparedDownloadIndex.get(key);
+  const info = preparedDownloadIndex.get(client)?.get(downloadSourceKey(sessionId, attachment, variant));
   if (!info) return null;
   const file = cachedDownload(info);
-  if (file) return { info, file };
-  preparedDownloadIndex.delete(key);
-  return null;
+  // A miss is normal between prepare and download. Retain the bounded metadata
+  // so the next open can reuse the completed file instead of preparing again.
+  return file ? { info, file } : null;
 }
 
 export async function downloadPrepared(
@@ -744,9 +763,13 @@ export async function downloadPrepared(
   signal?: AbortSignal,
   onWaiting?: () => void,
 ): Promise<File> {
-  throwIfCancelled(signal);
   let cached: File | null;
   try {
+    throwIfCancelled(signal);
+    if (!Number.isSafeInteger(info.size) || info.size < 0 || info.size > MAX_FILE_BYTES ||
+        !Number.isSafeInteger(info.chunkBytes) || info.chunkBytes <= 0) {
+      throw new Error("invalid_download_size");
+    }
     cached = await verifiedCachedDownload(info, signal);
   } catch (error) {
     cancelDownload(client, info.transferId);
@@ -772,6 +795,9 @@ export async function downloadPrepared(
         onWaiting,
       );
       throwIfCancelled(signal);
+      if (bytes.byteLength !== Math.min(info.chunkBytes, info.size - completed)) {
+        throw new Error("download_size_mismatch");
+      }
       handle.writeBytes(bytes);
       completed += bytes.byteLength;
       onProgress?.(completed, info.size);
