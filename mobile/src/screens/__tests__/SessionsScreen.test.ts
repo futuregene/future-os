@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, StyleSheet, View } from "react-native";
+import { Modal, StyleSheet, Text, View } from "react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
@@ -60,7 +60,9 @@ test("device header has real gutters and a non-shrinking touch target on a small
   expect(style.minWidth).toBe(0);
   const header = selector.parent!;
   expect(StyleSheet.flatten(header.props.style).paddingHorizontal).toBe(16);
-  expect(tree.root.findByType(ConnectionBadge).props.compact).toBe(true);
+  const badge = tree.root.findByType(ConnectionBadge);
+  expect(badge.findAllByType(Text)).toHaveLength(0);
+  expect(badge.props.active).toBe(true);
   act(() => selector.props.onPress());
   expect(onManageDesktops).toHaveBeenCalledTimes(1);
 });
@@ -73,17 +75,17 @@ test("category switching is delegated to the list toolbar, without a separate ta
   expect(tree.root.findByType(SessionList).props.tab).toBe("chat");
 });
 
-test("tablet layout is centered and large text keeps the device badge compact", () => {
+test("tablet and large-text layouts keep the status dot-only", () => {
   mockDimensions = { width: 820, height: 1180, scale: 1, fontScale: 1 };
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-  expect(tree.root.findByType(ConnectionBadge).props.compact).toBe(false);
+  expect(tree.root.findByType(ConnectionBadge).findAllByType(Text)).toHaveLength(0);
   expect(tree.root.findAllByType(View).some(node => {
     const style = StyleSheet.flatten(node.props.style);
     return style?.maxWidth === 760 && style.alignSelf === "center";
   })).toBe(true);
   mockDimensions = { ...mockDimensions, fontScale: 1.6 };
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
-  expect(tree.root.findByType(ConnectionBadge).props.compact).toBe(true);
+  expect(tree.root.findByType(ConnectionBadge).findAllByType(Text)).toHaveLength(0);
 });
 
 test("settings uses the keyboard-safe scrollable dialog and can be dismissed", () => {
