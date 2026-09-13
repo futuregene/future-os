@@ -1568,12 +1568,14 @@ mod bridge_tests {
             }))
             .await;
         assert_eq!(listing["success"], json!(true));
+        // The root is the session workspace, transported in the ordinary
+        // spelling the phone renders (no Windows `\\?\` extended-length
+        // prefix), so compare the directories rather than the raw spelling.
+        let root_path = listing["data"]["rootPath"].as_str().unwrap();
+        assert!(!root_path.starts_with(r"\\?\"));
         assert_eq!(
-            listing["data"]["rootPath"],
-            json!(std::path::Path::new(&cwd)
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy())
+            std::path::Path::new(root_path).canonicalize().unwrap(),
+            std::path::Path::new(&cwd).canonicalize().unwrap()
         );
         assert!(listing["data"]["entries"]
             .as_array()
