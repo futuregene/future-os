@@ -41,8 +41,14 @@ if ($Sha) {
 
 Write-Host "==> Running installer (silent)..." -ForegroundColor Green
 $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+if ($p.ExitCode -eq 32) {
+    throw "FutureOS is still running or its files are locked. Save your work, exit FutureOS (including the system tray and Future terminals), then retry. Or run `"$exe`" interactively for guided setup. No program files were replaced by the preflight check."
+}
+if ($p.ExitCode -eq 5) {
+    throw "Setup could not verify write access to the install folder. Run `"$exe`" interactively to see recovery instructions and choose a writable folder."
+}
 if ($p.ExitCode -ne 0) {
-    throw "Installer exited with code $($p.ExitCode)"
+    throw "Installer exited with code $($p.ExitCode). Run `"$exe`" interactively for details."
 }
 
 # Tauri's current-user NSIS mode normally installs under

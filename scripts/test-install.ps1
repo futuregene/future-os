@@ -1,4 +1,4 @@
-# Offline regression: stop at the download boundary; never download or install.
+# Offline regressions: mock download/process boundaries; never download or install.
 $ErrorActionPreference = 'Stop'
 $oldVersion = $env:FUTUREOS_VERSION
 $oldBase = $env:FUTUREOS_BASE
@@ -31,6 +31,29 @@ try {
         }
     }
     Write-Host 'Pinned installer regression passed.'
+
+    # A failed silent install must explain how to recover, and must not proceed
+    # to `future init`. Both external side effects remain mocked.
+    function Invoke-WebRequest { param($Uri, $OutFile) }
+    function Start-Process {
+        param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru)
+        return [pscustomobject]@{ ExitCode = $script:installerExitCode }
+    }
+    foreach ($case in @(
+        @{ Code = 32; Message = 'still running or its files are locked' },
+        @{ Code = 5; Message = 'write access' },
+        @{ Code = 1234; Message = 'exited with code 1234' }
+    )) {
+        $script:installerExitCode = $case.Code
+        try {
+            . "$PSScriptRoot/install.ps1"
+            throw 'installer unexpectedly continued after failure'
+        } catch {
+            if (-not $_.Exception.Message.Contains($case.Message) -or
+                -not $_.Exception.Message.Contains('interactively')) { throw }
+        }
+    }
+    Write-Host 'Installer failure guidance regressions passed.'
 } finally {
     $env:FUTUREOS_VERSION = $oldVersion
     $env:FUTUREOS_BASE = $oldBase

@@ -295,6 +295,15 @@ jobs:
             Remove-Item -Force $overlay -ErrorAction SilentlyContinue
           }
 
+      # Tauri has populated its NSIS cache. Exercise hooks with harmless fixture
+      # executables before publishing; never launch/stop a real agent in this test.
+      - name: Test Windows installer preflight
+        shell: powershell
+        timeout-minutes: 5
+        run: |
+          & ./scripts/test-windows-installer-preflight.ps1
+          & ./scripts/test-install.ps1
+
       # Portable (install-free) build: the desktop exe plus the unified CLI binary,
       # all in one directory. In signed mode, sign the staged copies explicitly:
       # the bundler signs its installer copies but does not guarantee that the
