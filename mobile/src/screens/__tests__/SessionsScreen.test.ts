@@ -5,6 +5,8 @@ import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
+import { SessionList } from "../SessionList";
+import { ActionMenu } from "../../components/ActionMenu";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 const mockRemote = {
@@ -17,6 +19,7 @@ const mockRemote = {
   approvalTier: "manual",
   newConversation: jest.fn(),
   reconnect: jest.fn(),
+  setSessionPinned: jest.fn(async () => {}),
 };
 jest.mock("react-native", () => {
   const actual = jest.requireActual("react-native");
@@ -29,7 +32,7 @@ jest.mock("../SessionList", () => ({ SessionList: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -101,6 +104,19 @@ test("iOS device navigation waits until the settings modal has dismissed", () =>
   expect(onManageDesktops).toHaveBeenCalledTimes(1);
   act(() => modal.props.onDismiss());
   expect(onManageDesktops).toHaveBeenCalledTimes(1);
+});
+
+test("session ellipsis and long-press callback use the shared app action sheet", async () => {
+  const session = { sessionId: "s", threadId: "t", title: "Reply", streaming: false };
+  act(() => tree.root.findByType(SessionList).props.onMenu(session));
+  const menu = tree.root.findByType(ActionMenu);
+  expect(menu.props.visible).toBe(true);
+  expect(menu.props.actions.map((action: { label: string }) => action.label)).toEqual(["sessions.pin", "chat.rename", "sessions.delete"]);
+  const modal = menu.findByType(Modal);
+  act(() => button("sessions.pin").props.onPress());
+  expect(mockRemote.setSessionPinned).not.toHaveBeenCalled();
+  await act(async () => { modal.props.onDismiss(); });
+  expect(mockRemote.setSessionPinned).toHaveBeenCalledWith("s", "t", true);
 });
 
 test("new chat opens immediately, without an extra creation dialog", () => {

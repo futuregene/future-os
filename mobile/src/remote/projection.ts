@@ -636,7 +636,7 @@ function buildLiveAssistantItem(
     // (agent_end) — the footer swaps the generating indicator for the copy
     // button exactly at that boundary.
     streaming: acc.streaming,
-    ...(acc.streaming ? { startedAt: acc.startedAt } : {}),
+    ...(acc.streaming && acc.startedAt > 0 ? { startedAt: acc.startedAt } : {}),
     ...(segments.length > 0 ? { segments } : {}),
     ...(durationMs != null ? { durationMs } : {}),
     ...(projection.outputTokens > 0 ? { outputTokens: projection.outputTokens } : {}),

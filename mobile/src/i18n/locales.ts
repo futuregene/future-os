@@ -168,6 +168,8 @@ export const resources = {
         responseInterrupted: "The response was interrupted before it finished.",
         responseIncomplete: "Response not completed",
         responseStopped: "You stopped this response",
+        responseCompleted: "Completed",
+        generating: "Generating…",
         retry: "Retry",
         continue: "Continue",
         compacting: "Compacting context…",
@@ -255,6 +257,11 @@ export const resources = {
         denying: "Denying",
         allowOnce: "Allow once",
         allowing: "Allowing",
+      },
+      share: {
+        newConversation: "Start a conversation with shared content",
+        chat: "New conversation · no workspace",
+        workspace: "New conversation · {{name}}",
       },
       attachment: {
         title: "Attachment",
@@ -514,6 +521,8 @@ export const resources = {
         responseInterrupted: "回复在完成前被中断。",
         responseIncomplete: "本次回复未完成",
         responseStopped: "你已停止本次回复",
+        responseCompleted: "已完成",
+        generating: "正在生成…",
         retry: "重试",
         continue: "继续",
         compacting: "正在压缩上下文…",
@@ -595,6 +604,11 @@ export const resources = {
         denying: "拒绝中",
         allowOnce: "允许一次",
         allowing: "允许中",
+      },
+      share: {
+        newConversation: "基于分享内容开启新会话",
+        chat: "新会话 · 非工作区",
+        workspace: "新会话 · {{name}}",
       },
       attachment: {
         title: "附件",

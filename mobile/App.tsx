@@ -8,7 +8,7 @@ import { SessionsScreen } from "./src/screens/SessionsScreen";
 import { DesktopsScreen } from "./src/screens/DesktopsScreen";
 import { RemoteProvider, useRemoteControls as useRemote } from "./src/remote/RemoteContext";
 import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbox";
-import { useShareIntake } from "./src/share/useShareIntake";
+import { ShareIntakeMenu } from "./src/share/ShareIntakeMenu";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";
 import { colors } from "./src/theme/tokens";
 
@@ -44,7 +44,7 @@ function AppContent() {
   const [screen, setScreen] = useState<"main" | "desktops" | "pair">("main");
   const showDesktops = () => setScreen("desktops");
   useUpdateReminder();
-  useShareIntake();
+  useEffect(() => subscribeShareLanded(() => setScreen("main")), []);
   // A share stages its payload in the composer draft; when the app is already
   // showing that same draft, the key below is what makes the composer re-read
   // it (see src/share/shareInbox.ts).
@@ -86,6 +86,7 @@ export default function App() {
       <RemoteProvider>
         <StatusBar style="dark" />
         <AppContent />
+        <ShareIntakeMenu />
       </RemoteProvider>
     </SafeAreaProvider>
   );

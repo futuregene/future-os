@@ -430,35 +430,68 @@ export class SyncEngine {
       const activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
       // just settled is no longer active) else the active run.
-      targetRunId = request.runId || activeRunId;
+      targetRunId = request.runId || activeRunId ||
+        (lane.timeline?.streaming ? lane.timeline.currentRunId ?? "" : "");
 
       const full = this.isFullReplay(lane, targetRunId, request);
       if (full) {
         stage = "history";
         const history = await this.deps.requestHistory(lane.sessionId);
         if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
-        let base = mergeLiveInto(history, lane.timeline);
+        let base = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId };
+        // A settled durable reply already contains the terminal metadata. Still
+        // read replay for its cursor, but never replace that reply with a partial
+        // or evicted replay when reopening idle.
+        const durableReply = !activeRunId && history.items.some(item =>
+          item.kind === "message" && item.role === "assistant" && item.runId === targetRunId &&
+          (item.durationMs != null || item.failed || item.stopped),
+        );
         if (targetRunId) {
           // History is already readable. A cold open must not wait for every
           // replay page before its first paint (or turn a slow replay into a
           // history timeout). This preview does NOT establish the lane or
           // advance its cursor; live ops still queue behind the full replay.
-          if (lane.timeline === null) {
-            lane.timeline = { ...base, streaming: !!activeRunId };
+          if (lane.timeline === null || durableReply) {
+            lane.timeline = {
+              ...base,
+              streaming: !!activeRunId,
+              items: base.items.map(item =>
+                item.kind === "message" && item.role === "assistant" && item.runId === activeRunId
+                  ? { ...item, streaming: true }
+                  : item,
+              ),
+            };
             this.commit(lane);
           }
           stage = "replay";
-          base = stripRunItems(base, targetRunId);
           const replay = await this.replayInto(lane, base, targetRunId, -1);
           if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
-          base = replay.timeline;
+          base = durableReply ? base : replay.timeline;
           lane.cursor = replay.cursor;
         }
-        lane.timeline = base;
+        // An idle state must not inherit a cached generating flag. Queued live
+        // events still run afterwards, so a newly started run is not suppressed.
+        lane.timeline = activeRunId ? base : {
+          ...base,
+          streaming: false,
+          items: base.items.map(item =>
+            item.kind === "message" && item.streaming ? { ...item, streaming: false } : item,
+          ),
+        };
         this.commit(lane);
       } else {
         stage = "replay";
         await this.tailReconcile(lane, targetRunId);
+        if (!activeRunId && lane.timeline?.streaming) {
+          lane.timeline = {
+            ...lane.timeline,
+            streaming: false,
+            items: lane.timeline.items.map(item =>
+              item.kind === "message" && item.streaming ? { ...item, streaming: false } : item,
+            ),
+          };
+          this.commit(lane);
+        }
       }
       lane.established = true;
       return null;
@@ -695,9 +728,26 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     }
     return true;
   });
+  const settledReplies = new Map(live.items.flatMap(item =>
+    item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
+      ? [[item.runId, item] as const] : [],
+  ));
+  const items = history.items.map(item => {
+    if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
+    const cached = settledReplies.get(item.runId);
+    if (!cached) return item;
+    // The entry page can arrive before its terminal metadata is attached.
+    // Preserve known stats for this exact run, never infer them from read time.
+    return {
+      ...item,
+      durationMs: item.durationMs ?? cached.durationMs,
+      outputTokens: item.outputTokens ?? cached.outputTokens,
+    };
+  });
   return {
     ...history,
-    items: [...history.items, ...folded],
-    streaming: live.streaming,
+    items: [...items, ...folded],
+    // History is authoritative on open; replay/queued events restore live state.
+    streaming: history.streaming,
   };
 }

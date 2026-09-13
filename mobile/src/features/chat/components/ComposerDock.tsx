@@ -24,7 +24,7 @@ type Remote = RemoteControls;
 type PendingApproval = Extract<TimelineItem, { kind: "approval" }>;
 
 const INPUT_MIN_HEIGHT = 46;
-const INPUT_MAX_HEIGHT = 160;
+const INPUT_MAX_HEIGHT = 240;
 
 function ComposerDockView({
   message,
@@ -67,9 +67,11 @@ function ComposerDockView({
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
 }) {
-  const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT);
-  const { width, fontScale } = useWindowDimensions();
+  const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
+  const { width, height, fontScale } = useWindowDimensions();
   const stackedToolbar = width < 380 || fontScale > 1.2;
+  const maxInputHeight = Math.max(INPUT_MIN_HEIGHT, Math.min(INPUT_MAX_HEIGHT, Math.floor(height * 0.3)));
+  const inputHeight = message ? Math.max(INPUT_MIN_HEIGHT, Math.min(maxInputHeight, contentHeight)) : INPUT_MIN_HEIGHT;
   return (
     <View style={styles.composerDock}>
       <View pointerEvents="none" style={styles.composerFade}>
@@ -158,28 +160,41 @@ function ComposerDockView({
           {attachments.some(a => a.kind === "image") && !supportsImages && (
             <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
           )}
-          <TextInput
-            accessibilityLabel={t("chat.placeholder")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={remote.desktopOnline && !remote.streaming && !remote.busy}
-            multiline
-            onContentSizeChange={event =>
-              setInputHeight(
-                Math.max(
-                  INPUT_MIN_HEIGHT,
-                  Math.min(INPUT_MAX_HEIGHT, event.nativeEvent.contentSize.height),
-                ),
-              )
-            }
-            onChangeText={setMessage}
-            onSubmitEditing={() => void send()}
-            placeholder={t("chat.placeholder")}
-            placeholderTextColor={colors.inkMuted}
-            spellCheck={false}
-            style={[styles.input, { height: message ? inputHeight : INPUT_MIN_HEIGHT }]}
-            value={message}
-          />
+          <View>
+            {/* Measure unconstrained text at the input's actual width. A fixed
+                native TextInput can report a clamped content size, especially
+                after pasting/restoring a draft. This also remeasures wrapping
+                after rotation and font-size changes without remounting input. */}
+            <View
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={styles.inputMeasure}
+            >
+              <Text
+                accessible={false}
+                onLayout={event => setContentHeight(Math.ceil(event.nativeEvent.layout.height))}
+                style={styles.inputText}
+              >
+                {`${message}\u200b`}
+              </Text>
+            </View>
+            <TextInput
+              accessibilityLabel={t("chat.placeholder")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={remote.desktopOnline && !remote.streaming && !remote.busy}
+              multiline
+              scrollEnabled={!!message && contentHeight > maxInputHeight}
+              onChangeText={setMessage}
+              onSubmitEditing={() => void send()}
+              placeholder={t("chat.placeholder")}
+              placeholderTextColor={colors.inkMuted}
+              spellCheck={false}
+              style={[styles.inputText, styles.input, { height: inputHeight }]}
+              value={message}
+            />
+          </View>
           <View style={[styles.composerToolbar, stackedToolbar && styles.composerToolbarStacked]}>
             <View style={[styles.composerSelectors, stackedToolbar && styles.composerSelectorsStacked]}>
               <Pressable
@@ -370,14 +385,17 @@ const styles = StyleSheet.create({
     color: colors.warning,
     fontSize: 11,
   },
-  input: {
-    minHeight: INPUT_MIN_HEIGHT,
-    maxHeight: INPUT_MAX_HEIGHT,
+  inputMeasure: { position: "absolute", top: 0, left: 0, right: 0, opacity: 0 },
+  inputText: {
     color: colors.ink,
     ...chatTypography,
+    includeFontPadding: false,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     paddingBottom: spacing.sm,
+  },
+  input: {
+    minHeight: INPUT_MIN_HEIGHT,
     textAlignVertical: "top",
   },
   composerToolbar: {

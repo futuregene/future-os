@@ -581,7 +581,7 @@ describe("pickFromAlbum", () => {
     Platform.OS = "ios";
   });
 
-  test.each(["ios", "android"] as const)(
+  test.each(["ios"] as const)(
     "%s opens the system album without requesting full-library access",
     async os => {
       Platform.OS = os;
@@ -597,9 +597,9 @@ describe("pickFromAlbum", () => {
     },
   );
 
-  test("uses the gallery, not a document browser, without a system photo picker", async () => {
+  test.each([true, false])("opens the phone gallery even when system picker availability is %s", async available => {
     Platform.OS = "android";
-    jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
+    jest.mocked(isPhotoPickerAvailable).mockReturnValue(available);
     jest
       .mocked(startActivityAsync)
       .mockResolvedValue({ resultCode: -1, data: "content://media/images/123" });
@@ -619,12 +619,32 @@ describe("pickFromAlbum", () => {
     });
   });
 
+  test("falls back to the system photo picker only when the gallery cannot launch", async () => {
+    Platform.OS = "android";
+    jest.mocked(isPhotoPickerAvailable).mockReturnValue(true);
+    jest.mocked(startActivityAsync).mockRejectedValue(new Error("No activity found"));
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+    const existing = [attachment()];
+    expect(await pickFromAlbum(existing)).toBe(existing);
+    expect(mockedLaunchLibrary).toHaveBeenCalled();
+    expect(mockedRequestLibrary).not.toHaveBeenCalled();
+  });
+
+  test("reports when neither gallery nor system photo picker is available", async () => {
+    Platform.OS = "android";
+    jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
+    jest.mocked(startActivityAsync).mockRejectedValue(new Error("No activity found"));
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
   test("keeps attachments on gallery cancellation", async () => {
     Platform.OS = "android";
     jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
     jest.mocked(startActivityAsync).mockResolvedValue({ resultCode: 0 });
     const existing = [attachment()];
     expect(await pickFromAlbum(existing)).toBe(existing);
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
 
   test("does not open a picker when the image quota is full", async () => {
@@ -689,6 +709,15 @@ describe("recoverPendingImagePickerAttachments", () => {
 });
 
 describe("prepareSharedAttachments", () => {
+  test("counts existing draft images before importing a share", async () => {
+    mockFS.__set("file:///share/new.png", { bytes: new Uint8Array(10), type: "image/png" });
+    await expect(prepareSharedAttachments(
+      [{ uri: "file:///share/new.png", name: "new.png", mimeType: "image/png" }],
+      Array.from({ length: 4 }, () => attachment({ kind: "image" })),
+    )).rejects.toThrow("attachment_image_count");
+    expect(mockedManipulate).not.toHaveBeenCalled();
+  });
+
   test("keeps the name the sending app reported and marks the copy temporary", async () => {
     const file = fsFile("file:///cache/share/0f1-a.png", {
       bytes: new Uint8Array(10),

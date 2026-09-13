@@ -53,14 +53,21 @@ function attachment(name: string): MobileAttachment {
 
 let renderer: ReactTestRenderer | null = null;
 const newConversation = jest.fn(async () => {});
+let intake: ReturnType<typeof useShareIntake>;
+async function choose(mode: "chat" | "workspace" = "chat", workspaceId?: string) {
+  const start = intake.chooseDestination;
+  act(() => intake.dismiss());
+  await act(async () => { await start(mode, workspaceId); });
+}
 
 function render(credentials: unknown = { pairId: "pair", expectedDesktopId: "desktop" }): void {
   mockedUseRemote.mockReturnValue({
     credentials,
+    workspaces: [{ id: "w1", name: "Project" }],
     newConversation,
   } as unknown as ReturnType<typeof useRemote>);
   function Harness(): null {
-    useShareIntake();
+    intake = useShareIntake();
     return null;
   }
   act(() => {
@@ -96,7 +103,7 @@ afterEach(() => {
 });
 
 test("stages a shared payload into the new-conversation draft", async () => {
-  mockedGetPendingShare.mockResolvedValue({
+  mockedGetPendingShare.mockResolvedValueOnce({
     text: "look at this",
     tooLarge: false,
     files: [{ uri: "file:///cache/share/a.jpg", name: "a.jpg", mimeType: "image/jpeg" }],
@@ -107,15 +114,19 @@ test("stages a shared payload into the new-conversation draft", async () => {
   render();
   await flush();
 
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(intake.pending).not.toBeNull();
+  await choose();
   expect(mockedPrepare).toHaveBeenCalledWith([
     { uri: "file:///cache/share/a.jpg", name: "a.jpg", mimeType: "image/jpeg" },
-  ]);
+  ], []);
   // The staged draft keeps what the user had typed and appends the share.
   expect(mockedSaveDraft).toHaveBeenCalledWith(NEW_CONVERSATION_DRAFT_KEY, {
     text: "typing…\n\nlook at this",
     attachments: [attachment("a.jpg")],
   });
-  expect(newConversation).toHaveBeenCalledWith("chat");
+  expect(newConversation).toHaveBeenCalledWith("chat", undefined);
   expect(mockedMarkLanded).toHaveBeenCalled();
 });
 
@@ -130,6 +141,8 @@ test("a share with no text keeps the files-only draft", async () => {
   render();
   await flush();
 
+  await choose("workspace", "w1");
+  expect(newConversation).toHaveBeenCalledWith("workspace", "w1");
   expect(mockedSaveDraft).toHaveBeenCalledWith(NEW_CONVERSATION_DRAFT_KEY, {
     text: "",
     attachments: [attachment("a.jpg")],
@@ -158,6 +171,7 @@ test("reports the oversized file but still stages the files that fit", async () 
   render();
   await flush();
 
+  await choose();
   expect(mockedSaveDraft).toHaveBeenCalled();
   expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_file_too_large");
 });
@@ -173,9 +187,29 @@ test("surfaces an attachment failure and leaves no half-staged draft", async () 
   render();
   await flush();
 
+  await choose();
   expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_file_too_large");
   expect(mockedSaveDraft).not.toHaveBeenCalled();
   expect(newConversation).not.toHaveBeenCalled();
+});
+
+test("cancelling the destination does not change a draft or start a conversation", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "caption", tooLarge: false, files: [] });
+  render();
+  await flush();
+  act(() => intake.dismiss());
+  await flush();
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+});
+
+test("does not open a workspace that disappeared while choosing", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "caption", tooLarge: false, files: [] });
+  render();
+  await flush();
+  await choose("workspace", "deleted");
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
 });
 
 test("does not read the share inbox until the device is paired", async () => {

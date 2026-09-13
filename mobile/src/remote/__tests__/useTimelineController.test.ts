@@ -780,8 +780,13 @@ describe("useTimelineController", () => {
   });
 
   describe("applySessionStreaming", () => {
-    test("flips streaming on a live timeline", async () => {
+    test.each([false, true])("checks authoritative state before accepting a running snapshot (active=%s)", async active => {
       options.selectedSessionId = "s1";
+      request.mockImplementation(async (command: { type: string }) => {
+        if (command.type === "get_state") return { data: { activeRun: active ? { runId: "r" } : null } };
+        if (command.type === "get_session_entries") return { data: { entries: [] } };
+        return { data: { events: [{ type: "agent_start", runId: "r", idx: 0, data: "{}" }] } };
+      });
       render();
       const engine = result.current.syncEngineRef.current!;
       engine.mutate("s1", () => ({
@@ -796,9 +801,12 @@ describe("useTimelineController", () => {
         ],
       }));
       await flush();
-      result.current.applySessionStreaming("s1", true);
+      act(() => result.current.applySessionStreaming("s1", true));
+      // A stale catalog hint must never immediately resurrect the stop button.
+      expect(result.current.timeline.streaming).toBe(false);
       await flush();
-      expect(result.current.timeline.streaming).toBe(true);
+      expect(result.current.timeline.streaming).toBe(active);
+      expect(result.current.syncEngineRef.current!.streamingFor("s1")).toBe(active);
     });
 
     test("does not reconcile when streaming state is unchanged", () => {
