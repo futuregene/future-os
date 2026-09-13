@@ -1,4 +1,5 @@
 import { remoteHttp } from "./http";
+import { createSecureIdentity, keyBytes } from "./secureChannel";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
@@ -76,6 +77,9 @@ export async function claimPairingCode(
 ): Promise<RemoteCredentials> {
   const invitation = parsePairingInvitation(code);
   if (!invitation) throw new Error("invalid_pairing_code");
+  if (!invitation.secureKey || !invitation.secret) throw new Error("pairing_identity_mismatch");
+  keyBytes(invitation.secureKey); keyBytes(invitation.secret);
+  const secureIdentity = createSecureIdentity();
   const pairing = decodePairingCode(invitation.code);
   if (!pairing) throw new Error("invalid_pairing_code");
   if (!isExpectedClaimUrl(pairing.claim_url)) throw new Error("unexpected_pairing_host");
@@ -101,6 +105,7 @@ export async function claimPairingCode(
   assertSecureNatsUrl(body.nats_ws_url);
   assertValidJwt(body.user_jwt);
   const credentials: RemoteCredentials = {
+    secureBundle: JSON.stringify({ identity: secureIdentity, desktopKey: invitation.secureKey, secret: invitation.secret }),
     pairId: body.pair_id,
     deviceId: id,
     seed,

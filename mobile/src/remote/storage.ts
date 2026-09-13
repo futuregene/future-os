@@ -6,8 +6,9 @@ import type { PairedDesktop, RemoteCredentials } from "./types";
 // DEVICE_ID_KEY alone (single source of truth) rather than being duplicated
 // inside the credential set.
 const CREDENTIAL_KEYS: {
-  [Key in Exclude<keyof RemoteCredentials, "deviceId">]: string;
+  [Key in Exclude<keyof RemoteCredentials, "deviceId">]-?: string;
 } = {
+  secureBundle: "futureos.remote.secure-bundle.v2",
   pairId: "futureos.remote.pair-id.v1",
   seed: "futureos.remote.seed.v1",
   userJwt: "futureos.remote.user-jwt.v1",
@@ -70,12 +71,12 @@ async function loadLegacyCredentials(): Promise<RemoteCredentials | null> {
   );
   if (entries.every(([, value]) => value == null)) return null;
   const deviceId = await loadDeviceId();
-  if (entries.some(([, value]) => !value) || !deviceId) {
+  if (entries.some(([field, value]) => field !== "secureBundle" && !value) || !deviceId) {
     await deleteCredentialFields();
     return null;
   }
   return {
-    ...Object.fromEntries(entries),
+    ...Object.fromEntries(entries.filter(([field, value]) => field !== "secureBundle" || value)),
     deviceId,
   } as unknown as RemoteCredentials;
 }
@@ -112,7 +113,7 @@ async function writeDesktop(
   const slot = previous?.slot === "a" ? "b" : "a";
   const fields = Object.keys(CREDENTIAL_KEYS) as (keyof typeof CREDENTIAL_KEYS)[];
   await settleWrites(fields.map((field) => SecureStore.setItemAsync(
-    desktopFieldKey(desktopId, field, slot), credentials[field], secureOptions,
+    desktopFieldKey(desktopId, field, slot), credentials[field] ?? "", secureOptions,
   )));
   // A credential refresh must not drop the name the user chose.
   const entry: DesktopEntry = {
@@ -196,8 +197,8 @@ export async function loadCredentials(desktopId?: string): Promise<RemoteCredent
       field, await SecureStore.getItemAsync(desktopFieldKey(entry.desktopId, field, entry.slot), secureOptions),
     ]));
     const deviceId = await loadDeviceId();
-    if (!deviceId || fields.some(([, value]) => !value)) throw new Error("incomplete_desktop_credentials");
-    const credentials = { ...Object.fromEntries(fields), deviceId } as unknown as RemoteCredentials;
+    if (!deviceId || fields.some(([field, value]) => field !== "secureBundle" && !value)) throw new Error("incomplete_desktop_credentials");
+    const credentials = { ...Object.fromEntries(fields.filter(([field, value]) => field !== "secureBundle" || value)), deviceId } as unknown as RemoteCredentials;
     if (credentials.pairId !== entry.pairId || credentials.expectedDesktopId !== entry.desktopId)
       throw new Error("desktop_credential_mismatch");
     return credentials;

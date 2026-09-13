@@ -111,6 +111,8 @@ impl Default for IncomingCmd {
 pub struct PairingCreds {
     #[serde(default)]
     pub handshake_version: u32,
+    #[serde(default)]
+    pub secure: Option<super::secure::PairingIdentity>,
     pub pair_id: String,
     pub desktop_id: String,
     pub nkey_seed: String,

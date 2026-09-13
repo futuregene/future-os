@@ -14,7 +14,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "packages/rpc", "orchestration/loop", "tui", "cli"]
+members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "orchestration/loop", "tui", "cli"]
 default-members = ["agent", "channels", "packages/rpc"]
 exclude = ["desktop"]
 resolver = "2"

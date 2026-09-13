@@ -28,6 +28,8 @@ export interface PairedDesktop {
 }
 
 export interface RemoteCredentials {
+  /** JSON-encoded v2 identity bundle, stored only in the OS credential store. */
+  secureBundle?: string;
   pairId: string;
   deviceId: string;
   seed: string;

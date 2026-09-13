@@ -16,6 +16,8 @@ export function utf8Bytes(value: string): number {
 }
 
 export interface PairingInvitation {
+  secureKey?: string;
+  secret?: string;
   code: string;
   desktopId: string;
   desktopPublicKey: string;
@@ -73,12 +75,18 @@ export function pairingCodeFromQr(value: string): string | null {
 export function parsePairingInvitation(value: string): PairingInvitation | null {
   try {
     const url = new URL(value.trim());
-    if (url.host !== "remote" || url.pathname !== "/pair") return null;
+    if (url.protocol !== "futureos:" || url.host !== "remote" || url.pathname !== "/pair") return null;
     const code = url.searchParams.get("code");
     const desktopId = url.searchParams.get("desktopId");
     const desktopPublicKey = url.searchParams.get("desktopKey");
     if (!code || !desktopId?.startsWith("desktop_") || !desktopPublicKey?.startsWith("U")) {
       return null;
+    }
+    const secureKey = url.searchParams.get("secureKey");
+    const secret = url.searchParams.get("secret");
+    if (url.searchParams.get("v") === "2") {
+      if (![secureKey, secret].every(key => key && /^[A-Za-z0-9_-]{43}$/.test(key) && decodeBase64Url(key)?.length === 32)) return null;
+      return { code, desktopId, desktopPublicKey, secureKey: secureKey!, secret: secret! };
     }
     return { code, desktopId, desktopPublicKey };
   } catch {

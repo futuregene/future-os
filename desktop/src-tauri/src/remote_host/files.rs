@@ -2102,11 +2102,8 @@ mod flow_tests {
         // Losing this critical subscription ends the generation; the runtime
         // supervisor owns the bounded rebuild policy.
         nats.kill();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(
-            loop_handle.is_finished(),
-            "supervisor must observe the dead task"
-        );
+        tokio::time::timeout(Duration::from_secs(5), loop_handle).await
+            .expect("supervisor must observe the dead task").expect("transfer task");
         cancel_upload(&upload_id).unwrap();
         std::fs::remove_file(&download_path).ok();
     }
@@ -2253,8 +2250,8 @@ mod flow_tests {
         let pair = unique("pair");
         let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let handle = spawn_transfer_loop(client, pair.clone(), active.clone());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(handle.is_finished(), "failed subscribe must return");
+        tokio::time::timeout(Duration::from_secs(5), handle).await
+            .expect("failed subscribe must return").expect("transfer task");
 
         // A healthy re-connection reports recovery (the `recovered()` Some arm).
         let nats2 = FakeNats::start().await;

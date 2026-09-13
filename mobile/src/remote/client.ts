@@ -2,11 +2,10 @@ import { ConnectionGeneration } from "./connectionGeneration";
 import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
-import { fromSeed } from "nkeys.js";
+import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "./secureChannel";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
-import { jwtExpiry, randomId, encodeBase64Url } from "./codec";
+import { jwtExpiry, randomId, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
-import { handshakeTranscript, type HandshakeChallenge, verifyDesktopChallenge } from "./handshake";
 import { decodeRemoteJson } from "./remoteJson";
 import type {
   SnapshotVersion,
@@ -20,7 +19,6 @@ import type {
 } from "./types";
 
 const encoder = new TextEncoder();
-const HANDSHAKE_PROTOCOL_VERSION = 1;
 const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
 const SYSTEM_FAILURE_WINDOW_MS = 10 * 60_000;
 const HEALTHY_RESET_MS = 60_000;
@@ -111,6 +109,7 @@ export class RemoteClient {
   private negotiatedFeatures = new Set<string>();
   private confirmedBridgeInstanceId = "";
   private readonly handshakes = new WeakMap<NatsConnection, Promise<HandshakeConfirmation>>();
+  private readonly secureChannels = new WeakMap<NatsConnection, SecureChannel>();
   /** Guards against overlapping token refresh (timer + auth failure racing). */
   private refreshInFlight = false;
   private systemFailures: number[] = [];
@@ -276,7 +275,11 @@ export class RemoteClient {
     this.candidateGeneration = null;
     const candidate = this.candidateConnection;
     this.candidateConnection = null;
-    if (candidate) void candidate.close().catch(() => undefined);
+    if (candidate) {
+      this.secureChannels.get(candidate)?.destroy();
+      this.secureChannels.delete(candidate);
+      void candidate.close().catch(() => undefined);
+    }
   }
 
   private isLiveGeneration(generation: number): boolean {
@@ -467,6 +470,7 @@ export class RemoteClient {
       this.subscribeState(connection, generation);
       this.subscribeTransfers(connection, generation);
       await withTimeout(connection.flush(), 10_000);
+      await this.activateSecureChannel(connection);
       candidate.check();
       if (this.stopped || this.isTerminal() || generation !== this.generation) {
         await connection.close().catch(() => undefined);
@@ -487,7 +491,11 @@ export class RemoteClient {
       this.authRetryCount = 0;
       this.failedGeneration = null;
       this.watchStatus(connection, generation);
-      if (previous && previous !== connection) void previous.close().catch(() => undefined);
+      if (previous && previous !== connection) {
+        this.secureChannels.get(previous)?.destroy();
+        this.secureChannels.delete(previous);
+        void previous.close().catch(() => undefined);
+      }
       this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
       this.callbacks.onPresence(confirmation.presence);
       this.negotiatedFeatures = new Set(confirmation.features ?? []);
@@ -515,6 +523,8 @@ export class RemoteClient {
         this.candidateGeneration = null;
         this.candidateConnection = null;
       }
+      this.secureChannels.get(connection)?.destroy();
+      this.secureChannels.delete(connection);
       await connection.close().catch(() => undefined);
       throw error;
     }
@@ -685,7 +695,11 @@ export class RemoteClient {
     this.activeGeneration = null;
     this.confirmedBridgeInstanceId = "";
     this.rejectDownloadWaiters(reason);
-    if (connection) void connection.close().catch(() => undefined);
+    if (connection) {
+      this.secureChannels.get(connection)?.destroy();
+      this.secureChannels.delete(connection);
+      void connection.close().catch(() => undefined);
+    }
   }
 
   private subscribe(
@@ -709,7 +723,13 @@ export class RemoteClient {
             if (!this.isLiveGeneration(generation)) return;
             void Promise.resolve()
               .then(() => {
-                if (this.isLiveGeneration(generation)) return consume(message);
+                if (!this.isLiveGeneration(generation)) return;
+                const channel = this.secureChannels.get(connection);
+                if (!channel) return;
+                let data: Uint8Array;
+                try { data = channel.open(message.subject, message.data); }
+                catch { return; } // forged, replayed, or retired-channel event
+                return consume({ ...message, data });
               })
               .catch((error) => this.failGeneration(error, generation));
           }, message.data.length);
@@ -771,6 +791,7 @@ export class RemoteClient {
           presence.bridgeInstanceId !== this.confirmedBridgeInstanceId
         ) {
           const confirmation = await this.ensureHandshake(connection);
+          await this.activateSecureChannel(connection);
           if (!this.isLiveGeneration(generation) || connection !== this.connection) return;
           this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
           this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
@@ -833,6 +854,7 @@ export class RemoteClient {
               }
               this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
               await withTimeout(connection.flush(), 10_000);
+              await this.activateSecureChannel(connection);
               if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
               this.callbacks.onPresence(confirmation.presence);
@@ -964,11 +986,8 @@ export class RemoteClient {
   async uploadChunk(transferId: string, index: number, bytes: Uint8Array): Promise<void> {
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
-    const message = await connection.request(
-      `p.${this.credentials.pairId}.xfer.up.${transferId}.chunk.${index}`,
-      bytes,
-      { timeout: 15_000 },
-    );
+    const message = await this.secureRequest(connection,
+      `p.${this.credentials.pairId}.xfer.up.${transferId}.chunk.${index}`, bytes, 15_000);
     const response = decodeRemoteJson<RpcResponse>(message.data);
     if (!response.success) throw new Error(response.error ?? "upload_chunk_failed");
   }
@@ -989,11 +1008,8 @@ export class RemoteClient {
     // as unhandled; the original promise is still awaited and rethrows below.
     void pending.catch(() => undefined);
     try {
-      const message = await connection.request(
-        `p.${this.credentials.pairId}.xfer.up.${transferId}.pull.${index}`,
-        new Uint8Array(),
-        { timeout: 15_000 },
-      );
+      const message = await this.secureRequest(connection,
+        `p.${this.credentials.pairId}.xfer.up.${transferId}.pull.${index}`, new Uint8Array(), 15_000);
       const response = decodeRemoteJson<RpcResponse>(message.data);
       if (!response.success) throw new Error(response.error ?? "download_chunk_failed");
       return await pending;
@@ -1016,11 +1032,8 @@ export class RemoteClient {
       ...command,
       id: command.id ?? randomId("cmd"),
     };
-    const message = await connection.request(
-      `p.${this.credentials.pairId}.cmd.${sessionId || "new"}`,
-      encoder.encode(JSON.stringify(payload)),
-      { timeout: timeoutMs },
-    );
+    const message = await this.secureRequest(connection,
+      `p.${this.credentials.pairId}.cmd.${sessionId || "new"}`, encoder.encode(JSON.stringify(payload)), timeoutMs);
     const response = decodeRemoteJson<RpcResponse<T>>(message.data);
     if (!response.success) {
       const error = new RemoteResponseError(response.error ?? "command_failed");
@@ -1029,62 +1042,65 @@ export class RemoteClient {
     return response;
   }
 
+  private async activateSecureChannel(connection: NatsConnection): Promise<void> {
+    await this.requestWithConnection(connection, { type: "secure_ready" }, "handshake");
+  }
+
+  private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Msg> {
+    const channel = this.secureChannels.get(connection);
+    if (!channel) throw new Error("pairing_handshake_required");
+    const wire = channel.seal(subject, plaintext);
+    const response = await connection.request(subject, wire, { timeout });
+    return { ...response, data: channel.open(replyContext(subject, wire), response.data) };
+  }
+
   private async performHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
-    const keyPair = fromSeed(encoder.encode(this.credentials.seed));
-    const clientPublicKey = keyPair.getPublicKey();
-    const clientNonce = randomId("challenge");
-    const challengeResponse = await this.requestWithConnection<HandshakeChallenge>(
-      connection,
-      {
-        type: "pair_handshake",
-        protocolVersion: HANDSHAKE_PROTOCOL_VERSION,
-        pairId: this.credentials.pairId,
-        deviceId: this.credentials.deviceId,
-        clientPublicKey,
-        clientNonce,
-        expectedDesktopId: this.credentials.expectedDesktopId,
-        expectedDesktopPublicKey: this.credentials.expectedDesktopPublicKey,
-      },
-      "handshake",
-    );
-    const challenge = challengeResponse.data;
-    if (
-      !verifyDesktopChallenge(challenge, {
-        pairId: this.credentials.pairId,
-        desktopId: this.credentials.expectedDesktopId,
-        desktopPublicKey: this.credentials.expectedDesktopPublicKey,
-        deviceId: this.credentials.deviceId,
-        clientPublicKey,
-        clientNonce,
-      })
-    ) {
-      throw new Error("pairing_signature_invalid");
+    if (!this.credentials.secureBundle) throw new Error("pairing_identity_mismatch");
+    const bundle = JSON.parse(this.credentials.secureBundle) as { identity: SecureIdentity; desktopKey: string; secret?: string };
+    const exchange = async (body: Record<string, unknown>) => {
+      const response = await connection.request(`p.${this.credentials.pairId}.cmd.handshake`, encoder.encode(JSON.stringify(body)), { timeout: 10_000 });
+      const parsed = decodeRemoteJson<RpcResponse<{ message?: string; id?: string; confirmation?: string }>>(response.data);
+      if (!parsed.success) throw new Error("pairing_signature_invalid");
+      return parsed.data;
+    };
+    const run = async (secret?: string): Promise<HandshakeConfirmation> => {
+      const handshake = new SecureHandshake(bundle.identity, this.credentials.pairId,
+        this.credentials.expectedDesktopId, bundle.desktopKey, secret);
+      let channel: SecureChannel | undefined;
+      try {
+        let response = await exchange({ type: "secure_open", pairing: Boolean(secret), message: encodeBase64Url(handshake.write()) });
+        const message = response.message && decodeBase64Url(response.message);
+        if (!message) throw new Error("pairing_signature_invalid");
+        handshake.read(message);
+        if (secret) response = await exchange({ type: "secure_finish", id: response.id, message: encodeBase64Url(handshake.write()) });
+        channel = handshake.finish();
+        const encrypted = response.confirmation && decodeBase64Url(response.confirmation);
+        if (!encrypted) throw new Error("pairing_confirmation_mismatch");
+        const confirmation = decodeRemoteJson<HandshakeConfirmation>(channel.open("handshake-confirm", encrypted));
+        if (!confirmation.confirmed || confirmation.pairId !== this.credentials.pairId || !confirmation.bridgeInstanceId ||
+            confirmation.presence.bridgeInstanceId !== confirmation.bridgeInstanceId || !confirmation.features?.includes("e2ee_v2")) {
+          throw new Error("pairing_confirmation_mismatch");
+        }
+        if (this.stopped || (this.candidateConnection !== connection && this.connection !== connection)) throw new Error("not_connected");
+        if (bundle.secret) {
+          const credentials = { ...this.credentials, secureBundle: JSON.stringify({ identity: bundle.identity, desktopKey: bundle.desktopKey }) };
+          await this.callbacks.onCredentials(credentials);
+          if (this.stopped || (this.candidateConnection !== connection && this.connection !== connection)) throw new Error("not_connected");
+          this.credentials = credentials;
+        }
+        this.secureChannels.get(connection)?.destroy();
+        this.secureChannels.set(connection, channel);
+        channel = undefined;
+        return confirmation;
+      } finally { handshake.destroy(); channel?.destroy(); }
+    };
+    // A first-pair response can be lost after Desktop durably binds this key.
+    // IK proves that same local identity; it is never a plaintext/TOFU fallback.
+    if (bundle.secret) {
+      try { return await run(bundle.secret); }
+      catch (error) { if (this.stopped) throw error; return run(); }
     }
-    const transcript = handshakeTranscript(challenge);
-    const clientSignature = encodeBase64Url(keyPair.sign(encoder.encode(transcript)));
-    const confirmationResponse = await this.requestWithConnection<HandshakeConfirmation>(
-      connection,
-      {
-        type: "pair_handshake_confirm",
-        deviceId: this.credentials.deviceId,
-        desktopNonce: challenge.desktopNonce,
-        clientSignature,
-      },
-      "handshake",
-    );
-    const confirmation = confirmationResponse.data;
-    if (
-      !confirmation.confirmed ||
-      confirmation.pairId !== this.credentials.pairId ||
-      confirmation.desktopId !== this.credentials.expectedDesktopId ||
-      confirmation.bridgeInstanceId !== challenge.bridgeInstanceId ||
-      confirmation.deviceId !== this.credentials.deviceId ||
-      confirmation.desktopNonce !== challenge.desktopNonce ||
-      confirmation.presence.bridgeInstanceId !== challenge.bridgeInstanceId
-    ) {
-      throw new Error("pairing_confirmation_mismatch");
-    }
-    return confirmation;
+    return run();
   }
 
   private ensureHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {

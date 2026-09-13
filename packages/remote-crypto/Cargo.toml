@@ -1,0 +1,15 @@
+[package]
+name = "future-remote-crypto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+snow = { version = "0.10", features = ["risky-raw-split"] }
+chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"

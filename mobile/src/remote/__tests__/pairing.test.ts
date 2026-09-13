@@ -44,7 +44,7 @@ function pairingCode(exp = 1_800_000_000): string {
 }
 
 function invitation(): string {
-  return `futureos://remote/pair?code=${pairingCode()}&desktopId=desktop_1&desktopKey=UABC`;
+  return `futureos://remote/pair?v=2&code=${pairingCode()}&desktopId=desktop_1&desktopKey=UABC&secureKey=${"A".repeat(43)}&secret=${"A".repeat(43)}`;
 }
 
 function jwt(exp = 1_800_000_000): string {
@@ -107,6 +107,11 @@ describe("claimPairingCode", () => {
       expectedDesktopPublicKey: "UABC",
     });
     expect(credentials.seed).not.toBe("");
+    expect(credentials.secureBundle).toBeTruthy();
+    const bundle = JSON.parse(credentials.secureBundle!);
+    expect(bundle.secret).toBe("A".repeat(43));
+    expect(JSON.stringify(lastFetchBody())).not.toContain(bundle.secret);
+    expect(JSON.stringify(lastFetchBody())).not.toContain(bundle.identity.privateKey);
     const body = lastFetchBody();
     expect(body).toMatchObject({
       nonce: "nonce_1",
@@ -128,7 +133,7 @@ describe("claimPairingCode", () => {
   });
 
   test("rejects an invitation whose embedded code does not decode", async () => {
-    const bad = "futureos://remote/pair?code=!!!&desktopId=desktop_1&desktopKey=UABC";
+    const bad = invitation().replace(pairingCode(), "!!!");
     await expect(claimPairingCode(bad)).rejects.toThrow("invalid_pairing_code");
   });
 

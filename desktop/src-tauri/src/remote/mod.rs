@@ -12,6 +12,7 @@ mod commands;
 mod lifecycle;
 pub(crate) mod pairing;
 pub(crate) mod protocol;
+pub(crate) mod secure;
 pub(crate) mod services;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -415,6 +416,7 @@ struct ConnectedNats {
 /// Active remote connection. Holds async-nats client + command/event tasks;
 /// on stop, aborts the tasks and drops the client.
 struct RemoteState {
+    security: secure::Transport,
     generation_id: u64,
     /// Raw client, kept to derive real connection state for [`status`].
     client: async_nats::Client,
@@ -811,7 +813,7 @@ async fn start_generation(
         pair_id.clone(),
         reply_slots,
         pairing_confirmed.clone(),
-        handshake_state,
+        handshake_state.clone(),
     );
     candidate_tasks.track(&refresh_task);
     // The browser client is a test-environment-only validation surface. Keep
@@ -860,6 +862,7 @@ async fn start_generation(
     // after it do we cancel the old generation.
     let previous = SUPERVISOR.access.commit(epoch, || {
         SUPERVISOR.state.lock().unwrap().replace(RemoteState {
+            security: handshake_state.secure.clone(),
             generation_id,
             client,
             nats_health,
@@ -1174,7 +1177,7 @@ fn spawn_web_reconnect(pair_id: String) {
 async fn establish() -> Result<(pairing::PairingCreds, Option<String>, Option<i64>), crate::AppError>
 {
     match pairing::load_creds() {
-        Some(creds) if creds.handshake_version != 1 => {
+        Some(creds) if creds.handshake_version != 2 || creds.secure.is_none() => {
             // Credentials created before the signed mutual handshake have no
             // QR-bound peer identity. They cannot be upgraded safely in place.
             eprintln!("remote: replacing legacy pairing [PA003]");
@@ -1239,14 +1242,9 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
     }
 }
 
-/// The desktop bridge talks NATS **directly** (`nats://…`) to the operator's
-/// own server over a trusted path; the server is this deployment's own
-/// infrastructure. TLS on this hop is the operator's choice, not something we
-/// can hard-assert here — the remote-link TLS invariant lives on the *mobile
-/// / web* side (`wss://`, enforced in the mobile client's `assertSecureNatsUrl`
-/// and the web server's own URL construction). Do NOT reintroduce a `wss://`
-/// assertion on this hop: the platform hands the desktop a `nats://` URL by
-/// design.
+/// NATS remains a direct TCP connection, but production requires verified TLS
+/// even when the endpoint uses the nats:// scheme. E2EE protects content from
+/// the broker; TLS independently protects credentials and transport metadata.
 async fn connect_nats(
     creds: &pairing::PairingCreds,
     credential_was_refreshed: bool,
@@ -1273,6 +1271,10 @@ async fn connect_nats(
         let health = event_health.clone();
         async move { health.handle_event(&event) }
     });
+    // Unit tests use an in-process, plaintext fake broker. There is no runtime
+    // configuration switch that permits a production TLS downgrade.
+    #[cfg(not(test))]
+    let options = options.require_tls(true);
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
         let message = format!("Failed to connect to NATS: {error}");
         classify_nats_connect_error(error.kind(), message)
@@ -1355,11 +1357,9 @@ fn mobile_unpair_notice() -> Option<(async_nats::Client, String, Vec<u8>)> {
         "bridgeInstanceId": state.bridge_instance_id, "lastHeartbeatTs": unix_timestamp(),
     }))
     .ok()?;
-    Some((
-        state.client.clone(),
-        format!("p.{}.presence", state.pair_id),
-        payload,
-    ))
+    let subject = format!("p.{}.presence", state.pair_id);
+    let payload = state.security.seal(&subject, &payload).ok()??;
+    Some((state.client.clone(), subject, payload))
 }
 
 pub fn stop() -> RemoteStatus {
@@ -1381,8 +1381,8 @@ fn stop_with<T>(cleanup: impl FnOnce() -> T) -> T {
             .web_reconnect_attempts
             .store(0, Ordering::Release);
         SUPERVISOR.cancel_tasks();
-        disable_handshake();
         stop_runtime();
+        disable_handshake();
         *SUPERVISOR.bridge_shared.lock().unwrap() = None;
         cleanup()
     })
@@ -1393,6 +1393,7 @@ fn disable_handshake() {
         let mut handshake = shared.handshake.lock().unwrap();
         if let Some(state) = handshake.take() {
             state.active_flag().store(false, Ordering::Release);
+            state.secure.clear();
         }
     }
 }
@@ -1423,22 +1424,21 @@ pub async fn notify_mobile_disconnect(reason: &str) {
 }
 
 fn mobile_disconnect_notice(reason: &str) -> Option<(async_nats::Client, String, Vec<u8>)> {
-    SUPERVISOR.state.lock().unwrap().as_ref().map(|state| {
+    SUPERVISOR.state.lock().unwrap().as_ref().and_then(|state| {
         let pair_id = state.pair_id.clone();
         let bridge_instance_id = state.bridge_instance_id.clone();
-        (
-            state.client.clone(),
-            format!("p.{pair_id}.presence"),
-            serde_json::to_vec(&json!({
-                "online": false,
-                "disconnected": true,
-                "reason": reason,
-                "pairId": pair_id,
-                "bridgeInstanceId": bridge_instance_id,
-                "lastHeartbeatTs": unix_timestamp(),
-            }))
-            .unwrap_or_default(),
-        )
+        let subject = format!("p.{pair_id}.presence");
+        let plaintext = serde_json::to_vec(&json!({
+            "online": false,
+            "disconnected": true,
+            "reason": reason,
+            "pairId": pair_id,
+            "bridgeInstanceId": bridge_instance_id,
+            "lastHeartbeatTs": unix_timestamp(),
+        }))
+        .ok()?;
+        let payload = state.security.seal(&subject, &plaintext).ok()??;
+        Some((state.client.clone(), subject, payload))
     })
 }
 
@@ -1568,17 +1568,15 @@ fn stop_runtime() -> RemoteStatus {
         let pair_id = state.pair_id.clone();
         let client = state.client.clone();
         let bridge_instance_id = state.bridge_instance_id.clone();
-        tauri::async_runtime::spawn(async move {
-            let subject = format!("p.{pair_id}.presence");
-            let payload = serde_json::to_vec(&json!({
-                "online": false,
-                "pairId": pair_id,
-                "bridgeInstanceId": bridge_instance_id,
-                "lastHeartbeatTs": unix_timestamp(),
-            }))
-            .unwrap_or_default();
-            send_mobile_disconnect_notice(client, subject, payload).await;
-        });
+        let subject = format!("p.{pair_id}.presence");
+        let plaintext = serde_json::to_vec(&json!({
+            "online": false, "pairId": pair_id,
+            "bridgeInstanceId": bridge_instance_id, "lastHeartbeatTs": unix_timestamp(),
+        }))
+        .unwrap_or_default();
+        if let Ok(Some(payload)) = state.security.seal(&subject, &plaintext) {
+            tauri::async_runtime::spawn(send_mobile_disconnect_notice(client, subject, payload));
+        }
         abort_generation(state);
     }
     empty()
@@ -1963,13 +1961,24 @@ fn cap_event_data(data: &str) -> std::borrow::Cow<'_, str> {
 /// Drop/backlog reporting happens in [`publish_event`], event-driven, since
 /// this loop can be blocked on `publish().await` (queue-backed NATS) and
 /// wouldn't reach its own timer while the backlog persists.
+#[cfg(test)]
 fn spawn_event_publisher(
     client: async_nats::Client,
+    rx: tokio::sync::mpsc::Receiver<EventPublish>,
+) -> tokio::task::JoinHandle<()> {
+    spawn_secure_event_publisher(client, rx, secure::Transport::legacy_fixture())
+}
+
+fn spawn_secure_event_publisher(
+    client: async_nats::Client,
     mut rx: tokio::sync::mpsc::Receiver<EventPublish>,
+    security: secure::Transport,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            if let Err(error) = client.publish(event.subject, event.payload.into()).await {
+            if let Err(error) =
+                secure::publish(&client, &security, event.subject, event.payload).await
+            {
                 if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
                     eprintln!("{line}");
                 }
@@ -2002,14 +2011,30 @@ fn refresh_tick() -> std::time::Duration {
     TICK
 }
 
+#[cfg(test)]
 fn spawn_presence_heartbeat(
     client: async_nats::Client,
     pair_id: String,
     bridge_instance_id: String,
 ) -> tokio::task::JoinHandle<()> {
+    spawn_secure_presence_heartbeat(
+        client,
+        pair_id,
+        bridge_instance_id,
+        secure::Transport::legacy_fixture(),
+    )
+}
+
+fn spawn_secure_presence_heartbeat(
+    client: async_nats::Client,
+    pair_id: String,
+    bridge_instance_id: String,
+    security: secure::Transport,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let health = tokio::spawn(host().monitor_agent());
-        let mut catalog = spawn_catalog_publisher(client.clone(), pair_id.clone());
+        let mut catalog =
+            spawn_catalog_publisher(client.clone(), pair_id.clone(), security.clone());
         let mut tasks = lifecycle::CandidateTasks::default();
         tasks.track(&catalog);
         tasks.track(&health);
@@ -2021,9 +2046,8 @@ fn spawn_presence_heartbeat(
             }
             let bytes = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
                 .expect("a presence Value always serializes");
-            if let Err(error) = client
-                .publish(format!("p.{pair_id}.presence"), bytes.into())
-                .await
+            if let Err(error) =
+                secure::publish(&client, &security, format!("p.{pair_id}.presence"), bytes).await
             {
                 if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("heartbeat_publish", error) {
                     eprintln!("{line}");
@@ -2040,6 +2064,7 @@ fn spawn_presence_heartbeat(
 fn spawn_catalog_publisher(
     client: async_nats::Client,
     pair_id: String,
+    security: secure::Transport,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // Three independent publish channels:
@@ -2076,9 +2101,13 @@ fn spawn_catalog_publisher(
                 if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
                     let bytes = serde_json::to_vec(&sessions_payload)
                         .expect("a sessions Value always serializes");
-                    if let Err(e) = client
-                        .publish(format!("p.{pair_id}.state.sessions"), bytes.into())
-                        .await
+                    if let Err(e) = secure::publish(
+                        &client,
+                        &security,
+                        format!("p.{pair_id}.state.sessions"),
+                        bytes,
+                    )
+                    .await
                     {
                         if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
                             eprintln!("{line}");
@@ -2097,9 +2126,13 @@ fn spawn_catalog_publisher(
             if dirty || workspaces_sig != last_workspaces_sig || secs_since_workspaces >= 20 {
                 let bytes = serde_json::to_vec(&workspaces_payload)
                     .expect("a workspaces Value always serializes");
-                if let Err(e) = client
-                    .publish(format!("p.{pair_id}.state.workspaces"), bytes.into())
-                    .await
+                if let Err(e) = secure::publish(
+                    &client,
+                    &security,
+                    format!("p.{pair_id}.state.workspaces"),
+                    bytes,
+                )
+                .await
                 {
                     if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
                         eprintln!("{line}");
@@ -2139,7 +2172,8 @@ async fn build_transport(
 ) -> Result<TransportTasks, crate::AppError> {
     let mut candidate_tasks = lifecycle::CandidateTasks::default();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
-    let event_task = spawn_event_publisher(client.clone(), event_rx);
+    let event_task =
+        spawn_secure_event_publisher(client.clone(), event_rx, handshake.secure.clone());
     candidate_tasks.track(&event_task);
     let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
     let cmd_task = tokio::spawn(commands::command_loop_with_ready(
@@ -2155,6 +2189,7 @@ async fn build_transport(
         client.clone(),
         pair_id.into(),
         handshake.active_flag(),
+        handshake.secure.clone(),
         Some(transfer_ready_tx),
     );
     candidate_tasks.track(&transfer_task);
@@ -2173,17 +2208,16 @@ async fn build_transport(
         transfer_ready_rx
             .await
             .map_err(|_| crate::AppError::RemoteTransport("transfer readiness ended".into()))?;
-        client
-            .publish(
-                format!("p.{pair_id}.presence"),
-                serde_json::to_vec(&light_presence_payload(
-                    pair_id,
-                    handshake.bridge_instance_id(),
-                ))?
-                .into(),
-            )
-            .await
-            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))?;
+        secure::publish(
+            client,
+            &handshake.secure,
+            format!("p.{pair_id}.presence"),
+            serde_json::to_vec(&light_presence_payload(
+                pair_id,
+                handshake.bridge_instance_id(),
+            ))?,
+        )
+        .await?;
         client
             .flush()
             .await
@@ -2192,10 +2226,11 @@ async fn build_transport(
     tokio::time::timeout(std::time::Duration::from_secs(10), readiness)
         .await
         .map_err(|_| crate::AppError::RemoteTransport("Remote readiness timed out".into()))??;
-    let heartbeat_task = spawn_presence_heartbeat(
+    let heartbeat_task = spawn_secure_presence_heartbeat(
         client.clone(),
         pair_id.into(),
         handshake.bridge_instance_id().into(),
+        handshake.secure.clone(),
     );
     candidate_tasks.track(&heartbeat_task);
     Ok(TransportTasks {
@@ -2913,7 +2948,8 @@ mod runtime_tests {
     fn test_creds(pair_id: &str, nats_url: &str, expires_in: i64) -> pairing::PairingCreds {
         let key_pair = nkeys::KeyPair::new_user();
         pairing::PairingCreds {
-            handshake_version: 1,
+            handshake_version: 2,
+            secure: Some(secure::PairingIdentity::new(now_secs() + 300).unwrap()),
             pair_id: pair_id.to_string(),
             desktop_id: format!("desktop_{}", unique("rt")),
             nkey_seed: key_pair.seed().unwrap().to_string(),
@@ -2931,6 +2967,7 @@ mod runtime_tests {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
         let event_task = spawn_event_publisher(client.clone(), event_rx);
         RemoteState {
+            security: secure::Transport::legacy_fixture(),
             generation_id: 1,
             client,
             nats_health: Arc::new(NatsHealth::default()),
@@ -3581,14 +3618,56 @@ mod runtime_tests {
         assert_eq!(started.reason, None);
 
         let mut tap = nats.tap();
-        // The presence heartbeat and both catalog snapshots flow.
+        // No session/catalog metadata leaves the endpoint before pairing.
+        super::test_support::assert_no_publish(
+            &mut tap,
+            &format!("p.{}.presence", started.pair_id),
+            Duration::from_millis(100),
+        )
+        .await;
+        let mobile = nats_connect(&nats).await;
+        let mut channel = super::test_support::secure_pair(
+            &mobile,
+            started.pairing_code.as_deref().unwrap(),
+            &started.pair_id,
+        )
+        .await;
+        // A broker can inject plaintext even after the real pair authenticated.
+        // It must not reach the command dispatcher.
+        let subject = format!("p.{}.cmd.list", started.pair_id);
+        let forged = mobile
+            .request(
+                subject.clone(),
+                serde_json::to_vec(&json!({"type":"get_presence"}))
+                    .unwrap()
+                    .into(),
+            )
+            .await
+            .unwrap();
+        let forged: serde_json::Value = serde_json::from_slice(&forged.payload).unwrap();
+        assert_eq!(forged["success"], false);
+        let request = channel
+            .seal(
+                &subject,
+                &serde_json::to_vec(&json!({"type":"get_presence", "id":"secure-test"})).unwrap(),
+            )
+            .unwrap();
+        let reply_context = future_remote_crypto::reply_context(&subject, &request).unwrap();
+        let reply = mobile.request(subject, request.into()).await.unwrap();
+        let reply: serde_json::Value =
+            serde_json::from_slice(&channel.open(&reply_context, &reply.payload).unwrap()).unwrap();
+        assert_eq!(reply["success"], true);
+        // The presence heartbeat and both catalog snapshots now flow encrypted.
         let presence = await_publish(
             &mut tap,
             &format!("p.{}.presence", started.pair_id),
             Duration::from_secs(5),
         )
         .await;
-        assert_eq!(presence.json()["online"], json!(true));
+        let presence_data: serde_json::Value =
+            serde_json::from_slice(&channel.open(&presence.subject, &presence.payload).unwrap())
+                .unwrap();
+        assert_eq!(presence_data["online"], json!(true));
         await_publish(
             &mut tap,
             &format!("p.{}.state.sessions", started.pair_id),
@@ -3637,19 +3716,31 @@ mod runtime_tests {
         assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
         assert!(response.contains("text/html"), "got: {response}");
 
-        // status() re-exposes the unexpired, unconfirmed pairing code.
+        // Successful authenticated pairing consumes the invitation.
         let polled = status();
-        assert!(polled.pairing_code.is_some());
+        assert!(polled.pairing_code.is_none());
 
         // stop() publishes offline presence and clears the state.
         stop();
-        let offline = await_publish(
-            &mut tap,
-            &format!("p.{}.presence", started.pair_id),
-            Duration::from_secs(5),
-        )
-        .await;
-        assert_eq!(offline.json()["online"], json!(false));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let offline = await_publish(
+                    &mut tap,
+                    &format!("p.{}.presence", started.pair_id),
+                    Duration::from_secs(5),
+                )
+                .await;
+                let data: serde_json::Value = serde_json::from_slice(
+                    &channel.open(&offline.subject, &offline.payload).unwrap(),
+                )
+                .unwrap();
+                if data["online"] == false {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("authenticated offline notice");
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
         wait_for_web_port_free().await;
     }
