@@ -5,6 +5,9 @@ import {
   MessageCircle,
   Monitor,
   Plus,
+  Pin,
+  Pencil,
+  Trash2,
   Settings,
   Unplug,
   X,
@@ -28,6 +31,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
+import { ActionMenu } from "../components/ActionMenu";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { DialogSurface } from "../components/DialogSurface";
@@ -70,6 +74,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [approvalSaving, setApprovalSaving] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const pendingNewConversationRef = useRef<(() => void) | null>(null);
@@ -268,33 +273,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   };
 
   const openSessionMenu = (session: RemoteSession) => {
-    const options = [
-      session.pinned ? t("sessions.unpin") : t("sessions.pin"),
-      t("chat.rename"),
-      t("sessions.delete"),
-      t("chat.cancel"),
-    ];
-    const title = session.title || t("sessions.unnamed");
-    const handleSelection = (index: number | null) => {
-      if (index === 0) deferPresentation(() => togglePin(session));
-      if (index === 1) deferPresentation(() => openRename(session));
-      if (index === 2) deferPresentation(() => confirmDelete(session));
-    };
-    if (Platform.OS === "ios") {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title,
-          options,
-          destructiveButtonIndex: 2,
-          cancelButtonIndex: 3,
-        },
-        handleSelection,
-      );
-      return;
-    }
-    void showAndroidActionSheet(options, title)
-      .then(handleSelection)
-      .catch(() => Alert.alert(t("common.error")));
+    if (remote.desktopOnline) setMenuSession(session);
   };
 
   const connection = remote.connectionPresentation;
@@ -344,6 +323,16 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.page}>
+        <ActionMenu
+          title={menuSession?.title || t("sessions.unnamed")}
+          visible={menuSession !== null}
+          onClose={() => setMenuSession(null)}
+          actions={menuSession ? [
+            { label: t(menuSession.pinned ? "sessions.unpin" : "sessions.pin"), icon: <Pin size={18} color={colors.inkSoft} />, disabled: !remote.desktopOnline, onPress: () => togglePin(menuSession) },
+            { label: t("chat.rename"), icon: <Pencil size={18} color={colors.inkSoft} />, disabled: !remote.desktopOnline, onPress: () => openRename(menuSession) },
+            { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !remote.desktopOnline, onPress: () => confirmDelete(menuSession) },
+          ] : []}
+        />
         <View style={styles.deviceBar}>
         <Pressable
           accessibilityRole="button"

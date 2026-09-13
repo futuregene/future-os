@@ -1,30 +1,24 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useTranslation } from "react-i18next";
 import { getPendingShare } from "future-share-intent";
 import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
-import {
-  loadSessionDraft,
-  saveSessionDraft,
-} from "../remote/draftStorage";
+import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
 import { prepareSharedAttachments } from "../remote/files";
 import { markShareLanded } from "./shareInbox";
 import { desktopDraftKey } from "../remote/desktopDraftKey";
+import type { SharedContent } from "future-share-intent";
 
-/**
- * Move content shared from another app into a new conversation's composer.
- *
- * Runs on mount and on every return to the foreground: a share either starts
- * the app (the share intent is the launch intent) or resumes it, where
- * `MainActivity` is `singleTask` and the payload arrives through `onNewIntent`.
- * The native side hands the payload over exactly once, so re-checking on every
- * foreground is free when nothing was shared.
- */
-export function useShareIntake(): void {
+/** Read shares only after pairing, then let the user choose their destination.
+ * No upload or prompt is sent until the user reviews and sends the composer. */
+export function useShareIntake() {
   const remote = useRemote();
   const { t } = useTranslation();
+  const [pending, setPending] = useState<{ desktopId: string; share: SharedContent } | null>(null);
+  const pendingRef = useRef(false);
   const readingRef = useRef(false);
+  const importingRef = useRef(false);
   const desktopRef = useRef(remote.credentials?.expectedDesktopId);
   useEffect(() => {
     desktopRef.current = remote.credentials?.expectedDesktopId;
@@ -32,52 +26,64 @@ export function useShareIntake(): void {
 
   const intake = useCallback(async () => {
     const desktopId = remote.credentials?.expectedDesktopId;
-    if (readingRef.current || !desktopId) return;
+    if (readingRef.current || pendingRef.current || importingRef.current || !desktopId) return;
     readingRef.current = true;
     try {
       const share = await getPendingShare();
       if (!share) return;
-      const attachments = share.files.length ? await prepareSharedAttachments(share.files) : [];
-      const text = share.text.trim();
-      if (!text && attachments.length === 0) {
+      if (!share.text.trim() && share.files.length === 0) {
         if (share.tooLarge) showToast(t("attachment.errors.attachment_file_too_large"));
         return;
       }
-      // Stage into the composer's new-conversation draft instead of pushing
-      // state around: the composer already restores that slot on mount, so the
-      // content is reviewable before the user sends it, and anything already
-      // typed there is kept.
-      const draftKey = desktopDraftKey(desktopId);
+      pendingRef.current = true;
+      setPending({ desktopId, share });
+    } catch {
+      showToast(t("attachment.errors.attachment_failed"));
+    } finally {
+      readingRef.current = false;
+    }
+  }, [remote.credentials?.expectedDesktopId, t]);
+
+  const dismiss = () => {
+    pendingRef.current = false;
+    setPending(null);
+  };
+
+  // The action sheet captures this callback before dismissing. That closure
+  // owns its payload even after pending is cleared for the modal transition.
+  const chooseDestination = async (mode: "chat" | "workspace", workspaceId?: string) => {
+    if (!pending || importingRef.current) return;
+    if (pending.desktopId !== desktopRef.current) return;
+    if (mode === "workspace" && !remote.workspaces.some(workspace => workspace.id === workspaceId)) return;
+    importingRef.current = true;
+    try {
+      const draftKey = desktopDraftKey(pending.desktopId);
       const existing = await loadSessionDraft(draftKey);
-      await saveSessionDraft(draftKey, {
-        text: [existing?.text.trim(), text].filter(Boolean).join("\n\n"),
-        attachments: [...(existing?.attachments ?? []), ...attachments],
-      });
-      // A share starts its own conversation rather than landing in whatever the
-      // app happened to be showing; the previous composer keeps its draft.
-      if (desktopRef.current !== desktopId) return;
-      await remote.newConversation("chat");
-      // Tell the chat screen to re-read that draft (see shareInbox).
+      const attachments = await prepareSharedAttachments(pending.share.files, existing?.attachments ?? []);
+      const text = [existing?.text.trim(), pending.share.text.trim()].filter(Boolean).join("\n\n");
+      await saveSessionDraft(draftKey, { text, attachments });
+      if (desktopRef.current !== pending.desktopId) return;
+      await remote.newConversation(mode, workspaceId);
       markShareLanded();
-      if (share.tooLarge) showToast(t("attachment.errors.attachment_file_too_large"));
+      if (pending.share.tooLarge) showToast(t("attachment.errors.attachment_file_too_large"));
     } catch (error) {
       const key = error instanceof Error ? error.message : "attachment_failed";
       showToast(t(`attachment.errors.${key}`));
     } finally {
-      readingRef.current = false;
+      importingRef.current = false;
     }
-  }, [remote, t]);
+  };
 
   useEffect(() => {
-    // A share is readable only once and the native side consumes it on read, so
-    // wait until there is a paired desktop to open a conversation against —
-    // otherwise a share that arrives while unpaired would be dropped instead of
-    // waiting for the user to finish pairing.
     if (!remote.credentials) return;
-    void intake();
+    // Read the native inbox after the initial render; foreground receipts use
+    // the same path, and the in-flight guard deduplicates concurrent reads.
+    void Promise.resolve().then(intake);
     const subscription = AppState.addEventListener("change", state => {
       if (state === "active") void intake();
     });
     return () => subscription.remove();
   }, [intake, remote.credentials]);
+
+  return { pending, dismiss, chooseDestination };
 }
