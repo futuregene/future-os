@@ -56,16 +56,18 @@ function formatDuration(durationMs: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-function RunIndicator({ startedAt }: { startedAt: number }) {
+function RunIndicator({ startedAt }: { startedAt?: number }) {
+  const { t } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (!startedAt) return;
     const timer = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(timer);
-  }, []);
+  }, [startedAt]);
   return (
     <View style={styles.runIndicator}>
       <View style={styles.runDot} />
-      <Text style={styles.runDuration}>{formatDuration(now - startedAt)}</Text>
+      <Text style={styles.runDuration}>{startedAt ? formatDuration(now - startedAt) : t("chat.generating")}</Text>
     </View>
   );
 }
@@ -678,7 +680,7 @@ function TimelineCardView({
               />
             </View>
           )}
-          {dividerOnly ? null : item.streaming && item.startedAt != null ? (
+          {dividerOnly ? null : item.streaming ? (
             // In-flight: the generating indicator occupies the same footer slot
             // the copy button uses once settled (desktop parity), so a streaming
             // reply never shows a copy button.
@@ -704,7 +706,9 @@ function TimelineCardView({
                   )}
                 </Pressable>
               ) : null}
-              {footerStats.length > 0 && <Text style={styles.messageDuration}>{footerStats}</Text>}
+              <Text style={styles.messageDuration}>
+                {footerStats || (item.stopped ? t("chat.responseStopped") : item.failed || item.truncated ? t("common.error") : t("chat.responseCompleted"))}
+              </Text>
             </View>
           )}
         </View>

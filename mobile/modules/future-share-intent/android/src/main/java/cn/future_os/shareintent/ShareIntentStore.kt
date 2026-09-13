@@ -90,8 +90,8 @@ object ShareIntentStore {
           SharedFile(
             uri = Uri.fromFile(target).toString(),
             name = name,
-            mimeType = share.mimeType?.takeIf { it.isNotBlank() && it != "*/*" }
-              ?: context.contentResolver.getType(uri)
+            mimeType = context.contentResolver.getType(uri)?.takeIf { !it.contains('*') }
+              ?: share.mimeType?.takeIf { it.isNotBlank() && !it.contains('*') }
               ?: "application/octet-stream",
           )
         )
@@ -110,10 +110,17 @@ object ShareIntentStore {
   private fun streamUris(intent: Intent): List<Uri> {
     // Some senders put a list on ACTION_SEND, so both shapes are accepted
     // regardless of the declared action.
-    val list = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-    if (!list.isNullOrEmpty()) return list.filterNotNull()
-    val single = intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
-    return listOfNotNull(single)
+    val stream = intent.extras?.get(Intent.EXTRA_STREAM)
+    val uris = when (stream) {
+      is Uri -> listOf(stream)
+      is ArrayList<*> -> stream.filterIsInstance<Uri>()
+      else -> emptyList()
+    }
+    // Gallery/file apps may grant their attachments through ClipData only.
+    val clip = intent.clipData
+    val clipped = if (clip == null) emptyList() else
+      (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+    return (uris + clipped).distinct()
   }
 
   private fun displayName(context: Context, uri: Uri): String? {
