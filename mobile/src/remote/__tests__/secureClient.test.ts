@@ -1,5 +1,7 @@
 import Noise from "noise-handshake";
 import type { Msg, NatsConnection } from "@nats-io/nats-core";
+import { MsgImpl, QueuedIteratorImpl } from "@nats-io/nats-core/internal";
+import { ConnectionGeneration } from "../connectionGeneration";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
 import { createSecureIdentity, keyBytes, replyContext, SecureChannel, securePrologue } from "../secureChannel";
 import { decodeBase64Url, encodeBase64Url } from "../codec";
@@ -8,6 +10,11 @@ import type { RemoteCredentials } from "../types";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const encode = (value: unknown) => encoder.encode(JSON.stringify(value));
+const natsMessage = (subject: string, data: Uint8Array) => new MsgImpl(
+  { subject: encoder.encode(subject), reply: new Uint8Array(), sid: 1, hdr: -1, size: data.length },
+  data, { publish: jest.fn() },
+);
+const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
 // Real Noise + real AEAD, with only NATS delivery replaced. Rust independently
 // verifies these algorithms/vectors and its actual NATS command boundary.
@@ -47,7 +54,7 @@ function fixture() {
       const body = encode({ success: true, data: { ok: true } });
       const reply = serverChannel!.seal(replyContext(subject, data), body);
       if (corruptReply) reply[reply.length - 1] = reply[reply.length - 1]! ^ 1;
-      return { subject: "untrusted-inbox", data: reply } as Msg;
+      return natsMessage("untrusted-inbox", reply);
     }
     const body = JSON.parse(decoder.decode(data));
     if (body.type === "secure_open") {
@@ -70,14 +77,28 @@ function fixture() {
     }
     throw new Error("plaintext business command");
   });
-  const connection = { request, close: async () => {}, flush: jest.fn(async () => {}), isClosed: () => false } as unknown as NatsConnection;
+  const subscriptions = new Map<string, QueuedIteratorImpl<Msg>>();
+  const connection = {
+    request,
+    subscribe: (subject: string) => {
+      const queue = new QueuedIteratorImpl<Msg>();
+      subscriptions.set(subject, queue);
+      return queue;
+    },
+    close: async () => { for (const queue of subscriptions.values()) queue.stop(); },
+    flush: jest.fn(async () => {}), isClosed: () => false,
+  } as unknown as NatsConnection;
   const internal = client as unknown as {
     connection: NatsConnection; credentials: RemoteCredentials;
     performHandshake(connection: NatsConnection): Promise<unknown>;
     secureChannels: WeakMap<NatsConnection, SecureChannel>;
+    subscribeEvents(connection: NatsConnection, generation: number): void;
+    subscribeState(connection: NatsConnection, generation: number): void;
+    subscribeLiveness(connection: NatsConnection, generation: number): void;
+    subscribeTransfers(connection: NatsConnection, generation: number): void;
   };
   internal.connection = connection;
-  return { client, internal, connection, request, commands, wires, callbacks, creds, desktop,
+  return { client, internal, connection, subscriptions, request, commands, wires, callbacks, creds, desktop,
     pair: () => internal.performHandshake(connection),
     loseConfirmation: () => { loseConfirmation = true; },
     corruptReply: () => { corruptReply = true; },
@@ -85,6 +106,46 @@ function fixture() {
     restartDesktop: () => { serverChannel?.destroy(); serverChannel = undefined; },
   };
 }
+
+test("real NATS messages retain routing after decryption across repeated catalog pushes", async () => {
+  const f = fixture();
+  jest.spyOn(f.client, "open").mockResolvedValue(undefined);
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1);
+    owner.activate();
+    Object.assign(f.internal, { generation: 1, activeGeneration: owner, state: "ready", confirmedBridgeInstanceId: "bridge_1" });
+    f.internal.subscribeEvents(f.connection, 1);
+    f.internal.subscribeState(f.connection, 1);
+    f.internal.subscribeLiveness(f.connection, 1);
+    f.internal.subscribeTransfers(f.connection, 1);
+    const deliver = async (subscription: string, subject: string, plaintext: Uint8Array) => {
+      const message = natsMessage(subject, f.serverChannel().seal(subject, plaintext));
+      expect(message.subject).toBe(subject);
+      // This is the production SDK object, not a plain-object imitation. The
+      // encrypted-message spread introduced in v2 loses these prototype getters.
+      expect(Object.keys(message)).not.toContain("subject");
+      f.subscriptions.get(subscription)!.push(message);
+      await settle();
+    };
+    for (let tick = 0; tick < 12; tick++) {
+      await deliver("p.pair_1.presence", "p.pair_1.presence", encode({ online: true, pairId: "pair_1", bridgeInstanceId: "bridge_1", lastHeartbeatTs: Date.now() / 1000 }));
+      await deliver("p.pair_1.state.>", "p.pair_1.state.sessions", encode({ sessions: [{ sessionId: "s1", title: "Session" }], version: { epoch: "epoch", revision: tick } }));
+      await deliver("p.pair_1.state.>", "p.pair_1.state.workspaces", encode({ workspaces: [{ id: "w1", name: "Project" }] }));
+      await deliver("p.pair_1.evt.>", "p.pair_1.evt.s1", encode({ type: "agent_start", runId: "r1", data: "{}" }));
+      expect(f.callbacks.onSessions).toHaveBeenCalledTimes(tick + 1);
+      expect(f.callbacks.onWorkspaces).toHaveBeenCalledTimes(tick + 1);
+      expect(f.callbacks.onEvent).toHaveBeenLastCalledWith({ type: "agent_start", runId: "r1", data: "{}" }, "s1");
+      expect(f.callbacks.onError).not.toHaveBeenCalled();
+      expect(f.callbacks.onConnectionState).not.toHaveBeenCalledWith("reconnecting");
+    }
+    const download = f.client.downloadChunk("file_1", 0);
+    const bytes = encoder.encode("file contents");
+    await deliver("p.pair_1.xfer.down.>", "p.pair_1.xfer.down.file_1.chunk.0", bytes);
+    await expect(download).resolves.toEqual(bytes);
+    expect(f.client.open).not.toHaveBeenCalled();
+  } finally { await f.client.close(); }
+});
 
 test("pairs, persists the bound identity without the invitation secret, encrypts commands and file chunks", async () => {
   const f = fixture();

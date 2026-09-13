@@ -745,7 +745,7 @@ export class RemoteClient {
     generation: number,
     subject: string,
     category: string,
-    consume: (message: Msg) => void | Promise<void>,
+    consume: (message: Pick<Msg, "subject" | "data">) => void | Promise<void>,
   ): void {
     const owner =
       this.candidateGeneration?.id === generation
@@ -767,7 +767,10 @@ export class RemoteClient {
                 let data: Uint8Array;
                 try { data = channel.open(message.subject, message.data); }
                 catch { return; } // forged, replayed, or retired-channel event
-                return consume({ ...message, data });
+                // MsgImpl exposes routing fields through prototype getters;
+                // spreading it drops subject and makes state/events/transfers
+                // throw after successful decryption, triggering reconnects.
+                return consume({ subject: message.subject, data });
               })
               .catch((error) => this.failGeneration(error, generation));
           }, message.data.length);
@@ -1084,12 +1087,12 @@ export class RemoteClient {
     await this.requestWithConnection(connection, { type: "secure_ready" }, "handshake");
   }
 
-  private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Msg> {
+  private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
     const channel = this.secureChannels.get(connection);
     if (!channel) throw new Error("pairing_handshake_required");
     const wire = channel.seal(subject, plaintext);
     const response = await connection.request(subject, wire, { timeout });
-    return { ...response, data: channel.open(replyContext(subject, wire), response.data) };
+    return { data: channel.open(replyContext(subject, wire), response.data) };
   }
 
   private async performHandshake(connection: NatsConnection): Promise<HandshakeConfirmation> {
