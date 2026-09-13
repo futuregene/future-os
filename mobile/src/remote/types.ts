@@ -160,6 +160,19 @@ export interface MobileAttachment {
   contentHash?: string;
 }
 
+export interface SessionFileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+}
+
+export interface SessionFileListing {
+  rootPath: string;
+  path: string;
+  entries: SessionFileEntry[];
+}
+
 export interface DownloadInfo {
   transferId: string;
   name: string;

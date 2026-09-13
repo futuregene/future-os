@@ -8,6 +8,7 @@ import {
   rememberPreparedPreview,
 } from "./files";
 import type { SyncEngine } from "./syncEngine";
+import { requestReadPage } from "./readPages";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "./timeline";
 import { modelProviderFromReference, modelReference } from "./types";
@@ -16,6 +17,7 @@ import type {
   HistoryAttachment,
   RemoteModel,
   RemoteSessionState,
+  SessionFileListing,
   ThinkingLevel,
 } from "./types";
 
@@ -145,6 +147,21 @@ export function useConversationController({
       setSelectedSessionId,
     ],
   );
+
+  const listSessionFiles = useCallback(async (path = "") => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    const epoch = conversationEpochRef.current;
+    if (!client || !sessionId) throw new Error("attachment_no_session");
+    const response = await requestReadPage<SessionFileListing>(
+      client,
+      { type: "list_session_files", sessionId, filePath: path },
+      sessionId,
+      () => clientRef.current === client && selectedRef.current === sessionId
+        && conversationEpochRef.current === epoch,
+    );
+    return response.data;
+  }, [clientRef, selectedRef, conversationEpochRef]);
 
   const prepareAttachment = useCallback(
     async (
@@ -277,6 +294,7 @@ export function useConversationController({
     openingSession,
     selectSession,
     newConversation,
+    listSessionFiles,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,

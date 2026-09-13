@@ -2,6 +2,22 @@ export const resources = {
   en: {
     translation: {
       appName: "FutureOS",
+      files: {
+        title: "Session files",
+        currentDirectory: "Current session directory",
+        root: "Session root",
+        up: "Up one level",
+        refresh: "Refresh files",
+        loading: "Loading files…",
+        empty: "No files to display in this directory.",
+        offline: "Connect to the desktop to browse session files.",
+        updateDesktop: "Update FutureOS Desktop to browse session files.",
+        loadFailed: "Could not read this directory. It may have been moved or is inaccessible. Try refreshing.",
+        showHidden: "Show hidden files",
+        hideHidden: "Hide hidden files",
+        openFolder: "Open folder {{name}}",
+        openFile: "Open file {{name}}",
+      },
       remote: "Phone Control",
       desktops: {
         title: "Paired desktops",
@@ -339,6 +355,22 @@ export const resources = {
   zh: {
     translation: {
       appName: "FutureOS",
+      files: {
+        title: "会话文件",
+        currentDirectory: "当前会话目录",
+        root: "会话根目录",
+        up: "返回上级",
+        refresh: "刷新文件",
+        loading: "正在加载文件…",
+        empty: "此目录下没有可显示的文件。",
+        offline: "请连接桌面端后查看会话文件。",
+        updateDesktop: "请更新 FutureOS 桌面端，以使用会话文件浏览功能。",
+        loadFailed: "无法读取此目录，目录可能已移动或无访问权限，请尝试刷新。",
+        showHidden: "显示隐藏文件",
+        hideHidden: "不显示隐藏文件",
+        openFolder: "打开文件夹 {{name}}",
+        openFile: "打开文件 {{name}}",
+      },
       remote: "手机遥控",
       desktops: {
         title: "已配对的桌面端",

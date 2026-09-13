@@ -1,4 +1,4 @@
-import { ArrowLeft, Pencil } from "lucide-react-native";
+import { ArrowLeft, FolderOpen, Pencil } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
@@ -9,6 +9,9 @@ export function ChatTopBar({
   renameLabel,
   onBack,
   onRename,
+  filesLabel,
+  filesOpen,
+  onFiles,
 }: {
   title: string;
   draft: boolean;
@@ -16,6 +19,9 @@ export function ChatTopBar({
   renameLabel: string;
   onBack: () => void;
   onRename: () => void;
+  filesLabel: string;
+  filesOpen: boolean;
+  onFiles: () => void;
 }) {
   return (
     <View style={styles.topbar}>
@@ -32,6 +38,17 @@ export function ChatTopBar({
           {title}
         </Text>
       </View>
+      {!draft && (
+        <Pressable
+          accessibilityLabel={filesLabel}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: filesOpen }}
+          onPress={onFiles}
+          style={({ pressed }) => [styles.iconButton, (pressed || filesOpen) && styles.pressed]}
+        >
+          <FolderOpen color={filesOpen ? colors.accent : colors.ink} size={20} />
+        </Pressable>
+      )}
       {!draft && (
         <Pressable
           accessibilityLabel={renameLabel}
