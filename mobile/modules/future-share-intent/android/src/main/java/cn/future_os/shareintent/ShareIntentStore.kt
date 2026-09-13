@@ -14,7 +14,7 @@ data class SharedFile(val uri: String, val name: String, val mimeType: String)
 data class SharedContent(
   val text: String,
   val files: List<SharedFile>,
-  /** At least one shared file was dropped for exceeding [ShareIntentStore.MAX_BYTES]. */
+  /** At least one shared file exceeded the per-file, batch-byte or item-count limit. */
   val tooLarge: Boolean,
 )
 
@@ -34,7 +34,7 @@ data class SharedContent(
  */
 object ShareIntentStore {
   /** Per-file ceiling. The composer validates against its own (smaller) limit. */
-  const val MAX_BYTES = 25L * 1024 * 1024
+  const val MAX_BYTES = ShareFileCopier.MAX_FILE_BYTES
 
   /** Shared copies older than this are reclaimed when the next share arrives. */
   private const val RETAIN_MILLIS = 24L * 60 * 60 * 1000
@@ -72,20 +72,18 @@ object ShareIntentStore {
     } ?: return null
 
     prune(context)
-    var tooLarge = false
+    var tooLarge = share.uris.size > ShareFileCopier.MAX_FILES
+    val budget = ShareFileCopier.Budget()
     val files = mutableListOf<SharedFile>()
-    share.uris.forEachIndexed { index, uri ->
+    share.uris.take(ShareFileCopier.MAX_FILES).forEachIndexed { index, uri ->
+      var target: File? = null
+      var retained = false
       try {
+        budget.beginFile()
         val name = displayName(context, uri) ?: "shared-${index + 1}${extensionFor(share.mimeType)}"
-        val target = File(shareDirectory(context), "${UUID.randomUUID()}-$name")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-          target.outputStream().use { output -> input.copyTo(output) }
-        } ?: run { target.delete(); return@forEachIndexed }
-        if (target.length() <= 0 || target.length() > MAX_BYTES) {
-          target.delete()
-          tooLarge = true
-          return@forEachIndexed
-        }
+        target = File(shareDirectory(context), "${UUID.randomUUID()}-$name")
+        val input = context.contentResolver.openInputStream(uri) ?: return@forEachIndexed
+        ShareFileCopier.copy(input, target, budget)
         files.add(
           SharedFile(
             uri = Uri.fromFile(target).toString(),
@@ -95,8 +93,14 @@ object ShareIntentStore {
               ?: "application/octet-stream",
           )
         )
+        retained = true
+      } catch (_: ShareFileCopier.LimitExceededException) {
+        tooLarge = true
       } catch (_: Exception) {
         // A single unreadable item must not discard the rest of the share.
+      } finally {
+        // Also covers metadata/URI failures after copying has succeeded.
+        if (!retained) target?.delete()
       }
     }
     if (share.text.isBlank() && files.isEmpty() && !tooLarge) return null

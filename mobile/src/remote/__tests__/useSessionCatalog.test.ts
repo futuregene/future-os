@@ -23,6 +23,7 @@ describe("useSessionCatalog", () => {
   let onFinished: jest.Mock;
   let result: { current: Catalog };
   let renderer: ReactTestRenderer | null;
+  let consoleError: jest.SpyInstance;
 
   function TestComponent(): null {
     result.current = useSessionCatalog(
@@ -40,6 +41,7 @@ describe("useSessionCatalog", () => {
   }
 
   beforeEach(() => {
+    consoleError = jest.spyOn(console, "error");
     request = jest.fn();
     onFinished = jest.fn();
     clientRef = {
@@ -55,6 +57,8 @@ describe("useSessionCatalog", () => {
       act(() => renderer!.unmount());
       renderer = null;
     }
+    try { expect(consoleError).not.toHaveBeenCalled(); }
+    finally { consoleError.mockRestore(); }
   });
 
   test("100 concurrent refreshes share one request and one trailing freshness read", async () => {
@@ -92,7 +96,8 @@ describe("useSessionCatalog", () => {
         resolve = done;
       }),
     );
-    const pulling = result.current.refreshSessions();
+    let pulling!: Promise<void>;
+    act(() => { pulling = result.current.refreshSessions(); });
     act(() => void result.current.applySessionSnapshot([session("new")]));
     await act(async () => {
       resolve({ data: { sessions: [session("old")] } });
@@ -109,11 +114,14 @@ describe("useSessionCatalog", () => {
         resolve = done;
       }),
     );
-    const pulling = Promise.all([
-      result.current.refreshSessions(),
-      result.current.refreshWorkspaces(),
-      result.current.refreshSettings(),
-    ]);
+    let pulling!: Promise<void[]>;
+    act(() => {
+      pulling = Promise.all([
+        result.current.refreshSessions(),
+        result.current.refreshWorkspaces(),
+        result.current.refreshSettings(),
+      ]);
+    });
     act(() => result.current.reset());
     await act(async () => {
       resolve({
@@ -223,6 +231,72 @@ describe("useSessionCatalog", () => {
     const count = onFinished.mock.calls.length;
     act(() => { result.current.observeRunEvent({ type: "agent_end", data: "{}", runId: "r1" }, "s1"); });
     expect(onFinished).toHaveBeenCalledTimes(count + 1);
+  });
+
+  test("a confirming push retires a title overlay so later Desktop renames are visible", () => {
+    render();
+    act(() => {
+      result.current.setCatalogEpoch("epoch");
+      result.current.applySessionSnapshot([session("s1")], { epoch: "epoch", revision: 1 });
+      result.current.setTitleOverrides({ s1: "Phone name" });
+      result.current.applySessionSnapshot([{ ...session("s1"), title: "Phone name" }], { epoch: "epoch", revision: 2 });
+    });
+    expect(result.current.titleOverrides).toEqual({});
+    act(() => { result.current.applySessionSnapshot([{ ...session("s1"), title: "Desktop name" }], { epoch: "epoch", revision: 3 }); });
+    expect(result.current.sessions[0]?.title).toBe("Desktop name");
+  });
+
+  test.each([1, 2])("a fresh read retires overlays even when confirmation was missed (revision %s)", async revision => {
+    render();
+    act(() => {
+      result.current.setCatalogEpoch("epoch");
+      result.current.applySessionSnapshot([session("s1")], { epoch: "epoch", revision: 1 });
+      result.current.setTitleOverrides({ s1: "Phone name" });
+    });
+    request.mockResolvedValue({ data: { sessions: [session("s1")], version: { epoch: "epoch", revision } } });
+    await act(async () => { await result.current.refreshSessions(); });
+    expect(result.current.titleOverrides).toEqual({});
+    expect(result.current.sessions[0]?.title).toBe("Title s1");
+  });
+
+  test("a pre-rename read cannot retire the new overlay; the trailing post-ack read can", async () => {
+    render();
+    act(() => {
+      result.current.setCatalogEpoch("epoch");
+      result.current.applySessionSnapshot([session("s1")], { epoch: "epoch", revision: 1 });
+    });
+    let oldReply!: (value: unknown) => void;
+    let newReply!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { oldReply = resolve; }))
+      .mockResolvedValueOnce({ data: {} })
+      .mockReturnValueOnce(new Promise(resolve => { newReply = resolve; }));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.refreshSessions(); });
+    await act(async () => { await result.current.rename("s1", "Phone name"); });
+    await act(async () => {
+      oldReply({ data: { sessions: [session("s1")], version: { epoch: "epoch", revision: 2 } } });
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+    });
+    expect(result.current.titleOverrides.s1).toBe("Phone name");
+    expect(result.current.sessions[0]?.title).toBe("Phone name");
+    await act(async () => {
+      newReply({ data: { sessions: [{ ...session("s1"), title: "Desktop newer" }], version: { epoch: "epoch", revision: 3 } } });
+      await pending;
+    });
+    expect(result.current.titleOverrides).toEqual({});
+    expect(result.current.sessions[0]?.title).toBe("Desktop newer");
+  });
+
+  test("an older version cannot retire overlays even when returned to a fresh request", async () => {
+    render();
+    act(() => {
+      result.current.setCatalogEpoch("epoch");
+      result.current.applySessionSnapshot([session("s1")], { epoch: "epoch", revision: 5 });
+      result.current.setTitleOverrides({ s1: "Phone name" });
+    });
+    request.mockResolvedValue({ data: { sessions: [session("s1")], version: { epoch: "epoch", revision: 4 } } });
+    await act(async () => { await result.current.refreshSessions(); });
+    expect(result.current.titleOverrides.s1).toBe("Phone name");
   });
 
   test("returns the full catalogue surface on mount", () => {

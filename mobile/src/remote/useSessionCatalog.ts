@@ -9,7 +9,7 @@ import type {
   SessionsData,
   WorkspacesData,
 } from "./types";
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type SetStateAction } from "react";
 import type { RemoteClient } from "./client";
 import { detectFinished, effectiveRunStatus, sortPinnedFirst } from "./sessionStatus";
 
@@ -54,7 +54,7 @@ export function useSessionCatalog(
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [approvalTier, setApprovalTier] = useState("off");
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
-  const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>({});
+  const [titleOverrides, setTitleOverridesState] = useState<Record<string, string>>({});
   const versionGate = useRef(new CatalogVersionGate());
   const authenticatedEpoch = useRef<string | undefined>(undefined);
   const catalogEpoch = useRef(0);
@@ -98,6 +98,11 @@ export function useSessionCatalog(
     }
   }, [onFinished, rememberRun, selectedRef]);
   const titleOverridesRef = useRef<Record<string, string>>({});
+  const setTitleOverrides = useCallback((update: SetStateAction<Record<string, string>>) => {
+    const next = typeof update === "function" ? update(titleOverridesRef.current) : update;
+    titleOverridesRef.current = next;
+    setTitleOverridesState(next);
+  }, []);
   const modelsRef = useRef<RemoteModel[]>([]);
   const sessionRefreshRef = useRef<{
     client: RemoteClient; epoch: number; dirty: boolean; promise: Promise<void>;
@@ -118,10 +123,6 @@ export function useSessionCatalog(
   }, []);
 
   useEffect(() => {
-    titleOverridesRef.current = titleOverrides;
-  }, [titleOverrides]);
-
-  useEffect(() => {
     modelsRef.current = models;
   }, [models]);
 
@@ -140,8 +141,21 @@ export function useSessionCatalog(
   );
 
   const applySessionSnapshot = useCallback(
-    (list: RemoteSession[], version?: SnapshotVersion) => {
-      if (!versionGate.current.accept("sessions", version)) return false;
+    (list: RemoteSession[], version?: SnapshotVersion, overridesAtRead?: Record<string, string>) => {
+      // A fresh read may repeat the current version yet still confirm that an
+      // optimistic title should be retired. Pushes retain strict deduplication.
+      if (!versionGate.current.accept("sessions", version, overridesAtRead !== undefined)) return false;
+      if (overridesAtRead && titleOverridesRef.current === overridesAtRead) {
+        setTitleOverrides({});
+      } else {
+        const current = titleOverridesRef.current;
+        const confirmed = list.filter(session => current[session.sessionId] !== undefined && current[session.sessionId] === session.title);
+        if (confirmed.length) {
+          const next = { ...current };
+          for (const session of confirmed) delete next[session.sessionId];
+          setTitleOverrides(next);
+        }
+      }
       markSync("sessions", "ready");
       revisions.current.sessions += 1;
       const overrides = titleOverridesRef.current;
@@ -180,7 +194,7 @@ export function useSessionCatalog(
       }
       return true;
     },
-    [selectedRef, markSync, onFinished, rememberRun],
+    [selectedRef, markSync, onFinished, rememberRun, setTitleOverrides],
   );
 
   const readSessions = useCallback(async () => {
@@ -188,6 +202,7 @@ export function useSessionCatalog(
     if (!client) return;
     const epoch = catalogEpoch.current;
     const revision = ++revisions.current.sessions;
+    const overridesAtRead = titleOverridesRef.current;
     markSync("sessions", "syncing");
     try {
       const response = await client.requestRetry<SessionsData>({ type: "list_sessions" }, "list");
@@ -197,7 +212,7 @@ export function useSessionCatalog(
         (!response.data.version && revisions.current.sessions !== revision)
       )
         return;
-      applySessionSnapshot(response.data.sessions ?? [], response.data.version);
+      applySessionSnapshot(response.data.sessions ?? [], response.data.version, overridesAtRead);
       markSync("sessions", "ready");
     } catch {
       if (
@@ -377,7 +392,7 @@ export function useSessionCatalog(
     lastStatusRef.current = {};
     liveRuns.current.clear();
     notifiedRuns.current.clear();
-  }, []);
+  }, [setTitleOverrides]);
 
   const rename = useCallback(
     async (sessionId: string, name: string) => {
@@ -394,8 +409,12 @@ export function useSessionCatalog(
           session.sessionId === sessionId ? { ...session, title: trimmed } : session,
         ),
       );
+      // The Desktop mirrors the accepted name before replying. A read started
+      // after this acknowledgement can authoritatively retire the overlay;
+      // coalesced older reads must leave it for the trailing freshness read.
+      void refreshSessions();
     },
-    [clientRef, setSessions, setTitleOverrides],
+    [clientRef, refreshSessions, setSessions, setTitleOverrides],
   );
 
   /**
