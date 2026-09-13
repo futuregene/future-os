@@ -22,13 +22,14 @@ import {
   clearPendingRevoke,
   loadCredentials,
   loadPairedDesktops,
-  type PairedDesktop,
+  renameDesktop as renameStoredDesktop,
   loadPendingRevoke,
   saveCredentials,
   savePendingRevoke,
 } from "./storage";
 import type {
   ConnectionPhase,
+  PairedDesktop,
   SnapshotVersion,
   Presence,
   RemoteCredentials,
@@ -600,6 +601,11 @@ export function useRemoteConnection({
         .catch(() => undefined);
   }, [clientRef, credentials, credentialsRef, refreshDesktops, resetCatalog, resetConversation, resetTimeline]);
 
+  const renameDesktop = useCallback(async (desktopId: string, name: string) => {
+    await renameStoredDesktop(desktopId, name);
+    await refreshDesktops();
+  }, [refreshDesktops]);
+
   const removeDesktop = useCallback(async (desktopId: string) => {
     if (credentials?.expectedDesktopId === desktopId) return unpair();
     const stored = await loadCredentials(desktopId);
@@ -620,6 +626,7 @@ export function useRemoteConnection({
     credentials,
     desktops,
     switchDesktop,
+    renameDesktop,
     removeDesktop,
     presence,
     desktopOnline,
