@@ -53,6 +53,7 @@ const config: ExpoConfig = {
       },
     ],
     "expo-localization",
+    "expo-notifications",
     [
       "expo-splash-screen",
       {
