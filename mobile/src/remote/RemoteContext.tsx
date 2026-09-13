@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import type { TimelineState } from "./timeline";
+import { notifyTaskFinished, prepareTaskNotifications } from "../notifications/taskNotifications";
 import { RemoteClient } from "./client";
 import { connectionPresentation as buildConnectionPresentation } from "./connectionPresentation";
 import type { ConnectionPresentation } from "./connectionPresentation";
@@ -53,6 +54,8 @@ interface RemoteContextValue {
   selectedSessionId: string;
   selectedTitle: string;
   draft: boolean;
+  draftMode: "chat" | "workspace";
+  draftWorkspaceId: string;
   timeline: TimelineState;
   timelinePending: boolean;
   timelineError: "timeout" | null;
@@ -126,6 +129,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
   const selectedRef = useRef("");
+  const onTaskFinished = useCallback((session: RemoteSession) => {
+    const pairId = credentialsRef.current?.pairId;
+    if (!pairId) return;
+    void notifyTaskFinished(session, () => credentialsRef.current?.pairId === pairId);
+  }, []);
   // The control-plane catalogue (sessions/workspaces/models/settings) lives in
   // its own hook; the provider keeps connection lifecycle + per-session
   // timeline and forwards the catalogue's state/setters into the context value.
@@ -143,6 +151,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     catalogSync,
     setCatalogEpoch,
     applySessionSnapshot,
+    observeRunEvent,
     refreshSessions,
     refreshModels,
     refreshSettings,
@@ -152,7 +161,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     deleteWorkspace: removeWorkspace,
     setSessionPinned,
     reset: resetCatalog,
-  } = useSessionCatalog(clientRef, selectedRef);
+  } = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
   // Changes whenever the user navigates between conversations. Long uploads
   // capture the epoch so their eventual ack cannot pull the UI back to a
   // conversation the user has already left.
@@ -185,6 +194,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshSessions,
     setTitleOverrides,
   });
+
+  const handleLiveEvent = useCallback((event: Parameters<typeof handleEvent>[0], sessionId: string) => {
+    observeRunEvent(event, sessionId);
+    handleEvent(event, sessionId);
+  }, [handleEvent, observeRunEvent]);
 
   const closeConversation = useCallback(() => {
     conversationEpochRef.current += 1;
@@ -229,7 +243,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     credentialsRef,
     selectedRef,
     syncEngineRef,
-    handleEvent,
+    handleEvent: handleLiveEvent,
     reconcileSession,
     setCatalogEpoch,
     applySessionSnapshot,
@@ -304,6 +318,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     reconcileSession,
     recordError,
   });
+  useEffect(() => {
+    if (phase === "ready" && credentials) void prepareTaskNotifications();
+  }, [phase, credentials]);
+
   const selectedTitle =
     sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
   const agentAvailable = presence?.agentAvailable !== false;
@@ -344,6 +362,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedSessionId,
       selectedTitle,
       draft,
+      draftMode,
+      draftWorkspaceId,
       streaming,
       modelId,
       thinkingLevel,
@@ -400,6 +420,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       deleteSession,
       deleteWorkspace,
       draft,
+      draftMode,
+      draftWorkspaceId,
       error,
       agentAvailable,
       modelId,

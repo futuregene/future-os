@@ -2,6 +2,11 @@ export const resources = {
   en: {
     translation: {
       appName: "FutureOS",
+      notifications: {
+        channel: "Task completion",
+        completed: "Task completed",
+        failed: "Task failed — review the conversation",
+      },
       files: {
         title: "Session files",
         currentDirectory: "Current session directory",
@@ -127,6 +132,10 @@ export const resources = {
       },
       chat: {
         new: "New conversation",
+        workspaceConversation: "Workspace conversation",
+        workspaceNamed: "Workspace · {{name}}",
+        nonWorkspaceConversation: "Non-workspace conversation",
+        contextLoading: "Loading conversation type…",
         placeholder: "Message FutureOS",
         send: "Send",
         stop: "Stop",
@@ -362,6 +371,11 @@ export const resources = {
   zh: {
     translation: {
       appName: "FutureOS",
+      notifications: {
+        channel: "任务完成提醒",
+        completed: "任务已完成",
+        failed: "任务失败，请查看会话",
+      },
       files: {
         title: "会话文件",
         currentDirectory: "当前会话目录",
@@ -480,6 +494,10 @@ export const resources = {
       },
       chat: {
         new: "新对话",
+        workspaceConversation: "工作区会话",
+        workspaceNamed: "工作区 · {{name}}",
+        nonWorkspaceConversation: "非工作区会话",
+        contextLoading: "正在加载会话类型…",
         placeholder: "给 FutureOS 发消息",
         send: "发送",
         stop: "停止",

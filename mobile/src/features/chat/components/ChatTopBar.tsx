@@ -4,6 +4,7 @@ import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
 export function ChatTopBar({
   title,
+  contextLabel,
   draft,
   backLabel,
   renameLabel,
@@ -14,6 +15,7 @@ export function ChatTopBar({
   onFiles,
 }: {
   title: string;
+  contextLabel: string;
   draft: boolean;
   backLabel: string;
   renameLabel: string;
@@ -36,6 +38,9 @@ export function ChatTopBar({
       <View style={styles.titleWrap}>
         <Text numberOfLines={1} style={styles.title}>
           {title}
+        </Text>
+        <Text numberOfLines={1} style={styles.context} accessibilityLabel={contextLabel}>
+          {contextLabel}
         </Text>
       </View>
       {!draft && (
@@ -83,5 +88,6 @@ const styles = StyleSheet.create({
   },
   pressed: { backgroundColor: colors.surfaceSubtle },
   titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
+  context: { color: colors.inkSoft, fontSize: 12, maxWidth: "100%", marginTop: 2 },
   title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
 });

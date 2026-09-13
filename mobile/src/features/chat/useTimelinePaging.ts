@@ -159,9 +159,11 @@ export function useTimelinePaging(
     [detectCollision, onScroll],
   );
 
-  const onScrollBeginDrag = useCallback(() => {
+  const onScrollBeginDrag = useCallback((event: ScrollEvent) => {
     gestureRef.current = { active: true, used: transactionRef.current !== null };
-  }, []);
+    // A drag at an already-clamped edge need not produce a changed offset.
+    detectCollision(event);
+  }, [detectCollision]);
   const onScrollEndDrag = useCallback(
     (event: ScrollEvent) => {
       detectCollision(event);
