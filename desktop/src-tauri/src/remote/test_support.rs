@@ -67,6 +67,81 @@ pub(crate) fn now_secs() -> i64 {
         .unwrap_or_default()
 }
 
+/// Complete the real v2 handshake over the fake broker, using the same
+/// invitation a phone scans. Used by runtime and malicious-relay tests.
+pub(crate) async fn secure_pair(
+    client: &async_nats::Client,
+    invitation: &str,
+    pair_id: &str,
+) -> future_remote_crypto::Channel {
+    let url = reqwest::Url::parse(invitation).unwrap();
+    let fields: HashMap<_, _> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let secret: [u8; 32] = URL_SAFE_NO_PAD
+        .decode(&fields["secret"])
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let desktop_key = URL_SAFE_NO_PAD.decode(&fields["secureKey"]).unwrap();
+    let (private, _) = future_remote_crypto::generate_identity().unwrap();
+    let prologue = future_remote_crypto::prologue(pair_id, &fields["desktopId"]).unwrap();
+    let mut handshake = future_remote_crypto::Handshake::new(
+        future_remote_crypto::Pattern::Pair,
+        true,
+        &private,
+        None,
+        Some(&secret),
+        &prologue,
+    )
+    .unwrap();
+    let subject = format!("p.{pair_id}.cmd.handshake");
+    let first = json!({ "type": "secure_open", "pairing": true, "message": URL_SAFE_NO_PAD.encode(handshake.write(b"").unwrap()) });
+    let response = client
+        .request(subject.clone(), serde_json::to_vec(&first).unwrap().into())
+        .await
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response.payload).unwrap();
+    assert_eq!(response["success"], true, "{response}");
+    handshake
+        .read(
+            &URL_SAFE_NO_PAD
+                .decode(response["data"]["message"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(handshake.remote_public_key().unwrap(), desktop_key);
+    let last = json!({ "type": "secure_finish", "id": response["data"]["id"], "message": URL_SAFE_NO_PAD.encode(handshake.write(b"").unwrap()) });
+    let response = client
+        .request(subject, serde_json::to_vec(&last).unwrap().into())
+        .await
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response.payload).unwrap();
+    assert_eq!(response["success"], true, "{response}");
+    let mut channel = handshake.finish().unwrap();
+    let encrypted = URL_SAFE_NO_PAD
+        .decode(response["data"]["confirmation"].as_str().unwrap())
+        .unwrap();
+    let confirmed: Value =
+        serde_json::from_slice(&channel.open("handshake-confirm", &encrypted).unwrap()).unwrap();
+    assert_eq!(confirmed["pairId"], pair_id);
+    assert_eq!(confirmed["confirmed"], true);
+    let subject = format!("p.{pair_id}.cmd.handshake");
+    let wire = channel
+        .seal(
+            &subject,
+            &serde_json::to_vec(&json!({"type":"secure_ready"})).unwrap(),
+        )
+        .unwrap();
+    let context = future_remote_crypto::reply_context(&subject, &wire).unwrap();
+    let response = client.request(subject, wire.into()).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&channel.open(&context, &response.payload).unwrap()).unwrap();
+    assert_eq!(ready["success"], true);
+    channel
+}
+
 // ── Mock gRPC FutureAgent ───────────────────────────────────────────────────
 
 /// Serialize every test (across families) that scripts or drives the

@@ -59,6 +59,7 @@ pub(super) type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
 
 #[derive(Clone)]
 pub(super) struct HandshakeState {
+    pub(super) secure: super::secure::Transport,
     host: &'static dyn super::services::BusinessHost,
     creds: crate::remote::pairing::PairingCreds,
     access_epoch: Option<u64>,
@@ -83,6 +84,7 @@ impl HandshakeState {
         bridge_instance_id: String,
     ) -> Self {
         Self {
+            secure: super::secure::Transport::new(&creds),
             creds,
             access_epoch: None,
             host: super::host(),
@@ -171,6 +173,91 @@ pub(super) async fn command_loop_with_ready(
         let handshake = handshake.clone();
         // Spawn per command: prevent a slow command from blocking others.
         tokio::spawn(async move {
+            if handshake.secure.enabled() {
+                if !handshake.access_current() {
+                    return;
+                }
+                if msg.payload.starts_with(b"FRE2") {
+                    let Ok((plain, security)) = handshake.secure.open(&msg.subject, &msg.payload)
+                    else {
+                        return;
+                    };
+                    let mut msg = msg;
+                    msg.payload = plain.into();
+                    // Handshake messages are never business commands, even
+                    // when a paired peer sends them inside a secure record.
+                    let parsed = serde_json::from_slice::<IncomingCmd>(&msg.payload);
+                    if parsed.as_ref().is_ok_and(|c| {
+                        matches!(
+                            c.cmd_type.as_str(),
+                            "pair_handshake" | "pair_handshake_confirm"
+                        )
+                    }) {
+                        return;
+                    }
+                    if parsed.as_ref().is_ok_and(|c| c.cmd_type == "secure_ready") {
+                        let activate = || {
+                            handshake.secure.activate(&security)?;
+                            handshake.active.store(true, Ordering::Release);
+                            Ok::<_, crate::AppError>(())
+                        };
+                        let activated = match handshake.access_epoch {
+                            Some(epoch) => super::SUPERVISOR.access.commit(epoch, activate),
+                            None => Some(activate()),
+                        };
+                        if matches!(activated, Some(Ok(()))) {
+                            super::secure::REPLY
+                                .scope(security, reply(&client, &msg, true, json!({}), None))
+                                .await;
+                        }
+                        return;
+                    }
+                    if !handshake.secure.is_active(&security) {
+                        return;
+                    }
+                    super::secure::REPLY
+                        .scope(
+                            security,
+                            handle_command_singleflight(&client, msg, reply_slots, handshake),
+                        )
+                        .await;
+                } else {
+                    let process = || {
+                        let result = handshake
+                            .secure
+                            .handshake(&msg.payload, &handshake.bridge_instance_id);
+                        if let Ok(data) = &result {
+                            if data.get("confirmation").is_some() {
+                                handshake.confirmed.store(true, Ordering::Release);
+                            }
+                        }
+                        result
+                    };
+                    let result = match handshake.access_epoch {
+                        Some(epoch) => match super::SUPERVISOR.access.commit(epoch, process) {
+                            Some(result) => result,
+                            None => return,
+                        },
+                        None => process(),
+                    };
+                    if let Some(reply) = msg.reply {
+                        let body = match result {
+                            Ok(data) => json!({ "success": true, "data": data }),
+                            Err(_) => {
+                                json!({ "success": false, "error": "remote_secure_channel_invalid" })
+                            }
+                        };
+                        let _ = client
+                            .publish(reply, serde_json::to_vec(&body).expect("JSON value").into())
+                            .await;
+                    }
+                }
+                #[cfg(test)]
+                return;
+            }
+            // Legacy protocol fixtures are retained solely for business-route
+            // unit tests. Production must never accept a v1 connection.
+            #[cfg(test)]
             handle_command_singleflight(&client, msg, reply_slots, handshake).await;
         });
     }
@@ -635,7 +722,7 @@ fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
     // still be rejected by Mobile's decompression guard. Negotiated read pages
     // reach here as small chunks; legacy/other oversized replies fail explicitly
     // rather than being dropped by NATS and making the client time out.
-    if plain.len() > 1024 * 1024 {
+    if plain.len() > future_remote_crypto::MAX_PLAINTEXT {
         return serde_json::to_vec(&json!({
             "type": "response", "success": false, "data": null,
             "error": "remote_reply_too_large"
@@ -666,6 +753,18 @@ async fn publish_reply_payload(
 ) {
     let Some(reply_subject) = msg.reply.clone() else {
         return;
+    };
+    let payload = match super::secure::REPLY.try_with(|security| security.seal(&payload)) {
+        Ok(Ok(wire)) => wire,
+        Ok(Err(_)) => return,
+        Err(_) => {
+            #[cfg(not(test))]
+            return;
+            #[cfg(test)]
+            {
+                payload
+            }
+        }
     };
     if let Err(error) = client.publish(reply_subject, payload.into()).await {
         eprintln!("FutureOS: failed to publish remote command reply: {error}");
@@ -1118,6 +1217,7 @@ mod bridge_tests {
         let key_pair = nkeys::KeyPair::new_user();
         crate::remote::pairing::PairingCreds {
             handshake_version: 1,
+            secure: None,
             pair_id: format!("pair_{}", unique("cmd")),
             desktop_id: format!("desktop_{}", unique("cmd")),
             nkey_seed: key_pair.seed().unwrap().to_string(),

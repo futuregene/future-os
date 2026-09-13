@@ -72,9 +72,23 @@ pub fn save_creds(creds: &PairingCreds) -> Result<(), crate::AppError> {
         ));
     }
     let path = pairing_path()?;
-    let value = serde_json::to_value(creds)
-        .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
-    crate::config_io::write_json_atomic(&path, &value, true)
+    crate::config_io::with_config_lock(&path, || {
+        let mut creds = creds.clone();
+        // Credential refresh may have started before pairing committed. Never
+        // overwrite a pinned identity with that stale pending invitation.
+        if let Some(stored) = load_creds().filter(|stored| stored.pair_id == creds.pair_id) {
+            if stored
+                .secure
+                .as_ref()
+                .is_some_and(|identity| identity.peer_public_key.is_some())
+            {
+                creds.secure = stored.secure;
+            }
+        }
+        let value = serde_json::to_value(&creds)
+            .map_err(|error| crate::AppError::Message(format!("encode pairing creds: {error}")))?;
+        crate::config_io::write_json_atomic(&path, &value, true)
+    })
 }
 
 pub fn clear_creds() -> Result<(), crate::AppError> {
@@ -108,7 +122,11 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
     let jwt_expires_at = jwt_expiry(&response.user_jwt)?;
     let code_expires_at = pairing_code_expiry(&response.pairing_code);
     let creds = PairingCreds {
-        handshake_version: 1,
+        handshake_version: 2,
+        secure: Some(crate::remote::secure::PairingIdentity::new(
+            code_expires_at
+                .ok_or_else(|| crate::AppError::Message("pairing_expiry_required".into()))?,
+        )?),
         pair_id: response.pair_id,
         desktop_id,
         nkey_seed,
@@ -117,7 +135,20 @@ pub async fn create_pairing() -> Result<(PairingCreds, String, Option<i64>), cra
         nats_ws_url: response.nats_ws_url,
         jwt_expires_at,
     };
-    Ok((creds, response.pairing_code, code_expires_at))
+    let identity = creds.secure.as_ref().expect("new secure identity");
+    let mut invitation = reqwest::Url::parse("futureos://remote/pair").expect("constant URL");
+    invitation
+        .query_pairs_mut()
+        .append_pair("v", "2")
+        .append_pair("code", &response.pairing_code)
+        .append_pair("desktopId", &creds.desktop_id)
+        .append_pair("desktopKey", &key_pair.public_key())
+        .append_pair("secureKey", &identity.public_key)
+        .append_pair(
+            "secret",
+            identity.secret.as_deref().expect("new invitation secret"),
+        );
+    Ok((creds, invitation.into(), code_expires_at))
 }
 
 /// Decode a v2 pairing code's `exp` (unix seconds). Self-contained — the
@@ -407,6 +438,7 @@ mod http_tests {
         let key_pair = nkeys::KeyPair::new_user();
         PairingCreds {
             handshake_version: 1,
+            secure: None,
             pair_id: "pair_test".to_string(),
             desktop_id: "desktop_test".to_string(),
             nkey_seed: key_pair.seed().unwrap().to_string(),
@@ -483,7 +515,18 @@ mod http_tests {
         let code = platform.respond_pair_code("nats://127.0.0.1:4222");
 
         let (creds, returned_code, code_expires_at) = create_pairing().await.unwrap();
-        assert_eq!(returned_code, code);
+        let invitation = reqwest::Url::parse(&returned_code).unwrap();
+        let fields: std::collections::HashMap<_, _> = invitation.query_pairs().collect();
+        assert_eq!(fields["code"], code);
+        assert_eq!(fields["v"], "2");
+        assert_eq!(
+            fields["secureKey"],
+            creds.secure.as_ref().unwrap().public_key
+        );
+        assert_eq!(
+            fields["secret"],
+            creds.secure.as_ref().unwrap().secret.as_deref().unwrap()
+        );
         assert!(creds.pair_id.starts_with("pair_mock-"));
         assert!(creds.desktop_id.starts_with("desktop_"));
         assert_eq!(creds.nats_url, "nats://127.0.0.1:4222");
@@ -501,6 +544,12 @@ mod http_tests {
         let body: Value = serde_json::from_str(&requests[0].2).unwrap();
         assert_eq!(body["desktop_id"], json!(creds.desktop_id));
         assert_eq!(body["desktop_name"], json!("FutureOS GUI"));
+        assert!(!requests[0]
+            .2
+            .contains(creds.secure.as_ref().unwrap().secret.as_deref().unwrap()));
+        assert!(!requests[0]
+            .2
+            .contains(&creds.secure.as_ref().unwrap().private_key));
     }
 
     #[tokio::test]

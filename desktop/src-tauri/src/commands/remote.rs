@@ -196,6 +196,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             crate::remote::pairing::save_creds(&crate::remote::pairing::PairingCreds {
                 handshake_version: 0,
+                secure: None,
                 pair_id: "pair_err".into(),
                 desktop_id: "desk_err".into(),
                 nkey_seed: String::new(),

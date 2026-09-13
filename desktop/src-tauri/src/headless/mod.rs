@@ -327,12 +327,19 @@ fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
     {
         return None;
     }
-    let mut url = reqwest::Url::parse("futureos://remote/pair").expect("constant pairing URI");
-    url.query_pairs_mut()
-        .append_pair("code", code)
-        .append_pair("desktopId", &status.desktop_id)
-        .append_pair("desktopKey", &status.desktop_public_key);
-    Some(url.to_string())
+    // Desktop owns the complete v2 invitation, including the local-only PSK.
+    // Do not wrap it in another `code` parameter or reconstruct a v1 invite.
+    let url = reqwest::Url::parse(code).ok()?;
+    if url.scheme() != "futureos"
+        || url.host_str() != Some("remote")
+        || url.path() != "/pair"
+        || !url
+            .query_pairs()
+            .any(|(key, value)| key == "v" && value == "2")
+    {
+        return None;
+    }
+    Some(code.clone())
 }
 
 fn unix_seconds() -> i64 {
@@ -549,7 +556,7 @@ mod tests {
             agent_available: true,
             nats_url: String::new(),
             pair_id: "pair".into(),
-            pairing_code: Some("a+b&c".into()),
+            pairing_code: Some(format!("futureos://remote/pair?v=2&code=a%2Bb%26c&desktopId=desktop_test&desktopKey=UTEST&secureKey={}&secret={}", "A".repeat(43), "B".repeat(43))),
             pairing_code_expires_at: Some(unix_seconds() + 300),
             desktop_id: "desktop_test".into(),
             desktop_public_key: "UTEST".into(),
@@ -565,6 +572,10 @@ mod tests {
         assert_eq!(fields["code"], "a+b&c");
         assert_eq!(fields["desktopId"], "desktop_test");
         assert_eq!(fields["desktopKey"], "UTEST");
+        assert_eq!(fields["v"], "2");
+        assert_eq!(fields["secureKey"], "A".repeat(43));
+        assert_eq!(fields["secret"], "B".repeat(43));
+        assert_eq!(Some(&link), status.pairing_code.as_ref());
         assert!(qrcode::QrCode::new(link.as_bytes()).is_ok());
         status.phase = remote::RemotePhase::Reconnecting;
         assert!(pairing_link(&status).is_none());

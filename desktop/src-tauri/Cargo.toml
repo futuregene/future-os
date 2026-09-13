@@ -37,6 +37,7 @@ tauri-build = { version = "2", features = [], optional = true }
 # milestone). Path dep: this crate lives in the root cargo workspace, and
 # tonic/prost versions must stay aligned with its workspace pins.
 future-rpc = { path = "../../packages/rpc" }
+future-remote-crypto = { path = "../../packages/remote-crypto" }
 tauri = { version = "2", features = ["protocol-asset", "test"], optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2", optional = true }

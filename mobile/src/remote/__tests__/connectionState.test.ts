@@ -317,9 +317,17 @@ function recoveryClient(): {
     onError: jest.fn(),
   } as jest.Mocked<RemoteClientCallbacks>;
   const client = new RemoteClient(credentials, callbacks);
+  // Lifecycle tests enter an already-authenticated connection. Keep their
+  // transport stub explicit; the production client has no plaintext fallback.
+  const boundary = client as unknown as {
+    secureChannels: WeakMap<object, unknown>;
+    secureRequest: (connection: { request: (subject: string, bytes: Uint8Array, opts: { timeout: number }) => Promise<unknown> }, subject: string, bytes: Uint8Array, timeout: number) => Promise<unknown>;
+  };
+  boundary.secureChannels.get = () => ({ open: (_: string, bytes: Uint8Array) => bytes, destroy: () => {} });
+  boundary.secureRequest = (connection, subject, bytes, timeout) => connection.request(subject, bytes, { timeout });
   const serving = new ConnectionGeneration(0);
   serving.activate();
-  Object.assign(client, { activeGeneration: serving });
+  Object.assign(client, { activeGeneration: serving, activateSecureChannel: async () => {} });
   return { client, callbacks };
 }
 

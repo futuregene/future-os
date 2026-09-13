@@ -122,7 +122,7 @@ export function classifyError(error: unknown): "authTerminal" | "auth" | "fatal"
   const message = error instanceof Error ? error.message : String(error);
   // A JWT with no readable exp is permanently malformed — refreshing can't
   // fix it, only re-pairing can (mirrors the desktop's hard reject).
-  if (message.includes("invalid_jwt")) {
+  if (message.includes("invalid_jwt") || message.includes("pairing_identity_mismatch")) {
     return "authTerminal";
   }
   if (

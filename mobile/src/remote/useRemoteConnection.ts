@@ -373,7 +373,7 @@ export function useRemoteConnection({
   }, [clientRef, connect, drainRevokes, recordError, refreshDesktops]);
 
   const recoverLifecycle = useCallback(
-    async (reason: "foreground" | "network-restored" | "network-changed") => {
+    async (reason: "foreground" | "network-restored" | "network-changed" | "request-failure") => {
       if (reason === "foreground") {
         const available = await refreshNetworkStateRef.current();
         if (!available) return;
@@ -486,11 +486,18 @@ export function useRemoteConnection({
 
   useEffect(() => {
     const timer = setInterval(() => {
-      if (phase === "ready") updateDesktopOnline(presence, Date.now());
-      else setDesktopOnline(false);
+      if (phase === "ready") {
+        updateDesktopOnline(presence, Date.now());
+        // After a desktop restart the broker connection may stay open, but
+        // the old traffic keys are gone. Recover without trusting an unsigned
+        // presence beacon (or waiting for the next JWT refresh).
+        if (AppState.currentState === "active" && Date.now() - lastPresenceReceiptRef.current >= PRESENCE_RECEIPT_STALE_MS) {
+          void recoverLifecycle("request-failure");
+        }
+      } else setDesktopOnline(false);
     }, 10_000);
     return () => clearInterval(timer);
-  }, [phase, presence, updateDesktopOnline]);
+  }, [phase, presence, updateDesktopOnline, recoverLifecycle]);
 
   const pair = useCallback(
     async (code: string) => {

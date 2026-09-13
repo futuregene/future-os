@@ -113,6 +113,12 @@ describe("RemoteClient connection handoff", () => {
     // Keep the real lifecycle and subscription loops; cryptographic identity
     // validation has its own handshake suite.
     jest.spyOn(client as never, "performHandshake").mockResolvedValue(confirmation as never);
+    jest.spyOn(client as never, "activateSecureChannel").mockResolvedValue(undefined as never);
+    // This suite mocks the handshake, so mock its installed record layer too.
+    // secureClient.test.ts exercises the actual cryptographic boundary.
+    const boundary = client as unknown as { secureChannels: WeakMap<object, unknown>; secureRequest: (connection: NatsConnection, subject: string, bytes: Uint8Array, timeout: number) => Promise<Msg> };
+    jest.spyOn(boundary.secureChannels, "get").mockReturnValue({ open: (_: string, bytes: Uint8Array) => bytes, destroy: () => {} });
+    boundary.secureRequest = (connection, subject, bytes, timeout) => connection.request(subject, bytes, { timeout });
   });
 
   afterEach(async () => {

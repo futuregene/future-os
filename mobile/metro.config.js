@@ -9,6 +9,8 @@ config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
   crypto: path.resolve(__dirname, "src/polyfills/crypto.ts"),
   util: path.resolve(__dirname, "src/polyfills/util.ts"),
+  "sodium-universal": require.resolve("sodium-javascript"),
+  "sodium-native": require.resolve("sodium-javascript"),
 };
 
 module.exports = config;

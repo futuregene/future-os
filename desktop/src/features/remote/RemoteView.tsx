@@ -92,12 +92,8 @@ export function RemoteView({
   }, [pairingCode, remoteStatus?.pairingCodeExpiresAt, now]);
   const pairingQrValue = useMemo(
     () =>
-      pairingCode
-        ? `futureos://remote/pair?code=${encodeURIComponent(pairingCode)}&desktopId=${
-          encodeURIComponent(remoteStatus?.desktopId ?? "")
-        }&desktopKey=${encodeURIComponent(remoteStatus?.desktopPublicKey ?? "")}`
-        : null,
-    [pairingCode, remoteStatus?.desktopId, remoteStatus?.desktopPublicKey],
+      pairingCode?.startsWith("futureos://remote/pair?") ? pairingCode : null,
+    [pairingCode],
   );
 
   async function handleStart() {
