@@ -1,7 +1,7 @@
 import { X } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 import { friendlyError } from "./errorMessage";
 
 /**
@@ -24,7 +24,7 @@ import { friendlyError } from "./errorMessage";
 export function ErrorBanner({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
   const { t } = useTranslation();
   return (
-    <View style={styles.banner}>
+    <View accessibilityLiveRegion="polite" style={styles.banner}>
       <Text style={styles.text}>{friendlyError(message, t)}</Text>
       {onDismiss ? (
         <Pressable
@@ -45,7 +45,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    marginHorizontal: spacing.md,
+    marginHorizontal: layout.gutter,
     marginBottom: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -55,5 +55,5 @@ const styles = StyleSheet.create({
     borderColor: colors.dangerLine,
   },
   text: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18 },
-  dismiss: { padding: 2 },
+  dismiss: { width: layout.touchTarget, minHeight: layout.touchTarget, alignItems: "center", justifyContent: "center" },
 });

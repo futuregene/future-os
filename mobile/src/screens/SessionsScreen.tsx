@@ -30,10 +30,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
 import { ConnectionBadge } from "../components/ConnectionBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { DialogSurface } from "../components/DialogSurface";
 import { useRemote } from "../remote/RemoteContext";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { VERSION } from "../version.generated";
@@ -53,7 +54,7 @@ function deferPresentation(action: () => void): void {
 export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void }) {
   const { t } = useTranslation();
   const remote = useRemote();
-  const { width } = useWindowDimensions();
+  const { width, fontScale } = useWindowDimensions();
   const selectedDesktopName =
     remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId)?.name ??
     remote.credentials?.expectedDesktopId ??
@@ -72,6 +73,21 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const pendingNewConversationRef = useRef<(() => void) | null>(null);
+  const pendingManageDesktopsRef = useRef(false);
+
+  const manageDesktopsFromSettings = () => {
+    // On iOS let the modal release UIKit's presentation controller before
+    // replacing this screen with the device picker.
+    pendingManageDesktopsRef.current = Platform.OS === "ios";
+    setSettingsOpen(false);
+    if (Platform.OS !== "ios") deferPresentation(onManageDesktops);
+  };
+
+  const flushPendingManageDesktops = () => {
+    if (!pendingManageDesktopsRef.current) return;
+    pendingManageDesktopsRef.current = false;
+    onManageDesktops();
+  };
 
   const openNew = () => {
     // The conversations tab has nothing left to pick — create the chat
@@ -326,20 +342,39 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   );
 
   return (
-    <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
+    <SafeAreaView style={styles.safe}>
       <View style={styles.page}>
+        <View style={styles.deviceBar}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("desktops.title")}
           onPress={onManageDesktops}
-          style={styles.desktopSelector}
+          style={({ pressed }) => [styles.desktopSelector, pressed && styles.pressed]}
         >
-          <Monitor color={colors.inkSoft} size={16} />
+          <View style={styles.desktopIcon}>
+            <Monitor color={colors.accent} size={20} />
+          </View>
           <Text numberOfLines={1} style={styles.desktopIdentity}>
             {selectedDesktopName}
           </Text>
           <ChevronDown color={colors.inkSoft} size={16} />
         </Pressable>
+          <View style={styles.topActions}>
+            <ConnectionBadge
+              compact={width < 400 || fontScale > 1.2}
+              presentation={connection}
+              onReconnect={() => void remote.reconnect()}
+            />
+            <Pressable
+              accessibilityLabel={t("sessions.settings")}
+              accessibilityRole="button"
+              onPress={() => setSettingsOpen(true)}
+              style={({ pressed }) => [styles.settingsButton, pressed && styles.pressed]}
+            >
+              <Settings color={colors.inkSoft} size={21} />
+            </Pressable>
+          </View>
+        </View>
         <View style={styles.topbar}>
           <View style={styles.tabs}>
             <Pressable
@@ -363,21 +398,6 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
               <Text style={[styles.tabText, tab === "chat" && styles.tabTextActive]}>
                 {t("sessions.conversations")}
               </Text>
-            </Pressable>
-          </View>
-          <View style={styles.topActions}>
-            <ConnectionBadge
-              compact={width < 400}
-              presentation={connection}
-              onReconnect={() => void remote.reconnect()}
-            />
-            <Pressable
-              accessibilityLabel={t("sessions.settings")}
-              accessibilityRole="button"
-              onPress={() => setSettingsOpen(true)}
-              style={styles.settingsButton}
-            >
-              <Settings color={colors.inkSoft} size={21} />
             </Pressable>
           </View>
         </View>
@@ -418,11 +438,10 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
           transparent
           visible={newOpen}
         >
-          <View style={styles.overlay}>
-            <View style={styles.dialog}>
+          <DialogSurface>
               <View style={styles.dialogHeader}>
                 <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
-                <Pressable accessibilityLabel={t("common.close")} onPress={closeNew}>
+                <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
                   <X color={colors.inkMuted} size={20} />
                 </Pressable>
               </View>
@@ -430,6 +449,8 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                 {(["workspace", "chat"] as Tab[]).map((mode) => (
                   <Pressable
                     key={mode}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: newMode === mode }}
                     onPress={() => {
                       setNewMode(mode);
                       if (mode === "workspace" && !workspaceId)
@@ -457,6 +478,8 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                   {remote.workspaces.map((workspace) => (
                     <Pressable
                       key={workspace.id}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: workspaceId === workspace.id }}
                       onPress={() => setWorkspaceId(workspace.id)}
                       style={[
                         styles.workspaceOption,
@@ -479,22 +502,23 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                 label={t("sessions.new")}
                 onPress={startConversation}
               />
-            </View>
-          </View>
+          </DialogSurface>
         </Modal>
 
         <Modal
           animationType="fade"
           onRequestClose={() => setSettingsOpen(false)}
+          onDismiss={flushPendingManageDesktops}
           transparent
           visible={settingsOpen}
         >
-          <View style={styles.overlay}>
-            <View style={styles.dialog}>
+          <DialogSurface>
               <View style={styles.dialogHeader}>
                 <Text style={styles.dialogTitle}>{t("sessions.settings")}</Text>
                 <Pressable
                   accessibilityLabel={t("common.close")}
+                  accessibilityRole="button"
+                  style={styles.settingsButton}
                   onPress={() => setSettingsOpen(false)}
                 >
                   <X color={colors.inkMuted} size={20} />
@@ -502,10 +526,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
               </View>
               <Button
                 label={t("desktops.title")}
-                onPress={() => {
-                  setSettingsOpen(false);
-                  onManageDesktops();
-                }}
+                onPress={manageDesktopsFromSettings}
                 variant="secondary"
               />
               <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
@@ -554,8 +575,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                 onPress={confirmUnpair}
                 variant="danger"
               />
-            </View>
-          </View>
+          </DialogSurface>
         </Modal>
 
         <Modal
@@ -564,11 +584,11 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
           transparent
           visible={Platform.OS !== "ios" && renameTarget !== null}
         >
-          <View style={styles.overlay}>
-            <View style={styles.dialog}>
+          <DialogSurface>
               <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
               <TextInput
                 autoFocus
+                accessibilityLabel={t("chat.renameTitle")}
                 onChangeText={setRenameValue}
                 onSubmitEditing={() => void submitRename()}
                 placeholder={t("sessions.unnamed")}
@@ -595,8 +615,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
                   />
                 </View>
               </View>
-            </View>
-          </View>
+          </DialogSurface>
         </Modal>
       </View>
     </SafeAreaView>
@@ -604,19 +623,43 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
 }
 
 const styles = StyleSheet.create({
-  desktopSelector: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm },
-  desktopIdentity: { flex: 1, color: colors.ink, fontSize: 13, fontWeight: "600" },
+  deviceBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: layout.gutter,
+    paddingVertical: spacing.sm,
+  },
+  desktopSelector: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: layout.touchTarget,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    borderRadius: radius.lg,
+  },
+  desktopIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.lg,
+    backgroundColor: colors.accentSoft,
+  },
+  desktopIdentity: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15, fontWeight: "600" },
   safe: { flex: 1, backgroundColor: colors.surface },
-  page: { flex: 1, backgroundColor: colors.surface },
+  page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: colors.surface },
   topbar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: layout.gutter,
     paddingTop: spacing.xs,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.md,
   },
   tabs: {
+    flex: 1,
     flexDirection: "row",
     gap: spacing.xs,
     padding: spacing.xs,
@@ -624,16 +667,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSubtle,
   },
   tab: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     paddingHorizontal: spacing.sm,
-    minHeight: 40,
+    minHeight: layout.touchTarget,
+    paddingVertical: spacing.sm,
     borderRadius: radius.sm,
   },
   tabActive: { backgroundColor: colors.surface },
-  tabText: { color: colors.inkMuted, fontSize: 13, fontWeight: "600" },
-  tabTextActive: { color: colors.ink, fontWeight: "700" },
+  tabText: { flexShrink: 1, textAlign: "center", color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
+  tabTextActive: { color: colors.accent, fontWeight: "700" },
   topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   settingsButton: {
     width: 44,
@@ -667,6 +714,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   emptyHint: {
+    marginBottom: spacing.md,
     alignSelf: "stretch",
     textAlign: "center",
     color: colors.inkMuted,
@@ -695,23 +743,8 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   fabPressed: { opacity: 0.8 },
-  overlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: colors.overlay,
-  },
-  dialog: {
-    width: "100%",
-    maxWidth: 420,
-    gap: spacing.md,
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
   dialogHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  dialogTitle: { color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  dialogTitle: { flexShrink: 1, color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   modeOptions: { flexDirection: "row", gap: spacing.sm },
   modeOption: {
     flex: 1,
@@ -719,16 +752,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: spacing.sm,
-    padding: spacing.md,
+    minHeight: 48,
+    padding: spacing.sm,
     borderWidth: 1,
     borderColor: colors.line,
     borderRadius: radius.md,
   },
   modeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  modeOptionText: { color: colors.ink, fontSize: 13, fontWeight: "700" },
+  modeOptionText: { flexShrink: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
   workspaceOptions: { maxHeight: 180 },
   workspaceOptionsContent: { gap: spacing.xs },
   workspaceOption: {
+    minHeight: layout.touchTarget,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
@@ -748,6 +783,7 @@ const styles = StyleSheet.create({
   },
   updateRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.md,
@@ -770,6 +806,7 @@ const styles = StyleSheet.create({
   tierTriggerText: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
   tierTriggerTextDisabled: { color: colors.inkMuted },
   nameInput: {
+    minHeight: 48,
     borderWidth: 1,
     borderColor: colors.line,
     borderRadius: radius.md,

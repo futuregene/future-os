@@ -1,6 +1,6 @@
 import { ArrowLeft, Pencil } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
 export function ChatTopBar({
   title,
@@ -23,7 +23,7 @@ export function ChatTopBar({
         accessibilityLabel={backLabel}
         accessibilityRole="button"
         onPress={onBack}
-        style={styles.iconButton}
+        style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
       >
         <ArrowLeft color={colors.ink} size={22} />
       </Pressable>
@@ -37,7 +37,7 @@ export function ChatTopBar({
           accessibilityLabel={renameLabel}
           accessibilityRole="button"
           onPress={onRename}
-          style={styles.iconButton}
+          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
         >
           <Pencil color={colors.ink} size={18} />
         </Pressable>
@@ -49,7 +49,7 @@ export function ChatTopBar({
 
 const styles = StyleSheet.create({
   topbar: {
-    minHeight: 52,
+    minHeight: 60,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: spacing.md,
@@ -58,12 +58,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   iconButton: {
-    width: 36,
-    height: 36,
+    width: layout.touchTarget,
+    height: layout.touchTarget,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
   },
-  titleWrap: { flex: 1, alignItems: "center" },
+  pressed: { backgroundColor: colors.surfaceSubtle },
+  titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
   title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
 });

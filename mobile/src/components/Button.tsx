@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 
 interface ButtonProps {
   label: string;
@@ -26,6 +26,7 @@ export function Button({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: inactive, busy: loading }}
       disabled={inactive}
       onPress={onPress}
       style={({ pressed }) => [
@@ -51,6 +52,7 @@ export function Button({
 const styles = StyleSheet.create({
   base: {
     minHeight: 48,
+    paddingVertical: spacing.sm,
     paddingHorizontal: spacing.lg,
     borderRadius: radius.md,
     alignItems: "center",
@@ -58,7 +60,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   compact: {
-    minHeight: 38,
+    minHeight: layout.touchTarget,
     paddingHorizontal: spacing.md,
   },
   primary: {
@@ -78,11 +80,15 @@ const styles = StyleSheet.create({
     borderColor: "transparent",
   },
   content: {
+    maxWidth: "100%",
+    justifyContent: "center",
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
   },
   label: {
+    flexShrink: 1,
+    textAlign: "center",
     fontSize: 15,
     fontWeight: "600",
   },

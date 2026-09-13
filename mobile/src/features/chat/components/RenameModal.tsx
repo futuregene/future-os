@@ -1,6 +1,7 @@
 import { Modal, Platform, StyleSheet, Text, TextInput, View } from "react-native";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
+import { DialogSurface } from "../../../components/DialogSurface";
 import { colors, radius, spacing } from "../../../theme/tokens";
 
 export function RenameModal({
@@ -25,11 +26,11 @@ export function RenameModal({
       transparent
       visible={Platform.OS !== "ios" && renameOpen}
     >
-      <View style={styles.overlay}>
-        <View style={styles.dialog}>
+      <DialogSurface>
           <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
           <TextInput
             autoFocus
+            accessibilityLabel={t("chat.renameTitle")}
             onChangeText={setRenameValue}
             onSubmitEditing={() => void submitRename()}
             placeholder={t("sessions.unnamed")}
@@ -51,28 +52,12 @@ export function RenameModal({
               />
             </View>
           </View>
-        </View>
-      </View>
+      </DialogSurface>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: colors.overlay,
-  },
-  dialog: {
-    width: "100%",
-    maxWidth: 420,
-    padding: spacing.xl,
-    gap: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
   dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   nameInput: {
     minHeight: 48,

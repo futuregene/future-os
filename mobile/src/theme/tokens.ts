@@ -1,12 +1,12 @@
 export const colors = {
-  canvas: "#f6f7f9",
+  canvas: "#f5f7fb",
   surface: "#ffffff",
   surfaceSubtle: "#f1f4f8",
   line: "#d9dee7",
   lineSoft: "#e8edf4",
   ink: "#172033",
   inkSoft: "#5d687a",
-  inkMuted: "#8a94a6",
+  inkMuted: "#707c90",
   inkStrong: "#0f172a",
   accent: "#2563eb",
   accentSoft: "#e8f0ff",
@@ -41,12 +41,21 @@ export const spacing = {
   xxl: 32,
 } as const;
 
-// Corner radii mirror the desktop Tailwind scale (rounded-sm/md/lg = 4/6/8px) so
-// cards, buttons and bubbles read the same on phone and desktop. `pill` stays a
-// full round for capsule chips/dots.
+// Softer mobile surfaces: small chips, controls, cards, and modal sheets.
+// `pill` stays fully round for capsule chips and status dots.
 export const radius = {
-  sm: 4,
-  md: 6,
-  lg: 8,
+  sm: 6,
+  md: 12,
+  lg: 16,
+  xl: 24,
   pill: 999,
+} as const;
+
+// Keep screen gutters and minimum touch targets consistent across phone sizes.
+export const layout = {
+  gutter: 16,
+  touchTarget: 44,
+  contentMaxWidth: 760,
+  formMaxWidth: 560,
+  dialogMaxWidth: 420,
 } as const;

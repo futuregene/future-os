@@ -1,12 +1,11 @@
-import { Check, Monitor, Pencil, Trash2 } from "lucide-react-native";
-import { useState } from "react";
+import { ArrowLeft, Check, Monitor, Pencil, Plus, Trash2 } from "lucide-react-native";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Alert,
+  BackHandler,
   Keyboard,
-  KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -16,9 +15,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
+import { DialogSurface } from "../components/DialogSurface";
 import { useRemoteControls } from "../remote/RemoteContext";
 import type { PairedDesktop } from "../remote/types";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 
 const MAX_NAME_LENGTH = 40;
 const renameDefault = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
@@ -30,6 +30,14 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
   const [failed, setFailed] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<PairedDesktop | null>(null);
   const [renameValue, setRenameValue] = useState("");
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!busy) onBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [busy, onBack]);
 
   const remove = (desktop: PairedDesktop) => {
     Alert.alert(
@@ -79,11 +87,22 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
   };
 
   return (
-    <SafeAreaView edges={["top", "bottom"]} style={styles.safe}>
+    <SafeAreaView style={styles.safe}>
       <View style={styles.column}>
+        <View style={styles.topbar}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("common.back")}
+            disabled={busy}
+            onPress={onBack}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+          >
+            <ArrowLeft color={colors.ink} size={22} />
+          </Pressable>
+          <Text accessibilityRole="header" style={styles.title}>{t("desktops.title")}</Text>
+        </View>
         <ScrollView contentContainerStyle={styles.scroll}>
           <View style={styles.header}>
-            <Text style={styles.title}>{t("desktops.title")}</Text>
             <Text style={styles.description}>{t("desktops.description")}</Text>
           </View>
           {remote.desktops.map((desktop) => {
@@ -95,9 +114,11 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
                   accessibilityState={{ selected, disabled: busy }}
                   disabled={busy}
                   onPress={() => void select(desktop.desktopId)}
-                  style={styles.select}
+                  style={({ pressed }) => [styles.select, pressed && styles.pressed]}
                 >
-                  <Monitor color={selected ? colors.accent : colors.inkMuted} size={20} />
+                  <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
+                    <Monitor color={selected ? colors.accent : colors.inkSoft} size={22} />
+                  </View>
                   <View style={styles.identity}>
                     <Text
                       numberOfLines={1}
@@ -115,7 +136,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
                   accessibilityLabel={t("desktops.rename")}
                   accessibilityRole="button"
                   disabled={busy}
-                  hitSlop={8}
+                  style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
                   onPress={() => {
                     setRenameTarget(desktop);
                     setRenameValue(desktop.name ?? "");
@@ -127,7 +148,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
                   accessibilityLabel={t("sessions.unpair")}
                   accessibilityRole="button"
                   disabled={busy}
-                  hitSlop={8}
+                  style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
                   onPress={() => remove(desktop)}
                 >
                   <Trash2 color={colors.danger} size={18} />
@@ -138,19 +159,13 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
           {remote.desktops.length === 0 && (
             <Text style={styles.empty}>{t("desktops.empty")}</Text>
           )}
-        </ScrollView>
         <View style={styles.footer}>
           {failed && (
             <Text accessibilityRole="alert" style={styles.error}>{t(failed)}</Text>
           )}
-          <Button disabled={busy} label={t("desktops.add")} onPress={onAdd} />
-          <Button
-            disabled={busy}
-            label={t("common.close")}
-            onPress={onBack}
-            variant="secondary"
-          />
+          <Button disabled={busy} icon={<Plus color={colors.surface} size={20} />} label={t("desktops.add")} onPress={onAdd} />
         </View>
+        </ScrollView>
       </View>
 
       <Modal
@@ -159,13 +174,10 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
         transparent
         visible={renameTarget !== null}
       >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.overlay}
-        >
-          <View style={styles.dialog}>
+        <DialogSurface>
             <Text style={styles.dialogTitle}>{t("desktops.rename")}</Text>
             <TextInput
+              accessibilityLabel={t("desktops.rename")}
               autoCapitalize="none"
               autoCorrect={false}
               autoFocus
@@ -195,8 +207,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
                 <Button compact label={t("chat.save")} onPress={() => void submitRename()} />
               </View>
             </View>
-          </View>
-        </KeyboardAvoidingView>
+        </DialogSurface>
       </Modal>
     </SafeAreaView>
   );
@@ -209,52 +220,42 @@ const styles = StyleSheet.create({
   column: {
     flex: 1,
     width: "100%",
-    maxWidth: 560,
+    maxWidth: layout.formMaxWidth,
     alignSelf: "center",
-    paddingHorizontal: spacing.xl,
-    paddingTop: spacing.xl,
+    paddingHorizontal: layout.gutter,
+    paddingTop: spacing.sm,
     paddingBottom: spacing.lg,
   },
-  scroll: { paddingBottom: spacing.xl, gap: spacing.md },
-  header: { gap: spacing.sm, paddingBottom: spacing.sm },
-  title: { color: colors.inkStrong, fontSize: 26, fontWeight: "700", textAlign: "center" },
-  description: { color: colors.inkSoft, fontSize: 15, lineHeight: 22, textAlign: "center" },
+  topbar: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 56, marginBottom: spacing.md },
+  scroll: { flexGrow: 1, paddingBottom: spacing.sm, gap: spacing.md },
+  header: { gap: spacing.sm, paddingBottom: spacing.md },
+  title: { flex: 1, color: colors.inkStrong, fontSize: 22, fontWeight: "700" },
+  description: { color: colors.inkSoft, fontSize: 15, lineHeight: 23 },
   card: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    minHeight: 60,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    minHeight: 80,
     borderWidth: 1,
     borderColor: colors.line,
     borderRadius: radius.lg,
     backgroundColor: colors.surface,
   },
   cardSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  select: { flex: 1, flexDirection: "row", alignItems: "center", gap: spacing.md },
-  identity: { flex: 1, gap: spacing.xs },
+  select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
+  desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
+  desktopIconSelected: { backgroundColor: colors.surface },
+  iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
+  pressed: { backgroundColor: colors.surfaceSubtle },
+  identity: { flex: 1, minWidth: 0, gap: spacing.xs },
   name: { color: colors.inkStrong, fontSize: 16, fontWeight: "600" },
   nameFallback: { color: colors.ink, fontWeight: "500" },
   id: { color: colors.inkMuted, fontSize: 12 },
   empty: { color: colors.inkSoft, fontSize: 15, textAlign: "center", paddingVertical: spacing.xl },
-  footer: { gap: spacing.md },
+  footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.md },
   error: { color: colors.danger, fontSize: 14, textAlign: "center" },
-  overlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: colors.overlay,
-  },
-  dialog: {
-    width: "100%",
-    maxWidth: 420,
-    padding: spacing.xl,
-    gap: spacing.lg,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-  },
   dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   input: {
     minHeight: 48,

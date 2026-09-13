@@ -23,12 +23,17 @@ const mockRemote: {
 };
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("lucide-react-native", () => ({
+  ArrowLeft: "ArrowLeft",
+  Plus: "Plus",
   Check: "Check",
   Monitor: "Monitor",
   Pencil: "Pencil",
   Trash2: "Trash2",
 }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: "SafeAreaView",
+  useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
+}));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 let tree: ReactTestRenderer;

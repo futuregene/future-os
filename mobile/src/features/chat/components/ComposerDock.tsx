@@ -8,7 +8,7 @@ import {
   Square,
   X,
 } from "lucide-react-native";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
 import { memo, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
@@ -16,7 +16,7 @@ import { PendingApprovalCard } from "../../../components/TimelineCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, TimelineItem } from "../../../remote/types";
-import { chatTypography, colors, radius, spacing } from "../../../theme/tokens";
+import { chatTypography, colors, layout, radius, spacing } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 
 type Remote = RemoteControls;
@@ -68,6 +68,8 @@ function ComposerDockView({
   setSelector: (value: "model" | "thinking" | null) => void;
 }) {
   const [inputHeight, setInputHeight] = useState(INPUT_MIN_HEIGHT);
+  const { width, fontScale } = useWindowDimensions();
+  const stackedToolbar = width < 380 || fontScale > 1.2;
   return (
     <View style={styles.composerDock}>
       <View pointerEvents="none" style={styles.composerFade}>
@@ -138,7 +140,8 @@ function ComposerDockView({
                   </View>
                   <Pressable
                     accessibilityLabel={t("attachment.remove", { name: attachment.name })}
-                    hitSlop={8}
+                    accessibilityRole="button"
+                    style={styles.removeAttachment}
                     onPress={() =>
                       setAttachments(current => {
                         deleteTemporaryAttachment(current[index]!);
@@ -177,7 +180,45 @@ function ComposerDockView({
             style={[styles.input, { height: message ? inputHeight : INPUT_MIN_HEIGHT }]}
             value={message}
           />
-          <View style={styles.composerToolbar}>
+          <View style={[styles.composerToolbar, stackedToolbar && styles.composerToolbarStacked]}>
+            <View style={[styles.composerSelectors, stackedToolbar && styles.composerSelectorsStacked]}>
+              <Pressable
+                accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming }}
+                disabled={remote.streaming}
+                onPress={() => setSelector("model")}
+                style={({ pressed }) => [
+                  styles.selectorTrigger,
+                  stackedToolbar && styles.selectorTriggerStacked,
+                  pressed && styles.selectorTriggerPressed,
+                  remote.streaming && styles.controlDisabled,
+                ]}
+              >
+                <Text numberOfLines={1} style={styles.selectorText}>
+                  {activeModelLabel}
+                </Text>
+                <ChevronDown color={colors.inkMuted} size={14} />
+              </Pressable>
+              <Pressable
+                accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming }}
+                disabled={remote.streaming}
+                onPress={() => setSelector("thinking")}
+                style={({ pressed }) => [
+                  styles.selectorTrigger,
+                  stackedToolbar && styles.selectorTriggerStacked,
+                  pressed && styles.selectorTriggerPressed,
+                  remote.streaming && styles.controlDisabled,
+                ]}
+              >
+                <Text numberOfLines={1} style={styles.selectorText}>
+                  {t(`thinking.${remote.thinkingLevel}`)}
+                </Text>
+                <ChevronDown color={colors.inkMuted} size={14} />
+              </Pressable>
+            </View>
             <Pressable
               accessibilityLabel={t("attachment.add")}
               accessibilityRole="button"
@@ -192,40 +233,6 @@ function ComposerDockView({
             >
               <Paperclip color={colors.inkSoft} size={17} />
             </Pressable>
-            <View style={styles.composerSelectors}>
-              <Pressable
-                accessibilityLabel={t("chat.model")}
-                accessibilityRole="button"
-                disabled={remote.streaming}
-                onPress={() => setSelector("model")}
-                style={({ pressed }) => [
-                  styles.selectorTrigger,
-                  pressed && styles.selectorTriggerPressed,
-                  remote.streaming && styles.controlDisabled,
-                ]}
-              >
-                <Text numberOfLines={1} style={styles.selectorText}>
-                  {activeModelLabel}
-                </Text>
-                <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>
-              <Pressable
-                accessibilityLabel={t("chat.thinkingLevel")}
-                accessibilityRole="button"
-                disabled={remote.streaming}
-                onPress={() => setSelector("thinking")}
-                style={({ pressed }) => [
-                  styles.selectorTrigger,
-                  pressed && styles.selectorTriggerPressed,
-                  remote.streaming && styles.controlDisabled,
-                ]}
-              >
-                <Text numberOfLines={1} style={styles.selectorText}>
-                  {t(`thinking.${remote.thinkingLevel}`)}
-                </Text>
-                <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>
-            </View>
             {remote.streaming ? (
               <Pressable
                 accessibilityLabel={t("chat.stop")}
@@ -289,7 +296,8 @@ const styles = StyleSheet.create({
   },
   backToLatest: {
     position: "absolute",
-    top: -48,
+    top: -56,
+    minHeight: layout.touchTarget,
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
@@ -323,7 +331,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   composerArea: {
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: layout.gutter,
     paddingTop: spacing.xs,
     paddingBottom: spacing.sm,
     backgroundColor: "transparent",
@@ -334,14 +342,14 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
     backgroundColor: colors.surface,
     shadowColor: colors.inkStrong,
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
   },
   pendingAttachments: { gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   pendingAttachment: {
-    maxWidth: 230,
+    maxWidth: 260,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
@@ -352,7 +360,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSubtle,
   },
-  pendingAttachmentCopy: { maxWidth: 155 },
+  pendingAttachmentCopy: { maxWidth: 155, flexShrink: 1 },
+  removeAttachment: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
   pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
   attachmentWarning: {
@@ -375,19 +384,28 @@ const styles = StyleSheet.create({
     minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
+    justifyContent: "space-between",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
     paddingBottom: spacing.xs,
   },
   composerSelectors: {
     minWidth: 0,
-    flexGrow: 0,
-    flexShrink: 1,
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
   },
+  composerToolbarStacked: { flexWrap: "wrap" },
+  composerSelectorsStacked: {
+    flexBasis: "100%",
+    flexGrow: 0,
+    justifyContent: "space-between",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.lineSoft,
+    paddingBottom: spacing.xs,
+  },
+  selectorTriggerStacked: { flex: 1, maxWidth: "100%" },
   selectorTrigger: {
     minWidth: 0,
     maxWidth: 154,
@@ -407,7 +425,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.md,
-    marginRight: "auto",
+    flexShrink: 0,
   },
   controlDisabled: { opacity: 0.5 },
   sendButton: {
@@ -415,7 +433,7 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     backgroundColor: colors.accent,
   },
   stopButton: { backgroundColor: colors.danger },
