@@ -48,7 +48,9 @@ function pdfjsWasm(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), pdfjsWasm()],
+  // Let Vite minify CSS once with esbuild below. Tailwind's Lightning CSS
+  // optimizer currently warns on the valid CSS Custom Highlight ::highlight().
+  plugins: [react(), tailwindcss({ optimize: false }), pdfjsWasm()],
   clearScreen: false,
   resolve: {
     alias: {
@@ -62,6 +64,14 @@ export default defineConfig({
     setupFiles: ["./src/test/i18nTestSetup.ts"],
   },
   build: {
+    cssMinify: "esbuild",
+    rolldownOptions: {
+      checks: {
+        // Plugin timings are profiling advice, not actionable install warnings.
+        // Keep all correctness checks and other build warnings enabled.
+        pluginTimings: false,
+      },
+    },
     chunkSizeWarningLimit: 2000, // suppress "chunk larger than 500 kB" warnings
   },
   server: {
