@@ -138,6 +138,22 @@ const CONNECTION_PRAGMAS: &str = "PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
 PRAGMA journal_mode = WAL;";
 
+/// Drop every pooled connection and forget the current database path.
+///
+/// Windows refuses to unlink a file that is still open, and the pool keeps
+/// connections to the previous test's database alive until something calls
+/// `connect()` for a different HOME. A test guard therefore has to release them
+/// *before* deleting its temporary home: otherwise `remove_dir_all` fails
+/// silently and every run leaks its home directory, eventually filling the
+/// disk (which surfaces as spurious SQLite `DatabaseBusy`/`StorageFull`).
+#[cfg(test)]
+pub(crate) fn close_pool() {
+    if let Ok(mut pool) = POOL.lock() {
+        pool.1.clear();
+        pool.0 = std::path::PathBuf::new();
+    }
+}
+
 pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     let path = db_path()?;
     if let Ok(mut pool) = POOL.lock() {

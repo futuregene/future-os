@@ -797,6 +797,59 @@ pub(crate) async fn await_publish(
     }
 }
 
+/// Wait for a tapped publish on `subject` that also satisfies `matches`; panic
+/// after `timeout`.
+///
+/// Use this when one subject carries several kinds of message: the presence
+/// heartbeat keeps publishing `online: true` on the same subject that `stop()`
+/// publishes `online: false` to, so matching on the subject alone can return the
+/// heartbeat and race the assertion.
+pub(crate) async fn await_publish_matching(
+    rx: &mut tokio::sync::broadcast::Receiver<Published>,
+    subject: &str,
+    timeout: std::time::Duration,
+    mut matches: impl FnMut(&Published) -> bool,
+) -> Published {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let published = tokio::time::timeout(remaining, rx.recv())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .filter(|published| published.subject == subject && matches(published));
+        match published {
+            Some(published) => return published,
+            None if remaining.is_zero() => {
+                panic!("timed out waiting for a matching publish on {subject}")
+            }
+            None => continue,
+        }
+    }
+}
+
+/// Poll `done` until it returns true, panicking with `message` after `timeout`.
+///
+/// Prefer this over a fixed `sleep` + assert: an aborted read/write surfaces
+/// much later on Windows than Linux's immediate refusal, so a fixed window
+/// races the scheduler and fails intermittently on slower hosts.
+pub(crate) async fn wait_until(
+    message: &str,
+    timeout: std::time::Duration,
+    mut done: impl FnMut() -> bool,
+) {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if done() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("{message}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 /// Assert that no publish on `subject` is tapped within `window`.
 pub(crate) async fn assert_no_publish(
     rx: &mut tokio::sync::broadcast::Receiver<Published>,

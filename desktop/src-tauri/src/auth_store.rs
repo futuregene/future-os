@@ -188,6 +188,10 @@ pub(crate) mod test_support {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
             }
+            // Release pooled connections first: Windows cannot unlink a file
+            // that is still open, so deleting while the pool holds this home's
+            // database leaves the directory behind on every run.
+            crate::store::close_pool();
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
@@ -196,6 +200,25 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             self.restore();
         }
+    }
+
+    #[test]
+    fn home_guard_removes_its_directory_even_with_a_live_pooled_connection() {
+        // Regression: the guard used to delete its temp home while the
+        // connection pool still held the database open. Windows cannot unlink
+        // an open file, so the delete failed silently and every run leaked its
+        // home directory (~19k dirs / 33 GB accumulated before this was found),
+        // which eventually filled the disk and surfaced as spurious SQLite
+        // `DatabaseBusy`/`StorageFull` failures in unrelated tests.
+        let dir = {
+            let guard = HomeGuard::new("leak-regression");
+            let dir = guard.dir.clone();
+            // Leave a pooled connection to this home's database open across the
+            // guard's drop: that handle is what used to make the delete fail.
+            crate::store::initialize_app_store().expect("store");
+            dir
+        };
+        assert!(!dir.exists(), "guard must remove {} on drop", dir.display());
     }
 
     #[test]

@@ -424,7 +424,12 @@ mod tests {
             .unwrap();
         assert!(out.status.success());
         std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
-        let file = std::fs::File::open(dir.join("a.txt")).unwrap();
+        // Opened for writing: `set_modified` needs FILE_WRITE_ATTRIBUTES, which
+        // a read-only handle does not carry on Windows (ACCESS_DENIED).
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("a.txt"))
+            .unwrap();
         file.set_modified(
             std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
         )
@@ -546,6 +551,14 @@ mod tests {
             stderr: Vec::new(),
         };
         assert!(check_status(&["ok"], &ok).is_ok());
+        // `sh` does not exist on Windows, so build the failing status through
+        // the platform's own shell (the test only needs a non-zero exit).
+        #[cfg(windows)]
+        let fail = std::process::Command::new("cmd")
+            .args(["/C", "exit 3"])
+            .output()
+            .unwrap();
+        #[cfg(not(windows))]
         let fail = std::process::Command::new("sh")
             .arg("-c")
             .arg("exit 3")

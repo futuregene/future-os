@@ -1256,7 +1256,7 @@ mod flow_tests {
     use super::*;
     use crate::remote::test_support::{
         assert_no_publish, await_publish, ensure_mock_agent, mock_agent_lock, nats_connect_once,
-        unique, FakeNats, HomeGuard,
+        unique, wait_until, FakeNats, HomeGuard,
     };
     use serde_json::json;
     use std::sync::{atomic::Ordering, Arc};
@@ -2102,10 +2102,12 @@ mod flow_tests {
         // Losing this critical subscription ends the generation; the runtime
         // supervisor owns the bounded rebuild policy.
         nats.kill();
-        tokio::time::timeout(Duration::from_secs(5), loop_handle)
-            .await
-            .expect("supervisor must observe the dead task")
-            .expect("transfer task");
+        wait_until(
+            "supervisor must observe the dead task",
+            Duration::from_secs(5),
+            || loop_handle.is_finished(),
+        )
+        .await;
         cancel_upload(&upload_id).unwrap();
         std::fs::remove_file(&download_path).ok();
     }
@@ -2252,10 +2254,12 @@ mod flow_tests {
         let pair = unique("pair");
         let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let handle = spawn_transfer_loop(client, pair.clone(), active.clone());
-        tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("failed subscribe must return")
-            .expect("transfer task");
+        wait_until(
+            "failed subscribe must return",
+            Duration::from_secs(5),
+            || handle.is_finished(),
+        )
+        .await;
 
         // A healthy re-connection reports recovery (the `recovered()` Some arm).
         let nats2 = FakeNats::start().await;
