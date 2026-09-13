@@ -286,6 +286,67 @@ test("a child in one workspace does not enlarge other workspace session gutters"
   act(() => button("sessions.collapseChildren").props.onPress());
 });
 
+test.each(["workspace", "chat"] as const)("independent %s sessions keep their gutter when a neighboring tree changes", tab => {
+  const originalSessions = mockRemote.sessions;
+  const originalWorkspaces = mockRemote.workspaces;
+  const update = () => act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+  const gutterWidth = (title: string) => StyleSheet.flatten(
+    sessionBody(title).parent!.findByProps({ testID: "session-expander-space" }).props.style,
+  ).width;
+  const rowIndent = (title: string) => StyleSheet.flatten(sessionBody(title).parent!.props.style).marginLeft;
+  try {
+    mockRemote.workspaces = [{ id: "gutter-workspace", name: "Gutter project", path: "/tmp/gutter" }];
+    const common = { mode: tab, workspaceId: "gutter-workspace", streaming: false };
+    const roots = [
+      { ...common, sessionId: "gutter-independent", threadId: "gutter-thread-independent", title: "Independent root" },
+      { ...common, sessionId: "gutter-parent", threadId: "gutter-thread-parent", title: "Neighboring parent" },
+    ];
+    mockRemote.sessions = roots;
+    update();
+    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowIndent("Independent root")).toBe(0);
+
+    mockRemote.sessions = [...roots, {
+      ...common, sessionId: "gutter-child", threadId: "gutter-thread-child", title: "Nested child", parentSessionId: "gutter-parent",
+    }];
+    update();
+    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowIndent("Independent root")).toBe(0);
+    expect(StyleSheet.flatten(button("sessions.expandChildren").props.style)).toMatchObject({ width: 44, minHeight: 44 });
+
+    act(() => button("sessions.expandChildren").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowIndent("Independent root")).toBe(0);
+    expect(gutterWidth("Nested child")).toBe(44);
+    expect(rowIndent("Nested child")).toBe(12);
+    act(() => button("sessions.collapseChildren").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(12);
+
+    act(() => button("sessions.search").props.onPress());
+    act(() => tree.root.findByType(TextInput).props.onChangeText("Independent"));
+    expect(gutterWidth("Independent root")).toBe(12);
+    act(() => button("chat.cancel").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(12);
+
+    act(() => button("sessions.select").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(0);
+    act(() => button("sessions.expandChildren").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(0);
+    expect(gutterWidth("Nested child")).toBe(44);
+    act(() => button("sessions.collapseChildren").props.onPress());
+    act(() => button("chat.cancel").props.onPress());
+    expect(gutterWidth("Independent root")).toBe(12);
+
+    mockRemote.sessions = roots;
+    update();
+    expect(gutterWidth("Independent root")).toBe(12);
+    expect(gutterWidth("Neighboring parent")).toBe(12);
+  } finally {
+    mockRemote.sessions = originalSessions;
+    mockRemote.workspaces = originalWorkspaces;
+  }
+});
+
 test("workspace menu offers the workspace actions and disables them offline", () => {
   renderWorkspaceTab();
   act(() => button("sessions.workspaceActions:Project").props.onPress());
