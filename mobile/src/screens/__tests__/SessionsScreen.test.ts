@@ -29,6 +29,7 @@ jest.mock("react-native", () => {
 });
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../SessionList", () => ({ SessionList: () => null }));
+jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(

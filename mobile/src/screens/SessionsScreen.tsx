@@ -39,6 +39,7 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { VERSION } from "../version.generated";
+import { LanguageSettings } from "../i18n/LanguageSettings";
 
 type Tab = "workspace" | "chat";
 
@@ -474,6 +475,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
                   </Pressable>
                 ))}
               </View>
+              <LanguageSettings />
               <View style={styles.updateRow}>
                 <Text style={styles.updateVersion}>
                   {t("common.version", { version: VERSION })}

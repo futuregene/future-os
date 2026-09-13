@@ -11,6 +11,7 @@ import { shareLandedRevision, subscribeShareLanded } from "./src/share/shareInbo
 import { ShareIntakeMenu } from "./src/share/ShareIntakeMenu";
 import { useUpdateReminder } from "./src/update/useUpdateReminder";
 import { colors } from "./src/theme/tokens";
+import { useSystemLanguage } from "./src/i18n/useSystemLanguage";
 
 // Enter transition for top-level screen swaps (there is no navigation library
 // here — App switches screens by conditional render). The outgoing screen
@@ -94,6 +95,14 @@ function AppContent() {
 }
 
 export default function App() {
+  const languageReady = useSystemLanguage();
+  if (!languageReady) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator color={colors.accent} size="large" />
+      </View>
+    );
+  }
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <RemoteProvider>
