@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Alert, Text, TextInput } from "react-native";
+import { Alert, Modal, Text, TextInput } from "react-native";
 import { Button } from "../../components/Button";
 import type { PairedDesktop } from "../../remote/types";
 import { DesktopsScreen } from "../DesktopsScreen";
@@ -163,7 +163,9 @@ test("reports a failed rename", async () => {
 
 test("confirms removal of only the chosen desktop", async () => {
   act(() => pressables("sessions.unpair")[1]!.props.onPress());
-  const buttons = jest.mocked(Alert.alert).mock.calls[0]![2]!;
-  await act(async () => { buttons.find((button) => button.style === "destructive")!.onPress!(); });
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
+  expect(mockRemote.removeDesktop).not.toHaveBeenCalled();
+  await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.removeDesktop).toHaveBeenCalledWith("desktop-2");
 });

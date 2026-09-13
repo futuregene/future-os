@@ -724,7 +724,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     expect(open).toHaveBeenCalledTimes(1);
   });
 
-  test("foreground validates a healthy socket without replacing it", async () => {
+  test.each(["foreground", "network-changed", "network-restored"] as const)("%s validates a healthy socket without replacing it", async reason => {
     const { client } = recoveryClient();
     const flush = jest.fn().mockResolvedValue(undefined);
     const close = jest.fn().mockResolvedValue(undefined);
@@ -732,17 +732,18 @@ describe("RemoteClient OS lifecycle recovery", () => {
       connection: { flush(): Promise<void>; close(): Promise<void>; isClosed(): boolean } | null;
     };
     testClient.connection = { flush, close, isClosed: () => false };
+    (client as unknown as { state: string }).state = "ready";
     const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
 
     client.setAppActive(true);
-    await client.recoverNow("foreground");
+    await client.recoverNow(reason);
 
     expect(flush).toHaveBeenCalledTimes(1);
     expect(close).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
   });
 
-  test("network path changes retain the old generation until replacement is ready", async () => {
+  test("missing encrypted presence replaces the secure generation even if the broker is healthy", async () => {
     const { client } = recoveryClient();
     const close = jest.fn().mockResolvedValue(undefined);
     const testClient = client as unknown as {
@@ -755,7 +756,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     };
     const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
 
-    await client.recoverNow("network-changed");
+    await client.recoverNow("presence-stale");
 
     expect(close).not.toHaveBeenCalled();
     expect(testClient.connection).not.toBeNull();

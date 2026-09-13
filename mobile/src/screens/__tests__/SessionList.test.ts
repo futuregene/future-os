@@ -1,10 +1,12 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Alert, BackHandler, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import { Modal, BackHandler, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import { Button } from "../../components/Button";
+import { DialogSurface } from "../../components/DialogSurface";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 
 const mockRemote: {
   sessions: RemoteSession[];
@@ -61,7 +63,7 @@ jest.mock("lucide-react-native", () =>
     ].map(name => [name, name]),
   ),
 );
-jest.mock("../../remote/RemoteContext", () => ({ useRemote: () => mockRemote }));
+jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: { title?: string; count?: number }) =>
@@ -88,7 +90,6 @@ beforeEach(async () => {
   mockRemote.desktopOnline = true;
   mockRemote.deleteSession.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
-  jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await act(async () => {
     tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
     // Let the persisted-folds read land inside act() so it cannot update the
@@ -184,10 +185,9 @@ test("cancelling deletion does not send any requests", () => {
   act(() => button("sessions.select").props.onPress());
   act(() => button("sessions.selectVisible").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
-  const cancel = jest
-    .mocked(Alert.alert)
-    .mock.calls[0]![2]!.find(action => action.style === "cancel")!;
-  act(() => cancel.onPress?.());
+  const modal = activeDialog();
+  act(() => modal.findAllByType(Button).find(node => node.props.variant === "secondary")!.props.onPress());
+  act(() => modal.props.onDismiss());
   expect(mockRemote.deleteSession).not.toHaveBeenCalled();
 });
 
@@ -195,13 +195,11 @@ test("a successful batch exits selection and duplicate confirmation cannot delet
   act(() => button("sessions.select").props.onPress());
   act(() => button("First").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
-  const confirm = jest
-    .mocked(Alert.alert)
-    .mock.calls[0]![2]!.find(action => action.style === "destructive")!;
-  await act(async () => {
-    confirm.onPress?.();
-    confirm.onPress?.();
-  });
+  const modal = activeDialog();
+  const confirm = modal.findAllByType(Button).find(node => node.props.variant === "danger")!;
+  act(() => { confirm.props.onPress(); confirm.props.onPress(); });
+  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  await act(async () => { modal.props.onDismiss(); modal.props.onDismiss(); });
   expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
   expect(button("sessions.select")).toBeDefined();
 });
@@ -215,24 +213,15 @@ test("batch deletion confirms exact visible selection, preserves hidden children
   act(() => button("sessions.selectVisible").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
   expect(mockRemote.deleteSession).not.toHaveBeenCalled();
-  expect(Alert.alert).toHaveBeenCalledWith(
-    "sessions.deleteSelected",
-    "sessions.deleteSelectedConfirm:2",
-    expect.any(Array),
-  );
-  const confirm = jest
-    .mocked(Alert.alert)
-    .mock.calls[0]![2]!.find(action => action.style === "destructive")!;
-  await act(async () => {
-    confirm.onPress?.();
-  });
+  expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteSelected", "sessions.deleteSelectedConfirm:2"]));
+  await act(async () => { confirmAlert(); });
   expect(mockRemote.deleteSession.mock.calls).toEqual([
     ["s1", "t1"],
     ["s2", "t2"],
   ]);
   expect(button("First").props.accessibilityState.checked).toBe(false);
   expect(button("Second").props.accessibilityState.checked).toBe(true);
-  expect(Alert.alert).toHaveBeenLastCalledWith("common.error", "sessions.deletePartialFailure:1");
+  expect(dialogText()).toEqual(expect.arrayContaining(["common.error", "sessions.deletePartialFailure:1"]));
 });
 
 // ── workspace rows ──────────────────────────────────────────────────────────
@@ -269,10 +258,33 @@ function pressWorkspaceMenu(index: number): void {
   act(() => modal.props.onDismiss());
 }
 
-function confirmAlert(): void {
-  const buttons = jest.mocked(Alert.alert).mock.calls.at(-1)![2]!;
-  act(() => buttons.find(action => action.style === "destructive")!.onPress?.());
+function activeDialog() {
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  expect(modal.findAllByType(DialogSurface)).toHaveLength(1);
+  return modal;
 }
+function dialogText() {
+  return activeDialog().findAllByType(Text).map(node => node.props.children);
+}
+function confirmAlert(): void {
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible);
+  if (!modal) return;
+  act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
+  act(() => modal.props.onDismiss());
+}
+
+test("a child in one workspace does not enlarge other workspace session gutters", () => {
+  renderWorkspaceTab();
+  mockRemote.workspaces = [...mockRemote.workspaces, { id: "w2", name: "Other", path: "/tmp/other" }];
+  mockRemote.sessions = [...mockRemote.sessions, { sessionId: "w2a", threadId: "t2a", title: "Independent", mode: "workspace", workspaceId: "w2", streaming: false }];
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  const row = sessionBody("Independent").parent!;
+  const gutter = row.findByProps({ testID: "session-expander-space" });
+  expect(StyleSheet.flatten(gutter.props.style).width).toBe(12);
+  act(() => button("sessions.expandChildren").props.onPress());
+  expect(StyleSheet.flatten(sessionBody("Independent").parent!.findByProps({ testID: "session-expander-space" }).props.style).width).toBe(12);
+  act(() => button("sessions.collapseChildren").props.onPress());
+});
 
 test("workspace menu offers the workspace actions and disables them offline", () => {
   renderWorkspaceTab();
@@ -321,11 +333,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockResolvedValue(undefined);
     pressWorkspaceMenu(2);
-    expect(Alert.alert).toHaveBeenLastCalledWith(
-      "sessions.deleteWorkspace",
-      "sessions.deleteWorkspaceConfirm:Project",
-      expect.any(Array),
-    );
+    expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project"]));
     await act(async () => {
       confirmAlert();
       confirmAlert(); // A second tap while the request is in flight must not re-fire.
@@ -362,7 +370,7 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
     await act(async () => {
       confirmAlert();
     });
-    expect(Alert.alert).toHaveBeenLastCalledWith("common.error", "sessions.deleteWorkspaceFailed");
+    expect(dialogText()).toEqual(expect.arrayContaining(["common.error", "sessions.deleteWorkspaceFailed"]));
   } finally {
     jest.useRealTimers();
   }

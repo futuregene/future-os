@@ -1,7 +1,7 @@
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState, useSyncExternalStore, type PropsWithChildren } from "react";
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
 import { ChatScreen } from "./src/features/chat/ChatScreen";
 import { PairingScreen } from "./src/screens/PairingScreen";
 import { SessionsScreen } from "./src/screens/SessionsScreen";
@@ -71,18 +71,31 @@ function AppContent() {
   if (!remote.credentials) return <PairingScreen onManageDesktops={remote.desktops.length ? showDesktops : undefined} />;
   const inChat = Boolean(remote.selectedSessionId || remote.draft);
   return (
-    <EnterTransition
-      key={`${remote.credentials.pairId}:${inChat ? `chat:${shareRevision}` : "sessions"}`}
-      fromRight={inChat}
-    >
-      {inChat ? <ChatScreen /> : <SessionsScreen onManageDesktops={showDesktops} />}
-    </EnterTransition>
+    <View key={remote.credentials.pairId} style={styles.fill}>
+      {/* Keep the list and its native scroll position in place on pop. A new
+          list + reverse entry animation caused a visible restoration jump. */}
+      <View
+        style={styles.fill}
+        pointerEvents={inChat ? "none" : "auto"}
+        accessibilityElementsHidden={inChat}
+        importantForAccessibility={inChat ? "no-hide-descendants" : "auto"}
+      >
+        <SessionsScreen active={!inChat} onManageDesktops={showDesktops} />
+      </View>
+      {inChat && (
+        <View style={StyleSheet.absoluteFill}>
+          <EnterTransition key={shareRevision} fromRight>
+            <ChatScreen />
+          </EnterTransition>
+        </View>
+      )}
+    </View>
   );
 }
 
 export default function App() {
   return (
-    <SafeAreaProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <RemoteProvider>
         <StatusBar style="dark" />
         <AppContent />

@@ -364,7 +364,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 2,
   },
-  pendingAttachments: { gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  pendingAttachments: { gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   pendingAttachment: {
     maxWidth: 260,
     flexDirection: "row",
@@ -382,7 +382,7 @@ const styles = StyleSheet.create({
   pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
   pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
   attachmentWarning: {
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.lg,
     paddingTop: spacing.xs,
     color: colors.warning,
     fontSize: 11,
@@ -401,13 +401,13 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
   composerToolbar: {
-    minHeight: 46,
+    minHeight: layout.touchTarget + spacing.sm,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: spacing.xs,
     paddingHorizontal: spacing.sm,
-    paddingBottom: spacing.xs,
+    paddingBottom: spacing.sm,
   },
   composerSelectors: {
     minWidth: 0,
@@ -418,9 +418,11 @@ const styles = StyleSheet.create({
   },
   // Keep both selectors visible alongside attachment/send even on a 320pt
   // screen. Labels may ellipsize; controls never move to a third row.
-  composerToolbarCompact: { gap: 2, paddingHorizontal: spacing.xs },
-  composerSelectorsCompact: { gap: 2 },
-  selectorTriggerCompact: { paddingHorizontal: 2, gap: 1 },
+  // Narrow screens may truncate labels, never squeeze away their insets.
+  // Toolbar 8 + trigger 8 matches the text/attachment inset of 16.
+  composerToolbarCompact: { gap: spacing.xs },
+  composerSelectorsCompact: { gap: spacing.xs },
+  selectorTriggerCompact: { gap: spacing.xs },
   modelTrigger: { flex: 1, maxWidth: 154 },
   thinkingTrigger: { flexShrink: 0, maxWidth: "50%" },
   selectorTrigger: {
@@ -430,7 +432,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: 3,
+    gap: spacing.xs,
     paddingHorizontal: spacing.sm,
     borderRadius: radius.sm,
   },

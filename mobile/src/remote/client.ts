@@ -26,7 +26,7 @@ const MAX_SYSTEM_RECOVERIES = 3;
 const FAILURE_LOG_WINDOW_MS = 24 * 60 * 60_000;
 const MAX_FAILURE_LOGS_PER_CATEGORY = 16;
 export type RecoveryReason =
-  "foreground" | "network-restored" | "network-changed" | "request-failure";
+  "foreground" | "network-restored" | "network-changed" | "request-failure" | "presence-stale";
 
 interface HandshakeConfirmation {
   confirmed: boolean;
@@ -258,11 +258,43 @@ export class RemoteClient {
       if (current()) this.scheduleRefresh();
     } catch (error) {
       if (current()) {
+        // A failed replacement does not prove the serving socket failed. Verify
+        // both directions with an encrypted RPC before disabling its UI or
+        // starting another replacement. Never mask identity/auth failures.
+        if (classifyError(error) === "transport" && await this.restoreServingConnection(generation)) return;
+        if (!current()) return;
         this.openPromise = null;
         this.handleFailure(error);
       }
     } finally {
       if (this.attemptController === controller) this.attemptController = null;
+    }
+  }
+
+  private async restoreServingConnection(generation: number): Promise<boolean> {
+    const connection = this.connection;
+    const owner = this.activeGeneration;
+    if (!connection || !owner?.live || this.failedGeneration === owner.id || connection.isClosed()) return false;
+    try {
+      const { data: presence } = await this.requestWithConnection<Presence>(
+        connection, { type: "get_presence" }, "list", FOREGROUND_PROBE_TIMEOUT_MS,
+      );
+      if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable ||
+          generation !== this.generation || connection !== this.connection || !owner.live ||
+          this.failedGeneration === owner.id || !presence.online ||
+          presence.pairId !== this.credentials.pairId || presence.bridgeInstanceId !== this.confirmedBridgeInstanceId) return false;
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.retryAttempt = 0;
+      this.signal({ type: "ready" });
+      this.callbacks.onPresence(presence);
+      this.scheduleRefresh();
+      this.finishFailureEpisode("recovered");
+      this.callbacks.onReconnected();
+      return true;
+    } catch {
+      // The old peer/channel really is gone: retain the bounded retry path.
+      return false;
     }
   }
 
@@ -347,7 +379,10 @@ export class RemoteClient {
     const connection = this.connection;
     const generation = this.generation;
     if (
-      (reason === "foreground" || reason === "request-failure") &&
+      // Missing authenticated presence is not a broker-connectivity problem.
+      // After a desktop restart its traffic keys are gone, while NATS still
+      // happily answers PING. That path must establish a new secure channel.
+      reason !== "presence-stale" &&
       connection &&
       !connection.isClosed()
     ) {
@@ -366,7 +401,7 @@ export class RemoteClient {
           generation === this.generation &&
           connection === this.connection
         ) {
-          return;
+          if (this.state === "ready" || await this.restoreServingConnection(generation)) return;
         }
       } catch {
         // Rebuild below without waiting for NATS's ping budget to expire.
@@ -395,6 +430,7 @@ export class RemoteClient {
     )
       return;
     this.refreshInFlight = true;
+    const generation = this.generation;
     const controller = new AbortController();
     this.attemptController = controller;
     try {
@@ -420,6 +456,8 @@ export class RemoteClient {
         this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
         return;
       }
+      if (classifyError(error) === "transport" && await this.restoreServingConnection(generation)) return;
+      if (this.stopped || controller.signal.aborted) return;
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       this.scheduleRetry();
     } finally {

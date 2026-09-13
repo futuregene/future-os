@@ -58,6 +58,9 @@ function socket() {
       return messages;
     }),
     status: () => status,
+    request: jest.fn(async () => ({ data: new TextEncoder().encode(JSON.stringify({ success: true, data: {
+      pairId: "pair", bridgeInstanceId: "bridge", online: true, lastHeartbeatTs: Date.now() / 1000,
+    } })) })),
     flush: jest.fn(async () => {}),
     isClosed: () => connection.close.mock.calls.length > 0,
     close: jest.fn(async () => {
@@ -136,7 +139,7 @@ describe("RemoteClient connection handoff", () => {
     await client.open();
     const fresh = deferred<RemoteCredentials>();
     (ensureFreshCredentials as jest.Mock).mockReturnValueOnce(fresh.promise);
-    const recovering = client.recoverNow("network-changed");
+    const recovering = client.recoverNow("presence-stale");
     await tick();
     old.subscriptions.get("p.pair.evt.>")!.push({
       subject: "p.pair.evt.session",
@@ -159,7 +162,7 @@ describe("RemoteClient connection handoff", () => {
       .mockResolvedValueOnce(replacement.connection);
     await client.open();
     replacement.flush.mockRejectedValueOnce(new Error("network timeout"));
-    await client.recoverNow("network-changed");
+    await client.recoverNow("presence-stale");
     expect(replacement.close).toHaveBeenCalled();
     expect(old.close).not.toHaveBeenCalled();
     old.subscriptions.get("p.pair.evt.>")!.push({
@@ -168,6 +171,38 @@ describe("RemoteClient connection handoff", () => {
     } as Msg);
     await tick();
     expect(callbacks.onEvent).toHaveBeenCalledTimes(1);
+    // Receiving catalog/events through the still-serving channel must not
+    // leave the UI yellow with every conversation action disabled.
+    expect(old.connection.request).toHaveBeenCalled();
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+  });
+
+  test("one-way event delivery does not mark a broken command channel ready", async () => {
+    const old = socket();
+    const replacement = socket();
+    (wsconnect as jest.Mock).mockResolvedValueOnce(old.connection).mockResolvedValueOnce(replacement.connection);
+    await client.open();
+    replacement.flush.mockRejectedValueOnce(new Error("network timeout"));
+    jest.mocked(old.connection.request).mockRejectedValueOnce(new Error("request timeout"));
+    await client.recoverNow("presence-stale");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+  });
+
+  test("a late successful fallback probe cannot resurrect a closed client", async () => {
+    const old = socket();
+    const replacement = socket();
+    (wsconnect as jest.Mock).mockResolvedValueOnce(old.connection).mockResolvedValueOnce(replacement.connection);
+    await client.open();
+    replacement.flush.mockRejectedValueOnce(new Error("network timeout"));
+    const response = deferred<Msg>();
+    jest.mocked(old.connection.request).mockReturnValueOnce(response.promise);
+    const recovering = client.recoverNow("presence-stale");
+    await tick();
+    await client.close();
+    jest.mocked(callbacks.onConnectionState).mockClear();
+    response.resolve({ data: new TextEncoder().encode(JSON.stringify({ success: true, data: { online: true, pairId: "pair", bridgeInstanceId: "bridge" } })) } as Msg);
+    await recovering;
+    expect(callbacks.onConnectionState).not.toHaveBeenCalled();
   });
 
   test("stop cancels an outstanding credential request and ignores its late result", async () => {
@@ -197,7 +232,7 @@ describe("RemoteClient connection handoff", () => {
     await client.open();
     const ready = deferred<void>();
     replacement.flush.mockReturnValueOnce(ready.promise);
-    const recovering = client.recoverNow("network-changed");
+    const recovering = client.recoverNow("presence-stale");
     await tick();
     replacement.subscriptions.get("p.pair.evt.>")!.push({
       subject: "p.pair.evt.session",
@@ -220,7 +255,7 @@ describe("RemoteClient connection handoff", () => {
     await client.open();
     const ready = deferred<void>();
     replacement.flush.mockReturnValueOnce(ready.promise);
-    const recovering = client.recoverNow("network-changed");
+    const recovering = client.recoverNow("presence-stale");
     await tick();
     await client.close();
     ready.resolve();
