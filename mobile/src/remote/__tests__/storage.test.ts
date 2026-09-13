@@ -5,6 +5,7 @@ import {
   loadCredentials,
   loadPairedDesktops,
   loadDeviceId,
+  renameDesktop,
   loadLastModel,
   loadLastThinking,
   loadPendingRevoke,
@@ -133,6 +134,40 @@ describe("credential storage", () => {
     await clearCredentials(credentials.pairId);
     expect(await loadCredentials()).toEqual(other);
     expect(await loadCredentials("desktop_1")).toBeNull();
+  });
+
+  test("a name survives a credential refresh and disappears with the pairing", async () => {
+    await saveCredentials(credentials);
+    await saveCredentials(other);
+    await renameDesktop(credentials.expectedDesktopId, "  Studio Mac  ");
+    await saveCredentials({ ...credentials, userJwt: "new-jwt" });
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1", name: "Studio Mac" },
+      { desktopId: "desktop_2", pairId: "pair_2" },
+    ]);
+    await clearCredentials(credentials.pairId);
+    await expect(loadPairedDesktops()).resolves.toEqual([
+      { desktopId: "desktop_2", pairId: "pair_2" },
+    ]);
+  });
+
+  test("a blank name reverts to the desktop id", async () => {
+    await saveCredentials(credentials);
+    await saveCredentials(credentials);
+    await renameDesktop(credentials.expectedDesktopId, "Desk");
+    await renameDesktop(credentials.expectedDesktopId, "   ");
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1" },
+    ]);
+    expect((await loadCredentials())?.pairId).toBe("pair_1");
+  });
+
+  test("renaming an unknown desktop is a no-op", async () => {
+    await saveCredentials(credentials);
+    await renameDesktop("desktop_9", "ghost");
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1" },
+    ]);
   });
 
   test("rejects another installation's credentials", async () => {

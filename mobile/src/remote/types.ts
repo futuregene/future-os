@@ -16,6 +16,17 @@ export interface PairingCode {
   exp: number;
 }
 
+/**
+ * A desktop this phone has paired with. Selecting one drives the connection;
+ * the optional name is a local label only (see `storage.renameDesktop`).
+ */
+export interface PairedDesktop {
+  desktopId: string;
+  pairId: string;
+  /** Absent until the user renames the desktop; the id is shown instead. */
+  name?: string;
+}
+
 export interface RemoteCredentials {
   pairId: string;
   deviceId: string;

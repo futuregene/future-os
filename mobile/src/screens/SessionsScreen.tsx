@@ -54,6 +54,10 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
   const { t } = useTranslation();
   const remote = useRemote();
   const { width } = useWindowDimensions();
+  const selectedDesktopName =
+    remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId)?.name ??
+    remote.credentials?.expectedDesktopId ??
+    "";
   const [tab, setTabState] = useState<Tab>(lastTab);
   const setTab = (next: Tab) => {
     lastTab = next;
@@ -332,7 +336,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
         >
           <Monitor color={colors.inkSoft} size={16} />
           <Text numberOfLines={1} style={styles.desktopIdentity}>
-            {remote.credentials?.expectedDesktopId}
+            {selectedDesktopName}
           </Text>
           <ChevronDown color={colors.inkSoft} size={16} />
         </Pressable>
@@ -601,7 +605,7 @@ export function SessionsScreen({ onManageDesktops }: { onManageDesktops(): void 
 
 const styles = StyleSheet.create({
   desktopSelector: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm },
-  desktopIdentity: { flex: 1, color: colors.inkSoft, fontSize: 12 },
+  desktopIdentity: { flex: 1, color: colors.ink, fontSize: 13, fontWeight: "600" },
   safe: { flex: 1, backgroundColor: colors.surface },
   page: { flex: 1, backgroundColor: colors.surface },
   topbar: {

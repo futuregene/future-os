@@ -1,5 +1,5 @@
 import * as SecureStore from "expo-secure-store";
-import type { RemoteCredentials } from "./types";
+import type { PairedDesktop, RemoteCredentials } from "./types";
 
 // `deviceId` is deliberately excluded from the credential bundle: it is the
 // stable device identity that must survive an unpair, so it lives under
@@ -80,11 +80,6 @@ async function loadLegacyCredentials(): Promise<RemoteCredentials | null> {
   } as unknown as RemoteCredentials;
 }
 
-export interface PairedDesktop {
-  desktopId: string;
-  pairId: string;
-}
-
 interface DesktopEntry extends PairedDesktop {
   slot: "a" | "b";
 }
@@ -119,7 +114,13 @@ async function writeDesktop(
   await settleWrites(fields.map((field) => SecureStore.setItemAsync(
     desktopFieldKey(desktopId, field, slot), credentials[field], secureOptions,
   )));
-  const entry: DesktopEntry = { desktopId, pairId: credentials.pairId, slot };
+  // A credential refresh must not drop the name the user chose.
+  const entry: DesktopEntry = {
+    desktopId,
+    pairId: credentials.pairId,
+    slot,
+    ...(previous?.name ? { name: previous.name } : {}),
+  };
   // One commit switches the complete bundle and active selection together.
   await commitRegistry({
     activeDesktopId: desktopId,
@@ -136,7 +137,8 @@ async function readRegistry(): Promise<DesktopRegistry> {
     if (!parsed || !Array.isArray(parsed.desktops) ||
       !parsed.desktops.every((entry) => entry && typeof entry.desktopId === "string" &&
         entry.desktopId && typeof entry.pairId === "string" && entry.pairId &&
-        (entry.slot === "a" || entry.slot === "b")) ||
+        (entry.slot === "a" || entry.slot === "b") &&
+        (entry.name === undefined || typeof entry.name === "string")) ||
       new Set(parsed.desktops.map((entry) => entry.desktopId)).size !== parsed.desktops.length ||
       (parsed.activeDesktopId !== null &&
         !parsed.desktops.some((entry) => entry.desktopId === parsed.activeDesktopId)))
@@ -155,8 +157,33 @@ async function readRegistry(): Promise<DesktopRegistry> {
 
 export async function loadPairedDesktops(): Promise<PairedDesktop[]> {
   return enqueueCredentialOperation(async () =>
-    (await readRegistry()).desktops.map(({ desktopId, pairId }) => ({ desktopId, pairId })),
+    (await readRegistry()).desktops.map(({ desktopId, pairId, name }) => ({
+      desktopId,
+      pairId,
+      ...(name ? { name } : {}),
+    })),
   );
+}
+
+/**
+ * Set (or, with a blank name, clear) a desktop's display name. Naming is local
+ * to this phone: it never reaches the platform, so it is not part of the pair.
+ */
+export async function renameDesktop(desktopId: string, name: string): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const registry = await readRegistry();
+    if (!registry.desktops.some((item) => item.desktopId === desktopId)) return;
+    const trimmed = name.trim();
+    await commitRegistry({
+      ...registry,
+      desktops: registry.desktops.map((item) => {
+        if (item.desktopId !== desktopId) return item;
+        return trimmed
+          ? { ...item, name: trimmed }
+          : { desktopId: item.desktopId, pairId: item.pairId, slot: item.slot };
+      }),
+    });
+  });
 }
 
 export async function loadCredentials(desktopId?: string): Promise<RemoteCredentials | null> {

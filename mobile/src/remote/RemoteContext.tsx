@@ -23,6 +23,7 @@ import type {
   DownloadInfo,
   HistoryAttachment,
   MobileAttachment,
+  PairedDesktop,
   Presence,
   RemoteCredentials,
   RemoteModel,
@@ -35,8 +36,9 @@ interface RemoteContextValue {
   phase: ConnectionPhase;
   error: string | null;
   credentials: RemoteCredentials | null;
-  desktops: import("./storage").PairedDesktop[];
+  desktops: PairedDesktop[];
   switchDesktop(desktopId: string): Promise<void>;
+  renameDesktop(desktopId: string, name: string): Promise<void>;
   removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
   desktopOnline: boolean;
@@ -208,6 +210,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     credentials,
     desktops,
     switchDesktop,
+    renameDesktop,
     removeDesktop,
     presence,
     desktopOnline,
@@ -324,6 +327,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentials,
       desktops,
       switchDesktop,
+      renameDesktop,
       removeDesktop,
       presence,
       desktopOnline,
@@ -380,6 +384,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       credentials,
       desktops,
       switchDesktop,
+      renameDesktop,
       removeDesktop,
       closeConversation,
       clearError,

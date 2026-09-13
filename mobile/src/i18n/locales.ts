@@ -6,10 +6,11 @@ export const resources = {
       desktops: {
         title: "Paired desktops",
         description: "Pair this phone with multiple desktops and select one to use. Each desktop still pairs with only one phone.",
-        desktop: "Desktop",
         add: "Scan to add a desktop",
         empty: "No paired desktops yet.",
+        rename: "Rename desktop",
         switchFailed: "Could not update the desktop connection. Please try again.",
+        actionFailed: "Could not save the change. Please try again.",
       },
       pairing: {
         title: "Connect to your desktop",
@@ -80,7 +81,7 @@ export const resources = {
         new: "New conversation",
         refresh: "Refresh",
         unpair: "Unpair device",
-        unpairConfirm: "Unpair this desktop? Other desktops will stay paired. To reconnect this desktop, scan a new QR code.",
+        unpairConfirm: "Unpair {{name}}? Other desktops will stay paired. To reconnect it, scan a new QR code.",
         unnamed: "Untitled",
         pin: "Pin",
         unpin: "Unpin",
@@ -342,10 +343,11 @@ export const resources = {
       desktops: {
         title: "已配对的桌面端",
         description: "一台手机可配对多个桌面端，选择后切换使用。每个桌面端仍只能配对一台手机。",
-        desktop: "桌面端",
         add: "扫码添加桌面端",
         empty: "尚未配对桌面端。",
+        rename: "重命名桌面端",
         switchFailed: "更新桌面端连接失败，请重试。",
+        actionFailed: "保存失败，请重试。",
       },
       pairing: {
         title: "连接桌面端",
@@ -410,7 +412,7 @@ export const resources = {
         new: "新对话",
         refresh: "刷新",
         unpair: "解除设备配对",
-        unpairConfirm: "确定解除与这台桌面端的配对吗？其他桌面端的配对不受影响。再次连接此桌面端需要重新扫码。",
+        unpairConfirm: "确定解除与“{{name}}”的配对吗？其他桌面端的配对不受影响。再次连接它需要重新扫码。",
         unnamed: "未命名",
         pin: "置顶",
         unpin: "取消置顶",
