@@ -95,7 +95,7 @@ pub async fn reconcile_delete_outbox() {
 /// alive. Startup-only delivery loses convergence whenever the sidecar starts
 /// late or an Agent refuses deletion while a run is draining.
 pub fn spawn_delete_outbox_worker() {
-    tauri::async_runtime::spawn(async {
+    crate::runtime::spawn(async {
         loop {
             reconcile_delete_outbox().await;
             #[cfg(test)]
@@ -1448,7 +1448,7 @@ async fn reconcile_active_run_once(
 /// pass self-gates on Agent reachability; Agent downtime is left for startup
 /// convergence on the next launch.
 pub fn spawn_active_run_watchdog() {
-    tauri::async_runtime::spawn(async move {
+    crate::runtime::spawn(async move {
         loop {
             tokio::time::sleep(watchdog_interval()).await;
             #[cfg(test)]

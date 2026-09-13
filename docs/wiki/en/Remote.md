@@ -2,7 +2,7 @@
 
 FutureOS Mobile for Android/iOS controls sessions on your desktop. Tools execute
 on the **desktop computer**, not inside a phone sandbox. Keep that computer awake,
-the desktop app running, and both devices connected to the network.
+Desktop running (graphical or explicitly headless), and both devices connected to the network.
 
 ## Pair a phone
 
@@ -18,6 +18,16 @@ the desktop app running, and both devices connected to the network.
 Production and test builds must use matching service environments. A code issued
 by another environment is rejected; use a matching build rather than editing the
 code or endpoint.
+
+## Headless Desktop over SSH
+
+Run `futureos --headless` to open phone remote access in the foreground without
+starting the desktop UI. When needed, it prints a browser login QR followed by a
+pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
+are reused. Ctrl+C closes the entry and exits; the process does not daemonize.
+
+See the [Headless Desktop guide](../../desktop-headless.md) for complete startup
+steps, options, GUI-free server builds, Agent lifetime and troubleshooting.
 
 ## What you can do
 

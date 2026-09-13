@@ -131,6 +131,7 @@ pub struct AttachmentInfo {
 
 const MAX_ATTACHMENT_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
+#[cfg(feature = "gui")]
 fn native_clipboard_file_paths() -> Vec<String> {
     // The OS clipboard formats are intentionally not decoded in the webview:
     // Finder may use a file-reference URL (`file:///.file/id=...`), Explorer
@@ -147,14 +148,15 @@ fn native_clipboard_file_paths() -> Vec<String> {
 
 /// Return native resource-manager paths from the current clipboard. Callers
 /// still inspect each returned path before use.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
 pub fn read_native_clipboard_file_paths() -> Vec<String> {
     native_clipboard_file_paths()
 }
 
 /// Inspect a local file for attachment classification. The webview can't read
 /// arbitrary paths, so directory + binary detection must happen here in Rust.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -189,7 +191,7 @@ pub fn inspect_attachment(path: String) -> Result<AttachmentInfo, crate::AppErro
 /// Fully decode a user-selected image before it enters the composer. Extension
 /// classification alone is insufficient: a corrupt or renamed file would be
 /// shown as attached but later skipped by the multimodal request builder.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn validate_image_attachment(path: String) -> Result<(), crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -229,6 +231,7 @@ pub struct ImagePreviewAsset {
 /// Tauri's asset protocol. The WebView then reads the bytes directly instead of
 /// receiving a 1.33x Base64 string over JSON IPC.
 #[tauri::command]
+#[cfg(feature = "gui")]
 pub fn prepare_image_preview(
     app: tauri::AppHandle,
     path: String,
@@ -236,6 +239,7 @@ pub fn prepare_image_preview(
     prepare_image_preview_with(&app, &path)
 }
 
+#[cfg(feature = "gui")]
 fn prepare_image_preview_with<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     path: &str,
@@ -322,7 +326,7 @@ fn safe_file_name(name: &str) -> String {
 /// the IPC bridge to a webview canvas — only the tiny thumbnail is produced. The
 /// decoder's allocation is capped to reject decompression bombs. Returns an error
 /// that rejects the send while leaving the composer draft intact.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn generate_image_thumbnail(
     thread_id: String,
     source_path: String,
@@ -380,7 +384,7 @@ pub fn generate_image_thumbnail(
 /// path. Conversations don't save attachments into the workspace/project dir,
 /// so the durable copy lives here (persistent, in the asset-protocol scope)
 /// instead of the temp dir, which the OS may purge.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn import_ephemeral_attachment(
     thread_id: String,
     source_path: String,
@@ -407,7 +411,7 @@ pub fn import_ephemeral_attachment(
 
 /// Delete a pasted temp attachment after send. Guarded to only remove files
 /// inside our own `<temp>/futureos-attachments/` subdir — never user originals.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn delete_temp_attachment(path: String) -> Result<(), crate::AppError> {
     let base = std::env::temp_dir().join("futureos-attachments");
     let target = std::path::Path::new(path.trim());
@@ -424,7 +428,7 @@ pub fn delete_temp_attachment(path: String) -> Result<(), crate::AppError> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn open_path(path: String) -> Result<(), crate::AppError> {
     open_path_with(&path, open_path_with_system)
 }
@@ -465,7 +469,7 @@ pub struct DirEntry {
 /// symlinks are reported by their own metadata (not followed) so a symlink cycle
 /// can't turn one directory read into an unbounded walk. `~/.future` internals
 /// stay blocked via `ensure_path_allowed`.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn list_directory(path: String) -> Result<Vec<DirEntry>, crate::AppError> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -502,7 +506,7 @@ pub fn list_directory(path: String) -> Result<Vec<DirEntry>, crate::AppError> {
 /// Open an http(s) or mailto URL in the user's default handler. The scheme is
 /// restricted to http/https/mailto so this can't be used to launch arbitrary
 /// local handlers (`file:`, custom app schemes, …) via a crafted url.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn open_external_url(url: String) -> Result<(), crate::AppError> {
     open_external_url_with(&url, open_path_with_system)
 }
@@ -533,7 +537,7 @@ fn open_external_url_with(
 /// access — mirroring `resolve_file_reference` but anchored to the previewed
 /// file's directory instead of a workspace root, so relative links in a previewed
 /// document point at siblings on disk rather than at the workspace root.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn resolve_preview_link_path(
     base_file: String,
     target: String,
@@ -565,7 +569,7 @@ pub fn resolve_preview_link_path(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn read_text_file_preview(
     path: String,
     max_bytes: Option<usize>,
@@ -593,7 +597,7 @@ pub fn read_text_file_preview(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn export_artifact_file(
     destination_path: String,
     source_path: Option<String>,
@@ -641,7 +645,7 @@ fn to_base36(mut n: u128) -> String {
 /// Persist pasted image bytes to a temp file so the path can be attached and
 /// later read by the multimodal agent. Pasted/dropped clipboard images have no
 /// filesystem path of their own.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn save_pasted_image(
     bytes: Vec<u8>,
     extension: Option<String>,
@@ -684,7 +688,7 @@ pub fn save_pasted_image(
 /// Persist a clipboard file that has no usable local URI. Such files may have
 /// come from a browser or a remote desktop, so keep the copied source bounded
 /// before it enters FutureOS-managed storage.
-#[tauri::command]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn save_pasted_file(bytes: Vec<u8>, name: String) -> Result<SavedAttachment, crate::AppError> {
     const MAX_PASTED_FILE_BYTES: u64 = 10 * 1024 * 1024;
     if bytes.is_empty() {
@@ -973,6 +977,7 @@ mod tests {
         assert!(validate_image_preview_path(&dir.display().to_string()).is_err());
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn prepare_image_preview_authorizes_only_the_canonical_file() {
         use tauri::Manager;
