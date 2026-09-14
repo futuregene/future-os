@@ -108,7 +108,10 @@ function ThreadListItemImpl({
         compact ? "h-7" : "h-8",
         active && "bg-surface-subtle text-ink",
       )}
-      style={{ paddingLeft: (compact ? 28 : 8) + depth * 16 }}
+      // Non-workspace rows (chat + pinned) get a gutter of their own: their
+      // titles carry no leading chevron, so the row padding is the only thing
+      // separating the text from the highlight's left edge — 8px read as flush.
+      style={{ paddingLeft: (compact ? 28 : 16) + depth * 16 }}
       // Right-click anywhere on the row opens the same actions menu as the
       // `...` button.
       onContextMenu={(event) => {

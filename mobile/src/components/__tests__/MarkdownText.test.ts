@@ -1,6 +1,7 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
-import { AccessibilityInfo, Alert, Animated, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
 

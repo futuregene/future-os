@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowUp, ChevronRight, Eye, EyeOff, File, Folder, RefreshCw } from "lucide-react-native";
-import { ActivityIndicator, Alert, BackHandler, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, BackHandler, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppAlert as Alert } from "../../../components/appAlerts";
 import type { SessionFileListing } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { formatBytes } from "../utils";

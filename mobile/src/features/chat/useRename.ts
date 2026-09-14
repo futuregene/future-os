@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert } from "react-native";
+import { AppAlert as Alert } from "../../components/appAlerts";
 import type { TFunction } from "i18next";
 import { useRemote } from "../../remote/RemoteContext";
 

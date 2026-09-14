@@ -1,4 +1,5 @@
-import { Alert, Platform, ToastAndroid } from "react-native";
+import { Platform, ToastAndroid } from "react-native";
+import { AppAlert as Alert } from "../../components/appAlerts";
 import type { File } from "expo-file-system";
 import type { DownloadInfo } from "../../remote/types";
 
@@ -45,7 +46,7 @@ export const COMPOSER_FADE_CLEARANCE = 48;
 
 // Transient failures (attachment pick, send) surface as a platform-native
 // toast instead of pinned red text above the composer. iOS has no native
-// toast, so it falls back to a plain Alert like the rest of the app's errors.
+// toast, so it uses the shared app dialog.
 export function showToast(message: string): void {
   if (Platform.OS === "android") {
     ToastAndroid.show(message, ToastAndroid.SHORT);
