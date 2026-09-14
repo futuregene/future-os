@@ -156,6 +156,44 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 
+  it.each(["exchange", "assistant preview"])("fills the initial page when history arrives after a lone %s", (preview) => {
+    let messages = preview === "exchange" ? MESSAGES.slice(-2) : MESSAGES.slice(-1);
+    const scrollRef = { current: null as HTMLElement | null };
+    const h = renderHook(() => useMessagePaging({
+      messages,
+      scrollRef,
+      userExchangeCount: 2,
+    }));
+    expect(h.current.visibleMessages).toEqual(messages);
+
+    // A live event or warm snapshot can precede the authoritative tail page.
+    messages = MESSAGES;
+    h.rerender();
+    expect(h.current.visibleMessages.map(m => m.id)).toEqual([
+      "u5",
+      "a5",
+      "u6",
+      "a6",
+    ]);
+    expect(h.current.canLoadOlder).toBe(true);
+    h.unmount();
+  });
+
+  it("keeps an explicitly expanded window when the tail is refreshed", async () => {
+    let messages = MESSAGES;
+    const scrollRef = { current: null as HTMLElement | null };
+    const h = renderHook(() => useMessagePaging({ messages, scrollRef, userExchangeCount: 2 }));
+    act(() => h.current.loadOlder());
+    await settle();
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+
+    messages = [...MESSAGES, msg("u7", "user"), msg("a7", "assistant")];
+    h.rerender();
+    expect(h.current.visibleMessages[0]?.id).toBe("u3");
+    expect(h.current.visibleMessages[h.current.visibleMessages.length - 1]?.id).toBe("a7");
+    h.unmount();
+  });
+
   it("handleScroll without a container only forwards to onScroll", () => {
     const scrollRef = { current: null as HTMLElement | null };
     const onScroll = vi.fn();
