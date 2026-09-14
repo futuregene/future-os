@@ -760,13 +760,13 @@ mod gui {
     }
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
-    pub fn run() {
+    pub fn run() -> Result<(), AppError> {
         // `reqwest` intentionally uses `rustls-no-provider` so it shares the
         // `ring` backend selected by async-nats/Tauri instead of pulling aws-lc
         // into the same process. Rustls requires the application to select that
         // backend before the first HTTP client is built.
         install_rustls_provider();
-        tauri::Builder::default()
+        let app = tauri::Builder::default()
             .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
                 // A second instance was launched — activate the existing window.
                 use tauri::Manager;
@@ -820,8 +820,6 @@ mod gui {
                 }
             })
             .setup(|app| {
-                use tauri::Manager;
-                app.manage(instance::InstanceGuard::acquire()?);
                 let _ = APP_HANDLE.set(app.handle().clone());
                 #[cfg(target_os = "macos")]
                 macos_power::install_disconnect_notifier();
@@ -1077,37 +1075,50 @@ mod gui {
                 open_url
             ])
             .build(tauri::generate_context!())
-            .expect("error while running FutureOS")
-            .run(|app_handle, event| match event {
-                // `setup` runs while Tauri is still constructing its event loop.
-                // Starting the bridge there races the runtime initialization on
-                // macOS and can leave the detached start task without a live
-                // connection. `Ready` is emitted once the process runtime is live.
-                tauri::RunEvent::Ready => spawn_remote_auto_connect(),
-                // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
-                // through here, NOT the window's `CloseRequested`. Guard them the same
-                // way so a running conversation can't be torn down without warning.
-                tauri::RunEvent::ExitRequested { api, .. } => {
-                    match agent_supervisor::on_close_requested() {
-                        agent_supervisor::QuitDecision::Proceed => {}
-                        agent_supervisor::QuitDecision::Confirm { open_dialog } => {
-                            api.prevent_exit();
-                            if open_dialog {
-                                agent_supervisor::confirm_quit(app_handle.clone());
-                            }
+            .map_err(|error| AppError::from(format!("Could not start Desktop: {error}")))?;
+
+        // Build initializes the single-instance plugin first, so a second GUI
+        // still activates the existing window. Acquire the shared GUI/headless
+        // lock before entering the event loop: returning an error from `setup`
+        // makes Tauri panic (and abort on macOS's non-unwinding callback).
+        let guard = instance::InstanceGuard::acquire()?;
+        tauri::Manager::manage(&app, guard);
+        // Keep the Windows console attached until startup errors can be reported.
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let _ = windows::Win32::System::Console::FreeConsole();
+        }
+        app.run(|app_handle, event| match event {
+            // `setup` runs while Tauri is still constructing its event loop.
+            // Starting the bridge there races the runtime initialization on
+            // macOS and can leave the detached start task without a live
+            // connection. `Ready` is emitted once the process runtime is live.
+            tauri::RunEvent::Ready => spawn_remote_auto_connect(),
+            // ⌘Q / the menu's "Quit FutureOS" / a programmatic `app.exit()` come
+            // through here, NOT the window's `CloseRequested`. Guard them the same
+            // way so a running conversation can't be torn down without warning.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                match agent_supervisor::on_close_requested() {
+                    agent_supervisor::QuitDecision::Proceed => {}
+                    agent_supervisor::QuitDecision::Confirm { open_dialog } => {
+                        api.prevent_exit();
+                        if open_dialog {
+                            agent_supervisor::confirm_quit(app_handle.clone());
                         }
                     }
                 }
-                tauri::RunEvent::Exit => {
-                    // A normal app/window exit still has a live runtime. Flush a
-                    // short disconnect notice so the phone disables sending at
-                    // once instead of waiting for heartbeat expiry. Crashes and
-                    // power loss cannot run this handler and remain timeout-based.
-                    tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
-                    agent_supervisor::shutdown_agent_gracefully();
-                }
-                _ => {}
-            });
+            }
+            tauri::RunEvent::Exit => {
+                // A normal app/window exit still has a live runtime. Flush a
+                // short disconnect notice so the phone disables sending at
+                // once instead of waiting for heartbeat expiry. Crashes and
+                // power loss cannot run this handler and remain timeout-based.
+                tauri::async_runtime::block_on(remote::stop_gracefully("app_exit"));
+                agent_supervisor::shutdown_agent_gracefully();
+            }
+            _ => {}
+        });
+        Ok(())
     }
 
     /// Start the persisted remote bridge only after Tauri's runtime has entered its

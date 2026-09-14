@@ -40,6 +40,35 @@ fn first_setup_refuses_redirected_logs_without_printing_authorization_material()
 }
 
 #[test]
+fn occupied_data_directory_exits_cleanly_without_startup_side_effects() {
+    let home = tempfile::tempdir().unwrap();
+    let directory = home.path().join(".future/app");
+    std::fs::create_dir_all(&directory).unwrap();
+    let lock_path = directory.join("desktop.lock");
+    let lock = std::fs::File::create(&lock_path).unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+
+    let result = desktop(home.path()).arg("--headless").output().unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("Desktop is already running"), "{error}");
+    assert!(error.contains("Ctrl+C"), "{error}");
+    assert!(!error.contains("panicked"), "{error}");
+    assert!(!error.contains("os error"), "{error}");
+    assert!(result.stdout.is_empty());
+    assert!(!directory.join("app.db").exists());
+    // A rejected second process must not unlink or release the owner's lock.
+    let second = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+    drop(lock);
+    fs2::FileExt::try_lock_exclusive(&second).unwrap();
+}
+
+#[test]
 fn corrupt_credentials_are_not_overwritten_or_treated_as_signed_out() {
     let home = tempfile::tempdir().unwrap();
     let directory = home.path().join(".future/agent");
