@@ -4,9 +4,10 @@ import { externalMimeCandidates } from "./fileTypes";
 
 /**
  * Resolve the MIME that an installed external app can consume. Android can
- * query VIEW/SEND intent handlers before gateway transfer. iOS does not expose
- * an equivalent third-party document-handler query, so its business allow-list
- * remains the preflight boundary and the system document sheet decides later.
+ * query VIEW intent handlers when the user chooses "open with another app".
+ * Never use this to gate saving or sharing (SEND does not require a reader).
+ * iOS does not expose an equivalent third-party document-handler query, so its
+ * business allow-list is the boundary and the system document sheet decides.
  */
 export async function supportedExternalMime(name: string): Promise<string | null> {
   const candidates = externalMimeCandidates(name);

@@ -110,7 +110,8 @@ export function mobilePreviewRoute(name: string, size: number): MobileFileRoute 
 
 export function externalMimeCandidates(name: string): string[] {
   const type = mobileFileType(name);
-  if (!type || type.route !== "external") return [];
+  // Previewable files can also be explicitly opened in another application.
+  if (!type) return [];
   return type.textFallback && type.mimeType !== "text/plain"
     ? [type.mimeType, "text/plain"]
     : [type.mimeType];
