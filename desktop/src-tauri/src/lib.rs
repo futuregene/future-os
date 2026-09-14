@@ -42,6 +42,7 @@ mod skills;
 mod skills_bootstrap;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod store;
+#[cfg(feature = "gui")]
 mod terminal;
 #[cfg(all(feature = "gui", target_os = "windows"))]
 mod windows_power;
