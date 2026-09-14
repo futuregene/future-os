@@ -24,7 +24,7 @@ describe("fetchEventsSince", () => {
     expect(result.truncated).toBeUndefined();
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith(
-      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, offset: 0, chunkedRead: true },
+      { type: "get_events_since", sessionId: "s1", runId: "r1", sinceIdx: 0, limit: 1000, offset: 0, chunkedRead: true },
       "s1",
     );
   });
@@ -103,6 +103,15 @@ test("a hidden or replaced lane stops after the in-flight page instead of draini
   finish({ data: { events: [event("a", 99)], hasMore: true, nextSinceIdx: 99, watermark: 9999 } });
   await rejected;
   expect(request).toHaveBeenCalledTimes(1);
+});
+
+test("single and empty replay pages retain their watermark for incremental integrity checks", async () => {
+  const { client } = clientReturning([
+    { events: [event("a", 4)], hasMore: false, watermark: 4 },
+    { events: [], hasMore: false, watermark: 4 },
+  ]);
+  expect((await fetchEventsSince(client, "s", "r", 3)).watermark).toBe(4);
+  expect(await fetchEventsSince(client, "s", "r", 4)).toEqual({ events: [], watermark: 4 });
 });
 
 test("an already obsolete replay does not issue any request", async () => {

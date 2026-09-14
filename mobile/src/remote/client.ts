@@ -469,7 +469,11 @@ export class RemoteClient {
           generation === this.generation &&
           connection === this.connection
         ) {
-          if (this.state === "ready" || await this.restoreServingConnection(generation)) return;
+          // A broker PONG does not prove the desktop still has our traffic
+          // keys (it may have restarted while the phone was asleep). Validate
+          // the authenticated command path before reusing it on foreground.
+          if ((this.state === "ready" && reason !== "foreground") ||
+              await this.restoreServingConnection(generation)) return;
         }
       } catch {
         // Rebuild below without waiting for NATS's ping budget to expire.

@@ -463,6 +463,7 @@ export function useRemoteConnection({
   useEffect(() => {
     let previous: AppStateStatus = AppState.currentState;
     let backgrounded = previous === "background";
+    let backgroundDeadline: number | null = backgrounded ? Date.now() : null;
     let presentationTimer: ReturnType<typeof setTimeout> | null = null;
     const clearPresentationTimer = () => {
       if (presentationTimer) clearTimeout(presentationTimer);
@@ -478,16 +479,25 @@ export function useRemoteConnection({
         // Keep a picker/quick-switch connection alive. Do not depend on the
         // picker promise still being pending at expiry: Android can deliver
         // its result before delivering the resumed AppState event.
+        const graceMs = nativePresentationInFlight() ? NATIVE_PRESENTATION_GRACE_MS : BACKGROUND_GRACE_MS;
+        backgroundDeadline = Date.now() + graceMs;
         presentationTimer = setTimeout(() => {
           presentationTimer = null;
           if (previous !== "active") clientRef.current?.setAppActive(false);
-        }, nativePresentationInFlight() ? NATIVE_PRESENTATION_GRACE_MS : BACKGROUND_GRACE_MS);
+        }, graceMs);
       } else if (returnedToForeground) {
         clearPresentationTimer();
         // iOS alerts/control center emit inactive -> active without suspending
         // the app. They must not restart history/catalogue sync or handshake.
         if (backgrounded) {
           backgrounded = false;
+          // The OS can suspend JS before the grace timer fires, then deliver
+          // active before overdue timers on resume. Retire the stale socket
+          // and in-flight recovery before starting a new foreground attempt.
+          if (backgroundDeadline !== null && Date.now() >= backgroundDeadline) {
+            clientRef.current?.setAppActive(false);
+          }
+          backgroundDeadline = null;
           clientRef.current?.setAppActive(true);
           void recoverLifecycle("foreground");
         }
