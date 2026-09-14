@@ -773,56 +773,32 @@ describe("RemoteClient OS lifecycle recovery", () => {
     await client.close();
   });
 
-  test("offline pauses the socket and open attempts until reachability returns", async () => {
-    const { client, callbacks } = recoveryClient();
-    const close = jest.fn().mockResolvedValue(undefined);
-    const testClient = client as unknown as {
-      connection: { close(): Promise<void> } | null;
-    };
-    testClient.connection = { close };
-
-    client.setNetworkAvailable(false);
-    callbacks.onConnectionState.mockClear();
-    await client.open();
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(callbacks.onConnectionState).not.toHaveBeenCalled();
-
-    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
-    client.setNetworkAvailable(true);
-    await client.recoverNow("network-restored");
-    expect(open).toHaveBeenCalledTimes(1);
-    await client.close();
-  });
 });
 
 describe("independent app and network lifecycle", () => {
-  test("offline wake is remembered before reachability returns", async () => {
+  test("foreground starts an attempt without waiting for reachability", async () => {
     const { client } = recoveryClient();
     const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
     client.setAppActive(false);
-    client.setNetworkAvailable(false);
     client.setAppActive(true);
     await client.recoverNow("foreground");
-    expect(open).not.toHaveBeenCalled();
-    client.setNetworkAvailable(true);
-    await client.recoverNow("network-restored");
     expect(open).toHaveBeenCalledTimes(1);
     await client.close();
   });
 
-  test("network recovery cannot activate a background app or override offline state", async () => {
-    const { client } = recoveryClient();
-    const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
-    client.setAppActive(false);
-    client.setNetworkAvailable(true);
-    await client.recoverNow("network-restored");
-    expect(open).not.toHaveBeenCalled();
-    client.setAppActive(true);
-    client.setNetworkAvailable(false);
-    await client.recoverNow("request-failure");
-    expect(open).not.toHaveBeenCalled();
-    await client.close();
-  });
+  test.each(["network-restored", "network-changed", "request-failure", "foreground"] as const)(
+    "%s cannot activate a background app", async reason => {
+      const { client } = recoveryClient();
+      const open = jest.spyOn(client, "open").mockResolvedValue(undefined);
+      client.setAppActive(false);
+      await client.recoverNow(reason);
+      expect(open).not.toHaveBeenCalled();
+      client.setAppActive(true);
+      await client.recoverNow(reason);
+      expect(open).toHaveBeenCalledTimes(1);
+      await client.close();
+    },
+  );
 
   test("a suspended probe cannot block or replace the next foreground connection", async () => {
     const { client } = recoveryClient();
