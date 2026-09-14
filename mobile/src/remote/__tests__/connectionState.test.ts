@@ -327,7 +327,13 @@ function recoveryClient(): {
   boundary.secureRequest = (connection, subject, bytes, timeout) => connection.request(subject, bytes, { timeout });
   const serving = new ConnectionGeneration(0);
   serving.activate();
-  Object.assign(client, { activeGeneration: serving, activateSecureChannel: async () => {} });
+  Object.assign(client, {
+    activeGeneration: serving,
+    activateSecureChannel: async () => {},
+    desktopAvailable: true,
+    everReady: true,
+    state: "ready",
+  });
   return { client, callbacks };
 }
 

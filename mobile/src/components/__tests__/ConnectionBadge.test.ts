@@ -65,7 +65,7 @@ test("only the dot is visible, with a 44pt button and an accessible status", () 
 test.each([
   [{ phase: "connecting", desktopOnline: false }, "connection.connecting", "connection.statusDetails.connecting.reason"],
   [{ phase: "ready", desktopOnline: false }, "connection.waitingDesktop", "connection.statusDetails.waitingDesktop.reason"],
-  [{ phase: "ready", desktopOnline: true, agentAvailable: false }, "connection.waitingDesktop", "connection.statusDetails.devicePreparing.reason"],
+  [{ phase: "ready", desktopOnline: true, agentAvailable: false }, "connection.waitingDesktop", "connection.statusDetails.devicePreparing.reason (LC003)"],
 ] as const)("explains %j without offering an inappropriate reconnect", (state, label, hint) => {
   render(connectionPresentation(state));
   open();

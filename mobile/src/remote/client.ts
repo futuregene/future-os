@@ -298,8 +298,8 @@ export class RemoteClient {
 
   private async openAttempt(): Promise<void> {
     if (this.stopped || this.isTerminal()) return;
-    this.signal({ type: "open_started" });
     if (!this.appActive || !this.networkAvailable) return;
+    this.signal({ type: "open_started" });
     const generation = ++this.generation;
     const controller = new AbortController();
     this.attemptController = controller;

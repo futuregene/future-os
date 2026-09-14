@@ -41,7 +41,11 @@ afterEach(() => act(() => tree.unmount()));
 test("pairing is scrollable on short screens and back shares the title row", () => {
   const scroll = tree.root.findByType(ScrollView);
   expect(StyleSheet.flatten(scroll.props.contentContainerStyle).flexGrow).toBe(1);
-  expect(scroll.findAll(node => node.props.accessibilityLabel === "common.back")).toHaveLength(1);
+  expect(
+    scroll.findAll(node =>
+      node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function",
+    ),
+  ).toHaveLength(1);
   act(() => button("common.back").props.onPress());
   expect(onBack).toHaveBeenCalledTimes(1);
 });
