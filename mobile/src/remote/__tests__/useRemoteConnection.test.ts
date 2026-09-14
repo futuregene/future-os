@@ -650,6 +650,29 @@ describe("useRemoteConnection", () => {
       } finally { jest.useRealTimers(); }
     });
 
+    test.each([false, true])("resume enforces elapsed grace even when JS timers were suspended (picker=%s)", async (picker) => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        client().setAppActive.mockClear();
+        if (picker) beginNativePresentation();
+        act(() => appStateListeners()[0]!("background"));
+        if (picker) endNativePresentation();
+        // Move wall time without running timers, as with a suspended JS VM.
+        jest.setSystemTime(Date.now() + 60 * 60_000);
+        expect(client().setAppActive).not.toHaveBeenCalled();
+        await act(async () => {
+          appStateListeners()[0]!("active");
+          await drain();
+        });
+        expect(client().setAppActive.mock.calls).toEqual([[false], [true]]);
+        expect(client().recoverNow).toHaveBeenCalledWith("foreground");
+        client().setAppActive.mockClear();
+        await act(async () => { await jest.advanceTimersByTimeAsync(NATIVE_PRESENTATION_GRACE_MS); });
+        expect(client().setAppActive).not.toHaveBeenCalled();
+      } finally { jest.useRealTimers(); }
+    });
+
     test("a native picker's background transition keeps the connection", async () => {
       await mountConnected();
       client().setAppActive.mockClear();
