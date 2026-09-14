@@ -10,6 +10,10 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { terminalTarget } from "../../features/terminal/panelTarget";
+import { TerminalPanel } from "../../features/terminal/TerminalPanel";
+import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
+import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
@@ -311,6 +315,21 @@ export function AppShell() {
       || section === "remote"
       || !rightPanelAvailable;
 
+  // The terminal belongs to a conversation: it is offered only while a real
+  // thread is on screen, so the shortcut and the panel state never apply to the
+  // new-chat / skills / phone-control views (see `terminalTarget`).
+  const terminalThreadId = terminalTarget({ section, centerMode, threadId: activeThread?.id });
+  const terminalPanel = useTerminalPanel(terminalThreadId);
+  const terminalHeaderAction = terminalThreadId
+    ? (
+        <TerminalToggleButton
+          onToggle={terminalPanel.toggle}
+          open={terminalPanel.open}
+          shortcut={terminalPanel.shortcut}
+        />
+      )
+    : null;
+
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
   useTauriEvent<string>("review-updated", (threadId) => {
@@ -559,105 +578,121 @@ export function AppShell() {
             </div>
           )
         : null}
-      <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
-        {centerMode === "new-chat"
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <main ref={centerRef} className="min-w-0 flex-1 bg-surface">
+            {centerMode === "new-chat"
+              ? (
+                  <NewConversation
+                    key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}:${newWorkspaceNonce}`}
+                    initialWorkspaceForm={newWorkspaceForm}
+                    initialMode={newConversationMode}
+                    initialWorkspaceId={newChatWorkspaceId}
+                    leftPanelExpanded={showLeftPanel}
+                    modelId={selectedModelId}
+                    modelOptions={visibleModelOptions}
+                    modelsEmptyReason={modelsEmptyReason}
+                    onAddWorkspace={handleAddWorkspace}
+                    onModelChange={changeDraftModel}
+                    thinkingLevel={selectedThinkingLevel}
+                    onThinkingLevelChange={changeDraftThinkingLevel}
+                    approvalTier={appSettings.approvalTier}
+                    onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                    onStart={startNewConversation}
+                    onToggleLeftPanel={handleToggleLeftPanel}
+                    skillGuideDismissed={appSettings.skillGuideDismissed}
+                    onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
+                    workspaces={userWorkspaces}
+                  />
+                )
+              : section === "skill"
+                ? (
+                    <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
+                  )
+                : section === "remote"
+                  ? (
+                      <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
+                    )
+                  : storeError
+                    ? (
+                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                          {t("appShell.storeInitFailed")}
+                          {storeError}
+                        </div>
+                      )
+                    : (
+                        <AgentThread
+                          // One instance per conversation: switching threads
+                          // remounts, so a conversation's messages, listeners and
+                          // in-flight writes can never bleed into another.
+                          key={activeThread?.id ?? "__none"}
+                          activeApproval={activeApproval}
+                          agentConnection={agentConnection}
+                          approvalTier={appSettings.approvalTier}
+                          showThinking={appSettings.showThinking}
+                          loadingStore={loadingStore}
+                          modelId={activeThreadModelId}
+                          modelOptions={visibleModelOptions}
+                          onModelChange={changeModel}
+                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                          thinkingLevel={activeThinkingLevel}
+                          onThinkingLevelChange={changeThinkingLevel}
+                          pendingPrompt={pendingPrompt}
+                          thread={activeThread}
+                          workspacePath={activeWorkspace?.path ?? null}
+                          onApprovalDecision={handleApprovalDecision}
+                          leftPanelExpanded={showLeftPanel}
+                          onRetryAgentConnection={() => void refreshAgentModels()}
+                          onOpenAccount={handleOpenAccount}
+                          onOpenModels={handleOpenModels}
+                          onOpenProviders={handleOpenProviders}
+                          onToggleLeftPanel={handleToggleLeftPanel}
+                          headerAction={terminalHeaderAction}
+                          onPromptConsumed={consumePendingPrompt}
+                          onForked={(forkedThreadId: string) => {
+                            void refreshStore(forkedThreadId);
+                          }}
+                          onThreadActivity={() => {
+                            void refreshStore(activeThread?.id ?? undefined);
+                          }}
+                        />
+                      )}
+          </main>
+          {/* Views without thread context hide the right panel entirely, including
+          the collapsed expand affordance. */}
+          {hideRightPanel
+            ? null
+            : (
+                <ContextPanel
+                  activeThread={activeThread}
+                  activeWorkspace={activeWorkspace}
+                  activeTab={contextTab}
+                  expanded={rightExpanded}
+                  width={rightPanelWidth}
+                  onResizeStart={startRightPanelResize}
+                  onResizeNudge={nudgeRightPanel}
+                  onTabChange={setContextTab}
+                  onToggleExpanded={() => setRightExpanded(value => !value)}
+                />
+              )}
+          {/* While dragging the divider, a full-window overlay keeps the cursor and
+          captures mouse events even over embedded iframes (PDF preview). */}
+          {rightPanelResizing && !hideRightPanel
+            ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
+            : null}
+        </div>
+        {/* The terminal spans the conversation *and* the right panel: it is a
+            sibling of that row, not of the left rail. Collapsing it removes its
+            height entirely, so the conversation keeps the full space. */}
+        {terminalThreadId && terminalPanel.open
           ? (
-              <NewConversation
-                key={`${newConversationMode}:${newWorkspaceForm ?? ""}:${newChatWorkspaceId ?? ""}:${newWorkspaceNonce}`}
-                initialWorkspaceForm={newWorkspaceForm}
-                initialMode={newConversationMode}
-                initialWorkspaceId={newChatWorkspaceId}
-                leftPanelExpanded={showLeftPanel}
-                modelId={selectedModelId}
-                modelOptions={visibleModelOptions}
-                modelsEmptyReason={modelsEmptyReason}
-                onAddWorkspace={handleAddWorkspace}
-                onModelChange={changeDraftModel}
-                thinkingLevel={selectedThinkingLevel}
-                onThinkingLevelChange={changeDraftThinkingLevel}
-                approvalTier={appSettings.approvalTier}
-                onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                onStart={startNewConversation}
-                onToggleLeftPanel={handleToggleLeftPanel}
-                skillGuideDismissed={appSettings.skillGuideDismissed}
-                onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
-                workspaces={userWorkspaces}
+              <TerminalPanel
+                panel={terminalPanel}
+                threadId={terminalThreadId}
               />
             )
-          : section === "skill"
-            ? (
-                <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
-              )
-            : section === "remote"
-              ? (
-                  <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
-                )
-              : storeError
-                ? (
-                    <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                      {t("appShell.storeInitFailed")}
-                      {storeError}
-                    </div>
-                  )
-                : (
-                    <AgentThread
-                      // One instance per conversation: switching threads
-                      // remounts, so a conversation's messages, listeners and
-                      // in-flight writes can never bleed into another.
-                      key={activeThread?.id ?? "__none"}
-                      activeApproval={activeApproval}
-                      agentConnection={agentConnection}
-                      approvalTier={appSettings.approvalTier}
-                      showThinking={appSettings.showThinking}
-                      loadingStore={loadingStore}
-                      modelId={activeThreadModelId}
-                      modelOptions={visibleModelOptions}
-                      onModelChange={changeModel}
-                      onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                      thinkingLevel={activeThinkingLevel}
-                      onThinkingLevelChange={changeThinkingLevel}
-                      pendingPrompt={pendingPrompt}
-                      thread={activeThread}
-                      workspacePath={activeWorkspace?.path ?? null}
-                      onApprovalDecision={handleApprovalDecision}
-                      leftPanelExpanded={showLeftPanel}
-                      onRetryAgentConnection={() => void refreshAgentModels()}
-                      onOpenAccount={handleOpenAccount}
-                      onOpenModels={handleOpenModels}
-                      onOpenProviders={handleOpenProviders}
-                      onToggleLeftPanel={handleToggleLeftPanel}
-                      onPromptConsumed={consumePendingPrompt}
-                      onForked={(forkedThreadId: string) => {
-                        void refreshStore(forkedThreadId);
-                      }}
-                      onThreadActivity={() => {
-                        void refreshStore(activeThread?.id ?? undefined);
-                      }}
-                    />
-                  )}
-      </main>
-      {/* Views without thread context hide the right panel entirely, including
-          the collapsed expand affordance. */}
-      {hideRightPanel
-        ? null
-        : (
-            <ContextPanel
-              activeThread={activeThread}
-              activeWorkspace={activeWorkspace}
-              activeTab={contextTab}
-              expanded={rightExpanded}
-              width={rightPanelWidth}
-              onResizeStart={startRightPanelResize}
-              onResizeNudge={nudgeRightPanel}
-              onTabChange={setContextTab}
-              onToggleExpanded={() => setRightExpanded(value => !value)}
-            />
-          )}
-      {/* While dragging the divider, a full-window overlay keeps the cursor and
-          captures mouse events even over embedded iframes (PDF preview). */}
-      {rightPanelResizing && !hideRightPanel
-        ? <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
-        : null}
+          : null}
+      </div>
       <AppShellDialogs
         batchDeleteDialog={batchDeleteDialog}
         deleteDialog={deleteDialog}

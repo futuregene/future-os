@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -7,12 +8,18 @@ interface ThreadHeaderProps {
   thread: StoredThread | null;
   leftPanelExpanded: boolean;
   onToggleLeftPanel: () => void;
+  /**
+   * Optional trailing affordance owned by the shell (the terminal toggle).
+   * A node rather than a callback keeps this header unaware of the feature.
+   */
+  action?: ReactNode;
 }
 
 export function ThreadHeader({
   thread,
   leftPanelExpanded,
   onToggleLeftPanel,
+  action,
 }: ThreadHeaderProps) {
   const { t } = useTranslation("agent");
   return (
@@ -29,6 +36,13 @@ export function ThreadHeader({
           <div className="truncate text-sm font-semibold text-ink">{thread?.title ?? t("thread.defaultTitle")}</div>
         </div>
       </div>
+      {action
+        ? (
+            <div className="flex shrink-0 items-center gap-1">
+              {action}
+            </div>
+          )
+        : null}
     </header>
   );
 }

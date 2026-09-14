@@ -49,8 +49,22 @@ pub fn rename_workspace(
 pub async fn delete_workspace(
     workspace_id: String,
 ) -> Result<store::WorkspaceRecord, crate::AppError> {
+    // Terminals are conversation-scoped and cannot be reached after their
+    // conversations are gone, so collect the ids first and close them once the
+    // delete succeeded. Terminal support is a gui feature; without it the ids
+    // have no consumer.
+    #[cfg(feature = "gui")]
+    let thread_ids: Vec<String> = store::list_threads()?
+        .into_iter()
+        .filter(|thread| thread.workspace_id == workspace_id)
+        .map(|thread| thread.id)
+        .collect();
     // Hard-delete the workspace, its threads, and all their child rows.
     let workspace = store::delete_workspace(&workspace_id)?;
+    #[cfg(feature = "gui")]
+    for thread_id in &thread_ids {
+        crate::commands::close_thread_terminals(thread_id);
+    }
     crate::agent_bridge::reconcile_delete_outbox().await;
     // Physically reclaim the now-orphaned GUI dirs: the workspace's shadow-review
     // repo and each thread's image/chat-scratch dir. These key off DB presence,

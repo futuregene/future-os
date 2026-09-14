@@ -161,3 +161,17 @@ body {
   overflow-y: auto;
   scrollbar-width: thin;
 }
+
+/* The embedded terminal's IME preedit box.
+   xterm ships `background: #000; color: #fff` for `.composition-view` — a
+   dark-theme default — while this app is light-only (see
+   `features/terminal/theme.ts`: a dark terminal in a white window reads as a
+   rendering bug). Typing Chinese therefore painted a black rectangle with white
+   characters over the terminal while the IME was composing. Paint it with the
+   terminal's own palette instead, so the preedit looks like the text being
+   typed. The selector is one level deeper than xterm's to win regardless of
+   stylesheet order. */
+[data-component="terminal"] .xterm .composition-view {
+  background: theme(colors.surface);
+  color: theme(colors.ink);
+}

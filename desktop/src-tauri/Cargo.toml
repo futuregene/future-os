@@ -24,6 +24,13 @@ gui = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+# End-to-end transport checks drive the real loopback listener with a real
+# WebSocket client (`terminal::server::end_to_end`). Features unify only for the
+# test build; the library keeps the server-side `handshake`-only dependency.
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+    "handshake",
+    "connect",
+] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -48,7 +55,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"
 tonic = "0.12"
 prost = "0.13"
-tokio = { version = "1", features = ["time", "sync", "rt-multi-thread", "signal", "process"] }
+tokio = { version = "1", features = ["time", "sync", "rt-multi-thread", "signal", "process", "net", "io-util", "macros"] }
 qrcode = { version = "0.14", default-features = false }
 terminal_size = "0.4"
 fs2 = "0.4"
@@ -90,6 +97,17 @@ ignore = "0.4"
 fuzzy-matcher = "0.3"
 # Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
 arboard = { version = "3.6", default-features = false, optional = true }
+# Embedded terminal (see desktop/DEV_MD/embedded-terminal.md): a PTY session
+# registry served to the app's own webview over a loopback-only HTTP/WebSocket
+# listener — the opencode transport model. `portable-pty` is the cross-platform
+# PTY abstraction (wezterm); the WebSocket upgrade rides tokio-tungstenite, the
+# same version the workspace already pins for the channel bridges. The HTTP/1.1
+# control routes are parsed in-crate (no axum/hyper): the loopback listener
+# serves one request per connection and the repo already hand-rolls the web
+# client's HTTP in `remote/mod.rs`.
+portable-pty = "0.9"
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+libc = "0.2"
 
 # Win32 API for the native window chrome: the high-quality taskbar icon (ICO
 # file loaded with proper multi-size support instead of Tauri's single-size GDI
