@@ -39,12 +39,12 @@
   },
   "statusConnected": "Connected",
   "statusConnecting": "Connecting",
-  "statusWaitingDesktop": "Waiting for desktop",
+  "statusRecovering": "Restoring connection",
   "statusDevicePreparing": "Desktop is preparing",
   "statusDisconnected": "Disconnected",
   "statusPairingExpired": "Pairing expired",
   "statusNetworkUnavailable": "Network unavailable",
   "statusServiceUnavailable": "Service unavailable",
   "statusDeviceUnavailable": "Device unavailable",
-  "connectionHint": "Trying to connect. Check the computer’s network and keep FutureOS running."
+  "connectionHint": "Trying to connect. Check the computer’s network."
 }

@@ -12,7 +12,6 @@ import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
   remoteConnectionPresentation,
-  shouldShowRemoteConnectionHint,
   startRemote,
   stopRemote,
   unpairRemote,
@@ -67,7 +66,7 @@ export function RemoteView({
   const presentation = remoteConnectionPresentation(remoteStatus);
   const connected = presentation?.level === "connected";
   const connecting = presentation?.level === "connecting";
-  const showConnectionHint = shouldShowRemoteConnectionHint(remoteStatus);
+  const reconnecting = connecting && presentation?.action !== "wait";
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
   // previously-stopped-but-credential-still-here.  Empty when truly unpaired.
@@ -190,7 +189,7 @@ export function RemoteView({
             ? (
                 <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <Badge tone={connected ? "info" : connecting ? "warning" : "danger"}>
+                    <Badge tone={connected ? "success" : connecting ? "warning" : "danger"}>
                       {presentation ? t(presentation.titleKey) : t("statusDisconnected")}
                       {presentation?.supportCode ? ` (${presentation.supportCode})` : ""}
                     </Badge>
@@ -198,11 +197,11 @@ export function RemoteView({
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                       <Button
                         disabled={busy}
-                        onClick={() => void (running ? handleStop() : handleStart())}
+                        onClick={() => void (running && !reconnecting ? handleStop() : handleStart())}
                         size="sm"
                         variant="secondary"
                       >
-                        {running
+                        {running && !reconnecting
                           ? t("disconnect")
                           : presentation?.action === "pairAgain"
                             ? t("pairAgain")
@@ -230,10 +229,6 @@ export function RemoteView({
                   <span className="min-w-0 flex-1">{errorText}</span>
                 </div>
               )
-            : null}
-
-          {showConnectionHint
-            ? <p className="text-sm text-ink-muted">{t(presentation?.messageKey === "devicePreparing" ? "agentUnavailable" : "connectionHint")}</p>
             : null}
 
           {remoteStatus?.warningCode === "web_bind"

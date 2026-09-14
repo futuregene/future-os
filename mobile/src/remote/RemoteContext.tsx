@@ -45,6 +45,7 @@ interface RemoteContextValue {
   removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
   desktopOnline: boolean;
+  hasConnectedContent: boolean;
   agentAvailable: boolean;
   connectionPresentation: ConnectionPresentation;
   catalogSync: import("./useSessionCatalog").CatalogSyncState;
@@ -234,6 +235,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     removeDesktop,
     presence,
     desktopOnline,
+    hasConnectedContent,
     capabilities,
     fileTransferSupported,
     promptReceiptSupported,
@@ -337,9 +339,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         desktopOnline,
         agentAvailable,
         desktopDisconnected: presence?.disconnected,
+        desktopDisconnectReason: presence?.reason,
         error,
       }),
-    [agentAvailable, desktopOnline, error, phase, presence?.disconnected],
+    [agentAvailable, desktopOnline, error, phase, presence?.disconnected, presence?.reason],
   );
 
   const streaming = timeline.streaming;
@@ -357,6 +360,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       removeDesktop,
       presence,
       desktopOnline,
+      hasConnectedContent,
       catalogSync,
       agentAvailable,
       connectionPresentation,
@@ -422,6 +426,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       continueRun,
       decideApproval,
       desktopOnline,
+      hasConnectedContent,
       catalogSync,
       deleteSession,
       deleteWorkspace,

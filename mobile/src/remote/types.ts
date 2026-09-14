@@ -1,5 +1,7 @@
 export type ConnectionPhase =
   | "booting"
+  /** Desktop explicitly ended the remote session; wait for a user retry. */
+  | "stopped"
   | "unpaired"
   | "claiming"
   | "connecting"
@@ -88,6 +90,8 @@ export interface Presence {
   online: boolean;
   /** An intentional desktop disconnect; `online: false` is authoritative. */
   disconnected?: boolean;
+  /** Why Desktop explicitly ended the remote session. */
+  reason?: string;
   /** Immediate desktop-originated unpair notice; server revocation backs it up. */
   unpaired?: boolean;
   pairId: string;

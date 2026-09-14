@@ -74,6 +74,7 @@ export function SessionList({
   }, [expanded]);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState(new Set<string>());
+  const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   const rows = useMemo(
@@ -259,7 +260,7 @@ export function SessionList({
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
     return (
-      <View style={[styles.row, { marginLeft: Math.min(item.depth, 3) * 12 }, checked && styles.selected]}>
+      <View style={[styles.row, { marginLeft: Math.min(item.depth, 3) * 12 }, pressedSessionId === session.sessionId && styles.rowPressed]}>
         {selecting ? (
           <Pressable
             accessibilityRole="checkbox"
@@ -308,7 +309,11 @@ export function SessionList({
           onLongPress={() => {
             if (!selecting) onMenu(session);
           }}
-          style={({ pressed }) => [styles.sessionBody, pressed && styles.pressed]}
+          onPressIn={() => setPressedSessionId(session.sessionId)}
+          onPressOut={() =>
+            setPressedSessionId(current => (current === session.sessionId ? null : current))
+          }
+          style={styles.sessionBody}
         >
           <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
@@ -628,6 +633,7 @@ const styles = StyleSheet.create({
   workspaceName: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "700" },
   count: { color: colors.inkMuted, fontSize: 12, fontVariant: ["tabular-nums"] },
   row: { minHeight: layout.touchTarget, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
+  rowPressed: { backgroundColor: colors.surfaceSubtle },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   sessionBody: {
     flex: 1,

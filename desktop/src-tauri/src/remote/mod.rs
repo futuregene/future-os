@@ -465,6 +465,7 @@ struct Supervisor {
     start_lock: tokio::sync::Mutex<()>,
     start_requested: AtomicBool,
     suspended: AtomicBool,
+    resume_recovery_running: AtomicBool,
     start_retry_running: AtomicBool,
     start_retry_attempts: AtomicU64,
     start_retry_since: AtomicU64,
@@ -485,6 +486,7 @@ static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(|| Supervisor {
     start_lock: tokio::sync::Mutex::const_new(()),
     start_requested: AtomicBool::new(false),
     suspended: AtomicBool::new(false),
+    resume_recovery_running: AtomicBool::new(false),
     start_retry_running: AtomicBool::new(false),
     start_retry_attempts: AtomicU64::new(0),
     start_retry_since: AtomicU64::new(0),
@@ -516,6 +518,7 @@ impl Supervisor {
         for (task, _) in self.tasks.lock().unwrap().drain(..) {
             task.abort();
         }
+        self.resume_recovery_running.store(false, Ordering::Release);
         self.start_retry_running.store(false, Ordering::Release);
         self.runtime_reconnect_running
             .store(false, Ordering::Release);
@@ -1536,11 +1539,26 @@ pub fn handle_system_resume() {
         }
     }
     *SUPERVISOR.last_error_code.lock().unwrap() = Some("system_sleep".to_string());
+    SUPERVISOR
+        .resume_recovery_running
+        .store(true, Ordering::Release);
     SUPERVISOR.spawn(async {
         match start_once(false).await {
-            Ok(status) if retryable_start_status(&status) => spawn_start_retry(),
-            Ok(_) => {}
+            Ok(status) if retryable_start_status(&status) => {
+                spawn_start_retry();
+                SUPERVISOR
+                    .resume_recovery_running
+                    .store(false, Ordering::Release);
+            }
+            Ok(_) => {
+                SUPERVISOR
+                    .resume_recovery_running
+                    .store(false, Ordering::Release);
+            }
             Err(error) => {
+                SUPERVISOR
+                    .resume_recovery_running
+                    .store(false, Ordering::Release);
                 eprintln!("remote: resume recovery failed [PW001]: {error}");
                 *SUPERVISOR.last_error_code.lock().unwrap() =
                     Some("reconnect_required".to_string());
@@ -1710,14 +1728,19 @@ pub fn status() -> RemoteStatus {
             // state cannot be inferred from `SUPERVISOR.state`. Expose it explicitly so
             // the UI shows an amber reconnecting indicator instead of briefly
             // presenting the initial transient network/server error as final.
-            let reconnecting = SUPERVISOR.start_requested.load(Ordering::Acquire)
+            let retrying_start = SUPERVISOR.start_requested.load(Ordering::Acquire)
                 && SUPERVISOR.start_retry_running.load(Ordering::Acquire)
                 && matches!(error_code.as_deref(), Some("network") | Some("server"));
+            let resuming_from_sleep = SUPERVISOR.start_requested.load(Ordering::Acquire)
+                && SUPERVISOR.resume_recovery_running.load(Ordering::Acquire)
+                && matches!(error_code.as_deref(), Some("system_sleep"));
+            let reconnecting = retrying_start || resuming_from_sleep;
             let (phase, reason) = if reconnecting {
                 (
                     RemotePhase::Reconnecting,
                     Some(match error_code.as_deref() {
                         Some("server") => RemoteFailureReason::RemoteServer,
+                        Some("system_sleep") => RemoteFailureReason::SystemSleep,
                         _ => RemoteFailureReason::Network,
                     }),
                 )
@@ -1735,10 +1758,9 @@ pub fn status() -> RemoteStatus {
                         RemotePhase::Failed,
                         Some(RemoteFailureReason::GenerationUnhealthy),
                     ),
-                    Some("system_sleep") => (
-                        RemotePhase::Reconnecting,
-                        Some(RemoteFailureReason::SystemSleep),
-                    ),
+                    Some("system_sleep") => {
+                        (RemotePhase::Failed, Some(RemoteFailureReason::SystemSleep))
+                    }
                     Some("connecting") => (RemotePhase::Connecting, None),
                     Some("protocol") => (RemotePhase::Failed, Some(RemoteFailureReason::Protocol)),
                     Some("network") => (
@@ -4888,7 +4910,7 @@ mod runtime_tests {
             ),
             (
                 "system_sleep",
-                RemotePhase::Reconnecting,
+                RemotePhase::Failed,
                 Some(RemoteFailureReason::SystemSleep),
             ),
             ("connecting", RemotePhase::Connecting, None),

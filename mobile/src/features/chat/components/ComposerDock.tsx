@@ -42,7 +42,6 @@ function ComposerDockView({
   send,
   atLatest,
   scrollToLatest,
-  showOffline,
   pendingApprovals,
   approvalSubmitting,
   approvalError,
@@ -63,7 +62,6 @@ function ComposerDockView({
   send: () => Promise<void>;
   atLatest: boolean;
   scrollToLatest: () => void;
-  showOffline: boolean;
   pendingApprovals: PendingApproval[];
   approvalSubmitting: string | null;
   approvalError: { id: string; message: string } | null;
@@ -75,7 +73,7 @@ function ComposerDockView({
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
-  const editable = remote.desktopOnline && !remote.streaming && !remote.busy;
+  const editable = !remote.streaming && !remote.busy;
   const inputRef = useRef<TextInput>(null);
   const completion = useSkillCompletion(message, setMessage, editable && selector === null, inputRef);
   const pickerHeight = Math.max(100, Math.min(240, (height - keyboardHeight - 100) * 0.5));
@@ -104,11 +102,6 @@ function ComposerDockView({
           <ArrowDown color={colors.inkSoft} size={16} />
           <Text style={styles.backToLatestText}>{t("chat.backToLatest")}</Text>
         </Pressable>
-      )}
-      {(showOffline || remote.connectionPresentation.customerState === "devicePreparing") && (
-        <Text style={styles.offlineComposer}>
-          {t(remote.connectionPresentation.hintKey ?? "connection.offlineHint")}
-        </Text>
       )}
       {!remote.draft && remote.desktopOnline && remote.models.length === 0 && !remote.modelId && (
         <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
@@ -225,8 +218,8 @@ function ComposerDockView({
               <Pressable
                 accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming }}
-                disabled={remote.streaming}
+                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming || remote.connectionPresentation.level !== "connected" }}
+                disabled={remote.streaming || remote.connectionPresentation.level !== "connected"}
                 onPress={() => setSelector("model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
@@ -244,8 +237,8 @@ function ComposerDockView({
               <Pressable
                 accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming }}
-                disabled={remote.streaming}
+                accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming || remote.connectionPresentation.level !== "connected" }}
+                disabled={remote.streaming || remote.connectionPresentation.level !== "connected"}
                 onPress={() => setSelector("thinking")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,

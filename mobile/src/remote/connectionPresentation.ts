@@ -30,7 +30,11 @@ export interface ConnectionPresentation {
     | "connection.deviceUnavailable"
     | "connection.connectionFailed";
   hintKey:
-    "connection.offlineHint" | "connection.agentUnavailable" | "connection.failedHint" | null;
+    | "connection.offlineHint"
+    | "connection.manuallyDisconnectedHint"
+    | "connection.agentUnavailable"
+    | "connection.failedHint"
+    | null;
 }
 
 function failedTitleKey(state: RemoteErrorCustomerState): ConnectionPresentation["titleKey"] {
@@ -55,12 +59,14 @@ export function connectionPresentation({
   desktopOnline,
   agentAvailable = true,
   desktopDisconnected = false,
+  desktopDisconnectReason,
   error = null,
 }: {
   phase: ConnectionPhase;
   desktopOnline: boolean;
   agentAvailable?: boolean;
   desktopDisconnected?: boolean;
+  desktopDisconnectReason?: string;
   error?: string | null;
 }): ConnectionPresentation {
   if (phase === "revoked")
@@ -83,14 +89,14 @@ export function connectionPresentation({
       hintKey: "connection.failedHint",
     };
   }
-  if (phase === "unpaired" || desktopDisconnected)
+  if (phase === "stopped" || phase === "unpaired" || desktopDisconnected)
     return {
       level: "disconnected",
       customerState: "disconnected",
       action: "reconnect",
-      supportCode: null,
+      supportCode: desktopDisconnectReason === "system_sleep" ? "PW001" : null,
       titleKey: "connection.disconnected",
-      hintKey: "connection.offlineHint",
+      hintKey: desktopDisconnectReason === "user_disconnect" ? "connection.manuallyDisconnectedHint" : "connection.offlineHint",
     };
   if (phase === "ready" && desktopOnline && agentAvailable)
     return {
@@ -107,8 +113,8 @@ export function connectionPresentation({
       customerState: "devicePreparing",
       action: "restartDesktop",
       supportCode: "LC003",
-      titleKey: "connection.devicePreparing",
-      hintKey: "connection.agentUnavailable",
+      titleKey: "connection.waitingDesktop",
+      hintKey: "connection.offlineHint",
     };
   if (phase === "ready")
     return {

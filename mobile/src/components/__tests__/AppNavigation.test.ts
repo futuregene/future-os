@@ -4,7 +4,14 @@ import App from "../../../App";
 import { SessionsScreen } from "../../screens/SessionsScreen";
 import { ChatScreen } from "../../features/chat/ChatScreen";
 
-const mockRemote = { phase: "ready", credentials: { pairId: "pair" }, desktops: [], selectedSessionId: "", draft: false };
+const mockRemote = {
+  phase: "ready",
+  credentials: { pairId: "pair" },
+  desktops: [{ desktopId: "desktop", pairId: "pair" }],
+  connectionPresentation: { level: "connected" },
+  selectedSessionId: "",
+  draft: false,
+};
 jest.mock("../../remote/RemoteContext", () => ({ RemoteProvider: ({ children }: { children: unknown }) => children, useRemoteControls: () => mockRemote }));
 jest.mock("expo-status-bar", () => ({ StatusBar: () => null }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaProvider: ({ children }: { children: unknown }) => children }));

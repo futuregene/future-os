@@ -96,10 +96,17 @@ function fixture() {
     subscribeState(connection: NatsConnection, generation: number): void;
     subscribeLiveness(connection: NatsConnection, generation: number): void;
     subscribeTransfers(connection: NatsConnection, generation: number): void;
+    desktopAvailable: boolean;
+    state: string;
   };
   internal.connection = connection;
   return { client, internal, connection, subscriptions, request, commands, wires, callbacks, creds, desktop,
-    pair: () => internal.performHandshake(connection),
+    pair: async () => {
+      const result = await internal.performHandshake(connection);
+      internal.desktopAvailable = true;
+      internal.state = "ready";
+      return result;
+    },
     loseConfirmation: () => { loseConfirmation = true; },
     corruptReply: () => { corruptReply = true; },
     serverChannel: () => serverChannel!,
@@ -202,6 +209,8 @@ test("tampered replies are rejected before RPC success can be observed", async (
 
 test("does not send any business command before a secure handshake", async () => {
   const f = fixture();
+  f.internal.desktopAvailable = true;
+  f.internal.state = "ready";
   await expect(f.client.request({ type: "approval_decision" })).rejects.toThrow("pairing_handshake_required");
   expect(f.request).not.toHaveBeenCalled();
   await f.client.close();

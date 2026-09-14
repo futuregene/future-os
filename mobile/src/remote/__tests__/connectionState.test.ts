@@ -234,12 +234,12 @@ describe("backoffDelayMs", () => {
   test("grows with attempt (deterministic random)", () => {
     const r0 = () => 0;
     const r1 = () => 1;
-    expect(backoffDelayMs(0, r0)).toBe(1000);
-    expect(backoffDelayMs(1, r0)).toBe(2000);
-    expect(backoffDelayMs(2, r0)).toBe(4000);
-    expect(backoffDelayMs(4, r0)).toBe(16000);
-    expect(backoffDelayMs(5, r0)).toBe(MAX_BACKOFF_MS); // 32000 → capped
-    expect(backoffDelayMs(6, r0)).toBe(MAX_BACKOFF_MS);
+    expect(backoffDelayMs(0, r0)).toBe(800);
+    expect(backoffDelayMs(1, r0)).toBe(1600);
+    expect(backoffDelayMs(2, r0)).toBe(3200);
+    expect(backoffDelayMs(4, r0)).toBe(12800);
+    expect(backoffDelayMs(5, r0)).toBe(24000);
+    expect(backoffDelayMs(6, r0)).toBe(24000);
     expect(backoffDelayMs(5, r1)).toBe(MAX_BACKOFF_MS); // 38400 → capped
   });
 });
@@ -327,7 +327,13 @@ function recoveryClient(): {
   boundary.secureRequest = (connection, subject, bytes, timeout) => connection.request(subject, bytes, { timeout });
   const serving = new ConnectionGeneration(0);
   serving.activate();
-  Object.assign(client, { activeGeneration: serving, activateSecureChannel: async () => {} });
+  Object.assign(client, {
+    activeGeneration: serving,
+    activateSecureChannel: async () => {},
+    desktopAvailable: true,
+    everReady: true,
+    state: "ready",
+  });
   return { client, callbacks };
 }
 

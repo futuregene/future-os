@@ -79,6 +79,64 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 }
 
 export class RemoteClient {
+  private everReady = false;
+  private recoveryDeadline = 0;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private desktopAvailable = false;
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private endUnavailable(error: Error): void {
+    if (this.stopped || this.isTerminal()) return;
+    this.cancelAttempt();
+    this.clearTimers();
+    this.clearDeadline();
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.signal({ type: "fatal", error });
+    this.callbacks.onError(error);
+  }
+
+  private clearDeadline(): void {
+    if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
+    this.deadlineTimer = null;
+    this.recoveryDeadline = 0;
+  }
+
+  private beginDeadline(): boolean {
+    if (!this.recoveryDeadline) {
+      this.recoveryDeadline = Date.now() + (this.everReady ? 180_000 : 20_000);
+      this.deadlineTimer = setTimeout(
+        () => this.endUnavailable(new Error(this.everReady ? "recovery_timeout" : "connection_timeout")),
+        this.recoveryDeadline - Date.now(),
+      );
+    }
+    if (Date.now() >= this.recoveryDeadline) {
+      this.endUnavailable(new Error(this.everReady ? "recovery_timeout" : "connection_timeout"));
+      return false;
+    }
+    return true;
+  }
+
+  private assertBusinessReady(): void {
+    if (this.stopped || this.state !== "ready" || !this.desktopAvailable)
+      throw new Error("communication_frozen");
+  }
+
+  private receivePresence(presence: Presence): void {
+    this.desktopAvailable = presence.online && presence.agentAvailable !== false;
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    if (!presence.disconnected) {
+      this.presenceTimer = setTimeout(() => {
+        this.desktopAvailable = false;
+        void this.recoverNow("network-changed");
+      }, 15_000);
+    }
+    if (this.desktopAvailable && this.state === "ready") {
+      if (this.recoveryDeadline && !this.beginDeadline()) return;
+      this.everReady = true;
+      this.clearDeadline();
+    }
+    this.callbacks.onPresence(presence);
+  }
   private connection: NatsConnection | null = null;
   private credentials: RemoteCredentials;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -229,6 +287,7 @@ export class RemoteClient {
    * the retry timer is owned by exactly one place, here).
    */
   open(): Promise<void> {
+    if (this.stopped || this.isTerminal() || !this.beginDeadline()) return Promise.resolve();
     if (this.openPromise) return this.openPromise;
     const pending = this.openAttempt().finally(() => {
       if (this.openPromise === pending) this.openPromise = null;
@@ -238,7 +297,8 @@ export class RemoteClient {
   }
 
   private async openAttempt(): Promise<void> {
-    if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
+    if (this.stopped || this.isTerminal()) return;
+    if (!this.appActive || !this.networkAvailable) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     const controller = new AbortController();
@@ -246,15 +306,17 @@ export class RemoteClient {
     const current = () =>
       !controller.signal.aborted && !this.stopped && generation === this.generation;
     try {
-      const previous = this.credentials;
-      const fresh = await ensureFreshCredentials(previous, controller.signal);
-      if (!current()) return;
-      if (fresh !== previous) {
-        await this.callbacks.onCredentials(fresh);
+      await withTimeout((async () => {
+        const previous = this.credentials;
+        const fresh = await ensureFreshCredentials(previous, controller.signal);
         if (!current()) return;
-      }
-      this.credentials = fresh;
-      await this.connectSocket(generation);
+        if (fresh !== previous) {
+          await this.callbacks.onCredentials(fresh);
+          if (!current()) return;
+        }
+        this.credentials = fresh;
+        await this.connectSocket(generation);
+      })(), Math.min(20_000, this.recoveryDeadline - Date.now()));
       if (current()) this.scheduleRefresh();
     } catch (error) {
       if (current()) {
@@ -263,6 +325,7 @@ export class RemoteClient {
         // starting another replacement. Never mask identity/auth failures.
         if (classifyError(error) === "transport" && await this.restoreServingConnection(generation)) return;
         if (!current()) return;
+        this.cancelAttempt();
         this.openPromise = null;
         this.handleFailure(error);
       }
@@ -286,8 +349,10 @@ export class RemoteClient {
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = null;
       this.retryAttempt = 0;
+      if (this.recoveryDeadline && !this.beginDeadline()) return false;
+      this.receivePresence(presence);
+      if (this.stopped || this.isTerminal()) return false;
       this.signal({ type: "ready" });
-      this.callbacks.onPresence(presence);
       this.scheduleRefresh();
       this.finishFailureEpisode("recovered");
       this.callbacks.onReconnected();
@@ -326,6 +391,8 @@ export class RemoteClient {
   async close(reason: "UserInitiated" | "Unpair" = "UserInitiated"): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.clearDeadline();
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
     this.cancelAttempt();
     this.clearTimers();
     this.disposeConnection(reason === "UserInitiated" ? "close" : "unpair");
@@ -365,6 +432,7 @@ export class RemoteClient {
   /** Validate after foregrounding, or immediately rebuild after a path change. */
   recoverNow(reason: RecoveryReason): Promise<void> {
     if (this.stopped || this.isTerminal()) return Promise.resolve();
+    if (this.recoveryDeadline && !this.beginDeadline()) return Promise.resolve();
     if (!this.appActive) return Promise.resolve();
     if (!this.networkAvailable) return Promise.resolve();
     if (this.recoveryPromise) return this.recoveryPromise;
@@ -477,6 +545,7 @@ export class RemoteClient {
       connection = await wsconnect({
         servers: this.credentials.natsWsUrl,
         timeout: 10_000,
+        maxReconnectAttempts: 0,
         inboxPrefix: `p.${this.credentials.pairId}.rep.${this.credentials.deviceId}`,
         authenticator: jwtAuthenticator(this.credentials.userJwt, seed),
       });
@@ -539,7 +608,7 @@ export class RemoteClient {
         void previous.close().catch(() => undefined);
       }
       this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
-      this.callbacks.onPresence(confirmation.presence);
+      this.receivePresence(confirmation.presence);
       this.negotiatedFeatures = new Set(confirmation.features ?? []);
       this.callbacks.onFeatures(confirmation.features ?? []);
       candidate.activate();
@@ -573,6 +642,11 @@ export class RemoteClient {
   }
 
   private handleFailure(error: unknown): void {
+    if (this.stopped || this.isTerminal()) return;
+    if (!this.everReady && classifyError(error) !== "authTerminal") {
+      this.endUnavailable(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     const kind = classifyError(error);
     if (kind === "authTerminal") {
       // The device was revoked (M1) — stop every network action and tell the
@@ -675,6 +749,11 @@ export class RemoteClient {
 
   private scheduleRetry(): void {
     if (this.stopped || this.isTerminal()) return;
+    if (!this.everReady) {
+      this.endUnavailable(new Error("connection_failed"));
+      return;
+    }
+    if (!this.beginDeadline()) return;
     this.signal({ type: "open_failed", error: new Error("transport_failed") });
     if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -709,6 +788,18 @@ export class RemoteClient {
       | { type: "revoked" }
       | { type: "unpair" },
   ): void {
+    if (event.type === "ready") {
+      if (this.stopped || this.isTerminal()) return;
+      if (this.recoveryDeadline && !this.beginDeadline()) return;
+      if (this.desktopAvailable) {
+        this.everReady = true;
+        this.clearDeadline();
+      }
+    } else if (event.type === "transport_disconnect" || event.type === "auth_failed") {
+      if (!this.beginDeadline()) return;
+    } else if (event.type === "fatal" || event.type === "revoked") {
+      this.clearDeadline();
+    }
     const action = transition(this.state, event);
     if (action.next !== this.state) {
       this.state = action.next;
@@ -840,11 +931,11 @@ export class RemoteClient {
           if (!this.isLiveGeneration(generation) || connection !== this.connection) return;
           this.confirmedBridgeInstanceId = confirmation.bridgeInstanceId;
           this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
-          this.callbacks.onPresence(confirmation.presence);
+          this.receivePresence(confirmation.presence);
           this.negotiatedFeatures = new Set(confirmation.features ?? []);
           this.callbacks.onFeatures(confirmation.features ?? []);
           this.callbacks.onReconnected();
-        } else this.callbacks.onPresence(presence);
+        } else this.receivePresence(presence);
       },
     );
   }
@@ -869,14 +960,11 @@ export class RemoteClient {
   }
 
   /**
-   * The NATS status loop is the transport-truth feeder. A disconnect while
-   * ready enters reconnecting WITHOUT arming our own timer — NATS reconnects
-   * this same connection and emits a `reconnect` status, which we treat as the
-   * re-bound handshake. The internal budget is finite (maxReconnectAttempts ≈
-   * 10 → ~30s): once it is spent, this for-await loop simply ENDS — no status,
-   * no timer, and the app would sit in "reconnecting" forever on a dead
-   * connection. A normal loop exit therefore falls back to `open_failed`, which
-   * arms the single-owner backoff timer so the FSM keeps retrying.
+   * The NATS status loop is the transport-truth feeder. SDK auto-reconnect is
+   * disabled, so a disconnect disposes this generation and immediately asks
+   * the local supervisor to build a replacement. Any natural loop exit also
+   * falls back to `open_failed`; the same supervisor then owns the bounded
+   * backoff and the three-minute recovery deadline.
    */
   private watchStatus(connection: NatsConnection, generation: number): void {
     void (async () => {
@@ -889,6 +977,9 @@ export class RemoteClient {
           }
           if (status.type === "disconnect") {
             this.signal({ type: "transport_disconnect" });
+            this.disposeConnection("network_unavailable");
+            void this.open();
+            return;
           } else if (status.type === "reconnect") {
             if (this.connection !== connection) continue;
             try {
@@ -902,7 +993,7 @@ export class RemoteClient {
               await this.activateSecureChannel(connection);
               if (!this.isLiveGeneration(generation) || this.connection !== connection) return;
               this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
-              this.callbacks.onPresence(confirmation.presence);
+              this.receivePresence(confirmation.presence);
               this.negotiatedFeatures = new Set(confirmation.features ?? []);
               this.callbacks.onFeatures(confirmation.features ?? []);
               this.signal({ type: "ready" });
@@ -972,6 +1063,7 @@ export class RemoteClient {
     sessionId = command.sessionId ?? "list",
     timeoutMs = 10_000,
   ): Promise<RpcResponse<T>> {
+    this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
     return this.requestWithConnection(connection, command, sessionId, timeoutMs);
@@ -1029,6 +1121,7 @@ export class RemoteClient {
   }
 
   async uploadChunk(transferId: string, index: number, bytes: Uint8Array): Promise<void> {
+    this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
     const message = await this.secureRequest(connection,
@@ -1038,6 +1131,7 @@ export class RemoteClient {
   }
 
   async downloadChunk(transferId: string, index: number): Promise<Uint8Array> {
+    this.assertBusinessReady();
     const connection = this.connection;
     if (!connection) throw new Error("not_connected");
     const key = `${transferId}:${index}`;
