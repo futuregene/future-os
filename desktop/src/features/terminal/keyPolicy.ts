@@ -41,9 +41,13 @@ export interface KeyPolicyEvent extends ShortcutKey {
  * Standing down does not swallow the key: xterm returns without calling
  * `preventDefault`, so the browser still delivers it to the IME, which is
  * exactly what a composing keystroke needs.
+ *
+ * The app's own command is released first, so a wedged composition cannot make
+ * the panel un-collapsible. Measured caveat: on WebKitGTK + ibus the composing
+ * `j` of `Ctrl+J` arrives as `key: "Unidentified"`, i.e. the IME consumes it and
+ * cancels the preedit before it can be recognised — the ordering only decides
+ * engines that report the key normally.
  */
 export function terminalKeyPolicy(event: KeyPolicyEvent, isMac: boolean = isMacOS): boolean {
-  if (event.isComposing)
-    return false;
-  return !isPanelToggleShortcut(event, isMac);
+  return !isPanelToggleShortcut(event, isMac) && !event.isComposing;
 }

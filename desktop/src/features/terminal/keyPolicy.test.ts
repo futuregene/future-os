@@ -43,4 +43,16 @@ describe("terminalKeyPolicy", () => {
     expect(terminalKeyPolicy(key({ key: "Enter", isComposing: false }), false)).toBe(true);
     expect(terminalKeyPolicy(key({ key: "\x7F", isComposing: false }), false)).toBe(true);
   });
+
+  it("lets the app's command through even mid-composition", () => {
+    // Contract of the policy: the app's command is not text input, so it is
+    // released before the composing check. Whether the browser presents a
+    // recognisable `j` during a composition is up to the engine — measured on
+    // WebKitGTK + ibus, the composing `j` arrives as `key: "Unidentified"` with
+    // keyCode 229 (the IME consumes it and cancels the preedit), so the
+    // shortcut needs a second press there. The ordering only decides the case
+    // where the key *is* reported normally.
+    expect(terminalKeyPolicy(key({ ctrlKey: true, isComposing: true }), false)).toBe(false);
+    expect(terminalKeyPolicy(key({ metaKey: true, isComposing: true }), true)).toBe(false);
+  });
 });

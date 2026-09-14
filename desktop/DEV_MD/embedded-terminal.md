@@ -129,6 +129,14 @@ replays). A detached viewer never grows memory without bound.
   WebKit sequences are in `features/terminal/keyPolicy.ts`; the IME preedit box
   is painted with the terminal's own palette in `styles/globals.css` (xterm ships
   a black-on-white dark-theme default, and this app is light-only).
+  Two measured details worth knowing: pressing a key with a modifier during a
+  composition (e.g. `Ctrl+J`) makes the IME **cancel** the pending preedit, and
+  the browser reports that key as `key: "Unidentified"` — so the panel shortcut
+  cannot be recognised mid-composition and needs a second press (nothing leaks to
+  the shell either way); and candidates are chosen/confirmed with Space or a
+  digit, while a synthesised `Enter` makes this IME commit the raw pinyin
+  (`nihao`) — verified to be the input method's own choice, since a plain
+  `<input>` behaves the same.
 
 ## Working directory
 
