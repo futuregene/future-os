@@ -130,7 +130,7 @@ describe("activity rail conversation hierarchy", () => {
     const expectCompactRoots = () => {
       for (const id of ["sibling", "pinned"]) {
         const current = row(id);
-        expect(current.style.paddingLeft).toBe(workspace && id !== "pinned" ? "28px" : "12px");
+        expect(current.style.paddingLeft).toBe(workspace && id !== "pinned" ? "28px" : "16px");
         expect(current.querySelector("span.truncate")?.previousElementSibling).toBe(current.firstElementChild);
       }
     };
