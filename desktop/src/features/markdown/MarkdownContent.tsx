@@ -108,11 +108,8 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
           ? "text-base font-semibold leading-7 text-ink"
           : "text-sm font-semibold leading-6 text-ink";
       const children = renderInline(node.children, workspaceId, key);
-      if (node.level === 1)
-        return <h1 className={className} key={key}>{children}</h1>;
-      if (node.level === 2)
-        return <h2 className={className} key={key}>{children}</h2>;
-      return <h3 className={className} key={key}>{children}</h3>;
+      const Heading = `h${node.level}` as const;
+      return <Heading className={className} key={key}>{children}</Heading>;
     }
     case "list": {
       const Tag = node.ordered ? "ol" : "ul";
@@ -122,6 +119,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
             ? "list-decimal space-y-1 pl-5"
             : "list-disc space-y-1 pl-5"}
           key={key}
+          start={node.ordered ? node.start : undefined}
         >
           {withStableKeys(node.items, key).map(({ item, key: itemKey }) => (
             <li className="pl-1" key={itemKey}>
