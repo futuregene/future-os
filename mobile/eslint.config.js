@@ -19,6 +19,19 @@ module.exports = defineConfig([
     },
   },
   {
+    files: ["App.tsx", "src/**/*.{ts,tsx}"],
+    ignores: ["src/**/__tests__/**"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        paths: [{
+          name: "react-native",
+          importNames: ["Alert"],
+          message: "Use AppAlert or useAppDialog so app errors and confirmations share DialogSurface styling.",
+        }],
+      }],
+    },
+  },
+  {
     // The namespace rule recursively loads the linked ESM-only Remark graph
     // through eslint-plugin-import's legacy resolver and rejects its interface.
     // TypeScript still validates every named import during `typecheck`.

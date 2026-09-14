@@ -10,7 +10,8 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { StyleProp, TextStyle } from "react-native";
-import { Alert, Animated, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";

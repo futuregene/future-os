@@ -1,4 +1,5 @@
-import { Alert, AppState, Platform } from "react-native";
+import { AppState, Platform } from "react-native";
+import { AppAlert as Alert } from "../../components/appAlerts";
 import * as Notifications from "expo-notifications";
 import { notifyTaskFinished, prepareTaskNotifications } from "../taskNotifications";
 

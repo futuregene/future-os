@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Platform } from "react-native";
+import { Platform } from "react-native";
+import { AppAlert as Alert } from "../../components/appAlerts";
 import * as Network from "expo-network";
 import * as Sharing from "expo-sharing";
-import { openFile as openNativeFile, saveFile, supportsNativeFileActions } from "future-file-handler";
+import { openFile as openNativeFile, saveFile, shareFile, supportsNativeFileActions } from "future-file-handler";
 import { File } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import type { TFunction } from "i18next";
@@ -10,7 +11,7 @@ import { useRemote } from "../../remote/RemoteContext";
 import { basename } from "../../remote/localPath";
 import { mobileFileType, mobilePreviewRoute } from "../../remote/fileTypes";
 import { supportedExternalMime } from "../../remote/fileHandler";
-import { withNativePresentation } from "../../remote/nativePresentation";
+import { withNativeHandoff, withNativePresentation } from "../../remote/nativePresentation";
 import {
   MAX_FILE_BYTES,
   mimeFor,
@@ -529,7 +530,7 @@ export function useFileDownload(
           openMimeType = supported;
         }
         const nativeIosAction = Platform.OS === "ios" && operation !== "share" && supportsNativeFileActions();
-        const usesShareSheet = operation === "share" || (Platform.OS !== "android" && !nativeIosAction);
+        const usesShareSheet = Platform.OS !== "android" && (operation === "share" || !nativeIosAction);
         if (usesShareSheet && !(await Sharing.isAvailableAsync())) {
           handoffDownloadAlert(handle, t("attachment.shareUnavailable"));
           return;
@@ -567,8 +568,12 @@ export function useFileDownload(
         });
         const namedFile = await namedExternalFile(file, info.name);
         if (handle.controller.signal.aborted) throw new TransferCancelledError();
-        if (operation === "open" && Platform.OS === "android") {
-          await withNativePresentation(() => openNativeFile(namedFile.uri, openMimeType));
+        if (Platform.OS === "android") {
+          if (operation === "open") {
+            await withNativePresentation(() => openNativeFile(namedFile.uri, openMimeType));
+          } else {
+            await withNativeHandoff(() => shareFile(namedFile.uri, info.mimeType, t("attachment.share")));
+          }
           return;
         }
         const present = () => withNativePresentation(() => {
@@ -597,7 +602,11 @@ export function useFileDownload(
         await present();
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
-        handoffDownloadAlert(handle, t(errorKey));
+        // Android compatibility runtimes can reject export, URI grants or the
+        // system chooser independently. Preserve the native reason instead of
+        // hiding every failure behind the same generic file-action message.
+        const detail = Platform.OS === "android" && error instanceof Error ? error.message.trim() : "";
+        handoffDownloadAlert(handle, detail ? `${t(errorKey)}\n\n${detail}` : t(errorKey));
       } finally {
         finishDownload(handle);
       }
