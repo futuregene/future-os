@@ -224,7 +224,8 @@ fn compile_matcher(abs_pattern: &str) -> Matcher {
 }
 
 /// Convert a glob to an anchored regex. `**` matches across `/`, `*` within a
-/// segment, `?` one non-`/` char. Case-insensitive on macOS (APFS default).
+/// segment, `?` one non-`/` char. Case-insensitive on macOS (APFS default) and
+/// Windows (NTFS default), matching [`paths::path_within`] for literal rules.
 /// Infallible: every regex metacharacter is escaped or rewritten below, so
 /// the builder can only fail on a regex-crate regression.
 fn build_glob_regex(glob: &str) -> Regex {
@@ -792,6 +793,24 @@ mod tests {
         assert_eq!(rules.evaluate(&path, Op::Read), Decision::Deny);
         assert_eq!(rules.evaluate(&path, Op::Write), Decision::Allow);
         assert_eq!(rules.resolution_errors.len(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_literal_write_deny_is_case_insensitive() {
+        // The layer-0 override for the workspace rule file is a literal
+        // (non-glob) rule. NTFS resolves names case-insensitively, so a
+        // differently-cased spelling of a not-yet-existing file must still hit
+        // the deny — otherwise the agent could create its own approval-rule
+        // file by case variation and gain control of the workspace rule layer.
+        let root = tempfile::tempdir().unwrap();
+        let rules = RuleSet::resolve_isolated(root.path());
+        let sneaky = paths::canonicalize_lenient(root.path())
+            .join(".future")
+            .join("APPROVAL_RULE.JSON");
+        assert_eq!(rules.evaluate(&sneaky, Op::Write), Decision::Deny);
+        // Reads stay open, as before.
+        assert_eq!(rules.evaluate(&sneaky, Op::Read), Decision::Allow);
     }
 
     #[test]

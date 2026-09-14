@@ -151,6 +151,14 @@ W0契约冻结，W1纯计划、W2token/ACL/capability、W3restricted driver、W4
 | Windows lint/日志测试假失败 | Rust1.97 lint修正、Unix-only import加cfg、日志smoke固定RUST_LOG=info |
 | PS5.1生命周期Snapshot空数组null | `if`管道折叠数组；`41d458b3`显式初始化数组 |
 
+2026-09-14路径审计（代码审查结论，未依赖新真机复现）：
+
+| 症状 | 根因 / 已有修复 |
+|---|---|
+| 审批卡片/持久化规则出现`\\?\C:\...` | `windows_request`直接用`Path::canonicalize`；改`paths::canonicalize_existing`保持ordinary拼写，与规则层路径可比 |
+| 大小写变体绕过字面规则（如自建`.future\APPROVAL_RULE.JSON`） | `path_within`在Windows按字节比较，而glob已忽略大小写；改Windows与macOS一致忽略ASCII大小写 |
+| ask carveout目标未被预检拒绝 | 同上两条使`reject_explicit_ask_carveouts`比较失败（fail-closed但会先弹审批再失败）；ordinary拼写后恢复 |
+
 ## 6. 原生验收操作
 
 必须在Windows11**非管理员**PowerShell运行；workspace与TEMP为本地NTFS，Rust按仓库toolchain、安装MSVC C++ Build Tools/SDK。关闭FutureOS和自行管理Agent；保留用户dirty文件，不执行git clean/reset。记录候选commit+git status，**不要照旧文档切回已合并的历史分支**。

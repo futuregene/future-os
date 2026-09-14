@@ -101,6 +101,18 @@ pub fn canonicalize_lenient(path: &Path) -> PathBuf {
     }
 }
 
+/// Canonicalize a path that must already exist, in the same ordinary spelling
+/// as [`canonicalize_lenient`].
+///
+/// `Path::canonicalize` returns the Windows extended-length spelling
+/// (`\\?\C:\...`) there, which must never reach the cross-platform rule model,
+/// user-facing approval payloads, or persisted capability metadata. Callers
+/// that need strict "must exist" semantics should use this instead of calling
+/// `Path::canonicalize` directly.
+pub fn canonicalize_existing(path: &Path) -> std::io::Result<PathBuf> {
+    path.canonicalize().map(ordinary_platform_path)
+}
+
 /// `std::fs::canonicalize` returns the Windows extended-length spelling
 /// (`\\?\C:\...`). Keep that kernel spelling at the Win32-handle boundary, but
 /// never leak it into the cross-platform rule model: `?` would be interpreted
@@ -127,8 +139,11 @@ fn ordinary_platform_path(path: PathBuf) -> PathBuf {
 /// Whether `path` is `root` itself or lies under `root`.
 ///
 /// Both sides must already be canonicalized (see [`canonicalize_lenient`]).
-/// On macOS the default APFS volume is case-insensitive, so the comparison
-/// ignores ASCII case there; other platforms compare exactly.
+/// On case-insensitive filesystems — macOS's default APFS volume and Windows'
+/// default NTFS — the comparison ignores ASCII case; other platforms compare
+/// exactly. This must stay in step with the glob matcher, which already
+/// compiles Windows and macOS patterns case-insensitively: a literal rule and
+/// a glob rule for the same Windows path must not disagree about matching.
 pub fn path_within(path: &Path, root: &Path) -> bool {
     let path_parts: Vec<&std::ffi::OsStr> = path.iter().collect();
     let root_parts: Vec<&std::ffi::OsStr> = root.iter().collect();
@@ -141,14 +156,14 @@ pub fn path_within(path: &Path, root: &Path) -> bool {
         .all(|(a, b)| component_eq(a, b))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
     a == b
         || a.to_string_lossy()
             .eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn component_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
     a == b
 }
@@ -275,6 +290,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonicalize_existing_is_ordinary_spelling_and_requires_existence() {
+        let dir = temp_dir("canonicalize-existing");
+        let file = dir.join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        // Same spelling as the lenient helper, but strict about existence.
+        assert_eq!(
+            canonicalize_existing(&file).unwrap(),
+            canonicalize_lenient(&file)
+        );
+        assert!(canonicalize_existing(&dir).unwrap().is_absolute());
+        assert!(!canonicalize_existing(&file)
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(r"\\?\"));
+        assert!(canonicalize_existing(&dir.join("missing.txt")).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn canonicalize_lenient_follows_symlinked_dir_for_new_files() {
@@ -306,6 +339,24 @@ mod tests {
         let dir = temp_dir("case");
         let upper = PathBuf::from(dir.to_string_lossy().to_uppercase());
         assert!(path_within(&dir.join("f.txt"), &upper));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_prefix_check_is_case_insensitive() {
+        // NTFS resolves names case-insensitively, and the glob matcher already
+        // compiles Windows patterns case-insensitively, so a case-varied
+        // spelling must still be recognized as lying inside the root.
+        assert!(path_within(
+            Path::new(r"c:\work\sub\file.txt"),
+            Path::new(r"C:\Work")
+        ));
+        assert!(path_within(Path::new(r"C:\WORK"), Path::new(r"C:\work")));
+        // Only case may differ: `C:\workshop` is not inside `C:\work`.
+        assert!(!path_within(
+            Path::new(r"C:\workshop"),
+            Path::new(r"C:\work")
+        ));
     }
 
     #[test]
