@@ -18,7 +18,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
-import { isPanelToggleShortcut } from "./shortcut";
+import { terminalKeyPolicy } from "./keyPolicy";
 import { TERMINAL_THEME } from "./theme";
 import "@xterm/xterm/css/xterm.css";
 
@@ -94,12 +94,14 @@ export function TerminalView(props: TerminalViewProps) {
       theme: TERMINAL_THEME,
     });
     disposables.push(terminal);
-    // The panel shortcut belongs to the app, not to the shell. xterm cancels
-    // (`preventDefault` + `stopPropagation`) every key it handles, and Ctrl+J is
-    // one of them (a line feed), so without this the window listener never sees
-    // it: the panel would stay open and the shell would run the line the user
-    // was typing. Returning false stands xterm down and lets the event bubble.
-    terminal.attachCustomKeyEventHandler(event => !isPanelToggleShortcut(event));
+    // Two keys belong to someone else. The panel shortcut is the app's (see
+    // `useTerminalPanel`), and while an IME is composing every key belongs to
+    // the IME: xterm's own composition heuristic only knows Chromium's `229`, so
+    // on WebKit it committed the half-typed composition when the user pressed
+    // Backspace to fix a letter, typing the text twice. Returning false stands
+    // xterm down and lets the event reach its owner.
+    // Details and the reproduction: `./keyPolicy`.
+    terminal.attachCustomKeyEventHandler(event => terminalKeyPolicy(event));
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     const serializer = new SerializeAddon();
@@ -312,7 +314,7 @@ export function TerminalView(props: TerminalViewProps) {
         }
         const bytes = new Uint8Array(event.data as ArrayBuffer);
         if (bytes.length > 0 && bytes[0] === 0) {
-          applyMeta(decodeMeta(decoder, bytes.subarray(1)));
+          applyMeta(decodeMeta(bytes.subarray(1)));
           return;
         }
         push(decoder.decode(bytes, { stream: true }));
@@ -421,9 +423,19 @@ export function TerminalView(props: TerminalViewProps) {
   );
 }
 
-function decodeMeta(decoder: TextDecoder, payload: Uint8Array): TerminalFrameMeta | undefined {
+/**
+ * Decode a control frame.
+ *
+ * A decoder of its own, deliberately: the streaming decoder that decodes PTY
+ * output holds the bytes of a character split across two frames, and a
+ * non-streaming `decode()` on the same instance flushes those bytes out as
+ * U+FFFD — which used to eat the end of a replay (and with it the control frame
+ * that reports the cursor) whenever the 64 KiB replay chunk boundary fell inside
+ * a multi-byte character. Control payloads are ASCII JSON.
+ */
+function decodeMeta(payload: Uint8Array): TerminalFrameMeta | undefined {
   try {
-    return JSON.parse(decoder.decode(payload)) as TerminalFrameMeta;
+    return JSON.parse(new TextDecoder().decode(payload)) as TerminalFrameMeta;
   }
   catch {
     return undefined;

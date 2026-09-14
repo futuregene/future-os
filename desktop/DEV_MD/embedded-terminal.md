@@ -115,6 +115,20 @@ replays). A detached viewer never grows memory without bound.
   still sees it while the terminal has focus — without that, xterm would cancel
   the event and send a line feed to the shell instead. The single definition
   lives in `features/terminal/shortcut.ts`.
+* **The IME owns the keyboard while it is composing.** The same custom key
+  handler also stands down for every event flagged `isComposing`, so a composing
+  keystroke reaches the input method instead of the terminal. xterm's own
+  composition heuristic only knows Chromium's convention for "this key belongs
+  to the IME" (`keyCode === 229`); WebKit — the engine the desktop webview uses
+  on Linux — reports consumed keys with their real keyCodes (a composing
+  Backspace arrives as `keyCode 0`). On such a key xterm ran
+  `_finalizeComposition(false)`, which commits whatever the textarea holds at
+  that instant, so *typing pinyin, pressing Backspace to fix a letter and then
+  committing sent the Chinese text to the shell twice* — the command line kept a
+  leftover copy that deleting could not clear. The policy and the captured
+  WebKit sequences are in `features/terminal/keyPolicy.ts`; the IME preedit box
+  is painted with the terminal's own palette in `styles/globals.css` (xterm ships
+  a black-on-white dark-theme default, and this app is light-only).
 
 ## Working directory
 
@@ -149,6 +163,15 @@ session members (Linux: `/proc`; other unix: `ps -o sess`). Windows uses
 Nothing above claims otherwise. A Job Object on Windows and `proc_listchildpids`
 on macOS would be strictly better than the current best-effort paths.
 
+The keyboard **is** covered on Linux beyond the app's own test suite: the real
+`TerminalView` was driven in the system's WebKitGTK (the same engine the Tauri
+webview uses here) against a real PTY running the user's login shell, with
+**ibus-libpinyin** as the input method, through `WebKitWebDriver` — the IME
+preedit, the commit, deleting during a composition and the panel shortcut all
+observed as real events. That is how the composing-Backspace behaviour above was
+found and fixed. macOS and Windows input methods are still **not run**; the
+policy relies only on `KeyboardEvent.isComposing`, which every engine sets.
+
 ## Manual verification (5 minutes, GUI)
 
 1. `npm run tauri:dev` (or run a packaged build), open a conversation.
@@ -163,6 +186,10 @@ on macOS would be strictly better than the current best-effort paths.
 6. Reload the webview (⌘R / Ctrl+R): the panel restores the same screen and the
    shell keeps running (no new shell is spawned).
 7. `exit` in the shell: the tab shows the exit code and offers a restart.
+8. Type Chinese through your IME, correct a letter with Backspace, then commit:
+   the characters must appear **once**, and deleting them must leave a clean
+   line (no leftover copy, no stray backspace). The preedit must render in the
+   terminal's own colours, not in a black box.
 
 ## Differences from opencode
 

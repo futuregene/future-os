@@ -106,6 +106,24 @@ describe("terminal key policy", () => {
     expect(policy?.(new KeyboardEvent("keydown", { key: "j", ctrlKey: true }))).toBe(false);
   });
 
+  it("stands down while an IME owns the keyboard", () => {
+    const policy = mount();
+    // Real WebKitGTK + ibus sequence: a composing Backspace carries keyCode 0 and
+    // isComposing, which xterm's Chromium-only `229` heuristic misreads as a
+    // plain key — it committed the half-typed composition and typed the text
+    // twice. The policy must release the key to the IME instead.
+    const composingBackspace = new KeyboardEvent("keydown", { key: "\u0008", isComposing: true });
+    expect(composingBackspace.isComposing).toBe(true);
+    expect(policy?.(composingBackspace)).toBe(false);
+
+    const composingEnter = new KeyboardEvent("keydown", { key: "Enter", isComposing: true });
+    expect(policy?.(composingEnter)).toBe(false);
+
+    // Once the composition has ended the terminal handles the key again, so the
+    // Enter that submits the line still reaches the shell.
+    expect(policy?.(new KeyboardEvent("keydown", { key: "Enter" }))).toBe(true);
+  });
+
   it("leaves ordinary terminal input to xterm", () => {
     const policy = mount();
     expect(policy?.(new KeyboardEvent("keydown", { key: "j" }))).toBe(true);
