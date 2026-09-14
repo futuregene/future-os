@@ -29,7 +29,28 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
       setInputSelection(undefined);
     },
     onChangeText: (text: string) => {
+      if (text !== message) {
+        // Native text and selection events need not arrive together. Derive
+        // the edit's caret now so slash filtering never waits on a stale caret.
+        // Prefer the known selection to disambiguate repeated characters.
+        const prefix = message.slice(0, selection.start);
+        const suffix = message.slice(selection.end);
+        let cursor: number;
+        if (selection.end <= message.length && text.length >= prefix.length + suffix.length
+          && text.startsWith(prefix) && text.endsWith(suffix)) {
+          cursor = text.length - suffix.length;
+        } else {
+          let start = 0;
+          while (start < message.length && start < text.length && message[start] === text[start]) start++;
+          let tail = 0;
+          while (tail < message.length - start && tail < text.length - start
+            && message[message.length - tail - 1] === text[text.length - tail - 1]) tail++;
+          cursor = text.length - tail;
+        }
+        setSelection({ start: cursor, end: cursor });
+      }
       setMessage(text);
+      // Prediction is only for completion; do not control the native IME caret.
       setInputSelection(undefined);
       setDismissed(false);
     },
