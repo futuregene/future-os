@@ -43,6 +43,48 @@ import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { COMPOSER_FADE_CLEARANCE } from "./utils";
 import { newestFirst } from "./timelineListModel";
 
+const SYNC_NOTICE_MIN_MS = 750;
+
+function useMinimumVisible(active: boolean, minimumMs: number, key: string) {
+  const [presentation, setPresentation] = useState({ key, visible: active });
+  const shownAtRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visible = presentation.key === key && presentation.visible;
+
+  useEffect(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (active) {
+      if (!visible || !shownAtRef.current) shownAtRef.current = Date.now();
+      if (!visible) {
+        // The notice must become visible in the same status transition; delaying
+        // this update would allow a fast sync to finish before it is ever shown.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setPresentation({ key, visible: true });
+      }
+      return;
+    }
+    if (!visible) return;
+
+    const remaining = Math.max(0, shownAtRef.current + minimumMs - Date.now());
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      shownAtRef.current = 0;
+      setPresentation(current =>
+        current.key === key ? { key, visible: false } : current,
+      );
+    }, remaining);
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = null;
+    };
+  }, [active, key, minimumMs, visible]);
+
+  return visible;
+}
+
 function TimelineItemGap() {
   return <View style={styles.itemGap} />;
 }
@@ -88,14 +130,18 @@ export function ChatScreen() {
     ? remote.draftWorkspaceId
     : selectedSession?.workspaceId;
   const workspace = remote.workspaces.find((item) => item.id === workspaceId);
+  // Chat threads also own an internal storage workspace. Trust the explicit
+  // mode; only infer from a user-visible workspace for legacy rows without it.
+  const isWorkspaceConversation =
+    mode === "workspace" || (mode === undefined && workspace !== undefined);
   const contextLabel =
-    mode === "workspace" || workspaceId
+    isWorkspaceConversation
       ? workspace?.name
         ? t("chat.workspaceNamed", { name: workspace.name })
         : t("chat.workspaceConversation")
       : !remote.draft && !selectedSession
         ? t("chat.contextLoading")
-        : t("chat.nonWorkspaceConversation");
+        : t("sessions.conversations");
   const activeModel = remote.models.find(
     (model) => modelReference(model) === remote.modelId,
   );
@@ -173,6 +219,16 @@ export function ChatScreen() {
     !remote.draft &&
     (remote.busy || remote.timelinePending) &&
     timelineItems.length === 0;
+  const syncNoticeActive =
+    !remote.draft &&
+    timelineItems.length > 0 &&
+    (remote.timelineSyncStatus === "syncing" ||
+      remote.timelineSyncStatus === "retrying");
+  const showSyncNotice = useMinimumVisible(
+    syncNoticeActive,
+    SYNC_NOTICE_MIN_MS,
+    conversationKey,
+  );
 
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
@@ -202,7 +258,6 @@ export function ChatScreen() {
   const {
     showLoadOlderHint,
     pagingActive,
-    pagingFailed,
     loadOlder,
     onRowLayout,
     onListLayout,
@@ -467,13 +522,7 @@ export function ChatScreen() {
 
                 {showLoadOlderHint && (
                   <FloatingTimelineButton
-                    label={t(
-                      pagingFailed
-                        ? "common.retry"
-                        : pagingActive || remote.loadingOlderTimeline
-                          ? "chat.loadingOlder"
-                          : "chat.loadOlder",
-                    )}
+                    label={t("chat.loadingOlder")}
                     icon={<History color={colors.inkSoft} size={16} />}
                     busy={pagingActive || remote.loadingOlderTimeline}
                     onPress={() => {
@@ -484,10 +533,7 @@ export function ChatScreen() {
                   />
                 )}
 
-                {!remote.draft &&
-                  timelineItems.length > 0 &&
-                  (remote.timelineSyncStatus === "syncing" ||
-                    remote.timelineSyncStatus === "retrying") && (
+                {showSyncNotice && (
                     <View
                       pointerEvents="none"
                       style={[

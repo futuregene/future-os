@@ -485,33 +485,40 @@ export function SessionList({
                   onPress={() => onTabChange(value)}
                   style={[styles.tab, tab === value && styles.tabActive]}
                 >
-                  <Text style={[styles.tabText, tab === value && styles.tabTextActive]}>
+                  <Text
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.85}
+                    numberOfLines={1}
+                    style={[styles.tabText, tab === value && styles.tabTextActive]}
+                  >
                     {t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
                   </Text>
                 </Pressable>
               ))}
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.search")}
-              onPress={() => setSearching(true)}
-              style={styles.manage}
-            >
-              <Search size={19} color={colors.inkSoft} />
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.select")}
-              accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
-              disabled={deleting || !remote.desktopOnline}
-              onPress={() => {
-                setSelecting(true);
-                setSelected(new Set());
-              }}
-              style={[styles.manage, (deleting || !remote.desktopOnline) && styles.disabled]}
-            >
-              <ListChecks size={19} color={colors.inkSoft} />
-            </Pressable>
+            <View style={styles.toolActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("sessions.search")}
+                onPress={() => setSearching(true)}
+                style={styles.manage}
+              >
+                <Search size={19} color={colors.inkSoft} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("sessions.select")}
+                accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
+                disabled={deleting || !remote.desktopOnline}
+                onPress={() => {
+                  setSelecting(true);
+                  setSelected(new Set());
+                }}
+                style={[styles.manage, (deleting || !remote.desktopOnline) && styles.disabled]}
+              >
+                <ListChecks size={19} color={colors.inkSoft} />
+              </Pressable>
+            </View>
           </>
         )}
       </View>
@@ -548,12 +555,14 @@ const styles = StyleSheet.create({
     minHeight: layout.touchTarget + spacing.xs * 2 + spacing.md,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.xs,
+    gap: spacing.sm,
     paddingHorizontal: layout.gutter,
     paddingBottom: spacing.md,
   },
   tabs: {
-    flex: 1,
+    width: "65%",
+    maxWidth: 240,
+    flexShrink: 1,
     minWidth: 0,
     flexDirection: "row",
     padding: spacing.xs,
@@ -572,6 +581,11 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: colors.surface },
   tabText: { textAlign: "center", color: colors.inkSoft, fontSize: 14, fontWeight: "600" },
   tabTextActive: { color: colors.accent, fontWeight: "700" },
+  toolActions: {
+    marginLeft: "auto",
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
   cancelSearch: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   search: {
     flex: 1,

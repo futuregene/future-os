@@ -23,7 +23,7 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
 const MAX_NAME_LENGTH = 40;
 const renameDefault = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
 
-export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): void }) {
+export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): void }) {
   const { t } = useTranslation();
   const Alert = useAppDialog();
   const remote = useRemoteControls();
@@ -34,6 +34,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!onBack) return false;
       if (!busy) onBack();
       return true;
     });
@@ -66,7 +67,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
     setFailed(null);
     try {
       await remote.switchDesktop(desktopId);
-      onBack();
+      onBack?.();
     } catch {
       setFailed("desktops.switchFailed");
     } finally {
@@ -92,15 +93,17 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack(): void; onAdd(): voi
       {Alert.dialog}
       <View style={styles.column}>
         <View style={styles.topbar}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("common.back")}
-            disabled={busy}
-            onPress={onBack}
-            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-          >
-            <ArrowLeft color={colors.ink} size={22} />
-          </Pressable>
+          {onBack ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("common.back")}
+              disabled={busy}
+              onPress={onBack}
+              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            >
+              <ArrowLeft color={colors.ink} size={22} />
+            </Pressable>
+          ) : null}
           <Text accessibilityRole="header" style={styles.title}>{t("desktops.title")}</Text>
         </View>
         <ScrollView contentContainerStyle={styles.scroll}>

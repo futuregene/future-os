@@ -11,14 +11,15 @@ import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { ChatScreen } from "../ChatScreen";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
+import type { RemoteSession, RemoteWorkspace } from "../../../remote/types";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
   selectedSessionId: "history",
   selectedTitle: "History",
   closeConversation: jest.fn(),
-  sessions: [],
-  workspaces: [],
+  sessions: [] as RemoteSession[],
+  workspaces: [] as RemoteWorkspace[],
   models: [],
   capabilities: new Set(),
   timeline: {
@@ -99,6 +100,8 @@ beforeEach(() => {
   mockRemote.desktopOnline = true;
   mockRemote.timelineSyncStatus = "idle";
   mockRemote.loadingOlderTimeline = false;
+  mockRemote.sessions = [];
+  mockRemote.workspaces = [];
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   act(() => {
     tree = create(createElement(ChatScreen));
@@ -109,6 +112,17 @@ afterEach(() => {
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
+
+const olderCollision = () => {
+  const list = tree.root.findByType(FlatList);
+  act(() => list.props.onScrollBeginDrag({
+    nativeEvent: {
+      contentOffset: { x: 0, y: 1400 },
+      contentSize: { width: 320, height: 2000 },
+      layoutMeasurement: { width: 320, height: 600 },
+    },
+  }));
+};
 
 test("file browsing owns system back while the header still returns directly to chat", () => {
   expect(BackHandler.addEventListener).toHaveBeenCalledTimes(1);
@@ -125,18 +139,47 @@ test("file browsing owns system back while the header still returns directly to 
   expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
 });
 
-test("older history floats outside list data and a click preserves reading position", async () => {
+test("an ordinary conversation does not expose its internal storage workspace", () => {
+  mockRemote.sessions = [{
+    sessionId: "history",
+    threadId: "thread",
+    title: "History",
+    mode: "chat",
+    workspaceId: "internal-chat-workspace",
+    streaming: false,
+  }];
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(ChatTopBar).props.contextLabel).toBe(
+    "sessions.conversations",
+  );
+});
+
+test("a legacy conversation can infer its visible workspace when mode is absent", () => {
+  mockRemote.sessions = [{
+    sessionId: "history",
+    threadId: "thread",
+    title: "History",
+    workspaceId: "workspace",
+    streaming: false,
+  }];
+  mockRemote.workspaces = [{ id: "workspace", name: "Project", path: "/project" }];
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(ChatTopBar).props.contextLabel).toBe(
+    "chat.workspaceNamed",
+  );
+});
+
+test("an older-history collision shows only a one-second loading indicator", async () => {
   mockRemote.loadOlderTimeline.mockResolvedValueOnce(["older"]);
   const list = tree.root.findByType(FlatList);
   expect(list.props.data).toHaveLength(2);
   expect(list.props.inverted).toBe(true);
   expect(list.props.ListFooterComponent).toBeUndefined();
+  expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
+  olderCollision();
   const button = tree.root.findByType(FloatingTimelineButton);
-  expect(button.props.busy).toBe(false);
+  expect(button.props.busy).toBe(true);
   expect(StyleSheet.flatten(button.props.style).top).toBeGreaterThanOrEqual(0);
-  await act(async () => {
-    button.props.onPress();
-  });
   expect(mockRemote.loadOlderTimeline).toHaveBeenCalledTimes(1);
   expect(
     tree.root.findByType(FlatList).props.maintainVisibleContentPosition,
@@ -146,26 +189,28 @@ test("older history floats outside list data and a click preserves reading posit
     "chat.loadingOlder",
   );
   expect(tree.root.findAllByType(ActivityIndicator).length).toBeGreaterThan(0);
-  act(() => jest.advanceTimersByTime(1000));
-  expect(tree.root.findByType(FloatingTimelineButton).props.busy).toBe(false);
+  await act(async () => {});
+  act(() => list.props.onContentSizeChange(320, 2500));
+  act(() => jest.advanceTimersByTime(999));
+  expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(1);
+  act(() => jest.advanceTimersByTime(1));
+  expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
 });
 
-test("failed history exposes a working floating retry", async () => {
+test("failed history hides after one second and retries only on a new collision", async () => {
   mockRemote.loadOlderTimeline.mockResolvedValueOnce(false);
-  await act(async () => {
-    tree.root.findByType(FloatingTimelineButton).props.onPress();
-  });
+  olderCollision();
+  await act(async () => {});
   expect(tree.root.findByType(FloatingTimelineButton).props.label).toBe(
-    "common.retry",
+    "chat.loadingOlder",
   );
-  expect(tree.root.findByType(FloatingTimelineButton).props.busy).toBe(false);
-  await act(async () => {
-    tree.root.findByType(FloatingTimelineButton).props.onPress();
-  });
+  act(() => jest.advanceTimersByTime(1000));
+  expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
+  olderCollision();
   expect(mockRemote.loadOlderTimeline).toHaveBeenCalledTimes(2);
 });
 
-test("cached messages remain visible with a sync notice until replay is complete", () => {
+test("cached messages remain visible and the sync notice stays for at least 750ms", () => {
   const data = tree.root.findByType(FlatList).props.data;
   mockRemote.timelineSyncStatus = "syncing";
   act(() => tree.update(createElement(ChatScreen)));
@@ -194,6 +239,18 @@ test("cached messages remain visible with a sync notice until replay is complete
     tree.root.findAll(
       (node) => node.props.accessibilityLiveRegion === "polite",
     ),
+  ).not.toHaveLength(0);
+  act(() => jest.advanceTimersByTime(749));
+  expect(
+    tree.root.findAll(
+      (node) => node.props.accessibilityLiveRegion === "polite",
+    ),
+  ).not.toHaveLength(0);
+  act(() => jest.advanceTimersByTime(1));
+  expect(
+    tree.root.findAll(
+      (node) => node.props.accessibilityLiveRegion === "polite",
+    ),
   ).toHaveLength(0);
   expect(tree.root.findByType(FlatList).props.data).toBe(data);
 });
@@ -212,8 +269,8 @@ test("no floating history button when the history is exhausted", () => {
   expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
 });
 
-test("an external history load shows the floating loading state", () => {
+test("an external loading flag does not create an extra prompt without a collision", () => {
   mockRemote.loadingOlderTimeline = true;
   act(() => tree.update(createElement(ChatScreen)));
-  expect(tree.root.findByType(FloatingTimelineButton).props.busy).toBe(true);
+  expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
 });

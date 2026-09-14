@@ -134,16 +134,29 @@ async function writeDesktop(
 async function readRegistry(): Promise<DesktopRegistry> {
   const raw = await SecureStore.getItemAsync(DESKTOP_REGISTRY_KEY, secureOptions);
   if (raw !== null) {
-    const parsed = JSON.parse(raw) as DesktopRegistry;
+    let parsed: DesktopRegistry;
+    try {
+      parsed = JSON.parse(raw) as DesktopRegistry;
+    } catch {
+      throw new Error("invalid_desktop_registry");
+    }
     if (!parsed || !Array.isArray(parsed.desktops) ||
       !parsed.desktops.every((entry) => entry && typeof entry.desktopId === "string" &&
         entry.desktopId && typeof entry.pairId === "string" && entry.pairId &&
         (entry.slot === "a" || entry.slot === "b") &&
         (entry.name === undefined || typeof entry.name === "string")) ||
-      new Set(parsed.desktops.map((entry) => entry.desktopId)).size !== parsed.desktops.length ||
-      (parsed.activeDesktopId !== null &&
-        !parsed.desktops.some((entry) => entry.desktopId === parsed.activeDesktopId)))
+      new Set(parsed.desktops.map((entry) => entry.desktopId)).size !== parsed.desktops.length)
       throw new Error("invalid_desktop_registry");
+    // The active id is only a selection pointer. If an interrupted migration
+    // or an older build leaves it malformed/dangling, preserve every valid
+    // pairing and fall back to the desktop picker.
+    if (typeof parsed.activeDesktopId !== "string" ||
+        !parsed.desktops.some((entry) => entry.desktopId === parsed.activeDesktopId)) {
+      if (parsed.activeDesktopId !== null) {
+        parsed = { ...parsed, activeDesktopId: null };
+        await commitRegistry(parsed);
+      }
+    }
     return parsed;
   }
   const registry: DesktopRegistry = { activeDesktopId: null, desktops: [] };
@@ -197,10 +210,15 @@ export async function loadCredentials(desktopId?: string): Promise<RemoteCredent
       field, await SecureStore.getItemAsync(desktopFieldKey(entry.desktopId, field, entry.slot), secureOptions),
     ]));
     const deviceId = await loadDeviceId();
-    if (!deviceId || fields.some(([field, value]) => field !== "secureBundle" && !value)) throw new Error("incomplete_desktop_credentials");
+    if (!deviceId || fields.some(([field, value]) => field !== "secureBundle" && !value)) {
+      if (desktopId === undefined) await commitRegistry({ ...registry, activeDesktopId: null });
+      throw new Error("incomplete_desktop_credentials");
+    }
     const credentials = { ...Object.fromEntries(fields.filter(([field, value]) => field !== "secureBundle" || value)), deviceId } as unknown as RemoteCredentials;
-    if (credentials.pairId !== entry.pairId || credentials.expectedDesktopId !== entry.desktopId)
+    if (credentials.pairId !== entry.pairId || credentials.expectedDesktopId !== entry.desktopId) {
+      if (desktopId === undefined) await commitRegistry({ ...registry, activeDesktopId: null });
       throw new Error("desktop_credential_mismatch");
+    }
     return credentials;
   });
 }

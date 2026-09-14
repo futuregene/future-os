@@ -3,7 +3,13 @@ import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 
 type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
 type PageResult = false | string[];
-type PagePresentation = { deadline: number | null; lastLayout: number | null };
+type PagePresentation = {
+  minimumUntil: number;
+  completedAt: number | null;
+  lastLayout: number | null;
+  requiresLayout: boolean;
+};
+const INDICATOR_MIN_MS = 1_000;
 const LAYOUT_QUIET_MS = 100;
 const LAYOUT_WAIT_MAX_MS = 1_000;
 
@@ -37,15 +43,11 @@ export function useTimelinePaging(
   const [presentation, setPresentation] = useState({
     sessionId,
     active: false,
-    failed: false,
-    nearOlder: true,
   });
   if (presentation.sessionId !== sessionId) {
     setPresentation({
       sessionId,
       active: false,
-      failed: false,
-      nearOlder: true,
     });
   }
   const requestRef = useRef<PagePresentation | null>(null);
@@ -66,12 +68,18 @@ export function useTimelinePaging(
     function checkLayout() {
       clearTimer();
       const request = requestRef.current;
-      if (request?.deadline == null) return;
-      const finishAt = Math.min(
-        request.deadline,
-        request.lastLayout === null
-          ? Infinity
-          : request.lastLayout + LAYOUT_QUIET_MS,
+      if (request?.completedAt == null) return;
+      const layoutReadyAt = request.requiresLayout
+        ? Math.min(
+            request.completedAt + LAYOUT_WAIT_MAX_MS,
+            request.lastLayout === null
+              ? Infinity
+              : request.lastLayout + LAYOUT_QUIET_MS,
+          )
+        : request.completedAt;
+      const finishAt = Math.max(
+        request.minimumUntil,
+        layoutReadyAt,
       );
       const remaining = finishAt - Date.now();
       if (remaining > 0) {
@@ -94,45 +102,29 @@ export function useTimelinePaging(
     };
   }, [sessionId, clearTimer]);
 
-  const updateProximity = useCallback(() => {
-    const geometry = geometryRef.current;
-    // Keep a manual entry point until the first native measurements arrive.
-    if (!geometry.content || !geometry.viewport) return;
-    const nearOlder = nearOlderEdge(geometry);
-    setPresentation((previous) =>
-      previous.sessionId !== sessionId || previous.nearOlder === nearOlder
-        ? previous
-        : { ...previous, nearOlder },
-    );
-  }, [sessionId]);
-
   const loadOlder = useCallback(() => {
     if (!canLoadOlder || loadingOlder || requestRef.current) return;
-    const request: PagePresentation = { deadline: null, lastLayout: null };
+    const request: PagePresentation = {
+      minimumUntil: Date.now() + INDICATOR_MIN_MS,
+      completedAt: null,
+      lastLayout: null,
+      requiresLayout: true,
+    };
     requestRef.current = request;
     gestureRef.current.used = true;
     setPresentation((previous) => ({
       ...previous,
       sessionId,
       active: true,
-      failed: false,
     }));
+    timerRef.current = setTimeout(settle, INDICATOR_MIN_MS);
     const complete = (result: PageResult) => {
       if (requestRef.current !== request) return;
-      if (result !== false && result.length > 0) {
-        // The deadline starts after the sync lane acknowledges the page, not
-        // when the network request starts. It never declares missing data ready.
-        request.deadline = Date.now() + LAYOUT_WAIT_MAX_MS;
-        settle();
-        return;
-      }
-      requestRef.current = null;
-      setPresentation((previous) => ({
-        ...previous,
-        sessionId,
-        active: false,
-        failed: result === false,
-      }));
+      request.completedAt = Date.now();
+      // Failed and empty pages add no rows, so there is no native layout event
+      // to await. Both still honor the one-second minimum presentation.
+      request.requiresLayout = result !== false && result.length > 0;
+      settle();
     };
     try {
       void requestOlder().then(complete, () => complete(false));
@@ -150,12 +142,11 @@ export function useTimelinePaging(
         content: contentSize.height,
         viewport: layoutMeasurement.height,
       };
-      updateProximity();
       const gesture = gestureRef.current;
       if (gesture.active && !gesture.used && nearOlderEdge(geometryRef.current))
         loadOlder();
     },
-    [loadOlder, updateProximity],
+    [loadOlder],
   );
 
   const handleScroll = useCallback(
@@ -200,7 +191,7 @@ export function useTimelinePaging(
   );
 
   const onRowLayout = useCallback(() => {
-    if (requestRef.current?.deadline != null) {
+    if (requestRef.current?.completedAt != null && requestRef.current.requiresLayout) {
       requestRef.current.lastLayout = Date.now();
       settle();
     }
@@ -208,28 +199,22 @@ export function useTimelinePaging(
   const onListLayout = useCallback(
     (height: number) => {
       geometryRef.current.viewport = height;
-      updateProximity();
       onRowLayout();
     },
-    [onRowLayout, updateProximity],
+    [onRowLayout],
   );
   const onContentSizeChange = useCallback(
     (_width: number, height: number) => {
       geometryRef.current.content = height;
-      updateProximity();
       onRowLayout();
     },
-    [onRowLayout, updateProximity],
+    [onRowLayout],
   );
 
   const current = presentation.sessionId === sessionId;
   return {
-    showLoadOlderHint:
-      current &&
-      (presentation.active ||
-        (canLoadOlder && (presentation.failed || presentation.nearOlder))),
+    showLoadOlderHint: current && presentation.active,
     pagingActive: current && presentation.active,
-    pagingFailed: current && presentation.failed,
     loadOlder,
     onRowLayout,
     onListLayout,
