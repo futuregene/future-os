@@ -61,9 +61,10 @@ function AppContent() {
   }
   if (screen === "desktops") return <DesktopsScreen onBack={() => setScreen("main")} onAdd={() => setScreen("pair")} />;
   if (screen === "pair") return <PairingScreen onBack={showDesktops} onPaired={() => setScreen("main")} />;
-  // The local desktop registry owns startup routing. Credential validity and
-  // connection health update inside the paired UI without swapping screens.
+  // No saved pair starts pairing. Saved pairs without a usable active choice
+  // start in the picker; only a restored credential enters its session list.
   if (remote.desktops.length === 0) return <PairingScreen />;
+  if (!remote.credentials) return <DesktopsScreen onAdd={() => setScreen("pair")} />;
   const inChat = !!remote.credentials && remote.connectionPresentation.level !== "disconnected" && Boolean(remote.selectedSessionId || remote.draft);
   return (
     <View style={styles.fill}>

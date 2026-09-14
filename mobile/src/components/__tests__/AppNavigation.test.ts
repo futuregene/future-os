@@ -3,8 +3,17 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import App from "../../../App";
 import { SessionsScreen } from "../../screens/SessionsScreen";
 import { ChatScreen } from "../../features/chat/ChatScreen";
+import { DesktopsScreen } from "../../screens/DesktopsScreen";
+import { PairingScreen } from "../../screens/PairingScreen";
 
-const mockRemote = {
+const mockRemote: {
+  phase: string;
+  credentials: { pairId: string } | null;
+  desktops: { desktopId: string; pairId: string }[];
+  connectionPresentation: { level: string };
+  selectedSessionId: string;
+  draft: boolean;
+} = {
   phase: "ready",
   credentials: { pairId: "pair" },
   desktops: [{ desktopId: "desktop", pairId: "pair" }],
@@ -34,6 +43,31 @@ test("waits for the saved language before mounting app screens", () => {
   act(() => tree.update(createElement(App)));
   expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(1);
   act(() => tree.unmount());
+});
+
+test("opens the desktop picker when pairings exist without an active credential", () => {
+  mockRemote.credentials = null;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  expect(tree.root.findAllByType(DesktopsScreen)).toHaveLength(1);
+  expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(0);
+  expect(tree.root.findAllByType(PairingScreen)).toHaveLength(0);
+  expect(tree.root.findByType(DesktopsScreen).props.onBack).toBeUndefined();
+  act(() => tree.unmount());
+  mockRemote.credentials = { pairId: "pair" };
+});
+
+test("opens pairing only when there are no saved desktops", () => {
+  const desktops = mockRemote.desktops;
+  mockRemote.credentials = null;
+  mockRemote.desktops = [];
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  expect(tree.root.findAllByType(PairingScreen)).toHaveLength(1);
+  expect(tree.root.findAllByType(DesktopsScreen)).toHaveLength(0);
+  act(() => tree.unmount());
+  mockRemote.credentials = { pairId: "pair" };
+  mockRemote.desktops = desktops;
 });
 
 test("opening and closing a chat retains the list instance and disables its background handlers", () => {

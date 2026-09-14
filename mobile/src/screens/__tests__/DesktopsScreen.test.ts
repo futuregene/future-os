@@ -90,6 +90,17 @@ test("selects a saved desktop without scanning again", async () => {
   expect(onBack).toHaveBeenCalled();
 });
 
+test("supports a startup picker without a back action", async () => {
+  act(() => tree.unmount());
+  await act(async () => {
+    tree = create(createElement(DesktopsScreen, { onAdd }));
+  });
+  expect(pressables("common.back")).toHaveLength(0);
+  await act(async () => selectors()[1]!.props.onPress());
+  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
+  expect(onBack).not.toHaveBeenCalled();
+});
+
 test("keeps the list in a centered column with side padding", () => {
   const column = tree.root.findAll(
     (node) => node.props.style?.alignSelf === "center" && node.props.style?.maxWidth > 0,

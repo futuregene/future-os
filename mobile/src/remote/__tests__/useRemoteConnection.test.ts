@@ -404,6 +404,30 @@ describe("useRemoteConnection", () => {
       expect(loadCredentials).toHaveBeenCalled();
     });
 
+    test("keeps saved desktops available when there is no active selection", async () => {
+      const saved = [{ desktopId: "desktop-1", pairId: "pair-1" }];
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(saved);
+      render();
+      await flush();
+      expect(result.current.phase).toBe("unpaired");
+      expect(result.current.error).toBeNull();
+      expect(result.current.credentials).toBeNull();
+      expect(result.current.desktops).toEqual(saved);
+      expect(options.clientRef.current).toBeNull();
+    });
+
+    test("keeps saved desktops available when the active credential cannot load", async () => {
+      const saved = [{ desktopId: "desktop-1", pairId: "pair-1" }];
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(saved);
+      cast<jest.Mock>(loadCredentials).mockRejectedValue(new Error("incomplete_desktop_credentials"));
+      render();
+      await flush();
+      expect(result.current.phase).toBe("failed");
+      expect(result.current.error).toBe("incomplete_desktop_credentials");
+      expect(result.current.credentials).toBeNull();
+      expect(result.current.desktops).toEqual(saved);
+    });
+
     test("attempts and clears a pending revoke on mount", async () => {
       cast<jest.Mock>(loadPendingRevoke).mockResolvedValue({
         pairId: "pair",

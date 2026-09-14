@@ -404,20 +404,18 @@ export function useRemoteConnection({
       try {
         void drainRevokes().catch(recordError);
         if (!active) return;
-        // The desktop registry owns startup routing. Publish it before loading
-        // credentials so a paired installation never flashes the scan screen.
+        // Resolve the registry before the active credential so final routing
+        // can distinguish an empty installation from an unselected desktop.
         storedDesktops = await refreshDesktops();
         if (!active || bootstrapAccess !== accessRef.current) return;
-        setPhase(storedDesktops.length > 0 ? "connecting" : "unpaired");
         const stored = await loadCredentials();
         if (!active || bootstrapAccess !== accessRef.current) return;
         if (!stored) {
-          if (storedDesktops.length > 0) {
-            setError("incomplete_desktop_credentials");
-            setPhase("failed");
-          } else {
-            setPhase("unpaired");
-          }
+          // Pairings without an active selection belong in the desktop picker.
+          // Keep booting until both registry and selection have been resolved,
+          // so a valid active desktop does not flash the picker first.
+          setError(null);
+          setPhase("unpaired");
           return;
         }
         await connect(stored);

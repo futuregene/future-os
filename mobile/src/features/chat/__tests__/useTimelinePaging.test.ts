@@ -58,7 +58,7 @@ describe("paging intent and bounded layout settling", () => {
     onScroll.mockReset();
   });
 
-  test("programmatic scroll changes button visibility without fetching", () => {
+  test("only a deliberate collision starts the loading indicator and fetch", () => {
     act(() => current.onScroll(scrollEvent(0)));
     expect(current.showLoadOlderHint).toBe(false);
     act(() => {
@@ -66,7 +66,7 @@ describe("paging intent and bounded layout settling", () => {
       current.onScroll(scrollEvent(1400));
       current.onMomentumScrollEnd(scrollEvent(1400));
     });
-    expect(current.showLoadOlderHint).toBe(true);
+    expect(current.showLoadOlderHint).toBe(false);
     expect(request).not.toHaveBeenCalled();
     collide();
     expect(request).toHaveBeenCalledTimes(1);
@@ -91,7 +91,7 @@ describe("paging intent and bounded layout settling", () => {
       current.onListLayout(600);
       current.onContentSizeChange(320, 200);
     });
-    expect(current.showLoadOlderHint).toBe(true);
+    expect(current.showLoadOlderHint).toBe(false);
     act(() => {
       current.loadOlder();
       current.loadOlder();
@@ -103,7 +103,7 @@ describe("paging intent and bounded layout settling", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  test("a committed page finishes after 100ms of native layout quietness", async () => {
+  test("a committed and laid-out page keeps the indicator for at least one second", async () => {
     collide();
     await act(async () => {});
     act(() => current.onContentSizeChange(320, 2500));
@@ -111,7 +111,9 @@ describe("paging intent and bounded layout settling", () => {
     expect(current.pagingActive).toBe(true);
     // A late row layout restarts quietness, but not the overall deadline.
     act(() => current.onRowLayout());
-    await advance(99);
+    await advance(100);
+    expect(current.pagingActive).toBe(true);
+    await advance(800);
     expect(current.pagingActive).toBe(true);
     await advance(1);
     expect(current.pagingActive).toBe(false);
@@ -126,7 +128,6 @@ describe("paging intent and bounded layout settling", () => {
     expect(current.pagingActive).toBe(true);
     await advance(1);
     expect(current.pagingActive).toBe(false);
-    expect(current.pagingFailed).toBe(false);
     act(() => current.loadOlder());
     expect(request).toHaveBeenCalledTimes(2);
   });
@@ -143,7 +144,7 @@ describe("paging intent and bounded layout settling", () => {
     expect(current.pagingActive).toBe(false);
   });
 
-  test("layout before commit never starts the 1s deadline", async () => {
+  test("the minimum timer runs with a slow load and only post-load layout completes it", async () => {
     let resolve!: (result: string[]) => void;
     request.mockImplementationOnce(
       () =>
@@ -153,10 +154,14 @@ describe("paging intent and bounded layout settling", () => {
     );
     collide();
     act(() => current.onContentSizeChange(320, 2500));
-    await advance(5000);
+    await advance(1500);
     expect(current.pagingActive).toBe(true);
     await act(async () => resolve(["older"]));
-    await advance(999);
+    // The one-second minimum has already elapsed, but the earlier layout did
+    // not belong to the loaded page. A post-load layout and quiet period do.
+    expect(current.pagingActive).toBe(true);
+    act(() => current.onContentSizeChange(320, 2600));
+    await advance(99);
     expect(current.pagingActive).toBe(true);
     await advance(1);
     expect(current.pagingActive).toBe(false);
@@ -197,21 +202,31 @@ describe("paging intent and bounded layout settling", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  test("empty pages and errors need no layout wait; failures allow immediate retry", async () => {
+  test("failures show only the one-second loading indicator and retry on a new collision", async () => {
     request.mockRejectedValueOnce(new Error("timeout"));
     collide();
     await act(async () => {});
+    expect(current.pagingActive).toBe(true);
+    expect(current.showLoadOlderHint).toBe(true);
+    await advance(999);
+    expect(current.pagingActive).toBe(true);
+    await advance(1);
     expect(current.pagingActive).toBe(false);
-    expect(current.pagingFailed).toBe(true);
+    expect(current.showLoadOlderHint).toBe(false);
     request.mockImplementationOnce(() => {
       throw new Error("disconnected");
     });
-    act(() => current.loadOlder());
-    expect(current.pagingFailed).toBe(true);
+    collide();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(current.pagingActive).toBe(true);
+    await advance(1000);
+    expect(current.showLoadOlderHint).toBe(false);
     request.mockResolvedValueOnce([]);
-    await act(async () => current.loadOlder());
+    collide();
+    await act(async () => {});
+    expect(current.pagingActive).toBe(true);
+    await advance(1000);
     expect(current.pagingActive).toBe(false);
-    expect(current.pagingFailed).toBe(false);
   });
 
   test("old-session completion and layout timers cannot unlock a new request", async () => {
@@ -229,7 +244,6 @@ describe("paging intent and bounded layout settling", () => {
     await act(async () => resolveOld(false));
     await advance(2000);
     expect(current.pagingActive).toBe(true);
-    expect(current.pagingFailed).toBe(false);
     act(() => renderer.update(createElement(Harness, { sessionId: "c" })));
     expect(current.pagingActive).toBe(false);
   });

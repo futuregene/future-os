@@ -135,7 +135,18 @@ test("tabs, search and selection share one toolbar with full touch targets", () 
   expect(tabs).toHaveLength(2);
   for (const tab of tabs) {
     expect(StyleSheet.flatten(tab.props.style)).toMatchObject({ flex: 1, minHeight: 44, minWidth: 0 });
+    const label = tab.findByType(Text);
+    expect(label.props.numberOfLines).toBe(1);
+    expect(label.props.adjustsFontSizeToFit).toBe(true);
   }
+  const tabBar = tabs[0]!.parent!;
+  expect(StyleSheet.flatten(tabBar.props.style)).toMatchObject({
+    width: "65%",
+    maxWidth: 240,
+    flexShrink: 1,
+  });
+  const toolActions = button("sessions.search").parent!;
+  expect(StyleSheet.flatten(toolActions.props.style)).toMatchObject({ marginLeft: "auto" });
   act(() => tabs[0]!.props.onPress());
   expect(onTabChange).toHaveBeenCalledWith("workspace");
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search").length).toBeGreaterThan(0);

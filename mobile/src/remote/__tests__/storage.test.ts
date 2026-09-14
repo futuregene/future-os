@@ -54,6 +54,11 @@ const credentials: RemoteCredentials = {
 const other: RemoteCredentials = { ...credentials, pairId: "pair_2", expectedDesktopId: "desktop_2", seed: "other-seed" };
 const registryKey = "futureos.remote.desktops.v3";
 
+function storedFieldKey(desktopId: string, field: string, slot: string): string {
+  const encoded = Array.from(desktopId, (char) => char.codePointAt(0)!.toString(16)).join("-");
+  return `futureos.remote.desktop.v3.${encoded}.${field}.${slot}`;
+}
+
 function seedLegacy(slot?: "a" | "b") {
   const fields: Record<string, string> = {
     "pair-id": credentials.pairId, seed: credentials.seed, "user-jwt": credentials.userJwt,
@@ -71,6 +76,37 @@ describe("credential storage", () => {
   test("empty installation has no selected desktop", async () => {
     expect(await loadCredentials()).toBeNull();
     expect(await loadPairedDesktops()).toEqual([]);
+  });
+
+  test("repairs a dangling active desktop without dropping valid pairings", async () => {
+    await saveCredentials(credentials);
+    const registry = JSON.parse(values.get(registryKey)!) as { activeDesktopId: string | null };
+    values.set(registryKey, JSON.stringify({ ...registry, activeDesktopId: "missing-desktop" }));
+
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: credentials.expectedDesktopId, pairId: credentials.pairId },
+    ]);
+    expect(JSON.parse(values.get(registryKey)!).activeDesktopId).toBeNull();
+    expect(await loadCredentials()).toBeNull();
+  });
+
+  test("clears an active selection whose credential bundle is incomplete", async () => {
+    await saveCredentials(credentials);
+    const registry = JSON.parse(values.get(registryKey)!) as {
+      activeDesktopId: string;
+      desktops: { desktopId: string; slot: string }[];
+    };
+    const entry = registry.desktops[0]!;
+    values.delete(storedFieldKey(entry.desktopId, "userJwt", entry.slot));
+
+    await expect(loadCredentials()).rejects.toThrow("incomplete_desktop_credentials");
+    expect(JSON.parse(values.get(registryKey)!).activeDesktopId).toBeNull();
+    expect(await loadPairedDesktops()).toHaveLength(1);
+  });
+
+  test("normalizes malformed registry JSON to the registry error", async () => {
+    values.set(registryKey, "{");
+    await expect(loadPairedDesktops()).rejects.toThrow("invalid_desktop_registry");
   });
 
   test.each([undefined, "a", "b"] as const)("migrates legacy slot %s without re-pairing", async (slot) => {
