@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { StoredFile } from "../../../integrations/storage/types";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -32,7 +33,7 @@ function toFileUrl(path: string): string {
  * their workspace-relative path, files written elsewhere (e.g. `~/Desktop`)
  * show the full path.
  */
-export function FileLink({ file }: { file: StoredFile }) {
+export function FileLink({ file, children }: { file: StoredFile; children?: ReactNode }) {
   const { t } = useTranslation("markdown");
   const menu = useLinkContextMenu();
   const preview = usePreviewMarkdown();
@@ -90,7 +91,7 @@ export function FileLink({ file }: { file: StoredFile }) {
         onContextMenu={preview ? event => event.preventDefault() : menu.open}
         title={file.path}
       >
-        {display}
+        {children ?? display}
       </a>
       {preview ? null : <LinkContextMenu controller={menu} items={items} />}
       {!preview && previewKind

@@ -105,7 +105,7 @@ export function PreviewModal({
             {!!preview?.truncated && (
               <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
             )}
-            <MarkdownText mode="file-preview" text={preview?.markdown ?? ""} />
+            <MarkdownText mode="file-preview" imageBasePath={preview?.attachment.path} text={preview?.markdown ?? ""} />
           </ScrollView>
         ) : preview?.info.previewKind === "json" ? (
           <JsonPreview

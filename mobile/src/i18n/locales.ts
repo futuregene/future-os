@@ -303,6 +303,9 @@ export const resources = {
       },
       attachment: {
         title: "Attachment",
+        loadImage: "Load image here",
+        retryImage: "Retry image",
+        openImageLink: "Open image link",
         add: "Add attachment",
         chooseFiles: "Choose files",
         takePhoto: "Take photo",
@@ -693,6 +696,9 @@ export const resources = {
       },
       attachment: {
         title: "附件",
+        loadImage: "在正文中加载图片",
+        retryImage: "重新加载图片",
+        openImageLink: "打开图片链接",
         add: "添加附件",
         chooseFiles: "选择手机文件",
         takePhoto: "拍照",

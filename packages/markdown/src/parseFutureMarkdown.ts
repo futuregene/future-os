@@ -323,7 +323,7 @@ function linkToInline(node: Link, context: ParseContext): InlineNode {
   const label = mdastText({ children: node.children, type: "paragraph" });
   const reference = parseFutureLink(label, node.url);
   if (reference) {
-    return { reference, type: "futureReference" };
+    return { reference, children: phrasingToInline(node.children, context), type: "futureReference" };
   }
   return {
     children: phrasingToInline(node.children, context),
@@ -347,7 +347,7 @@ function linkReferenceToInline(
 
   const reference = parseFutureLink(label, definition.url);
   if (reference) {
-    return { reference, type: "futureReference" };
+    return { reference, children: phrasingToInline(node.children, context), type: "futureReference" };
   }
   return {
     children: phrasingToInline(node.children, context),
@@ -692,6 +692,7 @@ function collectInlineReferences(
   for (const node of nodes) {
     if (node.type === "futureReference") {
       references.push(node.reference);
+      if (node.children) collectInlineReferences(node.children, references);
     } else if (node.type === "image") {
       const path = localFilePath(node.src);
       if (path) {
@@ -706,7 +707,8 @@ function collectInlineReferences(
     } else if (
       node.type === "strong" ||
       node.type === "italic" ||
-      node.type === "delete"
+      node.type === "delete" ||
+      node.type === "link"
     ) {
       collectInlineReferences(node.children, references);
     }
@@ -730,7 +732,9 @@ function mdastText(node: {
   children?: PhrasingContent[];
   type: string;
   value?: string;
+  alt?: string | null;
 }): string {
+  if (node.type === "image" || node.type === "imageReference") return node.alt ?? "";
   if (typeof node.value === "string") return node.value;
   return node.children?.map((child) => mdastText(child)).join("") ?? "";
 }

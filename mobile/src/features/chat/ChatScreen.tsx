@@ -22,6 +22,8 @@ import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { useComposerDraft } from "./useComposerDraft";
 import { useAttachmentPicker } from "./useAttachmentPicker";
 import { useFileDownload } from "./useFileDownload";
+import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
+import { MarkdownImageLoaderContext } from "../../components/MarkdownImage";
 import { useChatScroll } from "./useChatScroll";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useRename } from "./useRename";
@@ -91,6 +93,7 @@ export function ChatScreen() {
   const { message, setMessage, attachments, setAttachments } = useComposerDraft(remote, t);
   const { openAttachmentMenu, attachmentMenu } = useAttachmentPicker(attachments, setAttachments, t);
   const fileDownload = useFileDownload(remote, t, setTransferProgress);
+  const markdownImageLoader = useMarkdownImageLoader(remote, t);
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
   const { send, retryMessage, continueMessage } = useSendMessage(
@@ -283,6 +286,7 @@ export function ChatScreen() {
       : 0;
 
   return (
+    <MarkdownImageLoaderContext value={markdownImageLoader}>
     <SafeAreaView style={styles.safe}>
       {attachmentMenu}
       <KeyboardAvoidingView
@@ -521,6 +525,7 @@ export function ChatScreen() {
         />
       </KeyboardAvoidingView>
     </SafeAreaView>
+    </MarkdownImageLoaderContext>
   );
 }
 

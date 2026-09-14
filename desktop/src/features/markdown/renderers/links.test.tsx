@@ -103,6 +103,34 @@ describe("safeLink", () => {
 });
 
 describe("safeImage", () => {
+  it("recovers after a failed source is replaced and allows retry of the same source", () => {
+    const { container, root, cleanup } = mount(<SafeImage alt="chart" src="https://x/old.png" />);
+    act(() => container.querySelector("img")!.dispatchEvent(new Event("error")));
+    expect(container.querySelector("img")).toBeNull();
+    click(container.querySelector("button")!);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://x/old.png");
+    act(() => container.querySelector("img")!.dispatchEvent(new Event("error")));
+    act(() => root.render(<SafeImage alt="chart" src="https://x/new.png" />));
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://x/new.png");
+    cleanup();
+  });
+
+  it("expands tall images without injecting buttons into image links", () => {
+    const { container, root, cleanup } = mount(<SafeImage alt="chart" src="https://x/tall.png" />);
+    const img = container.querySelector("img")!;
+    Object.defineProperty(img, "naturalHeight", { value: 1600 });
+    act(() => img.dispatchEvent(new Event("load")));
+    expect(img.className).toContain("max-h-80");
+    click(container.querySelector("button")!);
+    expect(img.className).toContain("max-h-none");
+    expect(container.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
+    click(container.querySelector("button")!);
+    expect(img.className).toContain("max-h-80");
+    act(() => root.render(<SafeImage alt="chart" linked src="https://x/tall.png" />));
+    expect(container.querySelector("button")).toBeNull();
+    cleanup();
+  });
+
   it("renders the fallback chip for disallowed protocols", () => {
     const html = renderToStaticMarkup(createElement(SafeImage, { alt: "pic", src: "data:image/png;base64,x" }));
     expect(html).toContain("pic");

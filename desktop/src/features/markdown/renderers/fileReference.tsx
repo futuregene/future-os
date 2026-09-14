@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ResolvedMarkdownReference } from "../../../integrations/storage/markdownReferences";
 import type { FutureReference } from "../futureMarkdownTypes";
 import { isStoredFile } from "../../../integrations/storage/typeGuards";
@@ -10,10 +11,10 @@ import { PendingReference } from "./PendingReference";
  * succeeds. Returns null for non-file references (let the caller handle those);
  * while a file reference is still resolving, shows a neutral text placeholder.
  */
-export function renderFileReference(reference: FutureReference, resolved?: ResolvedMarkdownReference) {
+export function renderFileReference(reference: FutureReference, resolved?: ResolvedMarkdownReference, children?: ReactNode) {
   if (reference.targetType !== "file")
     return null;
   if (resolved?.status === "resolved" && resolved.targetType === "file" && isStoredFile(resolved.data))
-    return <FileLink file={resolved.data} />;
-  return <PendingReference reference={reference} />;
+    return <FileLink file={resolved.data}>{children}</FileLink>;
+  return children ?? <PendingReference reference={reference} />;
 }
