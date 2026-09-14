@@ -205,6 +205,53 @@ describe("RemoteClient connection handoff", () => {
     expect(callbacks.onConnectionState).not.toHaveBeenCalled();
   });
 
+  test("foreground reuses a socket only after authenticated desktop presence succeeds", async () => {
+    const old = socket();
+    (wsconnect as jest.Mock).mockResolvedValueOnce(old.connection);
+    await client.open();
+    await client.recoverNow("foreground");
+    expect(old.connection.request).toHaveBeenCalledTimes(1);
+    expect(wsconnect).toHaveBeenCalledTimes(1);
+    expect(old.close).not.toHaveBeenCalled();
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+  });
+
+  test("foreground rebuilds when the broker responds but the desktop channel is gone", async () => {
+    const old = socket();
+    const replacement = socket();
+    (wsconnect as jest.Mock).mockResolvedValueOnce(old.connection).mockResolvedValueOnce(replacement.connection);
+    await client.open();
+    jest.mocked(old.connection.request).mockRejectedValueOnce(new Error("request timeout"));
+    await client.recoverNow("foreground");
+    expect(old.flush).toHaveBeenCalled();
+    expect(old.connection.request).toHaveBeenCalledTimes(1);
+    expect(old.close).toHaveBeenCalledTimes(1);
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+  });
+
+  test("background teardown releases a suspended recovery before foreground reconnects", async () => {
+    const old = socket();
+    const replacement = socket();
+    (wsconnect as jest.Mock).mockResolvedValueOnce(old.connection).mockResolvedValueOnce(replacement.connection);
+    await client.open();
+    const fresh = deferred<RemoteCredentials>();
+    (ensureFreshCredentials as jest.Mock).mockReturnValueOnce(fresh.promise);
+    const suspended = client.recoverNow("presence-stale");
+    await tick();
+    const signal = (ensureFreshCredentials as jest.Mock).mock.calls[1][1] as AbortSignal;
+    client.setAppActive(false);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
+    expect(signal.aborted).toBe(true);
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+    fresh.resolve(credentials);
+    await suspended;
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+    expect(replacement.close).not.toHaveBeenCalled();
+  });
+
   test("stop cancels an outstanding credential request and ignores its late result", async () => {
     const fresh = deferred<RemoteCredentials>();
     (ensureFreshCredentials as jest.Mock).mockReturnValueOnce(fresh.promise);
