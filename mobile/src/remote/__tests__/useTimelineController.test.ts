@@ -217,7 +217,7 @@ describe("useTimelineController", () => {
       });
       await flush();
       expect(request.mock.calls.at(-1)?.[0]).toEqual(
-        expect.objectContaining({ before: 60, limit: 10 }),
+        expect.objectContaining({ before: 60, limit: 3 }),
       );
       expect(
         result.current.timeline.items
@@ -482,10 +482,45 @@ describe("useTimelineController", () => {
         expect.objectContaining({
           type: "get_session_entries",
           before: Number.MAX_SAFE_INTEGER,
-          limit: 10,
+          limit: 3,
         }),
       );
       expect(result.current.canLoadOlderTimeline).toBe(true);
+    });
+
+    test("three-exchange pages reach all older history without gaps or duplicates", async () => {
+      options.selectedSessionId = "s1";
+      const entries = Array.from({ length: 8 }, (_, index) => index + 1).flatMap(n => [
+        userEntry(`u${n}`, `user ${n}`),
+        assistantEntry(`a${n}`, `answer ${n}`),
+      ]);
+      request.mockImplementation(async (command: { type: string; before: number; limit: number }) => {
+        if (command.type === "get_state") return { data: {} };
+        expect(command.type).toBe("get_session_entries");
+        expect(command.limit).toBe(3);
+        const end = Math.min(command.before, entries.length);
+        const start = Math.max(0, end - command.limit * 2);
+        return { data: { entries: entries.slice(start, end), hasMore: start > 0, nextOffset: start } };
+      });
+      render();
+      await establish();
+      expect(result.current.timeline.items).toHaveLength(6);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+
+      await act(async () => { await result.current.loadOlderTimeline(); });
+      await flush();
+      expect(result.current.timeline.items).toHaveLength(12);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+
+      await act(async () => { await result.current.loadOlderTimeline(); });
+      await flush();
+      expect(result.current.timeline.items.map(item => item.id)).toEqual(entries.map(entry => `m_${entry.id}`));
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+      expect(request.mock.calls.filter(([command]) => command.type === "get_session_entries")
+        .map(([command]) => command.before)).toEqual([Number.MAX_SAFE_INTEGER, 10, 4]);
+      const requests = request.mock.calls.length;
+      await act(async () => { expect(await result.current.loadOlderTimeline()).toBe(false); });
+      expect(request).toHaveBeenCalledTimes(requests);
     });
 
     test("loads one older page and prepends it without refetching the tail", async () => {
@@ -532,7 +567,7 @@ describe("useTimelineController", () => {
         expect.objectContaining({
           type: "get_session_entries",
           before: 20,
-          limit: 10,
+          limit: 3,
         }),
       );
       expect(result.current.canLoadOlderTimeline).toBe(false);
@@ -544,11 +579,11 @@ describe("useTimelineController", () => {
         .map(i => (i.kind === "message" ? i.text : ""));
       expect(reconciledTexts).toEqual(["older", "older answer", "latest", "reconciled answer"]);
       expect(request.mock.calls[4]?.[0]).toEqual(
-        expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 10 }),
+        expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 3 }),
       );
     });
 
-    test("reopening a warm timeline renders only the latest ten exchanges", async () => {
+    test("reopening a warm timeline renders only the latest three exchanges", async () => {
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       const exchanges = (start: number, end: number) =>
@@ -574,11 +609,16 @@ describe("useTimelineController", () => {
       await flush();
       expect(result.current.timeline.items).toHaveLength(40);
 
+      act(() => result.current.prepareTimelineOpen("s1"));
+      await flush();
+      // Cache warmth must not mount all previously paged tool-heavy turns while
+      // waiting for the new network request.
+      expect(result.current.timeline.items).toHaveLength(6);
+      expect(result.current.timeline.items[0]?.id).toBe("m_u18");
       request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({
-        data: { entries: exchanges(11, 20), hasMore: true, nextOffset: 20 },
+        data: { entries: exchanges(18, 20), hasMore: true, nextOffset: 34 },
       });
       await act(async () => {
-        result.current.prepareTimelineOpen("s1");
         await result.current.syncEngineRef.current!.open("s1");
       });
       await flush();
@@ -587,7 +627,7 @@ describe("useTimelineController", () => {
         result.current.timeline.items
           .filter(item => item.kind === "message" && item.role === "user")
           .map(item => (item.kind === "message" ? item.text : "")),
-      ).toEqual(Array.from({ length: 10 }, (_, index) => `user ${index + 11}`));
+      ).toEqual(["user 18", "user 19", "user 20"]);
       expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 

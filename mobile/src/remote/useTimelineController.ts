@@ -15,7 +15,9 @@ import {
 import type { EntriesData, RemoteSessionState, StreamEvent } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
-const HISTORY_PAGE_USER_EXCHANGES = 10;
+// An exchange can contain hundreds of tool steps. Bound both the first paint
+// and each older-history pull to the same small window.
+const HISTORY_PAGE_USER_EXCHANGES = 3;
 const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 
 interface HistoryPagingState {

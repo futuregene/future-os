@@ -386,6 +386,10 @@ export function ChatScreen() {
               maintainVisibleContentPosition={scroll.maintainVisibleContentPosition}
               keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
               keyboardShouldPersistTaps="handled"
+              // Android selectable Text requests focus/rectangle visibility on
+              // long press. Its native auto-scroll ignores our inverted reading
+              // anchor and jumps the transcript; selection itself stays enabled.
+              scrollsChildToFocus={false}
               automaticallyAdjustContentInsets={false}
               contentInsetAdjustmentBehavior="never"
               automaticallyAdjustKeyboardInsets={false}
