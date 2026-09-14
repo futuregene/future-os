@@ -64,7 +64,9 @@ fn occupied_data_directory_exits_cleanly_without_startup_side_effects() {
         .open(&lock_path)
         .unwrap();
     assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
-    drop(lock);
+    // Other parallel tests may briefly inherit this descriptor between fork
+    // and exec. Unlock explicitly rather than waiting for every copy to close.
+    fs2::FileExt::unlock(&lock).unwrap();
     fs2::FileExt::try_lock_exclusive(&second).unwrap();
 }
 
