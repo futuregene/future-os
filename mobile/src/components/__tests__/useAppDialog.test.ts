@@ -1,6 +1,6 @@
 import { createElement, useEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform } from "react-native";
+import { Modal, Platform, Text } from "react-native";
 import { useAppDialog } from "../useAppDialog";
 import { DialogSurface } from "../DialogSurface";
 import { Button } from "../Button";
@@ -27,6 +27,15 @@ test.each(["ios", "android"] as const)("%s confirms once, only after dismissal",
   act(() => { if (os === "ios") modal.props.onDismiss(); else jest.runOnlyPendingTimers(); });
   act(() => modal.props.onDismiss());
   expect(confirm).toHaveBeenCalledTimes(1);
+});
+
+test.each(["ios", "android"] as const)("%s uses platform-safe selection without truncating notice text", os => {
+  Platform.OS = os;
+  act(() => api.alert("Update", "Current build\nAvailable build"));
+  const message = tree.root.findAllByType(Text).find(node => node.props.children === "Current build\nAvailable build")!;
+  expect(message).toBeDefined();
+  expect(message.props.selectable).toBe(os === "ios");
+  expect(message.props.numberOfLines).toBeUndefined();
 });
 
 test("system back cancels without invoking the destructive action", () => {
