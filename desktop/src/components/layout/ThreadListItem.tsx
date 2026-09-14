@@ -132,14 +132,23 @@ function ThreadListItemImpl({
             <button
               aria-expanded={expanded}
               aria-label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
-              className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
+              className={cn(
+                "z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft",
+                compact ? "absolute top-1/2 -translate-y-1/2" : "relative",
+              )}
+              // Workspace rows already have a gutter; reuse it rather than
+              // consuming another column of title space.
+              style={compact ? { left: 8 + depth * 16 } : undefined}
               onClick={() => onToggleExpanded?.(thread)}
               type="button"
             >
               {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
             </button>
           )
-        : <span className="pointer-events-none size-4 shrink-0" />}
+        : !compact && depth > 0
+            // Align descendants within a tree, but don't indent unrelated roots.
+            ? <span className="pointer-events-none size-4 shrink-0" />
+            : null}
       <span
         className={cn(
           "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
