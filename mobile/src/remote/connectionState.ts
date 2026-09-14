@@ -69,8 +69,8 @@ const BASE_BACKOFF_MS = 1_000;
 /** Exponential backoff with jitter — capped, and deterministic for tests. */
 export function backoffDelayMs(attempt: number, random = Math.random): number {
   const exp = Math.min(attempt, 5); // 1s → 2s → 4s → 8s → 16s → 30s cap
-  const base = BASE_BACKOFF_MS * 2 ** exp;
-  const jitter = base * 0.2 * random();
+  const base = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** exp);
+  const jitter = base * 0.2 * (2 * random() - 1);
   return Math.min(MAX_BACKOFF_MS, base + jitter);
 }
 

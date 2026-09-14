@@ -343,16 +343,17 @@ describe("useRemoteConnection", () => {
       expect(options.applySessionSnapshot).toHaveBeenCalled();
     });
 
-    test("desktop unpair notices clear only their own pair", async () => {
+    test("desktop unpair notices preserve the local pairing until explicit removal", async () => {
       render();
       await flush();
       cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([desktops[1]]);
       act(() => client().callbacks.onPresence({ ...presence, unpaired: true }));
       await flush();
-      expect(clearCredentials).toHaveBeenCalledWith(credentials.pairId);
+      expect(clearCredentials).not.toHaveBeenCalled();
       expect(discardPendingPrompt).toHaveBeenCalledWith(credentials.pairId);
       expect(discardPendingContinuation).toHaveBeenCalledWith(credentials.pairId);
-      expect(result.current.desktops).toEqual([desktops[1]]);
+      expect(result.current.desktops).toEqual(desktops);
+      expect(result.current.phase).toBe("revoked");
     });
 
     test("removing an inactive desktop leaves the active connection alone", async () => {
@@ -472,7 +473,7 @@ describe("useRemoteConnection", () => {
       act(() => c.callbacks.onConnectionState("revoked"));
       expect(result.current.phase).toBe("revoked");
       act(() => c.callbacks.onConnectionState("unpaired"));
-      expect(result.current.phase).toBe("unpaired");
+      expect(result.current.phase).toBe("revoked");
       act(() => c.callbacks.onConnectionState("refreshing"));
       expect(result.current.phase).toBe("refreshing");
       act(() => c.callbacks.onConnectionState("failed"));
@@ -512,18 +513,39 @@ describe("useRemoteConnection", () => {
       expect(result.current.desktopOnline).toBe(false);
     });
 
-    test("onPresence unpaired tears down and goes unpaired", async () => {
+    test("onPresence unpaired tears down but preserves the local pairing", async () => {
       await mountConnected();
       const c = client();
       await act(async () => { c.callbacks.onPresence({ ...presence, unpaired: true }); await drain(); });
-      expect(clearCredentials).toHaveBeenCalled();
+      expect(clearCredentials).not.toHaveBeenCalled();
       expect(discardPendingContinuation).toHaveBeenCalled();
       expect(discardPendingPrompt).toHaveBeenCalled();
       expect(options.resetCatalog).toHaveBeenCalled();
       expect(options.resetConversation).toHaveBeenCalled();
       expect(options.resetTimeline).toHaveBeenCalled();
-      expect(result.current.phase).toBe("unpaired");
+      expect(result.current.phase).toBe("revoked");
+      expect(result.current.credentials).toEqual(credentials);
       expect(options.clientRef.current).toBeNull();
+    });
+
+    test.each(["user_disconnect", "system_sleep", "app_exit"])("desktop %s stops retries and clears the mirrored catalogue", async (reason) => {
+      await mountConnected();
+      const c = client();
+      act(() =>
+        c.callbacks.onPresence({
+          ...presence,
+          online: false,
+          disconnected: true,
+          reason,
+        }),
+      );
+      expect(c.close).toHaveBeenCalledWith("UserInitiated");
+      expect(options.clientRef.current).toBeNull();
+      expect(options.resetCatalog).toHaveBeenCalled();
+      expect(options.resetConversation).toHaveBeenCalled();
+      expect(options.resetTimeline).toHaveBeenCalled();
+      expect(result.current.phase).toBe("stopped");
+      expect(result.current.credentials).toEqual(credentials);
     });
 
     test("onSessions closes the conversation when the selected session is gone", async () => {
@@ -876,15 +898,16 @@ describe("useRemoteConnection", () => {
       expect(client().open).toHaveBeenCalled();
     });
 
-    test("reconnect with an invalid JWT clears credentials", async () => {
+    test("reconnect with an invalid JWT preserves pairing metadata", async () => {
       await mountConnected();
       cast<jest.Mock>(saveCredentials).mockRejectedValueOnce(new Error("invalid_jwt"));
       await act(async () => {
         await result.current.reconnect();
       });
-      expect(clearCredentials).toHaveBeenCalled();
-      expect(result.current.phase).toBe("unpaired");
-      expect(result.current.error).toBeNull();
+      expect(clearCredentials).not.toHaveBeenCalled();
+      expect(result.current.credentials).toEqual(credentials);
+      expect(result.current.phase).toBe("revoked");
+      expect(result.current.error).toBe("invalid_jwt");
     });
 
     test("reconnect surfaces a non-JWT failure", async () => {

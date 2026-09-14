@@ -58,7 +58,7 @@ export type RemoteConnectionLevel = "connected" | "connecting" | "disconnected";
 export type RemoteCustomerState
   = | "connected"
     | "connecting"
-    | "waitingDesktop"
+    | "recovering"
     | "devicePreparing"
     | "disconnected"
     | "pairingExpired"
@@ -83,7 +83,7 @@ export interface RemoteConnectionPresentation {
   titleKey:
     | "statusConnected"
     | "statusConnecting"
-    | "statusWaitingDesktop"
+    | "statusRecovering"
     | "statusDevicePreparing"
     | "statusDisconnected"
     | "statusPairingExpired"
@@ -233,14 +233,18 @@ export function remoteConnectionPresentation(
   return {
     level: "connecting",
     customerState: status.reason === "system_sleep"
-      ? "waitingDesktop"
+      ? "recovering"
       : status.reason === "network"
         ? "networkUnavailable"
         : "connecting",
-    action: status.reason === "network" ? "checkNetwork" : "wait",
+    action: status.reason === "network"
+      ? "checkNetwork"
+      : status.reason === "system_sleep"
+        ? "retry"
+        : "wait",
     supportCode: failure?.supportCode ?? null,
     titleKey: status.reason === "system_sleep"
-      ? "statusWaitingDesktop"
+      ? "statusRecovering"
       : status.reason === "network"
         ? "statusNetworkUnavailable"
         : "statusConnecting",

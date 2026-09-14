@@ -104,7 +104,7 @@ export function remoteErrorPresentation(message: string): RemoteErrorPresentatio
       supportCode: "NW001",
     };
   if (
-    /invalid_remote_credential|credentials_revoked|invalid_jwt|pairing_signature|confirmation_mismatch/i.test(
+    /invalid_remote_credential|credentials_revoked|invalid_jwt|pairing_signature|confirmation_mismatch|incomplete_desktop_credentials|desktop_credential_mismatch/i.test(
       trimmed,
     )
   )

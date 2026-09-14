@@ -130,6 +130,37 @@ describe("RemoteClient connection handoff", () => {
     jest.restoreAllMocks();
   });
 
+  test("initial network failure is terminal and does not retry", async () => {
+    (wsconnect as jest.Mock).mockRejectedValue(new Error("network down"));
+    await client.open();
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
+    await jest.advanceTimersByTimeAsync(180_000);
+    expect(wsconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("offline recovery expires after three minutes and cannot restart on foreground", async () => {
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+    await client.open();
+    client.setNetworkAvailable(false);
+    await expect(client.request({ type: "list_sessions" })).rejects.toThrow("communication_frozen");
+    await jest.advanceTimersByTimeAsync(180_000);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
+    client.setNetworkAvailable(true);
+    await client.recoverNow("foreground");
+    expect(wsconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("initial timeout rejects a late credential result", async () => {
+    const fresh = deferred<RemoteCredentials>();
+    (ensureFreshCredentials as jest.Mock).mockReturnValue(fresh.promise);
+    const opening = client.open();
+    await jest.advanceTimersByTimeAsync(20_000);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
+    fresh.resolve(credentials);
+    await opening;
+    expect(wsconnect).not.toHaveBeenCalled();
+  });
+
   test("credential refresh pending does not retire the serving event subscription", async () => {
     const old = socket();
     const replacement = socket();

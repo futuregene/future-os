@@ -60,19 +60,12 @@ function AppContent() {
   }
   if (screen === "desktops") return <DesktopsScreen onBack={() => setScreen("main")} onAdd={() => setScreen("pair")} />;
   if (screen === "pair") return <PairingScreen onBack={showDesktops} onPaired={() => setScreen("main")} />;
-  // A revoked device (M1) has no usable credentials even though they're still
-  // stored — route to the pairing screen so the user can re-pair.
-  if (remote.phase === "revoked") {
-    return (
-      <EnterTransition fromRight={false}>
-        <PairingScreen revoked onManageDesktops={showDesktops} />
-      </EnterTransition>
-    );
-  }
-  if (!remote.credentials) return <PairingScreen onManageDesktops={remote.desktops.length ? showDesktops : undefined} />;
-  const inChat = Boolean(remote.selectedSessionId || remote.draft);
+  // The local desktop registry owns startup routing. Credential validity and
+  // connection health update inside the paired UI without swapping screens.
+  if (remote.desktops.length === 0) return <PairingScreen />;
+  const inChat = !!remote.credentials && remote.connectionPresentation.level !== "disconnected" && Boolean(remote.selectedSessionId || remote.draft);
   return (
-    <View key={remote.credentials.pairId} style={styles.fill}>
+    <View style={styles.fill}>
       {/* Keep the list and its native scroll position in place on pop. A new
           list + reverse entry animation caused a visible restoration jump. */}
       <View
@@ -81,7 +74,10 @@ function AppContent() {
         accessibilityElementsHidden={inChat}
         importantForAccessibility={inChat ? "no-hide-descendants" : "auto"}
       >
-        <SessionsScreen active={!inChat} onManageDesktops={showDesktops} />
+        <SessionsScreen
+          active={!inChat}
+          onManageDesktops={showDesktops}
+        />
       </View>
       {inChat && (
         <View style={StyleSheet.absoluteFill}>

@@ -90,10 +90,13 @@ export function useRemoteConnection({
   const latestPresenceRef = useRef<Presence | null>(null);
   const [desktops, setDesktops] = useState<PairedDesktop[]>([]);
   const refreshDesktops = useCallback(async () => {
-    setDesktops(await loadPairedDesktops());
+    const storedDesktops = await loadPairedDesktops();
+    setDesktops(storedDesktops);
+    return storedDesktops;
   }, []);
   const [capabilities, setCapabilities] = useState<Set<string>>(() => new Set());
   const [desktopOnline, setDesktopOnline] = useState(false);
+  const [hasConnectedContent, setHasConnectedContent] = useState(false);
   const accessRef = useRef(0);
   const catalogPairRef = useRef<string | null>(null);
   const recoveryRef = useRef(new RecoveryCoordinator<RemoteClient>());
@@ -197,10 +200,12 @@ export function useRemoteConnection({
       agentAvailableRef.current = undefined;
       lastPresenceReceiptRef.current = 0;
       latestPresenceRef.current = null;
+      setError(null);
       setPresence(null);
       setDesktopOnline(false);
       setPhase("connecting");
       if (catalogPairRef.current !== null && catalogPairRef.current !== nextCredentials.pairId) {
+        setHasConnectedContent(false);
         resetCatalog();
         resetConversation();
         resetTimeline();
@@ -217,7 +222,12 @@ export function useRemoteConnection({
       catalogPairRef.current = nextCredentials.pairId;
       credentialsRef.current = nextCredentials;
       setCredentials(nextCredentials);
-      setError(null);
+      // A manual Desktop disconnect is a terminal presence packet. Starting a
+      // user-requested connection attempt supersedes that packet immediately,
+      // so the UI can enter the normal connecting state rather than remaining
+      // pinned to the previous red disconnected presentation.
+      setPresence(null);
+      setPhase("connecting");
       setCapabilities(new Set());
       const client = new RemoteClient(nextCredentials, {
         onCredentials: async (next) => {
@@ -245,19 +255,39 @@ export function useRemoteConnection({
           if (access !== accessRef.current) return;
           if (nextPresence.unpaired) {
             accessRef.current += 1;
-            credentialsRef.current = null;
-            void clientRef.current?.close("Unpair");
+            connectionReadyRef.current = false;
             clientRef.current = null;
-            void clearCredentials(nextCredentials.pairId).then(refreshDesktops).catch(recordError);
             void discardPendingPrompt(nextCredentials.pairId);
             void discardPendingContinuation(nextCredentials.pairId);
-            setCredentials(null);
-            setPresence(null);
+            setPresence(nextPresence);
+            setDesktopOnline(false);
+            setCapabilities(new Set());
             resetCatalog();
             resetConversation();
             resetTimeline();
-            setPhase("unpaired");
+            setPhase("revoked");
+            setError("credentials_revoked");
+            void client.close("UserInitiated");
+            return;
+          }
+          // An explicit Desktop offline notice (including sleep) is terminal, unlike a
+          // transient transport loss. Retain the pairing credentials for the
+          // manual retry button, but tear down the mobile client and every
+          // mirrored catalogue so it cannot reconnect in the background or
+          // show stale conversations.
+          if (nextPresence.disconnected) {
+            accessRef.current += 1;
+            connectionReadyRef.current = false;
+            clientRef.current = null;
+            setPresence(nextPresence);
+            setDesktopOnline(false);
+            setCapabilities(new Set());
+            resetCatalog();
+            resetConversation();
+            resetTimeline();
+            setPhase("stopped");
             setError(null);
+            void client.close("UserInitiated");
             return;
           }
           const agentRecovered =
@@ -299,21 +329,32 @@ export function useRemoteConnection({
           if (access !== accessRef.current) return;
           connectionReadyRef.current = state === "ready";
           if (state === "ready") {
+            setHasConnectedContent(true);
             setPhase("ready");
             setError(null);
             // Handshake presence arrives before ready; evaluate it now rather
             // than leaving the UI disabled until the next heartbeat/timer.
             updateDesktopOnline(latestPresenceRef.current, Date.now());
           } else if (state === "revoked" || state === "unpaired") {
-            credentialsRef.current = null;
             void discardPendingPrompt(nextCredentials.pairId);
             void discardPendingContinuation(nextCredentials.pairId);
-            setPhase(state);
+            setCapabilities(new Set());
+            resetCatalog();
+            resetConversation();
+            resetTimeline();
+            setPhase("revoked");
+            setError("credentials_revoked");
           } else if (state === "refreshing") setPhase("refreshing");
           else if (state === "failed") setPhase("failed");
           else if (state === "connecting") setPhase("connecting");
           else setPhase("reconnecting");
           if (state !== "ready") setDesktopOnline(false);
+          if (state === "failed") {
+            resetCatalog();
+            resetConversation();
+            resetTimeline();
+            setCapabilities(new Set());
+          }
         },
         onReconnected: () => {
           if (access !== accessRef.current) return;
@@ -323,7 +364,9 @@ export function useRemoteConnection({
           presenceStateRef.current = INITIAL_PRESENCE_STATE;
         },
         onError: (error) => {
-          if (access === accessRef.current) recordError(error);
+          if (access === accessRef.current) {
+            setError(error.message);
+          }
         },
       });
       clientRef.current = client;
@@ -356,21 +399,31 @@ export function useRemoteConnection({
     let active = true;
     const bootstrapAccess = accessRef.current;
     void (async () => {
+      let storedDesktops: PairedDesktop[] = [];
       try {
         void drainRevokes().catch(recordError);
         if (!active) return;
+        // The desktop registry owns startup routing. Publish it before loading
+        // credentials so a paired installation never flashes the scan screen.
+        storedDesktops = await refreshDesktops();
+        if (!active || bootstrapAccess !== accessRef.current) return;
+        setPhase(storedDesktops.length > 0 ? "connecting" : "unpaired");
         const stored = await loadCredentials();
-        await refreshDesktops();
         if (!active || bootstrapAccess !== accessRef.current) return;
         if (!stored) {
-          setPhase("unpaired");
+          if (storedDesktops.length > 0) {
+            setError("incomplete_desktop_credentials");
+            setPhase("failed");
+          } else {
+            setPhase("unpaired");
+          }
           return;
         }
         await connect(stored);
       } catch (nextError) {
         if (!active) return;
         setError(nextError instanceof Error ? nextError.message : String(nextError));
-        setPhase("unpaired");
+        setPhase(storedDesktops.length > 0 ? "failed" : "unpaired");
       }
     })();
     return () => {
@@ -547,27 +600,25 @@ export function useRemoteConnection({
   }, [connect]);
 
   const reconnect = useCallback(async () => {
-    const stored = credentials ?? (await loadCredentials());
-    if (!stored) {
-      setPhase("unpaired");
-      return;
-    }
     try {
+      const stored = credentials ?? (await loadCredentials());
+      if (!stored) {
+        if (desktops.length > 0) {
+          setError("incomplete_desktop_credentials");
+          setPhase("failed");
+        } else {
+          setError(null);
+          setPhase("unpaired");
+        }
+        return;
+      }
       await connect(stored);
     } catch (nextError) {
       const message = nextError instanceof Error ? nextError.message : String(nextError);
-      if (message === "invalid_jwt") {
-        credentialsRef.current = null;
-        await clearCredentials(stored.pairId);
-        await refreshDesktops();
-        await discardPendingPrompt(stored.pairId);
-        await discardPendingContinuation(stored.pairId);
-        setCredentials(null);
-        setPhase("unpaired");
-        setError(null);
-      } else setError(message);
+      setError(message);
+      setPhase(message === "invalid_jwt" || message === "credentials_revoked" ? "revoked" : "failed");
     }
-  }, [connect, credentials, credentialsRef, refreshDesktops]);
+  }, [connect, credentials, desktops.length]);
 
   const unpair = useCallback(async () => {
     const unpairAccess = ++accessRef.current;
@@ -583,6 +634,7 @@ export function useRemoteConnection({
     setCredentials(null);
     setPresence(null);
     setDesktopOnline(false);
+    setHasConnectedContent(false);
     setCapabilities(new Set());
     resetCatalog();
     resetConversation();
@@ -652,6 +704,7 @@ export function useRemoteConnection({
     removeDesktop,
     presence,
     desktopOnline,
+    hasConnectedContent,
     capabilities,
     fileTransferSupported: capabilities.has("file_transfer_v1"),
     promptReceiptSupported: capabilities.has("prompt_receipt_v1"),

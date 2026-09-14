@@ -20,6 +20,7 @@ jest.mock("react-native-safe-area-context", () => ({
 
 let tree: ReactTestRenderer;
 const onReconnect = jest.fn();
+const onUnpair = jest.fn();
 const ready = connectionPresentation({ phase: "ready", desktopOnline: true });
 const trigger = () => tree.root.findAll(node => node.props.accessibilityHint === "connection.showDetails" && typeof node.props.onPress === "function")[0]!;
 const open = () => {
@@ -31,7 +32,7 @@ const open = () => {
 };
 const text = () => tree.root.findAllByType(Text).map(node => node.props.children);
 const render = (presentation = ready, active = true) => {
-  const element = createElement(ConnectionBadge, { presentation, onReconnect, active });
+  const element = createElement(ConnectionBadge, { presentation, onReconnect, onUnpair, active });
   act(() => {
     tree.update(element);
   });
@@ -39,7 +40,7 @@ const render = (presentation = ready, active = true) => {
 beforeEach(() => {
   mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
   jest.clearAllMocks();
-  act(() => { tree = create(createElement(ConnectionBadge, { presentation: ready, onReconnect })); });
+  act(() => { tree = create(createElement(ConnectionBadge, { presentation: ready, onReconnect, onUnpair })); });
 });
 afterEach(() => act(() => tree.unmount()));
 
@@ -56,16 +57,15 @@ test("only the dot is visible, with a 44pt button and an accessible status", () 
   open();
   expect(tree.root.findByType(Modal).props.visible).toBe(true);
   expect(trigger().props.accessibilityState.expanded).toBe(true);
-  expect(text()).toContain("connection.connectedHint");
+  expect(text()).toContain("connection.statusDetails.connected.reason");
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
   expect(onReconnect).not.toHaveBeenCalled();
 });
 
 test.each([
-  [{ phase: "connecting", desktopOnline: false }, "connection.connecting", "connection.connectingHint"],
-  [{ phase: "ready", desktopOnline: false }, "connection.waitingDesktop", "connection.offlineHint"],
-  [{ phase: "ready", desktopOnline: true, agentAvailable: false }, "connection.devicePreparing (LC003)", "connection.agentUnavailable"],
-  [{ phase: "revoked", desktopOnline: false }, "connection.pairingExpired (PA001)", "connection.pairAgainHint"],
+  [{ phase: "connecting", desktopOnline: false }, "connection.connecting", "connection.statusDetails.connecting.reason"],
+  [{ phase: "ready", desktopOnline: false }, "connection.waitingDesktop", "connection.statusDetails.waitingDesktop.reason"],
+  [{ phase: "ready", desktopOnline: true, agentAvailable: false }, "connection.waitingDesktop", "connection.statusDetails.devicePreparing.reason"],
 ] as const)("explains %j without offering an inappropriate reconnect", (state, label, hint) => {
   render(connectionPresentation(state));
   open();
@@ -75,10 +75,22 @@ test.each([
   expect(onReconnect).not.toHaveBeenCalled();
 });
 
+test("pairing expiry is preserved as a status and only offers explicit unpair", () => {
+  render(connectionPresentation({ phase: "revoked", desktopOnline: false }));
+  open();
+  expect(text()).toContain("connection.pairingExpired");
+  expect(text()).toContain("connection.disconnectDetails.pairing.reason (PA001)");
+  const action = tree.root.findByType(Button);
+  expect(action.props.label).toBe("sessions.unpair");
+  act(() => action.props.onPress());
+  expect(onUnpair).toHaveBeenCalledTimes(1);
+  expect(onReconnect).not.toHaveBeenCalled();
+});
+
 test.each([
   [{ phase: "unpaired", desktopOnline: false }, "connection.reconnect"],
   [{ phase: "failed", desktopOnline: false, error: "timed out" }, "connection.reconnect"],
-  [{ phase: "failed", desktopOnline: false, error: "503" }, "connection.retry"],
+  [{ phase: "failed", desktopOnline: false, error: "503" }, "connection.reconnect"],
 ] as const)("reconnect/retry for %j requires the separate action button", (state, label) => {
   render(connectionPresentation(state));
   open();

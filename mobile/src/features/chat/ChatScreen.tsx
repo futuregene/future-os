@@ -51,12 +51,12 @@ export function ChatScreen() {
   const { t } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
+  const connection = controls.connectionPresentation;
   const { closeConversation, decideApproval: submitApproval } = remote;
   const insets = useSafeAreaInsets();
 
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
-  const [showOffline, setShowOffline] = useState(false);
   const [filesSession, setFilesSession] = useState<string | null>(null);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
   const filesOpen = !remote.draft && filesSession === conversationKey;
@@ -268,14 +268,6 @@ export function ChatScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    const timer = setTimeout(
-      () => setShowOffline(!remote.desktopOnline),
-      remote.desktopOnline ? 0 : 3_000,
-    );
-    return () => clearTimeout(timer);
-  }, [remote.desktopOnline]);
-
   // Inset the whole flex column so the composer *card* clears the keyboard. The
   // dock includes composerArea's bottom padding, so retain a little additional
   // clearance for the card border, rounded corners, and shadow above Gboard.
@@ -309,7 +301,7 @@ export function ChatScreen() {
           }}
         />
 
-        {remote.error && (
+        {remote.error && connection.level === "connected" && (
           <ErrorBanner
             message={remote.error}
             onDismiss={
@@ -452,7 +444,6 @@ export function ChatScreen() {
               send={sendFromComposer}
               atLatest={atLatest}
               scrollToLatest={scrollToLatest}
-              showOffline={showOffline}
               pendingApprovals={pendingApprovals}
               approvalSubmitting={approvalSubmitting}
               approvalError={approvalError}

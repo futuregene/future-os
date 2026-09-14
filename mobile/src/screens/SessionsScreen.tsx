@@ -12,7 +12,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Modal,
@@ -34,6 +34,7 @@ import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
+import { DisconnectedScreen } from "./DisconnectedScreen";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
@@ -52,14 +53,21 @@ function deferPresentation(action: () => void): void {
   setTimeout(action, Platform.OS === "ios" ? 350 : 0);
 }
 
-export function SessionsScreen({ onManageDesktops, active = true }: { onManageDesktops(): void; active?: boolean }) {
+export function SessionsScreen({ onManageDesktops, active = true }: {
+  onManageDesktops(): void;
+  active?: boolean;
+}) {
   const Alert = useAppDialog(active);
   const { t } = useTranslation();
   const remote = useRemote();
+  const selectedDesktop =
+    remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId) ??
+    remote.desktops[0];
   const selectedDesktopName =
-    remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId)?.name ??
+    selectedDesktop?.name ??
     remote.credentials?.expectedDesktopId ??
-    "";
+    selectedDesktop?.desktopId ??
+    t("desktops.title");
   const [tab, setTabState] = useState<Tab>(lastTab);
   const setTab = (next: Tab) => {
     lastTab = next;
@@ -243,6 +251,35 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
   const connection = remote.connectionPresentation;
   const connected = connection.level === "connected";
   const connecting = connection.level === "connecting";
+  const [reconnectingFromDisconnected, setReconnectingFromDisconnected] = useState(false);
+  const reconnectStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!reconnectingFromDisconnected) return;
+    if (
+      remote.phase === "connecting" ||
+      remote.phase === "reconnecting" ||
+      remote.phase === "refreshing"
+    ) {
+      reconnectStartedRef.current = true;
+      return;
+    }
+    if (connected || (reconnectStartedRef.current && connection.level === "disconnected")) {
+      reconnectStartedRef.current = false;
+      setReconnectingFromDisconnected(false);
+    }
+  }, [connected, connection.level, reconnectingFromDisconnected, remote.phase]);
+
+  const reconnect = () => {
+    if (connection.level === "disconnected") {
+      reconnectStartedRef.current = false;
+      setReconnectingFromDisconnected(true);
+    }
+    void remote.reconnect();
+  };
+  const standaloneConnecting =
+    reconnectingFromDisconnected || (!remote.hasConnectedContent && connecting);
+  const showStandaloneStatus = connection.level === "disconnected" || standaloneConnecting;
 
   const offlineEmpty = (
     <View style={styles.emptyState}>
@@ -254,9 +291,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
       >
         <Unplug color={connecting ? colors.warning : colors.danger} size={26} />
       </View>
-      <Text style={styles.emptyTitle}>{t(connection.titleKey)}</Text>
-      <Text style={styles.emptyHint}>{t(connection.hintKey ?? "connection.offlineHint")}</Text>
-      {(connection.action === "retry" || connection.action === "checkNetwork") && (
+      <Text style={styles.emptyTitle}>
+        {t(connection.level === "disconnected" ? "connection.disconnected" : connection.titleKey)}
+      </Text>
+      {connection.level === "disconnected" && (
+        <Text style={styles.emptyHint}>{t(connection.hintKey ?? "connection.offlineHint")}</Text>
+      )}
+      {connection.level === "disconnected" && (
         <Button compact label={t("connection.retry")} onPress={() => void remote.reconnect()} />
       )}
     </View>
@@ -317,7 +358,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
             <ConnectionBadge
               active={active}
               presentation={connection}
-              onReconnect={() => void remote.reconnect()}
+              disconnectReason={remote.presence?.reason}
+              error={remote.error}
+              onReconnect={reconnect}
+              onUnpair={confirmUnpair}
             />
             <Pressable
               accessibilityLabel={t("sessions.settings")}
@@ -329,25 +373,27 @@ export function SessionsScreen({ onManageDesktops, active = true }: { onManageDe
             </Pressable>
           </View>
         </View>
-        {remote.error && (
+        {remote.error && connection.level === "connected" && (
           <ErrorBanner
             message={remote.error}
-            onDismiss={
-              connection.level === "disconnected" && connection.supportCode
-                ? undefined
-                : remote.clearError
-            }
+            onDismiss={remote.clearError}
           />
         )}
 
-        <SessionList
+        {showStandaloneStatus ? (
+          <DisconnectedScreen
+            reconnecting={standaloneConnecting}
+            onReconnect={reconnect}
+            onUnpair={confirmUnpair}
+          />
+        ) : <SessionList
           key={tab}
           tab={tab}
           active={active}
           onTabChange={setTab}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
-        />
+        />}
 
         {connected && (
           <Pressable
@@ -512,7 +558,7 @@ const styles = StyleSheet.create({
   deviceBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
+    gap: spacing.md,
     paddingHorizontal: layout.gutter,
     paddingVertical: spacing.sm,
   },
@@ -523,6 +569,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
     borderRadius: radius.lg,
   },
   desktopIcon: {
