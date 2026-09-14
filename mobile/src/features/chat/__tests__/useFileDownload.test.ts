@@ -4,6 +4,8 @@ import type { TFunction } from "i18next";
 import { Platform } from "react-native";
 import { AppAlert as Alert } from "../../../components/appAlerts";
 import * as Sharing from "expo-sharing";
+import * as Network from "expo-network";
+import * as downloadUtils from "../utils";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { File } from "expo-file-system";
 import { findSupportedMimeType, openFile, saveFile, shareFile, supportsNativeFileActions } from "future-file-handler";
@@ -37,7 +39,7 @@ jest.mock("../../../remote/files", () => ({
 }));
 jest.mock("expo-network", () => ({
   getNetworkStateAsync: jest.fn(async () => ({ type: "WIFI" })),
-  NetworkStateType: { CELLULAR: "CELLULAR", UNKNOWN: "UNKNOWN" },
+  NetworkStateType: { WIFI: "WIFI", ETHERNET: "ETHERNET", CELLULAR: "CELLULAR", UNKNOWN: "UNKNOWN" },
 }));
 
 const info: DownloadInfo = {
@@ -73,6 +75,58 @@ const pdfInfo: DownloadInfo = {
   ...info, name: "报告.pdf", mimeType: "application/pdf", previewKind: "file", variant: "original",
 };
 const localFile = file as File;
+
+describe("download confirmation policy across entry points", () => {
+  const platform = Platform.OS;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    Platform.OS = "android";
+    jest.mocked(LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync)
+      .mockResolvedValue({ granted: false });
+  });
+  afterEach(() => {
+    act(() => jest.runOnlyPendingTimers());
+    jest.useRealTimers();
+    Platform.OS = platform;
+    jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type: Network.NetworkStateType.WIFI });
+  });
+
+  test.each(["attachment", "link", "original", "save"])("%s skips small-file prompts but respects a large-file cancellation", async entry => {
+    const confirm = jest.spyOn(downloadUtils, "confirmDownload").mockResolvedValue(false);
+    for (const type of [Network.NetworkStateType.CELLULAR, Network.NetworkStateType.UNKNOWN]) {
+      for (const size of [5 * 1024, 1024 * 1024]) {
+        confirm.mockClear();
+        jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type });
+        const metadata = { ...info, size };
+        const remote = {
+          cachedAttachment: jest.fn(() => null),
+          prepareAttachment: jest.fn(async () => metadata),
+          downloadAttachment: jest.fn(async () => localFile),
+        };
+        const h = await mount(remote);
+        await act(async () => {
+          if (entry === "attachment") await h.api.openAttachment({ path: "/notes.txt", name: "notes.txt" });
+          else if (entry === "link") await h.api.openFileLink("/notes.txt");
+          else if (entry === "original") await h.api.downloadOriginal({ path: "/notes.txt", name: "notes.txt" });
+          else await h.api.openOrShare(metadata, null, "save");
+        });
+        if (size < 1024 * 1024) {
+          expect(confirm).not.toHaveBeenCalled();
+          expect(remote.downloadAttachment).toHaveBeenCalledTimes(1);
+        } else {
+          expect(confirm).toHaveBeenCalledWith("attachment.downloadTitle",
+            type === Network.NetworkStateType.CELLULAR ? "attachment.cellularWarning" : "attachment.unknownNetworkWarning",
+            "chat.cancel", "attachment.download");
+          expect(remote.downloadAttachment).not.toHaveBeenCalled();
+          expect(h.api.activeDownload).toBeNull();
+        }
+        act(() => jest.runOnlyPendingTimers());
+        act(() => h.tree.unmount());
+      }
+    }
+  });
+});
 
 describe("independent file operations", () => {
   const platform = Platform.OS;

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import type { TFunction } from "i18next";
-import * as Network from "expo-network";
+import { downloadWarning } from "./downloadPolicy";
 import { basename } from "@future-os/markdown";
 import type { MarkdownImageLoader } from "../../components/MarkdownImage";
 import type { useRemote } from "../../remote/RemoteContext";
@@ -51,11 +51,11 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
           if (!imagePreview(info)) throw new Error("markdown_image_unavailable");
           cached ??= cachedAttachment(attachment, "preview");
           if (cached) return cached.file.uri;
-          const network = await Network.getNetworkStateAsync();
+          const warning = await downloadWarning(info.size);
           check();
-          if (network.type === Network.NetworkStateType.CELLULAR || network.type === Network.NetworkStateType.UNKNOWN) {
+          if (warning) {
             const accepted = await confirmDownload(t("attachment.downloadTitle"),
-              t("attachment.cellularWarning", { size: formatBytes(info.size) }), t("chat.cancel"), t("attachment.download"));
+              t(warning, { size: formatBytes(info.size) }), t("chat.cancel"), t("attachment.download"));
             check();
             if (!accepted) return null;
           }

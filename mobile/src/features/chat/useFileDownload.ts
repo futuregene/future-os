@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { AppAlert as Alert } from "../../components/appAlerts";
-import * as Network from "expo-network";
+import { downloadWarning } from "./downloadPolicy";
 import * as Sharing from "expo-sharing";
 import { openFile as openNativeFile, saveFile, shareFile, supportsNativeFileActions } from "future-file-handler";
 import { File } from "expo-file-system";
@@ -345,18 +345,17 @@ export function useFileDownload(
         }
         let file = cachedPreview?.file ?? null;
         if (!file) {
-          const network = await Network.getNetworkStateAsync();
-          if (
-            network.type === Network.NetworkStateType.CELLULAR ||
-            network.type === Network.NetworkStateType.UNKNOWN
-          ) {
+          const warning = await downloadWarning(info.size);
+          if (handle.controller.signal.aborted) throw new TransferCancelledError();
+          if (warning) {
             const accepted = await confirmDownload(
               t("attachment.downloadTitle"),
-              t("attachment.cellularWarning", { size: formatBytes(info.size) }),
+              t(warning, { size: formatBytes(info.size) }),
               t("chat.cancel"),
               t("attachment.download"),
             );
             if (!accepted) return;
+            if (handle.controller.signal.aborted) throw new TransferCancelledError();
           }
           // Metadata is intentionally silent. Once we know this is a cache
           // miss and have the real byte size, show 0 / total before the first
@@ -437,8 +436,8 @@ export function useFileDownload(
     ],
   );
 
-  // Download `info` to a cached File, prompting on cellular. Returns the file,
-  // or null when the user declines the cellular download.
+  // Download `info` to a cached File, confirming large metered/unknown-network
+  // transfers. Returns null when the user declines.
   const fetchDownload = useCallback(
     async (
       info: DownloadInfo,
@@ -446,18 +445,17 @@ export function useFileDownload(
       handle?: DownloadHandle,
     ): Promise<File | null> => {
       if (cachedFile) return cachedFile;
-      const network = await Network.getNetworkStateAsync();
-      if (
-        network.type === Network.NetworkStateType.CELLULAR ||
-        network.type === Network.NetworkStateType.UNKNOWN
-      ) {
+      const warning = await downloadWarning(info.size);
+      if (handle?.controller.signal.aborted) throw new TransferCancelledError();
+      if (warning) {
         const accepted = await confirmDownload(
           t("attachment.downloadTitle"),
-          t("attachment.cellularWarning", { size: formatBytes(info.size) }),
+          t(warning, { size: formatBytes(info.size) }),
           t("chat.cancel"),
           t("attachment.download"),
         );
         if (!accepted) return null;
+        if (handle?.controller.signal.aborted) throw new TransferCancelledError();
       }
       if (handle) {
         const patch = {

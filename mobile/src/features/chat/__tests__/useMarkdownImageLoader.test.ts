@@ -54,8 +54,17 @@ test("cache hits avoid network requests and transfer", async () => {
   expect(Network.getNetworkStateAsync).not.toHaveBeenCalled();
 });
 
-test.each([Network.NetworkStateType.CELLULAR, Network.NetworkStateType.UNKNOWN])("asks before downloading on %s; declining downloads no bytes", async type => {
+test.each([Network.NetworkStateType.CELLULAR, Network.NetworkStateType.UNKNOWN])("small images do not prompt on %s", async type => {
   const remote = mount();
+  jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type });
+  await expect(loader.load("a.png", new AbortController().signal)).resolves.toBe("file:///verified.png");
+  expect(confirmDownload).not.toHaveBeenCalled();
+  expect(remote.downloadAttachment).toHaveBeenCalledTimes(1);
+});
+
+test.each([Network.NetworkStateType.CELLULAR, Network.NetworkStateType.UNKNOWN])("asks before large downloads on %s; declining downloads no bytes", async type => {
+  const remote = mount();
+  remote.prepareAttachment.mockResolvedValue({ ...info, size: 1024 * 1024 });
   jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type });
   jest.mocked(confirmDownload).mockResolvedValue(false);
   await expect(loader.load("a.png", new AbortController().signal)).resolves.toBeNull();

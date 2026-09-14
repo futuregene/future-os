@@ -31,12 +31,12 @@ function dismiss() {
   });
 }
 
-test.each(["ios", "android"] as const)("%s shows a selectable app-styled error, never a native alert", os => {
+test.each(["ios", "android"] as const)("%s shows an app-styled error with platform-safe text selection, never a native alert", os => {
   Platform.OS = os;
   act(() => AppAlert.alert("Cannot share", "Permission denied\n".repeat(100)));
   expect(tree.root.findByType(Modal).props.visible).toBe(true);
   expect(tree.root.findAllByType(DialogSurface)).toHaveLength(1);
-  expect(tree.root.findAllByType(Text).some(node => node.props.selectable)).toBe(true);
+  expect(tree.root.findAllByType(Text).some(node => node.props.selectable)).toBe(os === "ios");
   expect(Alert.alert).not.toHaveBeenCalled();
   act(() => tree.root.findByType(Button).props.onPress());
   expect(currentAppAlert()).not.toBeNull();
