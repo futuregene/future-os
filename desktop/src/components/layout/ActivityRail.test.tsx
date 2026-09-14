@@ -115,6 +115,44 @@ describe("activity rail conversation hierarchy", () => {
     }
   });
 
+  it.each([false, true])("does not reserve an expander for unrelated roots (workspace=%s)", async (workspace) => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const parent = workspace ? workspaceThread("parent", "ws") : thread("parent");
+    const sibling = workspace ? workspaceThread("sibling", "ws") : thread("sibling");
+    const pinned = { ...workspaceThread("pinned", "ws"), pinned: true };
+    const p = {
+      ...props([parent, sibling, pinned]),
+      workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
+    };
+    const row = (id: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${id}"]`)!.parentElement!;
+    const expectCompactRoots = () => {
+      for (const id of ["sibling", "pinned"]) {
+        const current = row(id);
+        expect(current.style.paddingLeft).toBe(workspace && id !== "pinned" ? "28px" : "8px");
+        expect(current.querySelector("span.truncate")?.previousElementSibling).toBe(current.firstElementChild);
+      }
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      expectCompactRoots();
+      const withChild = { ...p, threads: [...p.threads, { ...thread("child", "parent"), mode: parent.mode, workspaceId: parent.workspaceId }] };
+      act(() => root.render(<ActivityRail {...withChild} />));
+      expectCompactRoots();
+      const expander = row("parent").querySelector<HTMLButtonElement>("button[aria-expanded=false]:not([aria-haspopup])")!;
+      act(() => expander.click());
+      expect(row("child")).not.toBeNull();
+      expectCompactRoots();
+      expect(p.onSelectThread).not.toHaveBeenCalled();
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it("keeps the selection toolbar outside the shared workspace/chat viewport", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
