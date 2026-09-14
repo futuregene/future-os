@@ -310,6 +310,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     conversationEpochRef,
     syncEngineRef,
     phase,
+    businessReady: desktopOnline && presence?.agentAvailable !== false && !presence?.disconnected,
     draft,
     draftMode,
     draftWorkspaceId,
