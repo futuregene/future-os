@@ -147,7 +147,7 @@ where
         bail!("additional_permissions.write accepts at most {MAX_WRITE_TARGETS} targets");
     }
 
-    let canonical_home = home.and_then(|path| path.canonicalize().ok());
+    let canonical_home = home.and_then(|path| paths::canonicalize_existing(path).ok());
     let mut seen = HashSet::new();
     let mut targets = Vec::with_capacity(permissions.write.len());
 
@@ -164,8 +164,13 @@ where
         }
 
         let resolved = paths::resolve_against(workspace, raw_path);
-        let normalized = resolved
-            .canonicalize()
+        // Use the ordinary (extended-length-prefix stripped) spelling: this
+        // path is shown to the user, persisted in capability metadata, and
+        // compared against rule-layer paths, which are all ordinary. Raw
+        // `Path::canonicalize` returns `\\?\C:\...` on Windows, which would
+        // break those comparisons (for example the explicit-ask-carveout
+        // preflight rejection) and leak the kernel spelling into the UI.
+        let normalized = paths::canonicalize_existing(&resolved)
             .with_context(|| format!("write capability target does not exist: {raw_path}"))?;
         reject_overbroad_target(&normalized, canonical_home.as_deref())?;
         validate_scope(&normalized, request.scope)?;
@@ -277,7 +282,11 @@ mod tests {
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("futureos-w4-{name}-{stamp}"));
         std::fs::create_dir_all(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        // Canonicalize the way production does. `Path::canonicalize` returns
+        // the Windows extended-length spelling (`\\?\C:\...`) there, which the
+        // rule layer, the frozen targets, and every hand-built plan here must
+        // agree on — `canonicalize_lenient` is the ordinary spelling.
+        crate::sandbox::paths::canonicalize_lenient(&dir)
     }
 
     fn subtree(path: &Path, reason: &str) -> WritePermissionRequest {
@@ -425,6 +434,38 @@ mod tests {
         let error =
             prepare_with(&workspace, "command", &permissions, |_| Decision::Ask, None).unwrap_err();
         assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn frozen_targets_use_the_ordinary_platform_spelling() {
+        // `Path::canonicalize` returns the Windows extended-length spelling
+        // (`\\?\C:\...`) there. The frozen target is shown to the user,
+        // persisted in capability metadata, and compared against rule-layer
+        // paths (always ordinary), so it must never carry that prefix.
+        let workspace = temp_dir("ordinary-spelling");
+        let target = workspace.join("release");
+        std::fs::create_dir_all(&target).unwrap();
+        let permissions = AdditionalPermissions {
+            write: vec![subtree(&target, "publish")],
+        };
+        let prepared = prepare_with(
+            &workspace,
+            "cargo build",
+            &permissions,
+            |_| Decision::Ask,
+            None,
+        )
+        .unwrap();
+
+        let normalized = &prepared.targets[0].normalized_path;
+        assert_eq!(
+            normalized,
+            &crate::sandbox::paths::canonicalize_lenient(&target)
+        );
+        assert!(!normalized.to_string_lossy().starts_with(r"\\?\"));
+        assert!(!prepared.approval.as_ref().unwrap().targets[0]
+            .path
+            .starts_with(r"\\?"));
     }
 
     #[test]

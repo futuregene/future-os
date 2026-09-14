@@ -1,6 +1,6 @@
 import { createElement, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { FlatList } from "react-native";
+import { BackHandler, FlatList } from "react-native";
 import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import type { SessionFileListing } from "../../../remote/types";
 
@@ -24,10 +24,13 @@ let tree: ReactTestRenderer;
 let props: ComponentProps<typeof SessionFilesPanel>;
 const listFiles = jest.fn();
 const onOpenFile = jest.fn();
+const onClose = jest.fn();
+let systemBack: (() => boolean | null | undefined) | null;
+const removeBack = jest.fn();
 const entries = () => tree.root.findByType(FlatList).props.data;
 const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
 async function mount(patch: Partial<typeof props> = {}) {
-  props = { online: true, supported: true, isWorkspace: false, listFiles, onOpenFile, ...patch };
+  props = { online: true, supported: true, isWorkspace: false, listFiles, onOpenFile, onClose, ...patch };
   await act(async () => { tree = create(createElement(SessionFilesPanel, props)); });
 }
 async function press(label: string) {
@@ -35,10 +38,18 @@ async function press(label: string) {
 }
 beforeEach(() => {
   jest.clearAllMocks();
+  systemBack = null;
+  jest.spyOn(BackHandler, "addEventListener").mockImplementation((_event, handler) => {
+    systemBack = () => handler({ type: "hardwareBackPress", timeStamp: Date.now() });
+    return { remove: removeBack };
+  });
   listFiles.mockResolvedValue(root);
   onOpenFile.mockResolvedValue(undefined);
 });
-afterEach(() => act(() => tree?.unmount()));
+afterEach(() => {
+  act(() => tree?.unmount());
+  jest.restoreAllMocks();
+});
 
 test("loads the session root, toggles dotfiles, and opens the exact desktop file path", async () => {
   await mount();
@@ -64,6 +75,49 @@ test("enters a directory, refreshes it, and returns to the session root", async 
   listFiles.mockResolvedValue(root);
   await press("files.up");
   expect(listFiles).toHaveBeenLastCalledWith("");
+});
+
+test("system back pops one directory at a time and only closes at the root", async () => {
+  const child = {
+    ...root, path: "C:\\work\\reports",
+    entries: [{ name: "drafts", path: "C:\\work\\reports\\drafts", isDir: true, size: 0 }],
+  };
+  listFiles.mockImplementation(async (path: string) => path === child.path ? child
+    : path.endsWith("drafts") ? { ...root, path, entries: [] } : root);
+  await mount();
+  await press("files.openFolder:reports");
+  await press("files.openFolder:drafts");
+  await act(async () => { expect(systemBack?.()).toBe(true); });
+  expect(listFiles).toHaveBeenLastCalledWith(child.path);
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => { expect(systemBack?.()).toBe(true); });
+  expect(listFiles).toHaveBeenLastCalledWith("");
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => { expect(systemBack?.()).toBe(true); });
+  expect(onClose).toHaveBeenCalledTimes(1);
+  act(() => tree.unmount());
+  expect(removeBack).toHaveBeenCalled();
+});
+
+test("system back works during loading and ignores a late child-directory response", async () => {
+  await mount();
+  let resolve!: (listing: SessionFileListing) => void;
+  listFiles.mockReturnValueOnce(new Promise<SessionFileListing>(yes => { resolve = yes; }));
+  await press("files.openFolder:reports");
+  await act(async () => { systemBack?.(); });
+  expect(listFiles).toHaveBeenLastCalledWith("");
+  await act(async () => { resolve({ ...root, path: "C:\\work\\reports", entries: [] }); });
+  expect(entries()).toHaveLength(2);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+test("system back navigates up even when the desktop is offline", async () => {
+  await mount();
+  await press("files.openFolder:reports");
+  await act(async () => { tree.update(createElement(SessionFilesPanel, { ...props, online: false })); });
+  await act(async () => { systemBack?.(); });
+  expect(button("files.up").props.disabled).toBe(true);
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 test.each([{ online: false }, { supported: false }])("does not request files when unavailable: %j", async patch => {

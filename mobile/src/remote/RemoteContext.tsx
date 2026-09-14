@@ -59,6 +59,7 @@ interface RemoteContextValue {
   draftWorkspaceId: string;
   timeline: TimelineState;
   timelinePending: boolean;
+  timelineSyncStatus: import("./syncEngine").TimelineSyncStatus;
   timelineError: "timeout" | null;
   canLoadOlderTimeline: boolean;
   loadingOlderTimeline: boolean;
@@ -116,7 +117,7 @@ interface RemoteContextValue {
 }
 
 type TimelineContextValue = Pick<RemoteContextValue,
-  "timeline" | "timelinePending" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline"
+  "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline"
 >;
 export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue> & { streaming: boolean };
 const RemoteContext = createContext<RemoteControls | null>(null);
@@ -174,6 +175,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const {
     timeline,
     timelinePending,
+    timelineSyncStatus,
     timelineError,
     canLoadOlderTimeline,
     loadingOlderTimeline,
@@ -342,8 +344,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const streaming = timeline.streaming;
   const timelineValue = useMemo<TimelineContextValue>(() => ({
-    timeline, timelinePending, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
-  }), [timeline, timelinePending, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
+    timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
+  }), [timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
   const value = useMemo<RemoteControls>(
     () => ({
       phase,

@@ -10,6 +10,7 @@ import { useRemote } from "../../remote/RemoteContext";
 import { basename } from "../../remote/localPath";
 import { mobileFileType, mobilePreviewRoute } from "../../remote/fileTypes";
 import { supportedExternalMime } from "../../remote/fileHandler";
+import { withNativePresentation } from "../../remote/nativePresentation";
 import {
   MAX_FILE_BYTES,
   mimeFor,
@@ -27,6 +28,7 @@ import {
   type ActiveDownload,
   type DownloadHandle,
   type FileAction,
+  type FileOperation,
 } from "./utils";
 
 type Remote = ReturnType<typeof useRemote>;
@@ -48,13 +50,12 @@ export interface FileDownloadApi {
   setFileAction: (action: FileAction | null) => void;
   openAttachment: (attachment: HistoryAttachment) => Promise<void>;
   openFileLink: (path: string, refresh?: boolean) => Promise<void>;
-  downloadOriginal: (attachment: HistoryAttachment) => Promise<void>;
+  downloadOriginal: (attachment: HistoryAttachment, operation?: FileOperation) => Promise<void>;
   openOrShare: (
     info: DownloadInfo,
     cachedFile: File | null,
-    save: boolean,
+    operation: FileOperation,
     existingHandle?: DownloadHandle,
-    openMimeType?: string,
   ) => Promise<void>;
   closePreview: () => void;
   dismissPreviewThen: (action: () => void) => void;
@@ -79,8 +80,8 @@ export function useFileDownload(
   const pendingDownloadHandleRef = useRef<DownloadHandle | null>(null);
   const pendingPreviewActionRef = useRef<(() => void) | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
-  // Prepared non-previewable attachment awaiting an Android open/save choice;
-  // iOS immediately continues to its system share sheet.
+  // Choosing an operation is independent of installed file readers. A device
+  // without a PDF reader must still be able to save or share the PDF.
   const [fileAction, setFileAction] = useState<FileAction | null>(null);
 
   const activeDownloadFraction = activeDownload?.totalBytes
@@ -246,12 +247,6 @@ export function useFileDownload(
           Alert.alert(t("attachment.title"), t("attachment.unsupportedType"));
           return;
         }
-        const openMimeType =
-          fileType.route === "external" ? await supportedExternalMime(attachment.name) : null;
-        if (fileType.route === "external" && !openMimeType) {
-          Alert.alert(t("attachment.title"), t("attachment.noHandler"));
-          return;
-        }
         // The just-sent optimistic bubble still points at this phone's local
         // picker URI. Open it directly; durable history later replaces this
         // with the desktop path used by the NATS download flow.
@@ -285,7 +280,6 @@ export function useFileDownload(
                 chunkBytes: 0,
               },
               cachedFile: local,
-              openMimeType: openMimeType!,
             });
           } else {
             const bytes = await local.bytes();
@@ -343,12 +337,8 @@ export function useFileDownload(
           return;
         }
         if (info.previewKind === "file") {
-          if (!openMimeType) {
-            handoffDownloadAlert(handle, t("attachment.noHandler"));
-            return;
-          }
           handoffDownloadModal(handle, () =>
-            setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType }),
+            setFileAction({ info, cachedFile: cachedPreview?.file ?? null }),
           );
           return;
         }
@@ -505,15 +495,14 @@ export function useFileDownload(
     [remote, setTransferProgress, showDownload, t, updateDownload],
   );
 
-  // Non-previewable file: download then hand it to the OS share sheet, which is
-  // the cross-platform "open with external app / save to files" surface.
+  // Android uses distinct VIEW, SEND and SAF operations. iOS delegates to
+  // UIActivityViewController. Never require a VIEW handler to save or share.
   const openOrShare = useCallback(
     async (
       info: DownloadInfo,
       cachedFile: File | null,
-      save: boolean,
+      operation: FileOperation,
       existingHandle?: DownloadHandle,
-      openMimeType = info.mimeType,
     ) => {
       const handle =
         existingHandle ?? beginDownload(info.transferId || info.name, info.name, info.size, false);
@@ -521,14 +510,40 @@ export function useFileDownload(
         showToast(t("attachment.downloadInProgress"));
         return;
       }
+      let errorKey = "attachment.downloadFailed";
       try {
+        if (handle.controller.signal.aborted) throw new TransferCancelledError();
+        if (info.size > MAX_FILE_BYTES) {
+          handoffDownloadAlert(handle, t("attachment.tooLarge"));
+          return;
+        }
+        let openMimeType = info.mimeType;
+        if (operation === "open") {
+          errorKey = "attachment.openFailed";
+          const supported = await supportedExternalMime(info.name);
+          if (handle.controller.signal.aborted) throw new TransferCancelledError();
+          if (!supported) {
+            handoffDownloadAlert(handle, t("attachment.noHandler"));
+            return;
+          }
+          openMimeType = supported;
+        }
+        const usesShareSheet = Platform.OS !== "android" || operation === "share";
+        if (usesShareSheet && !(await Sharing.isAvailableAsync())) {
+          handoffDownloadAlert(handle, t("attachment.shareUnavailable"));
+          return;
+        }
+        if (handle.controller.signal.aborted) throw new TransferCancelledError();
+        errorKey = "attachment.downloadFailed";
         const file = await fetchDownload(info, cachedFile, handle);
         if (!file) return;
         if (handle.controller.signal.aborted) throw new TransferCancelledError();
-        if (save && Platform.OS === "android") {
+        errorKey = `attachment.${operation}Failed`;
+        if (operation === "save" && Platform.OS === "android") {
           updateDownload(handle, { phase: "saving" });
-          const permission =
-            await LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          const permission = await withNativePresentation(() =>
+            LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync(),
+          );
           if (!permission.granted) return;
           if (handle.controller.signal.aborted) throw new TransferCancelledError();
           const destination = await LegacyFileSystem.StorageAccessFramework.createFileAsync(
@@ -546,40 +561,35 @@ export function useFileDownload(
           showToast(t("attachment.downloaded", { name: info.name }));
           return;
         }
-        if (!save && Platform.OS === "android") {
-          updateDownload(handle, { phase: "opening" });
-          const namedFile = await namedExternalFile(file, info.name);
-          if (handle.controller.signal.aborted) throw new TransferCancelledError();
-          await openAndroidFile(namedFile.uri, openMimeType);
-          return;
-        }
-        if (!(await Sharing.isAvailableAsync())) {
-          handoffDownloadAlert(handle, t("attachment.shareUnavailable"));
-          return;
-        }
-        updateDownload(handle, { phase: save ? "saving" : "opening" });
+        updateDownload(handle, {
+          phase: operation === "share" ? "sharing" : operation === "save" ? "saving" : "opening",
+        });
         const namedFile = await namedExternalFile(file, info.name);
         if (handle.controller.signal.aborted) throw new TransferCancelledError();
+        if (operation === "open" && Platform.OS === "android") {
+          await withNativePresentation(() => openAndroidFile(namedFile.uri, openMimeType));
+          return;
+        }
+        const share = () => withNativePresentation(() => Sharing.shareAsync(namedFile.uri, {
+          mimeType: operation === "open" ? openMimeType : info.mimeType,
+          dialogTitle: t(`attachment.${operation}`),
+        }));
         if (Platform.OS === "ios") {
-          // UIActivityViewController cannot be presented reliably while the
-          // React Native download Modal is still on screen. Dismiss it first
-          // and wait for Modal.onDismiss before handing the file to UIKit.
+          // Wait for the progress Modal's onDismiss before presenting UIKit.
           // Once handed off, the system share sheet owns cancellation.
           handoffDownloadModal(handle, () => {
-            void Sharing.shareAsync(namedFile.uri, {
-              mimeType: save ? info.mimeType : openMimeType,
-              dialogTitle: save ? t("attachment.save") : t("attachment.open"),
-            }).catch(() => Alert.alert(t("attachment.title"), t("attachment.downloadFailed")));
+            void share().catch(() => {
+              if (!handle.controller.signal.aborted) {
+                Alert.alert(t("attachment.title"), t(errorKey));
+              }
+            });
           });
           return;
         }
-        await Sharing.shareAsync(namedFile.uri, {
-          mimeType: save ? info.mimeType : openMimeType,
-          dialogTitle: save ? t("attachment.save") : t("attachment.open"),
-        });
+        await share();
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
-        handoffDownloadAlert(handle, t("attachment.downloadFailed"));
+        handoffDownloadAlert(handle, t(errorKey));
       } finally {
         finishDownload(handle);
       }
@@ -596,32 +606,36 @@ export function useFileDownload(
   );
 
   const downloadOriginal = useCallback(
-    async (attachment: HistoryAttachment) => {
+    async (attachment: HistoryAttachment, operation: FileOperation = "save") => {
+      if (!mobileFileType(attachment.name)) {
+        Alert.alert(t("attachment.title"), t("attachment.unsupportedType"));
+        return;
+      }
       const handle = beginDownload(attachment.path, attachment.name, 0, false);
       if (!handle) {
         showToast(t("attachment.downloadInProgress"));
         return;
       }
-      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
-        const local = new File(attachment.path);
-        await openOrShare(
-          {
-            transferId: "local",
-            name: attachment.name,
-            mimeType: mimeFor(attachment.name),
-            size: local.size,
-            contentHash: "",
-            previewKind: "file",
-            variant: "original",
-            chunkBytes: 0,
-          },
-          local,
-          true,
-          handle,
-        );
-        return;
-      }
       try {
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
+          const local = new File(attachment.path);
+          await openOrShare(
+            {
+              transferId: "local",
+              name: attachment.name,
+              mimeType: mimeFor(attachment.name),
+              size: local.size,
+              contentHash: "",
+              previewKind: "file",
+              variant: "original",
+              chunkBytes: 0,
+            },
+            local,
+            operation,
+            handle,
+          );
+          return;
+        }
         let cached = remote.cachedAttachment(attachment, "original");
         const info =
           cached?.info ??
@@ -629,7 +643,7 @@ export function useFileDownload(
             updateDownload(handle, { phase: "waiting_network" }),
           ));
         cached ??= remote.cachedAttachment(attachment, "original");
-        await openOrShare(info, cached?.file ?? null, true, handle);
+        await openOrShare(info, cached?.file ?? null, operation, handle);
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
         handoffDownloadAlert(handle, t("attachment.downloadFailed"));
@@ -642,19 +656,13 @@ export function useFileDownload(
 
   // A local-file markdown link/image target: prepare, then dispatch by size and
   // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
-  // anything else → open/save action sheet.
+  // anything else → open/save/share action sheet.
   const openFileLink = useCallback(
     async (path: string, refresh = true) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
       const fileType = mobileFileType(attachment.name);
       if (!fileType) {
         Alert.alert(t("attachment.title"), t("attachment.unsupportedType"));
-        return;
-      }
-      const openMimeType =
-        fileType.route === "external" ? await supportedExternalMime(attachment.name) : null;
-      if (fileType.route === "external" && !openMimeType) {
-        Alert.alert(t("attachment.title"), t("attachment.noHandler"));
         return;
       }
       const handle = beginDownload(path, attachment.name, 0, false);
@@ -683,12 +691,8 @@ export function useFileDownload(
           info.previewKind === "text" ||
           info.previewKind === "json";
         if (!previewable) {
-          if (!openMimeType) {
-            handoffDownloadAlert(handle, t("attachment.noHandler"));
-            return;
-          }
           handoffDownloadModal(handle, () =>
-            setFileAction({ info, cachedFile: cachedPreview?.file ?? null, openMimeType }),
+            setFileAction({ info, cachedFile: cachedPreview?.file ?? null }),
           );
           return;
         }

@@ -75,8 +75,11 @@ export interface SyncDeps {
   fetchReplay(sessionId: string, runId: string, sinceIdx: number, isCurrent: () => boolean): Promise<ReplayResult>;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
+  /** Replay progress is independent of whether a cached timeline is readable. */
+  onSyncStatus?(sessionId: string, status: TimelineSyncStatus): void;
 }
 
+export type TimelineSyncStatus = "idle" | "syncing" | "retrying";
 export type SyncStage = "get_state" | "history" | "replay";
 
 export interface SyncFailure {
@@ -122,6 +125,7 @@ interface SessionLane {
   bufferedBytes: number;
   replayQueue: ReconcileRequest[];
   reconciling?: ReconcileRequest;
+  syncStatus?: TimelineSyncStatus;
   established: boolean;
   retryAttempt: number;
   retryNotBefore: number;
@@ -341,6 +345,7 @@ export class SyncEngine {
     if (duplicate) return;
     if (lane.replayQueue.length >= MAX_REPLAY_QUEUE) return;
     lane.replayQueue.push(request);
+    this.setSyncStatus(lane, lane.retryNotBefore > Date.now() ? "retrying" : "syncing");
     this.loop(lane);
   }
 
@@ -363,6 +368,7 @@ export class SyncEngine {
     const request = lane.replayQueue.shift();
     if (request) {
       lane.reconciling = request;
+      this.setSyncStatus(lane, "syncing");
       const failure = await this.runReconcile(lane, request);
       lane.reconciling = undefined;
       if (!this.isCurrent(lane)) return;
@@ -378,6 +384,7 @@ export class SyncEngine {
           500 * 2 ** Math.min(lane.retryAttempt - 1, 6),
         );
         lane.retryNotBefore = Date.now() + delay;
+        this.setSyncStatus(lane, "retrying");
         this.deps.onFailure?.({
           sessionId: lane.sessionId,
           ...(failure.runId ? { runId: failure.runId } : {}),
@@ -400,6 +407,15 @@ export class SyncEngine {
       lane.retryAttempt = 0;
       this.deps.onRecovered?.(lane.sessionId);
     }
+    if (lane.replayQueue.length === 0 && lane.retryNotBefore === 0) {
+      this.setSyncStatus(lane, "idle");
+    }
+  }
+
+  private setSyncStatus(lane: SessionLane, status: TimelineSyncStatus): void {
+    if (!this.isCurrent(lane) || lane.syncStatus === status) return;
+    lane.syncStatus = status;
+    this.deps.onSyncStatus?.(lane.sessionId, status);
   }
 
   private scheduleRetry(lane: SessionLane): void {

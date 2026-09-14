@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowUp, ChevronRight, Eye, EyeOff, File, Folder, RefreshCw } from "lucide-react-native";
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, BackHandler, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import type { SessionFileListing } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { formatBytes } from "../utils";
@@ -14,12 +14,14 @@ export function SessionFilesPanel({
   isWorkspace,
   listFiles,
   onOpenFile,
+  onClose,
 }: {
   online: boolean;
   supported: boolean;
   isWorkspace: boolean;
   listFiles: (path?: string) => Promise<SessionFileListing>;
   onOpenFile: (path: string) => Promise<void>;
+  onClose: () => void;
 }) {
   const { t } = useTranslation();
   const [directories, setDirectories] = useState<string[]>([]);
@@ -32,6 +34,18 @@ export function SessionFilesPanel({
   const [opening, setOpening] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(isWorkspace);
   const path = directories[directories.length - 1] ?? "";
+
+  useEffect(() => {
+    // Android's edge-back gesture is delivered as hardwareBackPress, including
+    // in APK compatibility runtimes. Only leave the panel at the session root.
+    // The top-left header button remains an explicit shortcut back to chat.
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (directories.length > 0) setDirectories(value => value.slice(0, -1));
+      else onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [directories.length, onClose]);
 
   const request = useMemo(() => ({ listFiles, path, revision, online, supported }),
     [listFiles, path, revision, online, supported]);

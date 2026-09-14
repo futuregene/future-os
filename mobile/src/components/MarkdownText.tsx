@@ -7,10 +7,11 @@ import {
   createStreamingMarkdownParser,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { StyleProp, TextStyle } from "react-native";
-import { Alert, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Alert, Animated, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
 
@@ -304,18 +305,39 @@ const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cel
   );
 });
 
-const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast }: {
+const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast, animate }: {
   node: MarkdownNode;
   openTarget: OpenTarget;
   isLast: boolean;
+  animate: boolean;
 }) {
-  return renderBlock(node, openTarget, "block", isLast);
+  const [opacity] = useState(() => new Animated.Value(animate ? 0 : 1));
+  const appeared = useRef(false);
+  useEffect(() => {
+    if (!animate || appeared.current) {
+      opacity.setValue(1);
+      return;
+    }
+    appeared.current = true;
+    opacity.setValue(0);
+    const animation = Animated.timing(opacity, {
+      toValue: 1, duration: 180, useNativeDriver: true, isInteraction: false,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [animate, opacity]);
+  // Only new blocks fade once. Updating a token never fades the whole message.
+  return <Animated.View style={{ opacity }}>{renderBlock(node, openTarget, "block", isLast)}</Animated.View>;
 });
 
 export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message", streaming = false }: MarkdownTextProps) {
   const { t } = useTranslation();
   const [project] = useState(createStreamingMarkdownParser);
-  const document = useMemo(() => project(text, streaming), [project, text, streaming]);
+  const reveal = useStreamingText(text, mode === "message" && streaming);
+  const displayedText = mode === "message" ? reveal.text : text;
+  const projectingStream = streaming || displayedText !== text;
+  const document = useMemo(() => project(displayedText, projectingStream), [project, displayedText, projectingStream]);
+  const [initialBlockCount] = useState(document.nodes.length);
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
@@ -332,7 +354,8 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
     });
   }, [mode, onOpenFile, t]);
   return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
-    <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1} />
+    <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
+      animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
   ))}</View></MarkdownImageBasePathContext>;
 }
 

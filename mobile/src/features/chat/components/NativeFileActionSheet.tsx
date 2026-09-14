@@ -1,40 +1,32 @@
-import { useEffect, useRef } from "react";
-import { Platform } from "react-native";
 import { ActionMenu } from "../../../components/ActionMenu";
-import { deferPresentation, type FileAction } from "../utils";
+import type { FileAction, FileOperation } from "../utils";
 
 export function NativeFileActionSheet({
   action,
   openLabel,
   saveLabel,
+  shareLabel,
   onClose,
   onSelect,
 }: {
   action: FileAction | null;
-  cancelLabel: string;
   openLabel: string;
   saveLabel: string;
+  shareLabel: string;
   onClose: () => void;
-  onSelect: (action: FileAction, save: boolean) => void;
+  onSelect: (action: FileAction, operation: FileOperation) => void;
 }) {
-  const shownActionRef = useRef<FileAction | null>(null);
-  useEffect(() => {
-    if (!action) { shownActionRef.current = null; return; }
-    if (Platform.OS !== "ios" || shownActionRef.current === action) return;
-    shownActionRef.current = action;
-    // iOS uses one real system share sheet for both open and save.
-    onClose();
-    deferPresentation(() => onSelect(action, false));
-  }, [action, onClose, onSelect]);
-  if (Platform.OS === "ios") return null;
+  // ActionMenu waits for dismissal before handing presentation to the OS.
+  // Keep all operations available even if no external reader is installed.
   return (
     <ActionMenu
       title={action?.info.name ?? ""}
       visible={action !== null}
       onClose={onClose}
       actions={action ? [
-        { label: openLabel, onPress: () => onSelect(action, false) },
-        { label: saveLabel, onPress: () => onSelect(action, true) },
+        { label: openLabel, onPress: () => onSelect(action, "open") },
+        { label: saveLabel, onPress: () => onSelect(action, "save") },
+        { label: shareLabel, onPress: () => onSelect(action, "share") },
       ] : []}
     />
   );

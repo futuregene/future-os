@@ -245,12 +245,15 @@ export function ChatScreen() {
   );
 
   useEffect(() => {
+    // While browsing files, the panel owns system back so it can pop a folder
+    // first. Do not rely on child/parent effect subscription order.
+    if (filesOpen) return;
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       goBack();
       return true;
     });
     return () => subscription.remove();
-  }, [goBack]);
+  }, [filesOpen, goBack]);
 
   // Measure both platforms to bound skill suggestions above the keyboard.
   // Only Android applies this as compensation below; iOS already uses KAV.
@@ -423,6 +426,17 @@ export function ChatScreen() {
               ItemSeparatorComponent={TimelineItemGap}
             />
 
+            {!remote.draft && timelineItems.length > 0 &&
+              (remote.timelineSyncStatus === "syncing" || remote.timelineSyncStatus === "retrying") && (
+                <View pointerEvents="none" style={styles.syncNotice} accessibilityLiveRegion="polite">
+                  {remote.desktopOnline && <ActivityIndicator color={colors.accent} size="small" />}
+                  <Text style={styles.syncNoticeText}>
+                    {t(!remote.desktopOnline ? "chat.syncWaitingNetwork"
+                      : remote.timelineSyncStatus === "retrying" ? "chat.syncRetrying" : "chat.syncingLatest")}
+                  </Text>
+                </View>
+              )}
+
             <ComposerDock
               key={`${conversationKey}:${remote.draft}:${remote.draftWorkspaceId}`}
               keyboardHeight={keyboardHeight}
@@ -456,6 +470,7 @@ export function ChatScreen() {
               isWorkspace={remote.sessions.find(session => session.sessionId === remote.selectedSessionId)?.mode === "workspace"}
               listFiles={remote.listSessionFiles}
               onOpenFile={path => fileDownload.openFileLink(path, true)}
+              onClose={() => setFilesSession(null)}
             />
           )}
 
@@ -470,19 +485,13 @@ export function ChatScreen() {
 
         <NativeFileActionSheet
           action={fileDownload.fileAction}
-          cancelLabel={t("chat.cancel")}
           onClose={() => fileDownload.setFileAction(null)}
-          onSelect={(action, save) => {
-            void fileDownload.openOrShare(
-              action.info,
-              action.cachedFile,
-              save,
-              undefined,
-              action.openMimeType,
-            );
+          onSelect={(action, operation) => {
+            void fileDownload.openOrShare(action.info, action.cachedFile, operation);
           }}
           openLabel={t("attachment.open")}
           saveLabel={t("attachment.save")}
+          shareLabel={t("attachment.share")}
         />
 
         <PreviewModal
@@ -525,6 +534,14 @@ const styles = StyleSheet.create({
   keyboard: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: colors.surface },
   chatContent: { flex: 1, minHeight: 0 },
   timelineList: { flex: 1, minHeight: 0 },
+  // Overlay, not a list row: changing sync state must not shift the viewport.
+  syncNotice: {
+    position: "absolute", top: spacing.xs, left: layout.gutter, right: layout.gutter,
+    zIndex: 2, flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    backgroundColor: colors.surfaceSubtle, borderRadius: radius.md,
+  },
+  syncNoticeText: { flexShrink: 1, color: colors.inkMuted, fontSize: 12 },
   // `inverted` flips the visual axis. A flexible physical header consumes only
   // the unused height of an underfilled list and therefore becomes visual
   // bottom space, leaving short conversations at the visual top. It collapses
