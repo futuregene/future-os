@@ -724,7 +724,9 @@ describe("RemoteClient OS lifecycle recovery", () => {
     expect(open).toHaveBeenCalledTimes(1);
   });
 
-  test.each(["foreground", "network-changed", "network-restored"] as const)("%s validates a healthy socket without replacing it", async reason => {
+  // Foreground additionally probes authenticated desktop presence; that path
+  // uses the full serving-generation fixture in client.test.ts.
+  test.each(["network-changed", "network-restored"] as const)("%s validates a healthy socket without replacing it", async reason => {
     const { client } = recoveryClient();
     const flush = jest.fn().mockResolvedValue(undefined);
     const close = jest.fn().mockResolvedValue(undefined);
