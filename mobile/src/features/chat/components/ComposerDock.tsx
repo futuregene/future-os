@@ -68,14 +68,13 @@ function ComposerDockView({
   approvalSubmitting: string | null;
   approvalError: { id: string; message: string } | null;
   decideApproval: (id: string, decision: "approved" | "rejected") => Promise<void>;
-  selector: "model" | "thinking" | "settings" | null;
-  setSelector: (value: "model" | "thinking" | "settings" | null) => void;
+  selector: "model" | "thinking" | null;
+  setSelector: (value: "model" | "thinking" | null) => void;
   keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
-  const combinedSettings = width < 360 || fontScale > 1.2;
   const editable = remote.desktopOnline && !remote.streaming && !remote.busy;
   const inputRef = useRef<TextInput>(null);
   const completion = useSkillCompletion(message, setMessage, editable && selector === null, inputRef);
@@ -224,11 +223,11 @@ function ComposerDockView({
           <View style={[styles.composerToolbar, compactToolbar && styles.composerToolbarCompact]}>
             <View style={[styles.composerSelectors, compactToolbar && styles.composerSelectorsCompact]}>
               <Pressable
-                accessibilityLabel={combinedSettings ? `${t("chat.modelSettings")}: ${activeModelLabel}, ${t(`thinking.${remote.thinkingLevel}`)}` : `${t("chat.model")}: ${activeModelLabel}`}
+                accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "model" || selector === "settings", disabled: remote.streaming }}
+                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming }}
                 disabled={remote.streaming}
-                onPress={() => setSelector(combinedSettings ? "settings" : "model")}
+                onPress={() => setSelector("model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
                   styles.modelTrigger,
@@ -238,11 +237,11 @@ function ComposerDockView({
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
-                  {combinedSettings ? t("chat.modelSettings") : activeModelLabel}
+                  {activeModelLabel}
                 </Text>
                 <ChevronDown color={colors.inkMuted} size={14} />
               </Pressable>
-              {!combinedSettings && <Pressable
+              <Pressable
                 accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
                 accessibilityRole="button"
                 accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming }}
@@ -260,7 +259,7 @@ function ComposerDockView({
                   {t(`thinking.${remote.thinkingLevel}`)}
                 </Text>
                 <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>}
+              </Pressable>
             </View>
             <Pressable
               accessibilityLabel={t("skills.choose")}
@@ -268,13 +267,15 @@ function ComposerDockView({
               accessibilityState={{ expanded: !!completion.query, disabled: !editable }}
               disabled={!editable}
               onPress={completion.insertSlash}
+              hitSlop={{ left: 6, right: 6 }}
               style={({ pressed }) => [
                 styles.attachmentButton,
+                styles.skillButton,
                 (pressed || !!completion.query) && styles.selectorTriggerPressed,
                 !editable && styles.controlDisabled,
               ]}
             >
-              <Slash color={completion.query ? colors.accent : colors.inkSoft} size={18} />
+              <Slash color={completion.query ? colors.accent : colors.inkSoft} size={16} />
             </Pressable>
             <Pressable
               accessibilityLabel={t("attachment.add")}
@@ -456,8 +457,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.xs,
   },
-  // Small screens / large type combine model and thinking into one settings
-  // entry so skill, attachment and send keep their full 44pt touch targets.
+  // Keep both selectors visible even on small screens / with large type.
   // Toolbar 8 + trigger 8 matches the text/attachment inset of 16.
   composerToolbarCompact: { gap: spacing.xs },
   composerSelectorsCompact: { gap: spacing.xs },
@@ -485,6 +485,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     flexShrink: 0,
   },
+  skillButton: { width: 32 },
   controlDisabled: { opacity: 0.5 },
   sendButton: {
     width: 44,

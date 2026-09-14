@@ -55,7 +55,7 @@ export function ChatScreen() {
   const insets = useSafeAreaInsets();
 
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
-  const [selector, setSelector] = useState<"model" | "thinking" | "settings" | null>(null);
+  const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [showOffline, setShowOffline] = useState(false);
   const [filesSession, setFilesSession] = useState<string | null>(null);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
