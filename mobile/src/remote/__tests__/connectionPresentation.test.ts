@@ -35,6 +35,12 @@ test("terminal states stay disconnected despite stale presence", () => {
     action: "reconnect",
     supportCode: null,
   });
+  expect(connectionPresentation({ phase: "stopped", desktopOnline: true, desktopDisconnectReason: "user_disconnect" })).toMatchObject({
+    level: "disconnected",
+    customerState: "disconnected",
+    action: "reconnect",
+    hintKey: "connection.manuallyDisconnectedHint",
+  });
 });
 test("requires usable desktop, distinguishes missing presence from explicit shutdown", () => {
   expect(connectionPresentation({ phase: "ready", desktopOnline: true })).toMatchObject({
@@ -54,7 +60,7 @@ test("requires usable desktop, distinguishes missing presence from explicit shut
     customerState: "devicePreparing",
     action: "restartDesktop",
     supportCode: "LC003",
-    titleKey: "connection.devicePreparing",
+    titleKey: "connection.waitingDesktop",
   });
   expect(
     connectionPresentation({ phase: "ready", desktopOnline: false, desktopDisconnected: true }),

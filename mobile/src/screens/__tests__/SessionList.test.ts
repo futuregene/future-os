@@ -83,7 +83,7 @@ const button = (label: string) =>
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
   )[0]!;
 const sessionBody = (title: string) => tree.root.findAll(node =>
-  typeof node.props.onLongPress === "function" && typeof node.props.style === "function",
+  node.props.accessibilityRole === "button" && typeof node.props.onLongPress === "function",
 ).find(node => node.findAllByType(Text).some(text => text.props.children === title))!;
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -107,7 +107,7 @@ test("session titles use a compact single line without reducing touch targets", 
   expect(title.props.numberOfLines).toBe(1);
   expect(title.props.ellipsizeMode).toBe("tail");
   const body = sessionBody("First");
-  expect(StyleSheet.flatten(body.props.style({ pressed: false }))).toMatchObject({ minHeight: 44, paddingVertical: 8 });
+  expect(StyleSheet.flatten(body.props.style)).toMatchObject({ minHeight: 44, paddingVertical: 8 });
 });
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {

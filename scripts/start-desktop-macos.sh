@@ -34,6 +34,9 @@ DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
 # holds script state (pid file) and the agent's stdout/stderr capture.
 AGENT_LOG="$HOME/.future/agent/logs/agent.log"
 AGENT_CONSOLE_LOG="$LOG_DIR/future-agent-test.log.console"
+AGENT_BUILD_LOG="$LOG_DIR/future-agent-test.build.log"
+CLI_BUILD_LOG="$LOG_DIR/future-cli-test.build.log"
+DESKTOP_CONSOLE_LOG="$LOG_DIR/futureos-desktop-test.log.console"
 AGENT_PID_FILE="$LOG_DIR/future-agent-test.pid"
 STARTED_AGENT_PID=""
 DESKTOP_PID=""
@@ -72,6 +75,9 @@ stop_process_group() {
 
 cleanup() {
   trap '' INT TERM
+  # Keep Bash from printing expected "Terminated: 15" job notifications while
+  # the launcher deliberately tears down the process groups below.
+  set +m
   # Tauri/Vite and the GUI must stop before the endpoint they consume.
   stop_process_group "$DESKTOP_PID" "desktop"
   stop_process_group "$STARTED_AGENT_PID" "future-agent"
@@ -233,7 +239,12 @@ fi
 
 if [[ "$BUILD_AGENT" == "1" ]]; then
   echo "Building future-agent..."
-  (cd "$AGENT_DIR" && cargo build)
+  if ! (cd "$AGENT_DIR" && cargo build) >"$AGENT_BUILD_LOG" 2>&1; then
+    echo "future-agent build failed. See $AGENT_BUILD_LOG"
+    tail -n 80 "$AGENT_BUILD_LOG"
+    exit 1
+  fi
+  echo "future-agent built."
 fi
 
 # Build the unified Rust CLI (cargo build, matching make build-cli) and put it
@@ -241,8 +252,11 @@ fi
 # Non-fatal: a failure only means those skills won't work; the desktop test proceeds.
 if [[ "$BUILD_CLI" == "1" ]]; then
   echo "Building future CLI..."
-  (cd "$CLI_DIR" && cargo build) || \
-    echo "future CLI build failed; skills that call \`future\` will not work."
+  if ! (cd "$CLI_DIR" && cargo build) >"$CLI_BUILD_LOG" 2>&1; then
+    echo "future CLI build failed; skills that call \`future\` will not work. See $CLI_BUILD_LOG"
+  else
+    echo "future CLI built."
+  fi
 fi
 # The agent (started below) inherits this exported PATH.
 if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
@@ -310,6 +324,7 @@ fi
 
 echo "Starting desktop..."
 echo "Press Ctrl-C here to stop the desktop and the agent started by this script."
+echo "Desktop log: $DESKTOP_CONSOLE_LOG"
 
 # The launcher owns terminal input (Ctrl-C); background readers must not suspend
 # the Tauri group with SIGTTIN. Vite already receives piped stdin from Tauri.
@@ -323,7 +338,7 @@ echo "Press Ctrl-C here to stop the desktop and the agent started by this script
     unset FUTURE_AGENT_GRPC_ADDR
     exec npm run tauri:dev
   fi
-) </dev/null &
+) </dev/null >"$DESKTOP_CONSOLE_LOG" 2>&1 &
 DESKTOP_PID="$!"
 
 # Rebuilds happen inside the long-lived Tauri job. Keep the same Agent alive
@@ -336,4 +351,12 @@ while kill -0 "$DESKTOP_PID" 2>/dev/null; do
   sleep 1 &
   wait "$!"
 done
-wait "$DESKTOP_PID"
+
+if wait "$DESKTOP_PID"; then
+  :
+else
+  desktop_status=$?
+  echo "Desktop exited unexpectedly (status $desktop_status). See $DESKTOP_CONSOLE_LOG" >&2
+  tail -n 80 "$DESKTOP_CONSOLE_LOG" >&2
+  exit "$desktop_status"
+fi

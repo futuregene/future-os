@@ -44,6 +44,18 @@ describe("customer remote status", () => {
       titleKey: "statusNetworkUnavailable",
     });
   });
+  it("describes post-sleep recovery from the desktop perspective", () => {
+    expect(remoteConnectionPresentation({
+      ...status("reconnecting"),
+      reason: "system_sleep",
+    })).toMatchObject({
+      level: "connecting",
+      customerState: "recovering",
+      action: "retry",
+      supportCode: "PW001",
+      titleKey: "statusRecovering",
+    });
+  });
   it("does not describe the first pairing connection as recovery", () => {
     expect(shouldShowRemoteConnectionHint(status("connecting", true, ""))).toBe(false);
     expect(shouldShowRemoteConnectionHint(status("connecting"))).toBe(true);

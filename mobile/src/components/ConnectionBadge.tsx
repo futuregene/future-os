@@ -4,16 +4,23 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react-native";
 import type { ConnectionPresentation } from "../remote/connectionPresentation";
+import { disconnectedCopy } from "../remote/disconnectedCopy";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 
 export function ConnectionBadge({
   presentation,
+  disconnectReason,
+  error,
   onReconnect,
+  onUnpair,
   active = true,
 }: {
   presentation: ConnectionPresentation;
+  disconnectReason?: string;
+  error?: string | null;
   onReconnect?: () => void;
+  onUnpair?: () => void;
   active?: boolean;
 }) {
   const { t } = useTranslation();
@@ -22,10 +29,13 @@ export function ConnectionBadge({
   const trigger = useRef<View>(null);
   const frameKey = `${dimensions.width}:${dimensions.height}:${dimensions.fontScale}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}`;
   const [anchor, setAnchor] = useState<{ right: number; top: number; frameKey: string } | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   // Dismiss rather than leave the bubble detached from its dot after layout changes.
-  if (anchor && (!active || anchor.frameKey !== frameKey)) setAnchor(null);
-  const visible = active && anchor !== null && anchor.frameKey === frameKey;
-  const close = () => setAnchor(null);
+  if (modalOpen && (!active || anchor?.frameKey !== frameKey)) setModalOpen(false);
+  const visible = active && modalOpen && anchor !== null && anchor.frameKey === frameKey;
+  const close = () => setModalOpen(false);
+  // Keep the last anchor while the native fade-out is running so the bubble does not
+  // jump to its fallback position before it disappears.
   const open = () => {
     trigger.current?.measureInWindow((x, y, width, height) => {
       setAnchor({
@@ -33,6 +43,7 @@ export function ConnectionBadge({
         right: dimensions.width - x - width,
         top: y + height + spacing.xs,
       });
+      setModalOpen(true);
     });
   };
   const color = presentation.level === "connected" ? colors.success :
@@ -42,14 +53,28 @@ export function ConnectionBadge({
     presentation.action === "retry" ||
     presentation.action === "checkNetwork"
   );
-  const label =
-    t(presentation.titleKey) + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
-  const hintKey = presentation.action === "none" ? "connection.connectedHint" :
-    presentation.action === "wait" ? "connection.connectingHint" :
-    presentation.action === "pairAgain" ? "connection.pairAgainHint" :
-    presentation.action === "checkNetwork" ? "connection.checkNetworkHint" :
-    presentation.action === "contactSupport" ? "connection.contactSupportHint" :
-    presentation.action === "retry" ? "connection.retryHint" : presentation.hintKey;
+  const unpairable = !!onUnpair && presentation.action === "pairAgain";
+  const disconnected = presentation.level === "disconnected";
+  const copy = disconnectedCopy(presentation, disconnectReason, error);
+  const statusKey = disconnected
+    ? presentation.customerState === "pairingExpired"
+      ? "connection.pairingExpired"
+      : "connection.disconnected"
+    : presentation.titleKey;
+  const detailState = presentation.customerState === "devicePreparing"
+    ? "devicePreparing"
+    : presentation.customerState === "waitingDesktop"
+      ? "waitingDesktop"
+      : presentation.level;
+  const label = t(statusKey);
+  const reason = disconnected
+    ? t(`connection.disconnectDetails.${copy}.reason`)
+    : t(`connection.statusDetails.${detailState}.reason`);
+  const solution = disconnected
+    ? t(`connection.disconnectDetails.${copy}.solution`)
+    : t(`connection.statusDetails.${detailState}.solution`);
+  const reasonWithCode =
+    reason + (presentation.supportCode ? ` (${presentation.supportCode})` : "");
   const leftEdge = insets.left + layout.gutter;
   const rightEdge = insets.right + layout.gutter;
   const popoverWidth = Math.min(320, dimensions.width - leftEdge - rightEdge);
@@ -77,7 +102,6 @@ export function ConnectionBadge({
         animationType="fade"
         visible={visible}
         onRequestClose={close}
-        onDismiss={close}
       >
         <View style={styles.overlay}>
           <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={close} />
@@ -93,15 +117,16 @@ export function ConnectionBadge({
             </View>
             <ScrollView bounces={false} contentContainerStyle={styles.content}>
               <Text accessibilityLiveRegion="polite" style={[styles.title, { color }]}>{label}</Text>
-              {hintKey && <Text style={styles.hint}>{t(hintKey)}</Text>}
-              {reconnectable && (
+              <Text style={styles.hint}>{reasonWithCode}</Text>
+              {solution && <Text style={styles.hint}>{solution}</Text>}
+              {(reconnectable || unpairable) && (
                 <Button
                   compact
-                  variant="secondary"
-                  label={t(presentation.action === "retry" ? "connection.retry" : "connection.reconnect")}
+                  label={t(unpairable ? "sessions.unpair" : "connection.reconnect")}
                   onPress={() => {
                     close();
-                    onReconnect?.();
+                    if (unpairable) onUnpair?.();
+                    else onReconnect?.();
                   }}
                 />
               )}
