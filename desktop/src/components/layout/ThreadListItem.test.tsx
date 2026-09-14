@@ -37,10 +37,10 @@ function props(): ComponentProps<typeof ThreadListItem> {
 
 describe("thread row title space", () => {
   it.each([
-    { compact: false, depth: 0, hasChildren: false, padding: 12, spacer: false },
-    { compact: false, depth: 0, hasChildren: true, padding: 12, spacer: false },
-    { compact: false, depth: 1, hasChildren: false, padding: 28, spacer: true },
-    { compact: false, depth: 1, hasChildren: true, padding: 28, spacer: false },
+    { compact: false, depth: 0, hasChildren: false, padding: 16, spacer: false },
+    { compact: false, depth: 0, hasChildren: true, padding: 16, spacer: false },
+    { compact: false, depth: 1, hasChildren: false, padding: 32, spacer: true },
+    { compact: false, depth: 1, hasChildren: true, padding: 32, spacer: false },
     { compact: true, depth: 0, hasChildren: false, padding: 28, spacer: false },
     { compact: true, depth: 0, hasChildren: true, padding: 28, spacer: false },
     { compact: true, depth: 1, hasChildren: false, padding: 44, spacer: false },
