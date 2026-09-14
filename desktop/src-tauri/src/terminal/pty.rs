@@ -5,7 +5,9 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
@@ -70,7 +72,10 @@ impl PtySession {
             .master
             .take_writer()
             .map_err(|error| format!("SPAWN_FAILED: pty writer: {error}"))?;
+        #[cfg(unix)]
         let pgid = pair.master.process_group_leader();
+        #[cfg(not(unix))]
+        let pgid = None;
         let pid = child.process_id();
         Ok(Self {
             child,
@@ -211,7 +216,7 @@ pub fn kill_tree(pgid: Option<i32>, pid: i32, grace: Duration) {
 
     #[cfg(windows)]
     {
-        let _ = grace;
+        let _ = (pgid, grace);
         // ConPTY children are not a process group; `taskkill /T` walks the tree
         // by parent links, which is the closest portable equivalent. (A Job
         // Object would be strictly better and is tracked in the design doc as

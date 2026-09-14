@@ -98,7 +98,7 @@ fn account_login_shell() -> Option<PathBuf> {
     unsafe {
         let uid = libc::getuid();
         let mut pwd: libc::passwd = std::mem::zeroed();
-        let mut buf = vec![0_i8; 4096];
+        let mut buf = vec![0 as libc::c_char; 4096];
         let mut result: *mut libc::passwd = std::ptr::null_mut();
         let rc = libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result);
         if rc != 0 || result.is_null() || pwd.pw_shell.is_null() {
