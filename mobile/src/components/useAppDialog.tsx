@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Modal, Platform, StyleSheet, Text, View, type AlertButton } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Modal, Platform, StyleSheet, Text, View, type AlertButton, type AlertOptions } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 import { DialogSurface } from "./DialogSurface";
@@ -9,6 +9,7 @@ interface DialogRequest {
   title: string;
   message?: string;
   buttons?: AlertButton[];
+  options?: AlertOptions;
 }
 
 /** App confirmations and notices share the same surface as rename/settings.
@@ -41,19 +42,22 @@ export function useAppDialog(active = true) {
     setVisible(false);
     if (Platform.OS !== "ios") timer.current = setTimeout(flush, 0);
   };
-  const alert = (title: string, message?: string, buttons?: AlertButton[]) => {
-    setRequest({ title, message, buttons });
+  const alert = useCallback((title: string, message?: string, buttons?: AlertButton[], options?: AlertOptions) => {
+    setRequest({ title, message, buttons, options });
     setVisible(true);
-  };
+  }, []);
   const buttons = request?.buttons ?? [{ text: t("common.close") }];
-  const cancel = () => dismiss(buttons.find(button => button.style === "cancel")?.onPress);
+  const cancel = () => {
+    if (request?.options?.cancelable === false) return;
+    dismiss(request?.options?.onDismiss ?? buttons.find(button => button.style === "cancel")?.onPress);
+  };
   return {
     alert,
     dialog: (
       <Modal transparent animationType="fade" visible={active && visible} onRequestClose={cancel} onDismiss={flush}>
         <DialogSurface>
           <Text accessibilityRole="header" style={styles.title}>{request?.title}</Text>
-          {!!request?.message && <Text style={styles.message}>{request.message}</Text>}
+          {!!request?.message && <Text selectable style={styles.message}>{request.message}</Text>}
           <View style={styles.actions}>
             {buttons.map((button, index) => (
               <View key={index} style={styles.action}>

@@ -1,3 +1,5 @@
+import { AppState } from "react-native";
+
 /**
  * Native surfaces presented *over* the app — the system camera, the photo
  * picker, the document picker — are separate Android activities / iOS view
@@ -34,6 +36,33 @@ export function endNativePresentation(): void {
 
 export function nativePresentationInFlight(): boolean {
   return presentations > 0;
+}
+
+/** Android file sharing acknowledges launch, not dismissal. Keep only the
+ * bounded connection grace until the app returns; never hold the file-action
+ * lane waiting for a chooser result that a compatibility runtime may omit. */
+export async function withNativeHandoff<T>(launch: () => Promise<T>): Promise<T> {
+  beginNativePresentation();
+  let released = false;
+  let leftApp = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    clearTimeout(timer);
+    subscription.remove();
+    endNativePresentation();
+  };
+  const subscription = AppState.addEventListener("change", state => {
+    if (state !== "active") leftApp = true;
+    else if (leftApp) release();
+  });
+  const timer = setTimeout(release, NATIVE_PRESENTATION_GRACE_MS);
+  try {
+    return await launch();
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
 
 /** Run a native presentation with the app treated as active throughout. */
