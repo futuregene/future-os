@@ -82,7 +82,7 @@ test.each([
   act(() => { tree = create(createElement(ComposerDock, props)); });
   try {
     const button = (label: string) => tree!.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
-    for (const label of ["chat.send", "attachment.add", "skills.choose"]) {
+    for (const label of ["chat.send", "attachment.add"]) {
       const control = button(label);
       expect(StyleSheet.flatten(control.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
     }
@@ -91,18 +91,18 @@ test.each([
     );
     expect(selectors).toBeUndefined();
     expect(tree!.root.findAllByType(View).some(node => StyleSheet.flatten(node.props.style)?.flexWrap === "wrap")).toBe(false);
-    const combined = width < 360 || fontScale > 1.2;
-    const model = button(combined ? "chat.modelSettings: A very long model label, thinking.high" : "chat.model: A very long model label");
+    const slash = button("skills.choose");
+    expect(StyleSheet.flatten(slash.props.style({ pressed: false }))).toMatchObject({ width: 32, height: 44 });
+    expect(slash.props.hitSlop).toEqual({ left: 6, right: 6 });
+    const model = button("chat.model: A very long model label");
     expect(StyleSheet.flatten(model.props.style({ pressed: false })).paddingHorizontal).toBe(8);
     expect(StyleSheet.flatten(tree!.root.findByType(TextInput).props.style).paddingHorizontal).toBe(16);
-    expect(model.findByType(Text).props.children).toBe(combined ? "chat.modelSettings" : "A very long model label");
-    if (!combined) {
-      expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
-      act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
-      expect(setSelector).toHaveBeenCalledWith("thinking");
-    }
+    expect(model.findByType(Text).props.children).toBe("A very long model label");
+    expect(button("chat.thinkingLevel: thinking.high").findByType(Text).props.children).toBe("thinking.high");
+    act(() => button("chat.thinkingLevel: thinking.high").props.onPress());
+    expect(setSelector).toHaveBeenCalledWith("thinking");
     act(() => model.props.onPress());
-    expect(setSelector).toHaveBeenCalledWith(combined ? "settings" : "model");
+    expect(setSelector).toHaveBeenCalledWith("model");
     act(() => button("chat.send").props.onPress());
     expect(send).toHaveBeenCalledTimes(1);
   } finally {
@@ -185,6 +185,9 @@ test("slash button opens above the composer and skill selection edits without se
     expect(picker.props.load).toBe(listSkills);
     expect(picker.props.query).toBe("");
     expect(tree!.root.findByType(TextInput).props.value).toBe("Hello /");
+    // Text updates must filter immediately, even before native selection events.
+    act(() => tree!.root.findByType(TextInput).props.onChangeText("Hello /web"));
+    expect(tree!.root.findByType(SkillPicker).props.query).toBe("web");
     act(() => picker.props.onSelect("future-web"));
     expect(tree!.root.findByType(TextInput).props.value).toBe("Hello /future-web ");
     expect(tree!.root.findAllByType(SkillPicker)).toHaveLength(0);

@@ -47,13 +47,16 @@ test("model selection exposes checked state and preserves the provider-qualified
   expect(setSelector).toHaveBeenCalledWith(null);
 });
 
-test("compact settings exposes both model and thinking choices", () => {
-  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector: "settings" })));
-  expect(options()).toHaveLength(8);
+test("model and thinking sheets only expose their own choices", () => {
+  expect(options()).toHaveLength(2);
   act(() => options()[1]!.props.onPress());
-  expect(remote.setModel).toHaveBeenCalledWith("provider/model-b");
-  act(() => options()[7]!.props.onPress());
+  expect(remote.setThinkingLevel).not.toHaveBeenCalled();
+  remote.setModel.mockClear();
+  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector: "thinking" })));
+  expect(options()).toHaveLength(6);
+  act(() => options()[5]!.props.onPress());
   expect(remote.setThinkingLevel).toHaveBeenCalledWith("xhigh");
+  expect(remote.setModel).not.toHaveBeenCalled();
 });
 
 test("thinking choices remain selectable after redesign", () => {

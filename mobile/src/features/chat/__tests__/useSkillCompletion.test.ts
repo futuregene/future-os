@@ -55,6 +55,43 @@ test("dismissal preserves draft; further typing or a button press reopens sugges
   expect(completion.query).not.toBeNull();
 });
 
+test("typing, deleting and pasting filter without waiting for native selection events", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  for (const text of ["/", "/w", "/web", "/we", "/研究", "/research"]) {
+    act(() => completion.onChangeText(text));
+    expect(completion.query?.query).toBe(text.slice(1));
+    expect(completion.inputSelection).toBeUndefined();
+  }
+  act(() => completion.onChangeText("/research "));
+  expect(completion.query).toBeNull();
+  act(() => completion.onChangeText(""));
+  expect(completion.query).toBeNull();
+});
+
+test("edits in the middle preserve the suffix and respect subsequent caret movement", () => {
+  act(() => { tree = create(createElement(Harness, { initial: "你好 /ww 后文" })); });
+  act(() => completion.onFocus());
+  act(() => completion.onSelectionChange({ start: 5, end: 5 }));
+  act(() => completion.onChangeText("你好 /www 后文"));
+  expect(completion.query?.query).toBe("ww");
+  expect(completion.selection).toEqual({ start: 6, end: 6 });
+  act(() => completion.onSelectionChange({ start: 4, end: 7 }));
+  expect(completion.query).toBeNull();
+  act(() => completion.onChangeText("你好 /web 后文"));
+  expect(completion.query?.query).toBe("web");
+  act(() => completion.select("future-web"));
+  expect(message).toBe("你好 /future-web 后文");
+});
+
+test("selection arriving before text also produces the current query", () => {
+  act(() => { tree = create(createElement(Harness, { initial: "/" })); });
+  act(() => completion.onFocus());
+  act(() => completion.onSelectionChange({ start: 4, end: 4 }));
+  act(() => completion.onChangeText("/web"));
+  expect(completion.query?.query).toBe("web");
+});
+
 test("disabled composer cannot insert or select skills", () => {
   act(() => { tree = create(createElement(Harness, {})); });
   act(() => completion.insertSlash());
