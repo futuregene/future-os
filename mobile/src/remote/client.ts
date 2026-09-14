@@ -163,7 +163,6 @@ export class RemoteClient {
   private openPromise: Promise<void> | null = null;
   private stopped = false;
   private appActive = true;
-  private networkAvailable = true;
   private recoveryPromise: Promise<void> | null = null;
   private failedGeneration: number | null = null;
   private state: ConnectionState = "unpaired";
@@ -301,7 +300,7 @@ export class RemoteClient {
 
   private async openAttempt(): Promise<void> {
     if (this.stopped || this.isTerminal()) return;
-    if (!this.appActive || !this.networkAvailable) return;
+    if (!this.appActive) return;
     this.signal({ type: "open_started" });
     const generation = ++this.generation;
     const controller = new AbortController();
@@ -345,7 +344,7 @@ export class RemoteClient {
       const { data: presence } = await this.requestWithConnection<Presence>(
         connection, { type: "get_presence" }, "list", FOREGROUND_PROBE_TIMEOUT_MS,
       );
-      if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable ||
+      if (this.stopped || this.isTerminal() || !this.appActive ||
           generation !== this.generation || connection !== this.connection || !owner.live ||
           this.failedGeneration === owner.id || !presence.online ||
           presence.pairId !== this.credentials.pairId || presence.bridgeInstanceId !== this.confirmedBridgeInstanceId) return false;
@@ -403,18 +402,6 @@ export class RemoteClient {
     this.state = reason === "UserInitiated" ? "stopped" : "unpaired";
   }
 
-  /** Stop live iterators and retries while the OS reports no usable network. */
-  setNetworkAvailable(available: boolean): void {
-    if (this.stopped || available === this.networkAvailable) return;
-    this.networkAvailable = available;
-    if (available) return;
-    this.cancelAttempt();
-    this.recoveryPromise = null;
-    this.clearTimers();
-    this.signal({ type: "transport_disconnect" });
-    this.disposeConnection("network_unavailable");
-  }
-
   /**
    * Ordinary WebSockets are not a background execution mechanism on either
    * mobile OS. Close deliberately before JavaScript is suspended so foreground
@@ -440,12 +427,13 @@ export class RemoteClient {
     this.disposeConnection("background");
   }
 
-  /** Validate after foregrounding, or immediately rebuild after a path change. */
+  /** Validate after foregrounding, or immediately rebuild after a path change.
+   * Native reachability is only a hint: actual connection failures own the
+   * bounded retry/backoff, even when the OS keeps reporting offline. */
   recoverNow(reason: RecoveryReason): Promise<void> {
     if (this.stopped || this.isTerminal()) return Promise.resolve();
     if (this.recoveryDeadline && !this.beginDeadline()) return Promise.resolve();
     if (!this.appActive) return Promise.resolve();
-    if (!this.networkAvailable) return Promise.resolve();
     if (this.recoveryPromise) return this.recoveryPromise;
     const recovery = this.runRecovery(reason).finally(() => {
       if (this.recoveryPromise === recovery) this.recoveryPromise = null;
@@ -476,7 +464,7 @@ export class RemoteClient {
         );
         if (
           !this.stopped &&
-          this.networkAvailable &&
+          this.appActive &&
           generation === this.generation &&
           connection === this.connection
         ) {
@@ -490,7 +478,7 @@ export class RemoteClient {
         // Rebuild below without waiting for NATS's ping budget to expire.
       }
     }
-    if (this.stopped || !this.appActive || !this.networkAvailable || generation !== this.generation)
+    if (this.stopped || !this.appActive || generation !== this.generation)
       return;
     // Keep the old generation as the serving fallback while the replacement
     // completes its handshake, subscriptions, and flush. `connectSocket()`
@@ -508,8 +496,7 @@ export class RemoteClient {
       this.refreshInFlight ||
       this.openPromise ||
       this.isTerminal() ||
-      !this.appActive ||
-      !this.networkAvailable
+      !this.appActive
     )
       return;
     this.refreshInFlight = true;
@@ -766,14 +753,14 @@ export class RemoteClient {
     }
     if (!this.beginDeadline()) return;
     this.signal({ type: "open_failed", error: new Error("transport_failed") });
-    if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
+    if (this.stopped || this.isTerminal() || !this.appActive) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     const delay = backoffDelayMs(this.retryAttempt);
     this.recordFailure("network", new Error("transport_failed"), Date.now() + delay);
     this.retryAttempt += 1;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      if (this.stopped || this.isTerminal() || !this.appActive || !this.networkAvailable) return;
+      if (this.stopped || this.isTerminal() || !this.appActive) return;
       void this.open();
     }, delay);
   }

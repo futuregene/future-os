@@ -64,7 +64,6 @@ jest.mock("../client", () => {
     callbacks: Record<string, (...args: never[]) => unknown>;
     close = jest.fn(async () => {});
     setAppActive = jest.fn();
-    setNetworkAvailable = jest.fn();
     open = jest.fn(async () => {
       this.callbacks.onConnectionState?.("ready" as never);
       this.callbacks.onReconnected?.();
@@ -130,7 +129,6 @@ interface MockClient {
   callbacks: MockClientCallbacks;
   close: jest.Mock;
   setAppActive: jest.Mock;
-  setNetworkAvailable: jest.Mock;
   open: jest.Mock;
   recoverNow: jest.Mock;
   request: jest.Mock;
@@ -797,7 +795,11 @@ describe("useRemoteConnection", () => {
         await drain();
       });
       await act(async () => { resolve(noneState); await drain(); });
-      expect(client().setNetworkAvailable).toHaveBeenLastCalledWith(true);
+      client().recoverNow.mockClear();
+      await act(async () => { networkListeners()[0]!(wifiState); await drain(); });
+      // If the stale offline snapshot won, this identical online event would
+      // incorrectly trigger another network-restored recovery.
+      expect(client().recoverNow).not.toHaveBeenCalled();
     });
 
     test("an older foreground query cannot overwrite a newer foreground query", async () => {
@@ -815,7 +817,9 @@ describe("useRemoteConnection", () => {
         resolve(noneState);
         await drain();
       });
-      expect(client().setNetworkAvailable).toHaveBeenLastCalledWith(true);
+      client().recoverNow.mockClear();
+      await act(async () => { networkListeners()[0]!(wifiState); await drain(); });
+      expect(client().recoverNow).not.toHaveBeenCalled();
     });
 
     test("a hung foreground network query is bounded and ignores its eventual result", async () => {
@@ -830,11 +834,12 @@ describe("useRemoteConnection", () => {
           appStateListeners()[0]!("background");
           appStateListeners()[0]!("active");
         });
-        expect(client().recoverNow).not.toHaveBeenCalled();
-        await act(async () => { await jest.advanceTimersByTimeAsync(4_000); });
         expect(client().recoverNow).toHaveBeenCalledWith("foreground");
+        await act(async () => { await jest.advanceTimersByTimeAsync(4_000); });
         await act(async () => { resolve(noneState); await drain(); });
-        expect(client().setNetworkAvailable).not.toHaveBeenCalledWith(false);
+        client().recoverNow.mockClear();
+        await act(async () => { networkListeners()[0]!(wifiState); await drain(); });
+        expect(client().recoverNow).not.toHaveBeenCalled();
       } finally { jest.useRealTimers(); }
     });
 
@@ -849,17 +854,82 @@ describe("useRemoteConnection", () => {
       expect(options.refreshSettings).toHaveBeenCalledTimes(2);
     });
 
-    test("foreground recovery aborts when the network is unavailable", async () => {
+    test("foreground immediately recovers even when the network hint stays offline", async () => {
       await mountConnected();
+      networkListeners()[0]!(noneState);
       cast<jest.Mock>(Network.getNetworkStateAsync).mockResolvedValue(noneState);
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
+        expect(client().recoverNow).toHaveBeenCalledWith("foreground");
+        await drain();
+      });
+      expect(client().recoverNow).toHaveBeenCalledTimes(1);
+      expect(client().setAppActive).toHaveBeenLastCalledWith(true);
+    });
+
+    test("offline hints do not tear down a healthy connection or add a polling loop", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        const connected = client();
+        act(() => networkListeners()[0]!(noneState));
+        expect(connected.close).not.toHaveBeenCalled();
+        expect(connected.recoverNow).not.toHaveBeenCalled();
+        expect(result.current.phase).toBe("ready");
+        act(() => connected.callbacks.onConnectionState("reconnecting"));
+        cast<jest.Mock>(Network.getNetworkStateAsync).mockClear();
+        await act(async () => { await jest.advanceTimersByTimeAsync(30_000); });
+        // The client owns transport retries; the hook must not introduce a
+        // competing 5s loop or reset its exponential backoff.
+        expect(Network.getNetworkStateAsync).not.toHaveBeenCalled();
+        expect(connected.recoverNow).not.toHaveBeenCalled();
+      } finally { jest.useRealTimers(); }
+    });
+
+    test("network-restored cannot start recovery while the app is in its background grace", async () => {
+      await mountConnected();
+      cast<{ currentState: string }>(AppState).currentState = "background";
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        networkListeners()[0]!(noneState);
+        networkListeners()[0]!(wifiState);
         await drain();
       });
       expect(client().recoverNow).not.toHaveBeenCalled();
-      expect(client().setAppActive).toHaveBeenLastCalledWith(true);
     });
+
+    test.each(["background", "stopped", "unmount"])(
+      "a late foreground network snapshot does not start another recovery after %s",
+      async stop => {
+        await mountConnected();
+        const connected = client();
+        let resolve!: (value: typeof wifiState) => void;
+        cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValueOnce(
+          new Promise<typeof wifiState>(done => { resolve = done; }),
+        );
+        await act(async () => {
+          appStateListeners()[0]!("background");
+          appStateListeners()[0]!("active");
+          await drain();
+        });
+        expect(connected.recoverNow).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          if (stop === "background") {
+            cast<{ currentState: string }>(AppState).currentState = "background";
+            appStateListeners()[0]!("background");
+          } else if (stop === "unmount") {
+            renderer!.unmount();
+            renderer = null;
+          } else {
+            connected.callbacks.onPresence({ ...presence, disconnected: true, reason: "user_disconnect" });
+          }
+          await drain();
+        });
+        await act(async () => { resolve(wifiState); await drain(); });
+        expect(connected.recoverNow).toHaveBeenCalledTimes(1);
+      },
+    );
 
     test("foreground socket replacement uses the same recovery pass as onReconnected", async () => {
       await mountConnected();
@@ -1080,7 +1150,7 @@ describe("useRemoteConnection", () => {
       expect(client().setAppActive).toHaveBeenCalled();
     });
 
-    test("disables the network when offline at connect time", async () => {
+    test("manual reconnect attempts a real connection despite an offline hint", async () => {
       render();
       await flush();
       networkListeners()[0]!(noneState);
@@ -1088,7 +1158,8 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         await result.current.reconnect();
       });
-      expect(client().setNetworkAvailable).toHaveBeenCalledWith(false);
+      expect(client().open).toHaveBeenCalledTimes(1);
+      expect(result.current.phase).toBe("ready");
     });
 
     test("interval refreshes presence while ready", async () => {
