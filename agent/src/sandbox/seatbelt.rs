@@ -35,9 +35,26 @@ fn sb_quote_str(raw: &str) -> String {
 fn matcher_filter(rule: &PathRule) -> String {
     match rule.matcher_sbpl() {
         MatcherSbpl::Subtree(base) => format!("(subpath {})", sb_quote(base)),
-        // SBPL regex literal. Our glob→regex output contains no `"`; escape
-        // backslashes defensively via the same quoter minus the outer quotes.
-        MatcherSbpl::Regex(re) => format!("(regex #{})", sb_quote_str(re)),
+        // Pass an ordinary SBPL string to `regex`, not a #"..." literal:
+        // only the string reader consumes sb_quote_str's escape layer.
+        // Double-escaping a regex literal silently unprotects e.g. *.pem.
+        // RegexBuilder flags do not survive Regex::as_str(), so encode ASCII
+        // case folding in the expression (Seatbelt has no (?i) support).
+        MatcherSbpl::Regex(re) => {
+            let mut literal = String::new();
+            for ch in re.chars() {
+                if ch.is_ascii_alphabetic() {
+                    literal.push_str(&format!(
+                        "[{}{}]",
+                        ch.to_ascii_lowercase(),
+                        ch.to_ascii_uppercase()
+                    ));
+                } else {
+                    literal.push(ch);
+                }
+            }
+            format!("(regex {})", sb_quote_str(&literal))
+        }
     }
 }
 
@@ -65,6 +82,12 @@ fn emit_rule(profile: &mut String, rule: &PathRule) {
 /// Build the SBPL profile for this sandbox.
 pub fn build_profile(sandbox: &ResolvedSandbox) -> String {
     let rules = sandbox.rule_set();
+    // A partially loaded policy must never become a permissive shell. Keep
+    // this public profile API fail-closed too (production prepare returns an
+    // actionable error before spawning).
+    if !rules.snapshot().resolution_errors.is_empty() {
+        return "(version 1)\n(deny default)\n".into();
+    }
     let mut profile = String::from(
         "(version 1)\n\
          (deny default)\n\

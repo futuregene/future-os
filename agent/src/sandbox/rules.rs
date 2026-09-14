@@ -236,7 +236,9 @@ fn build_glob_regex(glob: &str) -> Regex {
             '*' => {
                 if chars.peek() == Some(&'*') {
                     chars.next();
-                    re.push_str(".*");
+                    // Paths may contain newlines. Keep the flag in the
+                    // expression itself, using syntax Seatbelt also accepts.
+                    re.push_str("(.|\n)*");
                     // Collapse `/**/` so `a/**/b` also matches `a/b`.
                     if chars.peek() == Some(&'/') {
                         chars.next();
@@ -1002,6 +1004,15 @@ mod tests {
             set.evaluate(&workspace.join("vendored.txt"), Op::Read),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn recursive_secret_globs_match_newline_path_components() {
+        let root = tempfile::tempdir().unwrap();
+        let rules = RuleSet::resolve_isolated(root.path());
+        let secret = paths::canonicalize_lenient(root.path()).join("line\nbreak/private.pem");
+        assert_eq!(rules.evaluate(&secret, Op::Read), Decision::Ask);
+        assert_eq!(rules.evaluate(&secret, Op::Write), Decision::Ask);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //!
 //! These execute real commands under `sandbox-exec` to validate the generated
 //! profile against actual tool behavior: writes land only in writable roots,
-//! credential paths are unreadable, the network is blocked, and common
+//! credential paths are unreadable, the network remains open, and common
 //! developer commands still work. macOS only; marked `#[ignore]` so they run
 //! on demand (`cargo test --test sandbox_smoke -- --ignored`) rather than in
 //! every CI pass.
@@ -29,6 +29,9 @@ fn run_sandboxed(sandbox: &ResolvedSandbox, command: &str) -> Output {
     std::process::Command::new("/usr/bin/sandbox-exec")
         .args(["-p", &profile, "bash", "-c", command])
         .current_dir(&sandbox.workspace)
+        // The fixture's cargo output belongs inside its writable workspace,
+        // not in the parent test runner's shared build directory.
+        .env_remove("CARGO_TARGET_DIR")
         .output()
         .expect("sandbox-exec should spawn")
 }
