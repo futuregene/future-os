@@ -9,18 +9,39 @@ import {
   Square,
   X,
 } from "lucide-react-native";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from "react-native";
-import { memo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import {
+  memo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, TimelineItem } from "../../../remote/types";
-import { chatTypography, colors, layout, radius, spacing } from "../../../theme/tokens";
+import {
+  chatTypography,
+  colors,
+  layout,
+  radius,
+  spacing,
+} from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
 import { SkillPicker } from "./SkillPicker";
+import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
 type Remote = RemoteControls;
 
@@ -65,7 +86,10 @@ function ComposerDockView({
   pendingApprovals: PendingApproval[];
   approvalSubmitting: string | null;
   approvalError: { id: string; message: string } | null;
-  decideApproval: (id: string, decision: "approved" | "rejected") => Promise<void>;
+  decideApproval: (
+    id: string,
+    decision: "approved" | "rejected",
+  ) => Promise<void>;
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
   keyboardHeight?: number;
@@ -75,10 +99,26 @@ function ComposerDockView({
   const compactToolbar = width < 380 || fontScale > 1.2;
   const editable = !remote.streaming && !remote.busy;
   const inputRef = useRef<TextInput>(null);
-  const completion = useSkillCompletion(message, setMessage, editable && selector === null, inputRef);
-  const pickerHeight = Math.max(100, Math.min(240, (height - keyboardHeight - 100) * 0.5));
-  const maxInputHeight = Math.max(INPUT_MIN_HEIGHT, Math.min(completion.query ? 90 : INPUT_MAX_HEIGHT, Math.floor(height * 0.3)));
-  const inputHeight = message ? Math.max(INPUT_MIN_HEIGHT, Math.min(maxInputHeight, contentHeight)) : INPUT_MIN_HEIGHT;
+  const completion = useSkillCompletion(
+    message,
+    setMessage,
+    editable && selector === null,
+    inputRef,
+  );
+  const pickerHeight = Math.max(
+    100,
+    Math.min(240, (height - keyboardHeight - 100) * 0.5),
+  );
+  const maxInputHeight = Math.max(
+    INPUT_MIN_HEIGHT,
+    Math.min(
+      completion.query ? 90 : INPUT_MAX_HEIGHT,
+      Math.floor(height * 0.3),
+    ),
+  );
+  const inputHeight = message
+    ? Math.max(INPUT_MIN_HEIGHT, Math.min(maxInputHeight, contentHeight))
+    : INPUT_MIN_HEIGHT;
   return (
     <View style={styles.composerDock}>
       <View pointerEvents="none" style={styles.composerFade}>
@@ -93,24 +133,33 @@ function ComposerDockView({
         </Svg>
       </View>
       {!atLatest && (
-        <Pressable
-          accessibilityLabel={t("chat.backToLatest")}
-          accessibilityRole="button"
+        <FloatingTimelineButton
+          label={t("chat.backToLatest")}
+          icon={<ArrowDown color={colors.inkSoft} size={16} />}
           onPress={scrollToLatest}
           style={styles.backToLatest}
-        >
-          <ArrowDown color={colors.inkSoft} size={16} />
-          <Text style={styles.backToLatestText}>{t("chat.backToLatest")}</Text>
-        </Pressable>
+        />
       )}
-      {!remote.draft && remote.desktopOnline && remote.models.length === 0 && !remote.modelId && (
-        <Text style={styles.offlineComposer}>{t("connection.noModelsHint")}</Text>
-      )}
-      {pendingApprovals.map(item => (
+      {!remote.draft &&
+        remote.desktopOnline &&
+        remote.models.length === 0 &&
+        !remote.modelId && (
+          <Text style={styles.offlineComposer}>
+            {t("connection.noModelsHint")}
+          </Text>
+        )}
+      {pendingApprovals.map((item) => (
         <View key={item.id} style={styles.dockedApproval}>
           <PendingApprovalCard
-            error={approvalSubmitting !== item.payload.approval_request_id && approvalError?.id === item.payload.approval_request_id ? approvalError.message : null}
-            onDecision={decision => void decideApproval(item.payload.approval_request_id, decision)}
+            error={
+              approvalSubmitting !== item.payload.approval_request_id &&
+              approvalError?.id === item.payload.approval_request_id
+                ? approvalError.message
+                : null
+            }
+            onDecision={(decision) =>
+              void decideApproval(item.payload.approval_request_id, decision)
+            }
             payload={item.payload}
             submitting={approvalSubmitting === item.payload.approval_request_id}
           />
@@ -137,7 +186,10 @@ function ComposerDockView({
               showsHorizontalScrollIndicator={false}
             >
               {attachments.map((attachment, index) => (
-                <View key={`${attachment.localUri}:${index}`} style={styles.pendingAttachment}>
+                <View
+                  key={`${attachment.localUri}:${index}`}
+                  style={styles.pendingAttachment}
+                >
                   {attachment.kind === "image" && !supportsImages ? (
                     <CircleAlert color={colors.warning} size={13} />
                   ) : attachment.kind === "image" ? (
@@ -146,7 +198,10 @@ function ComposerDockView({
                     <FileText color={colors.inkSoft} size={13} />
                   )}
                   <View style={styles.pendingAttachmentCopy}>
-                    <Text numberOfLines={1} style={styles.pendingAttachmentName}>
+                    <Text
+                      numberOfLines={1}
+                      style={styles.pendingAttachmentName}
+                    >
                       {attachment.name}
                     </Text>
                     <Text style={styles.pendingAttachmentSize}>
@@ -154,13 +209,17 @@ function ComposerDockView({
                     </Text>
                   </View>
                   <Pressable
-                    accessibilityLabel={t("attachment.remove", { name: attachment.name })}
+                    accessibilityLabel={t("attachment.remove", {
+                      name: attachment.name,
+                    })}
                     accessibilityRole="button"
                     style={styles.removeAttachment}
                     onPress={() =>
-                      setAttachments(current => {
+                      setAttachments((current) => {
                         deleteTemporaryAttachment(current[index]!);
-                        return current.filter((_, itemIndex) => itemIndex !== index);
+                        return current.filter(
+                          (_, itemIndex) => itemIndex !== index,
+                        );
                       })
                     }
                   >
@@ -170,8 +229,10 @@ function ComposerDockView({
               ))}
             </ScrollView>
           )}
-          {attachments.some(a => a.kind === "image") && !supportsImages && (
-            <Text style={styles.attachmentWarning}>{t("attachment.imagesUnsupported")}</Text>
+          {attachments.some((a) => a.kind === "image") && !supportsImages && (
+            <Text style={styles.attachmentWarning}>
+              {t("attachment.imagesUnsupported")}
+            </Text>
           )}
           <View>
             {/* Measure unconstrained text at the input's actual width. A fixed
@@ -186,7 +247,9 @@ function ComposerDockView({
             >
               <Text
                 accessible={false}
-                onLayout={event => setContentHeight(Math.ceil(event.nativeEvent.layout.height))}
+                onLayout={(event) =>
+                  setContentHeight(Math.ceil(event.nativeEvent.layout.height))
+                }
                 style={styles.inputText}
               >
                 {`${message}\u200b`}
@@ -195,7 +258,9 @@ function ComposerDockView({
             <TextInput
               ref={inputRef}
               selection={completion.inputSelection}
-              onSelectionChange={event => completion.onSelectionChange(event.nativeEvent.selection)}
+              onSelectionChange={(event) =>
+                completion.onSelectionChange(event.nativeEvent.selection)
+              }
               onFocus={completion.onFocus}
               onBlur={completion.onBlur}
               accessibilityLabel={t("chat.placeholder")}
@@ -213,13 +278,31 @@ function ComposerDockView({
               value={message}
             />
           </View>
-          <View style={[styles.composerToolbar, compactToolbar && styles.composerToolbarCompact]}>
-            <View style={[styles.composerSelectors, compactToolbar && styles.composerSelectorsCompact]}>
+          <View
+            style={[
+              styles.composerToolbar,
+              compactToolbar && styles.composerToolbarCompact,
+            ]}
+          >
+            <View
+              style={[
+                styles.composerSelectors,
+                compactToolbar && styles.composerSelectorsCompact,
+              ]}
+            >
               <Pressable
                 accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "model", disabled: remote.streaming || remote.connectionPresentation.level !== "connected" }}
-                disabled={remote.streaming || remote.connectionPresentation.level !== "connected"}
+                accessibilityState={{
+                  expanded: selector === "model",
+                  disabled:
+                    remote.streaming ||
+                    remote.connectionPresentation.level !== "connected",
+                }}
+                disabled={
+                  remote.streaming ||
+                  remote.connectionPresentation.level !== "connected"
+                }
                 onPress={() => setSelector("model")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
@@ -237,8 +320,16 @@ function ComposerDockView({
               <Pressable
                 accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: selector === "thinking", disabled: remote.streaming || remote.connectionPresentation.level !== "connected" }}
-                disabled={remote.streaming || remote.connectionPresentation.level !== "connected"}
+                accessibilityState={{
+                  expanded: selector === "thinking",
+                  disabled:
+                    remote.streaming ||
+                    remote.connectionPresentation.level !== "connected",
+                }}
+                disabled={
+                  remote.streaming ||
+                  remote.connectionPresentation.level !== "connected"
+                }
                 onPress={() => setSelector("thinking")}
                 style={({ pressed }) => [
                   styles.selectorTrigger,
@@ -257,28 +348,39 @@ function ComposerDockView({
             <Pressable
               accessibilityLabel={t("skills.choose")}
               accessibilityRole="button"
-              accessibilityState={{ expanded: !!completion.query, disabled: !editable }}
+              accessibilityState={{
+                expanded: !!completion.query,
+                disabled: !editable,
+              }}
               disabled={!editable}
               onPress={completion.insertSlash}
               hitSlop={{ left: 6, right: 6 }}
               style={({ pressed }) => [
                 styles.attachmentButton,
                 styles.skillButton,
-                (pressed || !!completion.query) && styles.selectorTriggerPressed,
+                (pressed || !!completion.query) &&
+                  styles.selectorTriggerPressed,
                 !editable && styles.controlDisabled,
               ]}
             >
-              <Slash color={completion.query ? colors.accent : colors.inkSoft} size={16} />
+              <Slash
+                color={completion.query ? colors.accent : colors.inkSoft}
+                size={16}
+              />
             </Pressable>
             <Pressable
               accessibilityLabel={t("attachment.add")}
               accessibilityRole="button"
-              disabled={remote.streaming || remote.busy || !remote.fileTransferSupported}
+              disabled={
+                remote.streaming || remote.busy || !remote.fileTransferSupported
+              }
               onPress={openAttachmentMenu}
               style={({ pressed }) => [
                 styles.attachmentButton,
                 pressed && styles.selectorTriggerPressed,
-                (remote.streaming || remote.busy || !remote.fileTransferSupported) &&
+                (remote.streaming ||
+                  remote.busy ||
+                  !remote.fileTransferSupported) &&
                   styles.controlDisabled,
               ]}
             >
@@ -291,7 +393,11 @@ function ComposerDockView({
                 onPress={() => void remote.abort()}
                 style={[styles.sendButton, styles.stopButton]}
               >
-                <Square color={colors.surface} fill={colors.surface} size={14} />
+                <Square
+                  color={colors.surface}
+                  fill={colors.surface}
+                  size={14}
+                />
               </Pressable>
             ) : (
               <Pressable
@@ -327,10 +433,14 @@ function ComposerDockView({
 export const ComposerDock = memo(ComposerDockView, (previous, next) => {
   const { pendingApprovals: beforeApprovals, ...before } = previous;
   const { pendingApprovals: afterApprovals, ...after } = next;
-  return beforeApprovals.length === afterApprovals.length
-    && beforeApprovals.every((item, index) => item === afterApprovals[index])
-    && Object.keys(before).length === Object.keys(after).length
-    && (Object.keys(before) as (keyof typeof before)[]).every(key => Object.is(before[key], after[key]));
+  return (
+    beforeApprovals.length === afterApprovals.length &&
+    beforeApprovals.every((item, index) => item === afterApprovals[index]) &&
+    Object.keys(before).length === Object.keys(after).length &&
+    (Object.keys(before) as (keyof typeof before)[]).every((key) =>
+      Object.is(before[key], after[key]),
+    )
+  );
 });
 
 const styles = StyleSheet.create({
@@ -345,27 +455,7 @@ const styles = StyleSheet.create({
     left: 0,
     height: COMPOSER_FADE_CLEARANCE + 4,
   },
-  backToLatest: {
-    position: "absolute",
-    top: -56,
-    minHeight: layout.touchTarget,
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderWidth: 1,
-    borderColor: colors.lineSoft,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surface,
-    shadowColor: colors.inkStrong,
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
-  },
-  backToLatestText: { color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
+  backToLatest: { top: -56 },
   offlineComposer: {
     marginHorizontal: spacing.md,
     marginBottom: spacing.xs,
@@ -398,7 +488,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 3 },
     elevation: 2,
   },
-  pendingAttachments: { gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
+  pendingAttachments: {
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
   pendingAttachment: {
     maxWidth: 260,
     flexDirection: "row",
@@ -412,7 +506,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSubtle,
   },
   pendingAttachmentCopy: { maxWidth: 155, flexShrink: 1 },
-  removeAttachment: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
+  removeAttachment: {
+    width: layout.touchTarget,
+    height: layout.touchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
   pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
   attachmentWarning: {
@@ -469,7 +568,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.sm,
   },
   selectorTriggerPressed: { backgroundColor: colors.surfaceSubtle },
-  selectorText: { flexShrink: 1, color: colors.inkSoft, fontSize: 12, fontWeight: "600" },
+  selectorText: {
+    flexShrink: 1,
+    color: colors.inkSoft,
+    fontSize: 12,
+    fontWeight: "600",
+  },
   attachmentButton: {
     width: 44,
     height: 44,

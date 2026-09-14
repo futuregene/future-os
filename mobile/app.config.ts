@@ -42,7 +42,8 @@ const config: ExpoConfig = {
       "expo-image-picker",
       {
         cameraPermission,
-        photosPermission: "Allow FutureOS to select photos for conversation attachments.",
+        photosPermission:
+          "Allow FutureOS to select photos for conversation attachments.",
         microphonePermission: false,
       },
     ],
@@ -55,6 +56,10 @@ const config: ExpoConfig = {
     ],
     "expo-localization",
     "expo-notifications",
+    // Keep the local-notification module, but do not request APNs push access.
+    // This must follow expo-notifications because that plugin adds the APNs
+    // entitlement by default.
+    "./plugins/withLocalNotificationsOnly",
     [
       "expo-splash-screen",
       {
@@ -105,6 +110,14 @@ const config: ExpoConfig = {
     package: "cn.futureos.mobile",
     versionCode: Number.parseInt(buildNumber, 10),
     permissions: ["android.permission.REQUEST_INSTALL_PACKAGES"],
+    // The notifications module also brings optional FCM remote-push support.
+    // FutureOS has local task reminders only, so keep its display/recovery
+    // permissions while blocking the remote-push and unrelated overlay access.
+    blockedPermissions: [
+      "android.permission.SYSTEM_ALERT_WINDOW",
+      "android.permission.WAKE_LOCK",
+      "com.google.android.c2dm.permission.RECEIVE",
+    ],
     // Share targets. `MainActivity` is `singleTask`, so a share while the app
     // is running is delivered through `onNewIntent` (see the local
     // `future-share-intent` module, which captures both receipts).
@@ -112,11 +125,27 @@ const config: ExpoConfig = {
     // text with `*/*`, and a mimeType filter for `text/plain` alone would drop
     // those. Images keep their own entry so the gallery offers FutureOS first.
     intentFilters: [
-      { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "text/plain" }] },
-      { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "image/*" }] },
-      { action: "SEND_MULTIPLE", category: ["DEFAULT"], data: [{ mimeType: "image/*" }] },
+      {
+        action: "SEND",
+        category: ["DEFAULT"],
+        data: [{ mimeType: "text/plain" }],
+      },
+      {
+        action: "SEND",
+        category: ["DEFAULT"],
+        data: [{ mimeType: "image/*" }],
+      },
+      {
+        action: "SEND_MULTIPLE",
+        category: ["DEFAULT"],
+        data: [{ mimeType: "image/*" }],
+      },
       { action: "SEND", category: ["DEFAULT"], data: [{ mimeType: "*/*" }] },
-      { action: "SEND_MULTIPLE", category: ["DEFAULT"], data: [{ mimeType: "*/*" }] },
+      {
+        action: "SEND_MULTIPLE",
+        category: ["DEFAULT"],
+        data: [{ mimeType: "*/*" }],
+      },
     ],
     adaptiveIcon: {
       backgroundColor: "#0f172a",
