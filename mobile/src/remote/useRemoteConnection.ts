@@ -580,6 +580,36 @@ export function useRemoteConnection({
   }, [clientRef, recoverLifecycle]);
 
   useEffect(() => {
+    if (phase !== "connecting" && phase !== "reconnecting" && phase !== "refreshing") return;
+    let active = true;
+    let checking = false;
+    // A resume snapshot can still be offline while the radio wakes up, and
+    // native reachability events can be lost during suspension. Recheck that
+    // gate instead of waiting for an event until the recovery budget expires.
+    // Transport retries/deadlines remain owned by RemoteClient.
+    const timer = setInterval(() => {
+      const client = clientRef.current;
+      if (!active || checking || AppState.currentState !== "active" ||
+          networkAvailableRef.current !== false || !client || !credentialsRef.current) return;
+      checking = true;
+      void (async () => {
+        try {
+          const available = await refreshNetworkStateRef.current();
+          if (available && active && AppState.currentState === "active" && clientRef.current === client) {
+            await recoverLifecycle("network-restored");
+          }
+        } finally {
+          checking = false;
+        }
+      })().catch(recordError);
+    }, 5_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [phase, clientRef, credentialsRef, recoverLifecycle, recordError]);
+
+  useEffect(() => {
     const timer = setInterval(() => {
       if (phase === "ready") {
         updateDesktopOnline(presence, Date.now());
