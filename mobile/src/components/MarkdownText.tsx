@@ -9,7 +9,8 @@ import {
 } from "@future-os/markdown";
 import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Image, Linking, StyleSheet, Text, View } from "react-native";
+import type { StyleProp, TextStyle } from "react-native";
+import { Alert, Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 
 interface MarkdownTextProps {
@@ -73,11 +74,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
       }
       case "image": {
         const path = localFilePath(node.src);
-        const remoteUrl = remoteMarkdownImageUrl(node.src);
         const label = node.alt || (path ? basename(path) : node.src);
-        if (remoteUrl) {
-          return <RemoteMarkdownImage alt={node.alt} key={key} url={remoteUrl} />;
-        }
         if (!path) return label;
         return (
           <Text key={key} onPress={() => openTarget(node.src)} style={styles.fileChip}>
@@ -101,18 +98,83 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
   });
 }
 
+type InlineRun = { nodes: InlineNode[] } | { image: Extract<InlineNode, { type: "image" }>; href?: string };
+
+/** Native images cannot reliably participate in selectable Text layout. Split
+ * them into responsive blocks, retaining formatting/link wrappers around the
+ * surrounding text (including images nested in emphasis or external links).
+ */
+function inlineRuns(nodes: InlineNode[]): InlineRun[] {
+  const runs: InlineRun[] = [];
+  for (const node of nodes) {
+    let parts: InlineRun[];
+    if (node.type === "image" && remoteMarkdownImageUrl(node.src)) {
+      parts = [{ image: node }];
+    } else if ("children" in node) {
+      parts = inlineRuns(node.children).map(run => "nodes" in run
+        ? { nodes: [{ ...node, children: run.nodes }] }
+        : { ...run, href: node.type === "link" ? node.href : run.href });
+    } else {
+      parts = [{ nodes: [node] }];
+    }
+    for (const part of parts) {
+      const last = runs[runs.length - 1];
+      if (last && "nodes" in last && "nodes" in part) last.nodes.push(...part.nodes);
+      else runs.push(part);
+    }
+  }
+  return runs;
+}
+
+function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
+  nodes: InlineNode[];
+  openTarget: OpenTarget;
+  textStyle: StyleProp<TextStyle>;
+  heading?: boolean;
+}) {
+  return inlineRuns(nodes).map((run, index) => {
+    if ("nodes" in run) return (
+      <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={textStyle}>
+        {renderInline(run.nodes, openTarget, `run${index}`)}
+      </Text>
+    );
+    const url = remoteMarkdownImageUrl(run.image.src)!;
+    const image = <RemoteMarkdownImage key={url} alt={run.image.alt} url={url} />;
+    const target = run.href ? classifyMarkdownTarget(run.href) : null;
+    return target?.kind === "external-url" || target?.kind === "local-file" ? (
+      <Pressable key={index} accessibilityRole="link" accessibilityLabel={run.image.alt || run.href} onPress={() => openTarget(run.href!)}>
+        {image}
+      </Pressable>
+    ) : <View key={index}>{image}</View>;
+  });
+}
+
 function RemoteMarkdownImage({ alt, url }: { alt: string; url: string }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const failed = failedUrl === url;
-  if (failed) return <Text style={styles.imageFallback}>{alt || url}</Text>;
+  const [failed, setFailed] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState(1.5);
+  if (failed) return <Text selectable style={styles.imageFallback}>{alt || url}</Text>;
   return (
     <Image
       accessibilityLabel={alt}
-      onError={() => setFailedUrl(url)}
+      onError={() => setFailed(true)}
+      onLoad={({ nativeEvent: { source } }) => {
+        if (source.width > 0 && source.height > 0) setAspectRatio(source.width / source.height);
+      }}
       resizeMode="contain"
       source={{ uri: url }}
-      style={styles.remoteImage}
+      style={[styles.remoteImage, { aspectRatio }]}
     />
+  );
+}
+
+function CodeSource({ code, language }: { code: string; language?: string }) {
+  return (
+    <View style={styles.codeContainer}>
+      {language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
+      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
+        <Text selectable style={styles.code}>{code}</Text>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -120,6 +182,7 @@ function renderListItem(
   item: ListItemNode,
   itemIndex: number,
   ordered: boolean,
+  start: number,
   openTarget: OpenTarget,
   parentKey: string,
 ) {
@@ -127,17 +190,15 @@ function renderListItem(
   return (
     <View key={key} style={styles.listRow}>
       {item.checked === undefined ? (
-        <Text style={styles.listBullet}>{ordered ? `${itemIndex + 1}.` : "•"}</Text>
+        <Text style={styles.listBullet}>{ordered ? `${start + itemIndex}.` : "•"}</Text>
       ) : (
-        <View style={[styles.checkbox, item.checked ? styles.checkboxChecked : null]}>
+        <View accessibilityRole="checkbox" accessibilityState={{ checked: item.checked, disabled: true }} style={[styles.checkbox, item.checked ? styles.checkboxChecked : null]}>
           {item.checked ? <Text style={styles.checkMark}>✓</Text> : null}
         </View>
       )}
       <View style={styles.listItemBody}>
         {item.children.length > 0 ? (
-          <Text selectable style={styles.listItemText}>
-            {renderInline(item.children, openTarget, key)}
-          </Text>
+          <InlineContent nodes={item.children} openTarget={openTarget} textStyle={styles.listItemText} />
         ) : null}
         {item.blocks?.length ? (
           <View style={styles.nestedBlocks}>
@@ -158,31 +219,17 @@ function renderBlock(
   switch (node.type) {
     case "heading":
       return (
-        <Text
-          key={key}
-          selectable
-          style={[
-            styles.heading,
-            node.level <= 2 ? styles.headingLarge : null,
-            isLast ? styles.noBottom : null,
-          ]}
-        >
-          {renderInline(node.children, openTarget, key)}
-        </Text>
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <InlineContent nodes={node.children} openTarget={openTarget} heading textStyle={[styles.heading, headingSizes[node.level - 1]!]} />
+        </View>
       );
     case "code":
-      return (
-        <Text key={key} selectable style={[styles.code, isLast ? styles.noBottom : null]}>
-          {node.code}
-        </Text>
-      );
     case "mathBlock":
-      // React Native has no KaTeX DOM renderer; fall back to the raw TeX
-      // source in the block-code style so formulas stay legible.
+      // Math remains selectable TeX until a native formula renderer is added.
       return (
-        <Text key={key} selectable style={[styles.code, isLast ? styles.noBottom : null]}>
-          {node.code}
-        </Text>
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <CodeSource code={node.code} language={node.type === "code" ? node.language : undefined} />
+        </View>
       );
     case "blockquote":
       return (
@@ -194,23 +241,14 @@ function renderBlock(
       return (
         <View key={key} style={[styles.list, isLast ? styles.noBottom : null]}>
           {node.items.map((item, index) =>
-            renderListItem(item, index, node.ordered, openTarget, key),
+            renderListItem(item, index, node.ordered, node.start ?? 1, openTarget, key),
           )}
         </View>
       );
     case "table":
       return (
-        <View key={key} style={[styles.table, isLast ? styles.noBottom : null]}>
-          <MarkdownTableRow cells={node.headers} alignments={node.alignments} openTarget={openTarget} header />
-          {node.rows.map((row, rowIndex) => (
-            <MarkdownTableRow
-              key={rowIndex}
-              cells={row}
-              alignments={node.alignments}
-              openTarget={openTarget}
-              striped={rowIndex % 2 === 1}
-            />
-          ))}
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <MarkdownTable node={node} openTarget={openTarget} />
         </View>
       );
     case "thematicBreak":
@@ -227,9 +265,9 @@ function renderBlock(
     }
     default:
       return (
-        <Text key={key} selectable style={[styles.paragraph, isLast ? styles.noBottom : null]}>
-          {renderInline(node.children, openTarget, key)}
-        </Text>
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <InlineContent nodes={node.children} openTarget={openTarget} textStyle={styles.bodyText} />
+        </View>
       );
   }
 }
@@ -244,9 +282,28 @@ function renderBlocks(
   );
 }
 
-const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, openTarget, header = false, striped = false }: {
+function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
+  const [width, setWidth] = useState(0);
+  const { fontScale } = useWindowDimensions();
+  const cellWidth = Math.max(144 * fontScale, (width - 2) / Math.max(1, node.headers.length));
+  return (
+    <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
+      <ScrollView horizontal nestedScrollEnabled>
+        <View style={styles.table}>
+          <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} header />
+          {node.rows.map((row, rowIndex) => (
+            <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} striped={rowIndex % 2 === 1} />
+          ))}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cellWidth, openTarget, header = false, striped = false }: {
   cells: InlineNode[][];
   alignments: TableNode["alignments"];
+  cellWidth: number;
   openTarget: OpenTarget;
   header?: boolean;
   striped?: boolean;
@@ -254,13 +311,16 @@ const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, ope
   return (
     <View style={[styles.tableRow, header ? styles.tableHead : styles.tableBodyRow, striped && styles.tableRowZebra]}>
       {cells.map((cell, index) => (
-        <Text key={index} selectable style={[
-          header ? styles.th : styles.td,
+        <View key={index} style={[
+          styles.tableCell,
           index > 0 ? styles.cellBorderLeft : null,
-          { textAlign: alignments[index] ?? "left" },
+          { width: cellWidth },
         ]}>
-          {renderInline(cell, openTarget, `cell${index}`)}
-        </Text>
+          <InlineContent nodes={cell} openTarget={openTarget} textStyle={[
+            header ? styles.th : styles.td,
+            { textAlign: alignments[index] ?? "left" },
+          ]} />
+        </View>
       ))}
     </View>
   );
@@ -293,31 +353,40 @@ export function MarkdownText({ text, onOpenFile, mode = "message", streaming = f
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
   }, [mode, onOpenFile, t]);
-  return <View>{document.nodes.map((node, index) => (
+  return <View style={styles.constrained}>{document.nodes.map((node, index) => (
     <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1} />
   ))}</View>;
 }
+
+const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
+const headingSizes: TextStyle[] = [
+  { fontSize: 24, lineHeight: 32 },
+  { fontSize: 21, lineHeight: 29 },
+  { fontSize: 19, lineHeight: 27 },
+  { fontSize: 17, lineHeight: 25 },
+  { fontSize: 16, lineHeight: 24 },
+  { fontSize: 15, lineHeight: 22 },
+];
 
 const styles = StyleSheet.create({
   // The last block of a message drops its bottom margin — the surrounding
   // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
+  constrained: { minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
+  blockSpacing: { marginBottom: spacing.sm },
+  bodyText: { color: colors.ink, ...chatTypography },
   paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },
   heading: {
     color: colors.inkStrong,
-    fontSize: 17,
     fontWeight: "700",
-    lineHeight: 24,
-    marginBottom: spacing.sm,
   },
-  headingLarge: { fontSize: 20, lineHeight: 27 },
   bold: { fontWeight: "700" },
   italic: { fontStyle: "italic" },
   strike: { textDecorationLine: "line-through" },
   inlineCode: {
     color: colors.ink,
     backgroundColor: colors.surfaceSubtle,
-    fontFamily: "monospace",
+    fontFamily: monospace,
     fontSize: 13,
     paddingHorizontal: 4,
     paddingVertical: 1,
@@ -334,21 +403,25 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   remoteImage: {
-    width: 240,
-    height: 160,
+    width: "100%",
     marginVertical: spacing.sm,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSubtle,
   },
   imageFallback: { color: colors.inkMuted },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
+  codeContainer: {
+    maxWidth: "100%",
+    borderRadius: radius.md,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceSubtle,
+  },
+  codeContent: { flexGrow: 1 },
+  codeLanguage: { color: colors.inkMuted, fontSize: 12, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
-    marginBottom: spacing.md,
     padding: spacing.md,
     color: colors.ink,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
-    fontFamily: "monospace",
+    fontFamily: monospace,
     fontSize: 13,
     lineHeight: 20,
   },
@@ -361,12 +434,14 @@ const styles = StyleSheet.create({
   list: { marginBottom: spacing.md },
   listRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.xs },
   listBullet: {
-    width: 22,
+    minWidth: 22,
+    flexShrink: 0,
+    textAlign: "right",
     marginRight: spacing.xs,
     color: colors.ink,
     ...chatTypography,
   },
-  listItemBody: { flex: 1 },
+  listItemBody: { flex: 1, minWidth: 0 },
   listItemText: { color: colors.ink, ...chatTypography },
   nestedBlocks: { marginTop: spacing.xs },
   checkbox: {
@@ -383,7 +458,6 @@ const styles = StyleSheet.create({
   checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
   checkMark: { color: colors.surface, fontSize: 12, fontWeight: "700", lineHeight: 14 },
   table: {
-    marginBottom: spacing.md,
     borderWidth: 1,
     borderColor: colors.lineSoft,
     borderRadius: radius.md,
@@ -393,21 +467,14 @@ const styles = StyleSheet.create({
   tableHead: { backgroundColor: colors.surfaceSubtle },
   tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   tableRowZebra: { backgroundColor: colors.surfaceSubtle },
+  tableCell: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   th: {
-    flexGrow: 1,
-    flexBasis: 0,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
     color: colors.inkStrong,
     fontWeight: "700",
     fontSize: 14,
     lineHeight: 20,
   },
   td: {
-    flexGrow: 1,
-    flexBasis: 0,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
     color: colors.inkSoft,
     fontSize: 14,
     lineHeight: 20,

@@ -11,6 +11,7 @@ import type {
   LinkReference,
   List,
   ListItem,
+  Nodes,
   PhrasingContent,
   Root,
   RootContent,
@@ -111,10 +112,16 @@ export function parseMdast(raw: string): Root {
 
 function createParseContext(tree: Root): ParseContext {
   const definitions = new Map<string, Definition>();
-  for (const node of tree.children) {
+  // Definitions are document-wide, even inside lists/quotes. CommonMark uses
+  // the first definition in source order, not the last top-level definition.
+  const stack: Nodes[] = [...tree.children].reverse();
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     if (node.type === "definition") {
-      definitions.set(normalizeIdentifier(node.identifier), node);
+      const id = normalizeIdentifier(node.identifier);
+      if (!definitions.has(id)) definitions.set(id, node);
     }
+    if ("children" in node) stack.push(...[...node.children].reverse());
   }
   return { definitions };
 }
@@ -160,20 +167,24 @@ function blockToFutureNode(
           type: "paragraph",
         },
       ];
-    case "footnoteDefinition":
-      return [
-        {
-          children: node.children.flatMap((child) =>
-            blockToFutureNode(child, context),
-          ),
-          type: "blockquote",
-        },
-      ];
+    case "footnoteDefinition": {
+      // Until renderers provide footnote navigation, keep the identifier next
+      // to its body so multiple notes are not anonymous, ambiguous quotes.
+      const body = node.children.flatMap(child => blockToFutureNode(child, context));
+      const label: InlineNode = { text: `[^${node.identifier}]: `, type: "text" };
+      const first = body[0];
+      if (first?.type === "paragraph") {
+        body[0] = { ...first, children: [label, ...first.children] };
+      } else {
+        body.unshift({ type: "paragraph", children: [label] });
+      }
+      return [{ children: body, type: "blockquote" }];
+    }
     case "heading":
       return [
         {
           children: phrasingToInline(node.children, context),
-          level: normalizeHeadingLevel(node.depth),
+          level: node.depth,
           type: "heading",
         },
       ];
@@ -255,7 +266,11 @@ function phrasingNodeToInline(
     case "footnoteReference":
       return [{ text: `[^${node.identifier}]`, type: "text" }];
     case "html":
-      return [{ text: node.value, type: "text" }];
+      // A narrowly whitelisted break is useful in GFM table cells. All other
+      // HTML (including attributes/event handlers) stays inert literal text.
+      return /^<br\s*\/?\s*>$/i.test(node.value)
+        ? [{ type: "break" }]
+        : [{ text: node.value, type: "text" }];
     case "image":
       return [imageToInline(node)];
     case "imageReference":
@@ -407,6 +422,7 @@ function listToFutureNode(node: List, context: ParseContext): MarkdownNode {
   return {
     items: node.children.map((child) => listItemToFutureNode(child, context)),
     ordered: Boolean(node.ordered),
+    start: node.ordered ? node.start ?? 1 : undefined,
     type: "list",
   };
 }
@@ -612,12 +628,6 @@ function normalizeView(view: string | undefined): FutureReferenceView {
   if (view === "timeline") return "timeline";
   if (view === "summary") return "summary";
   return "card";
-}
-
-function normalizeHeadingLevel(depth: number): 1 | 2 | 3 {
-  if (depth <= 1) return 1;
-  if (depth === 2) return 2;
-  return 3;
 }
 
 function normalizeIdentifier(value: string) {

@@ -55,6 +55,15 @@ function mount(node: React.ReactElement) {
 }
 
 describe("markdownContent block rendering", () => {
+  it("retains shared-parser heading levels, ordered starts and safe table breaks", () => {
+    const html = renderToStaticMarkup(createElement(MarkdownContent, {
+      content: "#### Four\n\n##### Five\n\n###### Six\n\n0. Zero\n1. One\n\n| A |\n|---|\n| first<br>second |",
+    }));
+    for (const level of [4, 5, 6]) expect(html).toContain(`<h${level}`);
+    expect(html).toContain("start=\"0\"");
+    expect(html).toContain("first<br/>second");
+  });
+
   it("renders headings, lists, blockquotes, tables and breaks", () => {
     const html = renderToStaticMarkup(createElement(MarkdownContent, {
       content: [
