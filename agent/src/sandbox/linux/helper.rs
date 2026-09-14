@@ -227,11 +227,14 @@ fn run_outer(mut request: LinuxSandboxRequest) -> Result<ExitStatus> {
     }
     inherited.push(request_file);
     inherited.push(bwrap_args);
-    // SAFETY: pre_exec runs after fork in the single child. close_unlisted_fds
-    // only uses libc calls and stack data captured before the fork.
+    // The helper is single-threaded. Snapshot before fork for kernels without
+    // close_range; never bound descriptor cleanup by the current rlimit (it
+    // can have been lowered after a high-numbered descriptor was opened).
+    let open_fds = open_fds()?;
+    // SAFETY: pre_exec only uses async-signal-safe libc calls and captured data.
     unsafe {
         command.pre_exec(move || {
-            mark_all_fds_cloexec();
+            mark_all_fds_cloexec(&open_fds)?;
             for fd in &keep {
                 let flags = libc::fcntl(*fd, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
@@ -513,7 +516,7 @@ fn run_inner(request: LinuxSandboxRequest) -> Result<ExitStatus> {
     }
     let status_fd = request.status_fd.context("missing status fd")?;
     set_cloexec(status_fd)?;
-    close_unlisted_fds(&[status_fd]);
+    close_unlisted_fds(&[status_fd])?;
     let (program, argv) = request.argv.split_first().context("empty command argv")?;
     let mut command = Command::new(program);
     command.args(argv).current_dir(&request.cwd);
@@ -687,37 +690,58 @@ fn set_cloexec(fd: i32) -> Result<()> {
     Ok(())
 }
 
-fn close_unlisted_fds(keep: &[i32]) {
-    let max = open_max();
-    for fd in 3..max {
-        if !keep.contains(&fd) {
-            unsafe { libc::close(fd) };
-        }
-    }
+fn open_fds() -> std::io::Result<Vec<i32>> {
+    std::fs::read_dir("/proc/self/fd")?
+        .map(|entry| {
+            entry?
+                .file_name()
+                .to_string_lossy()
+                .parse::<i32>()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })
+        .collect()
 }
 
-fn mark_all_fds_cloexec() {
+fn close_unlisted_fds(keep: &[i32]) -> std::io::Result<()> {
+    for fd in open_fds()? {
+        if fd > 2 && !keep.contains(&fd) {
+            // The read_dir descriptor has already closed; EBADF is harmless.
+            if unsafe { libc::close(fd) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EBADF) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mark_all_fds_cloexec(open_fds: &[i32]) -> std::io::Result<()> {
     const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
     let result =
         unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) };
     if result == 0 {
-        return;
+        return Ok(());
     }
-    for fd in 3..open_max() {
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags >= 0 {
-            unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-        }
-    }
+    mark_fds_cloexec(open_fds)
 }
 
-fn open_max() -> i32 {
-    let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-    if max <= 0 {
-        4096
-    } else {
-        max.min(65_536) as i32
+fn mark_fds_cloexec(open_fds: &[i32]) -> std::io::Result<()> {
+    for &fd in open_fds.iter().filter(|&&fd| fd > 2) {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EBADF) {
+                continue;
+            }
+            return Err(error);
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
     }
+    Ok(())
 }
 
 fn same_mount_inode(expected: &BwrapIdentity, actual: &BwrapIdentity) -> bool {
@@ -762,6 +786,62 @@ fn mirror_status(status: ExitStatus) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fd_cleanup_covers_high_descriptors_after_limit_is_lowered() {
+        const CHILD: &str = "FUTURE_TEST_HIGH_FD_CLEANUP";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "sandbox::linux::helper::tests::fd_cleanup_covers_high_descriptors_after_limit_is_lowered", "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Only the isolated test subprocess changes limits/closes descriptors.
+        let file = File::open("/dev/null").unwrap();
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        limit.rlim_cur = limit.rlim_max;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let minimum = limit.rlim_max.saturating_sub(1).min(70_000) as i32;
+        let high = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, minimum) };
+        assert!(
+            high > 1024,
+            "high FD fixture: {}",
+            std::io::Error::last_os_error()
+        );
+        limit.rlim_cur = 1024;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+        let descriptors = open_fds().unwrap();
+        assert!(descriptors.contains(&high));
+        // Exercise the fallback even on kernels that support close_range.
+        mark_fds_cloexec(&descriptors).unwrap();
+        assert_ne!(
+            unsafe { libc::fcntl(high, libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        let kept = file.as_raw_fd();
+        close_unlisted_fds(&[kept]).unwrap();
+        assert_eq!(unsafe { libc::fcntl(high, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        assert!(unsafe { libc::fcntl(kept, libc::F_GETFD) } >= 0);
+    }
 
     #[test]
     fn mount_identity_ignores_mutation_but_rejects_inode_replacement() {

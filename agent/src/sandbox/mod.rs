@@ -256,6 +256,9 @@ impl ResolvedSandbox {
         if !escalated && self.wraps_shell() {
             #[cfg(target_os = "macos")]
             {
+                if let Some(error) = self.rules.snapshot().resolution_errors.first() {
+                    anyhow::bail!("approval rule layer could not be loaded: {error}");
+                }
                 return Ok(seatbelt::prepare(self, command));
             }
             #[cfg(target_os = "linux")]
