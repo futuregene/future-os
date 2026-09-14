@@ -171,6 +171,48 @@ impl RunClient {
         .await
     }
 
+    /// Search original visible history. The existing message field carries the literal query.
+    pub async fn search_session_history(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "search_session_history",
+            RpcCommand {
+                message: query.to_string(),
+                limit: Some(limit),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
+    /// Indexed original entry read; offset/limit are UTF-8 bytes, not display-page cursors.
+    pub async fn get_session_history_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_session_history_entry",
+            RpcCommand {
+                entry_id: entry_id.to_string(),
+                offset: Some(offset),
+                limit: Some(limit),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
     /// `renameSession(sessionId, name)` — `set_session_name`; errors on failure.
     pub async fn rename_session(&self, session_id: &str, name: &str) -> Result<(), String> {
         let cmd = RpcCommand {

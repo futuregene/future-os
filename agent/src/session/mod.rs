@@ -18,6 +18,8 @@ mod checkpoint;
 mod database;
 pub(crate) mod display;
 mod history_index;
+mod history_query;
+pub(crate) use history_query::HISTORY_DEFAULT_BYTES;
 mod legacy_import;
 pub use legacy_import::ImportRecord;
 mod entry;

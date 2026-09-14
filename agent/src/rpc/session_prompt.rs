@@ -502,6 +502,8 @@ impl ServerSession {
             snapshot.active_checkpoint = shared.active_checkpoint.clone();
             (system_prompt, shared.verbose, snapshot)
         };
+        run_loop.session_id = self.session_id.clone();
+        run_loop.history_recall_allowed = !self.ephemeral && run_permission_level != "none";
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
         run_loop.cumulative_output_tokens = self.tokens_out.clone();
         run_loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();

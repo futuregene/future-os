@@ -16,6 +16,7 @@ pub const SESSION_HELP: &str = "future session — manage agent sessions
 Usage:
   future session list [--json]                       List all sessions
   future session info <id>                           Show session details + stats
+  future session history --help                      Search/read original history
   future session rename <id> <name>                  Give a session a readable name
   future session delete <id>                         Delete a session
 
@@ -370,6 +371,10 @@ pub async fn session(
     if subcommand == "--help" || subcommand == "-h" {
         help(out);
         return Ok(());
+    }
+
+    if subcommand == "history" {
+        return super::session_history::run(args, out).await;
     }
 
     if subcommand == "list" {
