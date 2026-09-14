@@ -373,6 +373,15 @@ export function useTimelineController({
         setSyncStatuses(previous => previous[sessionId] === status
           ? previous : { ...previous, [sessionId]: status });
       },
+      onTiming: timing => {
+        // Keep successful fast live-gap checks quiet in release builds. Slow
+        // opens/retries still leave enough phase data for device diagnosis,
+        // without recording prompts, reply text, or transport credentials.
+        if (__DEV__ || timing.elapsedMs >= 1000) {
+          // eslint-disable-next-line no-console -- Timings are diagnostics, not LogBox warnings.
+          console.info("[remote] session timeline sync timing", timing);
+        }
+      },
       onFailure: failure => {
         console.error("[remote] session timeline sync failed", {
           sessionId: failure.sessionId,

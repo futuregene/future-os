@@ -23,7 +23,9 @@
  *     prefix converges here.
  *   - TAIL  (since = highWater): the prefix is complete. Folds the dropped
  *     tail (gap fill, reconnect while streaming, snapshot-flip) onto the live
- *     snapshot without disturbing the prefix.
+ *     snapshot without disturbing the prefix. A warm open/reconnect of the
+ *     same active run also refreshes durable history, retaining the proven
+ *     run's items and projector together before applying just this tail.
  *
  * Invariant (module doc + tests): at any instant a session's timeline equals
  * settled history + the active run's replay over [0, highWater] when its prefix
@@ -58,8 +60,9 @@ import type { StreamEvent, RemoteSessionState } from "./types";
 /** Paginated replay pages, merged by the caller (P0 H2 pagination). */
 export interface ReplayResult {
   events: ReplayEventWire[];
-  projection?: { run_id?: string; cursor?: number; events?: ReplayEventWire[] } | null;
+  projection?: { run_id?: string; runId?: string; cursor?: number; events?: ReplayEventWire[] } | null;
   truncated?: boolean;
+  watermark?: number;
 }
 
 /**
@@ -77,10 +80,22 @@ export interface SyncDeps {
   onRecovered?(sessionId: string): void;
   /** Replay progress is independent of whether a cached timeline is readable. */
   onSyncStatus?(sessionId: string, status: TimelineSyncStatus): void;
+  /** One metadata-only timing sample per reconcile attempt, including failures. */
+  onTiming?(timing: SyncTiming): void;
 }
 
 export type TimelineSyncStatus = "idle" | "syncing" | "retrying";
 export type SyncStage = "get_state" | "history" | "replay";
+
+export interface SyncTiming {
+  sessionId: string;
+  runId?: string;
+  reason: ReconcileReason;
+  attempt: number;
+  elapsedMs: number;
+  stagesMs: Partial<Record<SyncStage, number>>;
+  outcome: "success" | "failure" | "stale";
+}
 
 export interface SyncFailure {
   sessionId: string;
@@ -127,6 +142,8 @@ interface SessionLane {
   reconciling?: ReconcileRequest;
   syncStatus?: TimelineSyncStatus;
   established: boolean;
+  /** Invalidations also fence in-flight replay and survive a warm restart. */
+  baselineVersion: number;
   retryAttempt: number;
   retryNotBefore: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -184,7 +201,11 @@ export class SyncEngine {
 
   /** Enqueue a reconcile. Repeats of the same reason+run are folded. */
   reconcile(sessionId: string, reason: ReconcileReason, runId?: string): void {
-    if (!this.isVisible(sessionId)) return;
+    if (!this.isVisible(sessionId)) {
+      const cached = this.lanes.get(sessionId);
+      if (cached && requiresFreshPrefix(reason)) this.invalidateBaseline(cached);
+      return;
+    }
     this.enqueueReplay(this.laneFor(sessionId), { reason, runId });
   }
 
@@ -195,7 +216,7 @@ export class SyncEngine {
    * the draft lane ("") has no desktop state and is skipped by runReconcile. */
   reconcileAll(reason: ReconcileReason): void {
     for (const lane of this.lanes.values()) {
-      if (lane.sessionId !== "" && this.isVisible(lane.sessionId)) this.enqueueReplay(lane, { reason });
+      if (lane.sessionId !== "") this.reconcile(lane.sessionId, reason);
     }
   }
 
@@ -234,6 +255,7 @@ export class SyncEngine {
       bufferedBytes: 0,
       replayQueue: [],
       established: previous?.established ?? false,
+      baselineVersion: previous?.baselineVersion ?? 0,
       retryAttempt: 0,
       retryNotBefore: 0,
       retryTimer: null,
@@ -316,6 +338,7 @@ export class SyncEngine {
         bufferedBytes: 0,
         replayQueue: [],
         established: false,
+        baselineVersion: 0,
         retryAttempt: 0,
         retryNotBefore: 0,
         retryTimer: null,
@@ -338,7 +361,13 @@ export class SyncEngine {
     }, LIVE_EVENT_FRAME_MS);
   }
 
+  private invalidateBaseline(lane: SessionLane): void {
+    lane.established = false;
+    lane.baselineVersion += 1;
+  }
+
   private enqueueReplay(lane: SessionLane, request: ReconcileRequest): void {
+    if (requiresFreshPrefix(request.reason)) this.invalidateBaseline(lane);
     const matches = (existing: ReconcileRequest) =>
       existing.reason === request.reason && existing.runId === request.runId;
     const duplicate = (lane.reconciling && matches(lane.reconciling)) || lane.replayQueue.some(matches);
@@ -436,32 +465,54 @@ export class SyncEngine {
     if (lane.sessionId === "") return null; // the draft lane has no desktop state.
     let stage: SyncStage = "get_state";
     let targetRunId = request.runId ?? "";
+    const version = lane.baselineVersion;
+    const isCurrent = () => this.isCurrent(lane) && lane.baselineVersion === version;
+    const started = performance.now();
+    let stageStarted = started;
+    const stagesMs: SyncTiming["stagesMs"] = {};
+    let outcome: SyncTiming["outcome"] = "failure";
+    const enterStage = (next: SyncStage) => {
+      const now = performance.now();
+      stagesMs[stage] = now - stageStarted;
+      stageStarted = now;
+      stage = next;
+    };
     try {
       // An opening state is consumed once. A failed reconcile must retry
       // against fresh state, not keep reusing a rejected/stale promise.
       const initialState = request.initialState;
       delete request.initialState;
       const state = await (initialState ?? this.deps.requestGetState(lane.sessionId));
-      if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
-      const activeRunId = state.activeRun?.runId ?? "";
+      if (!isCurrent()) throw new Error("stale_sync_lane");
+      let activeRunId = state.activeRun?.runId ?? "";
       // The reconcile target is the requested run (a snapshot-flip run that
       // just settled is no longer active) else the active run.
       targetRunId = request.runId || activeRunId ||
         (lane.timeline?.streaming ? lane.timeline.currentRunId ?? "" : "");
 
-      const full = this.isFullReplay(lane, targetRunId, request);
-      if (full) {
-        stage = "history";
+      const refreshHistory = this.needsHistory(lane, targetRunId, request);
+      if (refreshHistory) {
+        enterStage("history");
         const history = await this.deps.requestHistory(lane.sessionId);
-        if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
-        let base = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId };
-        // A settled durable reply already contains the terminal metadata. Still
-        // read replay for its cursor, but never replace that reply with a partial
-        // or evicted replay when reopening idle.
-        const durableReply = !activeRunId && history.items.some(item =>
+        if (!isCurrent()) throw new Error("stale_sync_lane");
+        const settledReply = history.items.some(item =>
           item.kind === "message" && item.role === "assistant" && item.runId === targetRunId &&
           (item.durationMs != null || item.failed || item.stopped),
         );
+        // The run can finish between get_state and history. Its durable terminal
+        // reply is newer evidence: never replace it with a cached active prefix.
+        if (settledReply && activeRunId === targetRunId) activeRunId = "";
+        let base = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId };
+        // Refresh durable rows/attachments even on warm opens, but do not
+        // download the already-proven active prefix again. Its projector and
+        // visible items must be retained together, not just the cursor.
+        const resume = this.canResumeRun(lane, targetRunId, activeRunId, request.reason);
+        const since = resume ? cursorHighWater(lane.cursor, targetRunId) : -1;
+        if (resume) base = retainRunPrefix(base, lane.timeline!, targetRunId);
+        // A settled durable reply already contains the terminal metadata. Still
+        // read replay for its cursor, but never replace that reply with a partial
+        // or evicted replay when reopening idle.
+        const durableReply = !activeRunId && settledReply;
         if (targetRunId) {
           // History is already readable. A cold open must not wait for every
           // replay page before its first paint (or turn a slow replay into a
@@ -479,9 +530,9 @@ export class SyncEngine {
             };
             this.commit(lane);
           }
-          stage = "replay";
-          const replay = await this.replayInto(lane, base, targetRunId, -1);
-          if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
+          enterStage("replay");
+          const replay = await this.replayInto(lane, base, targetRunId, since);
+          if (!isCurrent()) throw new Error("stale_sync_lane");
           base = durableReply ? base : replay.timeline;
           lane.cursor = replay.cursor;
         }
@@ -496,7 +547,7 @@ export class SyncEngine {
         };
         this.commit(lane);
       } else {
-        stage = "replay";
+        enterStage("replay");
         await this.tailReconcile(lane, targetRunId);
         if (!activeRunId && lane.timeline?.streaming) {
           lane.timeline = {
@@ -509,7 +560,9 @@ export class SyncEngine {
           this.commit(lane);
         }
       }
+      if (!isCurrent()) throw new Error("stale_sync_lane");
       lane.established = true;
+      outcome = "success";
       return null;
     } catch (error) {
       // Network/desktop failure mid-reconcile — keep the last committed
@@ -519,6 +572,18 @@ export class SyncEngine {
         ...(targetRunId ? { runId: targetRunId } : {}),
         error,
       };
+    } finally {
+      const now = performance.now();
+      stagesMs[stage] = now - stageStarted;
+      this.deps.onTiming?.({
+        sessionId: lane.sessionId,
+        ...(targetRunId ? { runId: targetRunId } : {}),
+        reason: request.reason,
+        attempt: lane.retryAttempt + 1,
+        elapsedMs: now - started,
+        stagesMs,
+        outcome: isCurrent() ? outcome : "stale",
+      });
     }
   }
 
@@ -549,9 +614,14 @@ export class SyncEngine {
     runId: string,
     since: number,
   ): Promise<{ timeline: TimelineState; cursor: RunCursor }> {
-    const result = await this.deps.fetchReplay(lane.sessionId, runId, since, () => this.isCurrent(lane));
-    if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
+    const version = lane.baselineVersion;
+    const isCurrent = () => this.isCurrent(lane) && lane.baselineVersion === version;
+    const result = await this.deps.fetchReplay(lane.sessionId, runId, since, isCurrent);
+    if (!isCurrent()) throw new Error("stale_sync_lane");
     const cursor = new Map(lane.cursor);
+    // A replacement can rewind. Never pair a rebuilt prefix with a cursor or
+    // dedup keys belonging to the superseded snapshot.
+    if (since === -1 || result.projection?.events?.length) cursor.delete(runId);
     if (result.projection?.events?.length) {
       let events = normalizeReplayEvents(result.projection.events);
       // A folded projection's run id rides on the envelope, not necessarily on
@@ -563,8 +633,15 @@ export class SyncEngine {
       events = events.map((ev) => (ev.runId ? ev : { ...ev, runId }));
       const cursorIdx =
         result.projection.cursor ?? events.reduce((max, ev) => Math.max(max, ev.idx ?? -1), -1);
-      const stripped = stripRunItems(base, runId);
-      const projected = await applyReplayEvents(emptyTimeline(), events, { isCurrent: () => this.isCurrent(lane) });
+      const projectionRun = result.projection.runId ?? result.projection.run_id;
+      if ((projectionRun && projectionRun !== runId) || events.some(event => event.runId !== runId)
+        || !Number.isSafeInteger(cursorIdx) || cursorIdx < 0
+        || (result.watermark !== undefined && cursorIdx !== result.watermark)) {
+        this.invalidateBaseline(lane);
+        throw new Error("replay_projection_invalid");
+      }
+      const stripped = freshRunBase(base, runId);
+      const projected = await applyReplayEvents(emptyTimeline(), events, { isCurrent });
       advanceCursor(cursor, runId, cursorIdx, true);
       const settled = events.some((ev) => ev.type === "agent_end");
       return {
@@ -579,11 +656,29 @@ export class SyncEngine {
         },
       };
     }
-    const events = normalizeReplayEvents(result.events);
+    const events = normalizeReplayEvents(result.events).map(event => event.runId ? event : { ...event, runId });
+    if (events.some(event => event.runId !== runId)) {
+      this.invalidateBaseline(lane);
+      throw new Error("replay_run_changed");
+    }
+    if (since >= 0 || (result.watermark !== undefined && !result.truncated)) {
+      // A tail (and a watermarked full reply) must be contiguous and reach the pinned watermark. Do not
+      // advance over a gap or accept a reset journal as an empty successful
+      // sync. Preserve the UI, invalidate the baseline, and retry from -1.
+      const invalid = result.truncated || events.some((event, index) => event.idx !== since + 1 + index)
+        || (result.watermark !== undefined && result.watermark !== since + events.length);
+      if (invalid) {
+        this.invalidateBaseline(lane);
+        throw new Error("replay_prefix_invalid");
+      }
+    }
     if (events.length === 0) return { timeline: base, cursor };
-    let next = await applyReplayEvents(since === -1 ? stripRunItems(base, runId) : base, events, {
-      isCurrent: () => this.isCurrent(lane),
-      onEvent: ev => advanceCursor(cursor, ev.runId ?? runId, ev.idx ?? -1, since === -1),
+    const completePrefix = since === -1 && !result.truncated
+      && events.every((event, index) => event.idx === index)
+      && (result.watermark === undefined || result.watermark === events.length - 1);
+    let next = await applyReplayEvents(since === -1 ? freshRunBase(base, runId) : base, events, {
+      isCurrent,
+      onEvent: ev => advanceCursor(cursor, ev.runId ?? runId, ev.idx ?? -1, completePrefix),
     });
     const settled = events.some((ev) => ev.type === "agent_end");
     if (result.truncated) next = { ...next, items: upsertTruncationNotice(next.items, runId) };
@@ -676,11 +771,23 @@ export class SyncEngine {
     }
   }
 
-  private isFullReplay(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
+  private canResumeRun(lane: SessionLane, runId: string, activeRunId: string, reason: ReconcileReason): boolean {
+    const cached = lane.timeline;
+    const accumulator = cached?.liveRuns?.get(runId);
+    return (reason === "open" || reason === "reconnect")
+      && lane.established && !!runId && runId === activeRunId
+      && cached?.currentRunId === runId && cached.streaming
+      && accumulator?.streaming === true && isPrefixComplete(lane.cursor, runId)
+      && cached.items.some(item => item.id === accumulator.assistantId)
+      && !cached.items.some(item => item.runId === runId && item.kind === "notice" && item.text === "truncated");
+  }
+
+  private needsHistory(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
+    // Open/reconnect still refresh durable history. Only their active replay
+    // may reuse a prefix after canResumeRun checks the complete cached unit.
     if (
       request.reason === "open" ||
-      request.reason === "prefix" ||
-      request.reason === "resend" ||
+      requiresFreshPrefix(request.reason) ||
       request.reason === "reconnect"
     )
       return true;
@@ -707,6 +814,33 @@ export class SyncEngine {
     return lane.generation === this.generation && this.lanes.get(lane.sessionId) === lane
       && this.isVisible(lane.sessionId);
   }
+}
+
+function freshRunBase(base: TimelineState, runId: string): TimelineState {
+  return {
+    ...stripRunItems(base, runId),
+    seenEvents: new Set([...base.seenEvents].filter(key => !key.startsWith(`${runId}:`))),
+  };
+}
+
+function requiresFreshPrefix(reason: ReconcileReason): boolean {
+  return reason === "prefix" || reason === "resend" || reason === "truncated";
+}
+
+/** Keep the active run's proven projection over freshly loaded durable rows.
+ * History may already contain a partial assistant entry with a different id;
+ * replace that mirror, while retaining authoritative user attachments. */
+function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: string): TimelineState {
+  const stripped = stripRunItems(base, runId);
+  return {
+    ...stripped,
+    items: [...stripped.items, ...cached.items.filter(item =>
+      item.runId === runId && !(item.kind === "message" && item.role === "user"))],
+    liveRuns: new Map([...(stripped.liveRuns ?? []), [runId, cached.liveRuns!.get(runId)!]]),
+    seenEvents: new Set([...stripped.seenEvents, ...[...cached.seenEvents].filter(key => key.startsWith(`${runId}:`))]),
+    currentRunId: runId,
+    streaming: true,
+  };
 }
 
 /**
