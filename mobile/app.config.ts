@@ -55,11 +55,11 @@ const config: ExpoConfig = {
       },
     ],
     "expo-localization",
-    "expo-notifications",
     // Keep the local-notification module, but do not request APNs push access.
-    // This must follow expo-notifications because that plugin adds the APNs
-    // entitlement by default.
+    // Entitlement mods execute in reverse registration order: register cleanup
+    // first so it removes APNs after expo-notifications has added it.
     "./plugins/withLocalNotificationsOnly",
+    "expo-notifications",
     [
       "expo-splash-screen",
       {

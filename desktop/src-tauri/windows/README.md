@@ -1,5 +1,27 @@
 # Windows installer preflight
 
+## Visual C++ runtime
+
+The repository's `.cargo/config.toml` enables `+crt-static` for
+`x86_64-pc-windows-msvc`, embedding the CRT into the desktop and CLI/agent.
+Both NSIS and portable builds use this configuration. This avoids requiring a
+machine-wide Visual C++ Redistributable installation (and elevation) before
+`future.exe` can start, probe the sandbox, or clean up sandbox permissions during
+uninstall. Packaging builds must not override these flags with `RUSTFLAGS` or
+`CARGO_ENCODED_RUSTFLAGS` that omit `+crt-static`.
+
+For release validation on Windows, inspect **both** `future.exe` and
+`futureos.exe` with `dumpbin /DEPENDENTS`: neither should import `VCRUNTIME140*.dll`
+or `MSVCP140*.dll`. On a clean Windows machine without the VC++ Redistributable,
+test installation, desktop/agent startup, sandbox probing, and uninstall.
+Build success on a developer machine with the runtime installed is insufficient.
+
+This changes newly built binaries only. An already installed release whose
+uninstaller invokes its old dynamically linked `future.exe` may still need the
+Microsoft runtime repaired before an uninstall-first upgrade can proceed.
+
+## Process and file access checks
+
 Tauri's default NSIS running-app check covers only the main executable. The
 bundled `future.exe` can outlive the desktop and remain locked during an upgrade.
 `installer-hooks.nsh` checks file access **before** Tauri replaces any executables,

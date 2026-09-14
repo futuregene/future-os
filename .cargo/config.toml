@@ -22,6 +22,9 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 # `linker_messages` warning. It is benign — `/NOLOGO` does not suppress that
 # line — so without this every cdylib and bin link (so every `cargo build`,
 # `cargo test` and `make install`) on Windows prints a spurious warning.
-rustflags = ["-C", "link-arg=/DEBUG:NONE", "-A", "linker_messages"]
+# Ship the CRT inside both the desktop and CLI/agent. The current-user NSIS
+# installer must work without a machine-wide VC++ Redistributable install;
+# uninstall also launches future.exe to revoke sandbox permissions.
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEBUG:NONE", "-A", "linker_messages"]
 
 # macOS: the default linker (ld-prime on current Xcode) is already fast — no swap.
