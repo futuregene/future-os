@@ -219,10 +219,14 @@ export function useMessagePaging({
     = windowStartId === null
       ? -1
       : messages.findIndex(message => message.id === windowStartId);
+  // A live preview or partial cache may render before the history page arrives.
+  // Keep at least the default page visible once it does, rather than pinning
+  // that provisional tail forever. An older, expanded window still wins.
+  const defaultPageStart = computePageStart(messages, userExchangeCount);
   const effectivePageStart
     = pinnedStart >= 0
-      ? pinnedStart
-      : computePageStart(messages, userExchangeCount);
+      ? Math.min(pinnedStart, defaultPageStart)
+      : defaultPageStart;
   const visibleMessages = useMemo(
     () => messages.slice(effectivePageStart),
     [messages, effectivePageStart],
