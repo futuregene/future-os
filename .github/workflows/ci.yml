@@ -524,11 +524,16 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true'
         run: cargo check --workspace --manifest-path Cargo.toml
 
+      # Keep native commands in separate steps: on Windows, PowerShell can
+      # otherwise overwrite a failed GUI check's exit code with a successful
+      # no-default-features check and report a green required build check.
       - name: cargo check (desktop Tauri backend)
         if: needs.changes.outputs.desktop_tauri == 'true'
-        run: |
-          cargo check --manifest-path desktop/src-tauri/Cargo.toml
-          cargo check --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: cargo check (desktop Tauri backend, no default features)
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo check --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
 
   # ─── Desktop: typecheck + eslint + stylelint + vitest ─────────────────────────
   # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
