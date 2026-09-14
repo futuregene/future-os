@@ -1,7 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MAX_PROMPT_MESSAGE_BYTES, randomId, utf8Bytes } from "./codec";
-import { isTransientNatsRequestError, type RemoteClient } from "./client";
+import { isDeferredRequestError, isTransientNatsRequestError, type RemoteClient } from "./client";
 import { clearSessionDraftIfMatches } from "./draftStorage";
 import { desktopDraftKey } from "./desktopDraftKey";
 import { uploadAttachments } from "./files";
@@ -28,6 +28,10 @@ import type {
   RemoteCredentials,
   ThinkingLevel,
 } from "./types";
+
+function isRecoverableDeliveryError(error: unknown): boolean {
+  return isDeferredRequestError(error) || isTransientNatsRequestError(error);
+}
 
 function samePendingPrompt(
   pending: PendingPrompt,
@@ -152,6 +156,7 @@ interface PromptOutboxOptions {
   conversationEpochRef: MutableRefObject<number>;
   syncEngineRef: MutableRefObject<SyncEngine | null>;
   phase: ConnectionPhase;
+  businessReady: boolean;
   draft: boolean;
   draftMode: "chat" | "workspace";
   draftWorkspaceId: string;
@@ -176,6 +181,7 @@ export function usePromptOutbox({
   conversationEpochRef,
   syncEngineRef,
   phase,
+  businessReady,
   draft,
   draftMode,
   draftWorkspaceId,
@@ -330,7 +336,7 @@ export function usePromptOutbox({
             if (stillViewingSentDraft) void refreshSessions();
           }
         } catch (sendError) {
-          if (clientRef.current === client && !isTransientNatsRequestError(sendError)) {
+          if (clientRef.current === client && !isRecoverableDeliveryError(sendError)) {
             await clearPendingPrompt(pending.commandId, credentials.pairId);
           }
           throw sendError;
@@ -406,7 +412,7 @@ export function usePromptOutbox({
         reconcileSession(receipt.sessionId, "reconnect");
       } catch (recoveryError) {
         if (clientRef.current !== client) return;
-        if (!isTransientNatsRequestError(recoveryError)) {
+        if (!isRecoverableDeliveryError(recoveryError)) {
           await clearPendingPrompt(pending.commandId, credentials.pairId);
           if (!(
             recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
@@ -479,7 +485,7 @@ export function usePromptOutbox({
           await deliverPendingContinuation(client, pending, checkReceipt, promptReceiptSupported);
           await clearPendingContinuation(pending.commandId, credentials.pairId);
         } catch (continueError) {
-          if (!isTransientNatsRequestError(continueError)) {
+          if (!isRecoverableDeliveryError(continueError)) {
             await clearPendingContinuation(pending.commandId, credentials.pairId);
           }
           throw continueError;
@@ -530,7 +536,7 @@ export function usePromptOutbox({
         reconcileSession(receipt.sessionId || pending.sessionId, "reconnect", receipt.runId);
       } catch (recoveryError) {
         if (clientRef.current !== client) return;
-        if (!isTransientNatsRequestError(recoveryError)) {
+        if (!isRecoverableDeliveryError(recoveryError)) {
           await clearPendingContinuation(pending.commandId, credentials.pairId);
           if (!(
             recoveryError instanceof Error && recoveryError.message === "remote_access_changed"
@@ -563,12 +569,19 @@ export function usePromptOutbox({
   ]);
 
   useEffect(() => {
-    if (phase !== "ready") return;
+    if (phase !== "ready" || !businessReady) return;
+    let active = true;
     void (async () => {
+      // A readiness edge can arrive before an old receipt probe settles.
+      // Wait for that owner, then make one pass on the now-usable channel.
+      await pendingRecoveryRef.current;
+      if (!active) return;
       await recoverPendingPrompt();
-      await recoverPendingContinuation();
-    })();
-  }, [phase, recoverPendingContinuation, recoverPendingPrompt]);
+      await continuationInFlightRef.current?.promise.catch(() => undefined);
+      if (active) await recoverPendingContinuation();
+    })().catch(recordError);
+    return () => { active = false; };
+  }, [phase, businessReady, recordError, recoverPendingContinuation, recoverPendingPrompt]);
 
   return { sending, sendMessage, continueRun };
 }

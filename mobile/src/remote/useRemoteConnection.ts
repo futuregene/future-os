@@ -41,6 +41,7 @@ import type {
 // Avoid tearing down for a quick app switch / native activity transition.
 // This is not a background execution or push-notification guarantee.
 export const BACKGROUND_GRACE_MS = 5_000;
+export const NETWORK_PROBE_TIMEOUT_MS = 4_000;
 
 interface RemoteConnectionOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -511,7 +512,7 @@ export function useRemoteConnection({
 
   useEffect(() => {
     let active = true;
-    let eventSeen = false;
+    let observationRevision = 0;
     let previousType: Network.NetworkStateType | undefined;
     const observe = (state: Network.NetworkState, triggerRecovery = true): boolean => {
       if (!active) return false;
@@ -537,22 +538,40 @@ export function useRemoteConnection({
       return true;
     };
     refreshNetworkStateRef.current = async () => {
+      const revision = ++observationRevision;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        return observe(await Network.getNetworkStateAsync(), false);
+        const state = await Promise.race([
+          Network.getNetworkStateAsync(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("network_probe_timeout")), NETWORK_PROBE_TIMEOUT_MS);
+          }),
+        ]);
+        // A newer query or native event supersedes this snapshot. Its late
+        // offline result must not tear down a newly recovered connection.
+        if (!active) return false;
+        if (revision !== observationRevision) return networkAvailableRef.current !== false;
+        return observe(state, false);
       } catch (nextError) {
-        console.warn("[remote] foreground network refresh failed", {
-          error: nextError,
-        });
+        if (!active) return false;
+        if (revision === observationRevision) {
+          console.warn("[remote] foreground network refresh failed", {
+            error: nextError,
+          });
+        }
         return networkAvailableRef.current !== false;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     };
+    const initialRevision = observationRevision;
     void Network.getNetworkStateAsync()
       .then((state) => {
-        if (!eventSeen) observe(state);
+        if (initialRevision === observationRevision) observe(state);
       })
       .catch(() => undefined);
     const subscription = Network.addNetworkStateListener((state) => {
-      eventSeen = true;
+      observationRevision += 1;
       observe(state);
     });
     return () => {

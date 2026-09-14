@@ -728,6 +728,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     client.setAppActive(true);
     await client.recoverNow("foreground");
     expect(open).toHaveBeenCalledTimes(1);
+    await client.close();
   });
 
   // Foreground additionally probes authenticated desktop presence; that path
@@ -769,6 +770,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     expect(close).not.toHaveBeenCalled();
     expect(testClient.connection).not.toBeNull();
     expect(open).toHaveBeenCalledTimes(1);
+    await client.close();
   });
 
   test("offline pauses the socket and open attempts until reachability returns", async () => {
@@ -789,6 +791,7 @@ describe("RemoteClient OS lifecycle recovery", () => {
     client.setNetworkAvailable(true);
     await client.recoverNow("network-restored");
     expect(open).toHaveBeenCalledTimes(1);
+    await client.close();
   });
 });
 
@@ -804,6 +807,7 @@ describe("independent app and network lifecycle", () => {
     client.setNetworkAvailable(true);
     await client.recoverNow("network-restored");
     expect(open).toHaveBeenCalledTimes(1);
+    await client.close();
   });
 
   test("network recovery cannot activate a background app or override offline state", async () => {
@@ -817,6 +821,7 @@ describe("independent app and network lifecycle", () => {
     client.setNetworkAvailable(false);
     await client.recoverNow("request-failure");
     expect(open).not.toHaveBeenCalled();
+    await client.close();
   });
 
   test("a suspended probe cannot block or replace the next foreground connection", async () => {
@@ -839,5 +844,6 @@ describe("independent app and network lifecycle", () => {
     release();
     await old;
     expect(open).toHaveBeenCalledTimes(1);
+    await client.close();
   });
 });
