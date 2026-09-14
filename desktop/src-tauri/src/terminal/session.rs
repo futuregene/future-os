@@ -528,16 +528,27 @@ mod tests {
         let mut meta = None;
         while Instant::now() < deadline {
             match events.try_recv() {
-                Ok(SessionEvent::Data(chunk)) => bytes.extend_from_slice(&chunk),
+                Ok(SessionEvent::Data(chunk)) => {
+                    bytes.extend_from_slice(&chunk);
+                    // A non-empty needle stops the drain as soon as it appears;
+                    // an empty needle means "drain to the exit event" and never
+                    // stops here.
+                    if !needle.is_empty()
+                        && bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+                    {
+                        break;
+                    }
+                }
                 Ok(SessionEvent::Exited(end)) => {
                     meta = Some(end);
                     break;
                 }
                 Ok(SessionEvent::Lagged) => break,
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    if !bytes.is_empty() && needle.is_empty() {
-                        break;
-                    }
+                    // Wait out idle moments: with an empty needle the exit event
+                    // may still be in flight between the last data byte and the
+                    // reader's Exited push, so breaking on the first Empty made
+                    // exit-dependent tests flaky on loaded runners.
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 Err(_) => break,
