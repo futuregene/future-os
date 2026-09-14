@@ -148,12 +148,15 @@ describe("useTimelineController", () => {
       await establish();
       expect(result.current.timelinePending).toBe(false);
       expect(result.current.timeline.items).toHaveLength(1);
+      expect(result.current.timelineSyncStatus).toBe("syncing");
       await act(async () => { await jest.advanceTimersByTimeAsync(15_001); });
       expect(result.current.timelinePending).toBe(false);
       expect(result.current.timelineError).toBeNull();
       expect(result.current.timeline.items[0]).toMatchObject({ id: "m_u", text: "readable history" });
+      expect(result.current.timelineSyncStatus).toBe("syncing");
       await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
       expect(result.current.timelineError).toBeNull();
+      expect(result.current.timelineSyncStatus).toBe("idle");
     } finally {
       act(() => renderer!.unmount());
       renderer = null;

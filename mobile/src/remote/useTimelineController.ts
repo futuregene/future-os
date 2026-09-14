@@ -4,7 +4,7 @@ import type { RemoteClient } from "./client";
 import { fetchEventsSince } from "./replay";
 import { requestReadPage } from "./readPages";
 import type { RunCursor } from "./runCursor";
-import { SyncEngine, type ReconcileReason } from "./syncEngine";
+import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "./syncEngine";
 import {
   emptyTimeline,
   markApprovalDecision,
@@ -116,6 +116,7 @@ export function useTimelineController({
 }: TimelineControllerOptions) {
   const [timelines, setTimelines] = useState<Record<string, TimelineState>>({});
   const [timelineErrors, setTimelineErrors] = useState<Record<string, "timeout">>({});
+  const [syncStatuses, setSyncStatuses] = useState<Record<string, TimelineSyncStatus>>({});
   const timelinesRef = useRef<Record<string, TimelineState>>({});
   const syncEngineRef = useRef<SyncEngine | null>(null);
   const cursorsRef = useRef<Record<string, RunCursor>>({});
@@ -312,6 +313,11 @@ export function useTimelineController({
     historyPagingRef.current = paging;
     setTimelines(next);
     setHistoryPaging(paging);
+    setSyncStatuses(previous => {
+      const next = { ...previous };
+      for (const id of removed) delete next[id];
+      return next;
+    });
     setTimelineErrors(previous => {
       const errors = { ...previous };
       for (const id of removed) delete errors[id];
@@ -360,6 +366,10 @@ export function useTimelineController({
         const merged = await fetchEventsSince(client, sessionId, runId, sinceIdx,
           () => clientRef.current === client && isCurrent());
         return { ...merged, events: merged.events ?? [] };
+      },
+      onSyncStatus: (sessionId, status) => {
+        setSyncStatuses(previous => previous[sessionId] === status
+          ? previous : { ...previous, [sessionId]: status });
       },
       onFailure: failure => {
         console.error("[remote] session timeline sync failed", {
@@ -429,6 +439,7 @@ export function useTimelineController({
     syncEngineRef.current?.clear();
     setTimelines({});
     setTimelineErrors({});
+    setSyncStatuses({});
     cursorsRef.current = {};
     streamingRef.current = {};
     historyPagingRef.current = {};
@@ -448,6 +459,8 @@ export function useTimelineController({
     [selectedSessionId, draft, timelines],
   );
   const timelineError = selectedSessionId ? (timelineErrors[selectedSessionId] ?? null) : null;
+  const timelineSyncStatus: TimelineSyncStatus = selectedSessionId && !draft
+    ? syncStatuses[selectedSessionId] ?? "idle" : "idle";
   const selectedHistoryPaging = selectedSessionId ? historyPaging[selectedSessionId] : undefined;
 
   useEffect(() => {
@@ -496,6 +509,7 @@ export function useTimelineController({
     timeline,
     timelinePending,
     timelineError,
+    timelineSyncStatus,
     canLoadOlderTimeline: selectedHistoryPaging?.hasMore ?? false,
     loadingOlderTimeline: selectedHistoryPaging?.loading ?? false,
     loadOlderTimeline,

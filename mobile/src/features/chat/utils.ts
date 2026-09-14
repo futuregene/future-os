@@ -9,6 +9,7 @@ export type DownloadPhase =
   | "verifying"
   | "saving"
   | "opening"
+  | "sharing"
   | "cancelling";
 
 export interface ActiveDownload {
@@ -27,10 +28,11 @@ export interface DownloadHandle {
   handoffPending: boolean;
 }
 
+export type FileOperation = "open" | "save" | "share";
+
 export interface FileAction {
   info: DownloadInfo;
   cachedFile: File | null;
-  openMimeType: string;
 }
 
 export const MARKDOWN_RENDER_BYTES = 2 * 1024 * 1024;

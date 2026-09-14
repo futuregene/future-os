@@ -1,12 +1,16 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { FlatList, Pressable } from "react-native";
+import { BackHandler, FlatList, Pressable } from "react-native";
+import { ChatTopBar } from "../components/ChatTopBar";
+import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { ChatScreen } from "../ChatScreen";
+import type { TimelineSyncStatus } from "../../../remote/syncEngine";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
   selectedSessionId: "history",
   selectedTitle: "History",
+  closeConversation: jest.fn(),
   sessions: [], workspaces: [], models: [], capabilities: new Set(),
   timeline: { items: [
     { id: "u-last", kind: "message", role: "user", text: "Question" },
@@ -16,6 +20,7 @@ const mockRemote = {
   loadingOlderTimeline: false,
   loadOlderTimeline: jest.fn<Promise<string[]>, []>(),
   desktopOnline: true,
+  timelineSyncStatus: "idle" as TimelineSyncStatus,
   connectionPresentation: { level: "connected" },
 };
 jest.mock("../../../remote/RemoteContext", () => ({
@@ -42,9 +47,14 @@ jest.mock("../components/RenameModal", () => ({ RenameModal: "RenameModal" }));
 jest.mock("../components/NativeFileActionSheet", () => ({ NativeFileActionSheet: "NativeFileActionSheet" }));
 
 let tree: ReactTestRenderer;
+const removeBack = jest.fn();
 beforeEach(() => {
+  jest.clearAllMocks();
+  jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: removeBack });
   jest.useFakeTimers();
   mockRemote.canLoadOlderTimeline = true;
+  mockRemote.desktopOnline = true;
+  mockRemote.timelineSyncStatus = "idle";
   mockRemote.loadingOlderTimeline = false;
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   act(() => { tree = create(createElement(ChatScreen)); });
@@ -52,6 +62,22 @@ beforeEach(() => {
 afterEach(() => {
   act(() => tree.unmount());
   jest.useRealTimers();
+  jest.restoreAllMocks();
+});
+
+test("file browsing owns system back while the header still returns directly to chat", () => {
+  expect(BackHandler.addEventListener).toHaveBeenCalledTimes(1);
+  act(() => tree.root.findByType(ChatTopBar).props.onFiles());
+  expect(tree.root.findByType(SessionFilesPanel)).toBeDefined();
+  expect(removeBack).toHaveBeenCalledTimes(1);
+  // The parent must not install a later listener that swallows folder back.
+  expect(BackHandler.addEventListener).toHaveBeenCalledTimes(1);
+  act(() => tree.root.findByType(ChatTopBar).props.onBack());
+  expect(tree.root.findAllByType(SessionFilesPanel)).toHaveLength(0);
+  expect(mockRemote.closeConversation).not.toHaveBeenCalled();
+  expect(BackHandler.addEventListener).toHaveBeenCalledTimes(2);
+  act(() => tree.root.findByType(ChatTopBar).props.onBack());
+  expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
 });
 
 test("a single short exchange exposes a clickable older-history footer before any scrolling", async () => {
@@ -66,6 +92,25 @@ test("a single short exchange exposes a clickable older-history footer before an
   expect(tree.root.findByType(FlatList).props.ListFooterComponent.props.disabled).toBe(true);
   act(() => jest.advanceTimersByTime(100));
   expect(tree.root.findByType(FlatList).props.ListFooterComponent.props.disabled).toBe(false);
+});
+
+test("cached messages remain visible with a sync notice until replay is complete", () => {
+  const data = tree.root.findByType(FlatList).props.data;
+  mockRemote.timelineSyncStatus = "syncing";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(FlatList).props.data).toBe(data);
+  expect(tree.root.findAll(node => node.props.children === "chat.syncingLatest").length).toBeGreaterThan(0);
+  mockRemote.timelineSyncStatus = "retrying";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findAll(node => node.props.children === "chat.syncRetrying").length).toBeGreaterThan(0);
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findAll(node => node.props.children === "chat.syncWaitingNetwork").length).toBeGreaterThan(0);
+  mockRemote.desktopOnline = true;
+  mockRemote.timelineSyncStatus = "idle";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findAll(node => node.props.accessibilityLiveRegion === "polite")).toHaveLength(0);
+  expect(tree.root.findByType(FlatList).props.data).toBe(data);
 });
 
 test("no older-history footer when the history is exhausted", () => {

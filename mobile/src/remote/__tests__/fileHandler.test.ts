@@ -26,11 +26,13 @@ jest.mock("future-file-handler", () => ({
 const mockedFind = findSupportedMimeType as jest.Mock;
 
 describe("supportedExternalMime", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (Platform as { OS: string }).OS = "ios";
+  });
 
   test("returns null for a name with no external candidates", async () => {
-    // `.png` routes to "image", not "external", so the candidate list is empty.
-    expect(await supportedExternalMime("photo.png")).toBeNull();
+    expect(await supportedExternalMime("program.exe")).toBeNull();
     expect(mockedFind).not.toHaveBeenCalled();
   });
 
@@ -39,6 +41,16 @@ describe("supportedExternalMime", () => {
     expect(await supportedExternalMime("table.csv")).toBe("text/csv");
     expect(mockedFind).not.toHaveBeenCalled();
   });
+
+  test.each([["photo.png", "image/png"], ["notes.md", "text/markdown"], ["data.json", "application/json"]])(
+    "also supports explicitly opening previewable %s files",
+    async (name, mime) => {
+      (Platform as { OS: string }).OS = "android";
+      mockedFind.mockResolvedValueOnce(mime);
+      await expect(supportedExternalMime(name)).resolves.toBe(mime);
+      expect(mockedFind).toHaveBeenCalledWith(name, [mime]);
+    },
+  );
 
   test("queries the native intent handler on Android", async () => {
     (Platform as { OS: string }).OS = "android";

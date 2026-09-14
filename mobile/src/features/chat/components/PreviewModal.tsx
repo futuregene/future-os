@@ -1,4 +1,4 @@
-import { Download, X } from "lucide-react-native";
+import { Download, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
   Image,
@@ -16,7 +16,7 @@ import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import type { PreviewState } from "../useFileDownload";
-import type { ActiveDownload } from "../utils";
+import type { ActiveDownload, FileOperation } from "../utils";
 
 export function PreviewModal({
   preview,
@@ -31,7 +31,7 @@ export function PreviewModal({
   activeDownload: ActiveDownload | null;
   closePreview: () => void;
   dismissPreviewThen: (action: () => void) => void;
-  downloadOriginal: (attachment: HistoryAttachment) => Promise<void>;
+  downloadOriginal: (attachment: HistoryAttachment, operation?: FileOperation) => Promise<void>;
   flushPendingPreviewAction: () => void;
   t: TFunction;
 }) {
@@ -48,6 +48,34 @@ export function PreviewModal({
           <Text numberOfLines={1} style={styles.previewTitle}>
             {preview?.info.name}
           </Text>
+          <Pressable
+            accessibilityLabel={t("attachment.share")}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            disabled={activeDownload !== null}
+            onPress={() => {
+              if (preview) {
+                const attachment = preview.attachment;
+                dismissPreviewThen(() => void downloadOriginal(attachment, "share"));
+              }
+            }}
+          >
+            <Share2 color={colors.ink} size={21} />
+          </Pressable>
+          <Pressable
+            accessibilityLabel={t("attachment.open")}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+            disabled={activeDownload !== null}
+            onPress={() => {
+              if (preview) {
+                const attachment = preview.attachment;
+                dismissPreviewThen(() => void downloadOriginal(attachment, "open"));
+              }
+            }}
+          >
+            <ExternalLink color={colors.ink} size={21} />
+          </Pressable>
           <Pressable
             accessibilityLabel={t("attachment.save")}
             accessibilityRole="button"
@@ -108,8 +136,8 @@ const styles = StyleSheet.create({
     minHeight: 60,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.lineSoft,
   },

@@ -1,6 +1,6 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
-import { Alert, Image, Linking, Text } from "react-native";
+import { AccessibilityInfo, Alert, Animated, Image, Linking, Text } from "react-native";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
 
@@ -9,6 +9,34 @@ jest.mock("react-i18next", () => ({
 }));
 
 describe("MarkdownText", () => {
+  beforeEach(() => {
+    jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(true);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("only newly appended blocks fade, not every update to their text", async () => {
+    jest.useFakeTimers();
+    const preference = jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(false);
+    const timing = jest.spyOn(Animated, "timing").mockReturnValue({ start: jest.fn(), stop: jest.fn(), reset: jest.fn() });
+    let renderer!: ReactTestRenderer;
+    try {
+      await act(async () => { renderer = create(createElement(MarkdownText, { text: "Cached paragraph.", streaming: true })); });
+      expect(timing).not.toHaveBeenCalled();
+      act(() => renderer.update(createElement(MarkdownText, { text: "Cached paragraph.\n\nNew paragraph", streaming: true })));
+      act(() => jest.advanceTimersByTime(192));
+      expect(timing).toHaveBeenCalledTimes(1);
+      expect(timing).toHaveBeenCalledWith(expect.anything(), { toValue: 1, duration: 180, useNativeDriver: true, isInteraction: false });
+      act(() => renderer.update(createElement(MarkdownText, { text: "Cached paragraph.\n\nNew paragraph grows", streaming: true })));
+      act(() => jest.advanceTimersByTime(192));
+      expect(timing).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => renderer?.unmount());
+      timing.mockRestore();
+      preference.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   test("incremental prose/table rendering and finalization match ordinary rendering", () => {
     const source = "# Report\n\nA **paragraph**.\n\n| A | B |\n|---|---|\n| one | two |\n| three | four |\n\nDone.";
     let streamed!: ReactTestRenderer;
