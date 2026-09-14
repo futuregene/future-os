@@ -11,13 +11,14 @@ export interface EventsData {
   /** Raw replay events — the RPC serializes them with snake_case `run_id`. */
   events?: ReplayEventWire[];
   truncated?: boolean;
+  /** Fixed replay boundary, also returned for a single/empty page. */
+  watermark?: number;
   /** Coalesced replica of a run whose event ring overflowed — replaces the
    *  session's timeline wholesale (see `timelineFromProjection`). */
-  projection?: { run_id?: string; cursor?: number; events?: ReplayEventWire[] } | null;
+  projection?: { run_id?: string; runId?: string; cursor?: number; events?: ReplayEventWire[] } | null;
 }
 
 export interface EventsPage extends EventsData {
-  watermark?: number;
   nextSinceIdx?: number;
   hasMore?: boolean;
   nextOffset?: number;
@@ -65,6 +66,7 @@ export async function fetchEventsSince(
     if (!isCurrent()) throw new Error("stale_sync_lane");
     if (watermark !== undefined && page.watermark !== watermark)
       throw new Error("replay_window_changed");
+    if (Number.isSafeInteger(page.watermark)) watermark = page.watermark;
     events.push(...(page.events ?? []));
     if (page.projection?.events?.length) projection = page.projection;
     if (page.truncated) truncated = true;
@@ -85,6 +87,7 @@ export async function fetchEventsSince(
     offset = next;
   }
   const merged: EventsData = { events };
+  if (watermark !== undefined) merged.watermark = watermark;
   if (projection) merged.projection = projection;
   if (truncated) merged.truncated = true;
   return merged;

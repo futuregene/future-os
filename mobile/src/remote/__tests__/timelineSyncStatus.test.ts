@@ -92,10 +92,10 @@ test("warm opens retain content and stale replay cannot clear a newer sync indic
     expect(engine.timelineFor("s")).toBe(cached);
     await engine.open("s");
     await jest.advanceTimersByTimeAsync(0);
-    older.resolve(replay);
+    older.resolve({ events: [], watermark: 1 });
     await jest.advanceTimersByTimeAsync(0);
     expect(onSyncStatus.mock.calls).toEqual([["s", "syncing"], ["s", "syncing"]]);
-    newer.resolve(replay);
+    newer.resolve({ events: [], watermark: 1 });
     await jest.advanceTimersByTimeAsync(0);
     expect(onSyncStatus).toHaveBeenLastCalledWith("s", "idle");
   } finally { engine.clear(); }

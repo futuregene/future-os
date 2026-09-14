@@ -37,7 +37,7 @@ test.each([20, 150])("streaming open: 10,000 events at %i ms RPC latency", async
   const client = { requestRetry } as unknown as RemoteClient;
   let syncedAt = 0;
   let firstPaintAt = 0;
-  const start = Date.now();
+  let start = Date.now();
   const engine = new SyncEngine({
     requestGetState: () => delay({ activeRun: { runId: "r" } }),
     requestHistory: () => delay(emptyTimeline()),
@@ -61,6 +61,26 @@ test.each([20, 150])("streaming open: 10,000 events at %i ms RPC latency", async
     expect(syncedAt).toBeLessThanOrEqual(latency * 12 + 20);
     console.warn(JSON.stringify({ benchmark: "streaming-open", rpcLatencyMs: latency,
       replayRequests, replayEvents, firstPaintMs: firstPaintAt, syncedMs: syncedAt }));
+
+    events.push(...Array.from({ length: 200 }, (_, i) => ({
+      type: "text_chunk", runId: "r", idx: 10_000 + i, data: JSON.stringify({ text: "tail " }),
+    })));
+    for (const mode of ["warm-incremental", "cold-full-comparison"]) {
+      if (mode === "cold-full-comparison") engine.clear();
+      replayRequests = 0;
+      replayEvents = 0;
+      syncedAt = 0;
+      start = Date.now();
+      const reopened = engine.open("s");
+      await jest.runAllTimersAsync();
+      await reopened;
+      expect(engine.timelineFor("s")?.items[0]).toMatchObject({ text: "token ".repeat(9999) + "tail ".repeat(200) });
+      expect(engine.cursorFor("s").get("r")?.highWater).toBe(10_199);
+      expect(replayEvents).toBe(mode === "warm-incremental" ? 200 : 10_200);
+      expect(replayRequests).toBe(mode === "warm-incremental" ? 1 : 11);
+      expect(engine.streamingFor("s")).toBe(true);
+      console.warn(JSON.stringify({ benchmark: mode, rpcLatencyMs: latency, replayRequests, replayEvents, syncedMs: syncedAt }));
+    }
   } finally {
     engine.clear();
     jest.useRealTimers();
