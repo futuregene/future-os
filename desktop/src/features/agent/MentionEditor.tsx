@@ -1,7 +1,7 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
 import { Blocks, FileText, Minimize2 } from "lucide-react";
-import { useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
@@ -122,6 +122,7 @@ export function MentionEditor({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedSlashItem, setSelectedSlashItem] = useState(0);
   const [empty, setEmpty] = useState(true);
+  const emptyRef = useRef(true);
 
   const slashGroups = useMemo(
     () => slashQuery === null
@@ -139,6 +140,31 @@ export function MentionEditor({
   // skill pills from `/name` tokens without re-declaring the handle.
   const skillsRef = useRef(skills);
   skillsRef.current = skills;
+
+  const syncEmpty = useCallback(() => {
+    const next = isEditorEmpty(editorRef.current);
+    if (emptyRef.current === next)
+      return;
+    emptyRef.current = next;
+    setEmpty(next);
+    // Notify outside the state updater: React may replay updaters, and the
+    // parent must not be updated while this component is rendering.
+    onEmptyChange?.(next);
+  }, [onEmptyChange]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor)
+      return;
+    // The browser owns this DOM. Native edits need not arrive through our
+    // input handlers; reconcile from mutations too so the placeholder cannot
+    // remain over existing text. Only read the DOM, preserving WebKit IME and
+    // the caret. Keep explicit syncs for immediate clear/restore/paste updates.
+    const observer = new MutationObserver(syncEmpty);
+    observer.observe(editor, { childList: true, characterData: true, subtree: true });
+    syncEmpty();
+    return () => observer.disconnect();
+  }, [syncEmpty]);
 
   useImperativeHandle(ref, () => ({
     getContent: () => serialize(editorRef.current),
@@ -182,15 +208,6 @@ export function MentionEditor({
     setQuery(null);
     setOpen(false);
     setSlashQuery(null);
-  }
-
-  function syncEmpty() {
-    const next = isEditorEmpty(editorRef.current);
-    setEmpty((previous) => {
-      if (previous !== next)
-        onEmptyChange?.(next);
-      return next;
-    });
   }
 
   // Refresh the active trigger (`@` file mention or `/` skill) at the caret.
