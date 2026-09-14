@@ -2,6 +2,11 @@ import type { RemoteClient } from "./client";
 import { requestReadPage } from "./readPages";
 import type { ReplayEventWire } from "./timeline";
 
+// Token events are small: the desktop's generic 100-item default wastes a
+// network round trip per ~100 tokens. Keep a bounded event count while relying
+// on its independent 512-KiB wire budget (and chunked reads) for large tools.
+const REPLAY_PAGE_EVENTS = 1000;
+
 export interface EventsData {
   /** Raw replay events — the RPC serializes them with snake_case `run_id`. */
   events?: ReplayEventWire[];
@@ -49,6 +54,7 @@ export async function fetchEventsSince(
           sessionId,
           runId,
           sinceIdx: cursor,
+          limit: REPLAY_PAGE_EVENTS,
           offset,
           ...(watermark === undefined ? {} : { replayUntilIdx: watermark }),
         },

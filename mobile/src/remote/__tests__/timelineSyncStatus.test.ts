@@ -17,6 +17,38 @@ const replay: ReplayResult = { events: [
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => jest.useRealTimers());
 
+test("reports state/history/replay timings without treating a failed attempt as synced", async () => {
+  const delay = <T,>(value: T, ms: number) => new Promise<T>(resolve => setTimeout(() => resolve(value), ms));
+  const onTiming = jest.fn();
+  let fail = true;
+  const engine = new SyncEngine({
+    requestGetState: () => delay({ activeRun: { runId: "r" } }, 20),
+    requestHistory: () => delay(history, 30),
+    fetchReplay: async () => {
+      await delay(null, 100);
+      if (fail) throw new Error("offline");
+      return replay;
+    },
+    onTiming,
+  });
+  try {
+    const opened = engine.open("s");
+    await jest.advanceTimersByTimeAsync(150);
+    await opened;
+    expect(onTiming).toHaveBeenLastCalledWith({
+      sessionId: "s", runId: "r", reason: "open", attempt: 1,
+      elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "failure",
+    });
+    fail = false;
+    await jest.advanceTimersByTimeAsync(650);
+    expect(onTiming).toHaveBeenLastCalledWith({
+      sessionId: "s", runId: "r", reason: "open", attempt: 2,
+      elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "success",
+    });
+    expect(engine.streamingFor("s")).toBe(true);
+  } finally { engine.clear(); }
+});
+
 test("readable initial history does not finish syncing while replay is pending", async () => {
   const pending = deferred<ReplayResult>();
   const onSyncStatus = jest.fn();

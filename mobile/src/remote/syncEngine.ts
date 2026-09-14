@@ -77,10 +77,22 @@ export interface SyncDeps {
   onRecovered?(sessionId: string): void;
   /** Replay progress is independent of whether a cached timeline is readable. */
   onSyncStatus?(sessionId: string, status: TimelineSyncStatus): void;
+  /** One metadata-only timing sample per reconcile attempt, including failures. */
+  onTiming?(timing: SyncTiming): void;
 }
 
 export type TimelineSyncStatus = "idle" | "syncing" | "retrying";
 export type SyncStage = "get_state" | "history" | "replay";
+
+export interface SyncTiming {
+  sessionId: string;
+  runId?: string;
+  reason: ReconcileReason;
+  attempt: number;
+  elapsedMs: number;
+  stagesMs: Partial<Record<SyncStage, number>>;
+  outcome: "success" | "failure" | "stale";
+}
 
 export interface SyncFailure {
   sessionId: string;
@@ -436,6 +448,16 @@ export class SyncEngine {
     if (lane.sessionId === "") return null; // the draft lane has no desktop state.
     let stage: SyncStage = "get_state";
     let targetRunId = request.runId ?? "";
+    const started = performance.now();
+    let stageStarted = started;
+    const stagesMs: SyncTiming["stagesMs"] = {};
+    let outcome: SyncTiming["outcome"] = "failure";
+    const enterStage = (next: SyncStage) => {
+      const now = performance.now();
+      stagesMs[stage] = now - stageStarted;
+      stageStarted = now;
+      stage = next;
+    };
     try {
       // An opening state is consumed once. A failed reconcile must retry
       // against fresh state, not keep reusing a rejected/stale promise.
@@ -451,7 +473,7 @@ export class SyncEngine {
 
       const full = this.isFullReplay(lane, targetRunId, request);
       if (full) {
-        stage = "history";
+        enterStage("history");
         const history = await this.deps.requestHistory(lane.sessionId);
         if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
         let base = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId };
@@ -479,7 +501,7 @@ export class SyncEngine {
             };
             this.commit(lane);
           }
-          stage = "replay";
+          enterStage("replay");
           const replay = await this.replayInto(lane, base, targetRunId, -1);
           if (!this.isCurrent(lane)) throw new Error("stale_sync_lane");
           base = durableReply ? base : replay.timeline;
@@ -496,7 +518,7 @@ export class SyncEngine {
         };
         this.commit(lane);
       } else {
-        stage = "replay";
+        enterStage("replay");
         await this.tailReconcile(lane, targetRunId);
         if (!activeRunId && lane.timeline?.streaming) {
           lane.timeline = {
@@ -510,6 +532,7 @@ export class SyncEngine {
         }
       }
       lane.established = true;
+      outcome = "success";
       return null;
     } catch (error) {
       // Network/desktop failure mid-reconcile — keep the last committed
@@ -519,6 +542,18 @@ export class SyncEngine {
         ...(targetRunId ? { runId: targetRunId } : {}),
         error,
       };
+    } finally {
+      const now = performance.now();
+      stagesMs[stage] = now - stageStarted;
+      this.deps.onTiming?.({
+        sessionId: lane.sessionId,
+        ...(targetRunId ? { runId: targetRunId } : {}),
+        reason: request.reason,
+        attempt: lane.retryAttempt + 1,
+        elapsedMs: now - started,
+        stagesMs,
+        outcome: this.isCurrent(lane) ? outcome : "stale",
+      });
     }
   }
 
