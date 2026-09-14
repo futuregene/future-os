@@ -13,19 +13,24 @@ function scrollEvent(y: number): NativeSyntheticEvent<NativeScrollEvent> {
   } as NativeSyntheticEvent<NativeScrollEvent>;
 }
 
-describe("paging transaction", () => {
+describe("paging intent and bounded layout settling", () => {
   let renderer: ReactTestRenderer;
   let current: ReturnType<typeof useTimelinePaging>;
   const request = jest.fn<Promise<false | string[]>, []>();
   const onScroll = jest.fn();
-  function Harness({ sessionId = "a", ids = [], rows }: { sessionId?: string; ids?: string[]; rows?: { id: string }[] }) {
+  function Harness({
+    sessionId = "a",
+    canLoadOlder = true,
+  }: {
+    sessionId?: string;
+    canLoadOlder?: boolean;
+  }) {
     current = useTimelinePaging(
       sessionId,
-      true,
+      canLoadOlder,
       false,
       request,
       onScroll,
-      rows ?? ids.map(id => ({ id })),
     );
     return null;
   }
@@ -41,7 +46,7 @@ describe("paging transaction", () => {
     });
   beforeEach(() => {
     jest.useFakeTimers();
-    request.mockResolvedValue([]);
+    request.mockResolvedValue(["older"]);
     act(() => {
       renderer = create(createElement(Harness));
     });
@@ -53,27 +58,22 @@ describe("paging transaction", () => {
     onScroll.mockReset();
   });
 
-  test("idle text updates do not rebuild the full history identity index", async () => {
-    const readId = jest.fn((i: number) => `row-${i}`);
-    const rows = Array.from({ length: 1000 }, (_, i) => ({ get id() { return readId(i); } }));
-    for (let frame = 0; frame < 100; frame++) {
-      act(() => renderer.update(createElement(Harness, { rows: [...rows] })));
-    }
-    expect(readId).not.toHaveBeenCalled();
-    collide();
-    expect(readId).toHaveBeenCalledTimes(rows.length);
-    await act(async () => {});
-  });
-
-  test("programmatic scroll never loads a page; collision starts request immediately", () => {
-    act(() => current.onScroll(scrollEvent(1400)));
+  test("programmatic scroll changes button visibility without fetching", () => {
+    act(() => current.onScroll(scrollEvent(0)));
+    expect(current.showLoadOlderHint).toBe(false);
+    act(() => {
+      current.onMomentumScrollBegin();
+      current.onScroll(scrollEvent(1400));
+      current.onMomentumScrollEnd(scrollEvent(1400));
+    });
+    expect(current.showLoadOlderHint).toBe(true);
     expect(request).not.toHaveBeenCalled();
     collide();
     expect(request).toHaveBeenCalledTimes(1);
     expect(current.pagingActive).toBe(true);
   });
 
-  test("a deliberate gesture prefetches at most one page within a bounded look-ahead", () => {
+  test("one gesture prefetches at most one page within one viewport", () => {
     act(() => {
       current.onScrollBeginDrag(scrollEvent(0));
       current.onScroll(scrollEvent(799));
@@ -81,39 +81,36 @@ describe("paging transaction", () => {
     expect(request).not.toHaveBeenCalled();
     act(() => {
       current.onScroll(scrollEvent(800));
-      current.onScroll(scrollEvent(1000));
       current.onScroll(scrollEvent(1400));
     });
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  test("a drag at a clamped edge starts paging without another scroll event", () => {
+  test("a clamped edge and a short list both have a usable entry point", async () => {
+    act(() => {
+      current.onListLayout(600);
+      current.onContentSizeChange(320, 200);
+    });
+    expect(current.showLoadOlderHint).toBe(true);
+    act(() => {
+      current.loadOlder();
+      current.loadOlder();
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+    await act(async () => {});
+    await advance(1000);
     act(() => current.onScrollBeginDrag(scrollEvent(1400)));
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
-  test("a short page can be explicitly loaded without any native scroll events", () => {
-    act(() => current.loadOlder());
-    expect(request).toHaveBeenCalledTimes(1);
-    act(() => current.loadOlder());
-    expect(request).toHaveBeenCalledTimes(1);
-  });
-
-  test("a completed empty page only waits for the 100ms quiet window", async () => {
+  test("a committed page finishes after 100ms of native layout quietness", async () => {
     collide();
     await act(async () => {});
+    act(() => current.onContentSizeChange(320, 2500));
     await advance(99);
     expect(current.pagingActive).toBe(true);
-    await advance(1);
-    expect(current.showLoadOlderHint).toBe(false);
-  });
-
-  test("a fast committed page permits another deliberate gesture without a 1500ms cooldown", async () => {
-    request.mockResolvedValue(["older"]);
-    collide();
-    await act(async () => {});
-    act(() => renderer.update(createElement(Harness, { ids: ["older"] })));
-    act(() => current.onListLayout());
+    // A late row layout restarts quietness, but not the overall deadline.
+    act(() => current.onRowLayout());
     await advance(99);
     expect(current.pagingActive).toBe(true);
     await advance(1);
@@ -122,104 +119,134 @@ describe("paging transaction", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  test("request completion and unchanged old geometry cannot satisfy a new page", async () => {
-    request.mockResolvedValue(["older"]);
+  test("missing native layout events release paging at exactly 1s", async () => {
     collide();
     await act(async () => {});
-    act(() => current.onListLayout());
-    await advance(2000);
+    await advance(999);
     expect(current.pagingActive).toBe(true);
-    act(() => renderer.update(createElement(Harness, { ids: ["older"] })));
-    await advance(200);
-    expect(current.pagingActive).toBe(true);
-    act(() => current.onListLayout());
-    await advance(99);
-    expect(current.pagingActive).toBe(true);
-    // Late row layout restarts the quiet window.
-    act(() => current.onListLayout());
-    await advance(100);
-    expect(current.showLoadOlderHint).toBe(false);
+    await advance(1);
+    expect(current.pagingActive).toBe(false);
+    expect(current.pagingFailed).toBe(false);
+    act(() => current.loadOlder());
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
-  test("a slow response only waits for layout quietness after completion", async () => {
+  test("continuous layouts cannot extend the 1s deadline", async () => {
+    collide();
+    await act(async () => {});
+    for (let i = 0; i < 19; i++) {
+      await advance(50);
+      act(() => current.onContentSizeChange(320, 2000 + i));
+    }
+    expect(current.pagingActive).toBe(true);
+    await advance(50);
+    expect(current.pagingActive).toBe(false);
+  });
+
+  test("layout before commit never starts the 1s deadline", async () => {
     let resolve!: (result: string[]) => void;
     request.mockImplementationOnce(
       () =>
-        new Promise(done => {
+        new Promise((done) => {
           resolve = done;
         }),
     );
     collide();
-    await advance(2000);
+    act(() => current.onContentSizeChange(320, 2500));
+    await advance(5000);
     expect(current.pagingActive).toBe(true);
-    await act(async () => resolve([]));
-    await advance(100);
-    expect(current.showLoadOlderHint).toBe(false);
+    await act(async () => resolve(["older"]));
+    await advance(999);
+    expect(current.pagingActive).toBe(true);
+    await advance(1);
+    expect(current.pagingActive).toBe(false);
   });
 
-  test("drag and momentum cannot cascade to another page even after cooldown", async () => {
+  test("momentum shares the gesture budget even after paging finishes", async () => {
     collide();
     await act(async () => {});
-    await advance(100);
+    await advance(1000);
     act(() => {
       current.onScrollEndDrag(scrollEvent(1400));
+      current.onMomentumScrollBegin();
+      current.onScroll(scrollEvent(1400));
       current.onMomentumScrollEnd(scrollEvent(1400));
     });
     expect(request).toHaveBeenCalledTimes(1);
-    // Another deliberate drag at the clamped edge can load again.
-    act(() => {
-      current.onScrollBeginDrag(scrollEvent(0));
-      current.onScrollEndDrag(scrollEvent(1400));
-    });
+    collide();
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  test("timeout and synchronous failures expose a retry without unhandled rejection", async () => {
+  test("unconsumed drag may prefetch during its momentum", () => {
+    act(() => {
+      current.onScrollBeginDrag(scrollEvent(0));
+      current.onScrollEndDrag(scrollEvent(700));
+      current.onMomentumScrollBegin();
+      current.onScroll(scrollEvent(800));
+    });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  test("ended drag without momentum cannot turn later layout scrolling into paging", () => {
+    act(() => {
+      current.onScrollBeginDrag(scrollEvent(0));
+      current.onScrollEndDrag(scrollEvent(700));
+      current.onContentSizeChange(320, 2400);
+      current.onScroll(scrollEvent(1400));
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("empty pages and errors need no layout wait; failures allow immediate retry", async () => {
     request.mockRejectedValueOnce(new Error("timeout"));
     collide();
     await act(async () => {});
-    await advance(100);
     expect(current.pagingActive).toBe(false);
     expect(current.pagingFailed).toBe(true);
     request.mockImplementationOnce(() => {
       throw new Error("disconnected");
     });
     act(() => current.loadOlder());
-    await advance(100);
     expect(current.pagingFailed).toBe(true);
-    act(() => current.loadOlder());
-    await act(async () => {});
-    await advance(100);
-    expect(current.showLoadOlderHint).toBe(false);
+    request.mockResolvedValueOnce([]);
+    await act(async () => current.loadOlder());
+    expect(current.pagingActive).toBe(false);
+    expect(current.pagingFailed).toBe(false);
   });
 
-  test("old-session completion cannot change the new-session transaction", async () => {
+  test("old-session completion and layout timers cannot unlock a new request", async () => {
     let resolveOld!: (result: false) => void;
     request.mockImplementationOnce(
       () =>
-        new Promise(done => {
+        new Promise((done) => {
           resolveOld = done;
         }),
     );
     collide();
     act(() => renderer.update(createElement(Harness, { sessionId: "b" })));
-    request.mockResolvedValueOnce(["b-page"]);
+    request.mockImplementationOnce(() => new Promise(() => {}));
     collide();
     await act(async () => resolveOld(false));
     await advance(2000);
     expect(current.pagingActive).toBe(true);
     expect(current.pagingFailed).toBe(false);
-    act(() => renderer.update(createElement(Harness, { sessionId: "b", ids: ["b-page"] })));
-    act(() => current.onListLayout());
-    await advance(100);
-    expect(current.showLoadOlderHint).toBe(false);
+    act(() => renderer.update(createElement(Harness, { sessionId: "c" })));
+    expect(current.pagingActive).toBe(false);
   });
 
-  test("returning to a previous session cannot resurrect its marker", async () => {
+  test("switching during settling clears the timer and exhausted history hides the button", async () => {
+    collide();
+    await act(async () => {});
+    act(() => renderer.update(createElement(Harness, { sessionId: "b" })));
     request.mockImplementationOnce(() => new Promise(() => {}));
     collide();
-    act(() => renderer.update(createElement(Harness, { sessionId: "b" })));
-    act(() => renderer.update(createElement(Harness, { sessionId: "a" })));
+    await advance(1000);
+    expect(current.pagingActive).toBe(true);
+    act(() =>
+      renderer.update(
+        createElement(Harness, { sessionId: "c", canLoadOlder: false }),
+      ),
+    );
     expect(current.showLoadOlderHint).toBe(false);
     expect(current.pagingActive).toBe(false);
   });

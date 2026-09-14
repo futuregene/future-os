@@ -17,7 +17,11 @@ function userEntry(id: string, text: string): HistoryEntry {
     blocks: [{ kind: "text", text }],
   };
 }
-function assistantEntry(id: string, text: string, runId?: string): HistoryEntry {
+function assistantEntry(
+  id: string,
+  text: string,
+  runId?: string,
+): HistoryEntry {
   return {
     id,
     role: "assistant",
@@ -27,7 +31,12 @@ function assistantEntry(id: string, text: string, runId?: string): HistoryEntry 
     runId,
   };
 }
-function evt(type: string, data: string, runId?: string, idx?: number): StreamEvent {
+function evt(
+  type: string,
+  data: string,
+  runId?: string,
+  idx?: number,
+): StreamEvent {
   return {
     type,
     data,
@@ -48,7 +57,8 @@ describe("useTimelineController", () => {
   }
 
   function render(): void {
-    if (options.selectedSessionId) options.selectedRef.current = options.selectedSessionId;
+    if (options.selectedSessionId)
+      options.selectedRef.current = options.selectedSessionId;
     act(() => {
       renderer = create(createElement(Harness));
     });
@@ -105,9 +115,18 @@ describe("useTimelineController", () => {
   }
 
   test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
-    request.mockImplementation(async (command: { type: string; sessionId: string }) => ({ data: command.type === "get_state" ? {} : {
-      entries: [userEntry(command.sessionId, "history")], hasMore: true, nextOffset: 10,
-    } }));
+    request.mockImplementation(
+      async (command: { type: string; sessionId: string }) => ({
+        data:
+          command.type === "get_state"
+            ? {}
+            : {
+                entries: [userEntry(command.sessionId, "history")],
+                hasMore: true,
+                nextOffset: 10,
+              },
+      }),
+    );
     options.selectedSessionId = "s0";
     render();
     for (let i = 0; i < 12; i++) {
@@ -124,10 +143,15 @@ describe("useTimelineController", () => {
     expect(result.current.syncEngineRef.current!.timelineFor("s0")).toBeNull();
     options.selectedSessionId = "s0";
     options.selectedRef.current = "s0";
-    act(() => { result.current.prepareTimelineOpen("s0"); renderer!.update(createElement(Harness)); });
+    act(() => {
+      result.current.prepareTimelineOpen("s0");
+      renderer!.update(createElement(Harness));
+    });
     expect(result.current.timelinePending).toBe(true);
     expect(result.current.canLoadOlderTimeline).toBe(false);
-    await act(async () => { await result.current.syncEngineRef.current!.open("s0"); });
+    await act(async () => {
+      await result.current.syncEngineRef.current!.open("s0");
+    });
     await flush();
     expect(result.current.timelinePending).toBe(false);
     expect(result.current.canLoadOlderTimeline).toBe(true);
@@ -138,9 +162,11 @@ describe("useTimelineController", () => {
     options.selectedSessionId = "s1";
     options.selectedRef.current = "s1";
     request.mockImplementation(async (command: { type: string }) => {
-      if (command.type === "get_state") return { data: { activeRun: { runId: "r" } } };
-      if (command.type === "get_session_entries") return { data: { entries: [userEntry("u", "readable history")] } };
-      await new Promise(resolve => setTimeout(resolve, 20_000));
+      if (command.type === "get_state")
+        return { data: { activeRun: { runId: "r" } } };
+      if (command.type === "get_session_entries")
+        return { data: { entries: [userEntry("u", "readable history")] } };
+      await new Promise((resolve) => setTimeout(resolve, 20_000));
       return { data: { events: [] } };
     });
     try {
@@ -149,12 +175,19 @@ describe("useTimelineController", () => {
       expect(result.current.timelinePending).toBe(false);
       expect(result.current.timeline.items).toHaveLength(1);
       expect(result.current.timelineSyncStatus).toBe("syncing");
-      await act(async () => { await jest.advanceTimersByTimeAsync(15_001); });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(15_001);
+      });
       expect(result.current.timelinePending).toBe(false);
       expect(result.current.timelineError).toBeNull();
-      expect(result.current.timeline.items[0]).toMatchObject({ id: "m_u", text: "readable history" });
+      expect(result.current.timeline.items[0]).toMatchObject({
+        id: "m_u",
+        text: "readable history",
+      });
       expect(result.current.timelineSyncStatus).toBe("syncing");
-      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(5_000);
+      });
       expect(result.current.timelineError).toBeNull();
       expect(result.current.timelineSyncStatus).toBe("idle");
     } finally {
@@ -166,14 +199,16 @@ describe("useTimelineController", () => {
 
   test.each(["restart", "resend"])(
     "%s refreshes an idle session and keeps disjoint history reachable",
-    async mode => {
+    async (mode) => {
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       const exchanges = (start: number, end: number) =>
-        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(n => [
-          userEntry(`u${n}`, `user ${n}`),
-          assistantEntry(`a${n}`, `answer ${n}`),
-        ]);
+        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(
+          (n) => [
+            userEntry(`u${n}`, `user ${n}`),
+            assistantEntry(`a${n}`, `answer ${n}`),
+          ],
+        );
       request
         .mockResolvedValueOnce({ success: true, data: {} })
         .mockResolvedValueOnce({
@@ -196,20 +231,27 @@ describe("useTimelineController", () => {
       });
       await flush();
       act(() => {
-        result.current.syncEngineRef.current!.mutate("s1", live =>
-          applyStreamEvent(live, evt("user_message", JSON.stringify({ text: "pending" }))),
+        result.current.syncEngineRef.current!.mutate("s1", (live) =>
+          applyStreamEvent(
+            live,
+            evt("user_message", JSON.stringify({ text: "pending" })),
+          ),
         );
       });
       await flush();
       act(() => {
-        if (mode === "restart") result.current.syncEngineRef.current!.restartAll("reconnect");
+        if (mode === "restart")
+          result.current.syncEngineRef.current!.restartAll("reconnect");
         else result.current.reconcileSession("s1", "resend");
       });
       await flush();
       const users = result.current.timeline.items
-        .filter(i => i.kind === "message" && i.role === "user")
-        .map(i => (i.kind === "message" ? i.text : ""));
-      expect(users).toEqual([...Array.from({ length: 10 }, (_, i) => `user ${31 + i}`), "pending"]);
+        .filter((i) => i.kind === "message" && i.role === "user")
+        .map((i) => (i.kind === "message" ? i.text : ""));
+      expect(users).toEqual([
+        ...Array.from({ length: 10 }, (_, i) => `user ${31 + i}`),
+        "pending",
+      ]);
       expect(result.current.canLoadOlderTimeline).toBe(true);
       request.mockResolvedValueOnce({
         success: true,
@@ -224,9 +266,12 @@ describe("useTimelineController", () => {
       );
       expect(
         result.current.timeline.items
-          .filter(i => i.kind === "message" && i.role === "user")
-          .map(i => (i.kind === "message" ? i.text : "")),
-      ).toEqual([...Array.from({ length: 20 }, (_, i) => `user ${21 + i}`), "pending"]);
+          .filter((i) => i.kind === "message" && i.role === "user")
+          .map((i) => (i.kind === "message" ? i.text : "")),
+      ).toEqual([
+        ...Array.from({ length: 20 }, (_, i) => `user ${21 + i}`),
+        "pending",
+      ]);
     },
   );
 
@@ -284,15 +329,24 @@ describe("useTimelineController", () => {
       options.selectedSessionId = "front";
       render();
       for (let index = 0; index < 10_000; index++) {
-        result.current.handleEvent(evt("text_chunk", '{"text":"x"}', "r", index), `background-${index % 100}`);
+        result.current.handleEvent(
+          evt("text_chunk", '{"text":"x"}', "r", index),
+          `background-${index % 100}`,
+        );
       }
-      for (const type of ["agent_end", "approval_request", "approval_decision"]) {
+      for (const type of [
+        "agent_end",
+        "approval_request",
+        "approval_decision",
+      ]) {
         result.current.handleEvent(evt(type, "{}", "r"), "background-1");
       }
       await flush();
       expect(request).not.toHaveBeenCalled();
       expect(options.refreshSessions).toHaveBeenCalledTimes(3);
-      expect(result.current.syncEngineRef.current!.timelineFor("background-1")).toBeNull();
+      expect(
+        result.current.syncEngineRef.current!.timelineFor("background-1"),
+      ).toBeNull();
     });
 
     test("ignores events with an empty session id", () => {
@@ -321,7 +375,8 @@ describe("useTimelineController", () => {
         evt("session_name_changed", JSON.stringify({ name: " Renamed " })),
         "s1",
       );
-      const updater = (options.setTitleOverrides as jest.Mock).mock.calls[0][0] as (
+      const updater = (options.setTitleOverrides as jest.Mock).mock
+        .calls[0][0] as (
         prev: Record<string, string>,
       ) => Record<string, string>;
       expect(updater({})).toEqual({ s1: "Renamed" });
@@ -330,7 +385,10 @@ describe("useTimelineController", () => {
 
     test("session_name_changed ignores a blank name", () => {
       render();
-      result.current.handleEvent(evt("session_name_changed", JSON.stringify({ name: "  " })), "s1");
+      result.current.handleEvent(
+        evt("session_name_changed", JSON.stringify({ name: "  " })),
+        "s1",
+      );
       expect(options.setTitleOverrides).not.toHaveBeenCalled();
       expect(options.refreshSessions).not.toHaveBeenCalled();
     });
@@ -346,7 +404,10 @@ describe("useTimelineController", () => {
       render();
       const hydrate = jest.fn(async () => {});
       result.current.hydrateAttachmentsRef.current = hydrate;
-      result.current.handleEvent(evt("user_message", JSON.stringify({ text: "hi" })), "s1");
+      result.current.handleEvent(
+        evt("user_message", JSON.stringify({ text: "hi" })),
+        "s1",
+      );
       expect(hydrate).toHaveBeenCalledWith("s1");
     });
 
@@ -354,7 +415,7 @@ describe("useTimelineController", () => {
       options.selectedSessionId = "s1";
       render();
       const engine = result.current.syncEngineRef.current!;
-      engine.mutate("s1", tl => ({
+      engine.mutate("s1", (tl) => ({
         ...tl,
         items: [
           ...tl.items,
@@ -367,11 +428,16 @@ describe("useTimelineController", () => {
       }));
       await flush();
       result.current.handleEvent(
-        evt("approval_decision", JSON.stringify({ approval_request_id: "a1", status: "approved" })),
+        evt(
+          "approval_decision",
+          JSON.stringify({ approval_request_id: "a1", status: "approved" }),
+        ),
         "s1",
       );
       await flush();
-      const approval = result.current.timeline.items.find(i => i.kind === "approval");
+      const approval = result.current.timeline.items.find(
+        (i) => i.kind === "approval",
+      );
       expect(approval).toMatchObject({ decision: "approved" });
     });
 
@@ -379,7 +445,7 @@ describe("useTimelineController", () => {
       options.selectedSessionId = "s1";
       render();
       const engine = result.current.syncEngineRef.current!;
-      engine.mutate("s1", tl => ({
+      engine.mutate("s1", (tl) => ({
         ...tl,
         items: [
           ...tl.items,
@@ -399,7 +465,9 @@ describe("useTimelineController", () => {
         "s1",
       );
       await flush();
-      const approval = result.current.timeline.items.find(i => i.kind === "approval");
+      const approval = result.current.timeline.items.find(
+        (i) => i.kind === "approval",
+      );
       expect(approval?.decision).toBeUndefined();
     });
 
@@ -408,7 +476,10 @@ describe("useTimelineController", () => {
       const engine = result.current.syncEngineRef.current!;
       const mutate = jest.spyOn(engine, "mutate");
       result.current.handleEvent(
-        evt("approval_decision", JSON.stringify({ approval_request_id: "a1", status: "pending" })),
+        evt(
+          "approval_decision",
+          JSON.stringify({ approval_request_id: "a1", status: "pending" }),
+        ),
         "s1",
       );
       expect(mutate).not.toHaveBeenCalled();
@@ -469,7 +540,10 @@ describe("useTimelineController", () => {
         .mockResolvedValueOnce({
           success: true,
           data: {
-            entries: [userEntry("e3", "latest"), assistantEntry("e4", "answer")],
+            entries: [
+              userEntry("e3", "latest"),
+              assistantEntry("e4", "answer"),
+            ],
             hasMore: true,
             nextOffset: 20,
           },
@@ -477,8 +551,8 @@ describe("useTimelineController", () => {
       render();
       await establish();
       const texts = result.current.timeline.items
-        .filter(i => i.kind === "message")
-        .map(i => (i.kind === "message" ? i.text : ""));
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
       expect(texts).toEqual(["latest", "answer"]);
       expect(request).toHaveBeenCalledTimes(2);
       expect(request.mock.calls[1]?.[0]).toEqual(
@@ -493,36 +567,58 @@ describe("useTimelineController", () => {
 
     test("three-exchange pages reach all older history without gaps or duplicates", async () => {
       options.selectedSessionId = "s1";
-      const entries = Array.from({ length: 8 }, (_, index) => index + 1).flatMap(n => [
+      const entries = Array.from(
+        { length: 8 },
+        (_, index) => index + 1,
+      ).flatMap((n) => [
         userEntry(`u${n}`, `user ${n}`),
         assistantEntry(`a${n}`, `answer ${n}`),
       ]);
-      request.mockImplementation(async (command: { type: string; before: number; limit: number }) => {
-        if (command.type === "get_state") return { data: {} };
-        expect(command.type).toBe("get_session_entries");
-        expect(command.limit).toBe(3);
-        const end = Math.min(command.before, entries.length);
-        const start = Math.max(0, end - command.limit * 2);
-        return { data: { entries: entries.slice(start, end), hasMore: start > 0, nextOffset: start } };
-      });
+      request.mockImplementation(
+        async (command: { type: string; before: number; limit: number }) => {
+          if (command.type === "get_state") return { data: {} };
+          expect(command.type).toBe("get_session_entries");
+          expect(command.limit).toBe(3);
+          const end = Math.min(command.before, entries.length);
+          const start = Math.max(0, end - command.limit * 2);
+          return {
+            data: {
+              entries: entries.slice(start, end),
+              hasMore: start > 0,
+              nextOffset: start,
+            },
+          };
+        },
+      );
       render();
       await establish();
       expect(result.current.timeline.items).toHaveLength(6);
       expect(result.current.canLoadOlderTimeline).toBe(true);
 
-      await act(async () => { await result.current.loadOlderTimeline(); });
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
       await flush();
       expect(result.current.timeline.items).toHaveLength(12);
       expect(result.current.canLoadOlderTimeline).toBe(true);
 
-      await act(async () => { await result.current.loadOlderTimeline(); });
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
       await flush();
-      expect(result.current.timeline.items.map(item => item.id)).toEqual(entries.map(entry => `m_${entry.id}`));
+      expect(result.current.timeline.items.map((item) => item.id)).toEqual(
+        entries.map((entry) => `m_${entry.id}`),
+      );
       expect(result.current.canLoadOlderTimeline).toBe(false);
-      expect(request.mock.calls.filter(([command]) => command.type === "get_session_entries")
-        .map(([command]) => command.before)).toEqual([Number.MAX_SAFE_INTEGER, 10, 4]);
+      expect(
+        request.mock.calls
+          .filter(([command]) => command.type === "get_session_entries")
+          .map(([command]) => command.before),
+      ).toEqual([Number.MAX_SAFE_INTEGER, 10, 4]);
       const requests = request.mock.calls.length;
-      await act(async () => { expect(await result.current.loadOlderTimeline()).toBe(false); });
+      await act(async () => {
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+      });
       expect(request).toHaveBeenCalledTimes(requests);
     });
 
@@ -534,7 +630,10 @@ describe("useTimelineController", () => {
         .mockResolvedValueOnce({
           success: true,
           data: {
-            entries: [userEntry("e3", "latest"), assistantEntry("e4", "answer")],
+            entries: [
+              userEntry("e3", "latest"),
+              assistantEntry("e4", "answer"),
+            ],
             hasMore: true,
             nextOffset: 20,
           },
@@ -542,7 +641,10 @@ describe("useTimelineController", () => {
         .mockResolvedValueOnce({
           success: true,
           data: {
-            entries: [userEntry("e1", "older"), assistantEntry("e2", "older answer")],
+            entries: [
+              userEntry("e1", "older"),
+              assistantEntry("e2", "older answer"),
+            ],
             hasMore: false,
             nextOffset: 0,
           },
@@ -551,7 +653,10 @@ describe("useTimelineController", () => {
         .mockResolvedValueOnce({
           success: true,
           data: {
-            entries: [userEntry("e3", "latest"), assistantEntry("e4", "reconciled answer")],
+            entries: [
+              userEntry("e3", "latest"),
+              assistantEntry("e4", "reconciled answer"),
+            ],
             hasMore: true,
             nextOffset: 20,
           },
@@ -563,8 +668,8 @@ describe("useTimelineController", () => {
       });
       await flush();
       const texts = result.current.timeline.items
-        .filter(i => i.kind === "message")
-        .map(i => (i.kind === "message" ? i.text : ""));
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
       expect(texts).toEqual(["older", "older answer", "latest", "answer"]);
       expect(request.mock.calls[2]?.[0]).toEqual(
         expect.objectContaining({
@@ -578,9 +683,14 @@ describe("useTimelineController", () => {
       act(() => result.current.reconcileSession("s1", "resend"));
       await flush();
       const reconciledTexts = result.current.timeline.items
-        .filter(i => i.kind === "message")
-        .map(i => (i.kind === "message" ? i.text : ""));
-      expect(reconciledTexts).toEqual(["older", "older answer", "latest", "reconciled answer"]);
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
+      expect(reconciledTexts).toEqual([
+        "older",
+        "older answer",
+        "latest",
+        "reconciled answer",
+      ]);
       expect(request.mock.calls[4]?.[0]).toEqual(
         expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 3 }),
       );
@@ -590,10 +700,12 @@ describe("useTimelineController", () => {
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       const exchanges = (start: number, end: number) =>
-        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(n => [
-          userEntry(`u${n}`, `user ${n}`),
-          assistantEntry(`a${n}`, `answer ${n}`),
-        ]);
+        Array.from({ length: end - start + 1 }, (_, i) => start + i).flatMap(
+          (n) => [
+            userEntry(`u${n}`, `user ${n}`),
+            assistantEntry(`a${n}`, `answer ${n}`),
+          ],
+        );
       request
         .mockResolvedValueOnce({ success: true, data: {} })
         .mockResolvedValueOnce({
@@ -628,26 +740,225 @@ describe("useTimelineController", () => {
 
       expect(
         result.current.timeline.items
-          .filter(item => item.kind === "message" && item.role === "user")
-          .map(item => (item.kind === "message" ? item.text : "")),
+          .filter((item) => item.kind === "message" && item.role === "user")
+          .map((item) => (item.kind === "message" ? item.text : "")),
       ).toEqual(["user 18", "user 19", "user 20"]);
       expect(result.current.canLoadOlderTimeline).toBe(true);
     });
 
+    test("a downloaded page stays busy until the sync lane publishes it", async () => {
+      options.selectedSessionId = "s1";
+      let resolveReplay!: (value: unknown) => void;
+      request
+        .mockResolvedValueOnce({ data: { activeRun: { runId: "run" } } })
+        .mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("latest", "latest")],
+            hasMore: true,
+            nextOffset: 20,
+          },
+        })
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveReplay = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("older", "older")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        });
+      render();
+      await establish();
+      let page!: ReturnType<Result["loadOlderTimeline"]>;
+      act(() => {
+        page = result.current.loadOlderTimeline();
+      });
+      await flush();
+      expect(result.current.loadingOlderTimeline).toBe(true);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      expect(
+        result.current.timeline.items.map((item) => item.id),
+      ).not.toContain("m_older");
+      await act(async () => {
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+      });
+      expect(request).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        resolveReplay({ data: { events: [], hasMore: false } });
+        expect(await page).toContain("m_older");
+      });
+      expect(result.current.timeline.items.map((item) => item.id)).toContain(
+        "m_older",
+      );
+      expect(result.current.loadingOlderTimeline).toBe(false);
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+    });
+
+    test.each(["transport", "commit"])(
+      "a stalled %s cancels without advancing the cursor or installing late data",
+      async (stage) => {
+        jest.useFakeTimers();
+        const errorSpy = jest
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+        try {
+          options.selectedSessionId = "s1";
+          let release!: (value: unknown) => void;
+          request
+            .mockResolvedValueOnce({
+              data: stage === "commit" ? { activeRun: { runId: "run" } } : {},
+            })
+            .mockResolvedValueOnce({
+              data: {
+                entries: [userEntry("latest", "latest")],
+                hasMore: true,
+                nextOffset: 20,
+              },
+            });
+          if (stage === "commit") {
+            request.mockImplementationOnce(
+              () =>
+                new Promise((resolve) => {
+                  release = resolve;
+                }),
+            );
+            request.mockResolvedValueOnce({
+              data: {
+                entries: [userEntry("stale", "stale")],
+                hasMore: false,
+                nextOffset: 0,
+              },
+            });
+          } else {
+            request.mockImplementationOnce(
+              () =>
+                new Promise((resolve) => {
+                  release = resolve;
+                }),
+            );
+          }
+          render();
+          await establish();
+          let page!: ReturnType<Result["loadOlderTimeline"]>;
+          act(() => {
+            page = result.current.loadOlderTimeline();
+          });
+          await flush();
+          await act(async () => {
+            jest.advanceTimersByTime(30_000);
+            expect(await page).toBe(false);
+          });
+          expect(result.current.loadingOlderTimeline).toBe(false);
+          expect(result.current.canLoadOlderTimeline).toBe(true);
+          release(
+            stage === "commit"
+              ? { data: { events: [], hasMore: false } }
+              : {
+                  data: {
+                    entries: [userEntry("stale", "stale")],
+                    hasMore: false,
+                    nextOffset: 0,
+                  },
+                },
+          );
+          await flush();
+          expect(
+            result.current.timeline.items.map((item) => item.id),
+          ).not.toContain("m_stale");
+          request.mockResolvedValueOnce({
+            data: {
+              entries: [userEntry("retry", "retry")],
+              hasMore: false,
+              nextOffset: 0,
+            },
+          });
+          await act(async () => {
+            expect(await result.current.loadOlderTimeline()).toContain(
+              "m_retry",
+            );
+          });
+          const pages = request.mock.calls.filter(
+            ([command]) => command.type === "get_session_entries",
+          );
+          expect(pages.map(([command]) => command.before)).toEqual([
+            Number.MAX_SAFE_INTEGER,
+            20,
+            20,
+          ]);
+          expect(result.current.timeline.items.map((item) => item.id)).toEqual([
+            "m_retry",
+            "m_latest",
+          ]);
+        } finally {
+          errorSpy.mockRestore();
+          jest.useRealTimers();
+        }
+      },
+    );
+
+    test("switching sessions cancels an in-flight page immediately", async () => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      try {
+        options.selectedSessionId = "s1";
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({
+            data: {
+              entries: [userEntry("latest", "latest")],
+              hasMore: true,
+              nextOffset: 20,
+            },
+          })
+          .mockImplementationOnce(() => new Promise(() => {}));
+        render();
+        await establish();
+        let page!: ReturnType<Result["loadOlderTimeline"]>;
+        act(() => {
+          page = result.current.loadOlderTimeline();
+        });
+        await flush();
+        options.selectedSessionId = "s2";
+        options.selectedRef.current = "s2";
+        await act(async () => {
+          renderer!.update(createElement(Harness));
+        });
+        await expect(page).resolves.toBe(false);
+        expect(result.current.loadingOlderTimeline).toBe(false);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
     test("timeout retains the cursor and retry returns the committed page identities", async () => {
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       request
         .mockResolvedValueOnce({ success: true, data: {} })
         .mockResolvedValueOnce({
           success: true,
-          data: { entries: [userEntry("e2", "latest")], hasMore: true, nextOffset: 20 },
+          data: {
+            entries: [userEntry("e2", "latest")],
+            hasMore: true,
+            nextOffset: 20,
+          },
         })
         .mockRejectedValueOnce(new Error("timeout"))
         .mockResolvedValueOnce({
           success: true,
-          data: { entries: [userEntry("e1", "older")], hasMore: false, nextOffset: 0 },
+          data: {
+            entries: [userEntry("e1", "older")],
+            hasMore: false,
+            nextOffset: 0,
+          },
         });
       render();
       await establish();
@@ -662,7 +973,7 @@ describe("useTimelineController", () => {
       });
       await flush();
       expect(page.ids).toEqual(expect.arrayContaining([expect.any(String)]));
-      expect(result.current.timeline.items.map(item => item.id)).toEqual(
+      expect(result.current.timeline.items.map((item) => item.id)).toEqual(
         expect.arrayContaining(page.ids === false ? [] : page.ids),
       );
       expect(request.mock.calls[2][0].before).toBe(20);
@@ -672,7 +983,9 @@ describe("useTimelineController", () => {
     });
 
     test("rejects a non-advancing backward cursor", async () => {
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
       request
@@ -711,7 +1024,9 @@ describe("useTimelineController", () => {
   describe("engine deps", () => {
     test("requestGetState throws when the client is absent", async () => {
       options.selectedSessionId = "s1";
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       options.clientRef.current = null;
       render();
       await act(async () => {
@@ -759,13 +1074,15 @@ describe("useTimelineController", () => {
       render();
       await establish();
       const texts = result.current.timeline.items
-        .filter(i => i.kind === "message")
-        .map(i => (i.kind === "message" ? i.text : ""));
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
       expect(texts).toContain("replayed");
     });
 
     test("history from a replaced client is rejected before replay", async () => {
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       options.selectedSessionId = "s1";
       request.mockImplementation(async (cmd: { type: string }) => {
         if (cmd.type === "get_state")
@@ -823,34 +1140,45 @@ describe("useTimelineController", () => {
   });
 
   describe("applySessionStreaming", () => {
-    test.each([false, true])("checks authoritative state before accepting a running snapshot (active=%s)", async active => {
-      options.selectedSessionId = "s1";
-      request.mockImplementation(async (command: { type: string }) => {
-        if (command.type === "get_state") return { data: { activeRun: active ? { runId: "r" } : null } };
-        if (command.type === "get_session_entries") return { data: { entries: [] } };
-        return { data: { events: [{ type: "agent_start", runId: "r", idx: 0, data: "{}" }] } };
-      });
-      render();
-      const engine = result.current.syncEngineRef.current!;
-      engine.mutate("s1", () => ({
-        ...emptyTimeline(),
-        items: [
-          {
-            id: "m1",
-            kind: "message" as const,
-            role: "assistant" as const,
-            text: "x",
-          },
-        ],
-      }));
-      await flush();
-      act(() => result.current.applySessionStreaming("s1", true));
-      // A stale catalog hint must never immediately resurrect the stop button.
-      expect(result.current.timeline.streaming).toBe(false);
-      await flush();
-      expect(result.current.timeline.streaming).toBe(active);
-      expect(result.current.syncEngineRef.current!.streamingFor("s1")).toBe(active);
-    });
+    test.each([false, true])(
+      "checks authoritative state before accepting a running snapshot (active=%s)",
+      async (active) => {
+        options.selectedSessionId = "s1";
+        request.mockImplementation(async (command: { type: string }) => {
+          if (command.type === "get_state")
+            return { data: { activeRun: active ? { runId: "r" } : null } };
+          if (command.type === "get_session_entries")
+            return { data: { entries: [] } };
+          return {
+            data: {
+              events: [{ type: "agent_start", runId: "r", idx: 0, data: "{}" }],
+            },
+          };
+        });
+        render();
+        const engine = result.current.syncEngineRef.current!;
+        engine.mutate("s1", () => ({
+          ...emptyTimeline(),
+          items: [
+            {
+              id: "m1",
+              kind: "message" as const,
+              role: "assistant" as const,
+              text: "x",
+            },
+          ],
+        }));
+        await flush();
+        act(() => result.current.applySessionStreaming("s1", true));
+        // A stale catalog hint must never immediately resurrect the stop button.
+        expect(result.current.timeline.streaming).toBe(false);
+        await flush();
+        expect(result.current.timeline.streaming).toBe(active);
+        expect(result.current.syncEngineRef.current!.streamingFor("s1")).toBe(
+          active,
+        );
+      },
+    );
 
     test("does not reconcile when streaming state is unchanged", () => {
       render();
@@ -872,7 +1200,9 @@ describe("useTimelineController", () => {
     test("is a no-op without an engine", () => {
       render();
       result.current.syncEngineRef.current = null;
-      expect(() => result.current.applySessionStreaming("s1", false)).not.toThrow();
+      expect(() =>
+        result.current.applySessionStreaming("s1", false),
+      ).not.toThrow();
     });
   });
 
@@ -963,7 +1293,9 @@ describe("useTimelineController", () => {
       render();
       const engine = result.current.syncEngineRef.current!;
       const restart = jest.spyOn(engine, "restart");
-      const recoverNow = (client().current as unknown as { recoverNow: jest.Mock }).recoverNow;
+      const recoverNow = (
+        client().current as unknown as { recoverNow: jest.Mock }
+      ).recoverNow;
       await act(async () => {
         await result.current.retryTimeline();
       });
@@ -976,7 +1308,9 @@ describe("useTimelineController", () => {
       render();
       const engine = result.current.syncEngineRef.current!;
       const restart = jest.spyOn(engine, "restart");
-      const recoverNow = (client().current as unknown as { recoverNow: jest.Mock }).recoverNow;
+      const recoverNow = (
+        client().current as unknown as { recoverNow: jest.Mock }
+      ).recoverNow;
       recoverNow.mockRejectedValueOnce(new Error("offline"));
       await act(async () => {
         await result.current.retryTimeline();
@@ -985,10 +1319,14 @@ describe("useTimelineController", () => {
     });
 
     test("diagnosticError handles a non-Error recovery failure", async () => {
-      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       options.selectedRef.current = "s1";
       render();
-      const recoverNow = (client().current as unknown as { recoverNow: jest.Mock }).recoverNow;
+      const recoverNow = (
+        client().current as unknown as { recoverNow: jest.Mock }
+      ).recoverNow;
       recoverNow.mockRejectedValueOnce("plain string failure");
       await act(async () => {
         await result.current.retryTimeline();
