@@ -11,14 +11,14 @@ export class CatalogVersionGate {
     this.revisions = { sessions: -1, workspaces: -1 };
   }
 
-  accept(domain: "sessions" | "workspaces", version?: SnapshotVersion): boolean {
+  accept(domain: "sessions" | "workspaces", version?: SnapshotVersion, allowEqual = false): boolean {
     if (!this.epoch) return !version; // Old Desktop: retain request/arrival fencing.
     if (
       !version ||
       version.epoch !== this.epoch ||
       !Number.isSafeInteger(version.revision) ||
       version.revision < 0 ||
-      version.revision <= this.revisions[domain]
+      (allowEqual ? version.revision < this.revisions[domain] : version.revision <= this.revisions[domain])
     )
       return false;
     this.revisions[domain] = version.revision;

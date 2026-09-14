@@ -16,7 +16,7 @@ describe("mention editor caret scrolling", () => {
   let originalRangeRect: PropertyDescriptor | undefined;
   const onSubmit = vi.fn();
 
-  beforeEach(() => {
+  beforeEach(async () => {
     originalRangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects");
     caretRect = new DOMRect(10, 300, 0, 20);
     Object.defineProperty(Range.prototype, "getClientRects", {
@@ -28,7 +28,9 @@ describe("mention editor caret scrolling", () => {
     root = createRoot(container);
     act(() => root.render(<MentionEditor onSubmit={onSubmit} placeholder="Message" />));
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
-    editor.textContent = "before after";
+    await act(async () => {
+      editor.textContent = "before after";
+    });
     vi.spyOn(editor, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 100, 500, 100));
     Object.defineProperty(editor, "clientHeight", { configurable: true, value: 100 });
     Object.defineProperty(editor, "clientTop", { configurable: true, value: 0 });

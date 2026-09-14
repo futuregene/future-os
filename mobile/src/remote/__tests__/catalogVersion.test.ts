@@ -15,6 +15,16 @@ test("only an authenticated source can advance a catalog and old or duplicate sn
   expect(gate.accept("sessions", { epoch: "A", revision: 999 })).toBe(false);
 });
 
+test("an explicit freshness read can repeat a revision but cannot regress or change epoch", () => {
+  const gate = new CatalogVersionGate();
+  gate.authenticate("A");
+  expect(gate.accept("sessions", { epoch: "A", revision: 3 })).toBe(true);
+  expect(gate.accept("sessions", { epoch: "A", revision: 3 }, true)).toBe(true);
+  expect(gate.accept("sessions", { epoch: "A", revision: 3 })).toBe(false);
+  expect(gate.accept("sessions", { epoch: "A", revision: 2 }, true)).toBe(false);
+  expect(gate.accept("sessions", { epoch: "B", revision: 4 }, true)).toBe(false);
+});
+
 test("legacy Desktop retains arrival fencing, malformed versions never advance state", () => {
   const gate = new CatalogVersionGate();
   expect(gate.accept("sessions")).toBe(true);

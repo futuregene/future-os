@@ -28,9 +28,9 @@ describe("parseFutureMarkdown block constructs", () => {
     expect(quote.type === "blockquote" && quote.children[0]?.type).toBe("paragraph");
     const h2 = nodeAt(doc, 1);
     expect(h2.type === "heading" && h2.level).toBe(2);
-    // Headings clamp to level 3.
+    // Preserve the original heading level for both native and DOM renderers.
     const h4 = nodeAt(doc, 2);
-    expect(h4.type === "heading" && h4.level).toBe(3);
+    expect(h4.type === "heading" && h4.level).toBe(4);
     // Hard break inside the paragraph.
     const para = paragraphAt(doc, 3);
     expect(para.children.some(c => c.type === "break")).toBe(true);

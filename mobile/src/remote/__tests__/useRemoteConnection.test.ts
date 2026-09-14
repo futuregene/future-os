@@ -213,6 +213,7 @@ describe("useRemoteConnection", () => {
   let options: Options;
   let result: { current: Result };
   let renderer: ReactTestRenderer | null;
+  let consoleError: jest.SpyInstance;
 
   function Harness(): null {
     result.current = useRemoteConnection(options);
@@ -225,12 +226,12 @@ describe("useRemoteConnection", () => {
     });
   }
 
-  async function flush(times = 20): Promise<void> {
-    await act(async () => {
-      for (let i = 0; i < times; i += 1) {
-        await Promise.resolve();
-      }
-    });
+  async function drain(times = 40): Promise<void> {
+    for (let i = 0; i < times; i += 1) await Promise.resolve();
+  }
+
+  async function flush(): Promise<void> {
+    await act(async () => { await drain(); });
   }
 
   function client(): MockClient {
@@ -246,6 +247,7 @@ describe("useRemoteConnection", () => {
   }
 
   beforeEach(() => {
+    consoleError = jest.spyOn(console, "error");
     jest.clearAllMocks();
     options = makeOptions();
     result = { current: undefined as unknown as Result };
@@ -258,14 +260,16 @@ describe("useRemoteConnection", () => {
     cast<{ currentState: string }>(AppState).currentState = "active";
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (renderer) {
-      act(() => renderer!.unmount());
+      await act(async () => { renderer!.unmount(); await drain(); });
       renderer = null;
     }
     // The presentation depth is process-global; a failed assertion mid-test
     // must not leak a held connection into the next one.
     endNativePresentation();
+    try { expect(consoleError).not.toHaveBeenCalled(); }
+    finally { consoleError.mockRestore(); }
   });
 
   describe("multiple desktops", () => {
@@ -511,7 +515,7 @@ describe("useRemoteConnection", () => {
     test("onPresence unpaired tears down and goes unpaired", async () => {
       await mountConnected();
       const c = client();
-      act(() => c.callbacks.onPresence({ ...presence, unpaired: true }));
+      await act(async () => { c.callbacks.onPresence({ ...presence, unpaired: true }); await drain(); });
       expect(clearCredentials).toHaveBeenCalled();
       expect(discardPendingContinuation).toHaveBeenCalled();
       expect(discardPendingPrompt).toHaveBeenCalled();
@@ -618,7 +622,7 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         appStateListeners()[0]!("inactive");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(connected.recoverNow).not.toHaveBeenCalled();
       expect(options.refreshSessions).not.toHaveBeenCalled();
@@ -716,7 +720,7 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(client().recoverNow).toHaveBeenCalledWith("foreground");
       expect(options.refreshSettings).toHaveBeenCalledTimes(2);
@@ -728,7 +732,7 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(client().recoverNow).not.toHaveBeenCalled();
       expect(client().setAppActive).toHaveBeenLastCalledWith(true);
@@ -741,12 +745,12 @@ describe("useRemoteConnection", () => {
         client().callbacks.onReconnected();
         // Let the callback's recovery finish before recoverNow returns: checking
         // only for an in-flight promise would start a redundant second pass.
-        await flush();
+        await drain();
       });
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(options.refreshSettings).toHaveBeenCalledTimes(1);
     });
@@ -773,7 +777,7 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(client().recoverNow).toHaveBeenCalledWith("foreground");
     });
@@ -784,7 +788,7 @@ describe("useRemoteConnection", () => {
       await act(async () => {
         appStateListeners()[0]!("background");
         appStateListeners()[0]!("active");
-        await flush();
+        await drain();
       });
       expect(result.current.error).toBe("invalid_jwt");
     });

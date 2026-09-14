@@ -36,11 +36,11 @@ export interface TableNode {
 }
 
 export type MarkdownNode =
-  | { children: InlineNode[]; level: 1 | 2 | 3; type: "heading" }
+  | { children: InlineNode[]; level: 1 | 2 | 3 | 4 | 5 | 6; type: "heading" }
   | { children: InlineNode[]; type: "paragraph" }
   | { children: MarkdownNode[]; type: "blockquote" }
   | { code: string; language?: string; type: "code" }
-  | { items: ListItemNode[]; ordered: boolean; type: "list" }
+  | { items: ListItemNode[]; ordered: boolean; start?: number; type: "list" }
   | { reference: FutureReference; type: "futureEmbed" }
   | { type: "thematicBreak" }
   | ({ type: "table" } & TableNode)

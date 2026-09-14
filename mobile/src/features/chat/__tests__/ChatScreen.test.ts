@@ -113,6 +113,14 @@ test("cached messages remain visible with a sync notice until replay is complete
   expect(tree.root.findByType(FlatList).props.data).toBe(data);
 });
 
+test("text selection cannot trigger Android focus-driven transcript scrolling", () => {
+  const list = tree.root.findByType(FlatList);
+  expect(list.props.inverted).toBe(true);
+  expect(list.props.scrollsChildToFocus).toBe(false);
+  // Do not solve selection jumps by disabling manual reading/scrolling.
+  expect(list.props.scrollEnabled).not.toBe(false);
+});
+
 test("no older-history footer when the history is exhausted", () => {
   mockRemote.canLoadOlderTimeline = false;
   act(() => tree.update(createElement(ChatScreen)));
