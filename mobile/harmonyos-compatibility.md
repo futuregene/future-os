@@ -48,8 +48,11 @@
 - 手机文件：`expo-file-system` 的 `FilePickerContract` 使用 `ACTION_OPEN_DOCUMENT`。
 - `NativeFileActionSheet` 明确分开“用其他应用打开 / 保存 / 分享”。
 - Android 外部打开沿用 `future-file-handler` 的 `ACTION_VIEW`、FileProvider 与只读授权；
-  分享通过 `expo-sharing` 的 `ACTION_SEND`、`EXTRA_STREAM` 与 FileProvider 发送真实文件，
-  不是把缓存路径作为文本发送。保存沿用 Storage Access Framework。
+  分享也通过 `future-file-handler` 的 `ACTION_SEND`、`EXTRA_STREAM`、`ClipData` 与
+  FileProvider 发送真实文件，不是把缓存路径作为文本发送。保存沿用 Storage Access Framework。
+  分享在系统接受 chooser 后返回，不等待接收应用的结果，也不保留全局 pending promise。
+  这是为避免兼容环境未回传 activity result 时，`expo-sharing` 永久拒绝后续分享；
+  返回仅代表系统接管，不代表接收应用已发送成功。iOS 继续使用 `expo-sharing`。
 - 不再在进入文件菜单时检查阅读器。只有选择外部打开时才检查 VIEW 能力；缺少 PDF 阅读器
   不影响保存或分享。预览页也有分享和外部打开入口，并获取原文件而非预览截断文本。
 - iOS 保存使用 `UIDocumentPickerViewController`，外部打开使用 `UIDocumentInteractionController`，

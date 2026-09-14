@@ -1,4 +1,5 @@
 import { StatusBar } from "expo-status-bar";
+import { AppDialogHost } from "./src/components/AppDialogHost";
 import { useEffect, useState, useSyncExternalStore, type PropsWithChildren } from "react";
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from "react-native";
 import { SafeAreaProvider, initialWindowMetrics } from "react-native-safe-area-context";
@@ -109,6 +110,7 @@ export default function App() {
         <StatusBar style="dark" />
         <AppContent />
         <ShareIntakeMenu />
+        <AppDialogHost />
       </RemoteProvider>
     </SafeAreaProvider>
   );
