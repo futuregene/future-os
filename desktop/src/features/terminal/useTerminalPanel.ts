@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasOpenOverlay } from "../../components/ui/overlayStack";
-import { isMacOS } from "../../lib/platform";
+import { isPanelToggleShortcut, panelToggleShortcutLabel } from "./shortcut";
 
 const PREFS_KEY = "future.terminal.panel.v1";
 /** Default share of the viewport. */
@@ -108,15 +108,14 @@ export function useTerminalPanel(threadId: string | null): TerminalPanelControll
     update(previous => ({ ...previous, height: next }));
   }, [update]);
 
-  // Global shortcut. Ctrl+J on Windows/Linux, Cmd+J on macOS — the terminal
-  // never receives it (the design records that trade-off explicitly; Enter
-  // submits a command line).
+  // Global shortcut, so it also works while the composer (or anything else in
+  // the window) has focus. Ctrl+J on Windows/Linux, Cmd+J on macOS — the
+  // terminal never receives it (the design records that trade-off explicitly;
+  // Enter submits a command line). Inside the terminal, `TerminalView` releases
+  // the key from xterm so it reaches this listener; see `./shortcut`.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "j")
-        return;
-      const modifier = isMacOS ? event.metaKey : event.ctrlKey;
-      if (!modifier || event.altKey || event.shiftKey)
+      if (!isPanelToggleShortcut(event))
         return;
       // A modal owns the keyboard while it is open.
       if (hasOpenOverlay())
@@ -138,6 +137,6 @@ export function useTerminalPanel(threadId: string | null): TerminalPanelControll
     toggle,
     setOpen,
     setHeight,
-    shortcut: isMacOS ? "⌘J" : "Ctrl+J",
+    shortcut: panelToggleShortcutLabel(),
   };
 }

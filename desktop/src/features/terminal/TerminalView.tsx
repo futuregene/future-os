@@ -18,6 +18,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
+import { isPanelToggleShortcut } from "./shortcut";
 import { TERMINAL_THEME } from "./theme";
 import "@xterm/xterm/css/xterm.css";
 
@@ -93,6 +94,12 @@ export function TerminalView(props: TerminalViewProps) {
       theme: TERMINAL_THEME,
     });
     disposables.push(terminal);
+    // The panel shortcut belongs to the app, not to the shell. xterm cancels
+    // (`preventDefault` + `stopPropagation`) every key it handles, and Ctrl+J is
+    // one of them (a line feed), so without this the window listener never sees
+    // it: the panel would stay open and the shell would run the line the user
+    // was typing. Returning false stands xterm down and lets the event bubble.
+    terminal.attachCustomKeyEventHandler(event => !isPanelToggleShortcut(event));
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     const serializer = new SerializeAddon();

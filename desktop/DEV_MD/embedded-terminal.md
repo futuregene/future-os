@@ -103,6 +103,14 @@ replays). A detached viewer never grows memory without bound.
   closed or 25 later sessions have exited.
 * The panel auto-creates a tab only when it is opened with none. Every other
   shell is created by an explicit user action.
+* Collapsing the panel **hides** it; it never closes anything. The shell keeps
+  running, the tab keeps its serialized screen, and reopening reattaches to the
+  same session. Only closing a tab (or deleting the conversation) ends a shell.
+* The shortcut (`Ctrl+J`, `⌘J` on macOS) belongs to the app, not to the shell.
+  `TerminalView` releases it from xterm's key handling so the window listener
+  still sees it while the terminal has focus — without that, xterm would cancel
+  the event and send a line feed to the shell instead. The single definition
+  lives in `features/terminal/shortcut.ts`.
 
 ## Working directory
 
@@ -143,8 +151,10 @@ on macOS would be strictly better than the current best-effort paths.
 2. Press **Ctrl+J** (⌘J on macOS) or click the terminal button in the header.
 3. Type `pwd` — it must print the conversation's workspace directory.
 4. `sleep 300 &` then close the tab; `pgrep -f "sleep 300"` must be empty.
-5. Collapse the panel, reopen it: the screen and scrollback are still there, and
-   a `cd` you made survives.
+5. Press **Ctrl+J** (⌘J) while the terminal itself has focus: the panel must
+   collapse (it must not send a line feed to the shell). Press it again, or
+   click the ✕ in the panel header: the screen and scrollback are still there,
+   the shell is the same process, and a `cd` you made survives.
 6. Reload the webview (⌘R / Ctrl+R): the panel restores the same screen and the
    shell keeps running (no new shell is spawned).
 7. `exit` in the shell: the tab shows the exit code and offers a restart.
