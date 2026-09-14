@@ -126,6 +126,7 @@ describe("usePromptOutbox recovery", () => {
         conversationEpochRef,
         syncEngineRef,
         phase: "ready",
+        businessReady: true,
         draft: true,
         draftMode: "chat",
         draftWorkspaceId: "",
@@ -277,6 +278,7 @@ describe("usePromptOutbox sendMessage", () => {
         conversationEpochRef,
         syncEngineRef,
         phase: opts.phase ?? "connecting",
+        businessReady: true,
         draft: opts.draft ?? true,
         draftMode: opts.draftMode ?? "chat",
         draftWorkspaceId: opts.draftWorkspaceId ?? "",
@@ -638,6 +640,7 @@ describe("usePromptOutbox continueRun", () => {
         conversationEpochRef,
         syncEngineRef,
         phase: "connecting",
+        businessReady: true,
         draft: true,
         draftMode: "chat",
         draftWorkspaceId: "",
@@ -776,7 +779,7 @@ describe("usePromptOutbox recovery error handling", () => {
     mockedUploadAttachments.mockResolvedValue([]);
   });
 
-  async function mountRecovery(requestRetry: jest.Mock) {
+  async function mountRecovery(requestRetry: jest.Mock, initiallyReady = true) {
     const client = { requestRetry, accessIdentity: "active" } as unknown as RemoteClient;
     const clientRef = { current: client as RemoteClient | null };
     const credentialsRef = { current: credentials };
@@ -793,7 +796,7 @@ describe("usePromptOutbox recovery error handling", () => {
     const recordError = jest.fn();
     let renderer!: ReactTestRenderer;
 
-    function Harness() {
+    function Harness({ businessReady }: { businessReady: boolean }) {
       usePromptOutbox({
         clientRef,
         credentialsRef,
@@ -802,6 +805,7 @@ describe("usePromptOutbox recovery error handling", () => {
         conversationEpochRef,
         syncEngineRef,
         phase: "ready",
+        businessReady,
         draft: true,
         draftMode: "chat",
         draftWorkspaceId: "",
@@ -821,12 +825,74 @@ describe("usePromptOutbox recovery error handling", () => {
     }
 
     await act(async () => {
-      renderer = create(createElement(Harness));
+      renderer = create(createElement(Harness, { businessReady: initiallyReady }));
     });
     await flush();
 
-    return { renderer, requestRetry, recordError, reconcileSession, refreshSessions };
+    return { renderer, requestRetry, recordError, reconcileSession, refreshSessions,
+      setBusinessReady: async (businessReady: boolean) => {
+        await act(async () => renderer.update(createElement(Harness, { businessReady })));
+        await flush();
+      },
+    };
   }
+
+  it.each(["prompt", "continuation"])("retains a frozen %s and checks its receipt when business readiness returns", async kind => {
+    const common = {
+      version: 2 as const, bridgeInstanceId: "active", pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId, commandId: "uncertain-operation",
+      sessionId: "session-1", createdAt: 1,
+    };
+    if (kind === "prompt") {
+      await savePendingPrompt({ ...common, draftKey: "session-1", text: "hello", attachments: [],
+        modelId: "provider/model", thinkingLevel: "medium", mode: "chat", workspaceId: "" });
+    } else {
+      await savePendingContinuation({ ...common, sourceRunId: "failed-run" });
+    }
+    const load = () => kind === "prompt"
+      ? loadPendingPrompt(credentials.pairId) : loadPendingContinuation(credentials.pairId);
+    const requestRetry = jest.fn().mockRejectedValue(new Error("communication_frozen"));
+    const h = await mountRecovery(requestRetry, false);
+    try {
+      expect(requestRetry).not.toHaveBeenCalled();
+      await h.setBusinessReady(true);
+      expect(requestRetry).toHaveBeenCalledTimes(1);
+      await expect(load()).resolves.toMatchObject({ commandId: "uncertain-operation" });
+      expect(h.recordError).not.toHaveBeenCalled();
+      await h.setBusinessReady(false);
+      requestRetry.mockResolvedValue({ data: ack() });
+      await h.setBusinessReady(true);
+      await expect(load()).resolves.toBeNull();
+      expect(requestRetry).toHaveBeenCalledTimes(2);
+      for (const [request] of requestRetry.mock.calls) {
+        expect(request).toEqual({ type: "get_prompt_receipt", promptId: "uncertain-operation" });
+      }
+    } finally { await act(async () => h.renderer.unmount()); }
+  });
+
+  it("rechecks a receipt if readiness returns before the previous frozen probe settles", async () => {
+    await savePendingPrompt({
+      version: 2, bridgeInstanceId: "active", pairId: credentials.pairId,
+      expectedDesktopId: credentials.expectedDesktopId, commandId: "pending-probe",
+      draftKey: "session-1", sessionId: "session-1", text: "hello", attachments: [],
+      modelId: "provider/model", thinkingLevel: "medium", mode: "chat",
+      workspaceId: "", createdAt: 1,
+    });
+    const oldProbe = deferred();
+    const requestRetry = jest.fn().mockReturnValueOnce(oldProbe.promise).mockResolvedValue({ data: ack() });
+    const h = await mountRecovery(requestRetry);
+    try {
+      expect(requestRetry).toHaveBeenCalledTimes(1);
+      await h.setBusinessReady(false);
+      await h.setBusinessReady(true);
+      expect(requestRetry).toHaveBeenCalledTimes(1);
+      oldProbe.reject(new Error("communication_frozen"));
+      await flush();
+      expect(requestRetry).toHaveBeenCalledTimes(2);
+      await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
+      expect(h.recordError).not.toHaveBeenCalled();
+    } finally { await act(async () => h.renderer.unmount()); }
+  });
 
   it("clears and records a non-transient prompt recovery failure", async () => {
     await savePendingPrompt({

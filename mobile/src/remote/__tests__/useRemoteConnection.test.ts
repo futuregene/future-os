@@ -760,6 +760,60 @@ describe("useRemoteConnection", () => {
       } finally { jest.useRealTimers(); }
     });
 
+    test("a late foreground snapshot cannot overwrite a newer network event", async () => {
+      await mountConnected();
+      let resolve!: (value: typeof noneState) => void;
+      const stale = new Promise<typeof noneState>(done => { resolve = done; });
+      cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValueOnce(stale);
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        networkListeners()[0]!(noneState);
+        networkListeners()[0]!(wifiState);
+        await drain();
+      });
+      await act(async () => { resolve(noneState); await drain(); });
+      expect(client().setNetworkAvailable).toHaveBeenLastCalledWith(true);
+    });
+
+    test("an older foreground query cannot overwrite a newer foreground query", async () => {
+      await mountConnected();
+      let resolve!: (value: typeof noneState) => void;
+      cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValueOnce(
+        new Promise<typeof noneState>(done => { resolve = done; }),
+      );
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        await drain();
+        resolve(noneState);
+        await drain();
+      });
+      expect(client().setNetworkAvailable).toHaveBeenLastCalledWith(true);
+    });
+
+    test("a hung foreground network query is bounded and ignores its eventual result", async () => {
+      jest.useFakeTimers();
+      try {
+        await mountConnected();
+        let resolve!: (value: typeof noneState) => void;
+        cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValueOnce(
+          new Promise<typeof noneState>(done => { resolve = done; }),
+        );
+        act(() => {
+          appStateListeners()[0]!("background");
+          appStateListeners()[0]!("active");
+        });
+        expect(client().recoverNow).not.toHaveBeenCalled();
+        await act(async () => { await jest.advanceTimersByTimeAsync(4_000); });
+        expect(client().recoverNow).toHaveBeenCalledWith("foreground");
+        await act(async () => { resolve(noneState); await drain(); });
+        expect(client().setNetworkAvailable).not.toHaveBeenCalledWith(false);
+      } finally { jest.useRealTimers(); }
+    });
+
     test("foreground recovery refreshes network and recovers the client", async () => {
       await mountConnected();
       await act(async () => {

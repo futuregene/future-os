@@ -11,7 +11,7 @@ import {
 } from "@nats-io/nats-core";
 import { classifyNatsError } from "../natsErrors";
 import { classifyError } from "../connectionState";
-import { isTransientNatsRequestError } from "../client";
+import { isDeferredRequestError, isTransientNatsRequestError } from "../client";
 
 describe("NATS v3 error classification", () => {
   test.each([
@@ -59,6 +59,13 @@ describe("NATS v3 error classification", () => {
     ).toBe(false);
     expect(isTransientNatsRequestError(new Error("application rejected request"))).toBe(false);
     expect(isTransientNatsRequestError(new Error("not_connected"))).toBe(true);
+  });
+
+  test("a frozen readiness gate defers an operation without starting an RPC retry loop", () => {
+    const error = new Error("communication_frozen");
+    expect(isDeferredRequestError(error)).toBe(true);
+    expect(isTransientNatsRequestError(error)).toBe(false);
+    expect(isDeferredRequestError(new Error("application rejected request"))).toBe(false);
   });
 
   test("handles circular diagnostic causes", () => {

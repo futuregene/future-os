@@ -102,6 +102,9 @@ export class RemoteClient {
   }
 
   private beginDeadline(): boolean {
+    // OS suspension is not an active recovery attempt. Network notifications
+    // and open() can still arrive in the background; none may start a budget.
+    if (!this.appActive) return true;
     if (!this.recoveryDeadline) {
       this.recoveryDeadline = Date.now() + (this.everReady ? 180_000 : 20_000);
       this.deadlineTimer = setTimeout(
@@ -421,7 +424,15 @@ export class RemoteClient {
   setAppActive(active: boolean): void {
     if (this.stopped || active === this.appActive) return;
     this.appActive = active;
-    if (active) return;
+    if (active) {
+      // Resume with a fresh bounded window, even if reachability is still
+      // offline. Terminal failures and explicit close remain terminal.
+      if (!this.isTerminal()) this.beginDeadline();
+      return;
+    }
+    this.clearDeadline();
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.presenceTimer = null;
     this.recoveryPromise = null;
     this.cancelAttempt();
     this.clearTimers();
@@ -1260,6 +1271,13 @@ class RemoteResponseError extends Error {
     super(message);
     this.name = "RemoteResponseError";
   }
+}
+
+/** A local readiness gate postpones delivery, but must not trigger an RPC
+ * retry loop. Keep the pending operation until business readiness returns. */
+export function isDeferredRequestError(error: unknown): boolean {
+  return !(error instanceof RemoteResponseError) &&
+    error instanceof Error && error.message === "communication_frozen";
 }
 
 export function isTransientNatsRequestError(error: unknown): boolean {
