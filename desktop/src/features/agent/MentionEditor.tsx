@@ -414,12 +414,12 @@ export function MentionEditor({
     placePill(range, buildPill(file));
   }
 
-  // Our paste/newline handlers prevent the native edit, so the browser does
-  // not reveal the new caret until the next typed character. Scroll only this
-  // editor (not its ancestors), and only far enough to expose the caret line.
+  // Manual edits bypass native caret reveal, while native typing can use a
+  // different scroll inset. Keep both on the same line-box geometry. Scroll
+  // only this editor (not its ancestors), just far enough to expose the line.
   function revealCaret(range: Range) {
     const editor = editorRef.current;
-    if (!editor || editor.clientHeight === 0)
+    if (!editor || editor.clientHeight === 0 || !range.collapsed || !editor.contains(range.startContainer))
       return;
     const probe = range.cloneRange();
     // An element-boundary caret can have no rectangle. The first
@@ -431,12 +431,19 @@ export function MentionEditor({
     const caret = probe.getClientRects()[0];
     if (!caret?.height)
       return;
-    const top = editor.getBoundingClientRect().top + editor.clientTop;
-    const bottom = top + editor.clientHeight;
-    if (caret.top < top)
-      editor.scrollTop -= top - caret.top;
-    else if (caret.bottom > bottom)
-      editor.scrollTop += caret.bottom - bottom;
+    // Range rectangles cover glyphs, not the full line box. Keep the line and
+    // editor padding visible for both manual edits and native typing. WebKit's
+    // native reveal can alternate between the glyph edge and the scroll limit
+    // on soft wraps; using one inset avoids that visible vertical jitter.
+    const style = getComputedStyle(editor);
+    const leading = Math.max(0, ((Number.parseFloat(style.lineHeight) || caret.height) - caret.height) / 2);
+    const edge = editor.getBoundingClientRect().top + editor.clientTop;
+    const top = edge + (Number.parseFloat(style.paddingTop) || 0);
+    const bottom = edge + editor.clientHeight - (Number.parseFloat(style.paddingBottom) || 0);
+    if (caret.top - leading < top)
+      editor.scrollTop -= Math.ceil(top - (caret.top - leading));
+    else if (caret.bottom + leading > bottom)
+      editor.scrollTop += Math.ceil(caret.bottom + leading - bottom);
   }
 
   function insertNewline() {
@@ -560,9 +567,12 @@ export function MentionEditor({
       return;
     const range = selection.getRangeAt(0);
     range.deleteContents();
-    const node = document.createTextNode(text);
+    // As with a manual newline, a trailing pasted newline needs an editable
+    // last line. Without a pad WebKit can measure the preceding line instead
+    // (Chromium can return no rect), delaying the scroll until typing resumes.
+    const node = document.createTextNode(text.endsWith("\n") ? `${text}\u200B` : text);
     range.insertNode(node);
-    range.setStart(node, node.length);
+    range.setStart(node, text.length);
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
@@ -618,8 +628,12 @@ export function MentionEditor({
         )}
         onInput={() => {
           syncEmpty();
-          if (!isComposingRef.current)
+          if (!isComposingRef.current) {
             updateTrigger();
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0)
+              revealCaret(selection.getRangeAt(0));
+          }
           onChange?.();
         }}
         onKeyDown={handleKeyDown}
@@ -632,6 +646,9 @@ export function MentionEditor({
             if (!isComposingRef.current) {
               updateTrigger();
               syncEmpty();
+              const selection = window.getSelection();
+              if (selection && selection.rangeCount > 0)
+                revealCaret(selection.getRangeAt(0));
               onChange?.();
             }
           });
