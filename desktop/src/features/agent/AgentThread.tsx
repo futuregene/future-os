@@ -20,7 +20,6 @@ import {
   forkThread,
   getSessionEntries,
 } from "../../integrations/storage/threadStore";
-import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -35,6 +34,7 @@ import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
+import { useComposerInset } from "./useComposerInset";
 import { useMessagePaging } from "./useMessagePaging";
 
 /** How many user exchanges one loaded page renders. */
@@ -136,6 +136,7 @@ export function AgentThread({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const searchRootRef = useRef<HTMLDivElement>(null);
+  const { composerRef, composerHeight } = useComposerInset();
   const compactionWaitCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(
@@ -491,14 +492,13 @@ export function AgentThread({
           : null}
         <div
           ref={scrollRef}
-          className={cn(
-            "floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6",
-            activeApproval ? "pb-112" : "pb-48",
-          )}
+          className="floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6"
           data-chat-scroll="true"
           style={{ overflowAnchor: "none" }}
           onScroll={handlePagingScroll}
         >
+          {/* Keep the inset inside the observed content so sticky scrolling and
+              the floating scrollbar settle when the composer grows or shrinks. */}
           <div ref={searchRootRef} className="mx-auto w-full max-w-4xl">
             {loadingIndicator
               ? (
@@ -523,13 +523,17 @@ export function AgentThread({
                         onRetry={handleRetryMessage}
                       />
                     )}
+            <div aria-hidden="true" style={{ height: composerHeight }} />
           </div>
         </div>
         <FloatingScrollbar
           scrollbar={scrollbar}
           onPointerDown={handleThumbPointerDown}
         />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
+        <div
+          ref={composerRef}
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"
+        >
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {activeApproval
               ? (
