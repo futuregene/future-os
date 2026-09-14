@@ -96,4 +96,40 @@ describe("useTerminalPanel", () => {
     expect(harness.current.height).toBeGreaterThanOrEqual(MIN_PANEL_HEIGHT);
     harness.unmount();
   });
+
+  it("hands the keyboard back to the composer when it collapses", () => {
+    // Collapsing removes the panel from the layout, so focus left on a hidden
+    // terminal would swallow the next keystrokes. Both routes into a collapse
+    // (the shortcut and the panel's own ✕) go through the controller.
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ open: { "thread-1": true } }));
+    const focus: string[] = [];
+    const onFocus = () => focus.push("composer");
+    window.addEventListener("futureos:focus-composer", onFocus);
+    const harness = renderHook(() => useTerminalPanel("thread-1"));
+    try {
+      expect(harness.current.open).toBe(true);
+
+      // Ctrl+J.
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", ctrlKey: true }));
+      });
+      expect(harness.current.open).toBe(false);
+      expect(focus).toHaveLength(1);
+
+      // The ✕ in the panel header.
+      act(() => harness.current.setOpen(true));
+      expect(focus).toHaveLength(1);
+      act(() => harness.current.setOpen(false));
+      expect(focus).toHaveLength(2);
+
+      // Expanding gives the terminal the keyboard, not the composer.
+      act(() => harness.current.toggle());
+      expect(harness.current.open).toBe(true);
+      expect(focus).toHaveLength(2);
+    }
+    finally {
+      window.removeEventListener("futureos:focus-composer", onFocus);
+      harness.unmount();
+    }
+  });
 });

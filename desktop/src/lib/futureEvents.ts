@@ -56,6 +56,13 @@ export interface FutureEventMap {
   /** Emitted when a conversation finishes (agent_end stream event). */
   "agent_end": void;
   /**
+   * Put the caret back in the active thread's composer. Emitted when the
+   * terminal panel collapses (shortcut or its ✕): the panel is gone from the
+   * layout, so focus left on a hidden terminal would swallow the next
+   * keystrokes. The Composer ignores this while it cannot hold a caret.
+   */
+  "focus-composer": void;
+  /**
    * The onboarding init flow finished syncing the Future model catalog into the
    * agent — `useAgentConnection` should refresh immediately so the composer has
    * models the instant the gate closes (no "no models configured" banner flash).

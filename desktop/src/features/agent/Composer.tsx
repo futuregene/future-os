@@ -285,6 +285,15 @@ function ComposerImpl({
     editorRef.current?.insertMention(detail);
   }), []);
 
+  // The terminal panel asks for the caret when it collapses: the panel is gone
+  // from the layout, so leaving focus on a hidden terminal would swallow the
+  // next keystrokes. Declined while this composer cannot hold a caret
+  // (`disabled` is a contentEditable=false editor).
+  useEffect(() => onFutureEvent("focus-composer", () => {
+    if (!disabled)
+      editorRef.current?.focus();
+  }), [disabled]);
+
   // Autofocus so the user can type immediately: on mount, when switching
   // conversations (draftKey changes), and when a send settles. The streaming
   // lock lives on `sending` now (the editor stays editable mid-stream so the

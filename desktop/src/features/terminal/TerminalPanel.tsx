@@ -21,11 +21,9 @@ const TerminalView = lazy(() => import("./TerminalView").then(module => ({ defau
 export interface TerminalPanelProps {
   threadId: string;
   panel: TerminalPanelController;
-  /** Chat/composer focus target when the panel collapses. */
-  onCollapseFocus?: () => void;
 }
 
-export function TerminalPanel({ threadId, panel, onCollapseFocus }: TerminalPanelProps) {
+export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
   const { t } = useTranslation("terminal");
   const tabs = useTerminalTabs(threadId);
   // Transient transport notice per tab, cleared when it reconnects.
@@ -67,10 +65,9 @@ export function TerminalPanel({ threadId, panel, onCollapseFocus }: TerminalPane
     window.addEventListener("pointerup", onUp);
   };
 
-  const collapse = () => {
-    panel.setOpen(false);
-    onCollapseFocus?.();
-  };
+  // Collapsing hides the panel; the controller also hands the caret back to the
+  // composer (see `useTerminalPanel`).
+  const collapse = () => panel.setOpen(false);
 
   return (
     <section

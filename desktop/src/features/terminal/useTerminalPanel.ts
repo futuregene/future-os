@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasOpenOverlay } from "../../components/ui/overlayStack";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { isPanelToggleShortcut, panelToggleShortcutLabel } from "./shortcut";
 
 const PREFS_KEY = "future.terminal.panel.v1";
@@ -100,6 +101,12 @@ export function useTerminalPanel(threadId: string | null): TerminalPanelControll
     if (!threadId)
       return;
     update(previous => ({ ...previous, open: { ...previous.open, [threadId]: next } }));
+    // Collapsing (shortcut or the panel's own ✕) hands the keyboard back to the
+    // conversation: the panel leaves the layout, so focus left on a hidden
+    // terminal would swallow the next keystrokes. The composer answers this
+    // event and declines while it cannot hold a caret.
+    if (!next)
+      emitFutureEvent("focus-composer", undefined);
   }, [threadId, update]);
 
   const toggle = useCallback(() => setOpen(!open), [open, setOpen]);
