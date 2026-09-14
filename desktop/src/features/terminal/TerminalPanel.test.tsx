@@ -221,4 +221,35 @@ describe("terminalPanel", () => {
     });
     expect(panel.setOpen).toHaveBeenCalledWith(false);
   });
+
+  it("hides rather than closes: the shell survives the collapse and the next open re-attaches", async () => {
+    installFetch((call) => {
+      if (call.method === "GET")
+        return { status: 200, body: [running("term_1", "Terminal 1")] };
+      if (call.method === "DELETE")
+        return { status: 200, body: { removed: true } };
+      return { status: 200, body: running("term_2", "Terminal 1") };
+    });
+    const panel = controller();
+    await render(panel);
+    expect(container.querySelectorAll("[role=\"tab\"]")).toHaveLength(1);
+
+    // Collapsing takes the panel out of the layout, so `AppShell` unmounts it.
+    await act(async () => {
+      root.render(createElement("div"));
+    });
+    await flush();
+
+    // Not one stopping request — the shells, their tabs and their stored
+    // screens all outlive the panel.
+    expect(calls.some(call => call.method === "DELETE")).toBe(false);
+    expect(calls.some(call => call.method === "POST")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("future.terminal.tabs.v1.thread-1") ?? "{}").all).toHaveLength(1);
+
+    // Reopening re-attaches to the same session instead of starting a new one.
+    await render(panel);
+    expect(container.querySelectorAll("[role=\"tab\"]")).toHaveLength(1);
+    expect(calls.some(call => call.method === "POST")).toBe(false);
+    expect(calls.some(call => call.method === "DELETE")).toBe(false);
+  });
 });
