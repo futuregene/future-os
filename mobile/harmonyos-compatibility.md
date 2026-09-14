@@ -52,7 +52,8 @@
   不是把缓存路径作为文本发送。保存沿用 Storage Access Framework。
 - 不再在进入文件菜单时检查阅读器。只有选择外部打开时才检查 VIEW 能力；缺少 PDF 阅读器
   不影响保存或分享。预览页也有分享和外部打开入口，并获取原文件而非预览截断文本。
-- iOS 的三个文件操作入口仍委托系统 `UIActivityViewController`，不声称新增独立文档阅读器。
+- iOS 保存使用 `UIDocumentPickerViewController`，外部打开使用 `UIDocumentInteractionController`，
+  分享仍使用 `UIActivityViewController`；旧原生包回退到分享面板，不声称新增内置文档阅读器。
 - 维持文件类型白名单和 10 MiB 上限，取消传输后不执行迟到的文件分享。
 
 ## 真机验收（未执行）

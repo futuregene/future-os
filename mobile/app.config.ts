@@ -30,6 +30,7 @@ const config: ExpoConfig = {
   icon: "./assets/icon.png",
   userInterfaceStyle: "light",
   plugins: [
+    "./plugins/withIosShareExtension",
     [
       "expo-camera",
       {

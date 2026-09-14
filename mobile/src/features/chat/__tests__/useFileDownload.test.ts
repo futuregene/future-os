@@ -5,14 +5,16 @@ import { Alert, Platform } from "react-native";
 import * as Sharing from "expo-sharing";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import { File } from "expo-file-system";
-import { findSupportedMimeType, openFile } from "future-file-handler";
+import { findSupportedMimeType, openFile, saveFile, supportsNativeFileActions } from "future-file-handler";
 import { nativePresentationInFlight } from "../../../remote/nativePresentation";
 import { useFileDownload } from "../useFileDownload";
 import { TransferCancelledError } from "../../../remote/files";
 import type { DownloadInfo } from "../../../remote/types";
 
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
-jest.mock("future-file-handler", () => ({ openFile: jest.fn(), findSupportedMimeType: jest.fn() }));
+jest.mock("future-file-handler", () => ({
+  openFile: jest.fn(), saveFile: jest.fn(), findSupportedMimeType: jest.fn(), supportsNativeFileActions: jest.fn(),
+}));
 jest.mock("expo-sharing", () => ({ shareAsync: jest.fn(), isAvailableAsync: jest.fn() }));
 jest.mock("expo-file-system", () => ({
   File: jest.fn().mockImplementation((uri: string) => ({ uri, size: 3 })),
@@ -80,6 +82,8 @@ describe("independent file operations", () => {
     jest.mocked(Sharing.isAvailableAsync).mockResolvedValue(true);
     jest.mocked(Sharing.shareAsync).mockResolvedValue();
     jest.mocked(openFile).mockResolvedValue();
+    jest.mocked(saveFile).mockResolvedValue();
+    jest.mocked(supportsNativeFileActions).mockReturnValue(false);
     jest.mocked(LegacyFileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync)
       .mockResolvedValue({ granted: true, directoryUri: "content://documents/tree/downloads" });
     jest.mocked(LegacyFileSystem.StorageAccessFramework.createFileAsync)
@@ -222,6 +226,52 @@ describe("independent file operations", () => {
     expect(nativePresentationInFlight()).toBe(true);
     await act(async () => { sheet.resolve(); await sharing; });
     expect(nativePresentationInFlight()).toBe(false);
+    act(() => h.tree.unmount());
+  });
+
+  test.each(["open", "save"] as const)("iOS %s uses its native action without depending on sharing", async operation => {
+    Platform.OS = "ios";
+    jest.mocked(supportsNativeFileActions).mockReturnValue(true);
+    jest.mocked(Sharing.isAvailableAsync).mockResolvedValue(false);
+    const h = await mount({});
+    await act(async () => { await h.api.openOrShare(pdfInfo, localFile, operation); });
+    if (operation === "open") {
+      expect(openFile).toHaveBeenCalledWith("file:///cache/named/报告.pdf", "application/pdf");
+      expect(saveFile).not.toHaveBeenCalled();
+    } else {
+      expect(saveFile).toHaveBeenCalledWith("file:///cache/named/报告.pdf");
+      expect(openFile).not.toHaveBeenCalled();
+    }
+    expect(Sharing.isAvailableAsync).not.toHaveBeenCalled();
+    expect(Sharing.shareAsync).not.toHaveBeenCalled();
+    expect(findSupportedMimeType).not.toHaveBeenCalled();
+    act(() => h.tree.unmount());
+  });
+
+  test.each(["open", "save"] as const)("older iOS native builds retain the %s fallback", async operation => {
+    Platform.OS = "ios";
+    const h = await mount({});
+    await act(async () => { await h.api.openOrShare(pdfInfo, localFile, operation); });
+    expect(Sharing.shareAsync).toHaveBeenCalledTimes(1);
+    expect(openFile).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    act(() => h.tree.unmount());
+  });
+
+  test.each(["open", "save", "share"] as const)("iOS %s waits for the download modal dismissal", async operation => {
+    Platform.OS = "ios";
+    jest.mocked(supportsNativeFileActions).mockReturnValue(true);
+    const download = deferred<File>();
+    const h = await mount({ downloadAttachment: () => download.promise });
+    let transfer!: Promise<void>;
+    await act(async () => { transfer = h.api.openOrShare(pdfInfo, null, operation); });
+    act(() => h.api.onDownloadModalShow());
+    await act(async () => { download.resolve(localFile); await transfer; });
+    expect(h.api.activeDownload).toBeNull();
+    const action = operation === "save" ? saveFile : operation === "open" ? openFile : Sharing.shareAsync;
+    expect(action).not.toHaveBeenCalled();
+    await act(async () => { h.api.flushPendingDownloadModal(); });
+    expect(action).toHaveBeenCalledTimes(1);
     act(() => h.tree.unmount());
   });
 

@@ -24,10 +24,12 @@ iOS；业务层、主题、国际化和凭证存储均保持跨平台。
   阻止保存和分享。
 - 会话顶部的文件夹按钮可查看当前会话在桌面端的目录，进入子目录、返回上级、
   刷新列表或切换隐藏文件；点击文件复用手机预览/系统打开流程。
-- Android 支持从其他应用**分享**文字/图片/文件进来：会新建一个对话，并把内容
-  放进输入框（临时文件复制到应用缓存目录），确认后再发送。原生实现见
-  `modules/future-share-intent`；iOS 需要单独的 Share Extension target，当前
-  构建尚未包含，`getPendingShare()` 在 iOS 上返回 `null`。
+- Android 支持从其他应用**分享**文字/图片/文件进来；iOS 新增原生 Share Extension，
+  保存后打开 FutureOS 导入文字/链接/图片/文件。选择普通会话或工作区后内容放入草稿，
+  确认前不上传、不自动发送。iOS 的保存/外部打开也分别接入原生文档选择器/Open In；
+  旧原生包保留分享面板回退。扩展需 Apple App Group 和独立签名 profile，且须显式设置
+  `FUTURE_IOS_SHARE_EXTENSION=1` 启用；现有发版工作流不变、默认不打包扩展。
+  详见 [iOS 能力与签名配置](docs/ios-platform-parity.md)。
 - seed、JWT 和刷新 token 分项存入 Android Keystore 支持的 SecureStore；
   明文不会进入 AsyncStorage、日志或二维码。
 
@@ -243,28 +245,22 @@ npm run ios:device
 
 ### GitHub Action TestFlight 分发
 
-主分发路径用 GitHub Action（`.github/workflows/build-ios-testflight.yml`），
-手动触发，构建签名 `.ipa` 并上传 TestFlight：
+主分发路径是由 `build.yml` / `release.yml` 协调调用的可复用工作流
+`.github/workflows/build-ios-testflight.yml`，构建签名 `.ipa` 并上传 TestFlight：
 
 1. 在 GitHub 仓库 Settings → Secrets 配置：
-   - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution
-     证书（.p12，Apple Developer 后台生成，base64 编码）
-   - `IOS_PROVISIONING_PROFILE_BASE64` — App Store provisioning profile
-   - 复用现有 `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER`（App
-     Store Connect API Key，与 macOS 公证共用；角色需为 App Manager 或以上）
-   - 复用现有 `OSS_*` secrets（上传 IPA 到 `dl.future-os.cn`）
-2. Actions → Build iOS TestFlight → Run workflow。
-3. 当前工作流固定使用 TestFlight marketing version `0.0.2`；
-   `github.run_number` 同时作为 CFBundleVersion。若需要重置递增序列或发布正式版，
-   需在工作流中显式调整 marketing version。
-4. 上传成功后，登录 App Store Connect → TestFlight → 添加外部测试者。
-   首次外部测试需苹果 Beta 审核（约 1-2 天）。
-5. 测试者手机装 TestFlight App → 接受邀请 → 安装 FutureOS。
+   - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution 证书。
+   - `IOS_PROVISIONING_PROFILE_BASE64` — 主 App 的 App Store provisioning profile。
+   - Share Extension 默认不进入现有发版；启用需要独立 profile 和后续签名流程配置，
+     见 [签名配置](docs/ios-platform-parity.md)，本次不修改工作流。
+   - `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — App Store Connect API Key。
+2. 通过构建/发布协调工作流触发；iOS 子工作流不单独手动触发。
+3. 协调工作流传入纯数字 marketing version 与递增 build number。
+4. 上传后在 App Store Connect → TestFlight 管理测试者，外部测试可能需要 Beta 审核。
+5. 测试者通过 TestFlight 邀请安装 FutureOS。
 
-> 版本号机制：本地测试包由 `scripts/version.mjs` 生成，可带开发后缀；TestFlight
-> 必须使用纯数字的 marketing version，当前为 `0.0.2`。其 build number 来自该
-> 工作流的 `github.run_number`，并且必须在同一 marketing version 内单调递增。
-> 正式版从 `1.0.0` 起，打 `vX.Y.Z` tag 触发 release。
+> 本地测试包由 `scripts/version.mjs` 生成，可带开发后缀；TestFlight 版本必须为纯数字，
+> 且 build number 在同一 marketing version 内单调递增。
 
 ### iOS 平台注意
 
