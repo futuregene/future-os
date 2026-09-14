@@ -263,6 +263,7 @@ impl Loop {
             // shared Registry before every actual LLM turn. The dynamic LLM
             // client independently resolves protocol, route, headers,
             // modalities and max-output tokens for the request itself.
+            let mut output_reserve = 0;
             if let (Some(registry), Some(manager)) =
                 (&self.model_registry, context_manager.as_mut())
             {
@@ -274,6 +275,7 @@ impl Loop {
                 if let Some((_identity, model, _api_key)) =
                     registry.read().resolve_request_target(model_ref)
                 {
+                    output_reserve = crate::models::effective_max_tokens(&model);
                     manager.context_window = model.context_window.max(1);
                     let (reserve_tokens, keep_recent_tokens) =
                         crate::compaction::context_token_budgets(manager.context_window);
@@ -283,6 +285,14 @@ impl Loop {
                 }
             }
 
+            // Ephemeral/direct Loop users may have no persistence callback.
+            // New assistant/tool messages still need stable in-memory IDs for
+            // checkpoint ranges across subsequent turns.
+            for message in &mut messages {
+                if message.journal_entry_id().is_none() {
+                    message.ensure_journal_entry_id();
+                }
+            }
             // Build a model-only projection from the immutable journal view.
             // A committed checkpoint changes this request's prompt but never
             // replaces `messages`, which remains the complete transcript.
@@ -296,12 +306,30 @@ impl Loop {
                 .try_into()
                 .ok()
                 .filter(|tokens: &u64| *tokens > 0);
-            let projected = crate::compaction::project_prompt_context(
+            let mut projected = crate::compaction::project_prompt_context(
                 &messages,
                 active_checkpoint.as_ref(),
                 reported_input,
                 context_window,
             );
+            // Reserve the post-checkpoint guidance as well, so committing the
+            // first checkpoint cannot make its next request exceed admission.
+            let budget_system = super::history_recall::system_prompt(
+                &ctx.system_prompt,
+                &self.session_id,
+                self.history_recall_allowed
+                    && tool_defs.iter().any(|tool| tool.function.name == "shell"),
+            );
+            crate::compaction::set_request_budget(
+                &mut projected,
+                &budget_system,
+                &tool_defs,
+                output_reserve,
+            );
+            let account_summary = |usage: &crate::types::Usage| {
+                self.record_auxiliary_usage(usage);
+                on_event(RunEvent::Model(ModelStreamEvent::Usage(usage.clone())));
+            };
             let automatic_phase = if turn == 0 {
                 crate::compaction::CompactionPhase::PreTurn
             } else {
@@ -337,7 +365,7 @@ impl Loop {
                     })
                 } else {
                     manager
-                        .prepare_semantic_with_lifecycle(
+                        .prepare_semantic_observed(
                             projected.clone(),
                             automatic_trigger,
                             automatic_phase,
@@ -346,6 +374,7 @@ impl Loop {
                             self.interrupt_flag.as_ref(),
                             None,
                             Some(&emit_automatic_started),
+                            Some(&account_summary),
                         )
                         .await
                 }
@@ -368,6 +397,8 @@ impl Loop {
                             return Err(error);
                         }
                     }
+                    self.last_prompt_tokens
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
                     active_checkpoint = Some((*checkpoint).clone());
                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
                     on_event(RunEvent::CompactionCommitted {
@@ -398,6 +429,16 @@ impl Loop {
                     }
                 }
             };
+            if let Some(manager) = &context_manager {
+                if prompt
+                    .usage
+                    .estimated_input_tokens
+                    .max(prompt.usage.input_tokens.unwrap_or(0))
+                    > manager.input_limit(&prompt)
+                {
+                    return Err(anyhow!("context input exceeds model capacity after reserving system/tools and output; reduce input or compact history"));
+                }
+            }
             let mut work_messages: Vec<AgentMessage> = prompt
                 .messages
                 .into_iter()
@@ -530,11 +571,17 @@ impl Loop {
                                 });
                                 return Err(error);
                             };
-                            let projected = crate::compaction::project_prompt_context(
+                            let mut projected = crate::compaction::project_prompt_context(
                                 &messages,
                                 active_checkpoint.as_ref(),
                                 None,
                                 manager.context_window.max(1) as u64,
+                            );
+                            crate::compaction::set_request_budget(
+                                &mut projected,
+                                &budget_system,
+                                &tool_defs,
+                                output_reserve,
                             );
                             let emit_provider_limit_started = || {
                                 on_event(RunEvent::CompactionStarted {
@@ -545,7 +592,7 @@ impl Loop {
                                 });
                             };
                             match manager
-                                .prepare_semantic_with_lifecycle(
+                                .prepare_semantic_observed(
                                     projected,
                                     crate::compaction::CompactionTrigger::ProviderContextLimit,
                                     provider_limit_phase,
@@ -554,6 +601,7 @@ impl Loop {
                                     self.interrupt_flag.as_ref(),
                                     None,
                                     Some(&emit_provider_limit_started),
+                                    Some(&account_summary),
                                 )
                                 .await
                             {
@@ -572,6 +620,8 @@ impl Loop {
                                             return Err(error);
                                         }
                                     }
+                                    self.last_prompt_tokens
+                                        .store(0, std::sync::atomic::Ordering::Relaxed);
                                     active_checkpoint = Some((*checkpoint).clone());
                                     provider_limit_checkpoint_id =
                                         Some(checkpoint.checkpoint_id.clone());
@@ -1440,6 +1490,24 @@ impl Loop {
         }
     }
 
+    /// Account an auxiliary summary once per completed/retried request without
+    /// replacing last_prompt_tokens (which describes the conversation request).
+    pub(crate) fn record_auxiliary_usage(&self, u: &crate::types::Usage) {
+        use std::sync::atomic::Ordering;
+        self.cumulative_input_tokens
+            .fetch_add(u.prompt_tokens.max(0), Ordering::Relaxed);
+        self.cumulative_output_tokens
+            .fetch_add(u.completion_tokens.max(0), Ordering::Relaxed);
+        self.cumulative_cache_read_tokens
+            .fetch_add(u.cache_read_tokens.unwrap_or(0).max(0), Ordering::Relaxed);
+        self.cumulative_cache_write_tokens
+            .fetch_add(u.cache_write_tokens.unwrap_or(0).max(0), Ordering::Relaxed);
+        let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
+        if cost.is_finite() && cost > 0.0 {
+            *self.cumulative_cost.lock() += cost;
+        }
+    }
+
     fn process_usage_event(
         &self,
         u: &crate::types::Usage,
@@ -1684,6 +1752,7 @@ mod tests {
         system_prompts: parking_lot::Mutex<Vec<String>>,
         requests: parking_lot::Mutex<Vec<Vec<AgentMessage>>>,
         request_times: parking_lot::Mutex<Vec<tokio::time::Instant>>,
+        fail_summary: std::sync::atomic::AtomicBool,
     }
 
     impl ScriptedProvider {
@@ -1693,6 +1762,7 @@ mod tests {
                 system_prompts: parking_lot::Mutex::new(vec![]),
                 requests: parking_lot::Mutex::new(vec![]),
                 request_times: parking_lot::Mutex::new(vec![]),
+                fail_summary: std::sync::atomic::AtomicBool::new(false),
             })
         }
     }
@@ -1707,6 +1777,9 @@ mod tests {
                 .system_prompt
                 .contains("context summarization agent")
             {
+                if self.fail_summary.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(anyhow!("summary service unavailable"));
+                }
                 let events = vec![
                     ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
                     ev_stop(),
@@ -1860,6 +1933,39 @@ mod tests {
 
     fn user_messages(text: &str) -> Vec<AgentMessage> {
         vec![AgentMessage::new_user("user", serde_json::json!(text))]
+    }
+
+    fn compactable_messages(output_bytes: usize) -> Vec<AgentMessage> {
+        let mut messages = vec![
+            AgentMessage::new_user("user", serde_json::json!("old request")),
+            AgentMessage {
+                role: "assistant".into(),
+                content: vec![
+                    ContentBlock::text("older reply"),
+                    ContentBlock::tool_call(
+                        "old-read",
+                        "read",
+                        serde_json::json!({"path":"large.rs"}),
+                        Default::default(),
+                    ),
+                ],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "tool".into(),
+                content: vec![ContentBlock::tool_result(
+                    "old-read",
+                    "x".repeat(output_bytes),
+                    false,
+                )],
+                ..Default::default()
+            },
+            AgentMessage::new_user("user", serde_json::json!("latest")),
+        ];
+        for message in &mut messages {
+            message.ensure_journal_entry_id();
+        }
+        messages
     }
 
     fn noop_on_text(_: String) {}
@@ -3401,7 +3507,7 @@ mod tests {
             enabled: false,
             reserve_tokens: 1,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8192,
             model: "mock".into(),
         });
         // A single short user message cannot be compacted → hard failure.
@@ -3568,26 +3674,11 @@ mod tests {
             enabled: false,
             reserve_tokens: 1,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8192,
             model: "mock".into(),
         });
-        // A long multi-turn history gives compaction a valid cut point.
-        let mut messages = Vec::new();
-        for i in 0..12 {
-            let role = if i % 2 == 0 { "user" } else { "assistant" };
-            messages.push(AgentMessage {
-                role: role.to_string(),
-                content: vec![ContentBlock::text(format!("message {i} ").repeat(200))],
-                ..Default::default()
-            });
-        }
-        messages.push(AgentMessage::new_user(
-            "user",
-            serde_json::json!("fresh question"),
-        ));
-        for message in &mut messages {
-            message.ensure_journal_entry_id();
-        }
+        // A complete historical tool exchange gives S2 removable evidence.
+        let messages = compactable_messages(20_000);
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let (text, _) = loop_
             .run_streaming_with_messages(
@@ -3624,22 +3715,10 @@ mod tests {
             enabled: false,
             reserve_tokens: 1,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8192,
             model: "mock".into(),
         });
-        let mut messages = Vec::new();
-        for index in 0..6 {
-            let role = if index % 2 == 0 { "user" } else { "assistant" };
-            let mut message = AgentMessage {
-                role: role.to_string(),
-                content: vec![ContentBlock::text(format!("history {index}"))],
-                ..Default::default()
-            };
-            message.ensure_journal_entry_id();
-            messages.push(message);
-        }
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
-        messages.last_mut().unwrap().ensure_journal_entry_id();
+        let messages = compactable_messages(20_000);
         let committed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let result = loop_
             .run_streaming_with_messages(
@@ -3681,13 +3760,7 @@ mod tests {
             model: "small".into(),
         });
         loop_.preflight_context_check = true;
-        let mut messages = user_messages("old");
-        messages.push(AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("older reply")],
-            ..Default::default()
-        });
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let messages = compactable_messages(40_000);
         let triggers = Arc::new(parking_lot::Mutex::new(Vec::new()));
 
         let (text, _) = loop_
@@ -3736,13 +3809,7 @@ mod tests {
             context_window: 8_192,
             model: "mock".into(),
         });
-        let mut messages = user_messages("old");
-        messages.push(AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("older reply")],
-            ..Default::default()
-        });
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let messages = compactable_messages(20_000);
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let (text, final_messages) = loop_
             .run_streaming_with_messages(
@@ -3766,27 +3833,24 @@ mod tests {
             .unwrap();
         assert_eq!(text, "ok");
         assert!(events.lock().contains(&"compaction_committed"));
-        assert_eq!(final_messages.len(), 4, "full journal history is retained");
+        assert_eq!(final_messages.len(), 5, "full journal history is retained");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn automatic_summary_failure_keeps_history_and_runs_the_model() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        provider
+            .fail_summary
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
             enabled: true,
-            reserve_tokens: 1,
+            reserve_tokens: 2000,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8192,
             model: "mock".into(),
         });
-        let mut messages = user_messages("old");
-        messages.push(AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("older reply")],
-            ..Default::default()
-        });
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let messages = compactable_messages(26_000);
         let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (text, final_messages) = loop_
             .run_streaming_with_messages(
@@ -3807,7 +3871,7 @@ mod tests {
             .unwrap();
         assert_eq!(text, "ok");
         assert!(failed.load(std::sync::atomic::Ordering::Relaxed));
-        assert_eq!(final_messages.len(), 4, "uncompacted history must survive");
+        assert_eq!(final_messages.len(), 5, "uncompacted history must survive");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3821,13 +3885,7 @@ mod tests {
             context_window: 8_192,
             model: "mock".into(),
         });
-        let mut messages = user_messages("old");
-        messages.push(AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("older reply")],
-            ..Default::default()
-        });
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let messages = compactable_messages(20_000);
         let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let result = loop_
             .run_streaming_with_messages(
@@ -3855,8 +3913,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_errors_when_compaction_has_no_journal_boundary() {
-        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+    async fn run_rejects_a_window_consumed_by_request_overhead() {
+        let provider = ScriptedProvider::new(vec![]);
         let mut loop_ = Loop::new(provider, "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {
             enabled: true,
@@ -3865,7 +3923,7 @@ mod tests {
             context_window: 1,
             model: "mock".into(),
         });
-        let result = loop_
+        let error = loop_
             .run_streaming_with_messages(
                 user_messages("hi"),
                 &StreamContext::default(),
@@ -3873,12 +3931,9 @@ mod tests {
                 |_| {},
                 None,
             )
-            .await;
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("no valid journal boundary"));
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("leave no input room"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -5106,13 +5161,7 @@ mod tests {
             context_window: 8192,
             model: "mock".into(),
         });
-        let mut messages = user_messages("old");
-        messages.push(AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("older reply")],
-            ..Default::default()
-        });
-        messages.push(AgentMessage::new_user("user", serde_json::json!("latest")));
+        let messages = compactable_messages(20_000);
         let (text, _) = loop_
             .run_streaming_with_messages(
                 messages,
@@ -5141,25 +5190,10 @@ mod tests {
             enabled: false,
             reserve_tokens: 1,
             keep_recent_tokens: 1,
-            context_window: 1,
+            context_window: 8192,
             model: "mock".into(),
         });
-        let mut messages = Vec::new();
-        for i in 0..12 {
-            let role = if i % 2 == 0 { "user" } else { "assistant" };
-            messages.push(AgentMessage {
-                role: role.to_string(),
-                content: vec![ContentBlock::text(format!("message {i} ").repeat(200))],
-                ..Default::default()
-            });
-        }
-        messages.push(AgentMessage::new_user(
-            "user",
-            serde_json::json!("fresh question"),
-        ));
-        for message in &mut messages {
-            message.ensure_journal_entry_id();
-        }
+        let messages = compactable_messages(20_000);
         let result = loop_
             .run_streaming_with_messages(
                 messages,

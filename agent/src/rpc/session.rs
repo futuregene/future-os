@@ -598,7 +598,7 @@ impl ServerSession {
             .try_into()
             .ok()
             .filter(|tokens: &u64| *tokens > 0);
-        let prompt = crate::compaction::project_prompt_context(
+        let mut prompt = crate::compaction::project_prompt_context(
             &messages,
             active_checkpoint.as_ref(),
             reported,
@@ -611,7 +611,7 @@ impl ServerSession {
             context_window,
             model: self.model.clone(),
         };
-        let (provider, interrupted, current_model) = {
+        let (provider, interrupted, current_model, summary_tools, mut accounting_loop) = {
             let loop_ = match self.agent_loop.try_read() {
                 Ok(loop_) => loop_,
                 Err(_) => {
@@ -634,8 +634,31 @@ impl ServerSession {
                 loop_.provider.clone(),
                 loop_.interrupt_flag.clone(),
                 loop_.model.clone(),
+                loop_.tools.clone(),
+                loop_.independent_copy(),
             )
         };
+        self.swap_token_counters_into_loop(&mut accounting_loop);
+        let budget_system = self.build_system_prompt(
+            &self.cwd,
+            summary_tools.clone(),
+            &self.model,
+            &self.thinking_level,
+        );
+        let tool_defs = summary_tools
+            .iter()
+            .map(|tool| tool.def.clone())
+            .collect::<Vec<_>>();
+        let max_output = self
+            .model_registry
+            .read()
+            .resolve(&self.model)
+            .map(|model| crate::models::effective_max_tokens(&model))
+            .unwrap_or(0);
+        crate::compaction::set_request_budget(&mut prompt, &budget_system, &tool_defs, max_output);
+        let projected_messages_before = prompt.messages.len();
+        let saw_usage = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let usage_flag = saw_usage.clone();
         let manager = crate::compaction::ContextManager {
             model: current_model,
             ..manager
@@ -653,7 +676,7 @@ impl ServerSession {
                 .map_err(anyhow::Error::from)?;
             runtime
                 .block_on(
-                    manager.prepare_semantic_with_lifecycle(
+                    manager.prepare_semantic_observed(
                         prompt,
                         trigger,
                         phase,
@@ -674,6 +697,10 @@ impl ServerSession {
                                 started_broadcaster.broadcast(event);
                             }
                         }),
+                        Some(&|usage| {
+                            usage_flag.store(true, Ordering::Relaxed);
+                            accounting_loop.record_auxiliary_usage(usage);
+                        }),
                     ),
                 )
                 .map_err(anyhow::Error::from)
@@ -681,7 +708,38 @@ impl ServerSession {
         .join()
         .map_err(|_| anyhow::anyhow!("context compaction worker panicked"))
         .and_then(std::convert::identity);
-        let prepared = match prepared {
+        let usage_persisted = if saw_usage.load(Ordering::Relaxed) && !self.ephemeral {
+            (|| -> anyhow::Result<()> {
+                for (key, value) in [
+                    (
+                        "tokens_in",
+                        serde_json::json!(self.tokens_in.load(Ordering::Relaxed)),
+                    ),
+                    (
+                        "tokens_out",
+                        serde_json::json!(self.tokens_out.load(Ordering::Relaxed)),
+                    ),
+                    (
+                        "tokens_cache_r",
+                        serde_json::json!(self.tokens_cache_r.load(Ordering::Relaxed)),
+                    ),
+                    (
+                        "tokens_cache_w",
+                        serde_json::json!(self.tokens_cache_w.load(Ordering::Relaxed)),
+                    ),
+                    (
+                        "total_cost",
+                        serde_json::json!(*self.cumulative_cost.lock()),
+                    ),
+                ] {
+                    self.persistence.update_info(key, value)?;
+                }
+                Ok(())
+            })()
+        } else {
+            Ok(())
+        };
+        let prepared = match prepared.and_then(|value| usage_persisted.map(|_| value)) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.compaction_in_progress.store(false, Ordering::Release);
@@ -706,7 +764,7 @@ impl ServerSession {
                 "summary": "",
                 "messagesRemoved": 0,
             })),
-            crate::compaction::ContextPreparation::Compacted { checkpoint, .. } => {
+            crate::compaction::ContextPreparation::Compacted { checkpoint, prompt } => {
                 if let Err(error) = self
                     .persistence
                     .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
@@ -723,6 +781,13 @@ impl ServerSession {
                         self.broadcaster.broadcast(event);
                     }
                     return Err(error);
+                }
+                self.last_prompt_tokens.store(0, Ordering::Relaxed);
+                if let Err(error) = self
+                    .persistence
+                    .update_info("last_prompt_tokens", serde_json::json!(0))
+                {
+                    tracing::warn!(%error, "checkpoint committed but usage-baseline persistence failed");
                 }
                 if let Ok(loop_) = self.agent_loop.try_write() {
                     *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
@@ -754,7 +819,9 @@ impl ServerSession {
                     "tokensBefore": checkpoint.tokens_before,
                     "tokensAfter": checkpoint.tokens_after,
                     "summary": summary,
-                    "messagesRemoved": checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),
+                    "messagesRemoved": projected_messages_before.saturating_sub(prompt.messages.len()),
+                    "tokensSaved": checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),
+                    "protectedEntries": checkpoint.protected_entry_ids.len(),
                 }))
             }
         }
@@ -1219,6 +1286,35 @@ mod tests {
                     })
                     .await;
             });
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    struct UsageSummaryProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for UsageSummaryProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            use tokio_stream::StreamExt;
+            let events = SummaryProvider
+                .stream_model(request)
+                .await?
+                .collect::<Vec<_>>()
+                .await;
+            let (tx, rx) = mpsc::channel(events.len() + 1);
+            for event in events {
+                tx.try_send(event).unwrap();
+            }
+            tx.try_send(ModelStreamEvent::Usage(crate::types::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                credit_cost: Some(0.125),
+                ..Default::default()
+            }))
+            .unwrap();
             Ok(ReceiverStream::new(rx))
         }
     }
@@ -2550,12 +2646,30 @@ mod tests {
             .store(50_000, std::sync::atomic::Ordering::Relaxed);
         {
             let mut messages = session.messages.write();
-            for i in 0..10 {
-                let role = if i % 2 == 0 { "user" } else { "assistant" };
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
                 messages.push(crate::types::AgentMessage {
-                    role: role.to_string(),
-                    content: vec![crate::types::ContentBlock::text(
-                        format!("message {i} ").repeat(2000),
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
                     )],
                     ..Default::default()
                 });
@@ -2579,12 +2693,30 @@ mod tests {
             .store(50_000, std::sync::atomic::Ordering::Relaxed);
         {
             let mut messages = session.messages.write();
-            for i in 0..10 {
-                let role = if i % 2 == 0 { "user" } else { "assistant" };
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
                 messages.push(crate::types::AgentMessage {
-                    role: role.to_string(),
-                    content: vec![crate::types::ContentBlock::text(
-                        format!("message {i} ").repeat(2000),
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
                     )],
                     ..Default::default()
                 });
@@ -3001,6 +3133,62 @@ mod tests {
     }
 
     #[test]
+    fn manual_summary_usage_is_persisted() {
+        let mut session = make_test_session("manual-summary-usage");
+        session.model = "glm-4.5v".into();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(UsageSummaryProvider);
+        let mut messages = vec![
+            crate::types::AgentMessage::new_user("user", serde_json::json!("keep my requirement")),
+            crate::types::AgentMessage::new_user("assistant", serde_json::json!("verified answer")),
+        ];
+        for message in &mut messages {
+            message.ensure_journal_entry_id();
+        }
+        let mut entries = vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd":session.cwd,"model":session.model}),
+            session.model.clone(),
+            session.thinking_level.clone(),
+        )];
+        entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+        *session.messages.write() = messages;
+        session.compact("").unwrap();
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            100
+        );
+        assert_eq!(
+            session
+                .tokens_out
+                .load(std::sync::atomic::Ordering::Relaxed),
+            20
+        );
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let info = stored
+            .entries
+            .iter()
+            .rev()
+            .find(|e| e.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+            .unwrap()
+            .content
+            .as_ref()
+            .unwrap();
+        assert_eq!(info["tokens_in"], 100);
+        assert_eq!(info["tokens_out"], 20);
+        assert_eq!(info["total_cost"], 0.125);
+    }
+
+    #[test]
     fn compact_with_real_history_reports_summary() {
         let mut session = make_test_session("compact");
         session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
@@ -3011,12 +3199,30 @@ mod tests {
             .store(50_000, std::sync::atomic::Ordering::Relaxed);
         {
             let mut messages = session.messages.write();
-            for i in 0..10 {
-                let role = if i % 2 == 0 { "user" } else { "assistant" };
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
                 messages.push(crate::types::AgentMessage {
-                    role: role.to_string(),
-                    content: vec![crate::types::ContentBlock::text(
-                        format!("message {i} ").repeat(2000),
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
                     )],
                     ..Default::default()
                 });
@@ -3129,9 +3335,14 @@ mod tests {
             None,
             64_000,
         );
-        assert_eq!(restored_prompt.messages.len(), 1);
+        assert_eq!(restored_prompt.messages.len(), 5);
+        assert_eq!(restored_prompt.messages[0].message.text(), "test the tools");
         assert_eq!(
-            restored_prompt.messages[0]
+            restored_prompt.messages[3].message.text(),
+            "all tool tests passed"
+        );
+        assert_eq!(
+            restored_prompt.messages[4]
                 .message
                 .metadata
                 .as_ref()
@@ -3176,17 +3387,36 @@ mod tests {
             .store(100_000, std::sync::atomic::Ordering::Relaxed);
         {
             let mut messages = session.messages.write();
-            for index in 0..10 {
-                let role = if index % 2 == 0 { "user" } else { "assistant" };
-                let mut message = crate::types::AgentMessage {
-                    role: role.to_string(),
-                    content: vec![crate::types::ContentBlock::text(
+            for index in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("history question {index}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("history answer {index}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("call-{index}"),
+                            "read",
+                            serde_json::json!({"path":"history.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("call-{index}"),
                         format!("history {index} ").repeat(4_000),
+                        false,
                     )],
                     ..Default::default()
-                };
+                });
+            }
+            for message in messages.iter_mut() {
                 message.ensure_journal_entry_id();
-                messages.push(message);
             }
             let mut entries = vec![crate::session::SessionEntry::session_info(
                 serde_json::json!({"cwd": session.cwd, "model": session.model}),

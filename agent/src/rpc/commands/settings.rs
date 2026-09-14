@@ -205,6 +205,18 @@ pub(crate) fn handle_compact(
             }),
         );
     }
+    {
+        let sess = session.read();
+        if sess.runtime.snapshot().is_some() || sess.is_streaming.load(Ordering::Acquire) {
+            return RpcResponse::build_fail_code(
+                id,
+                "compact",
+                "session_busy",
+                "finish or stop the active run before manual compaction",
+                serde_json::json!({"busy_reason":"run"}),
+            );
+        }
+    }
     if in_progress
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()

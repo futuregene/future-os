@@ -481,7 +481,9 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
         .filter_map(|(index, entry)| entry["id"].as_str().map(|id| (id, index)))
         .collect();
     for (index, entry) in result.entries.iter().enumerate() {
-        if entry["type"] == "compaction" && entry["content"]["schema_version"] == 2 {
+        if entry["type"] == "compaction"
+            && matches!(entry["content"]["schema_version"].as_u64(), Some(2 | 3))
+        {
             let content = &entry["content"];
             let start = content["covered_from_entry_id"]
                 .as_str()
@@ -489,7 +491,25 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
             let end = content["cutoff_entry_id"]
                 .as_str()
                 .and_then(|id| positions.get(id));
-            if !matches!((start, end), (Some(start), Some(end)) if start <= end && *end < index) {
+            let protected_valid = match content.get("protected_entry_ids") {
+                Some(value) => value.as_array().is_some_and(|ids| {
+                    ids.iter().all(|id| {
+                        id.as_str()
+                            .and_then(|id| positions.get(id))
+                            .is_some_and(|position| {
+                                end.is_some_and(|end| position <= end)
+                                    && matches!(
+                                        result.entries[*position]["type"].as_str(),
+                                        Some("user" | "assistant")
+                                    )
+                            })
+                    })
+                }),
+                None => content["schema_version"] != 3,
+            };
+            if !protected_valid
+                || !matches!((start, end), (Some(start), Some(end)) if start <= end && *end < index)
+            {
                 return Err(InvalidSource {
                     file: "transcript".into(),
                     line: 0,

@@ -160,6 +160,26 @@ fn set_sandbox_policy_missing_payload() {
 }
 
 #[test]
+fn compact_rejects_an_active_run_without_starting_a_worker() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let lease = session
+        .read()
+        .runtime
+        .begin(Some("active-run"), Some("active-request"))
+        .unwrap();
+    let response = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "session_busy");
+    assert!(!session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(session.read().runtime.begin_finalizing(&lease));
+    assert!(session.read().runtime.finish(&lease));
+}
+
+#[test]
 fn compact_empty_session_returns_async_ack() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();

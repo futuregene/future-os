@@ -1220,7 +1220,7 @@ impl ServerSession {
     /// write/memory guidelines. Read fresh each run (cwd-scoped).
     /// Point the agent loop's cumulative token/cost counters at this session's
     /// shared atomics so streaming updates are tracked per-session.
-    fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
+    pub(super) fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
         r#loop.cumulative_input_tokens = self.tokens_in.clone();
         r#loop.cumulative_output_tokens = self.tokens_out.clone();
         r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
@@ -1264,7 +1264,7 @@ impl ServerSession {
         *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
-    fn build_system_prompt(
+    pub(super) fn build_system_prompt(
         &self,
         cwd: &str,
         tools: Vec<crate::types::AgentTool>,
