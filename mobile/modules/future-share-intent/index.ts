@@ -25,8 +25,8 @@ const nativeModule = requireOptionalNativeModule<ShareIntentNativeModule>("Futur
 
 /**
  * Read and clear the payload of the share intent that started or resumed the
- * app. Resolves to null when the platform has no share intake (iOS: a share
- * extension target is not part of this build) or when nothing was shared.
+ * app. iOS drains the App Group inbox populated by the Share Extension.
+ * Resolves to null on older native builds or when nothing was shared.
  */
 export async function getPendingShare(): Promise<SharedContent | null> {
   if (!nativeModule) return null;

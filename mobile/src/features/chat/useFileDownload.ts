@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Platform } from "react-native";
 import * as Network from "expo-network";
 import * as Sharing from "expo-sharing";
-import { openFile as openAndroidFile } from "future-file-handler";
+import { openFile as openNativeFile, saveFile, supportsNativeFileActions } from "future-file-handler";
 import { File } from "expo-file-system";
 import * as LegacyFileSystem from "expo-file-system/legacy";
 import type { TFunction } from "i18next";
@@ -495,8 +495,8 @@ export function useFileDownload(
     [remote, setTransferProgress, showDownload, t, updateDownload],
   );
 
-  // Android uses distinct VIEW, SEND and SAF operations. iOS delegates to
-  // UIActivityViewController. Never require a VIEW handler to save or share.
+  // Distinct native open/save/share operations on both platforms. Older iOS
+  // native builds retain the share-sheet fallback. Saving needs no reader.
   const openOrShare = useCallback(
     async (
       info: DownloadInfo,
@@ -528,7 +528,8 @@ export function useFileDownload(
           }
           openMimeType = supported;
         }
-        const usesShareSheet = Platform.OS !== "android" || operation === "share";
+        const nativeIosAction = Platform.OS === "ios" && operation !== "share" && supportsNativeFileActions();
+        const usesShareSheet = operation === "share" || (Platform.OS !== "android" && !nativeIosAction);
         if (usesShareSheet && !(await Sharing.isAvailableAsync())) {
           handoffDownloadAlert(handle, t("attachment.shareUnavailable"));
           return;
@@ -567,18 +568,25 @@ export function useFileDownload(
         const namedFile = await namedExternalFile(file, info.name);
         if (handle.controller.signal.aborted) throw new TransferCancelledError();
         if (operation === "open" && Platform.OS === "android") {
-          await withNativePresentation(() => openAndroidFile(namedFile.uri, openMimeType));
+          await withNativePresentation(() => openNativeFile(namedFile.uri, openMimeType));
           return;
         }
-        const share = () => withNativePresentation(() => Sharing.shareAsync(namedFile.uri, {
-          mimeType: operation === "open" ? openMimeType : info.mimeType,
-          dialogTitle: t(`attachment.${operation}`),
-        }));
+        const present = () => withNativePresentation(() => {
+          if (nativeIosAction) {
+            return operation === "save"
+              ? saveFile(namedFile.uri)
+              : openNativeFile(namedFile.uri, openMimeType);
+          }
+          return Sharing.shareAsync(namedFile.uri, {
+            mimeType: operation === "open" ? openMimeType : info.mimeType,
+            dialogTitle: t(`attachment.${operation}`),
+          });
+        });
         if (Platform.OS === "ios") {
           // Wait for the progress Modal's onDismiss before presenting UIKit.
           // Once handed off, the system share sheet owns cancellation.
           handoffDownloadModal(handle, () => {
-            void share().catch(() => {
+            void present().catch(() => {
               if (!handle.controller.signal.aborted) {
                 Alert.alert(t("attachment.title"), t(errorKey));
               }
@@ -586,7 +594,7 @@ export function useFileDownload(
           });
           return;
         }
-        await share();
+        await present();
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
         handoffDownloadAlert(handle, t(errorKey));

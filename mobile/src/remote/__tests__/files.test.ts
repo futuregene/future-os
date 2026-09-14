@@ -4,8 +4,6 @@ import * as FS from "expo-file-system";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { Image, Platform } from "react-native";
-import { isPhotoPickerAvailable } from "future-native-ui";
-import { startActivityAsync } from "expo-intent-launcher";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
 import {
@@ -160,11 +158,6 @@ jest.mock("expo-image-picker", () => ({
   getPendingResultAsync: jest.fn(),
 }));
 
-jest.mock("future-native-ui", () => ({ isPhotoPickerAvailable: jest.fn(() => true) }));
-jest.mock("expo-intent-launcher", () => ({
-  startActivityAsync: jest.fn(),
-  ResultCode: { Success: -1 },
-}));
 
 jest.mock("expo-crypto", () => ({
   __esModule: true,
@@ -682,7 +675,6 @@ describe("pickFromAlbum", () => {
     "%s opens the system album without requesting full-library access",
     async os => {
       Platform.OS = os;
-      jest.mocked(isPhotoPickerAvailable).mockReturnValue(true);
       mockedRequestLibrary.mockResolvedValue({ granted: false });
       mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
       await pickFromAlbum([]);
@@ -690,13 +682,11 @@ describe("pickFromAlbum", () => {
       expect(mockedLaunchLibrary).toHaveBeenCalledWith(
         expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: 4 }),
       );
-      expect(startActivityAsync).not.toHaveBeenCalled();
     },
   );
 
   test("Android delegates backport/fallback selection to the native photo contract, never an app resolver", async () => {
     Platform.OS = "android";
-    jest.mocked(isPhotoPickerAvailable).mockReturnValue(false);
     mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets: [
       { uri: "file:///album/one.png", mimeType: "image/png" },
       { uri: "file:///album/two.png", mimeType: "image/png" },
@@ -705,7 +695,6 @@ describe("pickFromAlbum", () => {
     const result = await pickFromAlbum([]);
     expect(result.map(item => item.name)).toEqual(["one.png", "two.png"]);
     expect(mockedLaunchLibrary).toHaveBeenCalledWith(expect.objectContaining({ allowsMultipleSelection: true, allowsEditing: false, legacy: false }));
-    expect(startActivityAsync).not.toHaveBeenCalled();
     expect(mockFS.File.pickFileAsync).not.toHaveBeenCalled();
     expect(mockedRequestLibrary).not.toHaveBeenCalled();
   });
@@ -713,7 +702,6 @@ describe("pickFromAlbum", () => {
   test("propagates native picker errors without trying a different app", async () => {
     mockedLaunchLibrary.mockRejectedValueOnce(new Error("No activity found"));
     await expect(pickFromAlbum([])).rejects.toThrow("No activity found");
-    expect(startActivityAsync).not.toHaveBeenCalled();
   });
 
   test("does not open a picker when the image quota is full", async () => {
@@ -721,7 +709,6 @@ describe("pickFromAlbum", () => {
       pickFromAlbum(Array.from({ length: 4 }, () => attachment({ kind: "image" }))),
     ).rejects.toThrow("attachment_image_count");
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
-    expect(startActivityAsync).not.toHaveBeenCalled();
   });
 
   test("returns existing attachments when the library is cancelled", async () => {
