@@ -24,7 +24,17 @@ impl InstanceGuard {
             .open(directory.join("desktop.lock"))
             .map_err(|e| format!("Open Desktop lock: {e}"))?;
         fs2::FileExt::try_lock_exclusive(&file).map_err(|e| {
-            format!("Another Desktop (GUI or headless) may be using this data directory: {e}")
+            if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                format!(
+                    "Desktop is already running for data directory {}. \
+                     GUI and headless mode cannot use the same data directory at the same time. \
+                     Please quit the running Desktop first (Ctrl+C if it is running with --headless), \
+                     then try again.",
+                    directory.display()
+                )
+            } else {
+                format!("Could not lock Desktop data directory {}: {e}", directory.display())
+            }
         })?;
         Ok(Self { _file: file })
     }
@@ -38,9 +48,27 @@ mod tests {
     fn excludes_second_owner_and_releases_on_drop() {
         let directory = tempfile::tempdir().unwrap();
         let guard = InstanceGuard::at(directory.path()).unwrap();
-        assert!(InstanceGuard::at(directory.path()).is_err());
+        let error = InstanceGuard::at(directory.path())
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("Desktop is already running"), "{error}");
+        assert!(error.contains("--headless"), "{error}");
+        assert!(
+            error.contains(&directory.path().display().to_string()),
+            "{error}"
+        );
+        assert!(!error.contains("os error"), "{error}");
         drop(guard);
         assert!(InstanceGuard::at(directory.path()).is_ok());
+    }
+
+    #[test]
+    fn directory_errors_are_not_reported_as_another_instance() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let error = InstanceGuard::at(file.path()).err().unwrap().to_string();
+        assert!(error.contains("Create Desktop directory"), "{error}");
+        assert!(!error.contains("already running"), "{error}");
     }
 
     #[test]

@@ -19,8 +19,13 @@ fn main() -> std::process::ExitCode {
             #[cfg(feature = "gui")]
             {
                 configure_environment();
-                futureos_lib::run();
-                std::process::ExitCode::SUCCESS
+                match futureos_lib::run() {
+                    Ok(()) => std::process::ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("FutureOS: {error}");
+                        std::process::ExitCode::FAILURE
+                    }
+                }
             }
             #[cfg(not(feature = "gui"))]
             {
@@ -35,14 +40,10 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// The executable uses the console subsystem so shells wait for --headless
-/// and Ctrl+C reaches it. Ordinary GUI launches detach their console instead.
+/// Suppress macOS activity logs for graphical launches. Windows console
+/// detachment happens only after the GUI has acquired its instance lock.
 #[cfg(any(feature = "gui", test))]
 fn configure_environment() {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        let _ = windows::Win32::System::Console::FreeConsole();
-    }
     #[cfg(target_os = "macos")]
     std::env::set_var("OS_ACTIVITY_MODE", "disable");
 }
