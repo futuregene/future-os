@@ -131,6 +131,41 @@ describe("markdownContent block rendering", () => {
 });
 
 describe("markdownContent reference resolution", () => {
+  it.each(["https://example.com/report", "./report.md"])("resolves local images inside a link to %s", async (href) => {
+    resolveReferencesMock.mockImplementation(async (_workspace, refs) => (refs as Array<{ targetId: string }>).map(ref => ({
+      targetType: "file",
+      targetId: ref.targetId,
+      status: "resolved",
+      data: { path: `/w/${ref.targetId}`, name: ref.targetId, insideWorkspace: true, relativePath: ref.targetId },
+    })));
+    const { container, cleanup } = mount(<MarkdownContent content={`[![chart](assets/linked.png)](${href})`} workspaceId={`linked-${href}`} />);
+    await flushStore();
+    await flushAsync();
+    expect(container.querySelector("a img")?.getAttribute("src")).toBe("asset:/w/assets/linked.png");
+    expect(container.querySelector("a button")).toBeNull();
+    cleanup();
+  });
+
+  it("still refuses to auto-read workspace-external images", async () => {
+    prepareImagePreviewUrlMock.mockClear();
+    resolveReferencesMock.mockResolvedValue([{
+      targetType: "file",
+      targetId: "/outside/a.png",
+      status: "resolved",
+      data: { path: "/outside/a.png", name: "a.png", insideWorkspace: false, relativePath: null },
+    }]);
+    const { container, cleanup } = mount(<MarkdownContent content="![outside](/outside/a.png)" workspaceId="outside-image" />);
+    await flushStore();
+    await flushAsync();
+    expect(container.querySelector("img")).toBeNull();
+    expect(prepareImagePreviewUrlMock).not.toHaveBeenCalled();
+    act(() => container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushAsync();
+    expect(prepareImagePreviewUrlMock).toHaveBeenCalledWith("/outside/a.png");
+    expect(container.querySelector("img")).not.toBeNull();
+    cleanup();
+  });
+
   it("resolves a file reference into a FileLink once the store resolves", async () => {
     resolveReferencesMock.mockResolvedValue([{
       targetType: "file",

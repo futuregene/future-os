@@ -3,7 +3,11 @@
     "copyCode": "复制代码"
   },
   "image": {
-    "unavailable": "图片不可用"
+    "unavailable": "图片不可用",
+    "retry": "重新加载图片",
+    "load": "在正文中加载图片",
+    "expand": "展开图片",
+    "collapse": "收起图片"
   },
   "embed": {
     "artifactPayloadInvalid": "artifact 数据无效",

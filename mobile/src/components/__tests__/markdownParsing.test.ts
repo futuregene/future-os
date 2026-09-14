@@ -1,6 +1,14 @@
 import { createStreamingMarkdownParser, parseFutureMarkdown } from "@future-os/markdown";
 
 describe("Markdown syntax fidelity", () => {
+  test("collects images inside links and preserves rich local-file labels", () => {
+    const document = parseFutureMarkdown("[![chart](assets/a.png)](https://example.com) [![local](assets/b.png)](./report.md) [**bold**](./report.md)");
+    expect(document.references.map(ref => ref.targetId)).toEqual(["assets/a.png", "report.md", "assets/b.png", "report.md"]);
+    expect(document.references.find(ref => ref.targetId === "report.md")?.label).toBe("local");
+    expect(JSON.stringify(document.nodes)).toContain('"type":"image"');
+    expect(JSON.stringify(document.nodes)).toContain('"type":"strong"');
+  });
+
   test("preserves all six heading levels", () => {
     const document = parseFutureMarkdown(Array.from({ length: 6 }, (_, i) => `${"#".repeat(i + 1)} Heading`).join("\n\n"));
     expect(document.nodes.map(node => node.type === "heading" ? node.level : null)).toEqual([1, 2, 3, 4, 5, 6]);

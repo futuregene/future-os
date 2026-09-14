@@ -20,7 +20,7 @@ export type InlineNode =
   | { type: "break" }
   | { children: InlineNode[]; href: string; type: "link" }
   | { alt: string; src: string; title?: string; type: "image" }
-  | { reference: FutureReference; type: "futureReference" }
+  | { reference: FutureReference; children?: InlineNode[]; type: "futureReference" }
   | { code: string; displayMode: false; type: "mathInline" };
 
 export interface ListItemNode {

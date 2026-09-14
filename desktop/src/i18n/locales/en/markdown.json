@@ -3,7 +3,11 @@
     "copyCode": "Copy code"
   },
   "image": {
-    "unavailable": "Image unavailable"
+    "unavailable": "Image unavailable",
+    "retry": "Retry image",
+    "load": "Load image here",
+    "expand": "Expand image",
+    "collapse": "Collapse image"
   },
   "embed": {
     "artifactPayloadInvalid": "artifact payload is invalid",

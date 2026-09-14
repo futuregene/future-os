@@ -1,11 +1,11 @@
 import type { ReactNode } from "react";
 import { classifyMarkdownTarget, remoteMarkdownImageUrl } from "@future-os/markdown";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openExternalUrl } from "../../../integrations/storage/files";
 import { copyText } from "../../../lib/clipboard";
 import { usePreviewMarkdown } from "../PreviewMarkdownContext";
 import { LinkContextMenu } from "./LinkContextMenu";
+import { MarkdownImageView } from "./MarkdownImageView";
 import { useLinkContextMenu } from "./useLinkContextMenu";
 
 /**
@@ -71,15 +71,16 @@ export function SafeImage({
   alt,
   src,
   title,
+  linked,
 }: {
   alt: string;
   src: string;
   title?: string;
+  linked?: boolean;
 }) {
   const { t } = useTranslation("markdown");
-  const [failed, setFailed] = useState(false);
   const safeSrc = remoteMarkdownImageUrl(src);
-  if (!safeSrc || failed) {
+  if (!safeSrc) {
     return (
       <span
         className="inline-flex max-w-full items-center rounded-md border border-dashed border-line-soft bg-surface-subtle px-2 py-1 text-sm text-ink-muted"
@@ -90,13 +91,5 @@ export function SafeImage({
     );
   }
 
-  return (
-    <img
-      alt={alt}
-      className="my-2 max-h-80 max-w-full rounded-md border border-line-soft object-contain"
-      onError={() => setFailed(true)}
-      src={safeSrc}
-      title={title}
-    />
-  );
+  return <MarkdownImageView alt={alt} linked={linked} src={safeSrc} title={title} />;
 }

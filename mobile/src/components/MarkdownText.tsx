@@ -10,13 +10,16 @@ import {
 import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { StyleProp, TextStyle } from "react-native";
-import { Alert, Image, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Alert, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
+import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
 
 interface MarkdownTextProps {
   /** Message links can fetch local files; file previews never nest previews. */
   mode?: "message" | "file-preview";
   text: string;
+  /** Original desktop document path, not its downloaded phone cache URI. */
+  imageBasePath?: string;
   streaming?: boolean;
   /** Route local-file markdown links/images to the caller's preview flow. */
   onOpenFile?(path: string): void;
@@ -88,7 +91,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
         if (reference.targetType !== "file") return label;
         return (
           <Text key={key} onPress={() => openTarget(reference.targetId)} style={styles.link}>
-            {label}
+            {node.children ? renderInline(node.children, openTarget, key) : label}
           </Text>
         );
       }
@@ -108,12 +111,12 @@ function inlineRuns(nodes: InlineNode[]): InlineRun[] {
   const runs: InlineRun[] = [];
   for (const node of nodes) {
     let parts: InlineRun[];
-    if (node.type === "image" && remoteMarkdownImageUrl(node.src)) {
+    if (node.type === "image" && (remoteMarkdownImageUrl(node.src) || localFilePath(node.src))) {
       parts = [{ image: node }];
-    } else if ("children" in node) {
+    } else if ("children" in node && node.children) {
       parts = inlineRuns(node.children).map(run => "nodes" in run
         ? { nodes: [{ ...node, children: run.nodes }] }
-        : { ...run, href: node.type === "link" ? node.href : run.href });
+        : { ...run, href: node.type === "link" ? node.href : node.type === "futureReference" ? node.reference.targetId : run.href });
     } else {
       parts = [{ nodes: [node] }];
     }
@@ -138,33 +141,8 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
         {renderInline(run.nodes, openTarget, `run${index}`)}
       </Text>
     );
-    const url = remoteMarkdownImageUrl(run.image.src)!;
-    const image = <RemoteMarkdownImage key={url} alt={run.image.alt} url={url} />;
-    const target = run.href ? classifyMarkdownTarget(run.href) : null;
-    return target?.kind === "external-url" || target?.kind === "local-file" ? (
-      <Pressable key={index} accessibilityRole="link" accessibilityLabel={run.image.alt || run.href} onPress={() => openTarget(run.href!)}>
-        {image}
-      </Pressable>
-    ) : <View key={index}>{image}</View>;
+    return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} href={run.href} openTarget={openTarget} />;
   });
-}
-
-function RemoteMarkdownImage({ alt, url }: { alt: string; url: string }) {
-  const [failed, setFailed] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState(1.5);
-  if (failed) return <Text selectable style={styles.imageFallback}>{alt || url}</Text>;
-  return (
-    <Image
-      accessibilityLabel={alt}
-      onError={() => setFailed(true)}
-      onLoad={({ nativeEvent: { source } }) => {
-        if (source.width > 0 && source.height > 0) setAspectRatio(source.width / source.height);
-      }}
-      resizeMode="contain"
-      source={{ uri: url }}
-      style={[styles.remoteImage, { aspectRatio }]}
-    />
-  );
 }
 
 function CodeSource({ code, language }: { code: string; language?: string }) {
@@ -334,7 +312,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ node, openTarget, isLast }: 
   return renderBlock(node, openTarget, "block", isLast);
 });
 
-export function MarkdownText({ text, onOpenFile, mode = "message", streaming = false }: MarkdownTextProps) {
+export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message", streaming = false }: MarkdownTextProps) {
   const { t } = useTranslation();
   const [project] = useState(createStreamingMarkdownParser);
   const document = useMemo(() => project(text, streaming), [project, text, streaming]);
@@ -353,9 +331,9 @@ export function MarkdownText({ text, onOpenFile, mode = "message", streaming = f
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
   }, [mode, onOpenFile, t]);
-  return <View style={styles.constrained}>{document.nodes.map((node, index) => (
+  return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
     <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1} />
-  ))}</View>;
+  ))}</View></MarkdownImageBasePathContext>;
 }
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
@@ -402,13 +380,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     overflow: "hidden",
   },
-  remoteImage: {
-    width: "100%",
-    marginVertical: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  imageFallback: { color: colors.inkMuted },
   rule: { height: 1, marginVertical: spacing.md, backgroundColor: colors.line },
   codeContainer: {
     maxWidth: "100%",

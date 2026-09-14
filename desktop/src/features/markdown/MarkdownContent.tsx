@@ -189,16 +189,16 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
   }
 }
 
-function renderInline(nodes: InlineNode[], workspaceId: string | null | undefined, parentKey: string) {
+function renderInline(nodes: InlineNode[], workspaceId: string | null | undefined, parentKey: string, linked = false) {
   return nodes.map<ReactNode>((node, index) => {
     const key = `${parentKey}:in${index}`;
     switch (node.type) {
       case "strong":
-        return <strong className="font-semibold text-ink" key={key}>{renderInline(node.children, workspaceId, key)}</strong>;
+        return <strong className="font-semibold text-ink" key={key}>{renderInline(node.children, workspaceId, key, linked)}</strong>;
       case "italic":
-        return <em className="italic" key={key}>{renderInline(node.children, workspaceId, key)}</em>;
+        return <em className="italic" key={key}>{renderInline(node.children, workspaceId, key, linked)}</em>;
       case "delete":
-        return <del className="text-ink-muted" key={key}>{renderInline(node.children, workspaceId, key)}</del>;
+        return <del className="text-ink-muted" key={key}>{renderInline(node.children, workspaceId, key, linked)}</del>;
       case "code":
         return (
           <code className="rounded bg-surface-subtle px-1 py-0.5 text-[0.92em] text-ink" key={key}>
@@ -208,11 +208,15 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
       case "break":
         return <br key={key} />;
       case "link":
-        return <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key)}</SafeLink>;
+        return <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key, true)}</SafeLink>;
       case "image":
-        return <MarkdownImage alt={node.alt} key={key} src={node.src} title={node.title} workspaceId={workspaceId} />;
+        return <MarkdownImage alt={node.alt} key={key} linked={linked} src={node.src} title={node.title} workspaceId={workspaceId} />;
       case "futureReference":
-        return <FutureReferenceChip key={key} reference={node.reference} workspaceId={workspaceId} />;
+        return (
+          <FutureReferenceChip key={key} reference={node.reference} workspaceId={workspaceId}>
+            {node.children ? renderInline(node.children, workspaceId, key, true) : undefined}
+          </FutureReferenceChip>
+        );
       case "mathInline":
         return <MathInline code={node.code} key={key} />;
       default:
@@ -273,27 +277,31 @@ function withStableKeys<T>(items: T[], seed: string) {
 function FutureReferenceChip({
   reference,
   workspaceId,
+  children,
 }: {
   reference: FutureReference;
   workspaceId: string | null | undefined;
+  children?: ReactNode;
 }) {
   const preview = usePreviewMarkdown();
   // In preview mode a file link resolves against the previewed file's directory
   // (there is no workspace root), bypassing the workspace-scoped reference store.
   if (preview && reference.targetType === "file")
-    return <PreviewFileReference basePath={preview.basePath} reference={reference} />;
-  return <WorkspaceFutureReference reference={reference} workspaceId={workspaceId} />;
+    return <PreviewFileReference basePath={preview.basePath} reference={reference}>{children}</PreviewFileReference>;
+  return <WorkspaceFutureReference reference={reference} workspaceId={workspaceId}>{children}</WorkspaceFutureReference>;
 }
 
 function WorkspaceFutureReference({
   reference,
   workspaceId,
+  children,
 }: {
   reference: FutureReference;
   workspaceId: string | null | undefined;
+  children?: ReactNode;
 }) {
   const resolved = useFutureReference(workspaceId, reference);
-  const fileLink = renderFileReference(reference, resolved);
+  const fileLink = renderFileReference(reference, resolved, children);
   if (fileLink)
     return fileLink;
   /* v8 ignore next -- minimal link mode: inline references are always files,
@@ -304,20 +312,22 @@ function WorkspaceFutureReference({
 function PreviewFileReference({
   basePath,
   reference,
+  children,
 }: {
   basePath: string;
   reference: FutureReference;
+  children?: ReactNode;
 }) {
   const resolved = usePreviewLinkPath(basePath, reference.targetId);
   if (!resolved)
-    return <PendingReference reference={reference} />;
+    return children ?? <PendingReference reference={reference} />;
   const file: StoredFile = {
     path: resolved.path,
     name: resolved.name,
     insideWorkspace: false,
     relativePath: null,
   };
-  return <FileLink file={file} />;
+  return <FileLink file={file}>{children}</FileLink>;
 }
 
 function FutureEmbedView({
