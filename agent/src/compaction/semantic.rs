@@ -28,7 +28,8 @@ const MAX_TRANSIENT_RETRIES: usize = 2;
 // smaller configured values intact, but cap the manual tail at a useful size.
 const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
-const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language."#;
+const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
+Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed."#;
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
 
@@ -1053,7 +1054,7 @@ fn tool_excerpt(value: &str, max_chars: usize) -> String {
         .into_iter()
         .rev()
         .collect::<String>();
-    format!("{head}\n[truncated for compaction] Query the history entry for the full stored output.\n{tail}")
+    format!("{head}\n[truncated for compaction] Middle omitted; only head and tail are shown. Missing content is unknown, not evidence of absence. Query the history entry for the full stored output.\n{tail}")
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -1726,6 +1727,8 @@ mod tests {
         assert!(serialized.contains("HEAD"));
         assert!(serialized.contains("TAIL_ERROR"));
         assert!(serialized.contains("History entry entry-source"));
+        assert!(serialized.contains("not evidence of absence"));
+        assert!(SUMMARY_SYSTEM_PROMPT.contains("omitted content remains unknown"));
     }
 
     #[test]

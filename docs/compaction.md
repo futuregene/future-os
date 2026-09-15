@@ -61,7 +61,10 @@ rejected while a run is active; automatic mid-run compaction stays in that run.
 - Budget instructions, template, prior accumulator, wrappers, output and margin
   before selecting each chunk. Large input is folded in bounded chunks.
 - Tool excerpts retain both head and tail; serialized inputs include true history
-  entry IDs so useful references can survive summarization.
+  entry IDs so useful references can survive summarization. An omitted middle
+  remains unknown: absence in an excerpt must not become a claim that the full
+  result contains no relevant data/errors or only filler. Successful execution
+  is not proof that every requested validation passed.
 - Reject incomplete/oversized/structurally invalid summaries. Cancellation is
   checked while connecting and waiting for stream events. Retries are bounded.
 - Only provider-context-limit recovery may use the deterministic emergency path;
