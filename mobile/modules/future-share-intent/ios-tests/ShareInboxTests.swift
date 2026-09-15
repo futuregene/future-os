@@ -68,6 +68,25 @@ struct ShareInboxTests {
     try inbox.commit(InboxPayload(tooLarge: true), directory: dropped)
     expect(tryValue { try inbox.take(into: cache)?.0.tooLarge == true }, "Oversize information must survive")
 
+    // Open In requires no App Group and leaves the original file unchanged.
+    for name in ["报告.doc", "报告.docx", "报告.pdf", "幻灯片.pptx", "笔记.md", "图.jpeg", "图.png"] {
+      let document = root.appendingPathComponent(name)
+      try Data("opened document".utf8).write(to: document)
+      try inbox.importFile(from: document, mimeType: "application/octet-stream")
+      let opened = try inbox.take(into: cache)!
+      expect(opened.0.files.count == 1 && opened.0.files[0].name == name, "Open In must preserve Unicode filename/extension")
+      expect(opened.0.files[0].mimeType == "application/octet-stream", "Open In preserves supplied MIME")
+      expect(tryValue { try Data(contentsOf: opened.1.appendingPathComponent(opened.0.files[0].path)) == Data(contentsOf: document) }, "Open In copies source bytes")
+      expect(tryValue { try inbox.take(into: cache) == nil }, "Open In consumed exactly once")
+    }
+    try inbox.importFile(from: large, mimeType: "application/pdf")
+    expect(tryValue { try inbox.take(into: cache)?.0.tooLarge == true }, "Open In reports oversized files")
+    expectFailure { try inbox.importFile(from: symlink, mimeType: "text/plain") }
+    expectFailure { try inbox.importFile(from: root, mimeType: "text/plain") }
+    expectFailure { try inbox.importFile(from: root.appendingPathComponent("missing"), mimeType: "text/plain") }
+    let leftovers = try fm.contentsOfDirectory(at: inbox.root, includingPropertiesForKeys: nil)
+    expect(!leftovers.contains { $0.pathExtension == "staging" }, "Failed opens must clean staging directories")
+
     for _ in 0..<ShareInbox.maxPending { _ = try inbox.begin() }
     expectFailure { _ = try inbox.begin() }
     expect(tryValue { try inbox.take(into: cache) == nil }, "In-flight batches do not appear as ready")

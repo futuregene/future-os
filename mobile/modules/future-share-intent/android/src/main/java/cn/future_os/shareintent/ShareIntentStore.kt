@@ -16,6 +16,7 @@ data class SharedContent(
   val files: List<SharedFile>,
   /** At least one shared file exceeded the per-file, batch-byte or item-count limit. */
   val tooLarge: Boolean,
+  val failed: Boolean = false,
 )
 
 /**
@@ -30,7 +31,8 @@ data class SharedContent(
  *
  * Only the most recent share is kept: sharing something twice before the app
  * reads the first payload should not queue two conversations. Nothing is stored
- * for a non-share intent (the launcher intent, a `futureos://` deep link).
+ * for an unrelated intent (the launcher intent, a `futureos://` deep link).
+ * ACTION_VIEW documents use the same private-copy/attachment path as shares.
  */
 object ShareIntentStore {
   /** Per-file ceiling. The composer validates against its own (smaller) limit. */
@@ -42,18 +44,26 @@ object ShareIntentStore {
   private val lock = Any()
   private var pending: PendingShare? = null
 
+  @Volatile
+  var onPending: (() -> Unit)? = null
+
   private class PendingShare(val text: String, val uris: List<Uri>, val mimeType: String?)
 
   /** Record a share intent. Safe to call with any intent, including null. */
   fun capture(intent: Intent?) {
     val action = intent?.action ?: return
-    if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-    val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
-    val uris = streamUris(intent)
+    val opening = action == Intent.ACTION_VIEW
+    if (!opening && action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+    // Open In carries its document in data, not EXTRA_STREAM. Only accept
+    // provider-granted content URIs; never treat deep links or private paths as files.
+    val uris = if (opening) listOfNotNull(intent.data?.takeIf { it.scheme == "content" })
+      else streamUris(intent)
+    val text = if (opening) "" else intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
     if (text.isBlank() && uris.isEmpty()) return
     synchronized(lock) {
       pending = PendingShare(text, uris, intent.type)
     }
+    onPending?.invoke()
   }
 
   /**
@@ -73,6 +83,7 @@ object ShareIntentStore {
 
     prune(context)
     var tooLarge = share.uris.size > ShareFileCopier.MAX_FILES
+    var failed = false
     val budget = ShareFileCopier.Budget()
     val files = mutableListOf<SharedFile>()
     share.uris.take(ShareFileCopier.MAX_FILES).forEachIndexed { index, uri ->
@@ -82,7 +93,8 @@ object ShareIntentStore {
         budget.beginFile()
         val name = displayName(context, uri) ?: "shared-${index + 1}${extensionFor(share.mimeType)}"
         target = File(shareDirectory(context), "${UUID.randomUUID()}-$name")
-        val input = context.contentResolver.openInputStream(uri) ?: return@forEachIndexed
+        val input = context.contentResolver.openInputStream(uri)
+          ?: throw java.io.IOException("Document provider returned no stream")
         ShareFileCopier.copy(input, target, budget)
         files.add(
           SharedFile(
@@ -98,13 +110,14 @@ object ShareIntentStore {
         tooLarge = true
       } catch (_: Exception) {
         // A single unreadable item must not discard the rest of the share.
+        failed = true
       } finally {
         // Also covers metadata/URI failures after copying has succeeded.
         if (!retained) target?.delete()
       }
     }
-    if (share.text.isBlank() && files.isEmpty() && !tooLarge) return null
-    return SharedContent(text = share.text, files = files, tooLarge = tooLarge)
+    if (share.text.isBlank() && files.isEmpty() && !tooLarge && !failed) return null
+    return SharedContent(text = share.text, files = files, tooLarge = tooLarge, failed = failed)
   }
 
   /** Whether a share is waiting, without consuming it (used by tests). */

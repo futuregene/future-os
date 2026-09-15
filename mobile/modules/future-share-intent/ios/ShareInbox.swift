@@ -62,6 +62,23 @@ final class ShareInbox {
     }
   }
 
+  // Open In uses a host-local inbox, not the optional extension's App Group.
+  // The caller owns security-scoped access and file coordination during this copy.
+  func importFile(from source: URL, mimeType: String) throws {
+    let directory = try begin()
+    defer { try? fm.removeItem(at: directory) }
+    let ext = source.pathExtension
+    let filename = UUID().uuidString + (ext.isEmpty ? "" : "." + ext)
+    var payload = InboxPayload()
+    do {
+      _ = try Self.copyFile(from: source, to: directory.appendingPathComponent(filename), remaining: Self.maxTotalBytes)
+      payload.files = [InboxFile(path: filename, name: source.lastPathComponent, mimeType: mimeType)]
+    } catch ShareInboxError.tooLarge {
+      payload.tooLarge = true
+    }
+    try commit(payload, directory: directory)
+  }
+
   // Called only after pairing. Move to the app's cache before removing the queue
   // entry; a failed move leaves the share available for the next foreground read.
   func take(into cache: URL) throws -> (InboxPayload, URL)? {

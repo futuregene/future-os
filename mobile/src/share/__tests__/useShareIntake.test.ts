@@ -1,7 +1,7 @@
 import { createElement, useEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { AppState } from "react-native";
-import { getPendingShare } from "future-share-intent";
+import { addPendingShareListener, getPendingShare } from "future-share-intent";
 import { showToast } from "../../features/chat/utils";
 import { useRemoteControls as useRemote } from "../../remote/RemoteContext";
 import {
@@ -14,7 +14,10 @@ import type { MobileAttachment } from "../../remote/types";
 import { useShareIntake } from "../useShareIntake";
 const NEW_CONVERSATION_DRAFT_KEY = "desktop:draft:new";
 
-jest.mock("future-share-intent", () => ({ getPendingShare: jest.fn() }));
+jest.mock("future-share-intent", () => ({
+  getPendingShare: jest.fn(),
+  addPendingShareListener: jest.fn(() => ({ remove: jest.fn() })),
+}));
 jest.mock("../../remote/draftStorage", () => ({
   NEW_CONVERSATION_DRAFT_KEY: "draft:new",
   loadSessionDraft: jest.fn(),
@@ -337,6 +340,51 @@ test("re-reads the inbox on every return to the foreground", async () => {
   act(() => appStateListener()("active"));
   await flush();
   expect(mockedGetPendingShare).toHaveBeenCalledTimes(2);
+});
+
+test("receives an Open In document while already active, without uploading or changing drafts", async () => {
+  render();
+  await flush();
+  const share = {
+    text: "", tooLarge: false,
+    files: [{ uri: "file:///cache/report.pdf", name: "report.pdf", mimeType: "application/pdf" }],
+  };
+  mockedGetPendingShare.mockResolvedValueOnce(share);
+  act(() => (addPendingShareListener as jest.Mock).mock.calls.at(-1)[0]());
+  await flush();
+  expect(intake.pending?.share).toEqual(share);
+  expect(mockedPrepare).not.toHaveBeenCalled();
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(newConversation).not.toHaveBeenCalled();
+});
+
+test("retries a native receipt arriving during an empty inbox read", async () => {
+  let release!: (value: null) => void;
+  mockedGetPendingShare.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  render();
+  await flush();
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "opened", files: [], tooLarge: false });
+  act(() => (addPendingShareListener as jest.Mock).mock.calls.at(-1)[0]());
+  await act(async () => { release(null); });
+  await flush();
+  expect(intake.pending?.share.text).toBe("opened");
+});
+
+test("reports an unreadable Open In document", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "", files: [], tooLarge: false, failed: true });
+  render();
+  await flush();
+  expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_failed");
+  expect(intake.pending).toBeNull();
+});
+
+test("removes the native receipt listener on unmount", async () => {
+  render();
+  await flush();
+  const subscription = (addPendingShareListener as jest.Mock).mock.results.at(-1)!.value;
+  act(() => renderer!.unmount());
+  renderer = null;
+  expect(subscription.remove).toHaveBeenCalledTimes(1);
 });
 
 test("only one intake runs at a time", async () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 import { useTranslation } from "react-i18next";
-import { getPendingShare } from "future-share-intent";
+import { addPendingShareListener, getPendingShare } from "future-share-intent";
 import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { loadSessionDraft, saveSessionDraft } from "../remote/draftStorage";
@@ -18,19 +18,26 @@ export function useShareIntake() {
   const [pending, setPending] = useState<{ desktopId: string; share: SharedContent } | null>(null);
   const pendingRef = useRef(false);
   const readingRef = useRef(false);
+  const readAgainRef = useRef(false);
   const importingRef = useRef(false);
   const desktopRef = useRef(remote.credentials?.expectedDesktopId);
   useEffect(() => {
     desktopRef.current = remote.credentials?.expectedDesktopId;
   }, [remote.credentials?.expectedDesktopId]);
 
-  const intake = useCallback(async () => {
+  const intake = useCallback(async function readInbox() {
     const desktopId = remote.credentials?.expectedDesktopId;
-    if (readingRef.current || pendingRef.current || importingRef.current || !desktopId) return;
+    if (pendingRef.current || importingRef.current || !desktopId) return;
+    if (readingRef.current) {
+      readAgainRef.current = true;
+      return;
+    }
+    readAgainRef.current = false;
     readingRef.current = true;
     try {
       const share = await getPendingShare();
-      if (!share) return;
+      if (!share || desktopId !== desktopRef.current) return;
+      if (share.failed) showToast(t("attachment.errors.attachment_failed"));
       if (!share.text.trim() && share.files.length === 0) {
         if (share.tooLarge) showToast(t("attachment.errors.attachment_file_too_large"));
         return;
@@ -41,6 +48,8 @@ export function useShareIntake() {
       showToast(t("attachment.errors.attachment_failed"));
     } finally {
       readingRef.current = false;
+      // A native receipt may arrive after an in-flight read found no payload.
+      if (readAgainRef.current && desktopId === desktopRef.current) void readInbox();
     }
   }, [remote.credentials?.expectedDesktopId, t]);
 
@@ -89,7 +98,11 @@ export function useShareIntake() {
     const subscription = AppState.addEventListener("change", state => {
       if (state === "active") void intake();
     });
-    return () => subscription.remove();
+    const receiptSubscription = addPendingShareListener(() => { void intake(); });
+    return () => {
+      subscription.remove();
+      receiptSubscription.remove();
+    };
   }, [intake, remote.credentials]);
 
   return { pending, dismiss, chooseDestination };
