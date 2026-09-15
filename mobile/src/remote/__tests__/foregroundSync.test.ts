@@ -142,7 +142,7 @@ test("reconnect only restarts the visible lane and reopening refreshes an idle c
     engine.restartAll("reconnect");
     await jest.advanceTimersByTimeAsync(0);
     expect(requestGetState.mock.calls).toEqual([["b"]]);
-    expect(requestHistory.mock.calls).toEqual([["b"]]);
+    expect(requestHistory.mock.calls).toEqual([["b", expect.any(Function)]]);
     text = "completed while hidden";
     visible = "a";
     await engine.open("a");
