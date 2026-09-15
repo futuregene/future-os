@@ -23,10 +23,12 @@ from pathlib import Path
 # ─── shared budgets ──────────────────────────────────────────────────────────
 
 RETRIEVAL_BYTES = 32_768      # total content returned to the model per probe
-RETRIEVAL_CALLS = 5           # model requests per probe
+NO_CALL_LIMIT = True          # probes run until the model stops on its own
+RUNAWAY_GUARD = 60            # safety bound only; tripping it is reported, not treated as normal
 GREP_MATCH_LIMIT = 100        # OpenCode's ripgrep limit
 OPENCODE_READ_BYTES = 51_200  # OpenCode caps a single read at ~50 KB
 CODEX_ITEM_CHARS = 4_000      # default truncated_content when the caller omits it
+CODEX_SNIPPET_MODE = "head"   # "head" | "centered" — see module docstring
 
 
 # ─── windows (Codex's model of history) ──────────────────────────────────────
@@ -70,17 +72,11 @@ def codex_short_id(record):
     return record["id"]
 
 
-def codex_item(record, max_chars):
-    if record["kind"] == "tool_call":
-        body = f"[Assistant tool call {record['call']}]: read({json.dumps({'path': record.get('path')})})"
-    elif record["kind"] == "tool_result":
-        label = "error" if record.get("error") else "result"
-        body = f"[Tool {label} {record['call']}]: {record['text']}"
-    else:
-        body = f"[{record['role'].title()}]: {record['text']}"
-    truncated = body[:max_chars]
-    if len(body) > max_chars:
-        truncated += "\n[truncated]"
+def codex_item(record, max_chars, mode=None, query=None):
+    body = _item_body(record)
+    mode = mode or CODEX_SNIPPET_MODE
+    match_at = body.find(query) if (query and mode == "centered") else None
+    truncated, _ = _snippet(body, max_chars, mode, match_at)
     return {"item_id": codex_short_id(record), "role": record["role"],
             "truncated_content": truncated, "content_chars": len(body)}
 
@@ -163,7 +159,7 @@ def codex_dispatch(name, arguments, windows, budget):
         width = arguments.get("max_chars_per_item") or CODEX_ITEM_CHARS
         items, used = [], 0
         for window_id, record in pool[:limit]:
-            item = codex_item(record, width)
+            item = codex_item(record, width, query=(arguments.get("query") or None))
             items.append({"window_id": window_id, **item})
             used += len(item["truncated_content"])
             if used > budget:
@@ -178,9 +174,31 @@ def codex_dispatch(name, arguments, windows, budget):
         limit = max(1, int(arguments.get("limit_chars") or 4_000))
         limit = min(limit, max(1, budget))
         chunk = body[offset:offset + limit]
-        return json.dumps({"item_id": target["id"], "offset_chars": offset,
-                           "content": chunk, "total_chars": len(body)}), len(chunk)
+        # Documented contract: {content, n_chars, next_offset_chars}. Without the
+        # cursor the caller must guess where to resume, which is what the earlier
+        # implementation forced the model to do.
+        next_offset = offset + len(chunk)
+        return json.dumps({"content": chunk, "n_chars": len(chunk),
+                           "next_offset_chars": next_offset,
+                           "total_chars": len(body)}), len(chunk)
     return json.dumps({"error": f"unknown action {action}"}), 0
+
+
+def _snippet(body, width, mode, match_at=None):
+    """Build `truncated_content` for one item.
+
+    `head` starts at character 0 (my original, unverified assumption).
+    `centered` windows around the first match, which is what a search service
+    would do to make the hit visible; the true backend behaviour is unobservable
+    because the server truncates before encryption.
+    """
+    if len(body) <= width:
+        return body, False
+    if mode == "centered" and match_at is not None and match_at >= 0:
+        half = max(0, (width - 64) // 2)
+        start = max(0, min(match_at - half, len(body) - width))
+        return body[start:start + width] + "\n[truncated]", True
+    return body[:width] + "\n[truncated]", True
 
 
 def _item_body(record):

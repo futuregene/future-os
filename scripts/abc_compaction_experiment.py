@@ -31,7 +31,7 @@ MODELS = ['future/deepseek-flash', 'future/glm-5.3-flash']
 SEED = 91526015
 CAP = 32000
 PROBES = [0, 3, 7]
-MAX_REQUESTS = 2200  # AMENDMENT-02 added the arms, -04 added search,
+MAX_REQUESTS = 6000  # AMENDMENT-02 added the arms, -04 added search,
                     # -05 adds the Codex/OpenCode retrieval interfaces
 CLOSED_SYSTEM = ('Answer retrospective questions only from the supplied conversation and, when enabled, its original archive. '
     'Do not execute the original project. Distinguish superseded and current facts. An omitted excerpt is not evidence of absence. '
@@ -586,7 +586,7 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                 continue
             for stage in PROBES:
                 identity = (f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}'
-                            f'__retrieval{mode if mode != "ours" else ""}')
+                            f'__retrieval{mode if mode != "ours" else ""}{args.result_tag}')
                 out = args.root / args.arm / "results" / f"{identity}.json"
                 if out.exists():
                     continue
@@ -611,8 +611,8 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                 messages = [{"role": "user", "content": f'<archived-conversation>\n{value}\n</archived-conversation>\n'
                                                         + QUESTION.format(stage=stage)}]
                 started = time.monotonic()
-                call_ids, tool_calls, returned, text, status = [], [], 0, "", "request_limit"
-                for step in range(retrieval.RETRIEVAL_CALLS):
+                call_ids, tool_calls, returned, text, status = [], [], 0, "", "runaway_guard"
+                for step in range(retrieval.RUNAWAY_GUARD):
                     body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
                             "tools": tools, "stream": True, "max_tokens": 8192,
                             "thinking": {"type": "enabled"}, "reasoning_effort": "high",
@@ -631,7 +631,10 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                                   error=parsed.get("error"))
                     call_ids.append(call_id)
                     if parsed.get("error"):
-                        status, text = "api_error", parsed.get("text", "")
+                        # Explicitly bounded error text: a provider rejection must be
+                        # recorded, and its message is truncated so one failure cannot
+                        # balloon the result file.
+                        status, text = "api_error", str(parsed.get("error"))[:2000]
                         break
                     if parsed["calls"]:
                         assistant = {"role": "assistant", "content": parsed["text"] or None, "tool_calls": parsed["calls"]}
@@ -808,6 +811,8 @@ def main():
     parser.add_argument('--models', nargs='*', default=None)
     parser.add_argument('--stages', nargs='*', type=int, default=None)
     parser.add_argument('--id-suffix', default='')
+    parser.add_argument('--result-tag', default='',
+                        help='suffix for saved results only; projections keep --id-suffix')
     parser.add_argument('--binary', type=Path, help='future CLI, required by --retrieval')
     parser.add_argument('--retrieval', action='store_true', help='give the probe a lookup tool')
     parser.add_argument('--retrieval-mode', default='ours', choices=['ours', 'codex', 'opencode'],
