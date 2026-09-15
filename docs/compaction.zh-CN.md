@@ -1,5 +1,7 @@
 # S2 压缩与历史召回
 
+开发入口、状态机和模型主动请求压缩的 CLI 设计见[压缩机制开发文档](compaction-development.zh-CN.md)。其中 CLI 新接口为待实现建议，不是当前可用命令。
+
 Agent 使用保留原始 journal 的 S2 上下文投影，不通过删除或重写原始聊天记录来压缩。历史召回复用现有 `shell`，不新增模型工具。查询命令见[会话历史召回](session-history.zh-CN.md)。
 
 ## 触发与请求预算

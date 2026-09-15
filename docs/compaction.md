@@ -1,5 +1,9 @@
 # S2 compaction and historical recall
 
+See the [developer guide](compaction-development.md) for the implementation map,
+state machine and proposed model-requested CLI. Its new CLI interfaces are design
+proposals, not currently available commands.
+
 The production Agent uses a journal-preserving S2 projection. It does not rewrite
 or delete the original conversation when compacting. No new model tools are
 introduced; [history recall](session-history.md) uses the existing shell tool.
