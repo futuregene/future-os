@@ -59,13 +59,13 @@ pub use runs::{
     active_run_sessions, advance_tool_projection, clear_all_run_events_files,
     clear_run_event_buffer, create_run, delete_run_events_file, fail_run_if_active,
     find_run_by_trigger_message_id, get_tool_call_input, latest_run, latest_run_infos,
-    list_run_events, list_runs, update_run_status_if_active, LatestRunInfo, RunEventRecord,
-    RunRecord, ToolCallRecord, ToolOutputRecord,
+    list_run_events, list_runs, mark_remote_prompt_accepted, update_run_status_if_active,
+    LatestRunInfo, RunEventRecord, RunRecord, ToolCallRecord, ToolOutputRecord,
 };
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use threads::{
-    archive_thread, batch_delete_threads, create_thread, delete_thread, delete_thread_with_files,
+    archive_thread, create_thread, delete_thread, delete_thread_with_files,
     find_thread_by_agent_session, get_or_create_thread_for_agent_session, get_recent_thread,
     get_thread, list_threads, mark_thread_opened, move_thread_to_workspace, pin_thread,
     purge_soft_deleted_threads, record_thread_message_activity, rename_thread, restore_thread,

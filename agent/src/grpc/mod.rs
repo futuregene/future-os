@@ -499,10 +499,18 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 "session_id is required for StreamEvents",
             ));
         }
-        let Some(session) = self.state.get_session(&session_id) else {
-            return Err(tonic::Status::not_found(format!(
-                "session {session_id} not found"
-            )));
+        let session = match self.state.try_get_session(&session_id) {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                return Err(tonic::Status::not_found(format!(
+                    "session {session_id} not found"
+                )));
+            }
+            Err(error) => {
+                return Err(tonic::Status::unavailable(format!(
+                    "session storage unavailable: {error:#}"
+                )));
+            }
         };
         let (rx, mut initial_events, lag_broadcaster) = {
             let sess = session.read();

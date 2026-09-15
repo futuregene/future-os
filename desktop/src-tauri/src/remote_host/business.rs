@@ -89,7 +89,11 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(data) => {
-                        let page = prepare_backward_entries_page(&cmd.session_id, data);
+                        let page = prepare_backward_entries_page_with_cap(
+                            &cmd.session_id,
+                            data,
+                            !cmd.chunked_read,
+                        );
                         reply(sink, true, page, None).await;
                     }
                     Err(e) if missing_session(&e) => {
@@ -105,7 +109,13 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                     reply(
                         sink,
                         true,
-                        paginate_items(entries, offset, limit, "entries"),
+                        paginate_items_with_cap(
+                            entries,
+                            offset,
+                            limit,
+                            "entries",
+                            !cmd.chunked_read,
+                        ),
                         None,
                     )
                     .await;
@@ -300,15 +310,35 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                         "threadId": prepared.thread_id,
                         "runId": prepared.run_id,
                     });
-                    // Actual execution runs in the background (completion visible via event stream agent_end).
+                    // Execution stays in the background, but success is not
+                    // acknowledged until the Agent has persisted the user
+                    // entry and Desktop has committed the durable receipt.
+                    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
                     tokio::spawn(async move {
                         let thread_id = prepared.thread_id.clone();
-                        if let Err(e) = crate::agent_bridge::run_prepared_prompt(prepared).await {
+                        if let Err(e) = crate::agent_bridge::run_prepared_prompt_with_acceptance(
+                            prepared,
+                            accepted_tx,
+                        )
+                        .await
+                        {
                             eprintln!("remote: prompt processing failed: {e}");
                         }
                         crate::emit_remote_activity(&thread_id);
                     });
-                    reply(sink, true, ack, None).await;
+                    match accepted_rx.await {
+                        Ok(Ok(())) => reply(sink, true, ack, None).await,
+                        Ok(Err(error)) => reply(sink, false, Value::Null, Some(&error)).await,
+                        Err(_) => {
+                            reply(
+                                sink,
+                                false,
+                                Value::Null,
+                                Some("Future Agent did not acknowledge the prompt."),
+                            )
+                            .await
+                        }
+                    }
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
@@ -368,14 +398,32 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                         "threadId": prepared.thread_id,
                         "runId": prepared.run_id,
                     });
+                    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
                     tokio::spawn(async move {
                         let thread_id = prepared.thread_id.clone();
-                        if let Err(e) = crate::agent_bridge::run_prepared_prompt(prepared).await {
+                        if let Err(e) = crate::agent_bridge::run_prepared_prompt_with_acceptance(
+                            prepared,
+                            accepted_tx,
+                        )
+                        .await
+                        {
                             eprintln!("remote: continue_run failed: {e}");
                         }
                         crate::emit_remote_activity(&thread_id);
                     });
-                    reply(sink, true, ack, None).await;
+                    match accepted_rx.await {
+                        Ok(Ok(())) => reply(sink, true, ack, None).await,
+                        Ok(Err(error)) => reply(sink, false, Value::Null, Some(&error)).await,
+                        Err(_) => {
+                            reply(
+                                sink,
+                                false,
+                                Value::Null,
+                                Some("Future Agent did not acknowledge the prompt."),
+                            )
+                            .await
+                        }
+                    }
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
@@ -909,10 +957,21 @@ pub(crate) fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usiz
 /// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
 /// complete oldest exchanges until the page fits and advance the returned
 /// cursor past those omitted rows; they remain reachable on the next pull.
+#[cfg(test)]
 pub(crate) fn prepare_backward_entries_page(_session_id: &str, data: Value) -> Value {
+    prepare_backward_entries_page_with_cap(_session_id, data, true)
+}
+
+pub(crate) fn prepare_backward_entries_page_with_cap(
+    _session_id: &str,
+    data: Value,
+    cap_items: bool,
+) -> Value {
     let mut entries = entries_vec(data.clone());
-    for entry in &mut entries {
-        cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
+    if cap_items {
+        for entry in &mut entries {
+            cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
+        }
     }
     let agent_start = data
         .get("nextOffset")
@@ -925,7 +984,8 @@ pub(crate) fn prepare_backward_entries_page(_session_id: &str, data: Value) -> V
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut removed = 0usize;
-    while serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
+    while cap_items
+        && serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
     {
         let Some(next_user) = entries
             .iter()
@@ -956,14 +1016,21 @@ pub(crate) fn prepare_backward_entries_page(_session_id: &str, data: Value) -> V
 /// [`MESSAGES_PAGE_BYTES`] or `limit` is reached (always at least one item —
 /// it's already capped). Returns the page (under `key`) plus cursor fields the
 /// client uses to fetch the remainder.
-pub(crate) fn paginate_items(
+pub(crate) fn paginate_items(items: Vec<Value>, offset: usize, limit: usize, key: &str) -> Value {
+    paginate_items_with_cap(items, offset, limit, key, true)
+}
+
+pub(crate) fn paginate_items_with_cap(
     mut items: Vec<Value>,
     offset: usize,
     limit: usize,
     key: &str,
+    cap_items: bool,
 ) -> Value {
-    for item in items.iter_mut() {
-        cap_remote_item(item, MESSAGE_CONTENT_CAP_BYTES);
+    if cap_items {
+        for item in items.iter_mut() {
+            cap_remote_item(item, MESSAGE_CONTENT_CAP_BYTES);
+        }
     }
     let total = items.len();
     let start = offset.min(total);
@@ -973,7 +1040,7 @@ pub(crate) fn paginate_items(
         let size = serde_json::to_vec(item)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
-        if index > 0 && (index >= limit || bytes + size > MESSAGES_PAGE_BYTES) {
+        if index > 0 && (index >= limit || (cap_items && bytes + size > MESSAGES_PAGE_BYTES)) {
             break;
         }
         bytes += size;
@@ -1023,6 +1090,8 @@ pub(crate) fn truncate_message_content(message: &mut Value, cap: usize) {
     if serialized_len(message) <= cap {
         return;
     }
+    let original_bytes = serialized_len(message);
+    let mut content_truncated = false;
     if let Some(blocks) = message.get_mut("blocks").and_then(Value::as_array_mut) {
         let mut remaining = cap;
         for block in blocks {
@@ -1032,6 +1101,7 @@ pub(crate) fn truncate_message_content(message: &mut Value, cap: usize) {
                     let mut cut = text[..end].to_owned();
                     cut.push('…');
                     *text = cut;
+                    content_truncated = true;
                 }
                 remaining = remaining.saturating_sub(text.len());
             }
@@ -1039,6 +1109,19 @@ pub(crate) fn truncate_message_content(message: &mut Value, cap: usize) {
     } else if let Some(Value::String(data)) = message.get_mut("data") {
         if data.len() > cap {
             *data = json!({"_truncated":true,"bytes":data.len()}).to_string();
+            content_truncated = true;
+        }
+    }
+    if content_truncated {
+        let metadata = message.as_object_mut().and_then(|object| {
+            object
+                .entry("metadata")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+        });
+        if let Some(metadata) = metadata {
+            metadata.insert("remoteTruncated".into(), Value::Bool(true));
+            metadata.insert("originalBytes".into(), json!(original_bytes));
         }
     }
 }

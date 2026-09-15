@@ -174,9 +174,35 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
         .map_err(crate::AppError::from)
 }
 
-/// Find the run created for a durable remote command id. Mobile persists this
-/// id before sending a prompt, so a retry after either process restarts can
-/// recover the original acknowledgement instead of creating a duplicate run.
+/// Mark the point at which the Agent has durably accepted the prompt. The
+/// remote client must not receive or recover a success receipt before this
+/// boundary: the Agent writes the user entry before returning its prompt ack.
+pub fn mark_remote_prompt_accepted(
+    run_id: &str,
+    trigger_message_id: &str,
+) -> Result<(), crate::AppError> {
+    if trigger_message_id.trim().is_empty() {
+        return Err("remote command id cannot be empty".to_string().into());
+    }
+    let conn = connect()?;
+    let updated = conn.execute(
+        "UPDATE runs
+             SET remote_accepted_at = COALESCE(remote_accepted_at, ?1)
+             WHERE id = ?2
+               AND trigger_message_id = ?3",
+        params![now_millis(), run_id, trigger_message_id],
+    )?;
+    if updated != 1 {
+        return Err("Remote prompt receipt could not be committed."
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+/// Find an accepted run for a durable remote command id. A locally prepared
+/// run is deliberately invisible here until the Agent has persisted the
+/// corresponding user message and acknowledged the prompt.
 pub fn find_run_by_trigger_message_id(
     trigger_message_id: &str,
 ) -> Result<Option<RunRecord>, crate::AppError> {
@@ -190,6 +216,7 @@ pub fn find_run_by_trigger_message_id(
             "SELECT {columns}
                  FROM runs
                  WHERE trigger_message_id = ?1
+                   AND remote_accepted_at IS NOT NULL
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1"
         ),

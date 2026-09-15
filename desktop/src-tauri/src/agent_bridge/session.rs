@@ -57,6 +57,12 @@ pub(super) async fn ensure_agent_session(
                     recreated: false,
                 });
             }
+        } else if !is_missing_session_error(&response.error) {
+            return Err(format!(
+                "Future Agent could not load the existing session: {}",
+                response.error
+            )
+            .into());
         }
     }
 
@@ -90,6 +96,11 @@ pub(super) async fn ensure_agent_session(
     })
 }
 
+fn is_missing_session_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("session not found") || error.contains("no such session")
+}
+
 pub(super) async fn set_agent_permission_level(
     client: &mut super::client::AgentClient,
     session_id: &str,
@@ -117,9 +128,18 @@ pub(super) async fn set_agent_sandbox_policy(
     session_id: &str,
     _thread_id: &str,
 ) -> Result<(), crate::AppError> {
-    let tier = store::get_app_settings()
-        .map(|settings| settings.approval_tier)
-        .unwrap_or_else(|_| "off".to_string());
+    let tier = match store::get_app_settings() {
+        Ok(settings) => settings.approval_tier,
+        Err(error) => {
+            // A settings read failure must never widen access. Keep the run
+            // usable behind explicit approval; the next successful settings
+            // read will apply the user's persisted selection again.
+            eprintln!(
+                "FutureOS: approval settings unavailable; falling back to manual approval: {error}"
+            );
+            "manual".to_string()
+        }
+    };
     let policy = crate::agent_proto::SandboxPolicy { tier: tier.clone() };
     let response = client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
@@ -639,6 +659,18 @@ mod tests {
             "{error}"
         );
 
+        // An application-level storage failure is not evidence that the
+        // session is absent and must never create a replacement conversation.
+        mock.push(
+            "get_state",
+            Reply::Reject("session storage unavailable".to_string()),
+        );
+        let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+            .await
+            .expect_err("storage rejection");
+        assert!(error.to_string().contains("session storage unavailable"));
+        assert!(mock.requests_of("new_session").is_empty());
+
         // new_session transport failure.
         mock.push("new_session", Reply::Status(tonic::Code::Internal, "boom"));
         let error = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
@@ -744,7 +776,7 @@ mod tests {
             "manual"
         );
 
-        // Store unreadable → falls back to "off".
+        // Store unreadable → falls back to explicit manual approval.
         let prev = break_home();
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));
         set_agent_sandbox_policy(&mut client, "sess-1", "thread-1")
@@ -757,7 +789,7 @@ mod tests {
                 .clone()
                 .expect("policy")
                 .tier,
-            "off"
+            "manual"
         );
 
         // Error paths.

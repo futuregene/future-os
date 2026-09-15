@@ -93,6 +93,11 @@ describe("pending prompt storage", () => {
     await expect(loadPendingPrompt()).resolves.toBeNull();
   });
 
+  test("surfaces storage read failures", async () => {
+    mockedAsync.getItem.mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(loadPendingPrompt()).rejects.toThrow("storage unavailable");
+  });
+
   test("a stale completion cannot clear a newer prompt", async () => {
     mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify(pending));
     await clearPendingPrompt("prompt_old");

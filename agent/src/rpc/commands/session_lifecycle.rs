@@ -146,16 +146,23 @@ pub(crate) fn cmd_switch_session(state: &AppState, cmd: &RpcCommand, id: &str) -
             "No session selected. Choose a session from the list to switch to.",
         );
     }
-    match state.get_session(&cmd.session_id) {
-        Some(_) => RpcResponse::ok(
+    match state.try_get_session(&cmd.session_id) {
+        Ok(Some(_)) => RpcResponse::ok(
             id,
             "switch_session",
             serde_json::json!({"cancelled": false}),
         ),
-        None => RpcResponse::build_fail(
+        Ok(None) => RpcResponse::build_fail(
             id,
             "switch_session",
             &format!("session `{}` not found", cmd.session_id),
+        ),
+        Err(error) => RpcResponse::build_fail_code(
+            id,
+            "switch_session",
+            "session_storage_unavailable",
+            &format!("unable to load session: {error:#}"),
+            serde_json::json!({"retryable": true}),
         ),
     }
 }
