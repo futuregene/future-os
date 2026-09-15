@@ -4,6 +4,9 @@ import type { RemoteCommand, RpcResponse } from "./types";
 
 const MAX_READ_BYTES = 16 * 1024 * 1024;
 const CHUNK_BYTES = 192 * 1024;
+// Bound in-flight replies/decodes while amortizing round-trip latency for large
+// histories. Replay pages themselves still follow their fixed watermark.
+const READ_CONCURRENCY = 4;
 interface Chunk { id: string; offset: number; nextOffset: number; totalBytes: number; data: string }
 
 function chunkOf(value: unknown): Chunk | null {
@@ -31,13 +34,12 @@ export async function requestReadPage<T>(
   if (!isCurrent()) throw new Error("stale_sync_lane");
   const response = await client.requestRetry<unknown>({ ...command, chunkedRead: true }, sessionId);
   if (!isCurrent()) throw new Error("stale_sync_lane");
-  let chunk = chunkOf(response.data);
+  const chunk = chunkOf(response.data);
   if (!chunk) return response as RpcResponse<T>;
   const id = chunk.id;
   const total = chunk.totalBytes;
   const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (;;) {
+  const storeChunk = (chunk: Chunk, offset: number) => {
     if (chunk.id !== id || chunk.totalBytes !== total || chunk.offset !== offset)
       throw new Error("remote_read_chunk_changed");
     const part = decodeBase64Url(chunk.data);
@@ -46,17 +48,26 @@ export async function requestReadPage<T>(
       || (chunk.nextOffset < total && part.length !== CHUNK_BYTES))
       throw new Error("remote_read_invalid_chunk");
     bytes.set(part, offset);
-    offset = chunk.nextOffset;
-    if (offset === total) break;
+  };
+  storeChunk(chunk, 0);
+  // The initial reply pins an immutable snapshot and its size. Its remaining
+  // offsets are independent: out-of-order replies write into disjoint ranges.
+  // Use bounded batches so failure/cancellation cannot launch another wave.
+  for (let start = chunk.nextOffset; start < total; start += READ_CONCURRENCY * CHUNK_BYTES) {
     if (!isCurrent()) throw new Error("stale_sync_lane");
-    const next = await client.requestRetry<unknown>({
-      type: "get_read_chunk", sessionId, replyId: id, offset,
-      ...(command.runId ? { runId: command.runId } : {}),
-      ...(command.bridgeInstanceId ? { bridgeInstanceId: command.bridgeInstanceId } : {}),
-    }, sessionId);
-    if (!isCurrent()) throw new Error("stale_sync_lane");
-    chunk = chunkOf(next.data);
-    if (!chunk) throw new Error("remote_read_invalid_chunk");
+    const offsets = Array.from({ length: Math.min(READ_CONCURRENCY, Math.ceil((total - start) / CHUNK_BYTES)) },
+      (_, index) => start + index * CHUNK_BYTES);
+    await Promise.all(offsets.map(async offset => {
+      const next = await client.requestRetry<unknown>({
+        type: "get_read_chunk", sessionId, replyId: id, offset,
+        ...(command.runId ? { runId: command.runId } : {}),
+        ...(command.bridgeInstanceId ? { bridgeInstanceId: command.bridgeInstanceId } : {}),
+      }, sessionId);
+      if (!isCurrent()) throw new Error("stale_sync_lane");
+      const part = chunkOf(next.data);
+      if (!part) throw new Error("remote_read_invalid_chunk");
+      storeChunk(part, offset);
+    }));
   }
   const data = JSON.parse(new TextDecoder().decode(bytes)) as T;
   return { ...response, data };
