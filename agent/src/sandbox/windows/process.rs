@@ -199,15 +199,6 @@ impl RestrictedChild {
         result
     }
 
-    pub(crate) fn wait_blocking(&self) -> io::Result<u32> {
-        let result = self.process.wait();
-        // Keep the synchronous maintenance/probe path identical to async shell
-        // execution: once the shell exits, no descendant may retain the Job or
-        // its capability lease.
-        self.job.terminate();
-        result
-    }
-
     /// Wait for a maintenance/probe child without allowing a broken host shell
     /// to pin the process-wide sandbox probe lock forever. A timeout terminates
     /// the no-breakaway Job, so every descendant and the attached capability
