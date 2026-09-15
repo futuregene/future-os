@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
+import { stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
@@ -89,7 +90,15 @@ export function AppShell() {
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
-  const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders();
+  const {
+    balance: futureBalance,
+    balanceStatus: futureBalanceStatus,
+    email: futureEmail,
+    refreshAuth: refreshFutureAuth,
+    refreshBalance: refreshFutureBalance,
+    status: futureSessionStatus,
+  } = useFutureAccount();
+  const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders(futureSessionStatus);
 
   const windowWidth = useWindowWidth();
   // Side panels yield to the conversation: when the window is too narrow to
@@ -203,14 +212,25 @@ export function AppShell() {
   // level. Returns { status, indicator, refresh } — RemoteView reads `status`
   // directly so its blue dot always matches the sidebar indicator.
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
-  const { balance: futureBalance, email: futureEmail, refreshBalance: refreshFutureBalance } = useFutureAccount();
   // Remote needs a FutureOS sign-in (its pairing code comes from the service);
   // if the user signs out while on it, drop back to the chat section.
   useEffect(() => {
-    if (!futureEmail && section === "remote") {
+    if ((futureSessionStatus === "signed_out" || futureSessionStatus === "invalid") && section === "remote") {
       setSection("chat");
     }
-  }, [futureEmail, section]);
+  }, [futureSessionStatus, section]);
+
+  // Remote credential renewal can be the first place a revoked account key is
+  // observed. Recheck the account through the same authoritative profile path.
+  useEffect(() => {
+    if (remoteStatus?.phase === "failed" && remoteStatus.reason === "service_authorization")
+      refreshFutureAuth();
+  }, [remoteStatus?.phase, remoteStatus?.reason, refreshFutureAuth]);
+
+  useEffect(() => {
+    if (futureSessionStatus === "invalid")
+      void stopRemote().then(refreshRemote).catch(() => {});
+  }, [futureSessionStatus, refreshRemote]);
 
   const handleRecharge = () => {
     getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});
@@ -510,6 +530,7 @@ export function AppShell() {
     onToggleExpanded: handleToggleLeftPanel,
     remoteIndicator,
     futureBalance,
+    futureSessionStatus,
     userEmail: futureEmail,
     communityEdition: appSettings.communityEdition,
     onRecharge: handleRecharge,
@@ -716,7 +737,10 @@ export function AppShell() {
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}
         futureBalance={futureBalance}
+        futureBalanceStatus={futureBalanceStatus}
         futureEmail={futureEmail}
+        futureSessionStatus={futureSessionStatus}
+        onRefreshFutureAuth={refreshFutureAuth}
         onRefreshFutureBalance={refreshFutureBalance}
         hasUpdate={hasUpdate}
         initialTab={settingsTab}
