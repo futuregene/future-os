@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import type { TFunction } from "i18next";
-import * as Network from "expo-network";
+import { downloadWarning } from "./downloadPolicy";
 import { basename } from "@future-os/markdown";
 import type { MarkdownImageLoader } from "../../components/MarkdownImage";
 import type { useRemote } from "../../remote/RemoteContext";
@@ -29,10 +29,10 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
   return useMemo(() => {
     return {
       scope,
-      cached(path) {
-        if (currentScope.current !== scope) return null;
-        const cached = cachedAttachment({ path, name: basename(path) }, "preview");
-        return cached && imagePreview(cached.info) ? cached.file.uri : null;
+      cached(_path) {
+        // A Markdown path can be overwritten in place. Revalidate its content
+        // identity on every user-initiated load before exposing cached bytes.
+        return null;
       },
       async load(path, signal) {
         const check = () => {
@@ -45,17 +45,16 @@ export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownIm
         pending.current = request;
         try {
           const attachment = { path, name: basename(path) };
-          let cached = cachedAttachment(attachment, "preview");
-          const info = cached?.info ?? await prepareAttachment(attachment, "preview", signal);
+          const info = await prepareAttachment(attachment, "preview", signal);
           check();
           if (!imagePreview(info)) throw new Error("markdown_image_unavailable");
-          cached ??= cachedAttachment(attachment, "preview");
+          const cached = cachedAttachment(attachment, "preview");
           if (cached) return cached.file.uri;
-          const network = await Network.getNetworkStateAsync();
+          const warning = await downloadWarning(info.size);
           check();
-          if (network.type === Network.NetworkStateType.CELLULAR || network.type === Network.NetworkStateType.UNKNOWN) {
+          if (warning) {
             const accepted = await confirmDownload(t("attachment.downloadTitle"),
-              t("attachment.cellularWarning", { size: formatBytes(info.size) }), t("chat.cancel"), t("attachment.download"));
+              t(warning, { size: formatBytes(info.size) }), t("chat.cancel"), t("attachment.download"));
             check();
             if (!accepted) return null;
           }

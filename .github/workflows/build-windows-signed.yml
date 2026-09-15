@@ -215,6 +215,28 @@ jobs:
           Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path $p
           Write-Host "signed: $p"
 
+      # Guard the bundle boundary itself. Tauri copies externalBin as-is, so a
+      # stale staged future.exe would otherwise produce a correctly versioned
+      # desktop installer containing an incompatible Agent.
+      - name: Verify staged sidecar compatibility
+        shell: powershell
+        env:
+          FUTURE_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
+          $sidecar = "desktop/src-tauri/binaries/future-$triple.exe"
+          $reportedVersion = (& $sidecar --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Staged future.exe --version failed (exit $LASTEXITCODE)." }
+          $expectedVersion = "future v$env:FUTURE_VERSION"
+          if ($reportedVersion -ne $expectedVersion) {
+            throw "Staged sidecar version mismatch: expected '$expectedVersion', got '$reportedVersion'."
+          }
+          $agentHelp = (& $sidecar agent --help 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "Staged future.exe agent --help failed (exit $LASTEXITCODE)." }
+          if (-not $agentHelp.Contains('--reset-windows-sandbox')) {
+            throw 'Staged future.exe does not support --reset-windows-sandbox.'
+          }
+
       # Pin the Tauri installer version to the plain semver core (NSIS rejects
       # SemVer suffixes). The display version keeps the full FUTURE_VERSION.
       - name: Set Tauri bundle version

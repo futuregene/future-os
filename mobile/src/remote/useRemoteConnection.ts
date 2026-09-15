@@ -372,7 +372,6 @@ export function useRemoteConnection({
       });
       clientRef.current = client;
       client.setAppActive(AppState.currentState !== "background");
-      if (networkAvailableRef.current === false) client.setNetworkAvailable(false);
       await client.open();
     },
     [
@@ -437,16 +436,18 @@ export function useRemoteConnection({
   const recoverLifecycle = useCallback(
     async (reason: RecoveryReason) => {
       const client = clientRef.current;
+      if (AppState.currentState !== "active") return;
       if (reason === "foreground") {
-        const available = await refreshNetworkStateRef.current();
-        if (!available) return;
+        // Refresh the advisory snapshot in parallel. A sleeping radio or hung
+        // native query must not delay the first real connection attempt.
+        void refreshNetworkStateRef.current();
       }
       void drainRevokes().catch(recordError);
-      if (!client || clientRef.current !== client || !credentialsRef.current || networkAvailableRef.current === false) return;
+      if (!client || clientRef.current !== client || !credentialsRef.current) return;
       try {
         const revision = recoveryRef.current.revision(client);
         await client.recoverNow(reason);
-        if (clientRef.current !== client || !credentialsRef.current) return;
+        if (clientRef.current !== client || !credentialsRef.current || AppState.currentState !== "active") return;
         presenceStateRef.current = INITIAL_PRESENCE_STATE;
         // A new transport already requested recovery through onReconnected.
         // A healthy foreground probe still needs one refresh for missed state.
@@ -529,7 +530,9 @@ export function useRemoteConnection({
         state.type !== previousType;
       networkAvailableRef.current = available;
       previousType = state.type;
-      clientRef.current?.setNetworkAvailable(available);
+      // Negative hints must not close a working socket or cancel its retries.
+      // Positive native events can accelerate recovery; transport errors and
+      // authenticated presence remain the source of connection truth.
       if (!available) return false;
       if (triggerRecovery && wasAvailable === false) void recoverLifecycle("network-restored");
       else if (triggerRecovery && pathChanged) void recoverLifecycle("network-changed");

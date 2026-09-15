@@ -1,7 +1,8 @@
 {
   "platforms": ["apple", "android"],
   "apple": {
-    "modules": ["ShareIntentModule"]
+    "modules": ["ShareIntentModule"],
+    "appDelegateSubscribers": ["OpenFileAppDelegateSubscriber"]
   },
   "android": {
     "modules": ["cn.future_os.shareintent.ShareIntentModule"]

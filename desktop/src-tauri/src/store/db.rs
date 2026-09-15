@@ -11,7 +11,8 @@ use super::approvals::{
 use super::runs::{run_from_row, RunRecord};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, AGENT_SESSION_BINDING_MIGRATION_VERSION, DROPPED_COLUMNS,
-    DROPPED_TABLES, RENAMED_COLUMNS, SCHEMA, UNIQUE_AGENT_SESSION_INDEX, VERSIONED_MIGRATIONS,
+    DROPPED_TABLES, REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION, RENAMED_COLUMNS, SCHEMA,
+    UNIQUE_AGENT_SESSION_INDEX, VERSIONED_MIGRATIONS,
 };
 use super::util::now_millis;
 
@@ -196,6 +197,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
             "ALTER TABLE threads ADD COLUMN parent_session_id TEXT",
         )],
     )?;
+    apply_remote_prompt_receipt_migration(conn)?;
     // Run archiving is optional UI metadata. A failed upgrade must not block
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
@@ -361,6 +363,51 @@ fn apply_migrations(
                 let _ = conn.execute_batch("ROLLBACK");
                 return Err(error);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Add the remote acceptance boundary and preserve receipts written by older
+/// Desktop builds. Before this column existed, every run with a non-empty
+/// trigger id had already been exposed as an acknowledgement, so those rows
+/// are backfilled once. Fresh rows remain NULL until Agent acceptance.
+fn apply_remote_prompt_receipt_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    let applied = conn
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = ?1",
+            [REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        if !column_exists(conn, "runs", "remote_accepted_at")? {
+            conn.execute("ALTER TABLE runs ADD COLUMN remote_accepted_at INTEGER", [])?;
+        }
+        conn.execute(
+            "UPDATE runs
+                 SET remote_accepted_at = updated_at
+                 WHERE trigger_message_id IS NOT NULL
+                   AND TRIM(trigger_message_id) != ''
+                   AND remote_accepted_at IS NULL",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            params![REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION, now_millis()],
+        )?;
+        Ok::<(), crate::AppError>(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
         }
     }
     Ok(())
@@ -597,6 +644,51 @@ mod tests {
             .unwrap(),
             1,
         );
+    }
+
+    #[test]
+    fn remote_prompt_receipt_migration_backfills_legacy_trigger_ids_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws-receipt', 'W', 'user', '/tmp/ws-receipt', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, created_at, updated_at)
+                 VALUES ('thread-receipt', 'ws-receipt', 'chat', 'T', 1, 1);
+             INSERT INTO runs (
+                 id, thread_id, trigger_message_id, status, created_at, updated_at
+             ) VALUES ('run-receipt', 'thread-receipt', 'cmd-legacy', 'completed', 1, 7);
+             DELETE FROM schema_migrations
+                 WHERE version = 'v1.1.7-remote-prompt-receipt';",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT remote_accepted_at FROM runs WHERE id = 'run-receipt'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            7
+        );
+        conn.execute(
+            "INSERT INTO runs (
+                 id, thread_id, trigger_message_id, status, created_at, updated_at
+             ) VALUES ('run-new', 'thread-receipt', 'cmd-new', 'running', 8, 8)",
+            [],
+        )
+        .unwrap();
+        apply_schema(&conn).unwrap();
+        let accepted: Option<i64> = conn
+            .query_row(
+                "SELECT remote_accepted_at FROM runs WHERE id = 'run-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(accepted, None);
     }
 
     #[test]

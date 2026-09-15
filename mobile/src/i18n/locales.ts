@@ -413,7 +413,9 @@ export const resources = {
         allowing: "Allowing",
       },
       share: {
-        newConversation: "Start a conversation with shared content",
+        chooseDestination: "Share to a conversation",
+        existing: "Existing conversation · {{title}}",
+        existingWorkspace: "Existing conversation · {{name}} · {{title}}",
         chat: "New conversation · no workspace",
         workspace: "New conversation · {{name}}",
       },
@@ -430,7 +432,9 @@ export const resources = {
         download: "Download",
         downloadTitle: "Download file?",
         cellularWarning:
-          "This file is {{size}} and you are using cellular data (or the network type is unknown). Continue?",
+          "File size: {{size}}\nDownloading will use cellular data. Continue?",
+        unknownNetworkWarning:
+          "File size: {{size}}\nThe network type could not be detected. Downloading may use cellular data. Continue?",
         downloaded: '"{{name}}" was saved.',
         downloadFailed: "The file could not be downloaded.",
         downloadInProgress: "Another file is already downloading.",
@@ -523,12 +527,16 @@ export const resources = {
         checkFailed: "Couldn't check for updates. Please try again.",
         title: "Software update",
         message:
-          "Version {{version}} is available (you have {{current}}). Update now?",
+          "New version: {{version}}\nCurrent version: {{current}}\n\nThe update will be downloaded, then the system installer will open.",
         manualMessage:
-          "Version {{version}} is available (you have {{current}}). Download and install it manually.",
-        confirm: "Update",
-        download: "Download",
-        cancel: "Cancel",
+          "Available build: {{version}}\nCurrent build: {{current}}\n\nDevelopment and local builds cannot be ordered against nightly builds. Open the browser to download and install manually.",
+        appStoreMessage:
+          "New version: {{version}}\nCurrent version: {{current}}\n\nContinue in the App Store to update.",
+        channels: { test: "Test", nightly: "Nightly", dev: "Development", local: "Local", localDirty: "Local, modified" },
+        confirm: "Download & install",
+        download: "Open download page",
+        appStore: "Open App Store",
+        cancel: "Not now",
         installFailed: "The update could not be downloaded or installed.",
       },
     },
@@ -893,7 +901,9 @@ export const resources = {
         allowing: "允许中",
       },
       share: {
-        newConversation: "基于分享内容开启新会话",
+        chooseDestination: "分享到会话",
+        existing: "已有会话 · {{title}}",
+        existingWorkspace: "已有会话 · {{name}} · {{title}}",
         chat: "新会话 · 非工作区",
         workspace: "新会话 · {{name}}",
       },
@@ -910,7 +920,9 @@ export const resources = {
         download: "继续下载",
         downloadTitle: "下载文件？",
         cellularWarning:
-          "文件大小为 {{size}}，当前使用移动数据网络或无法识别网络类型，是否继续？",
+          "文件大小：{{size}}\n当前使用移动网络，下载将消耗流量。是否继续？",
+        unknownNetworkWarning:
+          "文件大小：{{size}}\n暂时无法识别网络类型，下载可能消耗移动流量。是否继续？",
         downloaded: "「{{name}}」已保存。",
         downloadFailed: "无法下载文件。",
         downloadInProgress: "已有文件正在下载。",
@@ -988,12 +1000,16 @@ export const resources = {
         checkFailed: "检查更新失败，请稍后重试。",
         title: "软件更新",
         message:
-          "发现新版本 {{version}}（当前版本 {{current}}），是否立即升级？",
+          "新版本：{{version}}\n当前版本：{{current}}\n\n下载完成后将打开系统安装界面。",
         manualMessage:
-          "发现新版本 {{version}}（当前版本 {{current}}），请前往下载并手工升级。",
-        confirm: "升级",
+          "可下载构建：{{version}}\n当前构建：{{current}}\n\n开发或本地构建无法与每夜构建直接比较新旧。将打开浏览器下载，请手动安装。",
+        appStoreMessage:
+          "新版本：{{version}}\n当前版本：{{current}}\n\n请前往 App Store 完成更新。",
+        channels: { test: "测试构建", nightly: "每夜构建", dev: "开发构建", local: "本地构建", localDirty: "本地构建，含未提交修改" },
+        confirm: "下载并安装",
         download: "前往下载",
-        cancel: "取消",
+        appStore: "前往 App Store",
+        cancel: "稍后再说",
         installFailed: "下载或安装失败，请稍后重试。",
       },
     },

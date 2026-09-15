@@ -969,12 +969,10 @@ async fn supersede_interrupts_active_run_and_queues_successor() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn queued_follow_ups_merge_into_one_message() {
-    // Multiple follow-ups queued behind an active run are answered together in
-    // ONE run — their questions joined by a blank line — not executed one-by-one.
+async fn queued_follow_ups_keep_independent_runs() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),
-        text_turn("merged answer"),
+        Script::Stall(vec![text_event("second")]),
     ]);
     let fixture = run_fixture(provider, "merge-follow-ups");
     let mut session = fixture.session;
@@ -1021,16 +1019,20 @@ async fn queued_follow_ups_merge_into_one_message() {
     }
     assert!(session.runtime.snapshot().is_none());
 
-    // Drain the queue manually (the fixture has no scheduler worker): the two
-    // follow-ups coalesce into a single run.
+    // Drain manually (the fixture has no scheduler worker). Each accepted
+    // request retains its own identity and payload.
     let started = session.start_next_scheduled().unwrap();
     assert_eq!(
         started.accepted_state,
         crate::runtime::RunAcceptedState::Running
     );
 
-    // The merged run carries ONE user message joining both questions with a
-    // blank line — never two separate user messages.
+    assert_eq!(session.scheduler.queued().len(), 1);
+    assert_eq!(
+        session.scheduler.queued()[0].payload["message"],
+        "third question"
+    );
+
     let user_texts: Vec<String> = session
         .messages
         .read()
@@ -1038,25 +1040,19 @@ async fn queued_follow_ups_merge_into_one_message() {
         .filter(|m| m.role == "user")
         .map(|m| m.text())
         .collect();
-    assert!(
-        user_texts
-            .iter()
-            .any(|t| t == "second question\n\nthird question"),
-        "merged user message not found in {user_texts:?}"
-    );
-    assert!(
-        !user_texts.iter().any(|t| t == "second question"),
-        "the first follow-up must not be a standalone user message: {user_texts:?}"
-    );
+    assert!(user_texts.iter().any(|t| t == "second question"));
+    assert!(!user_texts.iter().any(|t| t == "third question"));
+    assert!(!user_texts
+        .iter()
+        .any(|t| t == "second question\n\nthird question"));
+    session.abort_run(Some(&started.run_id)).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn queued_follow_ups_merge_model_context_sidecars() {
-    // When follow-ups carry non-empty model_context sidecars, coalescing joins
-    // them with a blank line exactly like the visible message text.
+async fn queued_follow_ups_keep_model_context_sidecars_independent() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),
-        text_turn("merged answer"),
+        Script::Stall(vec![text_event("second")]),
     ]);
     let fixture = run_fixture(provider, "merge-model-context");
     let mut session = fixture.session;
@@ -1110,8 +1106,6 @@ async fn queued_follow_ups_merge_model_context_sidecars() {
         crate::runtime::RunAcceptedState::Running
     );
 
-    // The visible message still merges the two questions, and the
-    // non-display model_context sidecars are coalesced into the same block.
     let user_messages: Vec<crate::types::AgentMessage> = session
         .messages
         .read()
@@ -1121,10 +1115,15 @@ async fn queued_follow_ups_merge_model_context_sidecars() {
         .collect();
     assert!(user_messages
         .iter()
-        .any(|m| m.display_text() == "second question\n\nthird question"));
-    assert!(user_messages
+        .any(|m| m.display_text() == "second question" && m.text().contains("context-two")));
+    assert!(!user_messages
         .iter()
-        .any(|m| m.text().contains("context-two\n\ncontext-three")));
+        .any(|m| m.text().contains("context-three")));
+    let queued = session.scheduler.queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].payload["message"], "third question");
+    assert_eq!(queued[0].payload["model_context"], "context-three");
+    session.abort_run(Some(&started.run_id)).unwrap();
 }
 
 // ─── batch 3: rare error arms ──────────────────────────────────────────────

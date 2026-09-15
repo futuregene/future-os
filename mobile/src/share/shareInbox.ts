@@ -1,10 +1,10 @@
 /**
- * Signal that content shared from another app has landed in the new
- * conversation's composer draft.
+ * Signal that content shared from another app has landed in the chosen
+ * conversation's composer draft (new or existing).
  *
  * The content itself travels through `draftStorage` (the composer's existing,
  * tested restore path). This signal exists for one case that path cannot cover:
- * when the app is *already* showing a new-conversation draft, the composer's
+ * when the app is *already* showing the destination conversation, the composer's
  * draft key does not change, so nothing would re-read the draft. The chat
  * screen's key includes this revision, so that composer remounts and restores.
  */

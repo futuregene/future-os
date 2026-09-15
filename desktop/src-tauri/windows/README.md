@@ -28,7 +28,8 @@ bundled `future.exe` can outlive the desktop and remain locked during an upgrade
 and before the new uninstaller runs sandbox permission cleanup.
 
 - Check the current desktop (`futureos.exe`), legacy desktop
-  (`future-desktop.exe`), and CLI/agent (`future.exe`) in `$INSTDIR`.
+  (`future-desktop.exe`), CLI/agent (`future.exe`), and retired standalone Agent
+  (`future-agent.exe`) in `$INSTDIR`.
 - Explain that closing the window does not necessarily stop the agent. Offer
   Yes (close this installation and continue), No (recheck after manual exit),
   or Cancel. Cancel is the default and exits without replacing executables.
@@ -41,16 +42,48 @@ and before the new uninstaller runs sandbox permission cleanup.
 - A failed close offers Retry/Cancel with Task Manager and restart instructions.
   A write/check failure offers Retry/Cancel with permissions, disk space,
   security-software and default-directory guidance. There is no Ignore path.
-- Silent (`/S`) and passive (`/P`, including unattended updates) modes never close
-  programs or display blocking dialogs: exit **32** for busy files, **5** for
-  write/check failures. `scripts/install.ps1` translates these into recovery
-  instructions rather than continuing to initialization.
+- Generic silent (`/S`) and passive (`/P`) installs never close programs or
+  display blocking dialogs: exit **32** for busy files, **5** for write/check
+  failures. `scripts/install.ps1` translates these into recovery instructions
+  rather than continuing to initialization.
+- Explicit in-app updates (`/UPDATE`) close exact-path executables automatically.
+  This lets a new installer repair older releases that launched NSIS without
+  first stopping their Agent; unrelated installations are never touched.
+- After the preflight succeeds, remove both current and retired sidecar names
+  before Tauri copies the new desktop. Before replacement, preserve the current
+  and legacy executables in NSIS temporary storage. A copy/extraction failure
+  restores that exact set; a failed first install removes partial executables.
+- After copying, run bounded `futureos.exe --help` and `future.exe --version`
+  probes. They return before GUI/Agent initialization while still exercising the
+  Windows loader. A missing DLL, corrupt file, wrong architecture, non-zero exit
+  or timeout aborts installation and restores the previous executables.
+
+The in-app Windows updater downloads and verifies the complete NSIS package
+before it stops the Desktop-owned Agent. It then launches the installer, because
+Tauri exits the desktop process directly on Windows and does not emit the normal
+`RunEvent::Exit` cleanup path. Keep this ordering aligned with the fail-before-copy
+installer preflight: downloads must not interrupt work, while installation must
+never begin with the bundled sidecar still running. The updater's
+`on_before_exit` hook runs only after download, signature verification, and
+package extraction succeed, immediately before NSIS launch. Update checks have a
+30-second deadline and installation requests have a 15-minute deadline. Portable
+Windows builds do not run the NSIS in-place updater because they have no
+registered installation target.
 
 The helper is embedded into NSIS's temporary plugin directory, not installed
 with the app. Use native Windows PowerShell even from 32-bit NSIS so 64-bit
 process paths can be inspected. If PowerShell cannot run, fail closed with
 instructions. The normal current-user/unelevated install mode is unchanged.
-An active sandbox job still prevents permission cleanup during uninstall.
+Uninstall closes exact-path current and legacy processes, then verifies that
+every current and retired executable can be deleted before Tauri removes the
+uninstall record. Interactive removal offers Retry/Cancel; silent/passive removal
+exits 32 on a lock rather than reporting success with files still installed.
+Temporary executable backups also close the race between the access check and
+deletion: a late deletion failure restores the pre-uninstall executable set.
+This avoids `/REBOOTOK`, whose delayed-delete path requires privileges a
+current-user installer does not have. Sandbox reset remains best-effort and
+time-bounded, so a missing, old or broken CLI cannot hang or block removal.
+Capability metadata stays outside `$INSTDIR` for a later install/repair retry.
 
 ## Offline regression
 
@@ -64,9 +97,12 @@ On Windows with NSIS installed (the Tauri NSIS cache is also detected):
 The test compiles the actual hooks with NSIS `/WX`, creates harmless temporary
 executables, and drives only the test installer's dialogs by PID. It covers
 fresh installation, English/Chinese guidance, Cancel/No/Yes, silent/passive
-failure, exact-path closing (including legacy desktop), external locks, retry,
-read-only files, uninstall preflight, and preservation of the old executable on
-failure. It does not launch, stop, or modify the developer's real installation.
+failure, automatic-update recovery from a running mixed install, exact-path
+closing (including both legacy executable names), external locks, retry,
+read-only files, uninstall with a running Agent, arbitrary cleanup failure, a
+pre-sandbox mixed CLI, hung cleanup, a missing CLI, fail-closed locked uninstall,
+post-copy load verification, and rollback after copy/verification failures. It
+does not launch, stop, or modify the developer's real installation.
 The Windows packaging workflow runs these checks before publishing artifacts.
 
 Before releasing, also smoke-test the **full packaged installer** over the

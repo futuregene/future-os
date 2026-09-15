@@ -1,18 +1,98 @@
 # Embedded in the installer, not installed with the app. Windows PowerShell 5.1+.
-# Exit codes: 0 = writable, 32 = running/locked, 5 = access/check failure.
+# Preflight exits: 0 = success, 32 = running/locked, 5 = access/check failure.
+# ResetSandbox passes through the maintenance CLI code; 124 means timeout.
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
-    [ValidateSet('Check', 'Close')][string]$Mode = 'Check'
+    [ValidateSet('Check', 'Close', 'ResetSandbox', 'VerifyInstall')][string]$Mode = 'Check'
 )
 $ErrorActionPreference = 'Stop'
+
+function Invoke-FutureOSSandboxReset {
+    param([string]$Directory)
+
+    $process = $null
+    try {
+        $executable = [IO.Path]::Combine([IO.Path]::GetFullPath($Directory), 'future.exe')
+        if (-not [IO.File]::Exists($executable)) { return 0 }
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $executable
+        $startInfo.Arguments = 'agent --reset-windows-sandbox'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { return 1 }
+        if (-not $process.WaitForExit(15000)) {
+            Write-Host 'FutureOS sandbox cleanup timed out; terminating the maintenance process.'
+            $process.Kill()
+            $null = $process.WaitForExit(5000)
+            return 124
+        }
+        return $process.ExitCode
+    } catch {
+        Write-Host "FutureOS sandbox cleanup: $($_.Exception.Message)"
+        return 5
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Invoke-FutureOSInstallVerification {
+    param([string]$Directory)
+
+    try {
+        $directoryPath = [IO.Path]::GetFullPath($Directory)
+        # Both commands return before GUI/Agent initialization. Starting the
+        # real files still makes Windows resolve their native dependencies, so
+        # corrupt files, wrong architectures and missing DLLs fail here.
+        foreach ($probe in @(
+            @{ Name = 'futureos.exe'; Arguments = '--help' },
+            @{ Name = 'future.exe'; Arguments = '--version' }
+        )) {
+            $executable = [IO.Path]::Combine($directoryPath, $probe.Name)
+            if (-not [IO.File]::Exists($executable)) {
+                Write-Host "FutureOS install verification: missing $executable"
+                return 5
+            }
+            $process = $null
+            try {
+                $startInfo = [Diagnostics.ProcessStartInfo]::new()
+                $startInfo.FileName = $executable
+                $startInfo.Arguments = $probe.Arguments
+                $startInfo.WorkingDirectory = $directoryPath
+                $startInfo.UseShellExecute = $false
+                $startInfo.CreateNoWindow = $true
+                $process = [Diagnostics.Process]::Start($startInfo)
+                if ($null -eq $process) { return 5 }
+                if (-not $process.WaitForExit(15000)) {
+                    Write-Host "FutureOS install verification timed out: $($probe.Name)"
+                    $process.Kill()
+                    $null = $process.WaitForExit(5000)
+                    return 5
+                }
+                if ($process.ExitCode -ne 0) {
+                    Write-Host "FutureOS install verification failed: $($probe.Name) exited $($process.ExitCode)"
+                    return 5
+                }
+            } finally {
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+        return 0
+    } catch {
+        Write-Host "FutureOS install verification: $($_.Exception.Message)"
+        return 5
+    }
+}
 
 function Invoke-FutureOSPreflight {
     param([string]$Directory, [string]$Action)
 
     try {
         $directoryPath = [IO.Path]::GetFullPath($Directory)
-        # Current release desktop name, legacy desktop name, then the CLI/agent.
-        $targets = @('futureos.exe', 'future-desktop.exe', 'future.exe') | ForEach-Object {
+        # Current release desktop/CLI names plus both legacy executable names.
+        # A pre-unified install can leave future-agent.exe running after the
+        # desktop exits and block the new bundled Agent from taking ownership.
+        $targets = @('futureos.exe', 'future-desktop.exe', 'future.exe', 'future-agent.exe') | ForEach-Object {
             [IO.Path]::Combine($directoryPath, $_)
         }
         # Desktop first: it must not restart the agent while we are stopping it.
@@ -27,8 +107,9 @@ function Invoke-FutureOSPreflight {
                         continue
                     }
                     if ($Action -eq 'Check') { return 32 }
-                    # Close is called ONLY after an interactive interruption warning.
-                    # Do not kill the process tree or processes from other installs.
+                    # Close is used after interactive consent, by the explicit
+                    # in-app update path, or by uninstall. Never kill a process
+                    # tree or a process belonging to another installation.
                     $process.Kill()
                     if (-not $process.WaitForExit(10000)) { return 32 }
                 } catch {
@@ -66,4 +147,10 @@ function Invoke-FutureOSPreflight {
     }
 }
 
+if ($Mode -eq 'ResetSandbox') {
+    exit (Invoke-FutureOSSandboxReset -Directory $InstallDir)
+}
+if ($Mode -eq 'VerifyInstall') {
+    exit (Invoke-FutureOSInstallVerification -Directory $InstallDir)
+}
 exit (Invoke-FutureOSPreflight -Directory $InstallDir -Action $Mode)

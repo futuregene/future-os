@@ -7,12 +7,30 @@ internal static class InstallerFixture
 {
     private static int Main(string[] args)
     {
+#if INSTALLER_NEW
+        // Keep the installer payload observably different from the old fixture
+        // so rollback tests prove restoration rather than compare equal files.
+        if (args.Length == 1 && args[0] == "--fixture-new")
+        {
+            return 0;
+        }
+#endif
         if (args.Length == 2 && args[0] == "--hold")
         {
             File.WriteAllText(args[1], "ready");
             Thread.Sleep(Timeout.Infinite);
         }
-        // Simulate a cleanup failure without touching real sandbox state.
+        // Simulate a mixed pre-sandbox CLI (clap uses exit 2 for an unknown
+        // --reset-windows-sandbox flag) and an arbitrary cleanup failure
+        // without touching real sandbox state.
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unsupported-cleanup")))
+        {
+            return 2;
+        }
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "hang-cleanup")))
+        {
+            Thread.Sleep(Timeout.Infinite);
+        }
         return File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-cleanup")) ? 1 : 0;
     }
 }

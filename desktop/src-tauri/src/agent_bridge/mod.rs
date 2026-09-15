@@ -29,7 +29,7 @@ pub use self::client::{
 };
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::headless::{
-    prepare_prompt_persisted_with_trigger, run_prepared_prompt, PreparedPrompt,
+    prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{import_missing_sessions, list_agent_session_ids};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
@@ -703,6 +703,7 @@ pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppEr
         .map_err(|error| format!("Future Agent returned invalid sync result: {error}").into())
 }
 
+#[cfg(test)]
 pub async fn agent_prompt(
     message: String,
     attachments: Option<Vec<AttachmentInput>>,
@@ -728,12 +729,23 @@ pub async fn agent_prompt(
 pub async fn agent_prompt_with_model_context(
     request: AgentPromptRequest,
 ) -> Result<AgentPromptResponse, crate::AppError> {
+    agent_prompt_with_acceptance(request, None).await
+}
+
+/// Run a prompt while exposing the Agent's durable-acceptance boundary to a
+/// headless caller. The signal is sent only after the Agent's prompt command
+/// returns the requested canonical run id; the Agent persists the user entry
+/// before producing that acknowledgement.
+pub(crate) async fn agent_prompt_with_acceptance(
+    request: AgentPromptRequest,
+    accepted: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<AgentPromptResponse, crate::AppError> {
     let effective_session_id = request
         .session_id
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| request.thread_id.clone());
-    let result = agent_prompt_inner(request.clone()).await;
+    let result = agent_prompt_inner(request.clone(), accepted).await;
 
     // Settle the run row HERE, in the backend, not only in the frontend
     // pipeline: the pipeline's status write depends on this invoke response
@@ -796,6 +808,7 @@ pub async fn agent_prompt_with_model_context(
 
 async fn agent_prompt_inner(
     request: AgentPromptRequest,
+    mut accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
     let AgentPromptRequest {
         message,
@@ -932,6 +945,9 @@ async fn agent_prompt_inner(
         return Err(
             format!("Future Agent adopted run id {canonical_run_id}, expected {run_id}").into(),
         );
+    }
+    if let Some(accepted) = accepted.take() {
+        let _ = accepted.send(());
     }
 
     match replica_lease

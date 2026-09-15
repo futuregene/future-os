@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use std::time::Duration;
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -18,6 +19,8 @@ use crate::{
 };
 
 const PROGRESS_EVENT: &str = "app-update-progress";
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const RELEASE_MANIFEST_URL: &str = "https://dl.future-os.cn/releases/latest.json";
 const NIGHTLY_MANIFEST_URL: &str = "https://dl.future-os.cn/nightly/latest.json";
 
@@ -194,9 +197,19 @@ fn is_debian_deb_install() -> bool {
 }
 
 fn platform_allows_updates() -> bool {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         true
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::utils::{config::BundleType, platform::bundle_type};
+
+        // The portable ZIP contains the unpatched build output, for which
+        // bundle_type() is None. It has no registered install directory, so an
+        // NSIS in-place update could replace a different installation or fail
+        // after shutting down this portable process.
+        bundle_type() == Some(BundleType::Nsis)
     }
     #[cfg(target_os = "linux")]
     {
@@ -253,7 +266,11 @@ async fn check_manual_update_from_url(
     current_version: String,
     endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .build()
+        .map_err(|error| updater_error("Failed to initialize update client", error))?;
+    let response = client
         .get(endpoint_url)
         .send()
         .await
@@ -337,6 +354,7 @@ async fn check_signed_update<R: tauri::Runtime>(
     let comparison_current = current_version.clone();
     let updater = app
         .updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
         .endpoints(vec![endpoint])
         .map_err(|error| updater_error("Failed to select the update channel", error))?
         .version_comparator(move |_bundle_version, release| {
@@ -509,6 +527,14 @@ mod tests {
         assert!(!channel_allows_automatic_install(BuildChannel::Dev));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unbundled_windows_build_does_not_offer_in_place_updates() {
+        // Test executables are not patched as NSIS bundles. Portable release
+        // binaries have the same bundle marker and must remain manual-only.
+        assert!(!platform_allows_updates());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn identifies_debian_family_os_release_files() {
@@ -582,7 +608,7 @@ mod tests {
         assert_eq!(status.latest_version, "1.2.0");
         assert_eq!(status.current_version, "1.1.0");
         assert_eq!(status.platform_supported, platform_allows_updates());
-        assert!(status.can_install_in_app);
+        assert_eq!(status.can_install_in_app, platform_allows_updates());
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -593,7 +619,7 @@ mod tests {
         assert_eq!(status.latest_version, "1.1.0");
         assert_eq!(status.current_version, "1.1.0");
         assert_eq!(status.platform_supported, platform_allows_updates());
-        assert!(status.can_install_in_app);
+        assert_eq!(status.can_install_in_app, platform_allows_updates());
         assert_eq!(status.download_url, None);
     }
 
@@ -614,8 +640,8 @@ mod tests {
         .await
         .expect("check");
         assert!(!status.has_update);
-        assert!(status.platform_supported);
-        assert!(status.can_install_in_app);
+        assert_eq!(status.platform_supported, platform_allows_updates());
+        assert_eq!(status.can_install_in_app, platform_allows_updates());
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -664,7 +690,7 @@ mod tests {
         .await
         .expect("manual check");
         assert!(status.has_update);
-        assert!(status.platform_supported);
+        assert_eq!(status.platform_supported, platform_allows_updates());
         assert!(!status.can_install_in_app);
         assert_eq!(
             status.download_url.as_deref(),
@@ -835,8 +861,19 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         .parse()
         .map_err(|error| updater_error("Invalid update endpoint", error))?;
     let comparison_current = current_version.to_string();
-    let updater = app
-        .updater_builder()
+    let updater_builder = app.updater_builder();
+    let updater_builder = updater_builder.timeout(UPDATE_INSTALL_TIMEOUT);
+    // Include this branch in test builds on other hosts so API/type regressions
+    // are caught without requiring a Windows linker for the full test suite.
+    #[cfg(any(target_os = "windows", test))]
+    let updater_builder = updater_builder.on_before_exit(|| {
+        // Tauri calls this only after the package has downloaded, passed its
+        // minisign check, and extracted successfully. It then launches NSIS
+        // and exits via std::process::exit(0), which bypasses RunEvent::Exit.
+        // Stop the owned sidecar at the last safe point before replacement.
+        agent_supervisor::shutdown_agent_gracefully();
+    });
+    let updater = updater_builder
         .endpoints(vec![endpoint])
         .map_err(|error| updater_error("Failed to select the update channel", error))?
         .version_comparator(move |_bundle_version, release| {
@@ -852,6 +889,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
 
     let progress_app = app.clone();
     let mut downloaded = 0_u64;
+
     update
         .download_and_install(
             move |chunk_length, content_length| {

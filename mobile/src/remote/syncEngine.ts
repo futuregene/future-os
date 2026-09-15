@@ -74,7 +74,7 @@ export interface SyncDeps {
   /** Hidden sessions keep cached UI but defer expensive history/replay until opened. */
   isSessionVisible?(sessionId: string): boolean;
   requestGetState(sessionId: string): Promise<RemoteSessionState>;
-  requestHistory(sessionId: string): Promise<TimelineState>;
+  requestHistory(sessionId: string, isCurrent: () => boolean): Promise<TimelineState>;
   fetchReplay(sessionId: string, runId: string, sinceIdx: number, isCurrent: () => boolean): Promise<ReplayResult>;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
@@ -493,7 +493,7 @@ export class SyncEngine {
       const refreshHistory = this.needsHistory(lane, targetRunId, request);
       if (refreshHistory) {
         enterStage("history");
-        const history = await this.deps.requestHistory(lane.sessionId);
+        const history = await this.deps.requestHistory(lane.sessionId, isCurrent);
         if (!isCurrent()) throw new Error("stale_sync_lane");
         const settledReply = history.items.some(item =>
           item.kind === "message" && item.role === "assistant" && item.runId === targetRunId &&

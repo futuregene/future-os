@@ -57,7 +57,9 @@ export function useAppDialog(active = true) {
       <Modal transparent animationType="fade" visible={active && visible} onRequestClose={cancel} onDismiss={flush}>
         <DialogSurface>
           <Text accessibilityRole="header" style={styles.title}>{request?.title}</Text>
-          {!!request?.message && <Text selectable style={styles.message}>{request.message}</Text>}
+          {/* Android/OEM selection can add a native EditText background.
+              Keep iOS selection, but render Android notices as plain text. */}
+          {!!request?.message && <Text selectable={Platform.OS === "ios"} style={styles.message}>{request.message}</Text>}
           <View style={styles.actions}>
             {buttons.map((button, index) => (
               <View key={index} style={styles.action}>

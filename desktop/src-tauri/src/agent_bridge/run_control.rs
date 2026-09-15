@@ -143,12 +143,12 @@ pub(super) fn mark_run_completed_if_active(run_id: Option<&str>) {
     }
 }
 
-/// Poll the Agent's `get_state.isStreaming` until it reports idle (or a short
-/// timeout / the agent disappears). Best-effort confirmation that the Agent has
-/// stopped writing files before the after snapshot (§6.2).
-pub(crate) async fn wait_for_agent_idle(session_id: &str) {
+/// Poll the Agent's `get_state.isStreaming` until it explicitly reports idle.
+/// A timeout, transport failure, or malformed response is not confirmation and
+/// therefore returns `false`.
+pub(crate) async fn wait_for_agent_idle(session_id: &str) -> bool {
     let Ok(mut client) = connect_agent().await else {
-        return;
+        return false;
     };
     // ~5s budget at 200ms intervals.
     for _ in 0..25 {
@@ -158,18 +158,19 @@ pub(crate) async fn wait_for_agent_idle(session_id: &str) {
         {
             Ok(response) => {
                 let response = response.into_inner();
-                let streaming = future_rpc::decode::decode_get_state(&response)
-                    .map(|state| state.is_streaming)
-                    .unwrap_or(false);
-                if !streaming {
-                    return;
+                if let Some(state) = future_rpc::decode::decode_get_state(&response) {
+                    if !state.is_streaming {
+                        return true;
+                    }
+                } else {
+                    return false;
                 }
             }
-            // Agent unreachable → treat as idle; nothing more we can confirm.
-            Err(_) => return,
+            Err(_) => return false,
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+    false
 }
 
 fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
@@ -205,7 +206,10 @@ mod tests {
         let _home = TestHome::new("rc-abort-no-run");
         let mock = mock_agent();
 
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", false)),
+        );
         mock.push("abort", Reply::Data("{}".to_string()));
         abort_session("sess-1").await.expect("abort");
         assert_eq!(mock.requests_of("abort")[0].run_id, "");
@@ -415,25 +419,37 @@ mod tests {
         let _home = TestHome::new("rc-idle");
         let mock = mock_agent();
 
-        mock.push_data("get_state", serde_json::json!({"isStreaming": false}));
-        wait_for_agent_idle("sess-1").await;
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", false)),
+        );
+        assert!(wait_for_agent_idle("sess-1").await);
         assert_eq!(mock.requests_of("get_state").len(), 1);
 
         // Streaming twice, then idle: polls until the agent confirms quiet.
-        mock.push_typed_data("get_state", get_state_payload("sess-1", true));
-        mock.push_typed_data("get_state", get_state_payload("sess-1", true));
-        mock.push_typed_data("get_state", get_state_payload("sess-1", false));
-        wait_for_agent_idle("sess-1").await;
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", true)),
+        );
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", true)),
+        );
+        mock.push_state_for_session(
+            "sess-1",
+            Reply::TypedData(get_state_payload("sess-1", false)),
+        );
+        assert!(wait_for_agent_idle("sess-1").await);
         assert_eq!(mock.requests_of("get_state").len(), 4);
 
-        // Transport failure mid-poll → treated as idle.
-        mock.push("get_state", Reply::Status(tonic::Code::Unavailable, "gone"));
-        wait_for_agent_idle("sess-1").await;
+        // Transport failure cannot confirm that the Agent is idle.
+        mock.push_state_for_session("sess-1", Reply::Status(tonic::Code::Unavailable, "gone"));
+        assert!(!wait_for_agent_idle("sess-1").await);
         assert_eq!(mock.requests_of("get_state").len(), 5);
 
-        // Unparseable state payload → treated as not streaming.
-        mock.push("get_state", Reply::Data("not json".to_string()));
-        wait_for_agent_idle("sess-1").await;
+        // An unparseable state payload also cannot confirm idle.
+        mock.push_state_for_session("sess-1", Reply::Data("not json".to_string()));
+        assert!(!wait_for_agent_idle("sess-1").await);
         assert_eq!(mock.requests_of("get_state").len(), 6);
     }
 
@@ -443,7 +459,7 @@ mod tests {
         let _mock = mock_agent();
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").ok();
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
-        wait_for_agent_idle("sess-1").await;
+        assert!(!wait_for_agent_idle("sess-1").await);
         if let Some(prev) = prev {
             std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
         }

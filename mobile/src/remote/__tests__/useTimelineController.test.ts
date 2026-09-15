@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
-import { applyStreamEvent, emptyTimeline } from "../timeline";
+import { applyStreamEvent, applyStreamEvents, commitAcknowledgedUserMessage, emptyTimeline } from "../timeline";
 import type { HistoryEntry, StreamEvent } from "../types";
 import { useTimelineController } from "../useTimelineController";
 
@@ -198,7 +198,7 @@ describe("useTimelineController", () => {
   });
 
   test.each(["restart", "resend"])(
-    "%s refreshes an idle session and keeps disjoint history reachable",
+    "%s bridges a disjoint tail without evicting already displayed history",
     async (mode) => {
       options.selectedSessionId = "s1";
       options.selectedRef.current = "s1";
@@ -223,6 +223,12 @@ describe("useTimelineController", () => {
         .mockResolvedValueOnce({
           success: true,
           data: { entries: exchanges(31, 40), hasMore: true, nextOffset: 60 },
+        })
+        .mockResolvedValueOnce({
+          data: { entries: exchanges(26, 30), hasMore: true, nextOffset: 50 },
+        })
+        .mockResolvedValueOnce({
+          data: { entries: exchanges(21, 25), hasMore: true, nextOffset: 40 },
         });
       render();
       await establish();
@@ -249,29 +255,18 @@ describe("useTimelineController", () => {
         .filter((i) => i.kind === "message" && i.role === "user")
         .map((i) => (i.kind === "message" ? i.text : ""));
       expect(users).toEqual([
-        ...Array.from({ length: 10 }, (_, i) => `user ${31 + i}`),
+        ...Array.from({ length: 40 }, (_, i) => `user ${1 + i}`),
         "pending",
       ]);
-      expect(result.current.canLoadOlderTimeline).toBe(true);
-      request.mockResolvedValueOnce({
-        success: true,
-        data: { entries: exchanges(21, 30), hasMore: true, nextOffset: 40 },
-      });
-      await act(async () => {
-        await result.current.loadOlderTimeline();
-      });
-      await flush();
       expect(request.mock.calls.at(-1)?.[0]).toEqual(
-        expect.objectContaining({ before: 60, limit: 3 }),
+        expect.objectContaining({ before: 50, limit: 3 }),
       );
-      expect(
-        result.current.timeline.items
-          .filter((i) => i.kind === "message" && i.role === "user")
-          .map((i) => (i.kind === "message" ? i.text : "")),
-      ).toEqual([
-        ...Array.from({ length: 20 }, (_, i) => `user ${21 + i}`),
-        "pending",
-      ]);
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+      const calls = request.mock.calls.length;
+      await act(async () => {
+        expect(await result.current.loadOlderTimeline()).toBe(false);
+      });
+      expect(request).toHaveBeenCalledTimes(calls);
     },
   );
 
@@ -695,6 +690,281 @@ describe("useTimelineController", () => {
         expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 3 }),
       );
     });
+
+    test.each([false, true])(
+      "preserves a completed live reply when its entry cursor lagged during streaming (hydrate=%s)",
+      async (hydrate) => {
+        options.selectedSessionId = "s1";
+        const thirdUser = { ...userEntry("u3", "long task"), runId: "r3" };
+        const steps = Array.from({ length: 145 }, (_, n) => `step ${n}`);
+        const longReply = steps.join("\n\n");
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({ data: {
+            entries: [userEntry("u1", "first"), assistantEntry("a1", "first reply"),
+              userEntry("u2", "second"), assistantEntry("a2", "second reply"), thirdUser],
+            hasMore: true, nextOffset: 7,
+          } });
+        render();
+        await establish(); // The durable window ends at 12, before the long run.
+        const engine = result.current.syncEngineRef.current!;
+        act(() => engine.mutate("s1", live => applyStreamEvents(live, [
+          evt("agent_start", "{}", "r3", 0),
+          evt("text_chunk", JSON.stringify({ text: longReply }), "r3", 1),
+          evt("agent_end", '{"state":"completed","duration_ms":2997094}', "r3", 2),
+        ])));
+        await flush();
+        expect(result.current.timeline.items.at(-1)).toMatchObject({ text: longReply, streaming: false });
+        expect(request).toHaveBeenCalledTimes(2); // Live output did not advance the history cursor.
+        act(() => engine.mutate("s1", live => commitAcknowledgedUserMessage(live, {
+          id: "local:follow-up", runId: "r4", text: "follow-up",
+        })));
+        await flush();
+        const tail = { data: {
+          entries: [{ ...userEntry("u4", "follow-up"), runId: "r4" }, assistantEntry("a4", "new reply", "r4")],
+          hasMore: true, nextOffset: 157,
+        } };
+        if (hydrate) {
+          request.mockResolvedValueOnce(tail);
+          await act(async () => { await result.current.hydrateAttachmentsRef.current("s1"); });
+        }
+        let resolveGap!: (value: unknown) => void;
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce(tail)
+          .mockImplementationOnce(() => new Promise(resolve => { resolveGap = resolve; }));
+        act(() => result.current.reconcileSession("s1", "resend"));
+        await flush();
+        // A capped newest page is not a replacement for the displayed conversation.
+        expect(result.current.timeline.items.some(item => item.id === "m_u1")).toBe(true);
+        expect(result.current.timeline.items.some(item => item.kind === "message" && item.text === longReply)).toBe(true);
+        expect(request.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ before: 157 }));
+        await act(async () => resolveGap({ data: {
+          entries: [thirdUser, ...steps.map((text, n) => assistantEntry(`step-${n}`, text, "r3"))],
+          hasMore: true, nextOffset: 11,
+        } }));
+        await flush();
+        expect(result.current.timeline.items.map(item => item.kind === "message" ? item.text : "")).toEqual([
+          "first", "first reply", "second", "second reply", "long task", longReply, "follow-up", "new reply",
+        ]);
+        request.mockResolvedValueOnce({ data: {
+          entries: [userEntry("u0", "older")], hasMore: false, nextOffset: 0,
+        } });
+        await act(async () => { await result.current.loadOlderTimeline(); });
+        expect(request.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ before: 7 }));
+        expect(result.current.canLoadOlderTimeline).toBe(false);
+      },
+    );
+
+    test.each(["offline", "nonadvancing", "incomplete"])(
+      "a %s gap page preserves the committed history and cursor until retry succeeds",
+      async (failure) => {
+        jest.useFakeTimers();
+        try {
+          options.selectedSessionId = "s1";
+          const original = [userEntry("u1", "first"), assistantEntry("a1", "first reply")];
+          const tail = { data: {
+            entries: [userEntry("u3", "latest"), assistantEntry("a3", "latest reply")],
+            nextOffset: 24, hasMore: true,
+          } };
+          request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+            entries: original, nextOffset: 20, hasMore: true,
+          } });
+          render();
+          await establish();
+          request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce(tail);
+          if (failure === "offline") request.mockRejectedValueOnce(new Error("offline"));
+          else request.mockResolvedValueOnce({ data: {
+            entries: [userEntry("u2", "middle")],
+            nextOffset: failure === "nonadvancing" ? 24 : 22, hasMore: true,
+          } });
+          act(() => result.current.reconcileSession("s1", "resend"));
+          await flush();
+          expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1", "m_a1"]);
+          expect(result.current.timelineSyncStatus).toBe("retrying");
+          request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce(tail)
+            .mockResolvedValueOnce({ data: {
+              entries: [userEntry("u2", "middle"), assistantEntry("a2", "middle reply")],
+              nextOffset: 22, hasMore: true,
+            } });
+          act(() => result.current.syncEngineRef.current!.restart("s1", "reconnect"));
+          await flush();
+          expect(result.current.timeline.items.map(item => item.id)).toEqual([
+            "m_u1", "m_a1", "m_u2", "m_a2", "m_u3", "m_a3",
+          ]);
+          request.mockResolvedValueOnce({ data: {
+            entries: [userEntry("u0", "older")], nextOffset: 0, hasMore: false,
+          } });
+          await act(async () => { await result.current.loadOlderTimeline(); });
+          expect(request.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ before: 20 }));
+        } finally {
+          act(() => renderer?.unmount());
+          renderer = null;
+          jest.useRealTimers();
+        }
+      },
+    );
+
+    test("a failed replay cannot commit a downloaded history cursor without its rows", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+          entries: [userEntry("u1", "first")], nextOffset: 20, hasMore: true,
+        } });
+        render();
+        await establish();
+        const tail = { data: {
+          entries: [{ ...userEntry("u3", "latest"), runId: "r3" }], nextOffset: 23, hasMore: true,
+        } };
+        const gap = { data: {
+          entries: [userEntry("u2", "middle"), assistantEntry("a2", "middle reply")], nextOffset: 21, hasMore: true,
+        } };
+        request.mockResolvedValueOnce({ data: { activeRun: { runId: "r3" } } })
+          .mockResolvedValueOnce(tail).mockResolvedValueOnce(gap)
+          .mockRejectedValueOnce(new Error("replay offline"));
+        act(() => result.current.reconcileSession("s1", "resend"));
+        await flush();
+        expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1"]);
+        expect(result.current.timelineSyncStatus).toBe("retrying");
+        request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce(tail).mockResolvedValueOnce(gap);
+        act(() => result.current.syncEngineRef.current!.restart("s1", "reconnect"));
+        await flush();
+        expect(request.mock.calls.filter(([command]) => command.before === 23)).toHaveLength(2);
+        expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u1", "m_u2", "m_a2", "m_u3"]);
+        request.mockResolvedValueOnce({ data: {
+          entries: [userEntry("u0", "older")], nextOffset: 0, hasMore: false,
+        } });
+        await act(async () => { await result.current.loadOlderTimeline(); });
+        expect(request.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ before: 20 }));
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
+    test("a superseded gap read cannot overwrite a restarted lane's paging state", async () => {
+      options.selectedSessionId = "s1";
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+        entries: [userEntry("u1", "first")], nextOffset: 20, hasMore: true,
+      } });
+      render();
+      await establish();
+      let finishOld!: (value: unknown) => void;
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+        entries: [userEntry("u3", "tail")], nextOffset: 24, hasMore: true,
+      } }).mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      expect(request.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ before: 24 }));
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+        entries: [userEntry("fresh", "fresh history")], nextOffset: 0, hasMore: false,
+      } });
+      act(() => result.current.syncEngineRef.current!.restart("s1", "reconnect"));
+      await flush();
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+      await act(async () => finishOld({ data: {
+        entries: [userEntry("old2", "obsolete"), assistantEntry("old3", "obsolete reply"), userEntry("old4", "obsolete next")],
+        nextOffset: 21, hasMore: true,
+      } }));
+      await flush();
+      expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_fresh"]);
+      expect(result.current.canLoadOlderTimeline).toBe(false);
+    });
+
+    test("explicitly reopening a short cached window does not backfill a remote gap", async () => {
+      options.selectedSessionId = "s1";
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+        entries: [userEntry("u1", "old")], nextOffset: 20, hasMore: true,
+      } });
+      render();
+      await establish();
+      act(() => result.current.prepareTimelineOpen("s1"));
+      request.mockResolvedValueOnce({ data: {} }).mockResolvedValueOnce({ data: {
+        entries: [userEntry("u100", "latest")], nextOffset: 100, hasMore: true,
+      } });
+      await act(async () => { await result.current.syncEngineRef.current!.open("s1"); });
+      await flush();
+      expect(request).toHaveBeenCalledTimes(4);
+      expect(result.current.timeline.items.map(item => item.id)).toEqual(["m_u100"]);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+    });
+
+    test.each([
+      { acknowledged: false, hasOlder: false },
+      { acknowledged: true, hasOlder: false },
+      { acknowledged: false, hasOlder: true },
+      { acknowledged: true, hasOlder: true },
+    ])(
+      "sending after a long reply retains an adjacent capped page ($acknowledged, older=$hasOlder)",
+      async ({ acknowledged, hasOlder }) => {
+        options.selectedSessionId = "s1";
+        const longReply = "long reply ".repeat(1000);
+        const initialOffset = hasOlder ? 20 : 0;
+        // The bridge may omit the entire large exchange from the next tail
+        // page. Its cursor proves adjacency even though no entry ids overlap.
+        const previousEntries = [
+          { ...userEntry("u1", "previous prompt"), runId: "r1" },
+          assistantEntry("intermediate", "intermediate output", "r1"),
+          assistantEntry("a1", longReply, "r1"),
+        ];
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({
+            data: { entries: previousEntries, hasMore: hasOlder, nextOffset: initialOffset },
+          });
+        render();
+        await establish();
+        if (acknowledged) {
+          act(() => result.current.syncEngineRef.current!.mutate("s1", (live) =>
+            commitAcknowledgedUserMessage(live, {
+              id: "local:follow-up", runId: "r2", text: "follow-up",
+            }),
+          ));
+          await flush();
+        }
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({
+            data: {
+              entries: [
+                { ...userEntry("u2", "follow-up"), runId: "r2" },
+                assistantEntry("a2", "new reply", "r2"),
+              ],
+              hasMore: true,
+              nextOffset: initialOffset + previousEntries.length,
+            },
+          });
+        act(() => result.current.reconcileSession("s1", "resend"));
+        await flush();
+        expect(result.current.timeline.items.map(item => item.id)).toEqual([
+          "m_u1", "m_a1", "m_u2", "m_a2",
+        ]);
+        expect(result.current.timeline.items[1]).toMatchObject({
+          text: `intermediate output\n\n${longReply}`,
+        });
+        expect(result.current.canLoadOlderTimeline).toBe(hasOlder);
+        if (!hasOlder) return;
+
+        request.mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("u0", "older prompt"), assistantEntry("a0", "older reply")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        });
+        await act(async () => { await result.current.loadOlderTimeline(); });
+        await flush();
+        expect(request.mock.calls.at(-1)?.[0]).toEqual(
+          expect.objectContaining({ before: 20 }),
+        );
+        expect(result.current.timeline.items.map(item => item.id)).toEqual([
+          "m_u0", "m_a0", "m_u1", "m_a1", "m_u2", "m_a2",
+        ]);
+        expect(result.current.canLoadOlderTimeline).toBe(false);
+      },
+    );
 
     test("reopening a warm timeline renders only the latest three exchanges", async () => {
       options.selectedSessionId = "s1";

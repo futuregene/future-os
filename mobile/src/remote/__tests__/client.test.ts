@@ -1,6 +1,7 @@
 import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { wsconnect } from "@nats-io/nats-core";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
+import { RemoteApiError } from "../connectionState";
 import { ensureFreshCredentials } from "../pairing";
 import type { RemoteCredentials } from "../types";
 
@@ -135,23 +136,21 @@ describe("RemoteClient connection handoff", () => {
     await client.open();
     client.setAppActive(false);
     // Native reachability notifications must not start a background budget.
-    client.setNetworkAvailable(false);
+    await client.recoverNow("network-restored");
     await client.open();
     if (mode === "suspended") jest.setSystemTime(Date.now() + 60 * 60_000);
     else await jest.advanceTimersByTimeAsync(60 * 60_000);
     client.setAppActive(true);
-    client.setNetworkAvailable(true);
     await client.recoverNow("foreground");
     expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
     expect(wsconnect).toHaveBeenCalledTimes(2);
     expect(callbacks.onError).not.toHaveBeenCalled();
   });
 
-  test("foreground resumes a bounded budget even while still offline", async () => {
+  test("foreground resumes a bounded budget even without a completed attempt", async () => {
     (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
     await client.open();
     client.setAppActive(false);
-    client.setNetworkAvailable(false);
     jest.setSystemTime(Date.now() + 60 * 60_000);
     client.setAppActive(true);
     await jest.advanceTimersByTimeAsync(179_999);
@@ -160,7 +159,6 @@ describe("RemoteClient connection handoff", () => {
     expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
     client.setAppActive(false);
     client.setAppActive(true);
-    client.setNetworkAvailable(true);
     await client.recoverNow("foreground");
     expect(wsconnect).toHaveBeenCalledTimes(1);
   });
@@ -196,16 +194,111 @@ describe("RemoteClient connection handoff", () => {
     expect(wsconnect).toHaveBeenCalledTimes(1);
   });
 
-  test("offline recovery expires after three minutes and cannot restart on foreground", async () => {
-    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+  test("real offline recovery retries within three minutes, then stays terminal", async () => {
+    (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
     await client.open();
-    client.setNetworkAvailable(false);
+    client.setAppActive(false);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
     await expect(client.request({ type: "list_sessions" })).rejects.toThrow("communication_frozen");
     await jest.advanceTimersByTimeAsync(180_000);
     expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    client.setNetworkAvailable(true);
+    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    const attempts = jest.mocked(wsconnect).mock.calls.length;
+    expect(attempts).toBeGreaterThan(2);
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
     await client.recoverNow("foreground");
+    await client.recoverNow("network-restored");
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(wsconnect).toHaveBeenCalledTimes(attempts);
+  });
+
+  test("foreground attempts immediately, then retries at 1s, 2s, 4s without network events", async () => {
+    jest.spyOn(Math, "random").mockReturnValue(0.5);
+    (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
+    await client.open();
+    client.setAppActive(false);
+    jest.setSystemTime(Date.now() + 60 * 60_000);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+    for (const [delay, attempts] of [[1_000, 3], [2_000, 4], [4_000, 5]] as const) {
+      await jest.advanceTimersByTimeAsync(delay - 1);
+      expect(wsconnect).toHaveBeenCalledTimes(attempts - 1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(wsconnect).toHaveBeenCalledTimes(attempts);
+    }
+    // Actual reachability recovers, but the OS never sends a notification.
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+    await jest.advanceTimersByTimeAsync(8_000);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+    expect(wsconnect).toHaveBeenCalledTimes(6);
+  });
+
+  test("network-restored accelerates backoff and does not leave a duplicate retry", async () => {
+    jest.spyOn(Math, "random").mockReturnValue(0.5);
+    (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
+    await client.open();
+    client.setAppActive(false);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(wsconnect).toHaveBeenCalledTimes(3);
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+    await client.recoverNow("network-restored");
+    expect(wsconnect).toHaveBeenCalledTimes(4);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(wsconnect).toHaveBeenCalledTimes(4);
+  });
+
+  test("network notifications during a pending retry share the same connection attempt", async () => {
+    jest.spyOn(Math, "random").mockReturnValue(0.5);
+    (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
+    await client.open();
+    client.setAppActive(false);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
+    const pending = deferred<NatsConnection>();
+    (wsconnect as jest.Mock).mockReturnValueOnce(pending.promise);
+    await jest.advanceTimersByTimeAsync(1_000);
+    const first = client.recoverNow("network-restored");
+    const second = client.recoverNow("network-changed");
+    await tick();
+    expect(wsconnect).toHaveBeenCalledTimes(3);
+    pending.resolve(socket().connection);
+    await Promise.all([first, second]);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+    expect(wsconnect).toHaveBeenCalledTimes(3);
+  });
+
+  test.each(["background", "close", "unpair"])("%s cancels pending backoff and ignores network-restored", async stop => {
+    (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
+    await client.open();
+    client.setAppActive(false);
+    client.setAppActive(true);
+    await client.recoverNow("foreground");
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+    if (stop === "background") client.setAppActive(false);
+    else await client.close(stop === "unpair" ? "Unpair" : "UserInitiated");
+    await client.recoverNow("network-restored");
+    await jest.advanceTimersByTimeAsync(180_000);
+    expect(wsconnect).toHaveBeenCalledTimes(2);
+  });
+
+  test("revoked credentials stop foreground retries and ignore later network recovery", async () => {
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+    await client.open();
+    client.setAppActive(false);
+    client.setAppActive(true);
+    (ensureFreshCredentials as jest.Mock).mockRejectedValue(new RemoteApiError("revoked", "credentials_revoked", 401));
+    await client.recoverNow("foreground");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("revoked");
+    (ensureFreshCredentials as jest.Mock).mockResolvedValue(credentials);
+    await client.recoverNow("network-restored");
+    await jest.advanceTimersByTimeAsync(180_000);
     expect(wsconnect).toHaveBeenCalledTimes(1);
+    expect(ensureFreshCredentials).toHaveBeenCalledTimes(2);
   });
 
   test("initial timeout rejects a late credential result", async () => {
