@@ -27,13 +27,19 @@ const HISTORY_PAGE_TIMEOUT_MS = 30_000;
 const HISTORY_PAGE_USER_EXCHANGES = 3;
 const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 
-interface HistoryPagingState {
-  nextBefore: number;
-  /** Exclusive end of the loaded durable window, before UI turn folding. */
-  endOffset: number;
-  hasMore: boolean;
-  loading: boolean;
+async function readHistoryPage(
+  client: RemoteClient,
+  sessionId: string,
+  before: number,
+  isCurrent: () => boolean,
+): Promise<EntriesData> {
+  const response = await requestReadPage<EntriesData>(client, {
+    type: "get_session_entries", sessionId, before, limit: HISTORY_PAGE_USER_EXCHANGES,
+  }, sessionId, isCurrent);
+  return response.data;
 }
+
+type HistoryPagingState = NonNullable<TimelineState["historyWindow"]> & { loading: boolean };
 
 function latestTimelineWindow(
   timeline: TimelineState,
@@ -138,7 +144,14 @@ function retainOlderHistoryPrefix(
     (adjacent && item.kind === "message" && !!item.runId && latestRuns.has(`${item.role}:${item.runId}`)),
   );
   if (overlap === 0 || (overlap < 0 && !adjacent)) return latest;
-  const prefix = overlap < 0 ? existing.items : existing.items.slice(0, overlap);
+  const durableRuns = new Set(existing.items.flatMap(item =>
+    existing.durableItemIds?.has(item.id) && item.runId ? [item.runId] : [],
+  ));
+  const prefix = overlap < 0
+    ? existing.items.filter(item => existing.durableItemIds?.has(item.id) ||
+      (!!item.runId && durableRuns.has(item.runId)))
+    : existing.items.slice(0, overlap);
+  if (prefix.length === 0) return latest;
   return {
     ...latest,
     items: [...prefix, ...latest.items],
@@ -201,6 +214,7 @@ export function useTimelineController({
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
+  const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
   const olderRequestRef = useRef<{
     sessionId: string;
@@ -323,36 +337,38 @@ export function useTimelineController({
   );
 
   const loadHistory = useCallback(
-    async (sessionId: string): Promise<TimelineState> => {
+    async (sessionId: string, laneIsCurrent: () => boolean = () => true): Promise<TimelineState> => {
       const client = clientRef.current;
       if (!client) return emptyTimeline();
       const epoch = historyEpochRef.current;
-      const response = await requestReadPage<EntriesData>(
-        client,
-        {
-          type: "get_session_entries",
-          sessionId,
-          before: HISTORY_TAIL_CURSOR,
-          limit: HISTORY_PAGE_USER_EXCHANGES,
-        },
-        sessionId,
-        () =>
-          epoch === historyEpochRef.current &&
-          clientRef.current === client &&
-          selectedRef.current === sessionId,
-      );
-      if (
-        epoch !== historyEpochRef.current ||
-        clientRef.current !== client ||
-        selectedRef.current !== sessionId
-      )
-        throw new Error("stale_history_load");
-      const entries = response.data.entries ?? [];
-      const nextBefore = response.data.nextOffset ?? 0;
+      const isCurrent = () => laneIsCurrent() && epoch === historyEpochRef.current &&
+        clientRef.current === client && selectedRef.current === sessionId;
+      const response = await readHistoryPage(client, sessionId, HISTORY_TAIL_CURSOR, isCurrent);
+      let entries = response.entries ?? [];
+      let nextBefore = response.nextOffset ?? 0;
+      let hasMore = response.hasMore === true && nextBefore > 0;
+      const endOffset = nextBefore + entries.length;
       // A newer durable window supersedes any page still waiting to commit.
       if (olderRequestRef.current?.sessionId === sessionId)
         olderRequestRef.current.controller.abort();
       const retained = historyPagingRef.current[sessionId];
+      // Live events can append hundreds of entries without moving the last
+      // history cursor. A capped tail then starts beyond that cursor, not
+      // exactly beside it. Fill only this intervening range before replacing
+      // the visible timeline; a failure leaves the old messages/cursor intact.
+      while (retained && nextBefore > retained.endOffset) {
+        const older = await readHistoryPage(client, sessionId, nextBefore, isCurrent);
+        const olderEntries = older.entries ?? [];
+        const start = older.nextOffset ?? 0;
+        if (!Number.isSafeInteger(start) || start < 0 || start >= nextBefore ||
+          start + olderEntries.length !== nextBefore) {
+          throw new Error("history_gap_cursor_invalid");
+        }
+        entries = [...olderEntries, ...entries];
+        nextBefore = start;
+        hasMore = older.hasMore === true && start > 0;
+      }
+      if (!isCurrent()) throw new Error("stale_history_load");
       const latest = timelineFromEntries(entries);
       const history = retained
         ? retainOlderHistoryPrefix(
@@ -364,17 +380,14 @@ export function useTimelineController({
       // Only retain the cursor when the old prefix actually joined this page.
       // Otherwise the latest page starts a new contiguous history window.
       const retainedOlderPages = history !== latest ? retained : null;
-      const page: HistoryPagingState = {
-        nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
-        endOffset: nextBefore + entries.length,
-        hasMore:
-          retainedOlderPages?.hasMore ??
-          (response.data.hasMore === true && nextBefore > 0),
-        loading: false,
+      return {
+        ...history,
+        historyWindow: {
+          nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
+          endOffset,
+          hasMore: retainedOlderPages?.hasMore ?? hasMore,
+        },
       };
-      historyPagingRef.current[sessionId] = page;
-      setHistoryPaging((previous) => ({ ...previous, [sessionId]: page }));
-      return history;
     },
     [clientRef, selectedRef],
   );
@@ -496,6 +509,7 @@ export function useTimelineController({
     for (const id of removed) {
       delete next[id];
       delete paging[id];
+      delete committedHistoryRef.current[id];
       delete cursorsRef.current[id];
       delete streamingRef.current[id];
     }
@@ -524,6 +538,12 @@ export function useTimelineController({
       olderRequestRef.current?.controller.abort();
       historyEpochRef.current += 1;
       pruneTimelines(sessionId);
+      // Explicit navigation starts a bounded latest window. Only an in-place
+      // refresh bridges a gap back to already displayed history.
+      const nextPaging = { ...historyPagingRef.current };
+      delete nextPaging[sessionId];
+      historyPagingRef.current = nextPaging;
+      setHistoryPaging(nextPaging);
       const cached = timelinesRef.current[sessionId];
       if (!cached) return;
       const windowed = latestTimelineWindow(
@@ -539,11 +559,6 @@ export function useTimelineController({
       timelinesRef.current = nextTimelines;
       setTimelines(nextTimelines);
       syncEngineRef.current?.mutate(sessionId, () => windowed);
-
-      const nextPaging = { ...historyPagingRef.current };
-      delete nextPaging[sessionId];
-      historyPagingRef.current = nextPaging;
-      setHistoryPaging(nextPaging);
     },
     [pruneTimelines],
   );
@@ -611,6 +626,13 @@ export function useTimelineController({
       },
     });
     const unsubscribe = engine.subscribe((commit) => {
+      const window = commit.timeline.historyWindow;
+      if (window && window !== committedHistoryRef.current[commit.sessionId]) {
+        committedHistoryRef.current[commit.sessionId] = window;
+        const page: HistoryPagingState = { ...window, loading: false };
+        historyPagingRef.current[commit.sessionId] = page;
+        setHistoryPaging(previous => ({ ...previous, [commit.sessionId]: page }));
+      }
       setTimelines((previous) => {
         const existing = previous[commit.sessionId];
         return existing === commit.timeline
@@ -631,17 +653,24 @@ export function useTimelineController({
   useEffect(() => {
     hydrateAttachmentsRef.current = async (sessionId) => {
       const engine = syncEngineRef.current;
-      if (!engine || !engine.timelineFor(sessionId)) return;
+      const client = clientRef.current;
+      if (!engine || !client || !engine.timelineFor(sessionId)) return;
+      const epoch = historyEpochRef.current;
+      const isCurrent = () => clientRef.current === client && syncEngineRef.current === engine &&
+        historyEpochRef.current === epoch && selectedRef.current === sessionId;
       try {
-        const durable = await loadHistory(sessionId);
+        // Attachment hydration does not install history rows. It must not
+        // advance the durable paging cursor or cancel an older-page request.
+        const page = await readHistoryPage(client, sessionId, HISTORY_TAIL_CURSOR, isCurrent);
+        const durable = timelineFromEntries(page.entries ?? []);
         engine.mutate(sessionId, (live) =>
-          mergeHistoryAttachments(live, durable),
+          isCurrent() ? mergeHistoryAttachments(live, durable) : live,
         );
       } catch {
         // Durable history can briefly lag the live event; later reconcile retries.
       }
     };
-  }, [loadHistory]);
+  }, [clientRef, selectedRef]);
 
   const applySessionStreaming = useCallback(
     (sessionId: string, streaming: boolean) => {
@@ -670,6 +699,7 @@ export function useTimelineController({
     cursorsRef.current = {};
     streamingRef.current = {};
     historyPagingRef.current = {};
+    committedHistoryRef.current = {};
     setHistoryPaging({});
   }, []);
 
