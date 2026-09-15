@@ -172,6 +172,19 @@ fn release_probe_validates_complete_write_boundary() {
     );
 }
 
+#[test]
+fn release_probe_times_out_and_releases_its_capabilities() {
+    let started = std::time::Instant::now();
+    let result = runner::probe_host_with_command(
+        "Start-Sleep -Seconds 60",
+        std::time::Duration::from_millis(100),
+    )
+    .expect("timed-out host probe returns an availability result");
+    assert!(!result.available);
+    assert_eq!(result.code, "probe_timeout");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
 #[tokio::test]
 async fn release_probe_is_independent_of_an_active_sandbox_job() {
     let fixture = Fixture::new();

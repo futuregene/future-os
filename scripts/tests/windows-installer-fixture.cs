@@ -7,6 +7,14 @@ internal static class InstallerFixture
 {
     private static int Main(string[] args)
     {
+#if INSTALLER_NEW
+        // Keep the installer payload observably different from the old fixture
+        // so rollback tests prove restoration rather than compare equal files.
+        if (args.Length == 1 && args[0] == "--fixture-new")
+        {
+            return 0;
+        }
+#endif
         if (args.Length == 2 && args[0] == "--hold")
         {
             File.WriteAllText(args[1], "ready");
