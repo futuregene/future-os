@@ -177,16 +177,25 @@ class Ledger:
 
     def reserve(self, identity, model, reserve):
         for row in self.rows:
-            if row['id'] == identity:
-                if row['state'] == 'interrupted':
-                    # Explicit operator decision after an aborted request, never
-                    # an automatic retry: the earlier reservation stays counted.
-                    row['recovered'] = True
-                    save(self.path, self.rows)
-                    return row
-                if row['state'] != 'finished':
-                    raise RuntimeError(f'{identity}: unsettled prior request; not re-running')
+            if row['id'] != identity:
+                continue
+            if row['state'] == 'interrupted':
+                # Explicit operator decision after an aborted request, never an
+                # automatic retry: the earlier reservation stays counted.
+                row['recovered'] = True
+                save(self.path, self.rows)
                 return row
+            if row['state'] == 'finished' and (row.get('error') or not row.get('summary')):
+                # Keep the attempt on the ledger under a new id instead of
+                # overwriting it when the step is replayed. Rows without a stored
+                # summary cannot be safely reused, so they are re-run.
+                failed = sum(1 for r in self.rows if r['id'].startswith(identity + '#failed'))
+                row['id'] = f'{identity}#failed{failed + 1}'
+                save(self.path, self.rows)
+                break
+            if row['state'] != 'finished':
+                raise RuntimeError(f'{identity}: unsettled prior request; not re-running')
+            raise RuntimeError(f'{identity}: already recorded; pass a new --id-suffix to redo it')
         if self.spent() + reserve > self.budget or len(self.rows) >= MAX_REQUESTS:
             raise RuntimeError('EXPERIMENT_BUDGET_EXHAUSTED')
         row = {'id': identity, 'model': model, 'reserved': reserve, 'state': 'started'}
@@ -301,73 +310,175 @@ def request_reserve(body_bytes, output_tokens=8192):
     return (body_bytes / 4) * 2.5 / 1e6 + output_tokens * 8 / 1e6
 
 
+PROVIDER_WINDOW = 1_048_576      # measured from the provider's own rejection
+PROVIDER_OUTPUT = 8_192
+PROVIDER_MARGIN = 40_000
+CALIBRATION = 1.45               # harness estimate -> provider-counted tokens
+EXTERNAL_LIMIT = int((PROVIDER_WINDOW - PROVIDER_OUTPUT - PROVIDER_MARGIN) / CALIBRATION)
+
+
 def external_arm(args):
-    """Build projections for a strategy reimplemented from upstream source."""
+    """Replay a strategy that *replaces* the live history.
+
+    Codex and OpenCode discard the covered conversation and continue from the
+    compacted history, so the Nth compaction reads the already-compacted history
+    plus everything added since — not the raw archive our journal-backed arms
+    legitimately rebuild from.
+
+    Two compactions therefore exist in this arm:
+
+    * probe stages force one, so the recorded projection is comparable with the
+      other arms at the same boundary (the ablation);
+    * between probes the agent compacts on its own overflow trigger, before the
+      accumulated history would exceed the provider window. Without this the arm
+      would carry a history no real session can hold.
+    """
     import abc_external_strategies as external
 
-    manifest = json.loads((args.root / 'manifest.json').read_text())
     ledger = Ledger(args.root, args.budget)
+    limits = {}
+    for name in MODELS:
+        meta = json.loads(subprocess.run([str(args.bridge)], input=json.dumps({'mode': 'metadata', 'model': name}),
+                                         capture_output=True, text=True, check=True).stdout)
+        limits[name] = meta['maxTokens']
+
+    def size(live):
+        # Codex's live history is records; OpenCode's is entries, so entry sizes
+        # are summed from their records.
+        if args.arm == 'codex':
+            return external.estimate_full(live)
+        return sum(external.estimate_full(e['records']) for e in external.opencode_visible(live))
+
+    def compact(live, summary, stage, kind, previous_summary):
+        # Each strategy keeps its own output budget for the summary request:
+        # OpenCode hard-codes 4096; Codex uses the model's normal maximum, which
+        # we cap at 65 536 to bound a single request.
+        if args.arm == 'codex':
+            system = ''
+            user = external.codex_summary_request(live)
+            max_output = min(limits[model], 65_536)
+        else:
+            history = external.opencode_visible(live)
+            tail_start = external.opencode_select(history, external.opencode_preserve_budget(args.window))
+            head_text = '\n\n'.join(external.opencode_serialize(e) for e in history[:tail_start])
+            system = external.OPENCODE_COMPACTION_SYSTEM_PROMPT
+            user = external.opencode_summary_request(head_text, summary)
+            max_output = 4096
+        body = {'model': model, 'max_tokens': max_output, 'stream': True,
+                'stream_options': {'include_usage': True},
+                'messages': ([{'role': 'system', 'content': system}] if system else []) +
+                            [{'role': 'user', 'content': user}]}
+        identity = f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}__{kind}'
+        prompt_sha = hashlib.sha256(user.encode()).hexdigest()
+        # Reuse a recorded summary only when the replayed request is identical;
+        # otherwise the cached text would not correspond to this history.
+        for existing in ledger.rows:
+            if (existing['id'] == identity and existing.get('state') == 'finished'
+                    and existing.get('summary') and existing.get('prompt_sha') == prompt_sha):
+                summary = existing['summary']
+                if args.arm == 'codex':
+                    return external.codex_compacted_records(live, summary), summary, existing.get('truncated', False), False
+                history = external.opencode_visible(live)
+                tail_start = external.opencode_select(history, external.opencode_preserve_budget(args.window))
+                return external.opencode_compacted_entries(history, tail_start, summary), summary, existing.get('truncated', False), False
+        row = ledger.reserve(identity, model, request_reserve(len(json.dumps(body).encode())))
+        started = time.monotonic()
+        result = subprocess.run([str(args.bridge)], input=json.dumps({'model': model, 'body': body}),
+                                capture_output=True, text=True, timeout=900)
+        parsed = parse_sse(result.stdout)
+        if result.returncode != 0:
+            parsed['error'] = f'bridge exit {result.returncode}: {result.stderr[-300:]}'
+        usage = parsed.get('usage') or {}
+        ledger.settle(row, input_tokens=usage.get('prompt_tokens'), output_tokens=usage.get('completion_tokens'),
+                      credit_cost=usage.get('credit_cost'), seconds=round(time.monotonic() - started, 3),
+                      error=parsed.get('error'), request_tokens=external.estimate_tokens(user),
+                      summary=parsed['text'].strip(), prompt_sha=prompt_sha, truncated=parsed['finish'] != 'stop')
+        if parsed.get('error'):
+            raise RuntimeError(f'{identity}: summary failed: {parsed["error"]}')
+        if not parsed['text'].strip():
+            # OpenCode declines to compact when the summary comes back empty
+            # (`!summary.trim()` returns false and the history is left alone).
+            # Recorded as a decline rather than rewritten into a fake summary.
+            return live, summary, False, True
+        # Neither agent checks the completion reason: Codex stores whatever the
+        # response contained and OpenCode only rejects an empty summary. A
+        # `length` finish is therefore accepted and recorded as truncated, which
+        # is what these strategies really do under a large history.
+        truncated = parsed['finish'] != 'stop'
+        summary = parsed['text'].strip()
+        if args.arm == 'codex':
+            live = external.codex_compacted_records(live, summary)
+        else:
+            history = external.opencode_visible(live)
+            tail_start = external.opencode_select(history, external.opencode_preserve_budget(args.window))
+            live = external.opencode_compacted_entries(history, tail_start, summary)
+        return live, summary, truncated, False
+
     for task in ['export', 'analysis']:
         for model in MODELS:
             if args.models and model not in args.models:
                 continue
-            previous_summary = None
+            live, consumed, summary, truncated = [], 0, None, False
             for stage in range(8):
-                if args.stages and stage not in args.stages:
-                    continue
-                identity = f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}'
-                out = args.root / args.arm / 'projections' / (identity + '.json')
                 data = json.loads((args.root / 'data' / f'{task}-{stage}.json').read_text())
-                records = data['archive'] + data['tail']
-                if out.exists():
-                    previous_summary = json.loads(out.read_text()).get('summary')
-                    continue
-                if args.arm == 'codex':
-                    system = ''
-                    user = external.codex_summary_request(records)
-                elif args.arm == 'opencode':
-                    entries = external.opencode_entries(records)
-                    budget = external.opencode_preserve_budget(args.window)
-                    tail_start = external.opencode_select(entries, budget)
-                    head_text = '\n\n'.join(external.opencode_serialize(e) for e in entries[:tail_start])
-                    system = external.OPENCODE_COMPACTION_SYSTEM_PROMPT
-                    user = external.opencode_summary_request(head_text, previous_summary)
+                through = data['archive'] + data['tail']
+                fresh = through[consumed:]
+                consumed = len(through)
+                new = fresh if args.arm == 'codex' else external.opencode_entries(fresh)
+                events = []
+                # Compact before the appended content would overflow the window.
+                declined = False
+                while live and size(live) + size(new) > EXTERNAL_LIMIT:
+                    previous = summary
+                    live, summary, truncated, declined = compact(live, summary, stage, f'auto{len(events)}', previous)
+                    events.append(('declined' if declined else 'auto', stage))
+                    if declined:
+                        break
+                live = live + new
+                if stage in args.stages:
+                    identity = f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}'
+                    out = args.root / args.arm / 'projections' / (identity + '.json')
+                    if out.exists() and not events:
+                        # Resume: reuse the recorded summary rather than paying
+                        # for the same compaction twice.
+                        summary = json.loads(out.read_text())['summary']
+                        events.append(('resumed', stage))
+                        if args.arm == 'codex':
+                            live = external.codex_compacted_records(live, summary)
+                        else:
+                            history = external.opencode_visible(live)
+                            tail_start = external.opencode_select(history, external.opencode_preserve_budget(args.window))
+                            live = external.opencode_compacted_entries(history, tail_start, summary)
+                    elif not events:
+                        # Probe boundary: force one compaction so this projection
+                        # is comparable with the other arms at the same point.
+                        live, summary, truncated, declined = compact(live, summary, stage, 'boundary', summary)
+                        events.append(('declined' if declined else 'boundary', stage))
+                    # If an overflow compaction already fired for this stage, that
+                    # state *is* the boundary state; do not compact twice.
+                    if args.arm == 'codex':
+                        value = external.codex_build(live, summary)
+                        kept = [r for r in live if r['kind'] == 'text']
+                        extra = {'live_records': len(live), 'kept_user_messages': len(kept),
+                                 'kept_user_tokens': external.estimate_tokens('\n'.join(r['text'] for r in kept))}
+                    else:
+                        history = external.opencode_visible(live)
+                        tail_start = external.opencode_select(history, external.opencode_preserve_budget(args.window))
+                        value = external.opencode_build(history, tail_start, summary)
+                        tail_tokens = sum(external.estimate_full(e['records']) for e in history[tail_start:])
+                        extra = {'live_records': len(live), 'tail_start_index': tail_start, 'tail_tokens': tail_tokens,
+                                 'tail_budget': external.opencode_preserve_budget(args.window)}
+                    save(out, {'id': identity, 'summary': summary, 'text': value,
+                               'context_tokens': external.estimate_tokens(value),
+                               'summary_tokens': external.estimate_tokens(summary),
+                               'compactions': events, 'summary_truncated': truncated,
+                               'history_tokens': size(live), **extra})
+                    print(json.dumps({'stage': identity, 'compactions': events,
+                                      'context_tokens': external.estimate_tokens(value), **extra}), flush=True)
                 else:
-                    raise SystemExit(f'unknown external arm {args.arm}')
-                body = {'model': model, 'messages': ([{'role': 'system', 'content': system}] if system else []) +
-                        [{'role': 'user', 'content': user}],
-                        'stream': True, 'max_tokens': 8192, 'stream_options': {'include_usage': True}}
-                row = ledger.reserve(identity, model, request_reserve(len(json.dumps(body).encode())))
-                started = time.monotonic()
-                result = subprocess.run([str(args.bridge)], input=json.dumps({'model': model, 'body': body}),
-                                        capture_output=True, text=True, timeout=600)
-                parsed = parse_sse(result.stdout)
-                if result.returncode != 0:
-                    parsed['error'] = f'bridge exit {result.returncode}: {result.stderr[-300:]}'
-                usage = parsed.get('usage') or {}
-                ledger.settle(row, input_tokens=usage.get('prompt_tokens'), output_tokens=usage.get('completion_tokens'),
-                              credit_cost=usage.get('credit_cost'), seconds=round(time.monotonic() - started, 3),
-                              error=parsed.get('error'))
-                if parsed.get('error') or parsed['finish'] != 'stop' or not parsed['text'].strip():
-                    raise RuntimeError(f'{identity}: summary failed: {parsed.get("error") or parsed["finish"]}')
-                summary = parsed['text'].strip()
-                if args.arm == 'codex':
-                    value = external.codex_build(records, summary)
-                    extra = {'user_messages_kept': True, 'tail_tokens': None}
-                else:
-                    entries = external.opencode_entries(records)
-                    tail_start = external.opencode_select(entries, external.opencode_preserve_budget(args.window))
-                    value = external.opencode_build(entries, tail_start, summary)
-                    tail_tokens = external.estimate_tokens('\n\n'.join(external.opencode_serialize(e) for e in entries[tail_start:]))
-                    extra = {'tail_start_index': tail_start, 'tail_tokens': tail_tokens,
-                             'tail_budget': external.opencode_preserve_budget(args.window)}
-                save(out, {'id': identity, 'summary': summary, 'text': value, 'context_tokens': external.estimate_tokens(value),
-                           'summary_tokens': external.estimate_tokens(summary), 'seconds': round(time.monotonic() - started, 3),
-                           'usage': {'input_tokens': usage.get('prompt_tokens'), 'output_tokens': usage.get('completion_tokens'),
-                                     'credit_cost': usage.get('credit_cost')}, **extra})
-                print(json.dumps({'stage': identity, 'context_tokens': external.estimate_tokens(value),
-                                  'summary_tokens': external.estimate_tokens(summary), **extra}), flush=True)
-                previous_summary = summary
+                    for kind, _ in events:
+                        print(json.dumps({'stage': f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}',
+                                          'auto_compacted': True, 'kind': kind}), flush=True)
 
 
 def probe(args):

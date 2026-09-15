@@ -14,6 +14,8 @@ sent and settled to the provider's reported usage afterwards.
 | `codex` | `openai/codex` local inline compaction: all user messages (≤20 000 tokens) + summary |
 | `opencode` | `anomalyco/opencode`: summary + retained tail (`min(15 000, max(2 000, usable/4))`) |
 
+Results and limits: [docs/compaction-abc-experiment.md](../../docs/compaction-abc-experiment.md).
+
 ## Files
 
 | File | Purpose |
@@ -23,6 +25,7 @@ sent and settled to the provider's reported usage afterwards.
 | `scripts/abc_external_provenance.json` | upstream repo, commit and git blob SHA for every file that was read |
 | `agent/examples/abc_probe_bridge.rs` | direct model transport; reads the local Agent registry, refuses models outside the allowlist |
 | `scripts/abc_experiment/abc_compaction_arm.rs` | M-arm driver: dumps any checkout's projection. Copy it into the checkout you want to measure |
+| `scripts/abc_experiment/summarize.py` | prints the six-arm table and cost breakdown from a results root |
 
 ## Running it
 
@@ -38,35 +41,50 @@ cp scripts/abc_experiment/abc_compaction_arm.rs <that-checkout>/agent/examples/
 (cd <that-checkout> && CARGO_TARGET_DIR=... cargo build -p future-agent --example abc_compaction_arm)
 python3 scripts/abc_compaction_experiment.py main --root DIR \
     --arm-binary <that-checkout>/target/debug/examples/abc_compaction_arm \
-    --bridge target/debug/examples/abc_probe_bridge --window 32000 --budget 10
+    --bridge target/debug/examples/abc_probe_bridge --window 32000 --budget 25
 
-# 4. arms X/O (Codex, OpenCode)
+# 4. external arms (Codex, OpenCode); --stages lists the probe stages to record
 python3 scripts/abc_compaction_experiment.py external --root DIR --arm codex \
-    --bridge target/debug/examples/abc_probe_bridge --window 1000000 --stages 0 --budget 10
+    --bridge target/debug/examples/abc_probe_bridge --window 1000000 --stages 0 3 7 --budget 25
 python3 scripts/abc_compaction_experiment.py external --root DIR --arm opencode \
-    --bridge target/debug/examples/abc_probe_bridge --window 1000000 --stages 0 --budget 10
+    --bridge target/debug/examples/abc_probe_bridge --window 1000000 --stages 0 3 7 --budget 25
 
-# 5. score, then summarise
-python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex \
-    --bridge target/debug/examples/abc_probe_bridge --budget 10
-python3 scripts/abc_compaction_experiment.py report --root DIR --arm codex
+# 5. score each recorded projection, then summarise
+python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex --bridge target/debug/examples/abc_probe_bridge
+python3 scripts/abc_experiment/summarize.py --root DIR
 ```
 
-`--budget` is a hard CNY ceiling shared by every run in `DIR`; the ledger stops
-the experiment rather than overrunning it. `--stages` limits which compaction
-points are generated — later stages for the external arms are expensive because
-those strategies summarise the entire history.
+`--budget` is a hard CNY ceiling shared by every run in `DIR`; the ledger stops the
+experiment rather than overrunning it. `--id-suffix` re-runs a step under a new
+identity (the ledger refuses to silently overwrite a recorded one).
 
-## Why the external arms are stage-limited
+## External arms: history replay
 
-Codex and OpenCode both summarise the *whole* conversation, so their cost grows
-with the archive: at stage 1 the history is ~250 K tokens (≈¥0.27 per compaction
-for Codex), at stage 4 ~1 M tokens and at stage 8 ~2 M tokens. The recorded run
-covers stage 1 for both, which is the first and most common compaction point.
-Extending them to stages 4 and 8 was not affordable inside the ¥10 cap.
+Codex and OpenCode replace the conversation, so the Nth compaction reads the
+already-compacted history plus what was added since — not the raw archive the
+journal-backed arms rebuild from. The driver therefore:
+
+* forces one compaction at each probe stage, so the recorded projection is
+  comparable with the other arms at the same boundary;
+* compacts between probes on the strategy's own overflow trigger, before the
+  accumulated history would exceed the provider window.
+
+`PROVIDER_WINDOW`, `PROVIDER_MARGIN` and `CALIBRATION` in the harness are
+*measured*, not assumed: a forced stage-4 Codex request was rejected with
+"maximum context length is 1048576 tokens. However, you requested 1072531", while
+the harness estimated those messages at ~766 K — hence the 1.45× factor.
+
+Behaviour transcribed from source and worth knowing when reading results:
+
+* OpenCode declines to compact when the summary comes back empty (`!summary.trim()`)
+  and keeps the history; the driver records that as `declined`.
+* Neither agent inspects the completion reason, so a summary truncated by the
+  output cap is accepted and flagged `summary_truncated` here.
+* OpenCode's summary output is hard-capped at 4 096; Codex uses the model maximum.
 
 ## Ledger states
 
 `finished` (settled to reported usage), `invalidated` (implementation was wrong;
 charge kept), `interrupted` (operator abort; settlement unknown, reservation kept
-as spend). An `interrupted` or `started` row is never retried automatically.
+as spend), `#failedN` (a recorded attempt that was retried; both charges kept).
+An `interrupted` or `started` row is never retried automatically.

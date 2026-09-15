@@ -9,14 +9,20 @@
 //!   {"model":"future/…","body":{…chat-completions request…}}
 //!   {"mode":"metadata","model":"future/…"}   → model id/window/cost only
 //! Raw upstream SSE is streamed to stdout.
+//!
+//! The request bound is 8 MB: a Codex-style strategy reads the whole live
+//! history, which reaches ~4 MB of JSON on the experiment's late stages. The
+//! response bound is unchanged.
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::io::{Read, Write};
 
 const ALLOWED: [&str; 2] = ["future/deepseek-flash", "future/glm-5.3-flash"];
-const MAX_OUTPUT_TOKENS: i64 = 8192;
-const MAX_REQUEST_BYTES: usize = 2_000_000;
+// Raised from 8192: a strategy that summarizes the whole history needs more
+// room to finish its summary before the response hits the output limit.
+const MAX_OUTPUT_TOKENS: i64 = 65_536;
+const MAX_REQUEST_BYTES: usize = 8_000_000;
 const MAX_RESPONSE_BYTES: usize = 8_000_000;
 
 #[tokio::main]
@@ -82,11 +88,17 @@ async fn main() -> Result<()> {
         call = call.header(key, value);
     }
     let response = call.body(encoded).send().await?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "upstream HTTP {}",
-        response.status().as_u16()
-    );
+    if !response.status().is_success() {
+        // Include a bounded provider error body: without it a 400 is not
+        // diagnosable in the ledger. Never echo credentials (the body is the
+        // provider's own message).
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "upstream HTTP {status}: {}",
+            body.chars().take(600).collect::<String>()
+        );
+    }
     let mut stream = response.bytes_stream();
     let mut output = std::io::stdout();
     let mut count = 0;

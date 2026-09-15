@@ -157,6 +157,50 @@ def codex_truncate(text, max_tokens):
     return text[:low]
 
 
+def codex_compacted_records(records, summary):
+    """The history Codex keeps after compaction.
+
+    `build_compacted_history` output becomes the new live history: the selected
+    user messages (newest-first within the 20 000-token budget, oldest truncated)
+    followed by the summary item. Assistant turns and tool output are gone.
+    """
+    users = [r for r in records if r['kind'] == 'text' and r['role'] == 'user']
+    selected, remaining = [], CODEX_USER_MESSAGE_MAX_TOKENS
+    for record in reversed(users):
+        if remaining == 0:
+            break
+        cost = estimate_tokens(record['text'])
+        if cost <= remaining:
+            selected.append(dict(record))
+            remaining -= cost
+        else:
+            truncated = dict(record)
+            truncated['text'] = codex_truncate(record['text'], remaining)
+            selected.append(truncated)
+            break
+    selected.reverse()
+    selected.append({'id': 'compaction-summary', 'role': 'user', 'kind': 'summary', 'text': summary})
+    return selected
+
+
+def opencode_visible(entries):
+    """History as OpenCode sees it when selecting a tail.
+
+    `processCompaction` hides the compaction user message and the summary
+    assistant message of earlier compactions; the previous summary is instead
+    passed to the prompt as `<prior-summary>`.
+    """
+    return [e for e in entries if not e.get('compaction') and not e.get('summary_flag')]
+
+
+def opencode_compacted_entries(history, tail_start, summary):
+    """History after compaction: [compaction user msg, summary, ...retained tail...]."""
+    return ([{'role': 'user', 'compaction': True, 'records': []},
+             {'role': 'assistant', 'summary_flag': True,
+              'records': [{'kind': 'summary', 'role': 'assistant', 'text': summary}]}]
+            + [dict(e) for e in history[tail_start:]])
+
+
 def codex_build(records, summary):
     """`build_compacted_history` with the default 20_000-token user budget."""
     users = [r for r in records if r["kind"] == "text" and r["role"] == "user"]
@@ -179,7 +223,6 @@ def codex_build(records, summary):
 
 
 # ─── OpenCode ────────────────────────────────────────────────────────────────
-
 
 def _opencode_truncate(value):
     if len(value) <= OPENCODE_TOOL_OUTPUT_MAX_CHARS:
@@ -207,6 +250,10 @@ def opencode_entries(records):
 
 
 def opencode_serialize(entry):
+    if entry.get('summary_flag'):
+        return "\n".join(f"[Assistant]: {r['text']}" for r in entry['records'] if r['kind'] == 'summary')
+    if entry.get('compaction'):
+        return ''
     if entry["role"] == "user":
         text = "\n".join(r["text"] for r in entry["records"] if r["kind"] == "text")
         return f"[User]: {text}" if text else ""
@@ -214,6 +261,8 @@ def opencode_serialize(entry):
     for record in entry["records"]:
         if record["kind"] == "text":
             parts.append(f"[Assistant]: {record['text']}")
+        elif record["kind"] == "summary":
+            lines.append(f"[User]: {CODEX_SUMMARY_PREFIX}\n{record['text']}")
         elif record["kind"] == "tool_call":
             parts.append(f"[Assistant tool call]: read({_json_args(record)})")
         elif record["kind"] == "tool_result":
@@ -226,7 +275,7 @@ def opencode_serialize(entry):
 
 def opencode_turns(entries):
     """User-message-delimited turns; `end` is the next user message."""
-    starts = [i for i, e in enumerate(entries) if e["role"] == "user"]
+    starts = [i for i, e in enumerate(entries) if e["role"] == "user" and not e.get('compaction') and not e.get('summary_flag')]
     turns = [{"start": s, "end": len(entries)} for s in starts]
     for i in range(len(turns) - 1):
         turns[i]["end"] = turns[i + 1]["start"]
@@ -315,6 +364,12 @@ def opencode_build(entries, tail_start, summary):
     """
     tail_parts = []
     for entry in entries[tail_start:]:
+        if entry.get('summary_flag'):
+            for record in entry['records']:
+                tail_parts.append(f"[Assistant]: {record['text']}")
+            continue
+        if entry.get('compaction'):
+            continue
         for record in entry["records"]:
             if record["kind"] == "tool_call":
                 tail_parts.append(f"[Assistant tool call]: read({_json_args(record)})")
