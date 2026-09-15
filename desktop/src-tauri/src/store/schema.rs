@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS runs (
     error_message TEXT,
     error_type TEXT,
     archived_at INTEGER,
+    remote_accepted_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -327,6 +328,7 @@ pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
 /// been detached.
 pub(super) const AGENT_SESSION_BINDING_MIGRATION_VERSION: &str =
     "v1.1.5-unique-agent-session-binding";
+pub(super) const REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION: &str = "v1.1.7-remote-prompt-receipt";
 pub(super) const UNIQUE_AGENT_SESSION_INDEX: &str =
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_agent_session_unique \
      ON threads(agent_session_id) \
@@ -346,6 +348,9 @@ pub(super) const RENAMED_COLUMNS: &[(&str, &str, &str)] = &[
 /// the `ALTER`s, not inside `SCHEMA`, or they fail with "no such column" on a
 /// database created before those columns existed.
 pub(super) const ADDED_INDEXES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_runs_remote_prompt_receipt \
+     ON runs(trigger_message_id, remote_accepted_at) \
+     WHERE trigger_message_id IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_review_changesets_thread \
      ON review_changesets(thread_id, source_kind, created_at)",
     // One live artifact row per file per thread (see `ensure_artifact`). Kept

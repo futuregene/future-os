@@ -319,20 +319,17 @@ export function useFileDownload(
           return;
         }
         const variant = fileType.route === "external" ? "original" : "preview";
-        let cachedPreview = remote.cachedAttachment(attachment, variant);
-        const info =
-          cachedPreview?.info ??
-          (await remote.prepareAttachment(
-            attachment,
-            variant,
-            handle.controller.signal,
-            () => handle && updateDownload(handle, { phase: "waiting_network" }),
-          ));
+        const info = await remote.prepareAttachment(
+          attachment,
+          variant,
+          handle.controller.signal,
+          () => handle && updateDownload(handle, { phase: "waiting_network" }),
+        );
         // prepareAttachment records the returned content identity before it
         // resolves. Re-read the index so a persistent disk-cache hit is used
         // immediately instead of showing a progress Modal and verifying the
         // same file a second time in downloadAttachment.
-        cachedPreview ??= remote.cachedAttachment(attachment, variant);
+        const cachedPreview = remote.cachedAttachment(attachment, variant);
         if (info.size > MAX_FILE_BYTES) {
           handoffDownloadAlert(handle, t("attachment.tooLarge"));
           return;
@@ -651,13 +648,13 @@ export function useFileDownload(
           );
           return;
         }
-        let cached = remote.cachedAttachment(attachment, "original");
-        const info =
-          cached?.info ??
-          (await remote.prepareAttachment(attachment, "original", handle.controller.signal, () =>
-            updateDownload(handle, { phase: "waiting_network" }),
-          ));
-        cached ??= remote.cachedAttachment(attachment, "original");
+        const info = await remote.prepareAttachment(
+          attachment,
+          "original",
+          handle.controller.signal,
+          () => updateDownload(handle, { phase: "waiting_network" }),
+        );
+        const cached = remote.cachedAttachment(attachment, "original");
         await openOrShare(info, cached?.file ?? null, operation, handle);
       } catch (error) {
         if (error instanceof TransferCancelledError) return;
@@ -673,7 +670,7 @@ export function useFileDownload(
   // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
   // anything else → open/save/share action sheet.
   const openFileLink = useCallback(
-    async (path: string, refresh = true) => {
+    async (path: string, _refresh = true) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
       const fileType = mobileFileType(attachment.name);
       if (!fileType) {
@@ -687,15 +684,16 @@ export function useFileDownload(
       }
       try {
         const variant = fileType.route === "external" ? "original" : "preview";
-        // Directory entries and generated Markdown links are mutable:
-        // revalidate by default, reusing bytes only after content identity agrees.
-        let cachedPreview = refresh ? null : remote.cachedAttachment(attachment, variant);
-        const info =
-          cachedPreview?.info ??
-          (await remote.prepareAttachment(attachment, variant, handle.controller.signal, () =>
-            updateDownload(handle, { phase: "waiting_network" }),
-          ));
-        cachedPreview ??= remote.cachedAttachment(attachment, variant);
+        // Paths are mutable identities. Always ask Desktop for the current
+        // content hash, then reuse the content-addressed bytes only when that
+        // identity still matches.
+        const info = await remote.prepareAttachment(
+          attachment,
+          variant,
+          handle.controller.signal,
+          () => updateDownload(handle, { phase: "waiting_network" }),
+        );
+        const cachedPreview = remote.cachedAttachment(attachment, variant);
         if (info.size > MAX_FILE_BYTES) {
           handoffDownloadAlert(handle, t("attachment.tooLarge"));
           return;

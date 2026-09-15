@@ -27,9 +27,9 @@ function storageKey(pairId?: string): string {
 }
 
 async function loadPendingPromptDirect(pairId?: string): Promise<PendingPrompt | null> {
+  const raw = await AsyncStorage.getItem(storageKey(pairId));
+  if (!raw) return null;
   try {
-    const raw = await AsyncStorage.getItem(storageKey(pairId));
-    if (!raw) return null;
     const value = JSON.parse(raw) as Partial<PendingPrompt>;
     if (
       // Legacy records have no safe destination identity. Leave drafts alone,
@@ -55,6 +55,9 @@ async function loadPendingPromptDirect(pairId?: string): Promise<PendingPrompt |
     }
     return value as PendingPrompt;
   } catch {
+    // Invalid legacy/corrupt data is not replayable. Storage I/O errors occur
+    // before this parser and must propagate so callers do not mint a new
+    // command id while an older delivery may already have been accepted.
     return null;
   }
 }

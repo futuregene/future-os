@@ -490,40 +490,37 @@ pub(crate) fn delete_thread_inner(
     delete_thread_children_in(&tx, thread_id)?;
 
     if thread.mode == "chat" {
-        if delete_files {
-            // Mark cleaned immediately (skip the pending_cleanup phase) so
-            // orphans reconcilers won't re-attempt the now-removed directory.
-            const CLEANED_SQL: &str = "UPDATE workspaces
-                 SET cleanup_status = 'cleaned',
-                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
-                     cleaned_at = ?1,
-                     updated_at = ?1
-                 WHERE id = ?2
-                   AND kind = 'temporary'";
-            tx.execute(CLEANED_SQL, params![now, thread.workspace_id])?;
-        } else {
-            const PENDING_SQL: &str = "UPDATE workspaces
-                 SET cleanup_status = 'pending_cleanup',
-                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
-                     updated_at = ?1
-                 WHERE id = ?2
-                   AND kind = 'temporary'
-                   AND cleanup_status = 'active'";
-            tx.execute(PENDING_SQL, params![now, thread.workspace_id])?;
-        }
+        // Keep durable cleanup intent until physical removal succeeds. A file
+        // error after this transaction is therefore retryable by the cleanup
+        // reconciler and can never be recorded as already cleaned.
+        const PENDING_SQL: &str = "UPDATE workspaces
+             SET cleanup_status = 'pending_cleanup',
+                 cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
+                 updated_at = ?1
+             WHERE id = ?2
+               AND kind = 'temporary'
+               AND cleanup_status = 'active'";
+        tx.execute(PENDING_SQL, params![now, thread.workspace_id])?;
     }
     tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
     tx.commit()?;
     mark_catalog_dirty();
 
-    // Remove the directory on disk AFTER the transaction commits — if the
-    // directory deletion fails the DB row is already gone, which is the safer
-    // failure mode (side-effect-last).
     if delete_files && thread.mode == "chat" {
         let dir = super::db::chat_workspace_path(thread_id)?;
         if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::remove_dir_all(&dir)?;
         }
+        let conn = connect()?;
+        conn.execute(
+            "UPDATE workspaces
+                 SET cleanup_status = 'cleaned',
+                     cleaned_at = ?1,
+                     updated_at = ?1
+                 WHERE id = ?2
+                   AND kind = 'temporary'",
+            params![now_millis(), thread.workspace_id],
+        )?;
     }
 
     Ok(thread)
@@ -538,6 +535,7 @@ pub(crate) fn delete_thread_inner(
 ///
 /// Each thread delete is independent — one failure does not roll back
 /// already-deleted siblings. Returns a summary.
+#[cfg(test)]
 pub fn batch_delete_threads(
     input: &super::records::BatchDeleteThreadsInput,
 ) -> Result<super::records::BatchDeleteResult, crate::AppError> {
@@ -1119,6 +1117,24 @@ mod tests {
             .expect("get")
             .expect("some");
         assert_eq!(ws.cleanup_status, "cleaned");
+    }
+
+    #[test]
+    fn failed_directory_removal_stays_pending_cleanup() {
+        let (_home, _conn) = guarded_conn("threads_delete_file_failure");
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
+        if chat_path.exists() {
+            std::fs::remove_dir_all(&chat_path).expect("remove generated directory");
+        }
+        std::fs::write(&chat_path, b"not a directory").expect("create blocker");
+
+        assert!(delete_thread_with_files(&chat.id, true).is_err());
+        let workspace = get_workspace(&chat.workspace_id)
+            .expect("workspace")
+            .expect("workspace row remains for cleanup");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+        assert!(get_thread(&chat.id).expect("thread lookup").is_none());
     }
 
     #[test]

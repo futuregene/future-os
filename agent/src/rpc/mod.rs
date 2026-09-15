@@ -162,9 +162,12 @@ impl AppState {
     /// write lock.  Only the final map insertion acquires the write lock
     /// (with a double-check), so a slow session load never stalls concurrent
     /// session lookups.
-    pub fn get_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
+    pub fn try_get_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<Arc<RwLock<ServerSession>>>> {
         if session_id.is_empty() {
-            return None;
+            return Ok(None);
         }
         {
             let sessions = self.sessions.read();
@@ -172,11 +175,11 @@ impl AppState {
                 let sess = sess.clone();
                 drop(sessions);
                 ServerSession::ensure_scheduler_worker(&sess);
-                return Some(sess);
+                return Ok(Some(sess));
             }
         }
-        if !self.session_manager.contains(session_id).ok()? {
-            return None;
+        if !self.session_manager.contains(session_id)? {
+            return Ok(None);
         }
 
         // Load session from disk OUTSIDE any lock — switch_session parses
@@ -199,9 +202,7 @@ impl AppState {
             self.model_registry.clone(),
             self.queue_budget.clone(),
         );
-        if new_sess.switch_session_metadata(session_id).is_err() {
-            return None;
-        }
+        new_sess.switch_session_metadata(session_id)?;
         // Cold history is reconciled on hydration as well as during a live
         // provider-config commit. A removed persisted model must not survive
         // merely because this session was not resident when the catalog
@@ -259,13 +260,26 @@ impl AppState {
                 let sess = sess.clone();
                 drop(sessions);
                 ServerSession::ensure_scheduler_worker(&sess);
-                return Some(sess);
+                return Ok(Some(sess));
             }
             let sess_arc = Arc::new(RwLock::new(new_sess));
             sessions.insert(session_id.to_string(), sess_arc.clone());
             drop(sessions);
             ServerSession::ensure_scheduler_worker(&sess_arc);
-            Some(sess_arc)
+            Ok(Some(sess_arc))
+        }
+    }
+
+    /// Convenience lookup for internal paths that already have a separately
+    /// established storage-success boundary. Command admission must use
+    /// [`Self::try_get_session`] so an I/O failure is not reported as missing.
+    pub fn get_session(&self, session_id: &str) -> Option<Arc<RwLock<ServerSession>>> {
+        match self.try_get_session(session_id) {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::warn!(session_id, "session load failed: {error:#}");
+                None
+            }
         }
     }
 
@@ -1061,16 +1075,18 @@ mod tests {
     // ─── coverage batch 16: hydrate/reload/get_state residuals ─────────────
 
     #[test]
-    fn get_session_returns_none_for_unloadable_session_file() {
+    fn try_get_session_reports_an_unloadable_session_file() {
         let (_dir, state) = bare_app_state();
         // The file exists (find succeeds) but cannot be parsed, so the
-        // hydrate switch_session fails and get_session yields None.
+        // hydrate switch_session fails and the fallible API preserves the
+        // storage error instead of turning it into "session not found".
         std::fs::create_dir_all(&state.session_manager.dir).unwrap();
         std::fs::write(
             state.session_manager.dir.join("corrupt.jsonl"),
             "{not json\n",
         )
         .unwrap();
+        assert!(state.try_get_session("corrupt").is_err());
         assert!(state.get_session("corrupt").is_none());
     }
 

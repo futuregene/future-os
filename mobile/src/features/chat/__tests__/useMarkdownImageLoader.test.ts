@@ -45,12 +45,14 @@ test("mount does not read files; explicit load uses the verified preview flow", 
   expect(remote.downloadAttachment).toHaveBeenCalledWith(info, undefined, signal);
 });
 
-test("cache hits avoid network requests and transfer", async () => {
+test("cache hits are used only after metadata is revalidated", async () => {
   const remote = mount();
   remote.cachedAttachment.mockReturnValue({ info, file: { uri: "file:///cached.png" } });
-  expect(loader.cached("a.png")).toBe("file:///cached.png");
+  expect(loader.cached("a.png")).toBeNull();
   await expect(loader.load("a.png", new AbortController().signal)).resolves.toBe("file:///cached.png");
-  expect(remote.prepareAttachment).not.toHaveBeenCalled();
+  expect(remote.prepareAttachment).toHaveBeenCalledWith(
+    { path: "a.png", name: "a.png" }, "preview", expect.anything(),
+  );
   expect(Network.getNetworkStateAsync).not.toHaveBeenCalled();
 });
 
