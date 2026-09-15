@@ -1,9 +1,9 @@
 # Embedded in the installer, not installed with the app. Windows PowerShell 5.1+.
-# Preflight exits: 0 = writable, 32 = running/locked, 5 = access/check failure.
+# Preflight exits: 0 = success, 32 = running/locked, 5 = access/check failure.
 # ResetSandbox passes through the maintenance CLI code; 124 means timeout.
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
-    [ValidateSet('Check', 'Close', 'ResetSandbox')][string]$Mode = 'Check'
+    [ValidateSet('Check', 'Close', 'ResetSandbox', 'VerifyInstall')][string]$Mode = 'Check'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -33,6 +33,54 @@ function Invoke-FutureOSSandboxReset {
         return 5
     } finally {
         if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Invoke-FutureOSInstallVerification {
+    param([string]$Directory)
+
+    try {
+        $directoryPath = [IO.Path]::GetFullPath($Directory)
+        # Both commands return before GUI/Agent initialization. Starting the
+        # real files still makes Windows resolve their native dependencies, so
+        # corrupt files, wrong architectures and missing DLLs fail here.
+        foreach ($probe in @(
+            @{ Name = 'futureos.exe'; Arguments = '--help' },
+            @{ Name = 'future.exe'; Arguments = '--version' }
+        )) {
+            $executable = [IO.Path]::Combine($directoryPath, $probe.Name)
+            if (-not [IO.File]::Exists($executable)) {
+                Write-Host "FutureOS install verification: missing $executable"
+                return 5
+            }
+            $process = $null
+            try {
+                $startInfo = [Diagnostics.ProcessStartInfo]::new()
+                $startInfo.FileName = $executable
+                $startInfo.Arguments = $probe.Arguments
+                $startInfo.WorkingDirectory = $directoryPath
+                $startInfo.UseShellExecute = $false
+                $startInfo.CreateNoWindow = $true
+                $process = [Diagnostics.Process]::Start($startInfo)
+                if ($null -eq $process) { return 5 }
+                if (-not $process.WaitForExit(15000)) {
+                    Write-Host "FutureOS install verification timed out: $($probe.Name)"
+                    $process.Kill()
+                    $null = $process.WaitForExit(5000)
+                    return 5
+                }
+                if ($process.ExitCode -ne 0) {
+                    Write-Host "FutureOS install verification failed: $($probe.Name) exited $($process.ExitCode)"
+                    return 5
+                }
+            } finally {
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+        return 0
+    } catch {
+        Write-Host "FutureOS install verification: $($_.Exception.Message)"
+        return 5
     }
 }
 
@@ -101,5 +149,8 @@ function Invoke-FutureOSPreflight {
 
 if ($Mode -eq 'ResetSandbox') {
     exit (Invoke-FutureOSSandboxReset -Directory $InstallDir)
+}
+if ($Mode -eq 'VerifyInstall') {
+    exit (Invoke-FutureOSInstallVerification -Directory $InstallDir)
 }
 exit (Invoke-FutureOSPreflight -Directory $InstallDir -Action $Mode)

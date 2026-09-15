@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use std::fs::File;
 use std::os::windows::io::AsRawHandle;
@@ -383,7 +384,22 @@ fn capability_state_path() -> io::Result<PathBuf> {
 /// This intentionally probes more than `CreateRestrictedToken`: a host is only
 /// usable when the real shell/private-desktop pipeline can write the granted
 /// root while an adjacent user-writable path remains denied.
+const HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub(crate) fn probe_host() -> io::Result<crate::sandbox::WindowsSandboxProbe> {
+    probe_host_with_command(
+        "$ErrorActionPreference = 'Stop'; \
+        Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_ALLOW -Value 'ok'; \
+        try { Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_DENY -Value 'bad'; exit 42 } \
+        catch { exit 0 }",
+        HOST_PROBE_TIMEOUT,
+    )
+}
+
+pub(crate) fn probe_host_with_command(
+    command: &str,
+    timeout: Duration,
+) -> io::Result<crate::sandbox::WindowsSandboxProbe> {
     let fixture = tempfile::tempdir()?;
     let writable_root = fixture.path().join("allowed");
     std::fs::create_dir(&writable_root)?;
@@ -404,10 +420,6 @@ pub(crate) fn probe_host() -> io::Result<crate::sandbox::WindowsSandboxProbe> {
             denied_marker.as_os_str().to_owned(),
         ),
     ];
-    let command = "$ErrorActionPreference = 'Stop'; \
-        Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_ALLOW -Value 'ok'; \
-        try { Set-Content -LiteralPath $env:FUTUREOS_SANDBOX_PROBE_DENY -Value 'bad'; exit 42 } \
-        catch { exit 0 }";
     let child = match spawn_with_plan(&plan, command, &writable_root, &env, None, &state_path) {
         Ok(child) => child,
         Err(error) => {
@@ -418,7 +430,7 @@ pub(crate) fn probe_host() -> io::Result<crate::sandbox::WindowsSandboxProbe> {
             ));
         }
     };
-    let exit_code = child.wait_blocking();
+    let exit_code = child.wait_blocking_timeout(timeout);
     drop(child);
     let cleanup = reset_capabilities_at(&state_path);
     if let Err(error) = cleanup {
@@ -427,13 +439,16 @@ pub(crate) fn probe_host() -> io::Result<crate::sandbox::WindowsSandboxProbe> {
         )));
     }
     match exit_code {
-        Ok(0) if allowed_marker.is_file() && !denied_marker.exists() => {
+        Ok(Some(0)) if allowed_marker.is_file() && !denied_marker.exists() => {
             Ok(crate::sandbox::WindowsSandboxProbe::available())
         }
-        Ok(42) | Ok(0) if denied_marker.exists() => Ok(
+        Ok(Some(42)) | Ok(Some(0)) if denied_marker.exists() => Ok(
             crate::sandbox::WindowsSandboxProbe::unavailable_without_error("write_boundary_failed"),
         ),
-        Ok(_) => Ok(
+        Ok(None) => {
+            Ok(crate::sandbox::WindowsSandboxProbe::unavailable_without_error("probe_timeout"))
+        }
+        Ok(Some(_)) => Ok(
             crate::sandbox::WindowsSandboxProbe::unavailable_without_error(
                 "restricted_shell_failed",
             ),

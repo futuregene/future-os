@@ -123,14 +123,21 @@ try {
     & $csc /nologo /target:winexe "/out:$fixture" (Join-Path $PSScriptRoot 'tests\windows-installer-fixture.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Fixture compilation failed' }
     $fixtureHash = (Get-FileHash -LiteralPath $fixture).Hash
+    $newFixture = Join-Path $root 'fixture-new.exe'
+    & $csc /nologo /target:winexe /define:INSTALLER_NEW "/out:$newFixture" (Join-Path $PSScriptRoot 'tests\windows-installer-fixture.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'New fixture compilation failed' }
+    $newFixtureHash = (Get-FileHash -LiteralPath $newFixture).Hash
+    if ($newFixtureHash -eq $fixtureHash) { throw 'Old and new fixtures must differ' }
     $installer = Join-Path $root 'preflight-setup.exe'
-    & $MakeNsis /V2 /WX /INPUTCHARSET UTF8 "/DTEST_OUTFILE=$installer" (Join-Path $PSScriptRoot 'tests\windows-installer-preflight.nsi')
+    & $MakeNsis /V2 /WX /INPUTCHARSET UTF8 "/DTEST_OUTFILE=$installer" "/DTEST_FIXTURE=$newFixture" (Join-Path $PSScriptRoot 'tests\windows-installer-preflight.nsi')
     if ($LASTEXITCODE -ne 0) { throw 'NSIS compilation failed' }
 
     Write-Host 'Testing fresh install...'
     $fresh = Join-Path $root 'fresh install'
     Assert-Equal (Wait-Exit (Start-Installer $fresh)) 0 'Fresh install'
     Assert-Equal (Test-Path (Join-Path $fresh 'installed.marker')) $true 'Install completed'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'future.exe')).Hash $newFixtureHash 'Fresh install writes new Agent'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'futureos.exe')).Hash $newFixtureHash 'Fresh install writes new desktop'
 
     Write-Host 'Testing process detection, silent and passive modes...'
     # Space, apostrophe and Unicode paths; no command-string interpolation.
@@ -161,6 +168,8 @@ try {
     Assert-Equal $automaticLegacyAgent.HasExited $true 'Automatic update closes legacy Agent'
     Assert-Equal $automaticDesktop.HasExited $true 'Automatic update closes old desktop'
     Assert-Equal (Test-Path (Join-Path $automatic 'installed.marker')) $true 'Automatic update completed'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $automatic 'future.exe')).Hash $newFixtureHash 'Automatic update writes new Agent'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $automatic 'futureos.exe')).Hash $newFixtureHash 'Automatic update writes new desktop'
     Assert-Equal (Test-Path (Join-Path $automatic 'future-agent.exe')) $false 'Automatic update removes legacy Agent'
 
     Write-Host 'Testing interactive cancellation...'
@@ -205,6 +214,22 @@ try {
     } finally { $handle.Dispose() }
     Assert-Equal (Wait-Exit (Start-Installer $locked)) 0 'Retry succeeds after unlock'
 
+    Write-Host 'Testing failed upgrade rollback...'
+    $rollback = New-Install 'rollback after copy'
+    Assert-Equal (Wait-Exit (Start-Installer $rollback '/S /FAILAFTERCOPY')) 5 'Failed upgrade reports failure'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'future.exe')).Hash $fixtureHash 'Failed upgrade restores old Agent'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'futureos.exe')).Hash $fixtureHash 'Failed upgrade restores old desktop'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'future-agent.exe')).Hash $fixtureHash 'Failed upgrade restores legacy Agent'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'future-desktop.exe')).Hash $fixtureHash 'Failed upgrade restores legacy desktop'
+    Assert-Equal (Test-Path (Join-Path $rollback 'installed.marker')) $false 'Failed upgrade does not report completion'
+
+    Write-Host 'Testing failed post-install health check rollback...'
+    $unloadable = New-Install 'rollback after health check'
+    Assert-Equal (Wait-Exit (Start-Installer $unloadable '/S /FAILHEALTH')) 5 'Unloadable desktop reports failure'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'future.exe')).Hash $fixtureHash 'Health failure restores old Agent'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'futureos.exe')).Hash $fixtureHash 'Health failure restores old desktop'
+    Assert-Equal (Test-Path (Join-Path $unloadable 'installed.marker')) $false 'Health failure does not report completion'
+
     Write-Host 'Testing read-only executable...'
     $readOnly = New-Install 'read only'
     $readOnlyExe = Join-Path $readOnly 'future.exe'
@@ -226,6 +251,10 @@ try {
     Assert-Equal (Wait-Exit $uninstaller) 0 'Silent uninstall closes the owned Agent and completes'
     Assert-Equal $uninstallAgent.HasExited $true 'Uninstall closes the owned Agent'
     Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $true 'Uninstall proceeded'
+    Assert-Equal (Test-Path (Join-Path $uninstallDir 'futureos.exe')) $false 'Uninstall removes desktop before completion'
+    Assert-Equal (Test-Path (Join-Path $uninstallDir 'future.exe')) $false 'Uninstall removes Agent before completion'
+    Assert-Equal (Test-Path (Join-Path $uninstallDir 'future-desktop.exe')) $false 'Uninstall removes legacy desktop before completion'
+    Assert-Equal (Test-Path (Join-Path $uninstallDir 'future-agent.exe')) $false 'Uninstall removes legacy Agent before completion'
 
     # Both unattended modes mirror Tauri's production auto-close behavior.
     foreach ($flags in @('/S', '/P')) {
@@ -270,8 +299,9 @@ try {
     try {
         $uninstaller = Start-Process -FilePath (Join-Path $lockedUninstall 'uninstall.exe') -ArgumentList "/S _?=$lockedUninstall" -PassThru
         $processes.Add($uninstaller)
-        Assert-Equal (Wait-Exit $uninstaller) 0 'External lock does not block uninstall'
-        Assert-Equal (Test-Path (Join-Path $lockedUninstall 'uninstalled.marker')) $true 'Locked uninstall completes and defers deletion'
+        Assert-Equal (Wait-Exit $uninstaller) 32 'External lock blocks uninstall cleanly'
+        Assert-Equal (Test-Path (Join-Path $lockedUninstall 'uninstalled.marker')) $false 'Locked uninstall keeps uninstall state intact'
+        Assert-Equal (Test-Path (Join-Path $lockedUninstall 'futureos.exe')) $true 'Locked uninstall preserves desktop'
     } finally { $lockedUninstallHandle.Dispose() }
 
     Write-Host 'Windows installer preflight regressions passed.'

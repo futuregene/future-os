@@ -12,11 +12,12 @@ use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use uuid::Uuid;
 use windows_sys::Win32::Foundation::{
     CloseHandle, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT,
-    WAIT_FAILED, WAIT_OBJECT_0,
+    WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     SetEntriesInAclW, SetSecurityInfo, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
@@ -206,6 +207,21 @@ impl RestrictedChild {
         self.job.terminate();
         result
     }
+
+    /// Wait for a maintenance/probe child without allowing a broken host shell
+    /// to pin the process-wide sandbox probe lock forever. A timeout terminates
+    /// the no-breakaway Job, so every descendant and the attached capability
+    /// lease are released when this child is dropped.
+    pub(crate) fn wait_blocking_timeout(&self, timeout: Duration) -> io::Result<Option<u32>> {
+        let result = self.process.wait_timeout(timeout)?;
+        self.job.terminate();
+        if result.is_none() {
+            // Give TerminateJobObject a short, bounded chance to settle the
+            // process handle. Dropping the Job remains the final kill boundary.
+            let _ = self.process.wait_timeout(Duration::from_secs(5));
+        }
+        Ok(result)
+    }
 }
 
 /// A private desktop on the interactive `Winsta0` window station grants the
@@ -380,7 +396,21 @@ struct ProcessHandle(OwnedHandle);
 
 impl ProcessHandle {
     fn wait(&self) -> io::Result<u32> {
-        let result = unsafe { WaitForSingleObject(self.0.raw(), INFINITE) };
+        self.wait_for(INFINITE)?.ok_or_else(|| {
+            io::Error::other("infinite process wait unexpectedly reported a timeout")
+        })
+    }
+
+    fn wait_timeout(&self, timeout: Duration) -> io::Result<Option<u32>> {
+        let milliseconds = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+        self.wait_for(milliseconds)
+    }
+
+    fn wait_for(&self, milliseconds: u32) -> io::Result<Option<u32>> {
+        let result = unsafe { WaitForSingleObject(self.0.raw(), milliseconds) };
+        if result == WAIT_TIMEOUT {
+            return Ok(None);
+        }
         if result == WAIT_FAILED {
             return Err(io::Error::last_os_error());
         }
@@ -393,7 +423,7 @@ impl ProcessHandle {
         if unsafe { GetExitCodeProcess(self.0.raw(), &mut exit_code) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(exit_code)
+        Ok(Some(exit_code))
     }
 }
 
