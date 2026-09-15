@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
-import { applyStreamEvent, emptyTimeline } from "../timeline";
+import { applyStreamEvent, commitAcknowledgedUserMessage, emptyTimeline } from "../timeline";
 import type { HistoryEntry, StreamEvent } from "../types";
 import { useTimelineController } from "../useTimelineController";
 
@@ -695,6 +695,81 @@ describe("useTimelineController", () => {
         expect.objectContaining({ before: Number.MAX_SAFE_INTEGER, limit: 3 }),
       );
     });
+
+    test.each([
+      { acknowledged: false, hasOlder: false },
+      { acknowledged: true, hasOlder: false },
+      { acknowledged: false, hasOlder: true },
+      { acknowledged: true, hasOlder: true },
+    ])(
+      "sending after a long reply retains an adjacent capped page ($acknowledged, older=$hasOlder)",
+      async ({ acknowledged, hasOlder }) => {
+        options.selectedSessionId = "s1";
+        const longReply = "long reply ".repeat(1000);
+        const initialOffset = hasOlder ? 20 : 0;
+        // The bridge may omit the entire large exchange from the next tail
+        // page. Its cursor proves adjacency even though no entry ids overlap.
+        const previousEntries = [
+          { ...userEntry("u1", "previous prompt"), runId: "r1" },
+          assistantEntry("intermediate", "intermediate output", "r1"),
+          assistantEntry("a1", longReply, "r1"),
+        ];
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({
+            data: { entries: previousEntries, hasMore: hasOlder, nextOffset: initialOffset },
+          });
+        render();
+        await establish();
+        if (acknowledged) {
+          act(() => result.current.syncEngineRef.current!.mutate("s1", (live) =>
+            commitAcknowledgedUserMessage(live, {
+              id: "local:follow-up", runId: "r2", text: "follow-up",
+            }),
+          ));
+          await flush();
+        }
+        request
+          .mockResolvedValueOnce({ data: {} })
+          .mockResolvedValueOnce({
+            data: {
+              entries: [
+                { ...userEntry("u2", "follow-up"), runId: "r2" },
+                assistantEntry("a2", "new reply", "r2"),
+              ],
+              hasMore: true,
+              nextOffset: initialOffset + previousEntries.length,
+            },
+          });
+        act(() => result.current.reconcileSession("s1", "resend"));
+        await flush();
+        expect(result.current.timeline.items.map(item => item.id)).toEqual([
+          "m_u1", "m_a1", "m_u2", "m_a2",
+        ]);
+        expect(result.current.timeline.items[1]).toMatchObject({
+          text: `intermediate output\n\n${longReply}`,
+        });
+        expect(result.current.canLoadOlderTimeline).toBe(hasOlder);
+        if (!hasOlder) return;
+
+        request.mockResolvedValueOnce({
+          data: {
+            entries: [userEntry("u0", "older prompt"), assistantEntry("a0", "older reply")],
+            hasMore: false,
+            nextOffset: 0,
+          },
+        });
+        await act(async () => { await result.current.loadOlderTimeline(); });
+        await flush();
+        expect(request.mock.calls.at(-1)?.[0]).toEqual(
+          expect.objectContaining({ before: 20 }),
+        );
+        expect(result.current.timeline.items.map(item => item.id)).toEqual([
+          "m_u0", "m_a0", "m_u1", "m_a1", "m_u2", "m_a2",
+        ]);
+        expect(result.current.canLoadOlderTimeline).toBe(false);
+      },
+    );
 
     test("reopening a warm timeline renders only the latest three exchanges", async () => {
       options.selectedSessionId = "s1";

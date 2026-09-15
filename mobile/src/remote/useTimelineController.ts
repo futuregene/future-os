@@ -29,6 +29,8 @@ const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 
 interface HistoryPagingState {
   nextBefore: number;
+  /** Exclusive end of the loaded durable window, before UI turn folding. */
+  endOffset: number;
   hasMore: boolean;
   loading: boolean;
 }
@@ -117,18 +119,26 @@ function commitHistoryPage(
   });
 }
 
-/** Replace the already-loaded tail with a fresh durable page while retaining
- * the older prefix the user explicitly paged in. Entry ids are stable across
- * history reads, so the first overlap is the exact splice point. */
+/** Replace the loaded tail without evicting a contiguous older prefix. A long
+ * exchange can make the bridge return only the next exchange: in that case
+ * the durable entry cursor, not a shared UI row, proves the pages are adjacent. */
 function retainOlderHistoryPrefix(
   existing: TimelineState | null,
   latest: TimelineState,
+  adjacent: boolean,
 ): TimelineState {
   if (!existing || latest.items.length === 0) return latest;
   const latestIds = new Set(latest.items.map((item) => item.id));
-  const overlap = existing.items.findIndex((item) => latestIds.has(item.id));
-  if (overlap <= 0) return latest;
-  const prefix = existing.items.slice(0, overlap);
+  const latestRuns = new Set(latest.items.flatMap(item =>
+    item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
+  ));
+  // A just-acknowledged prompt has a local id until history arrives. Bind it
+  // by role + run, never by text (repeated prompts are distinct exchanges).
+  const overlap = existing.items.findIndex(item => latestIds.has(item.id) ||
+    (adjacent && item.kind === "message" && !!item.runId && latestRuns.has(`${item.role}:${item.runId}`)),
+  );
+  if (overlap === 0 || (overlap < 0 && !adjacent)) return latest;
+  const prefix = overlap < 0 ? existing.items : existing.items.slice(0, overlap);
   return {
     ...latest,
     items: [...prefix, ...latest.items],
@@ -348,6 +358,7 @@ export function useTimelineController({
         ? retainOlderHistoryPrefix(
             syncEngineRef.current?.timelineFor(sessionId) ?? null,
             latest,
+            retained.endOffset === nextBefore,
           )
         : latest;
       // Only retain the cursor when the old prefix actually joined this page.
@@ -355,6 +366,7 @@ export function useTimelineController({
       const retainedOlderPages = history !== latest ? retained : null;
       const page: HistoryPagingState = {
         nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
+        endOffset: nextBefore + entries.length,
         hasMore:
           retainedOlderPages?.hasMore ??
           (response.data.hasMore === true && nextBefore > 0),
@@ -442,6 +454,7 @@ export function useTimelineController({
       if (!isCurrent()) return false;
       const next: HistoryPagingState = {
         nextBefore,
+        endOffset: current.endOffset,
         hasMore: response.data.hasMore === true && nextBefore > 0,
         loading: false,
       };
