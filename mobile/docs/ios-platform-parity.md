@@ -3,8 +3,8 @@
 ## 本次补齐
 
 - **其他 App → FutureOS**：原生 `ShareViewController` 支持文字、网页链接、图片和文件。
-  用户在系统分享面板选 FutureOS，添加说明并保存；再打开 FutureOS，配对后选择普通会话
-  或工作区，内容进入草稿，确认发送前不上传。扩展不访问远程凭证、不联网，不使用
+  用户在系统分享面板选 FutureOS，添加说明并保存；再打开 FutureOS，配对后新建普通/工作区
+  会话或选择已有会话，内容追加到目标草稿，确认发送前不上传。扩展不访问远程凭证、不联网，不使用
   responder-chain / `UIApplication` 强行打开主 App 的非标准做法。
 - **存储到文件**：`UIDocumentPickerViewController(forExporting:asCopy:)`，用户选择位置；
   不再借用分享菜单完成保存。

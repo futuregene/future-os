@@ -51,19 +51,26 @@ export function useShareIntake() {
 
   // The action sheet captures this callback before dismissing. That closure
   // owns its payload even after pending is cleared for the modal transition.
-  const chooseDestination = async (mode: "chat" | "workspace", workspaceId?: string) => {
+  const chooseDestination = async (mode: "chat" | "workspace" | "session", destinationId?: string) => {
     if (!pending || importingRef.current) return;
     if (pending.desktopId !== desktopRef.current) return;
-    if (mode === "workspace" && !remote.workspaces.some(workspace => workspace.id === workspaceId)) return;
+    if (mode === "workspace" && !remote.workspaces.some(workspace => workspace.id === destinationId)) return;
+    if (mode === "session" && (!destinationId || !remote.sessions.some(session => session.sessionId === destinationId))) return;
     importingRef.current = true;
     try {
-      const draftKey = desktopDraftKey(pending.desktopId);
+      const draftKey = desktopDraftKey(pending.desktopId, mode === "session" ? destinationId : undefined);
       const existing = await loadSessionDraft(draftKey);
       const attachments = await prepareSharedAttachments(pending.share.files, existing?.attachments ?? []);
       const text = [existing?.text.trim(), pending.share.text.trim()].filter(Boolean).join("\n\n");
+      if (desktopRef.current !== pending.desktopId) return;
       await saveSessionDraft(draftKey, { text, attachments });
       if (desktopRef.current !== pending.desktopId) return;
-      await remote.newConversation(mode, workspaceId);
+      if (mode === "session") {
+        await remote.selectSession(destinationId!);
+      } else {
+        await remote.newConversation(mode, destinationId);
+      }
+      if (desktopRef.current !== pending.desktopId) return;
       markShareLanded();
       if (pending.share.tooLarge) showToast(t("attachment.errors.attachment_file_too_large"));
     } catch (error) {

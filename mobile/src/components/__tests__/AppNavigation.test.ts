@@ -5,6 +5,7 @@ import { SessionsScreen } from "../../screens/SessionsScreen";
 import { ChatScreen } from "../../features/chat/ChatScreen";
 import { DesktopsScreen } from "../../screens/DesktopsScreen";
 import { PairingScreen } from "../../screens/PairingScreen";
+import { markShareLanded } from "../../share/shareInbox";
 
 const mockRemote: {
   phase: string;
@@ -29,7 +30,6 @@ jest.mock("../../features/chat/ChatScreen", () => ({ ChatScreen: () => null }));
 jest.mock("../../screens/DesktopsScreen", () => ({ DesktopsScreen: () => null }));
 jest.mock("../../screens/PairingScreen", () => ({ PairingScreen: () => null }));
 jest.mock("../../share/ShareIntakeMenu", () => ({ ShareIntakeMenu: () => null }));
-jest.mock("../../share/shareInbox", () => ({ subscribeShareLanded: () => () => {}, shareLandedRevision: () => 0 }));
 jest.mock("../../update/useUpdateReminder", () => ({ useUpdateReminder: () => {} }));
 let mockLanguageReady = true;
 jest.mock("../../i18n/useSystemLanguage", () => ({ useSystemLanguage: () => mockLanguageReady }));
@@ -68,6 +68,23 @@ test("opens pairing only when there are no saved desktops", () => {
   act(() => tree.unmount());
   mockRemote.credentials = { pairId: "pair" };
   mockRemote.desktops = desktops;
+});
+
+test.each(["", "existing-session"])("a share remounts the composer even when destination %s is already open", sessionId => {
+  mockRemote.selectedSessionId = sessionId;
+  mockRemote.draft = !sessionId;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  try {
+    const composer = tree.root.findByType(ChatScreen);
+    act(() => markShareLanded());
+    expect(tree.root.findByType(ChatScreen)).not.toBe(composer);
+    expect(mockRemote.selectedSessionId).toBe(sessionId);
+  } finally {
+    act(() => tree.unmount());
+    mockRemote.selectedSessionId = "";
+    mockRemote.draft = false;
+  }
 });
 
 test("opening and closing a chat retains the list instance and disables its background handlers", () => {
