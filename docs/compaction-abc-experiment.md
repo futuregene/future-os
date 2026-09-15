@@ -109,11 +109,14 @@ Three consequences:
    summary was substantially a cache artefact of the experiment, not a property of
    the two designs.
 
-Caveats: one earlier run reported 0% for the same shape, so warmth/timing matters
-and no hit rate is guaranteed; 4 of the 8 cache-test requests never reported usage,
-so their ledger entries are reservations rather than settlements; and the
-production pattern — a summary issued immediately after a normal turn — was not
-measured end to end.
+Reproduced under a controlled repeat (`cache_diag.py`): priming the array then
+appending an instruction hit **257,792 of 257,943 tokens (99.9%)** and cost
+**¥0.0094** versus ¥0.65 for the same prefix cold.
+
+One caveat found late: my first C+summary run primed with `max_tokens=16` and got
+0–2% hits, because such a request does not populate the cache. The 99.9% above uses
+a normal output allowance. Two earlier identical requests also reported no usage at
+all, so their ledger rows are reservations, not settlements.
 
 ## Does search help? (same search tool for every arm)
 
@@ -277,6 +280,37 @@ the `buried` field (3/12 in the capped run) is the direct evidence.
   implementations of the same published contract.
 * Any claim of the form "strategy X needs N lookups" must state the interface and
   whether the budget was capped.
+
+## Does adding a summary to C help?
+
+Built C+summary: everything C has (protected originals, deterministic evidence,
+recent tail) **plus** a model summary, with the summary generated in the
+cache-friendly shape — the live material as real chat messages, instruction
+appended. 12 probes, uncapped, Codex interface.
+
+| Arm | Score | No usable answer | Requests/probe | Notes |
+|---|---:|---:|---:|---|
+| **C** | **132/144** | 0 | 8.8 | zero summary cost |
+| C + summary | 125/144 | 1 | 9.8 | summary ¥0.02–0.25/stage |
+| Codex | **143/144** | 0 | 8.0 | whole-history summary |
+
+**Adding a summary made C worse (132 → 125), and one GLM probe never terminated**
+— it burned all 60 rounds of the runaway guard on `analysis` stage 8 and produced
+no answer. The summary helped exactly where expected (`buried` misses 8 → 5) but
+cost accuracy elsewhere (`latest_version`, and one probe lost entirely).
+
+The reading: C's evidence index is already the compressed form of the tool layer.
+Adding a second, model-written compression of the same material does not add facts
+— it adds another thing the model can contradict, and one more block that can send
+it searching instead of answering.
+
+### What remains the honest gap
+
+Codex is still 11 fields ahead, and its advantage is **the summary reads the whole
+history** (258 K tokens at stage 1) rather than a curated excerpt. Our summaries
+read clipped material. That difference — input breadth, not summary-vs-evidence —
+is the untested lever. A summary that reads everything costs ~¥0.0094 when the
+prefix is warm, which is now the cheapest known way to buy those 11 fields.
 
 ## Does Codex have its own retrieval?
 

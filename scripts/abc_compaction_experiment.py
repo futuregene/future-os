@@ -203,6 +203,9 @@ class Ledger:
         self.rows.append(row); save(self.path, self.rows)
         return row
 
+    def save(self):
+        save(self.path, self.rows)
+
     def settle(self, row, **fields):
         row.update(state='finished', **fields)
         cost = fields.get('credit_cost')
