@@ -40,10 +40,19 @@ Function un.onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   IfErrors +2
   StrCpy $PassiveMode 1
+  ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
+  IfErrors +2
+  StrCpy $UpdateMode 1
 FunctionEnd
 Section Uninstall
   !insertmacro NSIS_HOOK_PREUNINSTALL
   FileOpen $0 "$INSTDIR\uninstalled.marker" w
   FileWrite $0 "uninstalled"
   FileClose $0
+  ; Mirror Tauri's production template: passive/update uninstallers close the
+  ; progress page automatically after the section finishes.
+  ${If} $PassiveMode = 1
+  ${OrIf} $UpdateMode = 1
+    SetAutoClose true
+  ${EndIf}
 SectionEnd
