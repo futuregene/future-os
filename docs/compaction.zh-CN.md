@@ -2,7 +2,7 @@
 
 **默认压缩已改为策略 C：S2 原文保护＋近期尾部＋确定性工具证据，不调用摘要大模型。** 原始 journal 不因压缩被删除或重写。模型在下一次请求中看到较小的投影，不会在生成过程中修改其内部状态。
 
-代码与状态机见[开发文档](compaction-development.zh-CN.md)。[旧模型摘要 Prompt](compaction-prompts.zh-CN.md)仅用于说明保留的显式 semantic API，不是当前默认路径。
+策略依据见 [A/B/C 对比实验](compaction-abc-experiment.zh-CN.md)，代码与状态机见[开发文档](compaction-development.zh-CN.md)。[旧模型摘要 Prompt](compaction-prompts.zh-CN.md)仅用于说明保留的显式 semantic API，不是当前默认路径。
 
 ## 用户 CLI
 

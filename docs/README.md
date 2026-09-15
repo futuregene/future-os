@@ -49,6 +49,7 @@ only together with the packaging pipelines.
 ## Internal working docs (not user-facing)
 
 - [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
+- [A/B/C compaction experiment](compaction-abc-experiment.md) ([中文](compaction-abc-experiment.zh-CN.md)) — why the default moved from a model summary to deterministic evidence: accuracy, cost and limits.
 - [Legacy semantic prompts](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — retained explicit A APIs; default C makes no summary-model calls.
 - [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
   for (re)creating the wiki pages; defines scope, style and page inventory.

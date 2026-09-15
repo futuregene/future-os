@@ -5,7 +5,8 @@ a deterministic tool-evidence index. No summary LLM is called.** The raw journal
 is neither deleted nor rewritten. Compaction changes the next request's input,
 not an in-flight generation or a provider's internal state.
 
-See the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
+See the [A/B/C experiment](compaction-abc-experiment.md) for the evidence behind
+this default and the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
 document retained explicit legacy APIs, not the default runtime path.
 
 ## User CLI
