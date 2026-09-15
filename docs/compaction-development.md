@@ -142,21 +142,25 @@ policy-version review so old results are not reused incorrectly.
 
 ## 5. Should a model-callable compact CLI be added?
 
-**Yes as separate layers, not by synchronously exposing manual compact inside its
-own active run. Everything in this section is a proposal, not implemented.**
+**The user management CLI is implemented; the model-requested entry point remains
+a proposal.** Do not synchronously expose manual compact inside its own active run.
 
-### User / automation management command
+### User / automation management command (implemented)
 
-Proposed spelling only:
-
-```text
+```sh
 future session compact --session SESSION_ID --json
+future session compact --session SESSION_ID --instructions "Keep current constraints and validation boundaries" --json
 ```
 
-Wrap the existing compact RPC and retain its busy, budget, idempotency and writer
-checks. Do not access SQLite directly. Start with an async ACK by default. A future
-wait option must subscribe/replay the correct terminal events rather than treating
-the ACK as success.
+[session_compact.rs](../cli/src/commands/session_compact.rs) uses
+`RunClient::compact_session` to wrap the existing compact RPC. It retains busy,
+budget, idempotency and writer checks, uses an explicit session and fresh request
+ID, and does not switch the default session or access SQLite directly.
+
+The command returns an async ACK and operation ID, not a completed summary. There
+is no `--wait`, `--force`, or model-facing `compact request` entry point. A future
+wait option must subscribe/replay terminal events rather than treating the ACK as
+completion.
 
 ### Model command: request, do not execute immediately
 
@@ -210,7 +214,11 @@ The existing **history recall** guide belongs after compaction. A future
 available; otherwise the model cannot discover its first request from a guide
 that only appears afterwards. Advertise it only after implementation and explicit
 enablement. Say that execution happens at a boundary, not immediately, and prohibit
-waiting/polling/repeated requests. Do not inject an unavailable command today.
+waiting/polling/repeated requests. Do not advertise the unimplemented model-request
+entry point; the management CLI still rejects active runs.
+
+See [model calls and prompts](compaction-prompts.md) for call-count semantics,
+the exact system prompt and user-message assembly.
 
 ## 6. Development and validation checklist
 

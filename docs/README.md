@@ -48,7 +48,8 @@ only together with the packaging pipelines.
 
 ## Internal working docs (not user-facing)
 
-- [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine and proposed safe model-requested CLI design.
+- [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
+- [Compaction prompts](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — actual summary call counts, system prompt and serialized user-message contents.
 - [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
   for (re)creating the wiki pages; defines scope, style and page inventory.
 - [verification/](verification/errors-outdated-missing.md) — doc↔source

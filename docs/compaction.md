@@ -1,12 +1,27 @@
 # S2 compaction and historical recall
 
 See the [developer guide](compaction-development.md) for the implementation map,
-state machine and proposed model-requested CLI. Its new CLI interfaces are design
-proposals, not currently available commands.
+state machine, implemented user management CLI and proposed model-requested entry
+point. The model-requested interface is not implemented.
 
 The production Agent uses a journal-preserving S2 projection. It does not rewrite
 or delete the original conversation when compacting. No new model tools are
 introduced; [history recall](session-history.md) uses the existing shell tool.
+
+## User CLI
+
+```sh
+future session compact --session SESSION_ID --json
+future session compact --session SESSION_ID --instructions "Keep current constraints, errors and validation boundaries" --json
+future session compact --help
+```
+
+This wraps the existing RPC and returns `accepted` plus `operationId` immediately;
+it does not wait for the summary. Agent compaction events report completion, reuse
+or failure. An ACK is not success of the work. Active runs are rejected; no model
+self-compaction, force bypass or wait option is exposed. Matching CLI/Agent builds
+are required. See [call counts and prompts](compaction-prompts.md) for what the
+summary model receives.
 
 ## Trigger and request admission
 

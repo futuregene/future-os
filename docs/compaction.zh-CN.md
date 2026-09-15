@@ -1,8 +1,20 @@
 # S2 压缩与历史召回
 
-开发入口、状态机和模型主动请求压缩的 CLI 设计见[压缩机制开发文档](compaction-development.zh-CN.md)。其中 CLI 新接口为待实现建议，不是当前可用命令。
+开发入口、状态机和模型主动请求压缩的 CLI 设计见[压缩机制开发文档](compaction-development.zh-CN.md)。用户管理 CLI 已实现，模型主动请求入口仍为待实现建议。
 
 Agent 使用保留原始 journal 的 S2 上下文投影，不通过删除或重写原始聊天记录来压缩。历史召回复用现有 `shell`，不新增模型工具。查询命令见[会话历史召回](session-history.zh-CN.md)。
+
+## 用户侧 CLI
+
+```sh
+future session compact --session SESSION_ID --json
+future session compact --session SESSION_ID --instructions "保留最新约束、错误与验证边界" --json
+future session compact --help
+```
+
+命令封装现有 RPC，只返回 `accepted` 与 `operationId`，不等待摘要完成。最终完成、复用或失败由 Agent 的压缩事件报告；ACK 不能当成压缩成功。活跃 run 会被拒绝，不提供模型自压缩、强制绕过或等待选项。需配套新 CLI 与 Agent。
+
+实际调用次数及 prompt 内容见[压缩 Prompt 参考](compaction-prompts.zh-CN.md)。
 
 ## 触发与请求预算
 

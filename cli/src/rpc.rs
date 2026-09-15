@@ -58,7 +58,9 @@ impl RunClient {
         session_id: Option<&str>,
         timeout_secs: u64,
     ) -> Result<Value, String> {
-        cmd.id = now_id();
+        if cmd.id.is_empty() {
+            cmd.id = now_id();
+        }
         cmd.r#type = r#type.to_string();
         if let Some(sid) = session_id {
             cmd.session_id = sid.to_string();
@@ -99,6 +101,32 @@ impl RunClient {
         // the raw-string form (the only non-JSON producer, `refresh_skills`,
         // discards its result).
         Ok(future_rpc::decode::response_data(&response))
+    }
+
+    /// User-triggered manual compaction. Returns admission only, not a summary.
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        instructions: &str,
+    ) -> Result<Value, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!(
+            "compact-{}-{}-{}",
+            std::process::id(),
+            now_id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.execute_command(
+            "compact",
+            RpcCommand {
+                id,
+                custom_instructions: instructions.to_string(),
+                ..Default::default()
+            },
+            Some(session_id),
+            5,
+        )
+        .await
     }
 
     /// `getAgentInfo()` — `get_agent_info` → `{version, skillsCount}`.

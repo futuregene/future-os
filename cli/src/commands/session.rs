@@ -17,6 +17,7 @@ Usage:
   future session list [--json]                       List all sessions
   future session info <id>                           Show session details + stats
   future session history --help                      Search/read original history
+  future session compact --help                      Request manual compaction
   future session rename <id> <name>                  Give a session a readable name
   future session delete <id>                         Delete a session
 
@@ -371,6 +372,10 @@ pub async fn session(
     if subcommand == "--help" || subcommand == "-h" {
         help(out);
         return Ok(());
+    }
+
+    if subcommand == "compact" {
+        return super::session_compact::run(args, out).await;
     }
 
     if subcommand == "history" {

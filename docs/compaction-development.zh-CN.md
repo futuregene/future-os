@@ -110,17 +110,18 @@ RPC `operationId` 标识请求尝试；复用结果中的 `sourceOperationId` �
 
 ## 5. 是否提供模型可调用的压缩 CLI？
 
-**建议分层提供，不建议把现有手动 RPC 直接暴露成模型同步自调用。以下全部为待实现设计。**
+**用户／自动化 CLI 已实现；模型主动请求入口仍为待实现设计。** 不建议把现有手动 RPC 直接暴露成模型同步自调用。
 
-### 5.1 用户／自动化管理入口：值得增加
+### 5.1 用户／自动化管理入口：已实现
 
-建议接口示意（当前不存在）：
-
-```text
+```sh
 future session compact --session SESSION_ID --json
+future session compact --session SESSION_ID --instructions "保留最新约束与验证边界" --json
 ```
 
-封装现有 `compact` RPC，复用预算、幂等和持久化，不直接操作数据库。初版默认返回异步 ACK。手动入口保留“活跃 run 时拒绝”的规则；若以后增加等待选项，需订阅／恢复正确的终态事件，不能把 ACK 当成功。
+入口为 [session_compact.rs](../cli/src/commands/session_compact.rs)，通过 `RunClient::compact_session` 调现有 `compact` RPC；复用预算、幂等和持久化，不直接操作数据库。每次请求使用独立的关联 ID，显式指定会话，不切换默认会话。
+
+当前仅返回异步 ACK 和 operation ID，不表示摘要已完成。活跃 run 会被拒绝，没有 `--wait`、`--force` 或 `compact request` 模型入口。若以后增加等待选项，需订阅／恢复正确的终态事件。
 
 ### 5.2 模型入口：只请求，不现场执行
 
@@ -162,7 +163,9 @@ future session compact request --session SESSION_ID --request-id INTENT_ID --jso
 - **现有历史召回说明**：只在压缩后启用。
 - **未来主动请求压缩的能力说明**：仅在能力实现并启用后，作为短说明在首次可用时提供；否则模型第一次压缩前根本不知道入口。
 
-后者应强调自动机制仍负责容量安全、请求只在边界执行、不等待／轮询、不反复请求。当前没有这个 CLI，不应提前把它写成可用能力。
+后者应强调自动机制仍负责容量安全、请求只在边界执行、不等待／轮询、不反复请求。当前没有模型请求入口，不应提前把它写成可用能力；已实现的管理 CLI 仍受活跃 run 限制。
+
+摘要调用次数、system prompt 原文和 user message 组装规则见[压缩 Prompt 参考](compaction-prompts.zh-CN.md)。
 
 ## 6. 开发与测试清单
 
