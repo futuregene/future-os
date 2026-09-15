@@ -31,7 +31,8 @@ MODELS = ['future/deepseek-flash', 'future/glm-5.3-flash']
 SEED = 91526015
 CAP = 32000
 PROBES = [0, 3, 7]
-MAX_REQUESTS = 340  # raised from 260 when Codex/OpenCode arms were added (AMENDMENT-02)
+MAX_REQUESTS = 520  # raised for the retrieval-enabled probes of the external arms
+                     # (AMENDMENT-02 raised it for the arms, AMENDMENT-04 for search)
 CLOSED_SYSTEM = ('Answer retrospective questions only from the supplied conversation and, when enabled, its original archive. '
     'Do not execute the original project. Distinguish superseded and current facts. An omitted excerpt is not evidence of absence. '
     'Never guess missing values. Return one JSON object with string values; use UNKNOWN when reliable evidence is unavailable. '

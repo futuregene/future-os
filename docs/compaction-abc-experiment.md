@@ -71,6 +71,70 @@ entire A/B/C arm. Note the asymmetry: the journal-backed arms (A/B/C/M) rebuild
 their projection from the archive for free, while the destructive arms pay for
 every intermediate compaction they need to keep their history inside the window.
 
+## Does search help? (same search tool for every arm)
+
+Every arm was then re-probed with access to the **identical** archive CLI —
+`future session history search/get` over the same per-stage session, with the same
+5-call and 32 KB budget. The search engine is therefore a controlled variable and
+only the projection differs.
+
+| Arm | Closed-book | With search (same CLI) | Δ |
+|---|---|---|---|
+| A | 126/144 · 12/12 delivered | 120/144 · 10/12 delivered | −6 |
+| B | 73/144 · 12/12 delivered | 117/144 · 10/12 delivered | **+44** |
+| **C** | 130/144 · 12/12 delivered | **132/144 · 11/12 delivered** | **+2** |
+| M (`origin/main`) | 117/144 · 12/12 delivered | 107/144 · 9/12 delivered | −10 |
+| Codex (hybrid) | 140/144 · 12/12 delivered | 120/144 · 10/12 delivered | −20 |
+| OpenCode (hybrid) | 120/144 · 12/12 delivered | 107/144 · 9/12 delivered | −13 |
+
+Undelivered probes count as zero in these totals. The decisive column is how many
+probes *finish*: with search, every delivered answer is near-perfect.
+
+| Arm | Closed-book, delivered only | With search, delivered only |
+|---|---|---|
+| A | 126/144 | 120/120 (100%) |
+| B | 73/144 | 117/120 (97.5%) |
+| **C** | 130/144 | **132/132 (100%)** |
+| M | 117/144 | 107/108 (99.1%) |
+| Codex | 140/144 | 120/120 (100%) |
+| OpenCode | 120/144 | 107/108 (99.1%) |
+
+**Search equalises accuracy and turns the comparison into one about budget
+exhaustion.** Once an arm can look things up it answers essentially perfectly, and
+the only remaining difference is how often it burns its five calls without
+producing an answer:
+
+* **Adding search helps the information-poor arm most** (B, +44) and adds a small
+  amount to C (+2), which already carried the facts it needed.
+* **Adding search *hurts* the information-rich arms.** Codex loses 20 fields and
+  two deliveries: with a dense projection it searches for detail instead of
+  answering, and exhausts the call budget. OpenCode (−13) and `origin/main` (−10)
+  behave the same way. This is an artefact of a fixed request budget — with
+  unlimited calls the accuracy would likely converge upwards — but a call budget
+  is the realistic condition.
+* **C is the only arm that delivers 11 of 12 probes with search**, i.e. it spends
+  the fewest calls: its evidence index already pins the entries worth reading, so
+  lookup is targeted rather than exploratory.
+
+So the honest answer to "does C + search beat Codex" is **it depends which Codex**:
+
+| Comparison | Winner |
+|---|---|
+| C + search vs Codex **+ search** (same tooling) | **C**, 132/144 vs 120/144 (and 11/12 vs 10/12 delivered) |
+| C + search vs Codex **closed-book** | **Codex**, 140/144 vs 132/144 |
+| C closed vs Codex closed | Codex, 140/144 vs 130/144 |
+
+C+search beats Codex when the search tool is held constant, because C spends its
+lookup budget better. It does not beat Codex's closed-book score, because Codex's
+summary is written by a model that read the whole history, and on this fixture
+that alone is worth more than a 2 K evidence index plus lookups.
+
+**The Codex-with-search column is a hybrid, not Codex's own capability.** Codex's
+built-in `history` tools are gated behind the hosted backend and a paid ChatGPT
+plan (see above), so this arm is Codex's projection driven by *our* CLI. It shows
+what the projection is worth when a search tool is present; it is not a
+measurement of Codex's product.
+
 ## Does Codex have its own retrieval?
 
 **Yes — and this matters for how the comparison should be read.** Codex ships a
@@ -150,6 +214,13 @@ that measured factor. Each arm keeps its own output budget: OpenCode hard-codes
 - Two synthetic chains from one blueprint with structured tool records; not two
   independent natural task types, and the questionnaire rewards carrying tool
   evidence.
+- The search-enabled numbers come from a fixed 5-call / 32 KB budget. That budget
+  is what separates the arms, so a larger or unbounded budget would compress the
+  differences; the reported ranking should not be read as a property of the
+  projections alone.
+- Search-enabled probes were run after the closed-book ones and reuse the same
+  projections, so they do not re-measure compaction cost. Retrieval cost is
+  reported separately (¥0.0036–0.0101 per request).
 - The ledger keeps every failure: 4 invalidated early OpenCode calls (wrong tail
   budget), one interrupted M request that was retried, and Codex attempts rejected
   for context length before the trigger was calibrated.
