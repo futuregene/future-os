@@ -57,19 +57,63 @@ Four findings:
 
 ## Cost
 
+Measured on the live provider through the platform's `credit_cost`, current ledger:
+
 | Group | Requests | CNY | Per compaction |
 |---|---:|---:|---:|
-| A/B/C | 200 | 3.49 | A ¥0.037, B/C ¥0 |
-| M | 48 | 0.79 | ¥0.018 |
-| Codex | 33 | **10.49** | **¥0.42** (9.07 M input tokens) |
-| OpenCode | 42 | 0.83 | ¥0.030 |
-| **total** | **323** | **15.60** | |
+| A/B/C (compaction only) | 33 | 1.23 | A **¥0.037**; B and C **¥0** |
+| A/B/C (all probes) | 690 | 6.17 | — |
+| M (`origin/main`) | 260 | 1.88 | ¥0.018 |
+| **Codex arm** | 226 | **11.14** | **¥0.50** per compaction (10.2 M input tokens) |
+| OpenCode arm | 245 | 1.75 | ¥0.023 |
+| **total** | **1454** | **22.18** | |
 
-Codex is the most accurate and the most expensive: its summarizer reads the whole
-live history, so one compaction costs ~23× a summary-only compaction and ~3× the
-entire A/B/C arm. Note the asymmetry: the journal-backed arms (A/B/C/M) rebuild
-their projection from the archive for free, while the destructive arms pay for
-every intermediate compaction they need to keep their history inside the window.
+Cost per compaction is what the retention rule costs to *maintain*; it excludes the
+ordinary model requests and any retrieval the agent performs afterwards
+(search-enabled probes cost a further ¥0.0036–0.0101 per request). A/B/C's 690
+probes cover three retrieval interfaces, so they are not comparable to the other
+arms' single-interface counts.
+
+### The Codex arm's price is cache-cold, and that is an artefact
+
+See "Prefix caching" below: a compaction request shaped like Codex's hits the
+provider cache ~99.9% and costs **~48× less** than the same 258 K-token read cold.
+My driver walks records into a fresh text blob per stage, so consecutive stages
+never share a byte-identical prefix and every Codex-stage request was billed as a
+miss. **Real Codex appends its summarization prompt to the live message history —
+the shape that cached.** Treat ¥0.50/compaction as an upper bound, not Codex's cost.
+
+## Prefix caching
+
+Measured directly on the provider (`scripts/abc_experiment/cache_test.py`,
+`cache_probe.py`), one chain, stage 1, DeepSeek Flash:
+
+| Request shape | Input tokens | Cache hit | Billed |
+|---|---:|---:|---:|
+| conversation as a message array + instruction at the tail | 257,978 | **257,792 (99.9%)** | **¥0.0135** |
+| the same conversation, cold | 257,978 | 0 | ¥0.65 (reservation) |
+| A-style clipped excerpt, sent twice | 14,846 | 14,592 (98.3%) | ¥0.0145 |
+
+Three consequences:
+
+1. **"Read the whole history" is not intrinsically expensive.** With a shared
+   prefix the marginal cost of 258 K tokens is ~¥0.013 — *cheaper than our A
+   summary at ¥0.037*, which reads only ~16 K tokens but changes every byte and
+   therefore misses the cache every time (A's 33 summaries: 14,592 of 524,196
+   tokens cached, **2.8%**).
+2. **Compaction design should preserve the prefix.** Appending the summarization
+   instruction to the live conversation — rather than flattening and clipping it —
+   is what buys the discount, and it works with the summary reading the *full*
+   history rather than an excerpt.
+3. **This changes the A/B/C cost comparison.** A's advantage over a full-history
+   summary was substantially a cache artefact of the experiment, not a property of
+   the two designs.
+
+Caveats: one earlier run reported 0% for the same shape, so warmth/timing matters
+and no hit rate is guaranteed; 4 of the 8 cache-test requests never reported usage,
+so their ledger entries are reservations rather than settlements; and the
+production pattern — a summary issued immediately after a normal turn — was not
+measured end to end.
 
 ## Does search help? (same search tool for every arm)
 
@@ -304,6 +348,21 @@ that measured factor. Each arm keeps its own output budget: OpenCode hard-codes
   is what separates the arms, so a larger or unbounded budget would compress the
   differences; the reported ranking should not be read as a property of the
   projections alone.
+- **The Codex-interface column measures our approximation, not Codex.** Three
+  things bound it: (a) the documented `read_item` contract carries a cursor
+  (`next_offset_chars`) that I did not implement; (b) `HistoryNotesToolOutput::new`
+  states "the server applies the requested output budget before encryption", so
+  snippet placement is server-side and I cannot observe it — I assumed head
+  truncation, and a match-centred backend would score higher; (c) namespaced tool
+  names, `encrypted` query arguments and server-side execution are Responses-API
+  features that cannot be reproduced on Chat Completions. The 5-request cap is also
+  mine, not Codex's — production has no such cap, so "exhausts the budget" describes
+  my budget interacting with an interface that needs more rounds, not a weak tool.
+  The *interface-shape* finding (no match position ⇒ more rounds) is what this
+  experiment supports; the 11/144 figure should not be read as Codex's capability.
+- Prefix caching was measured only in isolation (see "Prefix caching"). Its effect
+  on the full A/B/C/M comparison is inferred, not re-measured end to end.
+
 - Search-enabled probes were run after the closed-book ones and reuse the same
   projections, so they do not re-measure compaction cost. Retrieval cost is
   reported separately (¥0.0036–0.0101 per request).
