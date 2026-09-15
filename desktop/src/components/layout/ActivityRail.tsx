@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import {
@@ -69,6 +70,8 @@ interface ActivityRailProps {
   futureBalance?: number | null;
   /** Signed-in FutureOS email (null when signed out). Drives the account menu. */
   userEmail?: string | null;
+  /** Platform-verified account state. Controls FutureOS-only navigation. */
+  futureSessionStatus?: FutureSessionStatus;
   /** Community edition deliberately keeps account identity and billing out of the footer. */
   communityEdition?: boolean;
   /** Opens the recharge page in the system browser. */
@@ -114,6 +117,7 @@ export function ActivityRail({
   remoteIndicator,
   futureBalance,
   userEmail,
+  futureSessionStatus,
   communityEdition,
   onRecharge,
   onOpenUpdate,
@@ -128,7 +132,9 @@ export function ActivityRail({
   const listScrollbar = useFloatingScrollbar();
   // Remote pairing issues its code through the FutureOS service, so it needs a
   // sign-in. Hide the nav entry while signed out.
-  const showRemote = userEmail != null;
+  const showRemote = futureSessionStatus === "authenticated"
+    || futureSessionStatus === "unavailable"
+    || (futureSessionStatus === "checking" && userEmail != null);
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while a connection is being attempted, red when remote access is disconnected,
   // and nothing before pairing.

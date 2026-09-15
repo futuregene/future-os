@@ -18,7 +18,17 @@ it("renders logout rejection without losing the confirmation controls", async ()
   document.body.append(container);
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<AccountPage balance={null} communityEdition={false} email={null} onRefreshBalance={() => {}} />));
+    await act(async () => root.render(
+      <AccountPage
+        balance={null}
+        balanceStatus="idle"
+        communityEdition={false}
+        email="user@example.com"
+        sessionStatus="authenticated"
+        onRefreshAuth={() => {}}
+        onRefreshBalance={() => {}}
+      />,
+    ));
     const click = async (label: string) => {
       const button = [...container.querySelectorAll("button")].find(item => item.textContent === label);
       expect(button, label).toBeTruthy();

@@ -21,6 +21,7 @@ const FUTURE_MODELS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub const APP_UPDATE_EVENT: &str = "scheduler-app-update";
 pub const FUTURE_BALANCE_EVENT: &str = "scheduler-future-balance";
+pub const FUTURE_AUTH_INVALID_EVENT: &str = "scheduler-future-auth-invalid";
 pub const FUTURE_MODELS_EVENT: &str = "scheduler-future-models";
 
 static APP_UPDATE_JOB: LazyLock<FixedIntervalJob> =
@@ -164,7 +165,12 @@ pub fn start(app: tauri::AppHandle) {
                 Ok(balance) => {
                     let _ = app.emit(FUTURE_BALANCE_EVENT, balance);
                 }
-                Err(error) => eprintln!("FutureOS scheduled balance refresh failed: {error}"),
+                Err(error) => {
+                    if crate::future_login::is_auth_rejection(&error) {
+                        let _ = app.emit(FUTURE_AUTH_INVALID_EVENT, ());
+                    }
+                    eprintln!("FutureOS scheduled balance refresh failed: {error}");
+                }
             }
         }
     });

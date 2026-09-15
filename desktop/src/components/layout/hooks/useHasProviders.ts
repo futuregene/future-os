@@ -1,4 +1,5 @@
 import type { ProvidersView } from "../../../integrations/agent/providers";
+import type { FutureSessionStatus } from "./useFutureAccount";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FUTURE_PROVIDER_ID, listAgentProviders } from "../../../integrations/agent/providers";
 import { onFutureEvent } from "../../../lib/futureEvents";
@@ -22,7 +23,7 @@ import { useAsyncResource } from "../../../lib/useAsyncResource";
  * transitions never flash the neutral frame — `initialLoading` is true only on
  * the very first load.
  */
-export function useHasProviders() {
+export function useHasProviders(futureSessionStatus: FutureSessionStatus) {
   const { data, loading, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
@@ -90,14 +91,15 @@ export function useHasProviders() {
 
   // True when any provider has a usable key: FutureOS signed in, a builtin with
   // a key, or any custom provider. Also true when the user chose BYOK.
+  const futureUsable = futureSessionStatus === "authenticated" || futureSessionStatus === "unavailable";
   const hasProviders = byokMode || Boolean(
-    (data?.builtin ?? []).some(p => p.hasApiKey)
+    (data?.builtin ?? []).some(p => p.hasApiKey && (p.id !== FUTURE_PROVIDER_ID || futureUsable))
     || (data?.custom ?? []).some(p => p.hasApiKey),
   );
 
   // Whether the provider data shows at least one key (regardless of BYOK mode).
   const hasAnyProvider = Boolean(
-    (data?.builtin ?? []).some(p => p.hasApiKey)
+    (data?.builtin ?? []).some(p => p.hasApiKey && (p.id !== FUTURE_PROVIDER_ID || futureUsable))
     || (data?.custom ?? []).some(p => p.hasApiKey),
   );
 
