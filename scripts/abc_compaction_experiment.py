@@ -31,8 +31,8 @@ MODELS = ['future/deepseek-flash', 'future/glm-5.3-flash']
 SEED = 91526015
 CAP = 32000
 PROBES = [0, 3, 7]
-MAX_REQUESTS = 520  # raised for the retrieval-enabled probes of the external arms
-                     # (AMENDMENT-02 raised it for the arms, AMENDMENT-04 for search)
+MAX_REQUESTS = 2200  # AMENDMENT-02 added the arms, -04 added search,
+                    # -05 adds the Codex/OpenCode retrieval interfaces
 CLOSED_SYSTEM = ('Answer retrospective questions only from the supplied conversation and, when enabled, its original archive. '
     'Do not execute the original project. Distinguish superseded and current facts. An omitted excerpt is not evidence of absence. '
     'Never guess missing values. Return one JSON object with string values; use UNKNOWN when reliable evidence is unavailable. '
@@ -576,13 +576,17 @@ def start_archive_agent(root, binary):
 
 
 def probe_retrieval(args, ledger, binary, env, home, tasks):
-    """Ask a projection's owner to answer using the archive CLI."""
+    """Ask each projection's owner to answer through one retrieval interface."""
+    import abc_retrieval as retrieval
+
+    mode = args.retrieval_mode
     for task in tasks:
         for model in MODELS:
             if args.models and model not in args.models:
                 continue
             for stage in PROBES:
-                identity = f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}__retrieval'
+                identity = (f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}'
+                            f'__retrieval{mode if mode != "ours" else ""}')
                 out = args.root / args.arm / "results" / f"{identity}.json"
                 if out.exists():
                     continue
@@ -591,17 +595,24 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                                          f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}.json').read_text())
                 value = projection["text"]
                 sid = data["source_session"]
+                windows = retrieval.codex_windows(args.root, task, stage)
+                workspace = home / "workspace" / f"{task}-{stage}"
+                workspace_files = []
+                if mode == "opencode":
+                    if not workspace.exists():
+                        workspace_files = retrieval.materialize_workspace(args.root, task, stage, workspace)
+                    else:
+                        workspace_files = sorted(p.name for p in workspace.glob("*"))
+                tools = {"ours": lambda: retrieval.our_tools(sid),
+                         "codex": retrieval.codex_tools,
+                         "opencode": retrieval.opencode_tools}[mode]()
                 system = (CLOSED_SYSTEM.replace(" No tools or external evidence are available in this condition.", "")
-                          + RETRIEVAL_GUIDE.format(sid=sid))
-                tools = [{"type": "function", "function": {"name": "shell",
-                          "description": "Run one read-only history CLI command for this archive session.",
-                          "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
-                                         "required": ["command"]}}}]
+                          + retrieval.guide(mode, session_id=sid, workspace=workspace))
                 messages = [{"role": "user", "content": f'<archived-conversation>\n{value}\n</archived-conversation>\n'
                                                         + QUESTION.format(stage=stage)}]
                 started = time.monotonic()
                 call_ids, tool_calls, returned, text, status = [], [], 0, "", "request_limit"
-                for step in range(RETRIEVAL_CALLS):
+                for step in range(retrieval.RETRIEVAL_CALLS):
                     body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
                             "tools": tools, "stream": True, "max_tokens": 8192,
                             "thinking": {"type": "enabled"}, "reasoning_effort": "high",
@@ -626,19 +637,24 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                         assistant = {"role": "assistant", "content": parsed["text"] or None, "tool_calls": parsed["calls"]}
                         messages.append(assistant)
                         for call in parsed["calls"]:
+                            name = call["function"]["name"]
                             try:
-                                if call["function"]["name"] != "shell":
-                                    raise ValueError("tool not allowed")
-                                arguments = json.loads(call["function"]["arguments"])
-                                output, size = lookup(arguments["command"], sid, binary, env, home)
+                                arguments = json.loads(call["function"]["arguments"] or "{}")
+                                room = max(0, retrieval.RETRIEVAL_BYTES - returned)
+                                if mode == "ours":
+                                    output, size = retrieval.our_dispatch(arguments["command"], sid, binary, env, home)
+                                elif mode == "codex":
+                                    output, size = retrieval.codex_dispatch(name, arguments, windows, room)
+                                else:
+                                    output, size = retrieval.opencode_dispatch(name, arguments, workspace, room)
                             except (ValueError, KeyError) as error:
                                 output, size = f"TEST_POLICY: {error}", 0
-                            room = max(0, RETRIEVAL_BYTES - returned)
                             encoded = output.encode()
                             if len(encoded) > room:
                                 output = encoded[:room].decode("utf-8", errors="ignore") + "\n[experiment retrieval byte budget exhausted]"
                             returned += min(size, room)
-                            tool_calls.append({"call": call, "result_bytes": min(size, room),
+                            tool_calls.append({"tool": name, "arguments": arguments if isinstance(arguments, dict) else {},
+                                               "result_bytes": min(size, room),
                                                "policy_denied": output.startswith("TEST_POLICY")})
                             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
                         continue
@@ -647,31 +663,41 @@ def probe_retrieval(args, ledger, binary, env, home, tasks):
                     break
                 grade_result = grade(text, data["gold"]) if status == "completed" else {"valid": False, "correct": 0, "total": 12}
                 save(out, {"id": identity, "task": task, "model": model, "stage": stage, "arm": args.arm,
-                           "retrieval": True, "status": status, "context_tokens": tokens(value),
-                           "text": text, "grade": grade_result, "call_ids": call_ids, "tool_calls": tool_calls,
-                           "retrieved_bytes": returned, "seconds": round(time.monotonic() - started, 3)})
+                           "retrieval": True, "retrieval_mode": mode, "status": status,
+                           "context_tokens": tokens(value), "text": text, "grade": grade_result,
+                           "call_ids": call_ids, "tool_calls": tool_calls,
+                           "tool_names": sorted({c["tool"] for c in tool_calls}),
+                           "retrieved_bytes": returned, "workspace_files": workspace_files,
+                           "seconds": round(time.monotonic() - started, 3)})
                 print(json.dumps({"probe": identity, "status": status, "correct": grade_result["correct"],
                                   "calls": len(call_ids), "bytes": returned}), flush=True)
 
-
 def probe(args):
-    """Questionnaire against an arm's projection (closed-book, or with the archive CLI)."""
+    """Questionnaire against an arm's projection (closed-book, or with a lookup tool)."""
     ledger = Ledger(args.root, args.budget)
     if args.retrieval:
-        if not args.binary:
-            sys.exit("--binary (the future CLI) is required for --retrieval")
-        directory, env, home, agent, log = start_archive_agent(args.root, args.binary)
+        # Only the `ours` interface shells out to the CLI; the other two are
+        # served in-process from the frozen fixtures and need no Agent.
+        needs_cli = args.retrieval_mode == "ours"
+        if needs_cli and not args.binary:
+            sys.exit("--binary (the future CLI) is required for --retrieval-mode=ours")
+        if needs_cli:
+            directory, env, home, agent, log = start_archive_agent(args.root, args.binary)
+        else:
+            directory = tempfile.TemporaryDirectory(prefix="abc-probe-", dir=args.root)
+            env, home, agent, log = os.environ.copy(), Path(directory.name), None, None
         try:
             probe_retrieval(args, ledger, args.binary, env, home, ["export", "analysis"])
         finally:
-            if agent.poll() is None:
+            if agent is not None and agent.poll() is None:
                 agent.terminate()
                 try:
                     agent.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     agent.kill()
                     agent.wait()
-            log.close()
+            if log is not None:
+                log.close()
             directory.cleanup()
         return
     overrides = {}
@@ -783,7 +809,9 @@ def main():
     parser.add_argument('--stages', nargs='*', type=int, default=None)
     parser.add_argument('--id-suffix', default='')
     parser.add_argument('--binary', type=Path, help='future CLI, required by --retrieval')
-    parser.add_argument('--retrieval', action='store_true', help='give the probe the archive CLI')
+    parser.add_argument('--retrieval', action='store_true', help='give the probe a lookup tool')
+    parser.add_argument('--retrieval-mode', default='ours', choices=['ours', 'codex', 'opencode'],
+                        help='which lookup interface the probe receives')
     args = parser.parse_args()
     args.root = args.root.resolve()
     if args.action == 'prepare': prepare(args.root)

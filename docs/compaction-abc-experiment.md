@@ -135,6 +135,89 @@ plan (see above), so this arm is Codex's projection driven by *our* CLI. It show
 what the projection is worth when a search tool is present; it is not a
 measurement of Codex's product.
 
+## Retrieval interfaces compared
+
+Search is not one thing. Every arm was re-probed through three different lookup
+interfaces, with the *same* projections and the same 5-model-request and 32 KB
+returned-content budget:
+
+| | ours | Codex | OpenCode |
+|---|---|---|---|
+| What is searched | conversation archive | conversation archive, grouped into windows | **the working tree — files, not the transcript** |
+| Locator returned | `entryId` + **byte** offset of the match | `window_id` + short `item_id`; **no match position** | file path + line number |
+| Search semantics | literal, case-insensitive ASCII | literal, **case-sensitive** | **regex** (ripgrep) |
+| Reading | fixed-size chunks, `--limit` ≤ 32768 | caller picks `offset_chars` / `limit_chars` | line ranges, ~50 KB per read |
+| Result content | head+tail chunk around the requested offset | `truncated_content` — the item's **head** | matching lines, then whole lines |
+
+Only the interface changes; the projections, models, questionnaire and budgets do
+not. Fields lost to the 5-request cap count as zero.
+
+| Arm | ours | Codex interface | OpenCode interface |
+|---|---|---|---|
+| A | 120/144 · 2 lost | 46/144 · 8 lost | 75/144 · 5 lost |
+| B | 117/144 · 2 lost | 0/144 · 12 lost | 14/144 · 10 lost |
+| **C** | **132/144 · 1 lost** | 11/144 · 11 lost | 100/144 · 3 lost |
+| Codex projection | 120/144 · 2 lost | 24/144 · 10 lost | 71/144 · 6 lost |
+| OpenCode projection | 107/144 · 3 lost | 53/144 · 7 lost | 100/144 · 2 lost |
+| M (`origin/main`) | 107/144 · 3 lost | 64/144 · 6 lost | 45/144 · 7 lost |
+
+Mean model requests per probe rise from 3.25–4.67 (ours) to 4.42–5.00 (Codex
+interface), i.e. the Codex interface pushes every arm onto the cap.
+
+### The discriminator: a value that exists only mid-record
+
+The questionnaire includes one field — `buried` — that occurs at ~87 500
+characters inside a ~90 KB record. Nothing else in the projection mentions it.
+
+| Arm | ours | Codex interface | OpenCode interface |
+|---|---|---|---|
+| C | **11/12** | **0/12** | 3/12 |
+| Codex projection | 10/12 | 2/12 | 6/12 |
+| M (`origin/main`) | 9/12 | 0/12 | 0/12 |
+
+**Why the Codex interface loses it.** Its `search_contents` returns each matched
+item's `truncated_content` — the *head* of the item — and no match offset. The
+model correctly identifies the item, then has to guess where inside it to look.
+Across the run it issued **126 `read_item` calls with a non-zero `offset_chars`**,
+converging by hand — 86000, 86700, 87400, 88007, 88100 — and exhausted its rounds
+before reaching the marker. Our interface returns the match's byte offset, so the
+same model with the same budget pages straight to it.
+
+This is why the earlier "one wide read ate the byte budget" hypothesis was wrong:
+only 0 of 53 exhausted probes had a single call consume the whole budget. The cost
+is **rounds spent searching**, not bytes.
+
+### OpenCode has no conversation retrieval at all
+
+Its complete tool set — `glob`, `grep`, `read`, `shell`, `edit`, `write`, `task`,
+`todo`, `websearch`, `webfetch`, `lsp`, `apply_patch`, `skill`, plus MCP and
+plugin tools — contains **no history tool**. Its recovery path is the filesystem:
+re-read the project instead of the transcript.
+
+Implemented faithfully (newest version of each file only), that mode answers
+current-state questions but cannot recover superseded values: `buried` is 3/12
+for C, and all three successes are at the **first** stage, where the current
+`trace.log` still holds that value. From stage 4 onward the file has been
+overwritten and the value is simply not on disk.
+
+That is not a defect of OpenCode's design so much as a statement about what it
+optimises for: in a coding session the files *are* the ground truth, so re-reading
+them beats re-reading the conversation. The trade-off is that decisions, rejected
+approaches and superseded state leave no trace on disk.
+
+### What this changes
+
+* The 5-request cap was already the binding constraint; under Codex's interface it
+  becomes the dominant failure mode, and the cause is the missing match position
+  rather than the cap itself. The finding holds — and is sharper than before.
+* **C's advantage grows once the interface is equalised.** Under our interface C
+  leads every other arm; under Codex's it collapses to 11/144 because a
+  deterministic evidence index is only as useful as the model's ability to page to
+  the right byte. An index without offsets is not a substitute for knowing where
+  things are.
+* Claims about "search" must name the interface. "C + search" is 132/144 with an
+  offset-returning locator and 11/144 with a head-truncating one.
+
 ## Does Codex have its own retrieval?
 
 **Yes — and this matters for how the comparison should be read.** Codex ships a
@@ -159,6 +242,9 @@ local files. So the measured Codex arm is its **local fallback compaction withou
 experimental context management** — the configuration available to anyone using an
 API key or a third-party OpenAI-compatible provider, which is what this experiment
 ran. A "Codex + its own search" arm is **not reproducible** with API keys.
+
+Its measured cost is in "Retrieval interfaces compared" above: implementing the documented interface faithfully costs C 121 fields and 10 extra lost probes,
+because search returns no match position.
 
 Two consequences:
 

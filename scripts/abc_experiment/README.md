@@ -31,6 +31,8 @@ held constant while the projection varies.
 | `scripts/abc_experiment/abc_compaction_arm.rs` | M-arm driver: dumps any checkout's projection. Copy it into the checkout you want to measure |
 | `scripts/abc_experiment/summarize.py` | prints the six-arm table and cost breakdown from a results root |
 | `scripts/abc_experiment/search_ablation.py` | prints the closed-book vs search-enabled table and delivered-only accuracy |
+| `scripts/abc_experiment/interface_ablation.py` | compares the three retrieval interfaces across every arm |
+| `scripts/abc_retrieval.py` | the three lookup interfaces (ours / Codex-shaped / OpenCode filesystem) |
 
 ## Running it
 
@@ -58,15 +60,21 @@ python3 scripts/abc_compaction_experiment.py external --root DIR --arm opencode 
 python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex --bridge target/debug/examples/abc_probe_bridge
 python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex --bridge target/debug/examples/abc_probe_bridge \
     --binary target/debug/future --retrieval        # same questionnaire, archive CLI available
+python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex --bridge target/debug/examples/abc_probe_bridge \
+    --retrieval --retrieval-mode codex              # Codex-shaped window/item interface
+python3 scripts/abc_compaction_experiment.py probe --root DIR --arm codex --bridge target/debug/examples/abc_probe_bridge \
+    --retrieval --retrieval-mode opencode           # filesystem glob/grep/read
 python3 scripts/abc_experiment/summarize.py --root DIR
 python3 scripts/abc_experiment/search_ablation.py --root DIR
+python3 scripts/abc_experiment/interface_ablation.py --root DIR
 ```
 
-`--retrieval` starts its own isolated Agent (fresh HOME, fresh port) and gives the
-probe a `shell` tool that accepts only `future session history search|get` scoped
-to that stage's archive session; anything else is refused by policy. Every arm
-uses the same tool, the same 5-call budget and the same 32 KB returned-byte budget,
-so the search engine is a controlled variable.
+`--retrieval-mode` picks the lookup interface: `ours` (the `future session history`
+CLI, and the only mode that needs `--binary`), `codex` (windows, short item IDs,
+character offsets, case-sensitive search) or `opencode` (glob/grep/read over a
+materialised working tree). Each starts an isolated HOME; every arm uses the same
+interface, the same 5-call budget and the same 32 KB returned-byte budget, so the
+lookup engine is a controlled variable.
 
 `--budget` is a hard CNY ceiling shared by every run in `DIR`; the ledger stops the
 experiment rather than overrunning it. `--id-suffix` re-runs a step under a new
