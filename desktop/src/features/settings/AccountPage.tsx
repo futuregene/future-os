@@ -1,8 +1,9 @@
-import type { FutureEnvironment, ProvidersView } from "../../integrations/agent/providers";
+import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/layout/hooks/useFutureAccount";
+import type { FutureEnvironment } from "../../integrations/agent/providers";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
-import { getFutureEnvironment, listAgentProviders, logoutFutureProvider, peekAgentProviders } from "../../integrations/agent/providers";
+import { getFutureEnvironment, logoutFutureProvider } from "../../integrations/agent/providers";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -10,29 +11,26 @@ import { useAsyncResource } from "../../lib/useAsyncResource";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 
 /**
- * Account page. Login state is FutureGene provider login — the same signal the
- * Providers page uses (`future` builtin's `hasApiKey`). Signed out: a login
- * button that shows the onboarding gate (same guided flow as first launch).
- * Signed in: open the account page (platform URL follows the current
- * environment) plus sign out.
+ * Account page driven by the app-wide, platform-verified session state.
  */
 export function AccountPage({
   balance,
+  balanceStatus,
   communityEdition,
   email: accountEmail,
+  sessionStatus,
+  onRefreshAuth,
   onRefreshBalance,
 }: {
   balance: number | null;
+  balanceStatus: FutureBalanceStatus;
   communityEdition: boolean;
   email: string | null;
+  sessionStatus: FutureSessionStatus;
+  onRefreshAuth: () => void;
   onRefreshBalance: () => void;
 }) {
   const { t } = useTranslation("settings");
-  const { data: providers, loading, reload } = useAsyncResource<ProvidersView | null>(
-    listAgentProviders,
-    [],
-    peekAgentProviders(),
-  );
   // The platform host follows the active environment (test vs production).
   const environment = useAsyncResource<FutureEnvironment | null>(
     getFutureEnvironment,
@@ -42,7 +40,7 @@ export function AccountPage({
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const loggedIn = Boolean(providers?.builtin.find(provider => provider.id === "future")?.hasApiKey);
+  const loggedIn = sessionStatus === "authenticated" || sessionStatus === "unavailable";
 
   // Credits can change between settings visits; refresh them once when this
   // page opens without touching the cached account profile.
@@ -69,7 +67,6 @@ export function AccountPage({
       // logoutFutureProvider clears the profile cache internally.
       await logoutFutureProvider();
       setConfirmingLogout(false);
-      reload();
     }
     catch (error) {
       setActionError(errorMessage(error));
@@ -83,10 +80,6 @@ export function AccountPage({
     await openExternalUrl(`${platformUrl}/platform/`);
   }
 
-  if (loading && !providers) {
-    return null;
-  }
-
   return (
     <div className="space-y-6">
       {actionError ? <p role="alert" className="text-xs text-danger">{actionError}</p> : null}
@@ -94,64 +87,112 @@ export function AccountPage({
         <SettingsList>
           <SettingsRow
             title={t("account.futureGene")}
-            description={loggedIn ? signedInLabel : t("account.loggedOut")}
+            description={sessionStatus === "checking"
+              ? accountEmail
+                ? `${accountEmail} · ${t("account.checking")}`
+                : t("account.checking")
+              : sessionStatus === "invalid"
+                ? t("account.sessionExpired")
+                : sessionStatus === "unavailable"
+                  ? accountEmail
+                    ? `${accountEmail} · ${t("account.temporarilyUnavailable")}`
+                    : t("account.temporarilyUnavailable")
+                  : loggedIn
+                    ? signedInLabel
+                    : t("account.loggedOut")}
           >
-            {!loggedIn
-              ? (
-                  <Button
-                    onClick={() => emitFutureEvent("show-onboarding", undefined)}
-                    size="sm"
-                    variant="primary"
-                  >
-                    {t("account.login")}
-                  </Button>
-                )
-              : confirmingLogout
+            {sessionStatus === "checking"
+              ? null
+              : sessionStatus === "invalid" || sessionStatus === "signed_out"
                 ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-ink-muted">{t("account.confirmLogout")}</span>
-                      <Button onClick={() => void handleLogout()} size="sm" variant="danger">
-                        {t("account.logoutConfirm")}
-                      </Button>
-                      <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">
-                        {t("account.cancel")}
-                      </Button>
-                    </div>
+                    <Button
+                      onClick={() => emitFutureEvent("show-onboarding", undefined)}
+                      size="sm"
+                      variant="primary"
+                    >
+                      {t(sessionStatus === "invalid" ? "account.loginAgain" : "account.login")}
+                    </Button>
                   )
-                : (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        disabled={!environment.data}
-                        onClick={() => void handleOpenAccount()}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("account.viewInfo")}
-                      </Button>
-                      <Button
-                        className="text-ink-soft hover:text-danger"
-                        onClick={() => setConfirmingLogout(true)}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("account.logout")}
-                      </Button>
-                    </div>
-                  )}
+                : sessionStatus === "unavailable"
+                  ? confirmingLogout
+                    ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-ink-muted">{t("account.confirmLogout")}</span>
+                          <Button onClick={() => void handleLogout()} size="sm" variant="danger">
+                            {t("account.logoutConfirm")}
+                          </Button>
+                          <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">
+                            {t("account.cancel")}
+                          </Button>
+                        </div>
+                      )
+                    : (
+                        <div className="flex items-center gap-2">
+                          <Button onClick={onRefreshAuth} size="sm" variant="secondary">
+                            {t("account.retry")}
+                          </Button>
+                          <Button
+                            className="text-ink-soft hover:text-danger"
+                            onClick={() => setConfirmingLogout(true)}
+                            size="sm"
+                            variant="secondary"
+                          >
+                            {t("account.logout")}
+                          </Button>
+                        </div>
+                      )
+                  : confirmingLogout
+                    ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-ink-muted">{t("account.confirmLogout")}</span>
+                          <Button onClick={() => void handleLogout()} size="sm" variant="danger">
+                            {t("account.logoutConfirm")}
+                          </Button>
+                          <Button onClick={() => setConfirmingLogout(false)} size="sm" variant="secondary">
+                            {t("account.cancel")}
+                          </Button>
+                        </div>
+                      )
+                    : (
+                        <div className="flex items-center gap-2">
+                          <Button
+                            disabled={!environment.data}
+                            onClick={() => void handleOpenAccount()}
+                            size="sm"
+                            variant="secondary"
+                          >
+                            {t("account.viewInfo")}
+                          </Button>
+                          <Button
+                            className="text-ink-soft hover:text-danger"
+                            onClick={() => setConfirmingLogout(true)}
+                            size="sm"
+                            variant="secondary"
+                          >
+                            {t("account.logout")}
+                          </Button>
+                        </div>
+                      )}
           </SettingsRow>
           {loggedIn && !communityEdition
             ? (
                 <SettingsRow
                   title={t("account.balance")}
-                  description={balance != null ? `${Math.trunc(balance)} ${t("account.credits")}` : "—"}
+                  description={balanceStatus === "loading"
+                    ? t("account.balanceLoading")
+                    : balanceStatus === "unavailable"
+                      ? t("account.balanceUnavailable")
+                      : balance != null
+                        ? `${Math.trunc(balance)} ${t("account.credits")}`
+                        : "—"}
                 >
                   <Button
-                    disabled={!platformUrl}
-                    onClick={() => void handleRecharge()}
+                    disabled={balanceStatus !== "unavailable" && !platformUrl}
+                    onClick={balanceStatus === "unavailable" ? onRefreshBalance : () => void handleRecharge()}
                     size="sm"
                     variant="primary"
                   >
-                    {t("account.recharge")}
+                    {t(balanceStatus === "unavailable" ? "account.retry" : "account.recharge")}
                   </Button>
                 </SettingsRow>
               )

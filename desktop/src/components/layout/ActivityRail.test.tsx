@@ -181,3 +181,47 @@ describe("activity rail conversation hierarchy", () => {
     }
   });
 });
+
+describe("activity rail FutureOS session navigation", () => {
+  it("keeps Phone Control available during a temporary account check failure", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(
+      <ActivityRail
+        {...props([])}
+        futureSessionStatus="unavailable"
+        userEmail={null}
+      />,
+    ));
+    await flushAsync();
+    try {
+      expect([...container.querySelectorAll("button")].some(button => button.textContent === "Phone Control")).toBe(true);
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("hides Phone Control after the platform rejects the account key", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(
+      <ActivityRail
+        {...props([])}
+        futureSessionStatus="invalid"
+        userEmail="stale@example.com"
+      />,
+    ));
+    await flushAsync();
+    try {
+      expect([...container.querySelectorAll("button")].some(button => button.textContent === "Phone Control")).toBe(false);
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});

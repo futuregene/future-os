@@ -182,8 +182,20 @@ export interface FutureProfile {
   createdAt: string | null;
 }
 
+export type FutureAuthStatus = "signed_out" | "authenticated" | "invalid" | "unavailable";
+
+export interface FutureAuthState {
+  status: FutureAuthStatus;
+  profile: FutureProfile | null;
+}
+
 export interface FutureBalance {
   credits: number;
+}
+
+/** Verify whether the stored FutureOS key is currently accepted by the platform. */
+export function getFutureAuthState(): Promise<FutureAuthState> {
+  return invokeCommand<FutureAuthState>("get_future_auth_state");
 }
 
 // ── Balance cache ────────────────────────────────────────────────────────

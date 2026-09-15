@@ -1,3 +1,4 @@
+import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/layout/hooks/useFutureAccount";
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
@@ -65,7 +66,10 @@ export function SettingsDialog({
   appSettings,
   cachedUpdateStatus,
   futureBalance,
+  futureBalanceStatus,
   futureEmail,
+  futureSessionStatus,
+  onRefreshFutureAuth,
   onRefreshFutureBalance,
   hasUpdate,
   initialTab = "general",
@@ -81,7 +85,10 @@ export function SettingsDialog({
   cachedUpdateStatus?: UpdateStatus | null;
   /** Shared account state from AppShell; prevents tab-specific profile loads. */
   futureBalance: number | null;
+  futureBalanceStatus: FutureBalanceStatus;
   futureEmail: string | null;
+  futureSessionStatus: FutureSessionStatus;
+  onRefreshFutureAuth: () => void;
   onRefreshFutureBalance: () => void;
   /** Whether a new app version is available (shows a dot on the update nav item). */
   hasUpdate?: boolean;
@@ -196,11 +203,30 @@ export function SettingsDialog({
                 )
               : null}
             {tab === "account"
-              ? <AccountPage balance={futureBalance} communityEdition={appSettings.communityEdition} email={futureEmail} onRefreshBalance={onRefreshFutureBalance} />
+              ? (
+                  <AccountPage
+                    balance={futureBalance}
+                    balanceStatus={futureBalanceStatus}
+                    communityEdition={appSettings.communityEdition}
+                    email={futureEmail}
+                    sessionStatus={futureSessionStatus}
+                    onRefreshAuth={onRefreshFutureAuth}
+                    onRefreshBalance={onRefreshFutureBalance}
+                  />
+                )
               : null}
             {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} /> : null}
             {tab === "about" ? <AboutPage /> : null}
-            {tab === "providers" ? <ProvidersPage communityEdition={appSettings.communityEdition} onProvidersChanged={onProvidersChanged} /> : null}
+            {tab === "providers"
+              ? (
+                  <ProvidersPage
+                    communityEdition={appSettings.communityEdition}
+                    futureSessionStatus={futureSessionStatus}
+                    onProvidersChanged={onProvidersChanged}
+                    onRefreshFutureAuth={onRefreshFutureAuth}
+                  />
+                )
+              : null}
             {tab === "models"
               ? (
                   <ModelsPage

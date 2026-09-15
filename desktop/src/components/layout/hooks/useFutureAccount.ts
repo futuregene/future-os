@@ -1,79 +1,117 @@
-import { useCallback, useEffect, useState } from "react";
+import type { FutureAuthStatus } from "../../../integrations/agent/providers";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearFutureBalanceCache,
   clearFutureProfileCache,
-  FUTURE_PROVIDER_ID,
+  getFutureAuthState,
   getFutureBalance,
-  getFutureProfile,
-  listAgentProviders,
   peekFutureBalance,
   peekFutureProfile,
   storeFutureBalance,
 } from "../../../integrations/agent/providers";
 import { onFutureEvent } from "../../../lib/futureEvents";
-import { useAsyncResource } from "../../../lib/useAsyncResource";
 import { useTauriEvent } from "../../../lib/useTauriEvent";
 
+export type FutureSessionStatus = FutureAuthStatus | "checking";
+export type FutureBalanceStatus = "idle" | "loading" | "available" | "unavailable";
+
 export interface FutureAccount {
-  /** Credit balance, truncated to an integer-ish value; null when signed out or on error. */
+  status: FutureSessionStatus;
+  balanceStatus: FutureBalanceStatus;
   balance: number | null;
-  /** Signed-in email; null when signed out or on error. */
   email: string | null;
-  /** Refresh the volatile credit balance without reloading the account profile. */
+  refreshAuth: () => void;
   refreshBalance: () => void;
 }
 
 /**
- * Single source of truth for the signed-in FutureOS account: credit balance and
- * email. The backend scheduler refreshes the balance hourly; this hook still
- * refreshes immediately on mount, conversation completion (`agent_end`), and
- * auth transitions (`future-auth-changed`).
+ * App-wide FutureOS account state. The platform profile check is authoritative:
+ * a configured key is not treated as a valid login until that check succeeds.
+ * Request generations prevent a response from an old credential restoring stale
+ * email or balance after logout, environment change, or reauthentication.
  */
 export function useFutureAccount(): FutureAccount {
-  const { data: providers, reload: reloadProviders } = useAsyncResource(listAgentProviders, [], null);
-  const loggedIn = Boolean(
-    providers?.builtin.some(p => p.id === FUTURE_PROVIDER_ID && p.hasApiKey),
+  const [status, setStatus] = useState<FutureSessionStatus>("checking");
+  const [balanceStatus, setBalanceStatus] = useState<FutureBalanceStatus>(
+    () => peekFutureBalance() ? "available" : "idle",
   );
-
-  // Seed from the in-memory cache so reopening a view (e.g. the Settings dialog)
-  // shows the last-known value instantly instead of flashing null → value.
   const [balance, setBalance] = useState<number | null>(() => peekFutureBalance()?.credits ?? null);
   const [email, setEmail] = useState<string | null>(() => peekFutureProfile()?.email ?? null);
+  const generationRef = useRef(0);
+
+  const refreshAuth = useCallback(() => {
+    const generation = generationRef.current;
+    getFutureAuthState().then(
+      (next) => {
+        if (generation !== generationRef.current)
+          return;
+        setStatus(next.status);
+        if (next.status === "authenticated" && next.profile) {
+          setEmail(next.profile.email);
+        }
+        else if (next.status === "signed_out" || next.status === "invalid") {
+          // Invalidate any profile/balance work started with this credential.
+          generationRef.current += 1;
+          clearFutureProfileCache();
+          clearFutureBalanceCache();
+          setEmail(null);
+          setBalance(null);
+          setBalanceStatus("idle");
+        }
+        else if (next.status === "unavailable") {
+          setBalanceStatus(current => current === "available" ? current : "unavailable");
+        }
+        // On a temporary verification failure, retain last-known account data.
+      },
+      () => {
+        if (generation === generationRef.current) {
+          setStatus("unavailable");
+          setBalanceStatus(current => current === "available" ? current : "unavailable");
+        }
+      },
+    );
+  }, []);
 
   const refreshBalance = useCallback(() => {
-    if (!loggedIn) {
-      setBalance(null);
+    if (status !== "authenticated")
       return;
-    }
+    const generation = generationRef.current;
+    setBalanceStatus("loading");
     getFutureBalance(true).then(
-      b => setBalance(b.credits),
-      () => setBalance(null),
+      (next) => {
+        if (generation !== generationRef.current)
+          return;
+        setBalance(next.credits);
+        setBalanceStatus("available");
+      },
+      () => {
+        if (generation !== generationRef.current)
+          return;
+        setBalance(null);
+        setBalanceStatus("unavailable");
+        // A balance failure may be the first observation of a revoked key.
+        refreshAuth();
+      },
     );
-  }, [loggedIn]);
+  }, [refreshAuth, status]);
 
-  const refreshEmail = useCallback(() => {
-    if (!loggedIn) {
-      setEmail(null);
-      return;
-    }
-    getFutureProfile().then(
-      p => setEmail(p.email),
-      () => setEmail(null),
-    );
-  }, [loggedIn]);
-
-  // Fetch on mount and on every login/logout transition.
   useEffect(() => {
-    refreshBalance();
-    refreshEmail();
-  }, [refreshBalance, refreshEmail]);
+    refreshAuth();
+  }, [refreshAuth]);
+
+  useEffect(() => {
+    if (status === "authenticated")
+      refreshBalance();
+  }, [status, refreshBalance]);
 
   useTauriEvent<{ credits: number }>("scheduler-future-balance", (next) => {
     storeFutureBalance(next);
     setBalance(next.credits);
+    setBalanceStatus("available");
   });
 
-  // A finished conversation likely spent credits — refresh promptly.
+  useTauriEvent("scheduler-future-auth-invalid", refreshAuth);
+
   useEffect(
     () => onFutureEvent("agent_end", () => {
       clearFutureBalanceCache();
@@ -82,18 +120,19 @@ export function useFutureAccount(): FutureAccount {
     [refreshBalance],
   );
 
-  // Auth change: drop caches + local state, then reload providers so `loggedIn`
-  // recomputes (which re-triggers the fetch effects above).
   useEffect(
     () => onFutureEvent("future-auth-changed", () => {
+      generationRef.current += 1;
       clearFutureBalanceCache();
       clearFutureProfileCache();
       setBalance(null);
       setEmail(null);
-      reloadProviders();
+      setBalanceStatus("idle");
+      setStatus("checking");
+      queueMicrotask(refreshAuth);
     }),
-    [reloadProviders],
+    [refreshAuth],
   );
 
-  return { balance, email, refreshBalance };
+  return { status, balanceStatus, balance, email, refreshAuth, refreshBalance };
 }

@@ -2,7 +2,9 @@
 
 use crate::agent_providers::{self, ProvidersView};
 use crate::agent_supervisor;
-use crate::future_login::{self, FutureBalance, FutureLoginPoll, FutureLoginStart, FutureProfile};
+use crate::future_login::{
+    self, FutureAuthState, FutureBalance, FutureLoginPoll, FutureLoginStart, FutureProfile,
+};
 
 #[tauri::command]
 pub async fn start_future_login() -> Result<FutureLoginStart, crate::AppError> {
@@ -49,6 +51,11 @@ pub async fn logout_future_provider() -> Result<ProvidersView, crate::AppError> 
 #[tauri::command]
 pub async fn get_future_profile() -> Result<FutureProfile, crate::AppError> {
     future_login::fetch_profile().await
+}
+
+#[tauri::command]
+pub async fn get_future_auth_state() -> FutureAuthState {
+    future_login::check_auth_state().await
 }
 
 #[tauri::command]

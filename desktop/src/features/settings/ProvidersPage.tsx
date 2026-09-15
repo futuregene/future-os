@@ -1,3 +1,4 @@
+import type { FutureSessionStatus } from "../../components/layout/hooks/useFutureAccount";
 import type { BuiltinProvider, CustomProvider, ProvidersView } from "../../integrations/agent/providers";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,16 +34,20 @@ const DEFAULT_BUILTIN_PROVIDER_IDS = [
 
 export function ProvidersPage({
   communityEdition = false,
+  futureSessionStatus,
+  onRefreshFutureAuth,
   onProvidersChanged,
 }: {
   /** Future uses the regular built-in-provider key flow in community edition. */
   communityEdition?: boolean;
+  futureSessionStatus: FutureSessionStatus;
+  onRefreshFutureAuth: () => void;
   /**
    * Called after any mutation that changes the available model set, so the
    * Models tab (fed by the agent's `list_models`) refreshes immediately.
    */
   onProvidersChanged?: () => void;
-} = {}) {
+}) {
   const { t } = useTranslation("settings");
   const { data: loadedProviders, loading, error, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
@@ -156,6 +161,17 @@ export function ProvidersPage({
   const visibleBuiltinProviders = showMoreBuiltin
     ? [...defaultBuiltinProviders, ...hiddenBuiltinProviders]
     : defaultBuiltinProviders;
+  const futureHasCredential = futureSessionStatus !== "signed_out" && futureSessionStatus !== "invalid";
+  const futureAuthenticated = futureSessionStatus === "authenticated";
+  const futureStatusLabel = futureSessionStatus === "authenticated"
+    ? t("providers.loggedIn")
+    : futureSessionStatus === "invalid"
+      ? t("account.sessionExpired")
+      : futureSessionStatus === "unavailable"
+        ? t("account.temporarilyUnavailable")
+        : futureSessionStatus === "checking"
+          ? t("account.checking")
+          : t("providers.loggedOut");
 
   return (
     <div className="space-y-6">
@@ -174,7 +190,7 @@ export function ProvidersPage({
               {provider.id === "future" && !communityEdition
                 ? (
                     <div className="flex items-center gap-2">
-                      {confirmingLogout && provider.hasApiKey
+                      {confirmingLogout && futureHasCredential
                         ? (
                             <>
                               <span className="text-xs text-ink-muted">{t("providers.confirmLogout")}</span>
@@ -184,22 +200,30 @@ export function ProvidersPage({
                           )
                         : (
                             <>
-                              <Badge tone={provider.hasApiKey ? "success" : "neutral"}>
-                                {provider.hasApiKey ? t("providers.loggedIn") : t("providers.loggedOut")}
+                              <Badge tone={futureAuthenticated ? "success" : "neutral"}>
+                                {futureStatusLabel}
                               </Badge>
-                              {provider.hasApiKey
+                              {futureHasCredential
                                 ? (
                                     <>
-                                      <Button
-                                        disabled={syncingFutureModels}
-                                        onClick={() => void handleSyncFutureModels()}
-                                        size="sm"
-                                        variant="secondary"
-                                      >
-                                        {syncingFutureModels
-                                          ? t("providers.updatingModels")
-                                          : t("providers.updateModels")}
-                                      </Button>
+                                      {futureSessionStatus === "unavailable"
+                                        ? (
+                                            <Button onClick={onRefreshFutureAuth} size="sm" variant="secondary">
+                                              {t("account.retry")}
+                                            </Button>
+                                          )
+                                        : (
+                                            <Button
+                                              disabled={!futureAuthenticated || syncingFutureModels}
+                                              onClick={() => void handleSyncFutureModels()}
+                                              size="sm"
+                                              variant="secondary"
+                                            >
+                                              {syncingFutureModels
+                                                ? t("providers.updatingModels")
+                                                : t("providers.updateModels")}
+                                            </Button>
+                                          )}
                                       <Button
                                         className="text-ink-soft hover:text-danger"
                                         disabled={syncingFutureModels}
@@ -220,7 +244,7 @@ export function ProvidersPage({
                                       size="sm"
                                       variant="secondary"
                                     >
-                                      {t("providers.connect")}
+                                      {t(futureSessionStatus === "invalid" ? "account.loginAgain" : "providers.connect")}
                                     </Button>
                                   )}
                             </>

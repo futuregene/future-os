@@ -94,6 +94,74 @@ pub struct FutureBalance {
     pub credits: f64,
 }
 
+/// Authoritative account-session state for Desktop UI consumers. A stored key
+/// is only configuration; `authenticated` means the platform accepted it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FutureAuthState {
+    pub status: FutureAuthStatus,
+    pub profile: Option<FutureProfile>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FutureAuthStatus {
+    SignedOut,
+    Authenticated,
+    Invalid,
+    Unavailable,
+}
+
+pub fn is_auth_rejection(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::Remote {
+            status: 401 | 403,
+            ..
+        }
+    )
+}
+
+/// Verify the stored FutureOS credential against the account profile endpoint.
+/// Only a platform authorization rejection invalidates the session; transport,
+/// server, and response errors remain a recoverable `unavailable` state.
+pub async fn check_auth_state() -> FutureAuthState {
+    match future_api_key() {
+        Ok(_) => {}
+        Err(AppError::Message(_)) => {
+            return FutureAuthState {
+                status: FutureAuthStatus::SignedOut,
+                profile: None,
+            };
+        }
+        Err(error) => {
+            eprintln!("FutureOS account credential unavailable: {error}");
+            return FutureAuthState {
+                status: FutureAuthStatus::Unavailable,
+                profile: None,
+            };
+        }
+    }
+
+    match fetch_profile().await {
+        Ok(profile) => FutureAuthState {
+            status: FutureAuthStatus::Authenticated,
+            profile: Some(profile),
+        },
+        Err(error) if is_auth_rejection(&error) => FutureAuthState {
+            status: FutureAuthStatus::Invalid,
+            profile: None,
+        },
+        Err(error) => {
+            eprintln!("FutureOS account verification unavailable: {error}");
+            FutureAuthState {
+                status: FutureAuthStatus::Unavailable,
+                profile: None,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct BalanceResponse {
     balance_credits: i64,
@@ -123,7 +191,11 @@ pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
             error_message_from_body(response.json::<Value>().await.ok()).unwrap_or_else(|| {
                 format!("Account balance request failed (HTTP {})", status.as_u16())
             });
-        return Err(AppError::Message(message));
+        return Err(AppError::Remote {
+            status: status.as_u16(),
+            code: None,
+            message,
+        });
     }
 
     let raw = response
@@ -598,6 +670,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_balance_preserves_auth_rejection_status() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-auth");
+        let url = mock_http_server(vec![(
+            401,
+            "application/json",
+            b"{\"message\":\"expired\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let error = fetch_balance().await.unwrap_err();
+        assert!(is_auth_rejection(&error));
+    }
+
+    #[tokio::test]
     async fn fetch_balance_parse_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-balance-bad");
         let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
@@ -669,6 +754,51 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Not signed in"));
+    }
+
+    #[tokio::test]
+    async fn auth_state_requires_platform_validation() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-auth-state");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"email\":\"a@b.c\",\"user_id\":\"u1\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+
+        let state = check_auth_state().await;
+        assert!(matches!(state.status, FutureAuthStatus::Authenticated));
+        assert_eq!(state.profile.expect("profile").email, "a@b.c");
+    }
+
+    #[tokio::test]
+    async fn auth_state_marks_rejected_key_invalid() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-auth-invalid");
+        let url = mock_http_server(vec![(
+            401,
+            "application/json",
+            b"{\"message\":\"expired\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+
+        let state = check_auth_state().await;
+        assert!(matches!(state.status, FutureAuthStatus::Invalid));
+        assert!(state.profile.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_state_keeps_server_failure_recoverable() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-auth-unavailable");
+        let url = mock_http_server(vec![(
+            503,
+            "application/json",
+            b"{\"message\":\"try later\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+
+        let state = check_auth_state().await;
+        assert!(matches!(state.status, FutureAuthStatus::Unavailable));
+        assert!(state.profile.is_none());
     }
 
     #[tokio::test]

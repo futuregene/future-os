@@ -1003,6 +1003,7 @@ mod gui {
                 poll_future_login,
                 logout_future_provider,
                 get_future_profile,
+                get_future_auth_state,
                 get_future_balance,
                 archive_finished_runs,
                 list_threads,
