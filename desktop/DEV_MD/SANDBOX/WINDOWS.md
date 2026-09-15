@@ -70,7 +70,7 @@ capability SID按确定性名称生成account-domain-shaped SID，只用作Futur
 
 ### 2.4 Probe、维护与应用归属
 
-host probe在临时NTFS夹具中实际启动private-desktop受限shell，验证allowed写成功、邻接正常用户可写路径被拒，并清理ACE。不是仅测token创建，也不是证明主机所有目录ACL都安全。稳定结果含available或`backend_initialization_failed`、`write_boundary_failed`、`restricted_shell_failed`；内部Win32诊断留本机日志，不进普通UI。
+host probe在临时NTFS夹具中实际启动private-desktop受限shell，验证allowed写成功、邻接正常用户可写路径被拒，并清理ACE。不是仅测token创建，也不是证明主机所有目录ACL都安全。探测最多等待10秒，超时终止整个no-breakaway Job并释放capability lease，避免RPC超时后后台任务继续持锁。稳定结果含available或`backend_initialization_failed`、`write_boundary_failed`、`restricted_shell_failed`、`probe_timeout`；内部Win32诊断留本机日志，不进普通UI。
 
 ```powershell
 future agent --probe-windows-sandbox

@@ -3,6 +3,7 @@
 ; CLI/Agent or names left by older releases. Never let a locked old sidecar
 ; survive beside a newly copied desktop and create a mixed-version install.
 !include x64.nsh
+Var FutureOSRestorePending
 !define FUTUREOS_PREFLIGHT_SCRIPT "${__FILEDIR__}\installer-preflight.ps1"
 ; Tauri includes hooks BEFORE MUI_LANGUAGE defines LANG_*; use Windows LCIDs.
 
@@ -13,10 +14,37 @@ LangString FutureOSInstallLocked 2052 "以下目录中的程序文件仍被占�
 LangString FutureOSInstallNotWritable 1033 "Setup could not verify write access to:$\r$\n$INSTDIR$\r$\n$\r$\nNo program files have been replaced. Check that the folder and its files are writable, that enough disk space is available, and that security software is not blocking setup or Windows PowerShell.$\r$\n$\r$\nClick Retry after fixing the problem, or Cancel and choose a folder under your own user account (the default location is recommended). See setup details for diagnostics."
 LangString FutureOSInstallNotWritable 2052 "安装程序无法确认可以写入以下目录：$\r$\n$INSTDIR$\r$\n$\r$\n尚未替换程序文件。请检查目录和文件是否允许写入、磁盘空间是否充足，以及安全软件是否拦截了安装程序或 Windows PowerShell。$\r$\n$\r$\n处理后点击“重试”；或取消安装，重新选择当前用户有写入权限的目录（推荐默认位置）。具体原因可查看安装详情。"
 
+!macro FutureOSBackupExecutable NAME
+  IfFileExists "$INSTDIR\${NAME}" 0 +4
+  ClearErrors
+  CopyFiles /SILENT "$INSTDIR\${NAME}" "$PLUGINSDIR\${NAME}.futureos-backup"
+  IfErrors futureos_preinstall_backup_failed
+!macroend
+
+!macro FutureOSRestoreExecutable NAME
+  Delete "$INSTDIR\${NAME}"
+  IfFileExists "$PLUGINSDIR\${NAME}.futureos-backup" 0 +3
+  CopyFiles /SILENT "$PLUGINSDIR\${NAME}.futureos-backup" "$INSTDIR\${NAME}"
+  DetailPrint "Restored ${NAME} after the lifecycle operation failed."
+!macroend
+
+!macro FutureOSDeleteExecutableBackup NAME
+  Delete "$PLUGINSDIR\${NAME}.futureos-backup"
+!macroend
+
+!macro FutureOSUninstallBackupExecutable NAME
+  IfFileExists "$INSTDIR\${NAME}" 0 +4
+  ClearErrors
+  CopyFiles /SILENT "$INSTDIR\${NAME}" "$PLUGINSDIR\${NAME}.futureos-backup"
+  IfErrors futureos_uninstall_backup_failed
+!macroend
+
 ; Generate installer and uninstaller functions: upgrades may uninstall first.
-!macro FutureOSPreflightFunctions PREFIX
+; The RunPreflight helper is shared, while EnsureWritable/CloseForUpdate are
+; installer-only. Uninstall fails closed when executable removal is unsafe.
+!macro FutureOSRunPreflightFunction PREFIX
 Function ${PREFIX}FutureOSRunPreflight
-  ; $R0 = Check or Close, $R1 = exit code. Preserve Tauri's other registers.
+  ; $R0 = helper mode, $R1 = exit code. Preserve Tauri's other registers.
   Push $0
   Push $1
   StrCpy $0 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
@@ -32,7 +60,9 @@ Function ${PREFIX}FutureOSRunPreflight
   Pop $1
   Pop $0
 FunctionEnd
+!macroend
 
+!macro FutureOSInstallPreflightFunctions PREFIX
 Function ${PREFIX}FutureOSEnsureWritable
   Push $R0
   Push $R1
@@ -100,8 +130,9 @@ futureos_update_preflight_done:
   Pop $R0
 FunctionEnd
 !macroend
-!insertmacro FutureOSPreflightFunctions ""
-!insertmacro FutureOSPreflightFunctions "un."
+!insertmacro FutureOSRunPreflightFunction ""
+!insertmacro FutureOSRunPreflightFunction "un."
+!insertmacro FutureOSInstallPreflightFunctions ""
 
 !macro NSIS_HOOK_PREINSTALL
   ; Explicit updater mode owns the current installation and closes only
@@ -115,18 +146,70 @@ futureos_preinstall_update:
 futureos_preinstall_manual:
   Call FutureOSEnsureWritable
 futureos_preinstall_checked:
-  ; Make sidecar replacement unconditional, including same-version repair
-  ; installs. If an unexpected copy failure occurs later, no old Agent remains
-  ; beside a newly copied desktop and the installer can be retried cleanly.
+  ; Preserve every executable that this installer replaces or retires. NSIS
+  ; writes files in place; without these copies, a disk/AV/extraction failure
+  ; after the first write can leave neither a complete old nor new version.
+  InitPluginsDir
+  StrCpy $FutureOSRestorePending 0
+  !insertmacro FutureOSBackupExecutable "futureos.exe"
+  !insertmacro FutureOSBackupExecutable "future.exe"
+  !insertmacro FutureOSBackupExecutable "future-desktop.exe"
+  !insertmacro FutureOSBackupExecutable "future-agent.exe"
+  StrCpy $FutureOSRestorePending 1
+
+  ; Make sidecar replacement unconditional, including same-version repairs.
   ClearErrors
   Delete "$INSTDIR\future.exe"
   Delete "$INSTDIR\future-agent.exe"
   IfErrors 0 futureos_preinstall_sidecars_removed
+futureos_preinstall_backup_failed:
   DetailPrint "$(FutureOSInstallNotWritable)"
+  Call FutureOSRestoreAfterFailure
   SetErrorLevel 5
-  Quit
+  Abort
 futureos_preinstall_sidecars_removed:
 !macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  ; Run bounded --help/--version probes for both new executables. These return
+  ; before GUI/Agent initialization but still detect missing DLLs, corrupt files
+  ; and wrong architectures. Failure invokes .onInstFailed below.
+  Push $R0
+  Push $R1
+  StrCpy $R0 VerifyInstall
+  Call FutureOSRunPreflight
+  StrCmp $R1 0 futureos_postinstall_valid
+  DetailPrint "FutureOS installation verification failed (exit $R1)."
+  Pop $R1
+  Pop $R0
+  Call FutureOSRestoreAfterFailure
+  SetErrorLevel 5
+  Abort
+futureos_postinstall_valid:
+  Pop $R1
+  Pop $R0
+  !insertmacro FutureOSDeleteExecutableBackup "futureos.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future-desktop.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future-agent.exe"
+  StrCpy $FutureOSRestorePending 0
+!macroend
+
+Function FutureOSRestoreAfterFailure
+  StrCmp $FutureOSRestorePending 1 0 futureos_restore_done
+  !insertmacro FutureOSRestoreExecutable "futureos.exe"
+  !insertmacro FutureOSRestoreExecutable "future.exe"
+  !insertmacro FutureOSRestoreExecutable "future-desktop.exe"
+  !insertmacro FutureOSRestoreExecutable "future-agent.exe"
+  StrCpy $FutureOSRestorePending 0
+futureos_restore_done:
+FunctionEnd
+
+; NSIS extraction failures reach this callback while $PLUGINSDIR still exists.
+; Our own fail-closed paths call the same restoration function immediately.
+Function .onInstFailed
+  Call FutureOSRestoreAfterFailure
+FunctionEnd
 
 ; Sandbox cleanup remains unelevated and only revokes FutureOS-owned ACEs.
 ; Cleanup is best-effort during uninstall: a missing/old/broken CLI must never
@@ -136,15 +219,26 @@ LangString FutureOSSandboxCleanupFailed 1033 "Warning: FutureOS could not remove
 LangString FutureOSSandboxCleanupFailed 2052 "警告：FutureOS 无法清理全部 Windows 沙箱权限。卸载将继续；清理元数据会保留，以便以后安装或修复 FutureOS 时重试。"
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Starting uninstall is authority to stop this installation. Try exact-path
-  ; process cleanup, but do not let inspection errors, file locks, a mixed old
-  ; CLI, or a missing runtime hold the uninstaller hostage.
+  ; Starting uninstall is authority to stop this installation. Close exact-path
+  ; processes, then require write access so removal never reports success while
+  ; executable files remain installed.
   InitPluginsDir
   File /oname=$PLUGINSDIR\futureos-preflight.ps1 "${FUTUREOS_PREFLIGHT_SCRIPT}"
+futureos_uninstall_retry:
   StrCpy $R0 Close
   Call un.FutureOSRunPreflight
   StrCmp $R1 0 futureos_uninstall_cleanup
-  DetailPrint "Warning: FutureOS could not close or unlock every installed executable (exit $R1). Removal will continue and Windows may finish it after reboot."
+  DetailPrint "FutureOS could not close or unlock every installed executable (exit $R1)."
+  IfSilent futureos_uninstall_abort
+  StrCmp $PassiveMode 1 futureos_uninstall_abort
+  StrCmp $R1 32 0 futureos_uninstall_access
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(FutureOSInstallLocked)" IDRETRY futureos_uninstall_retry
+  Goto futureos_uninstall_abort
+futureos_uninstall_access:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(FutureOSInstallNotWritable)" IDRETRY futureos_uninstall_retry
+futureos_uninstall_abort:
+  SetErrorLevel $R1
+  Quit
 
 futureos_uninstall_cleanup:
   IfFileExists "$INSTDIR\future.exe" 0 futureos_sandbox_cleanup_done
@@ -163,10 +257,41 @@ futureos_sandbox_cleanup_failed:
   ; outside $INSTDIR and remains available for a later repair attempt.
 
 futureos_sandbox_cleanup_done:
-  ; Tauri removes configured current files after this hook. Also cover retired
-  ; names and any handle that raced the close attempt; /REBOOTOK keeps removal
-  ; recoverable without reporting a false successful cleanup.
-  Delete /REBOOTOK "$INSTDIR\future.exe"
-  Delete /REBOOTOK "$INSTDIR\future-agent.exe"
-  Delete /REBOOTOK "$INSTDIR\future-desktop.exe"
+  ; Delete and verify every current/retired executable before Tauri removes the
+  ; uninstall registry entry. /REBOOTOK is not a valid current-user guarantee:
+  ; Windows only permits scheduling those reboot deletions to administrators.
+  ; Keep temporary copies so a lock race between preflight and deletion cannot
+  ; turn a reported failure into a partially removed installation.
+  !insertmacro FutureOSUninstallBackupExecutable "futureos.exe"
+  !insertmacro FutureOSUninstallBackupExecutable "future.exe"
+  !insertmacro FutureOSUninstallBackupExecutable "future-agent.exe"
+  !insertmacro FutureOSUninstallBackupExecutable "future-desktop.exe"
+  ClearErrors
+  Delete "$INSTDIR\futureos.exe"
+  Delete "$INSTDIR\future.exe"
+  Delete "$INSTDIR\future-agent.exe"
+  Delete "$INSTDIR\future-desktop.exe"
+  IfErrors futureos_uninstall_restore
+  !insertmacro FutureOSDeleteExecutableBackup "futureos.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future-agent.exe"
+  !insertmacro FutureOSDeleteExecutableBackup "future-desktop.exe"
+  Goto futureos_uninstall_executables_removed
+futureos_uninstall_restore:
+  !insertmacro FutureOSRestoreExecutable "futureos.exe"
+  !insertmacro FutureOSRestoreExecutable "future.exe"
+  !insertmacro FutureOSRestoreExecutable "future-agent.exe"
+  !insertmacro FutureOSRestoreExecutable "future-desktop.exe"
+  DetailPrint "$(FutureOSInstallLocked)"
+  IfSilent futureos_uninstall_delete_abort
+  StrCmp $PassiveMode 1 futureos_uninstall_delete_abort
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(FutureOSInstallLocked)" IDRETRY futureos_uninstall_retry
+futureos_uninstall_delete_abort:
+  SetErrorLevel 32
+  Quit
+futureos_uninstall_backup_failed:
+  DetailPrint "$(FutureOSInstallNotWritable)"
+  SetErrorLevel 5
+  Quit
+futureos_uninstall_executables_removed:
 !macroend
