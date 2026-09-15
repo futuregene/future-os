@@ -51,6 +51,26 @@ Codex 与 OpenCode 是按上述提交**读源码后重新实现的选取规则**
 
 Codex 最准也最贵：摘要器读取整段活动历史，单次压缩约为“只摘要”方案的 23 倍，也约等于整个 A/B/C 组的 3 倍。注意这种不对称：journal 支撑的 A/B/C/M 可以免费从归档重建投影，而破坏性替换历史的策略必须为每一次中间压缩付费，才能把历史压在窗口内。
 
+## Codex 自己有检索能力吗？
+
+**有——这一点会影响整个对比该怎么读。** Codex 在 `codex-rs/ext/history-notes` 里带了一套第一方历史检索工具，它自己的描述就是：*"在上下文窗口重置后，通过列出、读取和搜索规范化历史来恢复先前对话。"* `history` 命名空间提供 `list_windows`、`list_items`、`read_item`、`search_contents`；另有 `notes` 命名空间，让私有笔记跨上下文窗口保留；还会自动向上下文注入一条 thread hint。
+
+但在本实验测的配置里它没有生效。以下是**同时**满足才可用：
+
+| 条件 | 本实验的情况 |
+|---|---|
+| `Feature::TokenBudget`、`Feature::ContextManagement` | 均为 `Stage::UnderDevelopment`，`default_enabled: false` |
+| 模型 `supports_experimental_context` | 第三方 provider 不满足 |
+| provider `supports_codex_backend_routes()`、`requires_openai_auth`，且无 env key／provider auth | 否 |
+| 认证方式／套餐 | 必须是 **ChatGPT** 账号且为 **Plus／Pro／ProLite** |
+
+历史数据放在**托管后端**（`alpha/history/v2/*`），不是本地文件。所以本次测的 Codex 是**没有启用实验性上下文管理的本地兜底压缩**——也就是任何使用 API key 或第三方 OpenAI 兼容 provider 的人实际能用到的那套。**"Codex＋它自己的检索"这一组，用 API key 无法复现。**
+
+两点后果：
+
+1. "C＋检索"的方向，与 Codex 付费托管产品已经在走的方向一致：**压缩＋一条回到原始对话的路**。这是支持 C＋检索设计的证据，而不是反对它的。
+2. 任何"C＋检索"与"Codex"的对比都必须说明是哪个 Codex。拿"C＋检索"去比"没有历史工具的 Codex"不是同条件比较；本页的数字正是后一种情况。
+
 ## 外部策略是如何跑的
 
 Codex 与 OpenCode **替换**对话，所以第 N 次压缩读到的是已被压缩过的历史加此后新增内容，而不是 journal 支撑策略可以合法重建的原始归档。因此存在两种压缩：
@@ -63,6 +83,7 @@ Codex 与 OpenCode **替换**对话，所以第 N 次压缩读到的是已被压
 ## 限制
 
 - Codex 与 OpenCode 是依据特定提交的单点复现。其保留规则与 prompt 来自那些提交；上游后续改动会让数字失效。
+- **Codex 的数字来自它的本地兜底路径。** 它的第一方历史／笔记检索工具需要托管 Codex 后端、付费 ChatGPT 套餐和两个 UnderDevelopment 特性开关，因此在任何 API key 或第三方 provider 配置里都不存在——包括本次实验。拿带检索的策略与之对比前，先看上文"Codex 自己有检索能力吗"。
 - 探针阶段对所有组都是强制的。探针之间外部策略使用自己的触发，因此某个边界的投影可能来自溢出压缩而非边界压缩；每个投影里的 `compactions` 字段记录了实际发生的情况。
 - harness 的 token 估算在这套 fixture 上比 provider 计数低约 1.45 倍，所以上下文一列低估了真实提示长度。
 - OpenCode 在 GLM 上有两次触及自己的 4 096 输出上限（截断摘要按其源码被接受），还有一次返回空摘要——OpenCode 把这种情况视为**拒绝压缩**，记录为 `declined`，没有改写成假摘要。这是“4K 输出上限 + 大历史”的真实脆弱点。

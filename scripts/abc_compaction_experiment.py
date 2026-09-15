@@ -23,7 +23,7 @@ before it is sent, and the harness stops at --budget CNY. Fixtures are synthetic
 no private conversation is read or sent.
 """
 
-import argparse, hashlib, json, os, random, re, subprocess, sys, time
+import argparse, hashlib, json, os, random, re, shlex, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 
 W = Path(__file__).resolve().parents[1]
@@ -481,9 +481,198 @@ def external_arm(args):
                                           'auto_compacted': True, 'kind': kind}), flush=True)
 
 
+
+# ─── retrieval-condition support ─────────────────────────────────────────────
+
+RETRIEVAL_GUIDE = (
+    ' Archive session ID: {sid}. Use the existing shell tool ONLY for '
+    '`future session history search --session {sid} --query "literal keyword" --limit 5 --json` or '
+    '`future session history get --session {sid} --entry ENTRY_ID --offset BYTE_OFFSET --limit 8192 --json`. '
+    'Search is literal. Use returned entryId/byteOffset/nextOffset; do not invent IDs, scan the filesystem, or run '
+    'other commands. Multiple separate calls are allowed. Stop when the evidence is sufficient.'
+)
+RETRIEVAL_BYTES = 32_768
+RETRIEVAL_CALLS = 5
+
+
+def archive_entry(record):
+    """Fixture record -> session entry for the isolated archive."""
+    if record["kind"] == "tool_call":
+        body = [{"type": "tool_call", "id": record["call"], "name": "read", "args": {"path": record["path"]}}]
+    elif record["kind"] == "tool_result":
+        body = [{"type": "tool_result", "tool_call_id": record["call"], "content": record["text"],
+                 "is_error": record.get("error", False)}]
+    else:
+        body = [{"type": "text", "text": record["text"]}]
+    return {"id": record["id"], "type": record["role"], "role": record["role"],
+            "timestamp": "2026-09-15T00:00:00Z", "content": body}
+
+
+def lookup(command, sid, binary, env, cwd):
+    """Run one history CLI command; no shell interpreter is involved.
+
+    The model's text is split into argv, so even metacharacters inside a query
+    stay literal. Anything other than `future session history search|get`
+    scoped to this stage's session is refused.
+    """
+    argv = shlex.split(command)
+    if argv[:3] != ["future", "session", "history"] or len(argv) < 4 or argv[3] not in ("search", "get"):
+        return "TEST_POLICY: only history search/get allowed", 0
+    if argv[4:] not in (["--help"], ["-h"]):
+        options, index = {}, 4
+        while index < len(argv):
+            flag = argv[index]
+            if flag == "--json":
+                index += 1
+                continue
+            if flag not in ("--session", "--query", "--entry", "--offset", "--limit") or flag in options or index + 1 >= len(argv):
+                return "TEST_POLICY: invalid option", 0
+            options[flag] = argv[index + 1]
+            index += 2
+        if options.get("--session") != sid:
+            return "TEST_POLICY: wrong session scope", 0
+    result = subprocess.run([str(binary), *argv[1:]], env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
+    output = result.stdout if result.returncode == 0 else result.stderr
+    return output + f"\n[exit: {result.returncode}]", len(output.encode())
+
+
+def start_archive_agent(root, binary):
+    """Isolated HOME + fresh port + one archive session per stage fixture."""
+    manifest = json.loads((root / "manifest.json").read_text())
+    directory = tempfile.TemporaryDirectory(prefix="abc-archive-", dir=root)
+    home = Path(directory.name)
+    sessions = home / ".future" / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    for name in manifest["files"]:
+        data = json.loads((root / name).read_text())
+        header = {"id": "info", "type": "session_info", "role": "system",
+                  "timestamp": "2026-09-15T00:00:00Z", "content": {"cwd": str(home)}}
+        records = data["archive"] + data["tail"]
+        (sessions / f'{data["source_session"]}.jsonl').write_text(
+            json.dumps(header) + "\n" + "".join(json.dumps(archive_entry(r), ensure_ascii=False) + "\n" for r in records),
+            encoding="utf-8")
+    env = os.environ.copy()
+    for key in ("FUTURE_HOME", "FUTURE_AGENT_SOCKET", "FUTURE_AGENT_GRPC_ADDR"):
+        env.pop(key, None)
+    env.update(HOME=str(home), USERPROFILE=str(home), XDG_RUNTIME_DIR=str(home))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    env["FUTURE_AGENT_GRPC_ADDR"] = f"127.0.0.1:{port}"
+    log = open(root / "archive-agent.log", "w+")
+    agent = subprocess.Popen([str(binary), "agent", "--grpc-addr", env["FUTURE_AGENT_GRPC_ADDR"]],
+                             env=env, cwd=home, stdout=log, stderr=subprocess.STDOUT)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if agent.poll() is not None:
+            raise RuntimeError("archive agent exited during startup")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                return directory, env, home, agent, log
+        except OSError:
+            threading.Event().wait(0.05)
+    raise TimeoutError("archive agent did not start")
+
+
+def probe_retrieval(args, ledger, binary, env, home, tasks):
+    """Ask a projection's owner to answer using the archive CLI."""
+    for task in tasks:
+        for model in MODELS:
+            if args.models and model not in args.models:
+                continue
+            for stage in PROBES:
+                identity = f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}__retrieval'
+                out = args.root / args.arm / "results" / f"{identity}.json"
+                if out.exists():
+                    continue
+                data = json.loads((args.root / "data" / f"{task}-{stage}.json").read_text())
+                projection = json.loads((args.root / args.arm / "projections" /
+                                         f'{task}__{model.split("/")[-1]}__s{stage}__{args.arm}{args.id_suffix}.json').read_text())
+                value = projection["text"]
+                sid = data["source_session"]
+                system = (CLOSED_SYSTEM.replace(" No tools or external evidence are available in this condition.", "")
+                          + RETRIEVAL_GUIDE.format(sid=sid))
+                tools = [{"type": "function", "function": {"name": "shell",
+                          "description": "Run one read-only history CLI command for this archive session.",
+                          "parameters": {"type": "object", "properties": {"command": {"type": "string"}},
+                                         "required": ["command"]}}}]
+                messages = [{"role": "user", "content": f'<archived-conversation>\n{value}\n</archived-conversation>\n'
+                                                        + QUESTION.format(stage=stage)}]
+                started = time.monotonic()
+                call_ids, tool_calls, returned, text, status = [], [], 0, "", "request_limit"
+                for step in range(RETRIEVAL_CALLS):
+                    body = {"model": model, "messages": [{"role": "system", "content": system}] + messages,
+                            "tools": tools, "stream": True, "max_tokens": 8192,
+                            "thinking": {"type": "enabled"}, "reasoning_effort": "high",
+                            "stream_options": {"include_usage": True}}
+                    call_id = f"{identity}__call{step}"
+                    row = ledger.reserve(call_id, model, request_reserve(len(json.dumps(body).encode())))
+                    began = time.monotonic()
+                    result = subprocess.run([str(args.bridge)], input=json.dumps({"model": model, "body": body}),
+                                            capture_output=True, text=True, timeout=300)
+                    parsed = parse_sse(result.stdout)
+                    if result.returncode != 0:
+                        parsed["error"] = f'bridge exit {result.returncode}: {result.stderr[-300:]}'
+                    usage = parsed.get("usage") or {}
+                    ledger.settle(row, input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"),
+                                  credit_cost=usage.get("credit_cost"), seconds=round(time.monotonic() - began, 3),
+                                  error=parsed.get("error"))
+                    call_ids.append(call_id)
+                    if parsed.get("error"):
+                        status, text = "api_error", parsed.get("text", "")
+                        break
+                    if parsed["calls"]:
+                        assistant = {"role": "assistant", "content": parsed["text"] or None, "tool_calls": parsed["calls"]}
+                        messages.append(assistant)
+                        for call in parsed["calls"]:
+                            try:
+                                if call["function"]["name"] != "shell":
+                                    raise ValueError("tool not allowed")
+                                arguments = json.loads(call["function"]["arguments"])
+                                output, size = lookup(arguments["command"], sid, binary, env, home)
+                            except (ValueError, KeyError) as error:
+                                output, size = f"TEST_POLICY: {error}", 0
+                            room = max(0, RETRIEVAL_BYTES - returned)
+                            encoded = output.encode()
+                            if len(encoded) > room:
+                                output = encoded[:room].decode("utf-8", errors="ignore") + "\n[experiment retrieval byte budget exhausted]"
+                            returned += min(size, room)
+                            tool_calls.append({"call": call, "result_bytes": min(size, room),
+                                               "policy_denied": output.startswith("TEST_POLICY")})
+                            messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
+                        continue
+                    text = parsed["text"]
+                    status = "completed" if parsed["finish"] == "stop" else "incomplete"
+                    break
+                grade_result = grade(text, data["gold"]) if status == "completed" else {"valid": False, "correct": 0, "total": 12}
+                save(out, {"id": identity, "task": task, "model": model, "stage": stage, "arm": args.arm,
+                           "retrieval": True, "status": status, "context_tokens": tokens(value),
+                           "text": text, "grade": grade_result, "call_ids": call_ids, "tool_calls": tool_calls,
+                           "retrieved_bytes": returned, "seconds": round(time.monotonic() - started, 3)})
+                print(json.dumps({"probe": identity, "status": status, "correct": grade_result["correct"],
+                                  "calls": len(call_ids), "bytes": returned}), flush=True)
+
+
 def probe(args):
-    """Closed-book questionnaire against an arm's projection."""
+    """Questionnaire against an arm's projection (closed-book, or with the archive CLI)."""
     ledger = Ledger(args.root, args.budget)
+    if args.retrieval:
+        if not args.binary:
+            sys.exit("--binary (the future CLI) is required for --retrieval")
+        directory, env, home, agent, log = start_archive_agent(args.root, args.binary)
+        try:
+            probe_retrieval(args, ledger, args.binary, env, home, ["export", "analysis"])
+        finally:
+            if agent.poll() is None:
+                agent.terminate()
+                try:
+                    agent.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    agent.kill()
+                    agent.wait()
+            log.close()
+            directory.cleanup()
+        return
     overrides = {}
     adjudication = args.root / 'ADJUDICATION.json'
     if adjudication.exists():
@@ -592,6 +781,8 @@ def main():
     parser.add_argument('--models', nargs='*', default=None)
     parser.add_argument('--stages', nargs='*', type=int, default=None)
     parser.add_argument('--id-suffix', default='')
+    parser.add_argument('--binary', type=Path, help='future CLI, required by --retrieval')
+    parser.add_argument('--retrieval', action='store_true', help='give the probe the archive CLI')
     args = parser.parse_args()
     args.root = args.root.resolve()
     if args.action == 'prepare': prepare(args.root)

@@ -71,6 +71,40 @@ entire A/B/C arm. Note the asymmetry: the journal-backed arms (A/B/C/M) rebuild
 their projection from the archive for free, while the destructive arms pay for
 every intermediate compaction they need to keep their history inside the window.
 
+## Does Codex have its own retrieval?
+
+**Yes — and this matters for how the comparison should be read.** Codex ships a
+first-party history-retrieval tool set in `codex-rs/ext/history-notes`, whose own
+description reads: *"Recover prior conversation after a context-window reset by
+listing, reading, and searching normalized history."* The `history` namespace
+exposes `list_windows`, `list_items`, `read_item` and `search_contents`; a `notes`
+namespace persists private notes across context-window transitions; and a thread
+hint is injected into the context automatically.
+
+It is not active in the configuration measured here. All of these must hold:
+
+| Requirement | Value in this experiment |
+|---|---|
+| `Feature::TokenBudget`, `Feature::ContextManagement` | `Stage::UnderDevelopment`, `default_enabled: false` |
+| Model `supports_experimental_context` | n/a via third-party provider |
+| Provider `supports_codex_backend_routes()`, `requires_openai_auth`, no env key/provider auth | no |
+| Auth mode / plan | must be **ChatGPT** with **Plus, Pro or ProLite** |
+
+The history itself lives on the hosted Codex backend (`alpha/history/v2/*`), not in
+local files. So the measured Codex arm is its **local fallback compaction without
+experimental context management** — the configuration available to anyone using an
+API key or a third-party OpenAI-compatible provider, which is what this experiment
+ran. A "Codex + its own search" arm is **not reproducible** with API keys.
+
+Two consequences:
+
+1. The direction "C + search" is the same direction Codex's paid, hosted product
+   already takes: compaction **plus** a way back to the original conversation.
+   That is a point in favour of the C+search design, not against it.
+2. Any comparison between "C with search" and "Codex" must state which Codex is
+   meant. Comparing C-with-search against Codex-without-its-history-tools is not
+   a like-for-like test, and the numbers in this page are that latter case.
+
 ## How the external arms were run
 
 Codex and OpenCode *replace* the conversation, so the Nth compaction reads the
@@ -95,6 +129,11 @@ that measured factor. Each arm keeps its own output budget: OpenCode hard-codes
 - Codex and OpenCode are single-point-of-source reimplementations. Their retention
   rules and prompts were read from specific commits; a later upstream change would
   invalidate the numbers.
+- **The Codex numbers are its local fallback path.** Its first-party history/notes
+  retrieval tools require the hosted Codex backend, a paid ChatGPT plan and two
+  UnderDevelopment feature flags, so they are absent in any API-key or third-party
+  provider setup — including this one. See "Does Codex have its own retrieval?"
+  above before comparing a search-enabled arm against these numbers.
 - The probe stages are forced for every arm. Between probes the external arms use
   their own trigger, so their boundary state can be the result of an overflow
   compaction rather than a boundary one; the recorded `compactions` field in each
