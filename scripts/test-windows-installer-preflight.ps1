@@ -23,6 +23,7 @@ function New-Install([string]$Name) {
     $directory = Join-Path $root $Name
     $null = New-Item -ItemType Directory -Path $directory
     Copy-Item -LiteralPath $fixture -Destination (Join-Path $directory 'future.exe')
+    Copy-Item -LiteralPath $fixture -Destination (Join-Path $directory 'future-agent.exe')
     Copy-Item -LiteralPath $fixture -Destination (Join-Path $directory 'futureos.exe')
     Copy-Item -LiteralPath $fixture -Destination (Join-Path $directory 'future-desktop.exe')
     return $directory
@@ -56,6 +57,7 @@ function Start-Installer([string]$Directory, [string]$Flags = '/S') {
 }
 function Assert-Unchanged([string]$Directory) {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $Directory 'future.exe')).Hash $fixtureHash 'Old binary preserved'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $Directory 'future-agent.exe')).Hash $fixtureHash 'Legacy Agent preserved'
     Assert-Equal (Test-Path -LiteralPath (Join-Path $Directory 'installed.marker')) $false 'No partial install'
 }
 
@@ -138,14 +140,28 @@ try {
     Assert-Equal (Invoke-Preflight $target) 0 'Other installation does not block'
     Assert-Unchanged $target
     $agent = Start-Fixture $target
+    $legacyAgent = Start-Fixture $target 'future-agent.exe'
     $desktop = Start-Fixture $target 'futureos.exe'
     $legacyDesktop = Start-Fixture $target 'future-desktop.exe'
     Assert-Equal (Invoke-Preflight $target) 32 'Detect running installation'
     Assert-Equal (Wait-Exit (Start-Installer $target)) 32 'Silent install fails closed'
     Assert-Equal (Wait-Exit (Start-Installer $target '/P')) 32 'Passive install fails closed'
     Assert-Equal $agent.HasExited $false 'Silent mode preserves tasks'
+    Assert-Equal $legacyAgent.HasExited $false 'Silent mode preserves legacy Agent tasks'
     Assert-Equal $desktop.HasExited $false 'Silent mode preserves desktop'
     Assert-Unchanged $target
+
+    Write-Host 'Testing automatic update recovery from an old running Agent...'
+    $automatic = New-Install 'automatic mixed update'
+    $automaticAgent = Start-Fixture $automatic
+    $automaticLegacyAgent = Start-Fixture $automatic 'future-agent.exe'
+    $automaticDesktop = Start-Fixture $automatic 'futureos.exe'
+    Assert-Equal (Wait-Exit (Start-Installer $automatic '/S /UPDATE')) 0 'Automatic update repairs running mixed install'
+    Assert-Equal $automaticAgent.HasExited $true 'Automatic update closes current Agent'
+    Assert-Equal $automaticLegacyAgent.HasExited $true 'Automatic update closes legacy Agent'
+    Assert-Equal $automaticDesktop.HasExited $true 'Automatic update closes old desktop'
+    Assert-Equal (Test-Path (Join-Path $automatic 'installed.marker')) $true 'Automatic update completed'
+    Assert-Equal (Test-Path (Join-Path $automatic 'future-agent.exe')) $false 'Automatic update removes legacy Agent'
 
     Write-Host 'Testing interactive cancellation...'
     # Interactive Cancel never stops processes or replaces files.
@@ -170,9 +186,11 @@ try {
     }
     Assert-Equal (Wait-Exit $ui) 0 'Consent continues installation'
     Assert-Equal $agent.HasExited $true 'Target agent closed'
+    Assert-Equal $legacyAgent.HasExited $true 'Target legacy agent closed'
     Assert-Equal $desktop.HasExited $true 'Target desktop closed'
     Assert-Equal $legacyDesktop.HasExited $true 'Legacy desktop closed'
     Assert-Equal $otherAgent.HasExited $false 'Other installation untouched'
+    Assert-Equal (Test-Path (Join-Path $target 'future-agent.exe')) $false 'Legacy Agent removed before install'
 
     Write-Host 'Testing external lock and retry...'
     $locked = New-Install 'external lock'
@@ -181,6 +199,8 @@ try {
         Assert-Equal (Invoke-Preflight $locked) 32 'External lock detected'
         Assert-Equal (Invoke-Preflight $locked 'Close') 32 'Cannot close unrelated locker'
         Assert-Equal (Wait-Exit (Start-Installer $locked)) 32 'Locked install blocked'
+        Assert-Unchanged $locked
+        Assert-Equal (Wait-Exit (Start-Installer $locked '/S /UPDATE')) 32 'Automatic update fails closed on unrelated locker'
         Assert-Unchanged $locked
     } finally { $handle.Dispose() }
     Assert-Equal (Wait-Exit (Start-Installer $locked)) 0 'Retry succeeds after unlock'
@@ -196,29 +216,62 @@ try {
     } finally { [IO.File]::SetAttributes($readOnlyExe, [IO.FileAttributes]::Normal) }
 
     Write-Host 'Testing uninstall preflight...'
-    # Fresh uninstall fixture: verify preflight runs before sandbox cleanup.
+    # Uninstall owns this installation: it closes exact-path processes and
+    # continues even when sandbox cleanup is unsupported or fails.
     $uninstallDir = New-Install 'uninstall'
     Copy-Item (Join-Path $fresh 'uninstall.exe') $uninstallDir
     $uninstallAgent = Start-Fixture $uninstallDir
     $uninstaller = Start-Process -FilePath (Join-Path $uninstallDir 'uninstall.exe') -ArgumentList "/S _?=$uninstallDir" -PassThru
     $processes.Add($uninstaller)
-    Assert-Equal (Wait-Exit $uninstaller) 32 'Uninstall checks agent before cleanup'
-    Assert-Equal $uninstallAgent.HasExited $false 'Silent uninstall preserves tasks'
-    Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $false 'Uninstall did not proceed'
-    Assert-Equal (Invoke-Preflight $uninstallDir 'Close') 0 'Close uninstall fixture'
-    $null = New-Item -ItemType File -Path (Join-Path $uninstallDir 'fail-cleanup')
+    Assert-Equal (Wait-Exit $uninstaller) 0 'Silent uninstall closes the owned Agent and completes'
+    Assert-Equal $uninstallAgent.HasExited $true 'Uninstall closes the owned Agent'
+    Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $true 'Uninstall proceeded'
+
     foreach ($flags in @('/S', '/P')) {
-        $uninstaller = Start-Process -FilePath (Join-Path $uninstallDir 'uninstall.exe') -ArgumentList "$flags _?=$uninstallDir" -PassThru
+        $failedCleanup = New-Install ('cleanup failure ' + $flags.TrimStart('/'))
+        Copy-Item (Join-Path $fresh 'uninstall.exe') $failedCleanup
+        $null = New-Item -ItemType File -Path (Join-Path $failedCleanup 'fail-cleanup')
+        $uninstaller = Start-Process -FilePath (Join-Path $failedCleanup 'uninstall.exe') -ArgumentList "$flags _?=$failedCleanup" -PassThru
         $processes.Add($uninstaller)
-        Assert-Equal (Wait-Exit $uninstaller) 1 'Cleanup failure exits unattended uninstall'
-        Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $false 'Cleanup failure blocks uninstall'
-        Assert-Unchanged $uninstallDir
+        Assert-Equal (Wait-Exit $uninstaller) 0 'Cleanup failure does not block unattended uninstall'
+        Assert-Equal (Test-Path (Join-Path $failedCleanup 'uninstalled.marker')) $true 'Cleanup failure still completes uninstall'
     }
-    Remove-Item -LiteralPath (Join-Path $uninstallDir 'fail-cleanup')
-    $uninstaller = Start-Process -FilePath (Join-Path $uninstallDir 'uninstall.exe') -ArgumentList "/S _?=$uninstallDir" -PassThru
+
+    $mixed = New-Install 'mixed old CLI'
+    Copy-Item (Join-Path $fresh 'uninstall.exe') $mixed
+    $null = New-Item -ItemType File -Path (Join-Path $mixed 'unsupported-cleanup')
+    $uninstaller = Start-Process -FilePath (Join-Path $mixed 'uninstall.exe') -ArgumentList "/S _?=$mixed" -PassThru
     $processes.Add($uninstaller)
-    Assert-Equal (Wait-Exit $uninstaller) 0 'Cleanup retry succeeds'
-    Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $true 'Uninstall continues after cleanup'
+    Assert-Equal (Wait-Exit $uninstaller) 0 'Pre-sandbox mixed CLI does not block uninstall'
+    Assert-Equal (Test-Path (Join-Path $mixed 'uninstalled.marker')) $true 'Mixed install removal completes'
+
+    $hungCleanup = New-Install 'hung cleanup'
+    Copy-Item (Join-Path $fresh 'uninstall.exe') $hungCleanup
+    $null = New-Item -ItemType File -Path (Join-Path $hungCleanup 'hang-cleanup')
+    $startedAt = [DateTime]::UtcNow
+    $uninstaller = Start-Process -FilePath (Join-Path $hungCleanup 'uninstall.exe') -ArgumentList "/S _?=$hungCleanup" -PassThru
+    $processes.Add($uninstaller)
+    Assert-Equal (Wait-Exit $uninstaller) 0 'Hung sandbox cleanup times out without blocking uninstall'
+    if (([DateTime]::UtcNow - $startedAt).TotalSeconds -gt 30) { throw 'Hung sandbox cleanup exceeded its bounded timeout' }
+    Assert-Equal (Test-Path (Join-Path $hungCleanup 'uninstalled.marker')) $true 'Uninstall continues after cleanup timeout'
+
+    $missingCli = New-Install 'missing CLI'
+    Copy-Item (Join-Path $fresh 'uninstall.exe') $missingCli
+    Remove-Item (Join-Path $missingCli 'future.exe')
+    $uninstaller = Start-Process -FilePath (Join-Path $missingCli 'uninstall.exe') -ArgumentList "/S _?=$missingCli" -PassThru
+    $processes.Add($uninstaller)
+    Assert-Equal (Wait-Exit $uninstaller) 0 'Missing CLI does not block uninstall'
+    Assert-Equal (Test-Path (Join-Path $missingCli 'uninstalled.marker')) $true 'Missing CLI removal completes'
+
+    $lockedUninstall = New-Install 'locked uninstall'
+    Copy-Item (Join-Path $fresh 'uninstall.exe') $lockedUninstall
+    $lockedUninstallHandle = [IO.File]::Open((Join-Path $lockedUninstall 'future.exe'), 'Open', 'Read', 'Read')
+    try {
+        $uninstaller = Start-Process -FilePath (Join-Path $lockedUninstall 'uninstall.exe') -ArgumentList "/S _?=$lockedUninstall" -PassThru
+        $processes.Add($uninstaller)
+        Assert-Equal (Wait-Exit $uninstaller) 0 'External lock does not block uninstall'
+        Assert-Equal (Test-Path (Join-Path $lockedUninstall 'uninstalled.marker')) $true 'Locked uninstall completes and defers deletion'
+    } finally { $lockedUninstallHandle.Dispose() }
 
     Write-Host 'Windows installer preflight regressions passed.'
 } finally {

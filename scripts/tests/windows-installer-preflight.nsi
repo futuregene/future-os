@@ -3,6 +3,7 @@ Unicode true
 !include MUI2.nsh
 !include FileFunc.nsh
 Var PassiveMode
+Var UpdateMode
 !include "..\..\desktop\src-tauri\windows\installer-hooks.nsh"
 Name "FutureOS preflight regression"
 OutFile "${TEST_OUTFILE}"
@@ -18,6 +19,9 @@ Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   IfErrors +2
   StrCpy $PassiveMode 1
+  ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
+  IfErrors +2
+  StrCpy $UpdateMode 1
   ${GetOptions} $CMDLINE "/ZH" $0
   IfErrors +2
   StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
