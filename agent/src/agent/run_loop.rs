@@ -355,6 +355,7 @@ impl Loop {
                     phase: automatic_phase,
                 });
             };
+            let mut compaction_ticket = None;
             let prepared = if let Some(manager) = &context_manager {
                 if provider_limit_checkpoint_id.is_some() {
                     // The retry below must use exactly the checkpoint produced
@@ -364,19 +365,26 @@ impl Loop {
                         prompt: projected.clone(),
                     })
                 } else {
-                    manager
-                        .prepare_semantic_observed(
-                            projected.clone(),
-                            automatic_trigger,
-                            automatic_phase,
-                            None,
-                            self.provider.as_ref(),
-                            self.interrupt_flag.as_ref(),
-                            None,
-                            Some(&emit_automatic_started),
-                            Some(&account_summary),
-                        )
-                        .await
+                    crate::compaction::prepare_with_journal(
+                        manager,
+                        projected.clone(),
+                        &messages,
+                        automatic_trigger,
+                        automatic_phase,
+                        None,
+                        self.provider.as_ref(),
+                        self.interrupt_flag.as_ref(),
+                        None,
+                        Some(&emit_automatic_started),
+                        Some(&account_summary),
+                        ctx.compaction_journal.as_ref(),
+                        &automatic_operation_id,
+                    )
+                    .await
+                    .map(|(prompt, ticket)| {
+                        compaction_ticket = ticket;
+                        prompt
+                    })
                 }
             } else {
                 Ok(crate::compaction::ContextPreparation::Unchanged {
@@ -384,10 +392,25 @@ impl Loop {
                 })
             };
             let prompt = match prepared {
-                Ok(crate::compaction::ContextPreparation::Unchanged { prompt }) => prompt,
+                Ok(crate::compaction::ContextPreparation::Unchanged { prompt }) => {
+                    if let Some(ticket) = &compaction_ticket {
+                        ticket.finish(None, serde_json::json!({"alreadyCompacted":active_checkpoint.is_some(),"tokensBefore":prompt.usage.estimated_input_tokens,"tokensAfter":prompt.usage.estimated_input_tokens,"summary":"","messagesRemoved":0}))?;
+                    }
+                    prompt
+                }
                 Ok(crate::compaction::ContextPreparation::Compacted { prompt, checkpoint }) => {
-                    if let Some(commit) = &ctx.on_checkpoint {
-                        if let Err(error) = commit(&checkpoint) {
+                    let commit_result = if let Some(ticket) = &compaction_ticket {
+                        ticket.finish(Some(&checkpoint),serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after}))
+                    } else if let Some(commit) = &ctx.on_checkpoint {
+                        commit(&checkpoint)
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(error) = commit_result {
+                        if let Some(ticket) = &compaction_ticket {
+                            ticket.fail(&error.to_string());
+                        }
+                        {
                             on_event(RunEvent::CompactionFailed {
                                 operation_id: automatic_operation_id.clone(),
                                 trigger: automatic_trigger,
@@ -401,10 +424,15 @@ impl Loop {
                         .store(0, std::sync::atomic::Ordering::Relaxed);
                     active_checkpoint = Some((*checkpoint).clone());
                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
-                    on_event(RunEvent::CompactionCommitted {
-                        operation_id: automatic_operation_id.clone(),
-                        checkpoint: *checkpoint,
-                    });
+                    if compaction_ticket
+                        .as_ref()
+                        .is_none_or(|t| t.cached_result().is_none())
+                    {
+                        on_event(RunEvent::CompactionCommitted {
+                            operation_id: automatic_operation_id.clone(),
+                            checkpoint: *checkpoint,
+                        });
+                    }
                     prompt
                 }
                 Err(error) => {
@@ -591,26 +619,43 @@ impl Loop {
                                     phase: provider_limit_phase,
                                 });
                             };
-                            match manager
-                                .prepare_semantic_observed(
-                                    projected,
-                                    crate::compaction::CompactionTrigger::ProviderContextLimit,
-                                    provider_limit_phase,
-                                    None,
-                                    self.provider.as_ref(),
-                                    self.interrupt_flag.as_ref(),
-                                    None,
-                                    Some(&emit_provider_limit_started),
-                                    Some(&account_summary),
-                                )
-                                .await
-                            {
+                            let mut recovery_ticket = None;
+                            match crate::compaction::prepare_with_journal(
+                                manager,
+                                projected,
+                                &messages,
+                                crate::compaction::CompactionTrigger::ProviderContextLimit,
+                                provider_limit_phase,
+                                None,
+                                self.provider.as_ref(),
+                                self.interrupt_flag.as_ref(),
+                                None,
+                                Some(&emit_provider_limit_started),
+                                Some(&account_summary),
+                                ctx.compaction_journal.as_ref(),
+                                &provider_limit_operation_id,
+                            )
+                            .await
+                            .map(|(prompt, ticket)| {
+                                recovery_ticket = ticket;
+                                prompt
+                            }) {
                                 Ok(crate::compaction::ContextPreparation::Compacted {
                                     checkpoint,
                                     ..
                                 }) => {
-                                    if let Some(commit) = &ctx.on_checkpoint {
-                                        if let Err(error) = commit(&checkpoint) {
+                                    let committed = if let Some(ticket) = &recovery_ticket {
+                                        ticket.finish(Some(&checkpoint), serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after}))
+                                    } else if let Some(commit) = &ctx.on_checkpoint {
+                                        commit(&checkpoint)
+                                    } else {
+                                        Ok(())
+                                    };
+                                    if let Err(error) = committed {
+                                        if let Some(ticket) = &recovery_ticket {
+                                            ticket.fail(&error.to_string());
+                                        }
+                                        {
                                             on_event(RunEvent::CompactionFailed {
                                                 operation_id: provider_limit_operation_id.clone(),
                                                 trigger: crate::compaction::CompactionTrigger::ProviderContextLimit,
@@ -626,12 +671,20 @@ impl Loop {
                                     provider_limit_checkpoint_id =
                                         Some(checkpoint.checkpoint_id.clone());
                                     *self.active_checkpoint.lock() = Some((*checkpoint).clone());
-                                    on_event(RunEvent::CompactionCommitted {
-                                        operation_id: provider_limit_operation_id.clone(),
-                                        checkpoint: *checkpoint,
-                                    });
+                                    if recovery_ticket
+                                        .as_ref()
+                                        .is_none_or(|t| t.cached_result().is_none())
+                                    {
+                                        on_event(RunEvent::CompactionCommitted {
+                                            operation_id: provider_limit_operation_id.clone(),
+                                            checkpoint: *checkpoint,
+                                        });
+                                    }
                                 }
                                 Ok(crate::compaction::ContextPreparation::Unchanged { .. }) => {
+                                    if let Some(ticket) = &recovery_ticket {
+                                        ticket.fail("no progress after provider limit");
+                                    }
                                     let error = anyhow!(
                                         "context compaction made no progress after provider limit"
                                     );
@@ -3560,6 +3613,7 @@ mod tests {
         });
         let commits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let ctx = StreamContext {
+            compaction_journal: None,
             model: "mock".into(),
             system_prompt: "base".into(),
             save_callback: Some(Arc::new(|m| {

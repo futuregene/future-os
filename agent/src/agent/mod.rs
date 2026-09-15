@@ -74,6 +74,7 @@ pub struct StreamContext {
     /// Durable checkpoint commit. A successful return means the checkpoint
     /// journal entry was fsync'd and a committed event may be emitted.
     pub on_checkpoint: Option<CheckpointCallback>,
+    pub compaction_journal: Option<crate::compaction::CompactionJournal>,
 }
 
 pub struct Loop {

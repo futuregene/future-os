@@ -54,6 +54,20 @@ S2 使用 **schema 3 checkpoint**，只保存 `protected_entry_ids`，不复制�
 
 继续读取 schema 2 和旧记录。旧 semantic checkpoint 的被覆盖原文仍在库中时，会在投影中恢复用户／assistant 文本，并按请求预算检查，再形成新的 S2 checkpoint。已经被旧版真正丢弃的历史无法凭空恢复。旧 Agent 不理解 schema 3，应配套升级 Agent 和 CLI。
 
+## 持久化幂等
+
+正常持久化会话会把压缩收据写入 `compaction_operations`。幂等键包含：原始 user／system／assistant／tool 条目的 ID 与内容、模型／协议／思考档位／工作目录／工具配置、实际预算、触发模式与阶段、规范化后的补充指令及摘要策略。JSON 对象键顺序不影响比较。
+
+**checkpoint、run 起止标记、用量和 session-info 更新不算原始历史变化。** 因此同一原始历史、相同参数下，即使用新请求 ID，或重启 Agent 后再压缩，也复用原结果；第一次保留的最近尾部不会因此被再次付费摘要。重复成功返回 `reused`、`alreadyCompacted`、`sourceOperationId`，不新增 checkpoint、不重复记账；复用旧结果不会撤销后来使用其他参数产生的压缩。
+
+先持久化“已开始”，再调用模型；checkpoint 与“已完成”收据通过有序 writer 在同一 SQLite 事务中提交。同键并发请求不会启动第二次生成。已知失败返回缓存错误；若只有“已开始”而没有持久化结果，返回 **`compaction_indeterminate`**，不自动重跑可能已经收费的请求。
+
+这是一种保守保护，不代表一定已扣费，也不是对外部 API“恰好一次计费”的保证。恢复需要明确发起新操作（改变输入或相关参数），不能盲目重试；同一已获准操作内部原有的有限重试仍然保留。
+
+新消息、原文修改或相关参数改变产生新键。手动、自动、provider 超限恢复因策略／阶段不同，分别计键。已缓存 checkpoint 被删除或修改时会拒绝复用，不默默重新生成。删除会话会清除收据，fork 使用新的会话范围。完全 ephemeral／直接内存调用没有跨重启收据。执行压缩的 Agent 必须使用新版本，旧版本不识别这个表。
+
+RPC ACK 的 operation ID 标识这次请求尝试；复用结果中的 `sourceOperationId` 标识原来的压缩操作。
+
 ## 如何验证
 
 Rust 测试覆盖阈值、完整请求预算、原文保护、超预算输出降级、重启／fork、超长文本、非法引用、取消、重试记账及真实 HTTP 输出上限字段。

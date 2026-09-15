@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 mod budget;
+mod durable;
 mod semantic;
 pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
+pub(crate) use durable::prepare_with_journal;
+pub use durable::CompactionJournal;
 
 pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 
@@ -226,6 +229,8 @@ pub enum ContextError {
     BudgetExceeded(String),
     #[error("context compaction made no token progress")]
     NoProgress,
+    #[error("context compaction durability: {0}")]
+    PersistenceFailed(String),
 }
 
 #[derive(Debug, Clone)]

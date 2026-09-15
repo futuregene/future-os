@@ -755,6 +755,12 @@ impl ServerSession {
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
             on_checkpoint: (!is_ephemeral).then_some(checkpoint_callback),
+            compaction_journal: (!is_ephemeral).then(|| crate::compaction::CompactionJournal::new(
+                self.session_manager.clone(),self.persistence.clone(),self.session_id.clone(),
+                serde_json::json!({"model":run_model,"thinking":run_thinking_level,"cwd":session_cwd,
+                    "tools":run_loop.tools.iter().map(|t|t.def.clone()).collect::<Vec<_>>(),
+                    "protocol":self.model_registry.read().resolve(&run_model).map(|m|serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
+            )),
         };
 
         // Set approval/sandbox hooks on this session's Loop config (these

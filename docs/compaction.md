@@ -93,6 +93,41 @@ text before the next S2 checkpoint, with normal request-budget checks. Already
 discarded legacy history cannot be reconstructed. Older Agents do not understand
 schema 3 and should not be used for S2 sessions; update Agent and CLI together.
 
+## Durable idempotency
+
+Persisted sessions use a content-addressed receipt in `compaction_operations`.
+The key covers the original user/system/assistant/tool records (including IDs and
+contents), selected model/protocol/thinking/cwd/tool configuration, actual budget,
+trigger/phase, normalized custom instructions and summary policy. JSON object-key
+order is canonicalized. Checkpoints, run markers, usage and session-info updates
+are excluded from the original-history digest.
+
+Consequently, a new request ID or an Agent restart does not generate another
+summary for the same history and parameters, even if the first checkpoint kept a
+recent tail. A successful duplicate returns the original result with `reused`,
+`alreadyCompacted` and `sourceOperationId` metadata, and emits an unchanged event;
+it does not append another checkpoint or repeat usage accounting. Replaying an
+older result does not undo a later compaction made with other parameters.
+
+Admission is recorded before the model call. The checkpoint and completed receipt
+are committed atomically in the ordered session writer. Concurrent admission for
+the same key is rejected. A known failed attempt replays an error; a `started`
+receipt without a committed result returns `compaction_indeterminate` rather than
+silently calling the provider again after a crash. This is deliberately fail-closed:
+it does not prove the provider charged anything, and cannot guarantee exactly-once
+external billing. Recovery requires a deliberate new operation (changed input or
+parameters), not blind retries. Existing bounded retries *within* one admitted
+operation still apply.
+
+New conversation data or relevant parameters form a new key. Manual, automatic,
+and provider-limit recovery are different modes, not interchangeable keys.
+A cached checkpoint that was removed or modified is rejected rather than silently
+regenerated. Deleting a session removes its receipts; fork creates a new session
+scope. Ephemeral/direct in-memory callers do not have cross-restart receipts.
+All Agents performing compaction must use this version; older Agents ignore the
+new receipt table. RPC acknowledgement IDs still identify request attempts; the
+receipt metadata identifies the original compaction result.
+
 ## Validation
 
 Scoped Rust tests cover threshold boundaries, overhead/output reservation,

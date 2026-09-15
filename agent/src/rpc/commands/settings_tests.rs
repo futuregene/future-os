@@ -304,6 +304,17 @@ fn compact_ack_does_not_wait_for_the_summary_provider() {
             message.ensure_journal_entry_id();
             messages.push(message);
         }
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace("default", entries)
+            .unwrap();
     }
     let mut events = session.read().broadcaster.subscribe();
     let started_at = std::time::Instant::now();

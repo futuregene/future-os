@@ -572,7 +572,7 @@ impl ServerSession {
         // `/压缩` would incorrectly report "nothing to compact" for a visible
         // conversation. Keep the restored cache for the next prompt as well.
         let mut messages = self.messages.read().clone();
-        if messages.is_empty() {
+        if !self.ephemeral || messages.is_empty() {
             if let Ok(session) = self.session_manager.load(&self.session_id) {
                 let supports_images = self
                     .model_registry
@@ -656,6 +656,12 @@ impl ServerSession {
             .map(|model| crate::models::effective_max_tokens(&model))
             .unwrap_or(0);
         crate::compaction::set_request_budget(&mut prompt, &budget_system, &tool_defs, max_output);
+        let journal = (!self.ephemeral).then(|| crate::compaction::CompactionJournal::new(
+            self.session_manager.clone(), self.persistence.clone(), self.session_id.clone(),
+            serde_json::json!({"model":self.model,"thinking":self.thinking_level,"cwd":self.cwd,"tools":tool_defs,
+                "protocol":self.model_registry.read().resolve(&self.model).map(|m| serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
+        ));
+        let original_messages = messages.clone();
         let projected_messages_before = prompt.messages.len();
         let saw_usage = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let usage_flag = saw_usage.clone();
@@ -675,34 +681,36 @@ impl ServerSession {
                 .build()
                 .map_err(anyhow::Error::from)?;
             runtime
-                .block_on(
-                    manager.prepare_semantic_observed(
-                        prompt,
-                        trigger,
-                        phase,
-                        Some(&instructions),
-                        provider.as_ref(),
-                        interrupted.as_ref(),
-                        fallback
-                            .as_ref()
-                            .map(|(provider, model)| (provider.as_ref(), model.as_str())),
-                        Some(&|| {
-                            if let Some(event) = super::prompt_helpers::run_event_to_sse(
-                                crate::agent::RunEvent::CompactionStarted {
-                                    operation_id: worker_operation_id.clone(),
-                                    trigger,
-                                    phase,
-                                },
-                            ) {
-                                started_broadcaster.broadcast(event);
-                            }
-                        }),
-                        Some(&|usage| {
-                            usage_flag.store(true, Ordering::Relaxed);
-                            accounting_loop.record_auxiliary_usage(usage);
-                        }),
-                    ),
-                )
+                .block_on(crate::compaction::prepare_with_journal(
+                    &manager,
+                    prompt,
+                    &original_messages,
+                    trigger,
+                    phase,
+                    Some(&instructions),
+                    provider.as_ref(),
+                    interrupted.as_ref(),
+                    fallback
+                        .as_ref()
+                        .map(|(provider, model)| (provider.as_ref(), model.as_str())),
+                    Some(&|| {
+                        if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                            crate::agent::RunEvent::CompactionStarted {
+                                operation_id: worker_operation_id.clone(),
+                                trigger,
+                                phase,
+                            },
+                        ) {
+                            started_broadcaster.broadcast(event);
+                        }
+                    }),
+                    Some(&|usage| {
+                        usage_flag.store(true, Ordering::Relaxed);
+                        accounting_loop.record_auxiliary_usage(usage);
+                    }),
+                    journal.as_ref(),
+                    &worker_operation_id,
+                ))
                 .map_err(anyhow::Error::from)
         })
         .join()
@@ -739,7 +747,7 @@ impl ServerSession {
         } else {
             Ok(())
         };
-        let prepared = match prepared.and_then(|value| usage_persisted.map(|_| value)) {
+        let (prepared, ticket) = match prepared.and_then(|value| usage_persisted.map(|_| value)) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.compaction_in_progress.store(false, Ordering::Release);
@@ -756,19 +764,68 @@ impl ServerSession {
                 return Err(error);
             }
         };
+        if let Some(ticket) = &ticket {
+            if let Some(mut result) = ticket.cached_result() {
+                result["reused"] = serde_json::json!(true);
+                if result.get("checkpointId").is_some() {
+                    result["alreadyCompacted"] = serde_json::json!(true);
+                }
+                result["sourceOperationId"] = serde_json::json!(ticket.operation_id);
+                return Ok(result);
+            }
+        }
         match prepared {
-            crate::compaction::ContextPreparation::Unchanged { prompt } => Ok(serde_json::json!({
-                "alreadyCompacted": active_checkpoint.is_some(),
-                "tokensBefore": prompt.usage.estimated_input_tokens,
-                "tokensAfter": prompt.usage.estimated_input_tokens,
-                "summary": "",
-                "messagesRemoved": 0,
-            })),
+            crate::compaction::ContextPreparation::Unchanged { prompt } => {
+                let result = serde_json::json!({
+                    "alreadyCompacted": active_checkpoint.is_some(),
+                    "tokensBefore": prompt.usage.estimated_input_tokens,
+                    "tokensAfter": prompt.usage.estimated_input_tokens,
+                    "summary": "",
+                    "messagesRemoved": 0,
+                });
+                if let Some(ticket) = &ticket {
+                    if let Err(error) = ticket.finish(None, result.clone()) {
+                        ticket.fail(&error.to_string());
+                        self.compaction_in_progress.store(false, Ordering::Release);
+                        if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                            crate::agent::RunEvent::CompactionFailed {
+                                operation_id,
+                                trigger,
+                                phase,
+                                error: error.to_string(),
+                            },
+                        ) {
+                            self.broadcaster.broadcast(event);
+                        }
+                        return Err(error);
+                    }
+                }
+                Ok(result)
+            }
             crate::compaction::ContextPreparation::Compacted { checkpoint, prompt } => {
-                if let Err(error) = self
-                    .persistence
-                    .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
-                {
+                let summary = checkpoint
+                    .summary
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let result = serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,
+                    "tokensAfter":checkpoint.tokens_after,"summary":summary,
+                    "messagesRemoved":projected_messages_before.saturating_sub(prompt.messages.len()),
+                    "tokensSaved":checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),"protectedEntries":checkpoint.protected_entry_ids.len()});
+                let committed = if let Some(ticket) = &ticket {
+                    ticket.finish(Some(&checkpoint), result.clone())
+                } else {
+                    self.persistence
+                        .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
+                };
+                if let Err(error) = committed {
+                    if let Some(ticket) = &ticket {
+                        ticket.fail(&error.to_string());
+                    }
                     self.compaction_in_progress.store(false, Ordering::Release);
                     if let Some(event) = super::prompt_helpers::run_event_to_sse(
                         crate::agent::RunEvent::CompactionFailed {
@@ -805,24 +862,7 @@ impl ServerSession {
                 ) {
                     self.broadcaster.broadcast(event);
                 }
-                let summary = checkpoint
-                    .summary
-                    .iter()
-                    .filter_map(|block| match block {
-                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(serde_json::json!({
-                    "checkpointId": checkpoint.checkpoint_id,
-                    "tokensBefore": checkpoint.tokens_before,
-                    "tokensAfter": checkpoint.tokens_after,
-                    "summary": summary,
-                    "messagesRemoved": projected_messages_before.saturating_sub(prompt.messages.len()),
-                    "tokensSaved": checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),
-                    "protectedEntries": checkpoint.protected_entry_ids.len(),
-                }))
+                Ok(result)
             }
         }
     }
@@ -1287,6 +1327,18 @@ mod tests {
                     .await;
             });
             Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    struct CountingSummaryProvider(Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait::async_trait]
+    impl LLMProvider for CountingSummaryProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            SummaryProvider.stream_model(request).await
         }
     }
 
@@ -3191,7 +3243,9 @@ mod tests {
     #[test]
     fn compact_with_real_history_reports_summary() {
         let mut session = make_test_session("compact");
-        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session.agent_loop.try_write().unwrap().provider =
+            Arc::new(CountingSummaryProvider(calls.clone()));
         let mut events = session.broadcaster.subscribe();
         session.model = "glm-4.5v".to_string(); // 64k catalog window
         session
@@ -3260,6 +3314,39 @@ mod tests {
         let started_data: serde_json::Value = serde_json::from_str(&started.data).unwrap();
         let committed_data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
         assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
+        let repeated = session.compact("").unwrap();
+        assert_eq!(repeated["checkpointId"], result["checkpointId"]);
+        assert_eq!(repeated["reused"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            session
+                .session_manager
+                .load(&session.session_id)
+                .unwrap()
+                .entries
+                .iter()
+                .filter(|e| e.entry_type == crate::session::ENTRY_TYPE_COMPACTION)
+                .count(),
+            1
+        );
+        // Fresh runtime, no in-memory request cache and a provider that fails
+        // if called. The previously retained tail must NOT be compressed again.
+        let mut restarted = ServerSession::new(
+            session.session_id.clone(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(FailingProvider),
+                "mock",
+            ))),
+            session.session_manager.clone(),
+            &session.cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            session.model_registry.clone(),
+        );
+        restarted.model = session.model.clone();
+        let restored = restarted.compact("").unwrap();
+        assert_eq!(restored["checkpointId"], result["checkpointId"]);
+        assert_eq!(restored["reused"], true);
     }
 
     #[test]

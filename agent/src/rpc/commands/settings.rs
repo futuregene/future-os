@@ -246,7 +246,11 @@ pub(crate) fn handle_compact(
                     .compact_with_operation_id(&instructions, worker_operation_id.clone())
             }));
             match result {
-                Ok(Ok(result)) if result.get("checkpointId").is_none() => {
+                Ok(Ok(result))
+                    if result.get("checkpointId").is_none()
+                        || result.get("reused").and_then(serde_json::Value::as_bool)
+                            == Some(true) =>
+                {
                     in_progress.store(false, Ordering::Release);
                     broadcaster.broadcast(SseEvent::new(
                         "compaction_unchanged",
@@ -258,6 +262,9 @@ pub(crate) fn handle_compact(
                                 .get("alreadyCompacted")
                                 .and_then(serde_json::Value::as_bool)
                                 .unwrap_or(false),
+                            "reused": result.get("reused").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                            "checkpoint_id": result.get("checkpointId"),
+                            "source_operation_id": result.get("sourceOperationId"),
                             "tokens_before": result
                                 .get("tokensBefore")
                                 .and_then(serde_json::Value::as_i64)
