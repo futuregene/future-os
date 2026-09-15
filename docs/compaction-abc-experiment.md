@@ -1,105 +1,104 @@
-# A/B/C compaction comparison
+# Compaction strategy comparison (A/B/C/M/Codex/OpenCode)
 
-**Question:** when S2 already protects original user/assistant text, is the paid
-model summary worth keeping?
+**Question:** when S2 already protects original user/assistant text, is a paid
+model summary the right way to spend the compaction budget — and how do other
+agents' published strategies compare?
 
-- **A** — protected originals + recursive model summary + recent tail (the previous default)
-- **B** — same originals and tail, summary deleted and not replaced
-- **C** — same originals and tail, summary slot replaced by a deterministic tool-evidence index
+The runtime default is C. See [C compaction](compaction.md); this page records the
+experiment behind that change.
 
-The current runtime default is C. See [C compaction](compaction.md); this page only
-records the experiment that motivated the switch.
+## Strategies compared
+
+| Arm | What survives compaction | Source |
+|---|---|---|
+| **A** | protected originals + recursive model summary + recent tail (earlier default) | this repo, pre-C |
+| **B** | protected originals + tail, summary deleted and not replaced | ablation of A |
+| **C** | protected originals + fixed 2K deterministic tool-evidence index + tail | this repo, current default |
+| **M** | summary + recent tail; covered originals dropped | `origin/main` as of this experiment |
+| **Codex** | **all user messages (≤20 000 tokens) + summary**; no assistant text, no tool output | `openai/codex` @ `b13164d8`, `compact.rs::build_compacted_history` + `templates/compact/prompt.md` |
+| **OpenCode** | **summary + retained tail** (`min(15 000, max(2 000, usable/4))`), tool output truncated to 2 000 chars when summarized | `anomalyco/opencode` @ `e03db9bc`, `session/compaction.ts` + `session/message-v2.ts` |
+
+Codex and OpenCode are reimplementations of the selection rules read from those
+commits, not forks; prompts were transcribed verbatim and every file's git blob
+SHA is recorded in [abc_external_provenance.json](../scripts/abc_external_provenance.json).
+Codex's two other paths were not modelled: remote v2 compaction (needs an
+OpenAI-hosted provider) and the `Feature::TokenBudget` path (fresh context window,
+no summary). OpenCode's optional `compaction.prune` step was left off because it
+is disabled unless configured.
 
 ## Setup
 
 | Item | Value |
 |---|---|
-| Data | 2 synthetic chains (ATLAS, MERIDIAN) from the same blueprint, ~2M estimated tokens each at the end |
+| Data | 2 synthetic tool-heavy chains (ATLAS, MERIDIAN); ~2 M estimated tokens per chain at stage 8 |
 | Models | DeepSeek Flash, GLM-5.3-Flash |
-| Stages | 8 per chain; checked at stages 1, 4 and 8 |
-| Workload | 32 A summary operations; 72 answer conditions (3 arms × retrieval on/off × 12 blocks) |
-| Answers | 12 fields per questionnaire: first/latest requirements, codes, old/new tool values, a middle-only value, validation, blocker, deployment, unknown device |
-| Retrieval | the real `future session history search/get` CLI against a per-stage archive session |
-| Budget guards | 5 model requests and 32 KB of retrieved text per retrieval condition; 8192 output cap; ¥10 total |
+| Compaction points | stages 1, 4, 8 of 8 (A/B/C/M). Codex and OpenCode: **stage 1 only** — see cost limits |
+| Questionnaire | 12 fields: first/latest requirements, codes, old/new tool values, a value that only appears mid-record, validation, blocker, deployment, unrecorded device |
+| Runs | 4 chains × 3 stages × 6 arms ≈ 268 model requests, **¥5.43** |
 
-All three arms share byte-identical protected text and recent tail. B and C never
-see A's summary; C learns only its *length* to match the slot budget.
+## Results
 
-## Accuracy
+Closed-book, 48 fields per stage (4 chains × 12):
 
-Closed-book (no history access), 144 fields per arm:
-
-| Arm | Correct fields | Share | Errors claimed with confidence |
-|---|---:|---:|---:|
-| A | 126/144 | 87.5% | 0 |
-| B | 73/144 | 50.7% | 0 |
-| C | 130/144 | 90.3% | 0 |
-
-B failed to answer at all rather than inventing values, and it lost exactly the
-facts that only ever appeared inside tool output: earliest/latest versions,
-validation result and blocker were 0/12 each. Original-text protection still kept
-the first question and first assistant code at 12/12, so B is not "context lost" —
-it is missing the tool layer that A and C carry.
-
-With the same history-query capability:
-
-| Arm | Delivered | Correct when delivered | Model calls / probe | History queries / probe | Seconds / probe |
+| Arm | stage 1 | stage 4 | stage 8 | all stages | mean context |
 |---|---:|---:|---:|---:|---:|
-| A | 10/12 | 120/120 | 3.50 | 7.75 | 21.4 |
-| B | 10/12 | 117/120 | 4.17 | 12.83 | 27.3 |
-| C | 11/12 | 132/132 | 3.25 | 8.08 | 19.1 |
+| A | 41/48 | 43/48 | 42/48 | **126/144** | ~7.0 K |
+| B | 21/48 | 26/48 | 26/48 | **73/144** | ~6.1 K |
+| C | 42/48 | 44/48 | 44/48 | **130/144** | ~7.0 K |
+| M (`origin/main`) | 43/48 | 38/48 | 36/48 | **117/144** | ~4.9 K |
+| Codex | **46/48** | not run | not run | — | ~1.1 K |
+| OpenCode | 43/48 | not run | not run | — | ~4.9 K |
 
-Five conditions ran out of steps or output and are counted as failures, not hidden.
-C was cheapest and fastest to answer; B had to query about 60% more to recover what
-it never carried.
+Three findings stand out.
+
+1. **Summary-only retention degrades under repeated compaction; C does not.**
+   M scores best of A/B/C/M at the first compaction (43/48) and then falls to
+   38 and 36 as later summaries have to carry more. C stays flat (42/44/44) and A
+   stays flat (41/43/42), because their covered originals or evidence survive each
+   round instead of being re-summarised. This is the same failure mode Codex warns
+   about in its own UI text ("long threads and multiple compactions can cause the
+   model to be less accurate").
+2. **Deleting the summary is the worst option (B, 73/144).** Its losses are tool
+   facts that never appeared in user or assistant prose: it is information
+   removal, not a cheaper way to do the same thing.
+3. **A well-fed summary is strong at first compaction.** Codex scored 46/48 on
+   ~1.1 K of context — the smallest projection of all six — because its summarizer
+   reads the *entire* history and its replacement keeps every user message. Its
+   advantage is the reading, not the retention.
 
 ## Cost
 
-Whole experiment: **200 API requests, ¥3.4899** (2,984,367 input tokens, 1,586,752
-of them cached; 213,809 output tokens, 121,992 of them reasoning). Only synthetic
-data was sent; no private conversation was used.
+| Arm | Cost per compaction | Why |
+|---|---:|---|
+| C | **¥0** | no model call |
+| OpenCode | ~¥0.01 | summarises the truncated head only |
+| M | ~¥0.02 | summarises clipped material |
+| A | ~¥0.039 | summarises clipped material + protected text |
+| Codex | ~¥0.26 | summarises the **entire** history (≈250 K tokens at stage 1) |
 
-A's summary maintenance: 33 requests over 32 stages, **¥1.2331**, about
-**¥0.0385 per stage** (~15.9K input / 2.6K output tokens per request).
+Codex's cost grows with the archive: the same call at stage 4 would read ~1 M
+tokens and at stage 8 ~2 M tokens. Extending Codex and OpenCode to stages 4 and 8
+was estimated at ¥6–17 and **was not run** inside this experiment's ¥10 cap, so
+their numbers are single-point. The recorded total is ¥5.43 for 268 requests.
 
-Per-condition answer cost, and the combined view for "8 stages per chain plus 3
-retrieval probes per chain":
+## Limits
 
-| Scenario | A | B | C |
-|---|---:|---:|---:|
-| 12 closed-book probes | ¥0.3319 | ¥0.3146 | ¥0.2897 |
-| 12 retrieval probes | ¥0.3846 | ¥0.5439 | ¥0.3922 |
-| **32 summary stages + 12 retrieval probes** | **¥1.6177** | **¥0.5439** | **¥0.3922** |
+- Codex and OpenCode have only the first compaction point. Their later-stage
+  behaviour is unmeasured; only their retention rules were verified against source.
+- Codex's summary reads the full history while A/C/M summarise clipped material.
+  The comparison therefore mixes *what a strategy reads* with *what it keeps*; the
+  cost column is where that difference is paid for.
+- Both datasets come from one synthetic blueprint with structured tool records,
+  which favours strategies that carry tool evidence.
+- The questionnaire is fact recall, not task continuation; it does not measure
+  whether an agent can resume work.
+- Request ordering was randomised within blocks, not strictly position-balanced;
+  provider-side caching affects the reported prices.
+- Ledger is honest about failures: one M stage was aborted mid-request and retried
+  (charge unknown, retry billed), and four early OpenCode calls were **invalidated**
+  after the tail budget was found to be estimated on truncated text instead of real
+  messages; they were re-run as `v2` and the invalid charges are still counted.
 
-Training-free B looks cheapest until it has to search: its retrieval bill is the
-largest of the three despite a shorter starting context. In this schedule C cost
-about 76% less than A — but probe sampling is not a whole natural workload, so that
-number is not a product-wide saving.
-
-Break-even, extrapolating from these means: A's summary needs roughly **3 similar
-probes** to pay for itself against B, and roughly **61** against C. The C figure is
-model-dependent and unstable (about 11 probes for DeepSeek, no positive break-even
-for GLM in this sample), so it should not be treated as a threshold.
-
-## What this does and does not show
-
-- It shows that the model summary is not automatically required: a deterministic,
-  fixed-budget evidence slot preserved the tool facts C needed at roughly the same
-  accuracy as A, with no summary call at all.
-- It does not show that deleting the summary outright is safe. B's losses come from
-  removing information, not from removing a model call.
-- Both datasets come from one blueprint, so they are not two independent natural
-  project types. Structured config/status fields favour C.
-- C received A's slot length in the experiment. A deployed C must use a fixed or
-  otherwise derived budget, which is what the implementation now does (2K, scaled
-  down on small windows).
-- Request ordering was randomized within blocks but not strictly position-balanced;
-  caching affects reported prices.
-- One A summary was empty and one was malformed; the retry and both rejected outputs
-  are recorded and billed. Five undelivered probes are kept as failures.
-- Scoring used deterministic normalization plus one documented manual equivalence
-  ("no deployment occurred" = `NOT_DEPLOYED`); it is not independent blinded review.
-
-Raw data (ledger, contexts, answers, scoring, reproduction scripts) stays in the
-local, git-ignored `.future/research/abc-summary-a47313/`. This page is the
-committed summary.
+Raw data, fixtures and reproduction scripts: `scripts/abc_experiment/README.md`
+(harness) and the local, git-ignored `.future/research/abc-summary-a47313/`
+(ledger, contexts, answers, scoring).

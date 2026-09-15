@@ -1,0 +1,40 @@
+{
+  "fetched": "2026-09-15",
+  "note": "Every file below was read from the upstream repository at the listed commit; the strategies in abc_external_strategies.py are reimplementations of those exact selection rules and prompts.",
+  "codex": {
+    "repo": "openai/codex",
+    "commit": "b13164d86f9a70adc48d22f4a5a07ed0c001a1d0",
+    "date": "2026-09-15T10:07:37Z",
+    "modelled_path": "local inline summarization (compact.rs::build_compacted_history), used when the provider has no remote compaction and the TokenBudget feature is off",
+    "not_modelled": [
+      "remote v2 compaction (compact_remote_v2.rs, server-side)",
+      "Feature::TokenBudget compaction (compact_token_budget.rs, fresh context window, no summary)"
+    ],
+    "blobs": {
+      "codex-rs/prompts/templates/compact/prompt.md": "42fae605db8a71cb2becb7b4eabd1de963ccb7a3",
+      "codex-rs/prompts/templates/compact/summary_prefix.md": "62a7161b89b2d3834f50ae35dadb13ac3f0bd524",
+      "codex-rs/core/src/compact.rs": "77e28b85e5f92b9593e4778e9afc052a3b959bf4",
+      "codex-rs/core/src/compact_token_budget.rs": "3e6ce1beaa946a4a5f57df1150eb6dc84db48441",
+      "codex-rs/core/src/tasks/compact.rs": "14913d95c89bcbefeeb5a7b33e6cee5248f3cdb7"
+    }
+  },
+  "opencode": {
+    "repo": "anomalyco/opencode",
+    "commit": "e03db9bc6908f75c9334d8aa997deeaac81c0298",
+    "date": "2026-09-14T21:41:36Z",
+    "modelled_path": "summary + retained tail (core select/prompt + packages/opencode select/tail_start_id)",
+    "not_modelled": [
+      "compaction.prune (in-place clearing of old tool output, disabled unless cfg.compaction.prune is set)",
+      "plugin hooks (experimental.session.compacting)",
+      "provider-specific prompt transforms"
+    ],
+    "blobs": {
+      "packages/core/src/session/compaction.ts": "f714633295a5879f2a99cb7934fa9b3c66cee3ab",
+      "packages/core/src/config/compaction.ts": "3c5960c835568c73ef4167b90b2869e8e1a3b378",
+      "packages/opencode/src/session/compaction.ts": "75d6374bfa54e5f492c2f0be83fa3029794009eb",
+      "packages/opencode/src/session/message-v2.ts": "9b3f2c46f40578128001957004c67633a18da23a",
+      "packages/opencode/src/session/overflow.ts": "used for usable()",
+      "packages/opencode/src/agent/prompt/compaction.txt": "compaction agent system prompt"
+    }
+  }
+}
