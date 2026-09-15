@@ -14,7 +14,9 @@ LangString FutureOSInstallNotWritable 1033 "Setup could not verify write access 
 LangString FutureOSInstallNotWritable 2052 "安装程序无法确认可以写入以下目录：$\r$\n$INSTDIR$\r$\n$\r$\n尚未替换程序文件。请检查目录和文件是否允许写入、磁盘空间是否充足，以及安全软件是否拦截了安装程序或 Windows PowerShell。$\r$\n$\r$\n处理后点击“重试”；或取消安装，重新选择当前用户有写入权限的目录（推荐默认位置）。具体原因可查看安装详情。"
 
 ; Generate installer and uninstaller functions: upgrades may uninstall first.
-!macro FutureOSPreflightFunctions PREFIX
+; The RunPreflight helper is shared, but EnsureWritable/CloseForUpdate are
+; installer-only: the uninstaller deliberately continues on write/lock failures.
+!macro FutureOSRunPreflightFunction PREFIX
 Function ${PREFIX}FutureOSRunPreflight
   ; $R0 = Check or Close, $R1 = exit code. Preserve Tauri's other registers.
   Push $0
@@ -32,7 +34,9 @@ Function ${PREFIX}FutureOSRunPreflight
   Pop $1
   Pop $0
 FunctionEnd
+!macroend
 
+!macro FutureOSInstallPreflightFunctions PREFIX
 Function ${PREFIX}FutureOSEnsureWritable
   Push $R0
   Push $R1
@@ -100,8 +104,9 @@ futureos_update_preflight_done:
   Pop $R0
 FunctionEnd
 !macroend
-!insertmacro FutureOSPreflightFunctions ""
-!insertmacro FutureOSPreflightFunctions "un."
+!insertmacro FutureOSRunPreflightFunction ""
+!insertmacro FutureOSRunPreflightFunction "un."
+!insertmacro FutureOSInstallPreflightFunctions ""
 
 !macro NSIS_HOOK_PREINSTALL
   ; Explicit updater mode owns the current installation and closes only

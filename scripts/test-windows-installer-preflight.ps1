@@ -227,7 +227,9 @@ try {
     Assert-Equal $uninstallAgent.HasExited $true 'Uninstall closes the owned Agent'
     Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $true 'Uninstall proceeded'
 
-    foreach ($flags in @('/S', '/P')) {
+    # Uninstall is now mode-agnostic (best-effort); a passive (/P) uninstaller
+    # shows the completion window and waits for Close, so only /S is unattended.
+    foreach ($flags in @('/S')) {
         $failedCleanup = New-Install ('cleanup failure ' + $flags.TrimStart('/'))
         Copy-Item (Join-Path $fresh 'uninstall.exe') $failedCleanup
         $null = New-Item -ItemType File -Path (Join-Path $failedCleanup 'fail-cleanup')
