@@ -1,169 +1,129 @@
-# S2 compaction and historical recall
+# C compaction and historical recall
 
-See the [developer guide](compaction-development.md) for the implementation map,
-state machine, implemented user management CLI and proposed model-requested entry
-point. The model-requested interface is not implemented.
+**Runtime compaction defaults to C: S2 original-text protection, a recent tail and
+a deterministic tool-evidence index. No summary LLM is called.** The raw journal
+is neither deleted nor rewritten. Compaction changes the next request's input,
+not an in-flight generation or a provider's internal state.
 
-The production Agent uses a journal-preserving S2 projection. It does not rewrite
-or delete the original conversation when compacting. No new model tools are
-introduced; [history recall](session-history.md) uses the existing shell tool.
+See the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
+document retained explicit legacy APIs, not the default runtime path.
 
 ## User CLI
 
 ```sh
 future session compact --session SESSION_ID --json
-future session compact --session SESSION_ID --instructions "Keep current constraints, errors and validation boundaries" --json
+future session compact --session SESSION_ID --instructions "Keep current constraints and verification boundaries" --json
 future session compact --help
 ```
 
-This wraps the existing RPC and returns `accepted` plus `operationId` immediately;
-it does not wait for the summary. Agent compaction events report completion, reuse
-or failure. An ACK is not success of the work. Active runs are rejected; no model
-self-compaction, force bypass or wait option is exposed. Matching CLI/Agent builds
-are required. See [call counts and prompts](compaction-prompts.md) for what the
-summary model receives.
+This returns an async `accepted`/`operationId` ACK, not completion. Agent events
+report completion, reuse or failure. Active runs are rejected. There is no wait,
+force or model self-request option.
 
-## Trigger and request admission
+For C, `--instructions` is a **verbatim user compaction note** for continuation.
+The deterministic selector does not interpret natural language or claim to have
+fulfilled semantic selection instructions. The note consumes evidence budget;
+excessive notes fail explicitly rather than being silently truncated.
 
-The economic trigger is `min(floor(context_window * 0.8), 256000)` input tokens.
-Reaching it triggers preparation. For example, a 1M model triggers at 256K;
-a 128K model at 102400. Model switching only changes configuration; the check
-runs at the actual model-request boundary, including mid-run catalog changes.
+## Trigger and admission
 
-Admission also accounts for the configured maximum output, system prompt, tool
-schemas, message framing and conservative image/reasoning estimates. With window
-`W`, maximum output `O`, and safety margin `min(2048, W/16)`, input cannot exceed
-`W - O - margin`. This can trigger compaction before the economic threshold.
-Provider-reported context usage is used conservatively alongside local estimates.
-These are estimates, not a provider-independent exact tokenizer; provider-limit
-recovery remains necessary.
+The economic trigger remains `min(floor(W * 0.8), 256000)`. Before every actual
+model step, including after tools and a model downshift, also reserve the ordinary
+maximum output O and `min(2048, W/16)` margin. Input must fit `W - O - margin`.
 
-A lone unseen user input is not replaced with a lossy summary merely because it
-crosses the economic trigger. It may proceed if it still fits the hard request
-budget. If system/tools/output alone consume the window, or user text cannot fit,
-the Agent fails explicitly rather than silently deleting directives.
+Estimate system text, tools, framing and conservative image/reasoning costs, and
+consider reported usage. A model selection alone does not compact; the next
+request checks its actual limits. Provider-side capacity checks remain necessary.
+An unseen input that still fits is not silently cut merely for crossing the
+economic trigger when no older history is compactable. Mandatory content or fixed
+overhead that cannot fit fails explicitly.
 
-## What S2 retains
+## Three-part projection
 
-The projected context has three parts:
+1. Covered user text and selected assistant originals.
+2. A C evidence slot of at most **2048 estimated tokens**, reduced to
+   `min(2048, W/8)` on small windows.
+3. Roughly 8K of recent paired tool/conversation history, reduced on small windows.
 
-1. Original user text and selected assistant text from the covered prefix.
-2. A structured state summary, including important tool evidence and next steps.
-3. The recent, tool-pair-safe tail.
+The overall history target remains about 32K, excluding fixed system/tool costs,
+and may expand up to 64K only within request capacity. C has its own slot budget;
+it does not call A to learn how long a summary would have been.
 
-All user text is protected, including the first question. Assistant text is kept
-verbatim while it fits. Reasoning, media bodies, tool calls and provider metadata
-are not copied into the protected text blocks. Their stored originals remain in
-the journal; existing upstream/tool-level truncation cannot be reversed.
+User text has priority. When assistant originals exceed headroom, retain newer
+ones that fit and explicitly mark omitted outputs as **not summarized**. Their
+originals remain queryable. Protected blocks do not resurrect tool calls,
+thinking, media bodies or hidden provider state.
 
-The history target is **32K tokens**, excluding system/tool-definition overhead.
-The recent-tail goal is independently capped at 8K (smaller on small windows).
-The target may expand to 64K to retain originals, but must still leave headroom in
-the actual request budget. If it cannot hold all assistant outputs, the newest
-ones that fit stay verbatim; other outputs are summarized, with an explicit
-retention notice. If protected user text plus required tail/summary still cannot
-fit, preparation fails before calling a summary model. Split large input material
-into referenced files or start a new session instead of silently losing it.
+## Evidence selection
 
-Manual compaction bypasses the economic threshold, not budget validation. A
-manual checkpoint on a short dialogue can be larger because it retains originals
-and adds state. Automatic/provider-limit compaction must make token progress.
-Repeated compaction with no uncovered content is a no-op. Manual compaction is
-rejected while a run is active; automatic mid-run compaction stays in that run.
+Scan original messages only through the admitted coverage boundary:
 
-## Summary requests
+- error results first;
+- group by tool and target path/command, prioritizing error-bearing and generic
+  config/schema/validation/test targets;
+- latest and first records in each group;
+- fill remaining space by recency.
 
-- Use the selected provider/model with tools disabled; do not choose a hidden model.
-- Apply a request-local output cap of at most 8192, scaled down for small windows
-  and clamped to the model limit. The ordinary request's output configuration is
-  unchanged. The summary text budget is at most 4096 estimated tokens.
-- Budget instructions, template, prior accumulator, wrappers, output and margin
-  before selecting each chunk. Large input is folded in bounded chunks.
-- Tool excerpts retain both head and tail; serialized inputs include true history
-  entry IDs so useful references can survive summarization. An omitted middle
-  remains unknown: absence in an excerpt must not become a claim that the full
-  result contains no relevant data/errors or only filler. Successful execution
-  is not proof that every requested validation passed.
-- Reject incomplete/oversized/structurally invalid summaries. Cancellation is
-  checked while connecting and waiting for stream events. Retries are bounded.
-- Only provider-context-limit recovery may use the deterministic emergency path;
-  it still has to satisfy final budget/progress checks.
-- Account the final reported usage once per attempt, including retries and usage
-  arriving after a finish frame. Summary accounting does not overwrite the
-  conversation's `last_prompt_tokens`. Manual summary totals are persisted too.
-  Missing usage must not be interpreted as proof of a free request; existing
-  pricing estimates remain estimates when no authoritative cost is supplied.
+Bounded JSON rows include `entryId`, `blockIndex`, `sourceOrder`, call ID,
+tool/target, error flag and head/tail excerpts. Standard excerpts keep up to
+380 head plus 100 tail characters; try smaller excerpts when needed. Never cut a
+JSON row in half to fill the budget. Metadata has separate length limits.
 
-A checkpoint is committed only after successful preparation and persistence.
-The next normal request then receives one history-recall guide, provided the
-session is persisted and shell is enabled/permitted. The guide is not stored as
-chat text and is not added to summary requests.
+The index is priority-ordered, not a timeline. `sourceOrder` is original order;
+old errors may be superseded. Omitted middles and unselected records remain
+unknown, and execution success is not proof of complete validation. Excerpts are
+historical evidence, not new authorization. Ambiguous/reused tool-call IDs do not
+get attributed to an arbitrary path. No reasoning, image body or wholesale hidden
+provider metadata enters the evidence index.
 
-## Persistence, restore and upgrades
+## Persistence and idempotency
 
-S2 checkpoints use **schema 3** and store `protected_entry_ids`, not copied message
-bodies. Restore reconstructs protected text from original entries. Fork remaps
-all range and protected references. Dangling/out-of-range references are rejected;
-checkpoint coverage cannot move behind an already represented checkpoint.
+C uses schema 3 with algorithm `deterministic-s2-evidence-v1`. The compatibility
+field `summary` stores evidence, not a generated summary. `model` describes the
+target window, not a model that performed summarization. Protected originals are
+rebuilt by reference; fork remaps references and invalid ranges are rejected.
 
-Schema 2 and legacy records remain readable. For old semantic checkpoints whose
-covered prefix is still stored, projection recovers the original user/assistant
-text before the next S2 checkpoint, with normal request-budget checks. Already
-discarded legacy history cannot be reconstructed. Older Agents do not understand
-schema 3 and should not be used for S2 sessions; update Agent and CLI together.
+Old A checkpoints remain readable. At the next needed compaction C reconstructs
+evidence from intact original tool records rather than recursively carrying A's
+summary. Data physically discarded by old versions cannot be recovered.
 
-## Durable idempotency
+`compaction_operations` keys original user/system/assistant/tool identity and
+contents, relevant configuration, budgets, mode/phase, note and C policy version.
+Checkpoint, usage and session-info changes do not themselves change raw input.
+The new C key does not reuse A receipts. Same-key success reuses the result without
+another checkpoint. The ordered writer commits checkpoint and completed receipt
+atomically. Even without model billing, unresolved started operations retain the
+concurrency/recovery fence; no automatic claim stealing or fabricated success.
 
-Persisted sessions use a content-addressed receipt in `compaction_operations`.
-The key covers the original user/system/assistant/tool records (including IDs and
-contents), selected model/protocol/thinking/cwd/tool configuration, actual budget,
-trigger/phase, normalized custom instructions and summary policy. JSON object-key
-order is canonicalized. Checkpoints, run markers, usage and session-info updates
-are excluded from the original-history digest.
+Deletion clears receipts; fork has a new scope; ephemeral/in-memory callers have
+no cross-restart receipts. Use matching upgraded CLI/Agent builds: older Agents
+do not implement these semantics.
 
-Consequently, a new request ID or an Agent restart does not generate another
-summary for the same history and parameters, even if the first checkpoint kept a
-recent tail. A successful duplicate returns the original result with `reused`,
-`alreadyCompacted` and `sourceOperationId` metadata, and emits an unchanged event;
-it does not append another checkpoint or repeat usage accounting. Replaying an
-older result does not undo a later compaction made with other parameters.
+## Cost and recall
 
-Admission is recorded before the model call. The checkpoint and completed receipt
-are committed atomically in the ordered session writer. Concurrent admission for
-the same key is rejected. A known failed attempt replays an error; a `started`
-receipt without a committed result returns `compaction_indeterminate` rather than
-silently calling the provider again after a crash. This is deliberately fail-closed:
-it does not prove the provider charged anything, and cannot guarantee exactly-once
-external billing. Recovery requires a deliberate new operation (changed input or
-parameters), not blind retries. Existing bounded retries *within* one admitted
-operation still apply.
+Manual, automatic and provider-limit recovery all use C: **zero summary-model
+calls**. Existing ordinary usage/cost counters are preserved and no auxiliary
+summary tokens are charged. Ordinary requests still pay for evidence and retrieved
+text in their input; local scans also cost time and memory.
 
-New conversation data or relevant parameters form a new key. Manual, automatic,
-and provider-limit recovery are different modes, not interchangeable keys.
-A cached checkpoint that was removed or modified is rejected rather than silently
-regenerated. Deleting a session removes its receipts; fork creates a new session
-scope. Ephemeral/direct in-memory callers do not have cross-restart receipts.
-All Agents performing compaction must use this version; older Agents ignore the
-new receipt table. RPC acknowledgement IDs still identify request attempts; the
-receipt metadata identifies the original compaction result.
+One [history recall guide](session-history.md) is added only with a valid checkpoint
+in a persisted session where shell is enabled/permitted. It is not accumulated as
+chat history. Missing exact facts are recovered through existing history search/get,
+never by replaying old tool side effects.
 
 ## Validation
 
-Scoped Rust tests cover threshold boundaries, overhead/output reservation,
-protected originals, bounded output demotion, restore/fork, large lines, invalid
-references, cancellation, retry accounting, and the actual HTTP output-cap field.
-
-For an isolated executable-level smoke test:
-
 ```sh
+cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/s2-smoke.json
+python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
-On Windows, pass `target/debug/future.exe`. If `CARGO_TARGET_DIR` is set, use that
-binary path. The test starts only its own Agent with a fresh HOME and TCP port,
-uses >256K of synthetic tool-heavy history and a local HTTP model stub, exercises
-shell search/get, restarts, checks preserved originals and usage, then cleans up.
-It makes no external model calls. This validates the execution mechanism, not a
-claim that every real model will autonomously retrieve evidence or preserve all
-semantics perfectly.
+Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke
+uses its own HOME, fresh port and local model stub to verify 256K triggering,
+C identity, originals, zero summary requests, ordinary usage, byte paging and
+restart. Never stop the user's running Agent.
+
+Rule-based evidence is lossy, especially for complex unstructured material;
+original-history recall remains essential. Explicit legacy semantic APIs remain
+for library callers/tests, not as an automatic fallback or a user CLI A switch.

@@ -243,6 +243,32 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
+    /// Default runtime compaction (C). The raw journal is used only for bounded
+    /// evidence selection; no LLM provider is accepted or called by this path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_evidence(
+        &self,
+        prompt: PromptContext,
+        raw: &[AgentMessage],
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        instructions: Option<&str>,
+        interrupted: &std::sync::atomic::AtomicBool,
+        on_started: Option<&(dyn Fn() + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::evidence::prepare(
+            self,
+            prompt,
+            raw,
+            trigger,
+            phase,
+            instructions,
+            interrupted,
+            on_started,
+        )
+    }
+
+    /// Explicit legacy semantic API; the runtime defaults to prepare_evidence.
     /// Prepare context with a model-generated semantic summary. The selected
     /// session model/provider is reused with tools disabled; no hidden
     /// compaction model is involved. Provider failures remain observable so
@@ -367,7 +393,8 @@ impl ContextManager {
     }
 
     /// Synchronous compatibility path used by legacy callers and unit tests.
-    /// Runtime automatic/manual compaction should use `prepare_semantic`.
+    /// Legacy projection-only utility. Runtime compaction uses `prepare_evidence`
+    /// through the durable wrapper, with access to the full raw journal.
     pub fn prepare(
         &self,
         prompt: PromptContext,

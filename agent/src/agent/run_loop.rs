@@ -326,10 +326,6 @@ impl Loop {
                 &tool_defs,
                 output_reserve,
             );
-            let account_summary = |usage: &crate::types::Usage| {
-                self.record_auxiliary_usage(usage);
-                on_event(RunEvent::Model(ModelStreamEvent::Usage(usage.clone())));
-            };
             let automatic_phase = if turn == 0 {
                 crate::compaction::CompactionPhase::PreTurn
             } else {
@@ -372,15 +368,11 @@ impl Loop {
                         automatic_trigger,
                         automatic_phase,
                         None,
-                        self.provider.as_ref(),
                         self.interrupt_flag.as_ref(),
-                        None,
                         Some(&emit_automatic_started),
-                        Some(&account_summary),
                         ctx.compaction_journal.as_ref(),
                         &automatic_operation_id,
                     )
-                    .await
                     .map(|(prompt, ticket)| {
                         compaction_ticket = ticket;
                         prompt
@@ -627,15 +619,11 @@ impl Loop {
                                 crate::compaction::CompactionTrigger::ProviderContextLimit,
                                 provider_limit_phase,
                                 None,
-                                self.provider.as_ref(),
                                 self.interrupt_flag.as_ref(),
-                                None,
                                 Some(&emit_provider_limit_started),
-                                Some(&account_summary),
                                 ctx.compaction_journal.as_ref(),
                                 &provider_limit_operation_id,
                             )
-                            .await
                             .map(|(prompt, ticket)| {
                                 recovery_ticket = ticket;
                                 prompt
@@ -1543,24 +1531,6 @@ impl Loop {
         }
     }
 
-    /// Account an auxiliary summary once per completed/retried request without
-    /// replacing last_prompt_tokens (which describes the conversation request).
-    pub(crate) fn record_auxiliary_usage(&self, u: &crate::types::Usage) {
-        use std::sync::atomic::Ordering;
-        self.cumulative_input_tokens
-            .fetch_add(u.prompt_tokens.max(0), Ordering::Relaxed);
-        self.cumulative_output_tokens
-            .fetch_add(u.completion_tokens.max(0), Ordering::Relaxed);
-        self.cumulative_cache_read_tokens
-            .fetch_add(u.cache_read_tokens.unwrap_or(0).max(0), Ordering::Relaxed);
-        self.cumulative_cache_write_tokens
-            .fetch_add(u.cache_write_tokens.unwrap_or(0).max(0), Ordering::Relaxed);
-        let cost = u.credit_cost.unwrap_or_else(|| self.estimate_usage_cost(u));
-        if cost.is_finite() && cost > 0.0 {
-            *self.cumulative_cost.lock() += cost;
-        }
-    }
-
     fn process_usage_event(
         &self,
         u: &crate::types::Usage,
@@ -1831,7 +1801,7 @@ mod tests {
                 .contains("context summarization agent")
             {
                 if self.fail_summary.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err(anyhow!("summary service unavailable"));
+                    panic!("default C unexpectedly called a summary model");
                 }
                 let events = vec![
                     ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
@@ -3891,7 +3861,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn automatic_summary_failure_keeps_history_and_runs_the_model() {
+    async fn automatic_c_never_calls_summary_model_and_keeps_history() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         provider
             .fail_summary
@@ -3924,8 +3894,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "ok");
-        assert!(failed.load(std::sync::atomic::Ordering::Relaxed));
-        assert_eq!(final_messages.len(), 5, "uncompacted history must survive");
+        assert!(!failed.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(
+            final_messages.len(),
+            5,
+            "original history must survive C projection"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

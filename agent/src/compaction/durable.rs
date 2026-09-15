@@ -71,21 +71,21 @@ impl CompactionTicket {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn prepare_with_journal(
+pub(crate) fn prepare_with_journal(
     manager: &ContextManager,
     prompt: PromptContext,
     raw: &[AgentMessage],
     trigger: CompactionTrigger,
     phase: CompactionPhase,
     instructions: Option<&str>,
-    provider: &dyn crate::types::LLMProvider,
     interrupted: &std::sync::atomic::AtomicBool,
-    fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
     on_started: Option<&(dyn Fn() + Sync)>,
-    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
     journal: Option<&CompactionJournal>,
     operation_id: &str,
 ) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
+    if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ContextError::Cancelled);
+    }
     let estimate = prompt
         .messages
         .iter()
@@ -110,11 +110,11 @@ pub(crate) async fn prepare_with_journal(
             .persistence
             .barrier()
             .map_err(|e| ContextError::PersistenceFailed(e.to_string()))?;
-        let policy = json!({"version":"s2-idempotency-v1","semantic":semantic::policy_identity(),
+        let policy = json!({"version":"c-idempotency-v1","evidence":semantic::evidence::policy_identity(),
             "sessionPolicy":journal.policy,"model":manager.model,"window":manager.context_window,
             "reserve":manager.reserve_tokens,"recent":manager.keep_recent_tokens,
             "fixedInput":prompt.usage.fixed_input_tokens,"outputReserve":prompt.usage.output_reserve_tokens,
-            "trigger":trigger,"phase":phase,"instructions":instructions.unwrap_or("").trim(),"fallbackModel":fallback.map(|(_,m)|m)});
+            "trigger":trigger,"phase":phase,"instructions":instructions.unwrap_or("").trim()});
         let claim = journal
             .manager
             .claim_compaction(&journal.session, policy, operation_id)
@@ -208,19 +208,15 @@ pub(crate) async fn prepare_with_journal(
             }
         }
     }
-    let result = manager
-        .prepare_semantic_observed(
-            prompt,
-            trigger,
-            phase,
-            instructions,
-            provider,
-            interrupted,
-            fallback,
-            on_started,
-            on_usage,
-        )
-        .await;
+    let result = manager.prepare_evidence(
+        prompt,
+        raw,
+        trigger,
+        phase,
+        instructions,
+        interrupted,
+        on_started,
+    );
     match result {
         Ok(prepared) => Ok((prepared, ticket)),
         Err(error) => {

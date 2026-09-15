@@ -15,7 +15,7 @@
 | [TUI](tui.md) ([中文](tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
 | [Directory layout](directory-layout.md) ([中文](directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
 | [Session history recall](session-history.md) ([中文](session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
-| [S2 compaction](compaction.md) ([中文](compaction.zh-CN.md)) | 80%/256K trigger, request budgets, original-text protection, bounded summaries and schema-3 restore |
+| [C compaction](compaction.md) ([中文](compaction.zh-CN.md)) | 80%/256K trigger, S2 original protection, fixed-budget deterministic evidence, zero summary calls and schema-3 restore |
 | [Channels configuration](channels-config.md) ([中文](channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
 
 The repo-root [README](../README.md) ([中文](../README.zh-CN.md)) is the
@@ -49,7 +49,7 @@ only together with the packaging pipelines.
 ## Internal working docs (not user-facing)
 
 - [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
-- [Compaction prompts](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — actual summary call counts, system prompt and serialized user-message contents.
+- [Legacy semantic prompts](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — retained explicit A APIs; default C makes no summary-model calls.
 - [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
   for (re)creating the wiki pages; defines scope, style and page inventory.
 - [verification/](verification/errors-outdated-missing.md) — doc↔source

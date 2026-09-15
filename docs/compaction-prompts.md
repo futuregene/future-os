@@ -1,4 +1,8 @@
-# Compaction model calls and prompts
+# Legacy A semantic calls and prompts
+
+**Default runtime compaction is now C and makes zero summary-model calls. This
+reference covers retained explicit legacy semantic APIs, not current manual,
+automatic or provider-limit recovery.** See [C compaction](compaction.md).
 
 The authoritative implementation is [semantic.rs](../agent/src/compaction/semantic.rs):
 `summarize_fold`, `summary_prompt`, `serialize_message`, and
@@ -19,7 +23,7 @@ SSE chunks are stream fragments, not distinct model calls. The user CLI returns
 an ACK, not a final call count. Ordinary answering and history-QA requests must
 not be counted as summary requests.
 
-The selected provider/model is used with tools disabled. Summary text is limited
+Explicit legacy semantic calls use the supplied provider/model with tools disabled; default C does not enter this path. Summary text is limited
 to about 4096 estimated tokens; the request-local generation cap is at most 8192,
 scaled for small windows and clamped to the model limit. Ordinary chat output
 settings are not changed.

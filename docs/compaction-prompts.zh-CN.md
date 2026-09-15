@@ -1,4 +1,6 @@
-# 压缩模型调用与 Prompt
+# 旧 A 模型摘要调用与 Prompt
+
+**默认运行路径已切换为 C，摘要模型调用数为零。以下仅记录仍保留的显式 legacy semantic API，不是当前手动／自动／超限恢复会执行的 prompt。** 当前机制见 [C 压缩](compaction.zh-CN.md)。
 
 本页说明实际的摘要调用，不把普通回答／历史查询后的答题调用算作压缩调用。权威实现为 [semantic.rs](../agent/src/compaction/semantic.rs) 的 `summarize_fold`、`summary_prompt`、`serialize_message` 和 `call_summary_model_bounded`。
 
@@ -14,7 +16,7 @@
 
 因此没有固定的“每次必然一次”或“总共最多三次”。流式响应里的大量 SSE chunk 不是大量模型请求。现有命令返回 ACK，不返回最终调用计数；不能从 ACK 推断只调用一次。
 
-普通运行时使用当前选定模型／provider，禁用工具，不自动寻找一个隐藏的压缩模型。摘要文字预算最多约 4096 estimated tokens；单次生成上限最多 8192，小窗口缩小且不超过模型上限。这不修改正常聊天的输出配置。
+显式调用旧 semantic API 时使用传入的模型／provider，禁用工具；默认 C 不进入这个路径。摘要文字预算最多约 4096 estimated tokens；单次生成上限最多 8192，小窗口缩小且不超过模型上限。这不修改正常聊天的输出配置。
 
 ## 1. System prompt 原文
 

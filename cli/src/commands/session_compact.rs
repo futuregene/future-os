@@ -10,12 +10,13 @@ Usage:
 
 Options:
   --session <id>          Required, explicit session to compact
-  --instructions <text>  Optional instructions for the summary
+  --instructions <text>  Verbatim continuation note (C does not interpret it)
   --json                 Print the Agent acknowledgement as JSON
   -h, --help             Show this help
 
 This command returns an asynchronous acknowledgement, NOT a completed summary.
 The Agent reports completion/reuse/failure through its compaction events.
+Default strategy C uses a fixed-budget evidence index, without a summary-model call.
 Active runs are rejected. Identical persisted history and parameters reuse the
 Agent's durable receipt; this command does not replay tools or bypass budgets.
 An unknown transport outcome must not be interpreted as success or cancellation.";

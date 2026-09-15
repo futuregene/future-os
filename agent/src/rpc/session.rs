@@ -551,7 +551,6 @@ impl ServerSession {
             crate::compaction::CompactionTrigger::Manual,
             crate::compaction::CompactionPhase::Standalone,
             context_window,
-            None,
             operation_id,
         )
     }
@@ -562,7 +561,6 @@ impl ServerSession {
         trigger: crate::compaction::CompactionTrigger,
         phase: crate::compaction::CompactionPhase,
         context_window: i32,
-        fallback: Option<(std::sync::Arc<dyn crate::types::LLMProvider>, String)>,
         operation_id: String,
     ) -> Result<serde_json::Value> {
         use std::sync::atomic::Ordering;
@@ -611,7 +609,7 @@ impl ServerSession {
             context_window,
             model: self.model.clone(),
         };
-        let (provider, interrupted, current_model, summary_tools, mut accounting_loop) = {
+        let (interrupted, current_model, request_tools) = {
             let loop_ = match self.agent_loop.try_read() {
                 Ok(loop_) => loop_,
                 Err(_) => {
@@ -631,21 +629,18 @@ impl ServerSession {
                 }
             };
             (
-                loop_.provider.clone(),
                 loop_.interrupt_flag.clone(),
                 loop_.model.clone(),
                 loop_.tools.clone(),
-                loop_.independent_copy(),
             )
         };
-        self.swap_token_counters_into_loop(&mut accounting_loop);
         let budget_system = self.build_system_prompt(
             &self.cwd,
-            summary_tools.clone(),
+            request_tools.clone(),
             &self.model,
             &self.thinking_level,
         );
-        let tool_defs = summary_tools
+        let tool_defs = request_tools
             .iter()
             .map(|tool| tool.def.clone())
             .collect::<Vec<_>>();
@@ -661,93 +656,37 @@ impl ServerSession {
             serde_json::json!({"model":self.model,"thinking":self.thinking_level,"cwd":self.cwd,"tools":tool_defs,
                 "protocol":self.model_registry.read().resolve(&self.model).map(|m| serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
         ));
-        let original_messages = messages.clone();
         let projected_messages_before = prompt.messages.len();
-        let saw_usage = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let usage_flag = saw_usage.clone();
         let manager = crate::compaction::ContextManager {
             model: current_model,
             ..manager
         };
-        let instructions = instructions.to_string();
-        let worker_operation_id = operation_id.clone();
-        let started_broadcaster = self.broadcaster.clone();
-        // RPC dispatch is synchronous today. Run the async, tool-free summary
-        // request on a scoped runtime thread so this path also uses semantic
-        // compaction without nesting a Tokio runtime on the dispatch thread.
-        let prepared = std::thread::spawn(move || -> anyhow::Result<_> {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(anyhow::Error::from)?;
-            runtime
-                .block_on(crate::compaction::prepare_with_journal(
-                    &manager,
-                    prompt,
-                    &original_messages,
-                    trigger,
-                    phase,
-                    Some(&instructions),
-                    provider.as_ref(),
-                    interrupted.as_ref(),
-                    fallback
-                        .as_ref()
-                        .map(|(provider, model)| (provider.as_ref(), model.as_str())),
-                    Some(&|| {
-                        if let Some(event) = super::prompt_helpers::run_event_to_sse(
-                            crate::agent::RunEvent::CompactionStarted {
-                                operation_id: worker_operation_id.clone(),
-                                trigger,
-                                phase,
-                            },
-                        ) {
-                            started_broadcaster.broadcast(event);
-                        }
-                    }),
-                    Some(&|usage| {
-                        usage_flag.store(true, Ordering::Relaxed);
-                        accounting_loop.record_auxiliary_usage(usage);
-                    }),
-                    journal.as_ref(),
-                    &worker_operation_id,
-                ))
-                .map_err(anyhow::Error::from)
-        })
-        .join()
-        .map_err(|_| anyhow::anyhow!("context compaction worker panicked"))
-        .and_then(std::convert::identity);
-        let usage_persisted = if saw_usage.load(Ordering::Relaxed) && !self.ephemeral {
-            (|| -> anyhow::Result<()> {
-                for (key, value) in [
-                    (
-                        "tokens_in",
-                        serde_json::json!(self.tokens_in.load(Ordering::Relaxed)),
-                    ),
-                    (
-                        "tokens_out",
-                        serde_json::json!(self.tokens_out.load(Ordering::Relaxed)),
-                    ),
-                    (
-                        "tokens_cache_r",
-                        serde_json::json!(self.tokens_cache_r.load(Ordering::Relaxed)),
-                    ),
-                    (
-                        "tokens_cache_w",
-                        serde_json::json!(self.tokens_cache_w.load(Ordering::Relaxed)),
-                    ),
-                    (
-                        "total_cost",
-                        serde_json::json!(*self.cumulative_cost.lock()),
-                    ),
-                ] {
-                    self.persistence.update_info(key, value)?;
+        // The RPC handler already runs this work off the dispatch thread. C
+        // needs no provider, async model runtime, or auxiliary usage accounting.
+        let prepared = crate::compaction::prepare_with_journal(
+            &manager,
+            prompt,
+            &messages,
+            trigger,
+            phase,
+            Some(instructions),
+            interrupted.as_ref(),
+            Some(&|| {
+                if let Some(event) = super::prompt_helpers::run_event_to_sse(
+                    crate::agent::RunEvent::CompactionStarted {
+                        operation_id: operation_id.clone(),
+                        trigger,
+                        phase,
+                    },
+                ) {
+                    self.broadcaster.broadcast(event);
                 }
-                Ok(())
-            })()
-        } else {
-            Ok(())
-        };
-        let (prepared, ticket) = match prepared.and_then(|value| usage_persisted.map(|_| value)) {
+            }),
+            journal.as_ref(),
+            &operation_id,
+        )
+        .map_err(anyhow::Error::from);
+        let (prepared, ticket) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.compaction_in_progress.store(false, Ordering::Release);
@@ -3185,8 +3124,15 @@ mod tests {
     }
 
     #[test]
-    fn manual_summary_usage_is_persisted() {
+    fn manual_c_compaction_preserves_existing_usage_without_model_charges() {
         let mut session = make_test_session("manual-summary-usage");
+        session
+            .tokens_in
+            .store(100, std::sync::atomic::Ordering::Relaxed);
+        session
+            .tokens_out
+            .store(20, std::sync::atomic::Ordering::Relaxed);
+        *session.cumulative_cost.lock() = 0.125;
         session.model = "glm-4.5v".into();
         session.agent_loop.try_write().unwrap().provider = Arc::new(UsageSummaryProvider);
         let mut messages = vec![
@@ -3197,7 +3143,7 @@ mod tests {
             message.ensure_journal_entry_id();
         }
         let mut entries = vec![crate::session::SessionEntry::session_info(
-            serde_json::json!({"cwd":session.cwd,"model":session.model}),
+            serde_json::json!({"cwd":session.cwd,"model":session.model,"tokens_in":100,"tokens_out":20,"total_cost":0.125}),
             session.model.clone(),
             session.thinking_level.clone(),
         )];
@@ -3317,7 +3263,11 @@ mod tests {
         let repeated = session.compact("").unwrap();
         assert_eq!(repeated["checkpointId"], result["checkpointId"]);
         assert_eq!(repeated["reused"], true);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(result["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Deterministic C evidence index"));
         assert_eq!(
             session
                 .session_manager

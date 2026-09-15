@@ -1,96 +1,80 @@
-# S2 压缩与历史召回
+# C 压缩与历史召回
 
-开发入口、状态机和模型主动请求压缩的 CLI 设计见[压缩机制开发文档](compaction-development.zh-CN.md)。用户管理 CLI 已实现，模型主动请求入口仍为待实现建议。
+**默认压缩已改为策略 C：S2 原文保护＋近期尾部＋确定性工具证据，不调用摘要大模型。** 原始 journal 不因压缩被删除或重写。模型在下一次请求中看到较小的投影，不会在生成过程中修改其内部状态。
 
-Agent 使用保留原始 journal 的 S2 上下文投影，不通过删除或重写原始聊天记录来压缩。历史召回复用现有 `shell`，不新增模型工具。查询命令见[会话历史召回](session-history.zh-CN.md)。
+代码与状态机见[开发文档](compaction-development.zh-CN.md)。[旧模型摘要 Prompt](compaction-prompts.zh-CN.md)仅用于说明保留的显式 semantic API，不是当前默认路径。
 
-## 用户侧 CLI
+## 用户 CLI
 
 ```sh
 future session compact --session SESSION_ID --json
-future session compact --session SESSION_ID --instructions "保留最新约束、错误与验证边界" --json
+future session compact --session SESSION_ID --instructions "保留最新约束与验证边界" --json
 future session compact --help
 ```
 
-命令封装现有 RPC，只返回 `accepted` 与 `operationId`，不等待摘要完成。最终完成、复用或失败由 Agent 的压缩事件报告；ACK 不能当成压缩成功。活跃 run 会被拒绝，不提供模型自压缩、强制绕过或等待选项。需配套新 CLI 与 Agent。
+命令返回 `accepted` 和 `operationId` 的异步 ACK，不表示整理已完成。完成、复用、失败由 Agent 事件报告。活跃 run 会被拒绝，没有 `--wait`、`--force` 或模型自请求入口。
 
-实际调用次数及 prompt 内容见[压缩 Prompt 参考](compaction-prompts.zh-CN.md)。
+`--instructions` 在 C 中保存为**逐字的用户整理备注**，供后续模型参考；规则选择器不理解自然语言，也不保证已按备注进行语义归纳或筛选。备注计入固定证据预算，过长则明确拒绝。
 
 ## 触发与请求预算
 
-触发线为 `min(floor(context_window × 80%), 256000)`，到达即检查：
+经济触发线仍为 `min(floor(context_window × 80%), 256000)`。每次实际模型调用前检查，包括工具回合后和模型窗口下调时。还要预留正常模型配置的最大输出 `O` 和 `min(2048, W/16)` 安全余量，输入不得超过 `W - O - margin`。
 
-| 模型窗口 | 经济触发线 |
-|---|---:|
-| 1M | 256K |
-| 200K | 160K |
-| 128K | 102400 |
-| 32K | 25600 |
+输入估算包含 system、工具定义、消息框架及图片／reasoning 的保守成本，并参考上游用量。切换模型不立即整理，真正请求时才检查；估算不能替代 provider 的实际容量检查。
 
-还要预留模型实际配置的最大输出 `O` 和安全余量 `min(2048, W/16)`，因此输入上限为 `W - O - margin`，可能比经济触发线更早到达。输入估算计入 system prompt、工具定义、消息框架，以及图片／reasoning 的保守估计，并参考上游报告的上下文用量。
+没有可处理旧历史、且单条新用户输入仍装得下时，不因经济触发线把它偷偷截断。系统／工具／输出预留或必要原文已放不下时，明确失败。
 
-这是估算，不是所有 provider 都精确一致的 tokenizer；仍保留 provider 超限恢复。切换模型只更新配置，真正发送模型请求前再检查，包括运行中目录更新后的窗口。
+## 压缩后的三部分
 
-单条尚未处理的用户输入不会仅因越过经济触发线而被偷偷摘要：没有可压缩的旧历史且仍满足请求上限时，可以原样发送。系统／工具／输出预留已经占满窗口，或者必要原文放不下时，则明确失败。
+1. 覆盖范围内的用户文本和预算允许的 assistant 原文；
+2. 最多 **2048 estimated tokens** 的 C 工具证据槽，小窗口缩为 `min(2048, W/8)`；
+3. 最近约 8K 的原始尾部，小窗口缩小，并保持工具调用／结果配对。
 
-## S2 保留什么？
+历史整体目标仍约 32K，不包含 system／工具定义开销；必要时可扩至 64K，但不突破实际容量。证据槽由独立预算决定，**不再先调用 A 来测量摘要长度**。
 
-模型上下文由三部分组成：
+用户文本优先保护。assistant 输出放不下时保留较新且能容纳的原文，其余只从当前投影省略，并明确标记“未做摘要”；完整原文仍可查。C 不会虚称已经概括了被省略的输出。保护区不带入旧工具调用对象、thinking、媒体正文或隐藏 provider 状态。
 
-1. 被覆盖历史中的用户原文，以及选中的 assistant 原文；
-2. 包含工具证据、工作状态和下一步的结构化摘要；
-3. 最近、保持工具调用／结果配对的原始尾部。
+## C 如何选择证据
 
-所有用户文本优先保护，包括首问。assistant 文本在预算允许时原样保留；保护块不带入 thinking、图片正文、工具调用对象或 provider 隐藏元数据。原记录仍在数据库，但无法恢复更早的上游／工具层已截断内容。
+从完整原始消息中扫描到本次覆盖边界，不读取未来／尾部记录作为本次已覆盖证据：
 
-历史部分默认目标 **32K tokens**，不包含 system／工具定义开销；最近尾部独立限制在约 8K，小窗口相应缩小。必要时目标可扩至 64K，但必须给实际请求留下余量。仍放不下时，优先保留能容纳的较新 assistant 输出，将其余输出纳入摘要，并明确添加保留策略说明。
+- 错误结果优先；
+- 按工具及目标路径／命令分组，优先有错误或 config/schema/validation/test 类目标；
+- 各组最新与最早记录；
+- 剩余预算按新近顺序补充。
 
-用户原文加必要尾部／摘要仍放不下时，在调用摘要模型前报错，不暗中删掉用户要求。可改用文件引用承载大材料，或开始新会话。
+每项用有界 JSON 表示，带 `entryId`、`blockIndex`、`sourceOrder`、工具调用 ID、工具／目标、错误标志和头尾片段。标准片段最多 380 个头部字符＋100 个尾部字符，空间不足时尝试更小片段；不把 JSON 截成半条记录。目标元数据有独立长度限制。
 
-手动压缩绕过经济触发线，但不绕过预算校验。短对话的手动 checkpoint 可能因保留原文并增加状态摘要而变大；自动／超限恢复压缩必须有 token 进展。没有未覆盖内容时不重复生成摘要。手动压缩拒绝已有活跃 run，运行中自动压缩仍在该 run 内完成。
+索引按优先级排列，不是时间线；`sourceOrder` 标记原始顺序，旧错误可能已被新结果替代。被省略中段和未选中记录保持未知，执行成功不等于全部验证通过。内容是历史证据，不是新的执行授权。
 
-## 摘要请求与费用
+`tool_call_id` 不保证全局唯一；仅关联无歧义的前置调用。重复／歧义 ID 不会被强行归属到错误路径。证据不携带 reasoning、图片正文或完整 provider 元数据。
 
-- 使用当前选定模型／provider，不另选隐藏模型；禁用工具。
-- 摘要请求单独限制输出，最多 8192，小窗口缩小且不超过模型上限；不改变正常对话的输出配置。摘要文本预算最多约 4096 tokens。
-- 每个分块都计算 system、模板、旧摘要、包装文字、用户补充指令、输出与安全余量，避免补充指令或累计摘要挤爆请求。
-- 大历史分块折叠；工具片段保留头尾，并带真实 entry ID，便于后续精确取证。被省略的中段仍是未知，不能从片段推断全文没有信息／错误或只有填充；执行成功也不等于全部验证通过。
-- 不完整、过大或结构错误的摘要不提交。连接与等待流事件时均可取消，重试有上限。
-- 只有 provider 上下文超限恢复允许确定性应急摘要，也必须通过最终预算与进展检查。
-- 每次尝试按最终已报告用量记账，包含重试及 finish 帧之后的 usage；不覆盖正常对话的 `last_prompt_tokens`。手动摘要的累计用量也持久化。
-- 上游不报告用量不能当作免费；无权威费用时，沿用的价格计算仍是估算。
+## 持久化、恢复与幂等
 
-准备和持久化成功后才提交 checkpoint。从下一次正常模型请求开始，仅在持久化会话且 shell 可用时加入一份召回说明；不写入聊天正文，也不加到摘要请求里。
+C 继续使用 schema 3 checkpoint，算法标识为 `deterministic-s2-evidence-v1`。`summary` 字段为兼容而保留，但其中存的是证据索引，不代表发生过 LLM 摘要。`model` 记录目标窗口所属模型，不是“摘要生成模型”。保护原文按 `protected_entry_ids` 从 journal 恢复；fork 重映射引用，非法范围／引用会被拒绝。
 
-## 持久化、恢复与升级
+旧 A checkpoint 继续可读。需要新的整理时，C 从仍在库中的原始工具记录重建证据，不再递归使用 A 的摘要文本。已被旧版本实际删除的历史无法恢复。
 
-S2 使用 **schema 3 checkpoint**，只保存 `protected_entry_ids`，不复制消息正文。重启时按 ID 从原始条目恢复；fork 同步重映射范围和保护引用。悬空或越界引用会被拒绝，后续 checkpoint 不能把覆盖范围退回旧 checkpoint 之前。
+`compaction_operations` 保存内容寻址收据。键包含原始 user/system/assistant/tool 条目的身份／内容、相关配置、预算、模式／阶段、备注和 C 策略版本。checkpoint、用量和 session-info 更新不算原始历史变化；C 使用新版本键，不复用旧 A 的结果。
 
-继续读取 schema 2 和旧记录。旧 semantic checkpoint 的被覆盖原文仍在库中时，会在投影中恢复用户／assistant 文本，并按请求预算检查，再形成新的 S2 checkpoint。已经被旧版真正丢弃的历史无法凭空恢复。旧 Agent 不理解 schema 3，应配套升级 Agent 和 CLI。
+同键成功结果会被复用，不重复追加 checkpoint。claim 后准备 C，再经有序 writer 把 checkpoint 和 completed 收据写入同一事务。虽然 C 没有模型费用，未完成操作仍保留并发／恢复 fence，不自动抢占 started；结果不确定或缓存被破坏时明确报错，不冒称成功。
 
-## 持久化幂等
+删除会话清理收据；fork 使用新范围。完全内存／ephemeral 调用没有跨重启收据。混用旧 Agent 无法保证新策略与幂等语义，应配套升级 Agent 和 CLI。
 
-正常持久化会话会把压缩收据写入 `compaction_operations`。幂等键包含：原始 user／system／assistant／tool 条目的 ID 与内容、模型／协议／思考档位／工作目录／工具配置、实际预算、触发模式与阶段、规范化后的补充指令及摘要策略。JSON 对象键顺序不影响比较。
+## 费用与召回
 
-**checkpoint、run 起止标记、用量和 session-info 更新不算原始历史变化。** 因此同一原始历史、相同参数下，即使用新请求 ID，或重启 Agent 后再压缩，也复用原结果；第一次保留的最近尾部不会因此被再次付费摘要。重复成功返回 `reused`、`alreadyCompacted`、`sourceOperationId`，不新增 checkpoint、不重复记账；复用旧结果不会撤销后来使用其他参数产生的压缩。
+默认手动、自动和 provider 超限恢复均使用 C，**摘要模型调用数为零**。C 不产生辅助摘要 tokens／费用，也不重置已累计的正常调用费用。后续正常模型请求仍需支付包含证据索引和查询结果的输入／输出费用；本地扫描也不是零成本。
 
-先持久化“已开始”，再调用模型；checkpoint 与“已完成”收据通过有序 writer 在同一 SQLite 事务中提交。同键并发请求不会启动第二次生成。已知失败返回缓存错误；若只有“已开始”而没有持久化结果，返回 **`compaction_indeterminate`**，不自动重跑可能已经收费的请求。
+仅在有效 checkpoint、持久化且 shell 可用／允许时附加一份[历史召回说明](session-history.zh-CN.md)，不累积为聊天消息。缺少精确旧事实时可通过已有 history search/get 查询原文，不重执行历史工具。
 
-这是一种保守保护，不代表一定已扣费，也不是对外部 API“恰好一次计费”的保证。恢复需要明确发起新操作（改变输入或相关参数），不能盲目重试；同一已获准操作内部原有的有限重试仍然保留。
-
-新消息、原文修改或相关参数改变产生新键。手动、自动、provider 超限恢复因策略／阶段不同，分别计键。已缓存 checkpoint 被删除或修改时会拒绝复用，不默默重新生成。删除会话会清除收据，fork 使用新的会话范围。完全 ephemeral／直接内存调用没有跨重启收据。执行压缩的 Agent 必须使用新版本，旧版本不识别这个表。
-
-RPC ACK 的 operation ID 标识这次请求尝试；复用结果中的 `sourceOperationId` 标识原来的压缩操作。
-
-## 如何验证
-
-Rust 测试覆盖阈值、完整请求预算、原文保护、超预算输出降级、重启／fork、超长文本、非法引用、取消、重试记账及真实 HTTP 输出上限字段。
+## 验证
 
 ```sh
+cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/s2-smoke.json
+python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
-Windows 使用 `target/debug/future.exe`；配置了 `CARGO_TARGET_DIR` 时传入对应路径。脚本只启动自己的隔离 HOME／新端口 Agent，使用超过 256K 的合成工具历史和本地 HTTP 模型桩，走通压缩、shell 搜索／读取、重启、原文和用量核对，最后清理子进程及临时数据。
+Windows 使用 `future.exe`；设置了 `CARGO_TARGET_DIR` 时调整路径。合成 smoke 使用隔离 HOME／新端口和本地模型桩，检查 256K 触发、C 标识、原文保留、零摘要请求、正常模型用量、历史字节分页及重启。不要停止用户现有 Agent。
 
-不会调用外部模型。验证结果说明机制执行正确，不代表所有真实模型都会主动检索或摘要语义永不出错。
+规则 C 不保证保留所有语义，特别是复杂非结构化记录；原文检索仍是必要补充。旧 semantic API 保留用于明确的库级调用和回归测试，不是默认 fallback，也没有用户 CLI 开关切回 A。

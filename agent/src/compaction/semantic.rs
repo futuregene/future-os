@@ -1,3 +1,5 @@
+pub(super) mod evidence;
+
 use super::{
     estimate_tokens, AgentMessage, CompactionPhase, CompactionTrigger, ContentBlock,
     ContextCheckpoint, ContextError, ContextManager, ContextPreparation, ContextUsage,
@@ -30,12 +32,6 @@ const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
 const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
 Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed."#;
-
-pub(super) fn policy_identity() -> serde_json::Value {
-    serde_json::json!({"system":SUMMARY_SYSTEM_PROMPT,"template":SUMMARY_TEMPLATE,
-        "target":super::budget::TARGET_HISTORY,"expanded":super::budget::MAX_EXPANDED_HISTORY,
-        "toolExcerpt":TOOL_OUTPUT_LIMIT,"strictExcerpt":STRICT_TOOL_OUTPUT_LIMIT})
-}
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
 
@@ -123,6 +119,7 @@ pub(super) async fn prepare(
         phase,
         custom_instructions,
         on_started,
+        4096,
     )? {
         PlannedPreparation::Unchanged(prompt) => {
             return Ok(ContextPreparation::Unchanged { prompt });
@@ -183,6 +180,7 @@ pub(super) fn prepare_deterministic(
         super::default_phase(trigger),
         custom_instructions,
         None,
+        4096,
     )? {
         PlannedPreparation::Unchanged(prompt) => Ok(ContextPreparation::Unchanged { prompt }),
         PlannedPreparation::Compact(plan) => {
@@ -206,6 +204,7 @@ fn plan(
     phase: CompactionPhase,
     custom_instructions: Option<&str>,
     on_started: Option<&(dyn Fn() + Sync)>,
+    summary_cap: u64,
 ) -> Result<PlannedPreparation, ContextError> {
     if prompt.messages.is_empty() {
         return Ok(PlannedPreparation::Unchanged(prompt));
@@ -334,7 +333,7 @@ fn plan(
             message,
         })
         .collect::<Vec<_>>();
-    let summary_budget = (window / 8).clamp(1, 4_096);
+    let summary_budget = (window / 8).clamp(1, summary_cap);
     let history_room = hard_limit.saturating_sub(prompt.usage.fixed_input_tokens);
     // 32K is a soft target. Expand up to 64K for protected originals while
     // preserving headroom; never silently truncate user/assistant text.
@@ -1217,6 +1216,15 @@ fn join_or_none(values: &[String]) -> String {
     }
 }
 
+fn retention_note(count: usize, algorithm: &str) -> String {
+    let action = if algorithm == evidence::ALGORITHM {
+        "omitted from the active context (not summarized)"
+    } else {
+        "summarized"
+    };
+    format!("\n\n[Retention note: {count} older assistant outputs were {action} to fit. Query original history for their exact text.]")
+}
+
 fn finalize(
     manager: &ContextManager,
     plan: CompactionPlan,
@@ -1228,7 +1236,7 @@ fn finalize(
         return Err(ContextError::InvalidSummary);
     }
     if plan.summarized_outputs > 0 {
-        summary.push_str(&format!("\n\n[Retention note: {} older assistant outputs were summarized to fit. Query original history for their exact text.]", plan.summarized_outputs));
+        summary.push_str(&retention_note(plan.summarized_outputs, algorithm_version));
     }
     let entry_id = crate::utils::generate_entry_id();
     let checkpoint_id = format!("cp_{entry_id}");
@@ -2523,6 +2531,7 @@ mod tests {
             CompactionPhase::MidTurn,
             None,
             None,
+            4096,
         );
         // Downshift + MidTurn leaves allow_full_active_turn false (the
         // `matches!` fallthrough arm), but the plan still resolves without

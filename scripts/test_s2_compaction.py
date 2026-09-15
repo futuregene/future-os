@@ -81,7 +81,7 @@ def main():
             call_id = f"read-{index}"
             records.append(entry(f"call-{index}", "assistant", [{"type": "tool_call", "id": call_id,
                            "name": "read", "args": {"path": "fixture.txt", "offset": index}}]))
-            text = (secret + "\n" if index == 5 else "historical output\n") + "x" * 96_000
+            text = "historical output\n" + "x" * 48_000 + (secret + "\n" if index == 5 else "") + "x" * 48_000
             expected_outputs[f"result-{index}"] = text
             records.append(entry(f"result-{index}", "tool", [{"type": "tool_result", "tool_call_id": call_id,
                                   "content": text, "is_error": False}]))
@@ -108,9 +108,7 @@ def main():
                     is_summary = "context summarization agent" in system
                     if is_summary:
                         state["summary"] += 1
-                        check("summary output cap is 8192", body.get("max_tokens") == 8192)
-                        check("summary has no tools", not body.get("tools"))
-                        delta, finish, cost = {"content": SUMMARY}, "stop", 0.01
+                        raise AssertionError("default C must not call a summary model")
                     else:
                         state["normal"] += 1
                         step = state["normal"]
@@ -126,14 +124,15 @@ def main():
                         elif step == 2:
                             reply = tool_reply(body)
                             check("search supplied exact entry ID", any(m["entryId"] == "result-5" for m in reply["matches"]))
-                            command = f"future session history get --session {sid} --entry result-5 --limit 256 --json"
+                            offset = next(m["byteOffset"] for m in reply["matches"] if m["entryId"] == "result-5")
+                            command = f"future session history get --session {sid} --entry result-5 --offset {offset} --limit 256 --json"
                         elif step == 3:
                             reply = tool_reply(body)
                             check("get supplied exact historical value", secret in "".join(c["text"] for c in reply["chunks"]))
                             check("get stayed bounded", sum(len(c["text"].encode()) for c in reply["chunks"]) <= 256)
                             command = None
                         elif step == 4:
-                            check("no repeat summary after restart", state["summary"] == 1)
+                            check("no summary model after restart", state["summary"] == 0)
                             command = None
                         else:
                             raise AssertionError("unexpected extra model request")
@@ -228,15 +227,16 @@ def main():
             check("compacted input below 32K on fixture", checkpoint["tokens_after"] < 32_000)
             check("S2 schema persisted", checkpoint["schema_version"] == 3)
             check("protected references persisted", {"u1", "a1"}.issubset(checkpoint["protected_entry_ids"]))
-            check("summary usage counted once", info["tokens_in"] == 1300 and info["tokens_out"] == 80)
-            check("summary and normal costs counted", abs(info["total_cost"] - 0.016) < 1e-9)
+            check("C algorithm persisted", checkpoint["algorithm_version"] == "deterministic-s2-evidence-v1")
+            check("only normal model usage counted", info["tokens_in"] == 300 and info["tokens_out"] == 30)
+            check("no summary model cost", abs(info["total_cost"] - 0.006) < 1e-9)
             stop_agent(process)
             process = start_agent()
             run("Confirm the preserved constraints after restart.")
             _, restored_info = read_state()
-            check("usage survives restart", restored_info["tokens_in"] == 1400 and restored_info["tokens_out"] == 90)
-            check("cost survives restart", abs(restored_info["total_cost"] - 0.018) < 1e-9)
-            check("exact model-call count", state == {"normal": 4, "summary": 1} and not errors)
+            check("usage survives restart", restored_info["tokens_in"] == 400 and restored_info["tokens_out"] == 40)
+            check("cost survives restart", abs(restored_info["total_cost"] - 0.008) < 1e-9)
+            check("exact model-call count", state == {"normal": 4, "summary": 0} and not errors)
             report = {"ok": True, "checks": checks, "model_calls": state, "external_model_calls": 0,
                       "tokens_before": checkpoint["tokens_before"], "tokens_after": checkpoint["tokens_after"],
                       "schema_version": checkpoint["schema_version"], "protected_entry_ids": checkpoint["protected_entry_ids"],
