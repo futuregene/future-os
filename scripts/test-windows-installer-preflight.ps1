@@ -227,6 +227,7 @@ try {
     Assert-Equal $uninstallAgent.HasExited $true 'Uninstall closes the owned Agent'
     Assert-Equal (Test-Path (Join-Path $uninstallDir 'uninstalled.marker')) $true 'Uninstall proceeded'
 
+    # Both unattended modes mirror Tauri's production auto-close behavior.
     foreach ($flags in @('/S', '/P')) {
         $failedCleanup = New-Install ('cleanup failure ' + $flags.TrimStart('/'))
         Copy-Item (Join-Path $fresh 'uninstall.exe') $failedCleanup
