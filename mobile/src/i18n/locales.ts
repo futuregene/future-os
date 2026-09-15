@@ -413,7 +413,9 @@ export const resources = {
         allowing: "Allowing",
       },
       share: {
-        newConversation: "Start a conversation with shared content",
+        chooseDestination: "Share to a conversation",
+        existing: "Existing conversation · {{title}}",
+        existingWorkspace: "Existing conversation · {{name}} · {{title}}",
         chat: "New conversation · no workspace",
         workspace: "New conversation · {{name}}",
       },
@@ -899,7 +901,9 @@ export const resources = {
         allowing: "允许中",
       },
       share: {
-        newConversation: "基于分享内容开启新会话",
+        chooseDestination: "分享到会话",
+        existing: "已有会话 · {{title}}",
+        existingWorkspace: "已有会话 · {{name}} · {{title}}",
         chat: "新会话 · 非工作区",
         workspace: "新会话 · {{name}}",
       },

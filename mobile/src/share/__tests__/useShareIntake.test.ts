@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, useEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { AppState } from "react-native";
 import { getPendingShare } from "future-share-intent";
@@ -53,11 +53,18 @@ function attachment(name: string): MobileAttachment {
 
 let renderer: ReactTestRenderer | null = null;
 const newConversation = jest.fn(async () => {});
+const selectSession = jest.fn(async (_sessionId: string) => {});
 let intake: ReturnType<typeof useShareIntake>;
-async function choose(mode: "chat" | "workspace" = "chat", workspaceId?: string) {
+async function choose(mode: "chat" | "workspace" | "session" = "chat", workspaceId?: string) {
   const start = intake.chooseDestination;
   act(() => intake.dismiss());
   await act(async () => { await start(mode, workspaceId); });
+}
+
+function Harness(): null {
+  const result = useShareIntake();
+  useEffect(() => { intake = result; });
+  return null;
 }
 
 function render(credentials: unknown = { pairId: "pair", expectedDesktopId: "desktop" }): void {
@@ -65,11 +72,12 @@ function render(credentials: unknown = { pairId: "pair", expectedDesktopId: "des
     credentials,
     workspaces: [{ id: "w1", name: "Project" }],
     newConversation,
+    selectSession,
+    sessions: [
+      { sessionId: "s1", threadId: "t1", title: "Chat", mode: "chat", streaming: false },
+      { sessionId: "s2", threadId: "t2", title: "Work", mode: "workspace", workspaceId: "w1", streaming: false },
+    ],
   } as unknown as ReturnType<typeof useRemote>);
-  function Harness(): null {
-    intake = useShareIntake();
-    return null;
-  }
   act(() => {
     renderer = create(createElement(Harness));
   });
@@ -93,6 +101,7 @@ beforeEach(() => {
   mockedSaveDraft.mockResolvedValue();
   mockedPrepare.mockResolvedValue([]);
   newConversation.mockResolvedValue();
+  selectSession.mockResolvedValue();
 });
 
 afterEach(() => {
@@ -128,6 +137,54 @@ test("stages a shared payload into the new-conversation draft", async () => {
   });
   expect(newConversation).toHaveBeenCalledWith("chat", undefined);
   expect(mockedMarkLanded).toHaveBeenCalled();
+});
+
+test.each(["s1", "s2"])("appends to existing session %s without creating or sending a conversation", async sessionId => {
+  const previous = attachment("previous.jpg");
+  const shared = attachment("shared.jpg");
+  mockedGetPendingShare.mockResolvedValueOnce({
+    text: "shared text",
+    tooLarge: false,
+    files: [{ uri: shared.localUri, name: shared.name, mimeType: shared.mimeType }],
+  });
+  mockedLoadDraft.mockResolvedValue({ version: 1, text: "unsent text", attachments: [previous] });
+  mockedPrepare.mockResolvedValue([previous, shared]);
+  render();
+  await flush();
+  await choose("session", sessionId);
+
+  expect(mockedLoadDraft).toHaveBeenCalledWith(`desktop:${sessionId}`);
+  expect(mockedPrepare).toHaveBeenCalledWith(expect.any(Array), [previous]);
+  expect(mockedSaveDraft).toHaveBeenCalledWith(`desktop:${sessionId}`, {
+    text: "unsent text\n\nshared text",
+    attachments: [previous, shared],
+  });
+  expect(selectSession).toHaveBeenCalledWith(sessionId);
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).toHaveBeenCalledTimes(1);
+});
+
+test.each([undefined, "", "deleted"])("ignores a missing or deleted session: %s", async sessionId => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "share", tooLarge: false, files: [] });
+  render();
+  await flush();
+  await choose("session", sessionId);
+  expect(mockedLoadDraft).not.toHaveBeenCalled();
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(selectSession).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+});
+
+test("attachment validation failure leaves an existing session draft untouched", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "share", tooLarge: false, files: [] });
+  mockedPrepare.mockRejectedValueOnce(new Error("attachment_file_too_large"));
+  render();
+  await flush();
+  await choose("session", "s1");
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(selectSession).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+  expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_file_too_large");
 });
 
 test("a share with no text keeps the files-only draft", async () => {
@@ -210,6 +267,56 @@ test("does not open a workspace that disappeared while choosing", async () => {
   await choose("workspace", "deleted");
   expect(newConversation).not.toHaveBeenCalled();
   expect(mockedSaveDraft).not.toHaveBeenCalled();
+});
+
+test("does not stage into an existing session after the desktop changes during preparation", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "share", tooLarge: false, files: [] });
+  let release!: (attachments: MobileAttachment[]) => void;
+  mockedPrepare.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  render();
+  await flush();
+  const start = intake.chooseDestination;
+  let importing!: Promise<void>;
+  act(() => {
+    intake.dismiss();
+    importing = start("session", "s1");
+  });
+  await flush();
+  mockedUseRemote.mockReturnValue({
+    ...mockedUseRemote(),
+    credentials: { pairId: "other-pair", expectedDesktopId: "other" },
+  } as ReturnType<typeof useRemote>);
+  act(() => renderer!.update(createElement(Harness)));
+  await act(async () => {
+    release([]);
+    await importing;
+  });
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(selectSession).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+});
+
+test("only imports once while an existing session is opening", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "share", tooLarge: false, files: [] });
+  let release!: () => void;
+  selectSession.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  render();
+  await flush();
+  const start = intake.chooseDestination;
+  let importing!: Promise<void>;
+  act(() => {
+    intake.dismiss();
+    importing = start("session", "s1");
+  });
+  await flush();
+  await act(async () => { await start("session", "s1"); });
+  await act(async () => {
+    release();
+    await importing;
+  });
+  expect(mockedSaveDraft).toHaveBeenCalledTimes(1);
+  expect(selectSession).toHaveBeenCalledTimes(1);
+  expect(mockedMarkLanded).toHaveBeenCalledTimes(1);
 });
 
 test("does not read the share inbox until the device is paired", async () => {
