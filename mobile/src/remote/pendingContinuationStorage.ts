@@ -20,9 +20,9 @@ function storageKey(pairId?: string): string {
 }
 
 async function loadPendingContinuationDirect(pairId?: string): Promise<PendingContinuation | null> {
+  const raw = await AsyncStorage.getItem(storageKey(pairId));
+  if (!raw) return null;
   try {
-    const raw = await AsyncStorage.getItem(storageKey(pairId));
-    if (!raw) return null;
     const value = JSON.parse(raw) as Partial<PendingContinuation>;
     if (
       value.version !== 2 ||
@@ -42,6 +42,7 @@ async function loadPendingContinuationDirect(pairId?: string): Promise<PendingCo
     }
     return value as PendingContinuation;
   } catch {
+    // Preserve I/O failures as errors. Only malformed data is non-replayable.
     return null;
   }
 }

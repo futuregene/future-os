@@ -146,7 +146,7 @@ pub(crate) fn handle_cycle_model(
         "cycle_model",
         serde_json::json!({
             "model": next_model,
-            "thinkingLevel": session.read().thinking_level.clone(),
+            "thinkingLevel": sess.thinking_level.clone(),
             "isScoped": false
         }),
     )

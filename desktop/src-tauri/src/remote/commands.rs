@@ -993,6 +993,15 @@ mod tests {
     }
 
     #[test]
+    fn chunked_history_preserves_oversized_entries() {
+        let text = "完整内容".repeat(200_000);
+        let entries = vec![text_message(&text)];
+        let page = paginate_items_with_cap(entries, 0, 100, "entries", false);
+        assert_eq!(page["entries"][0]["blocks"][0]["text"], text);
+        assert!(page["entries"][0].get("metadata").is_none());
+    }
+
+    #[test]
     fn truncate_caps_string_content() {
         let mut message = text_message(&"z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2));
         truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
@@ -2210,6 +2219,7 @@ mod bridge_tests {
     async fn prompt_creates_threads_and_rejects_busy_sessions() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-prompt").await;
+        let agent = ensure_mock_agent();
 
         // Workspace mode without a workspace id → validation error.
         let reply = bridge
@@ -2223,6 +2233,7 @@ mod bridge_tests {
 
         // Chat mode with an empty session id → lazy thread + agent session.
         let prompt_id = unique("cmd");
+        agent.complete_next_run_stream();
         let reply = bridge
             .call(json!({ "id": prompt_id, "type": "prompt", "message": "hello there", "modelId": "m1", "providerId": "p1", "level": "high" }))
             .await;
@@ -2230,14 +2241,13 @@ mod bridge_tests {
         let session = reply["data"]["sessionId"].as_str().unwrap().to_string();
         assert!(session.starts_with("mock-session-"));
         let thread_id = reply["data"]["threadId"].as_str().unwrap().to_string();
-        // The run the ack carried settles as failed: the mock agent's event
-        // stream ends without agent_end.
+        // The run the ack carried settles through the normal collector.
         let run_id = reply["data"]["runId"].as_str().unwrap().to_string();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let run = crate::store::get_run(&run_id).unwrap().expect("run row");
             if run.status != "running" {
-                assert_eq!(run.status, "failed");
+                assert_eq!(run.status, "completed");
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "run never settled");
@@ -2260,6 +2270,7 @@ mod bridge_tests {
         assert_eq!(retried["data"]["runId"], json!(run_id));
 
         // A follow-up prompt on the idle session reuses the thread.
+        agent.complete_next_run_stream();
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "prompt", "sessionId": session, "message": "again" }))
             .await;
@@ -2633,7 +2644,7 @@ mod bridge_tests {
     }
 
     #[tokio::test]
-    async fn continue_run_resumes_a_failed_run_and_rejects_busy_sessions() {
+    async fn continue_run_does_not_ack_before_agent_acceptance() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-continue").await;
         let agent = ensure_mock_agent();
@@ -2673,51 +2684,17 @@ mod bridge_tests {
         })
         .unwrap();
 
-        // Reject the Ok arm's spawned `run_prepared_prompt` at session
-        // provisioning (new_session) so it fails BEFORE spawning a session
-        // observer — the ack path (prepare_remote_prompt) is store-only and
-        // unaffected. This keeps the shared mock script clean for later tests
-        // (no zombie) without touching the process-global agent endpoint.
+        // Reject provisioning before the prompt reaches the Agent. The local
+        // run exists, but it must never become a successful mobile receipt.
         agent.script("new_session", false, json!(null), "rejected");
 
-        // Ok arm: continue the failed run → ack carries the fresh run ids.
         let command_id = unique("cmd");
         let reply = bridge
             .call(json!({ "id": command_id, "type": "continue_run", "sessionId": session, "runId": run.id }))
             .await;
-        assert_eq!(reply["success"], json!(true), "got: {reply}");
-        assert_eq!(reply["data"]["sessionId"], json!(session));
-        assert_eq!(reply["data"]["threadId"], json!(thread.id));
-
-        // The spawned pipeline settles the new run as failed (its session
-        // provisioning is rejected) — poll until the run leaves the running state.
-        let continued_run = reply["data"]["runId"].as_str().unwrap().to_string();
-
-        // Let the in-memory single-flight cache expire. The same command must
-        // still resolve to the persisted run receipt instead of creating a
-        // second continuation.
-        tokio::time::sleep(reply_slot_ttl() + Duration::from_millis(50)).await;
-        let retry = bridge
-            .call(json!({ "id": command_id, "type": "continue_run", "sessionId": session, "runId": run.id }))
-            .await;
-        assert_eq!(retry["success"], json!(true), "got: {retry}");
-        assert_eq!(retry["data"]["runId"], json!(continued_run));
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let row = crate::store::get_run(&continued_run)
-                .unwrap()
-                .expect("continued run");
-            if row.status != "running" {
-                assert_eq!(row.status, "failed");
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "continued run never settled"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        assert_eq!(reply["success"], json!(false), "got: {reply}");
+        assert!(reply["error"].as_str().unwrap().contains("rejected"));
+        assert!(remote_prompt_receipt(&command_id).unwrap().is_none());
 
         bridge.stop();
     }

@@ -83,6 +83,14 @@ describe("pending continuation storage", () => {
     await expect(loadPendingContinuation()).resolves.toBeNull();
   });
 
+  it("surfaces storage read failures", async () => {
+    const AsyncStorage = jest.requireMock("@react-native-async-storage/async-storage") as {
+      getItem: jest.Mock;
+    };
+    AsyncStorage.getItem.mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(loadPendingContinuation()).rejects.toThrow("storage unavailable");
+  });
+
   it("only clears the matching operation", async () => {
     await savePendingContinuation(pending);
     await clearPendingContinuation("stale-command");

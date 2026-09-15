@@ -153,15 +153,15 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    // `delete_thread_with_files` returns the deleted record and already errors
-    // for a missing thread, so its session id is always present here — the old
-    // pre-delete `get_thread` + `if let Some` guard had an unreachable None arm.
-    let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
+    let thread = store::get_thread(&input.thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
     // Shells opened from this conversation are children of the app and must not
     // outlive their conversation: closing them here means a deleted thread can
     // never leave an orphaned terminal pointable at a removed directory.
     close_thread_terminals(&input.thread_id);
     let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+    stop_active_session_before_delete(session_id).await?;
+    let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
     if store::is_agent_session_tombstoned(session_id)? {
         agent_bridge::drop_observer(session_id);
     }
@@ -178,13 +178,49 @@ pub async fn delete_thread(
 pub async fn batch_delete_threads(
     input: store::BatchDeleteThreadsInput,
 ) -> Result<store::BatchDeleteResult, crate::AppError> {
-    let result = store::batch_delete_threads(&input)?;
+    let mut result = store::BatchDeleteResult {
+        deleted_count: 0,
+        failed: Vec::new(),
+    };
     for thread_id in &input.thread_ids {
         close_thread_terminals(thread_id);
+        let deleted = async {
+            let thread = store::get_thread(thread_id)?.ok_or_else(|| {
+                crate::AppError::Message("Thread could not be loaded.".to_string())
+            })?;
+            let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
+            stop_active_session_before_delete(session_id).await?;
+            store::delete_thread_with_files(thread_id, input.delete_files)
+        }
+        .await;
+        match deleted {
+            Ok(_) => result.deleted_count += 1,
+            Err(error) => result.failed.push(format!("{thread_id}: {error}")),
+        }
     }
     crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
+}
+
+/// Stop and confirm any active Agent execution before its thread row or files
+/// are removed. Inactive sessions avoid an unnecessary Agent round trip.
+async fn stop_active_session_before_delete(session_id: &str) -> Result<(), crate::AppError> {
+    if !store::active_run_sessions()?
+        .iter()
+        .any(|active| active == session_id)
+    {
+        return Ok(());
+    }
+    agent_bridge::abort_session(session_id).await?;
+    if !agent_bridge::wait_for_agent_idle(session_id).await {
+        return Err(
+            "Future Agent did not confirm that the session stopped; deletion was cancelled."
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Close every terminal tab a conversation owns. Called from the deletion
@@ -1009,6 +1045,57 @@ mod tests {
         .await
         .expect("delete");
         assert_eq!(deleted.id, thread.id);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn delete_thread_stops_an_active_agent_session_first() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_active");
+        let thread = make_thread(&_home, Some("sess_active_delete"));
+        store::create_run(store::CreateRunInput {
+            id: Some("run_active_delete".to_string()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("active run");
+        let agent = crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([
+                ("delete_session".to_string(), "{}".to_string()),
+                (
+                    "get_state".to_string(),
+                    crate::agent_bridge::get_state_payload("sess_active_delete", false).to_string(),
+                ),
+            ]),
+            ..Default::default()
+        });
+        let request_offset = agent.requests().len();
+
+        delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete");
+
+        let commands: Vec<String> = agent
+            .requests()
+            .into_iter()
+            .skip(request_offset)
+            .map(|request| request.0)
+            .collect();
+        let abort = commands
+            .iter()
+            .position(|command| command == "abort")
+            .unwrap();
+        let delete = commands
+            .iter()
+            .position(|command| command == "delete_session")
+            .unwrap();
+        assert!(abort < delete, "{commands:?}");
         script_mock_agent(MockScript::default());
     }
 

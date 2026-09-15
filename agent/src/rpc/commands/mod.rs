@@ -150,12 +150,24 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
     // Browsing does not instantiate a model runtime or restore LLM context.
     if cmd_type == "get_session_entries" {
-        let known = !cmd.session_id.is_empty()
-            && (state.sessions.read().contains_key(&cmd.session_id)
-                || state
-                    .session_manager
-                    .contains(&cmd.session_id)
-                    .unwrap_or(false));
+        let known = if cmd.session_id.is_empty() {
+            false
+        } else if state.sessions.read().contains_key(&cmd.session_id) {
+            true
+        } else {
+            match state.session_manager.contains(&cmd.session_id) {
+                Ok(known) => known,
+                Err(error) => {
+                    return RpcResponse::build_fail_code(
+                        id,
+                        cmd_type,
+                        "session_storage_unavailable",
+                        &format!("unable to inspect session storage: {error:#}"),
+                        serde_json::json!({"retryable": true}),
+                    );
+                }
+            }
+        };
         if !known {
             return RpcResponse::build_fail(
                 id,
@@ -172,12 +184,24 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
     // No default-session fallback: an empty or unknown session_id is an
     // explicit error, never a silent redirect into another conversation.
-    let Some(session) = state.get_session(&cmd.session_id) else {
-        return RpcResponse::build_fail(
-            id,
-            cmd_type,
-            "session not found — pass a valid session_id (new_session creates one)",
-        );
+    let session = match state.try_get_session(&cmd.session_id) {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return RpcResponse::build_fail(
+                id,
+                cmd_type,
+                "session not found — pass a valid session_id (new_session creates one)",
+            );
+        }
+        Err(error) => {
+            return RpcResponse::build_fail_code(
+                id,
+                cmd_type,
+                "session_storage_unavailable",
+                &format!("unable to load session: {error:#}"),
+                serde_json::json!({"retryable": true}),
+            );
+        }
     };
 
     // Manual compaction owns a stable session snapshot until it commits or

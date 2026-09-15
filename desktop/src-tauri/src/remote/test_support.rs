@@ -188,6 +188,9 @@ struct MockAgentState {
     /// Commands that fail with `Code::Unavailable` regardless of `down` —
     /// includes the health check itself, for RPC-error-arm tests.
     persistent_transport_fail: HashSet<String>,
+    /// Complete the next run-scoped stream with `agent_end`. Session observers
+    /// use an empty run id and do not consume this one-shot seam.
+    complete_next_run_stream: bool,
 }
 
 /// Handle to the process-global mock agent.
@@ -197,6 +200,10 @@ pub(crate) struct MockAgent {
 }
 
 impl MockAgent {
+    pub(crate) fn complete_next_run_stream(&self) {
+        self.state.lock().unwrap().complete_next_run_stream = true;
+    }
+
     /// Enqueue a one-shot response for `command` (any session).
     pub(crate) fn script(&self, command: &str, success: bool, data: Value, error: &str) {
         self.script_for(command, "", success, data, error);
@@ -498,6 +505,10 @@ fn default_answer(
                 .insert(session_id.clone(), cmd.cwd.clone());
             ok(json!({ "sessionId": session_id }))
         }
+        "prompt" => ok(json!({
+            "run_id": cmd.requested_run_id,
+            "accepted_state": "running",
+        })),
         _ => ok(json!({})),
     }
 }
@@ -529,17 +540,40 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
         Ok(tonic::Response::new(self.answer(cmd)))
     }
 
-    type StreamEventsStream =
-        futures::stream::Empty<Result<crate::agent_proto::StreamEvent, tonic::Status>>;
+    type StreamEventsStream = std::pin::Pin<
+        Box<
+            dyn futures::Stream<Item = Result<crate::agent_proto::StreamEvent, tonic::Status>>
+                + Send,
+        >,
+    >;
 
     async fn stream_events(
         &self,
-        _request: tonic::Request<crate::agent_proto::StreamRequest>,
+        request: tonic::Request<crate::agent_proto::StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
+        let request = request.into_inner();
+        let complete = if request.run_id.is_empty() {
+            false
+        } else {
+            let mut state = self.state.lock().unwrap();
+            std::mem::take(&mut state.complete_next_run_stream)
+        };
+        if complete {
+            let event = crate::agent_proto::StreamEvent {
+                r#type: "agent_end".to_string(),
+                data: r#"{"reason":"complete"}"#.to_string(),
+                run_id: request.run_id,
+                idx: 0,
+                ..Default::default()
+            };
+            return Ok(tonic::Response::new(Box::pin(futures::stream::iter([Ok(
+                event,
+            )]))));
+        }
         // An immediately-ending stream: prompt drivers observe the
         // stream-interrupted path (no agent_end), which is all the remote
         // tests need.
-        Ok(tonic::Response::new(futures::stream::empty()))
+        Ok(tonic::Response::new(Box::pin(futures::stream::empty())))
     }
 }
 
