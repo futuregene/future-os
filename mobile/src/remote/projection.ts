@@ -22,6 +22,9 @@ import { messageText } from "./codec";
 
 export interface TimelineState {
   items: TimelineItem[];
+  /** A tail read's paging checkpoint travels with its rows through replay.
+   * The controller installs it only when the sync lane publishes those rows. */
+  historyWindow?: { nextBefore: number; endOffset: number; hasMore: boolean };
   /** Persisted rows must not be re-appended as live messages after a page reset. */
   durableItemIds?: Set<string>;
   seenEvents: Set<string>;
