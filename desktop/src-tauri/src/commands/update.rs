@@ -835,8 +835,18 @@ async fn install_app_update_impl<R: tauri::Runtime>(
         .parse()
         .map_err(|error| updater_error("Invalid update endpoint", error))?;
     let comparison_current = current_version.to_string();
-    let updater = app
-        .updater_builder()
+    let updater_builder = app.updater_builder();
+    // Include this branch in test builds on other hosts so API/type regressions
+    // are caught without requiring a Windows linker for the full test suite.
+    #[cfg(any(target_os = "windows", test))]
+    let updater_builder = updater_builder.on_before_exit(|| {
+        // Tauri calls this only after the package has downloaded, passed its
+        // minisign check, and extracted successfully. It then launches NSIS
+        // and exits via std::process::exit(0), which bypasses RunEvent::Exit.
+        // Stop the owned sidecar at the last safe point before replacement.
+        agent_supervisor::shutdown_agent_gracefully();
+    });
+    let updater = updater_builder
         .endpoints(vec![endpoint])
         .map_err(|error| updater_error("Failed to select the update channel", error))?
         .version_comparator(move |_bundle_version, release| {
@@ -852,6 +862,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
 
     let progress_app = app.clone();
     let mut downloaded = 0_u64;
+
     update
         .download_and_install(
             move |chunk_length, content_length| {

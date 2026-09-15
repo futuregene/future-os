@@ -12,7 +12,17 @@ internal static class InstallerFixture
             File.WriteAllText(args[1], "ready");
             Thread.Sleep(Timeout.Infinite);
         }
-        // Simulate a cleanup failure without touching real sandbox state.
+        // Simulate a mixed pre-sandbox CLI (clap uses exit 2 for an unknown
+        // --reset-windows-sandbox flag) and an arbitrary cleanup failure
+        // without touching real sandbox state.
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "unsupported-cleanup")))
+        {
+            return 2;
+        }
+        if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "hang-cleanup")))
+        {
+            Thread.Sleep(Timeout.Infinite);
+        }
         return File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-cleanup")) ? 1 : 0;
     }
 }
