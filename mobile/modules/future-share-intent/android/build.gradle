@@ -8,9 +8,14 @@ version = '1.0.0'
 
 dependencies {
   testImplementation 'junit:junit:4.13.2'
+  testImplementation 'org.robolectric:robolectric:4.16.1'
 }
 
 android {
+  testOptions.unitTests.all {
+    // Use the same Maven Central endpoint as Gradle for Robolectric's SDK jars.
+    systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+  }
   namespace "cn.future_os.shareintent"
   defaultConfig {
     versionCode 1

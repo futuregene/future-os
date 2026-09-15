@@ -12,6 +12,14 @@ import expo.modules.kotlin.modules.ModuleDefinition
 class ShareIntentModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("FutureShareIntent")
+    Events("onPendingShare")
+
+    OnCreate {
+      ShareIntentStore.onPending = { sendEvent("onPendingShare", emptyMap<String, Any>()) }
+    }
+    OnDestroy {
+      ShareIntentStore.onPending = null
+    }
 
     AsyncFunction("getPendingShare") {
       val context = appContext.reactContext ?: return@AsyncFunction null
@@ -19,6 +27,7 @@ class ShareIntentModule : Module() {
       mapOf(
         "text" to content.text,
         "tooLarge" to content.tooLarge,
+        "failed" to content.failed,
         "files" to content.files.map { file ->
           mapOf(
             "uri" to file.uri,
