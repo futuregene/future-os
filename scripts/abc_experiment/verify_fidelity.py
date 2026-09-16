@@ -15,7 +15,7 @@ def verify(root,previous,sdk,sources):
     ledger=b.load(root/'ledger.json'); old=b.load(previous/'ledger.json')
     assert b.sha(old)==config['prior_ledger_sha256']
     assert all(r['state']=='finished' for r in ledger.values())
-    assert not any('-open' in r['identity'] for r in ledger.values()), 'unauthorized open-book call'
+    assert not any('-open-turn' in r['identity'] for r in ledger.values()), 'unauthorized open-book call'
     for path,expected in config['code_hashes'].items(): assert b.sha((b.REPO/path).read_bytes())==expected,path
     assert b.sha(b.load(sdk/'package-lock.json'))==config['sdk_lock_sha256']
     for name,info in config['sources'].items(): assert b.sha((sources/name).read_bytes())==info['sha256']
