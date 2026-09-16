@@ -150,6 +150,70 @@ because both can reach most of what the archive holds. Three findings:
 > session id. With all three fixed the effect is large and consistent in direction for
 > every strategy.
 
+## Does C's search need adjusting, and is Codex's search better?
+
+Two questions the open-book results invite, both answerable from the stored runs.
+
+### Codex's search is not better — it is used more often
+
+| Strategy | Fields gained | Lookups | Data read | KB per field | Fields per lookup |
+|---|---:|---:|---:|---:|---:|
+| **C** | 39 | 48 | 0.20 MB | **4.9** | **0.81** |
+| Codex | 51 | 113 | 2.66 MB | 50.9 | 0.45 |
+
+C recovers a field for every 4.9 KB it reads; Codex needs 50.9 KB, and twice as many
+lookups per field. By that measure **C's interface is roughly ten times more
+byte-efficient**, which is what an evidence index pointing at the records worth reading
+should do.
+
+Codex's 2-point lead comes from a single behavioural difference, not a better tool. On
+three probes C made **no tool call at all** — it answered straight from its projection —
+and lost exactly the values its projection was missing:
+
+| Probe | C closed | C open | C lookups | Codex open | Codex lookups |
+|---|---:|---:|---:|---:|---:|
+| real-visual s2 | 9/12 | 9/12 | **1 (no call)** | 11/12 | 3 |
+| real-stream s1 | 12/15 | 12/15 | **1 (no call)** | 15/15 | 4 |
+| real-stream s2 | 14/17 | 14/17 | **1 (no call)** | 17/17 | 5 |
+
+Those three probes are the entire gap. **What is worth borrowing from Codex is therefore
+not its interface but its willingness to look things up** — and that willingness comes
+from having little choice: a 1.2 K-token projection cannot answer without searching,
+where C's 8.5 K-token projection often can.
+
+Where C *does* search, it recovers the gap exactly: on 13 of 18 probes the gain equals
+the number of values its projection was missing (`+3` of a gap of 3, and so on).
+
+### Restricting search to tool records: smaller saving than expected
+
+The projection contains **every assistant and user text block** — measured across all 18
+projections, 100 % of text blocks are present verbatim. So assistant prose never needs to
+be searched. The question is what ignoring it would save.
+
+Search hits by record kind, sampled over the frozen sessions (108 hits, 9 queries):
+
+| Kind | Hits | Snippet bytes | Share of bytes |
+|---|---:|---:|---:|
+| tool result | 64 | 26 180 | **61.9 %** |
+| tool call (arguments) | 34 | 13 781 | **32.6 %** |
+| assistant text | 10 | 2 350 | **5.6 %** |
+
+Two things follow, and they point in opposite directions:
+
+* **Assistant text is only 5.6 % of returned bytes**, so excluding it would save almost
+  nothing. A special search mode for it is not worth building.
+* **Excluding tool calls would be a mistake.** The projection does *not* contain them:
+  every assistant text block is present, but only **16–19 %** of tool-call paths survive
+  on the real sessions (27/169, 42/216, 29/250) and 40–100 % on the synthetic ones. Those
+  calls carry the file paths and commands, and they are 32.6 % of returned bytes —
+  dropping them to save 5.6 % would be a bad trade.
+
+So the answer is narrower than the question suggests: **searching only tool records is
+safe with respect to assistant prose but not with respect to tool-call arguments, and the
+saving is 5.6 %.** The projection's division of labour is already nearly right — prose is
+carried verbatim, tool evidence is indexed, and search is the fallback for what neither
+covered.
+
 ## Cost per compaction
 
 Measured on the driver, which issues requests **cold** (it does not first send the
