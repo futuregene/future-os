@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { CircleAlert, MoreHorizontal, TriangleRight } from "lucide-react";
+import { CircleAlert, Minus, MoreHorizontal, Plus } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -145,10 +145,11 @@ function ThreadListItemImpl({
               onClick={() => onToggleExpanded?.(thread)}
               type="button"
             >
-              {/* A solid caret, not the chevron the workspace/section headers
-                  use: sub-conversations are a different kind of disclosure, and
-                  the same glyph one row apart read as the same control. */}
-              <TriangleRight className={cn("size-3 shrink-0 fill-current transition-transform", expanded && "rotate-90")} />
+              {/* A +/− tree-node toggle, never the chevron the workspace and
+                  section headers fold with: the same glyph one row apart read
+                  as the same control (see PRODUCT.md §5.2). Both states also
+                  stay inside the existing thin-stroke icon language. */}
+              {expanded ? <Minus className="size-3.5 shrink-0" /> : <Plus className="size-3.5 shrink-0" />}
             </button>
           )
         : !compact && depth > 0

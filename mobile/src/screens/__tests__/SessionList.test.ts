@@ -54,6 +54,7 @@ jest.mock("lucide-react-native", () =>
       "CircleAlert",
       "Folder",
       "ListChecks",
+      "Minus",
       "MoreHorizontal",
       "Pin",
       "Plus",
@@ -283,6 +284,42 @@ function confirmAlert(): void {
   act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
   act(() => modal.props.onDismiss());
 }
+
+test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
+  // A 44px touch target keeps the row toggle and the workspace header's fold
+  // control in the same column, so the glyph is the only thing separating them.
+  const originalSessions = mockRemote.sessions;
+  const originalWorkspaces = mockRemote.workspaces;
+  const iconsIn = (node: ReactTestRenderer["root"], name: string) =>
+    node.findAll(candidate => candidate.type === name);
+  try {
+    mockRemote.workspaces = [{ id: "glyph-workspace", name: "Glyph project", path: "/tmp/glyph" }];
+    const common = { mode: tab, workspaceId: "glyph-workspace", streaming: false };
+    mockRemote.sessions = [
+      { ...common, sessionId: "glyph-parent", threadId: "glyph-thread", title: "Glyph parent" },
+      { ...common, sessionId: "glyph-child", threadId: "glyph-thread-child", title: "Glyph child", parentSessionId: "glyph-parent" },
+    ];
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+
+    const parentRow = sessionBody("Glyph parent").parent!;
+    expect(iconsIn(parentRow, "Plus")).toHaveLength(1);
+    expect(iconsIn(parentRow, "ChevronRight")).toHaveLength(0);
+    // The workspace header keeps its chevron; only rows fold with +/−.
+    const headerChevrons = iconsIn(tree.root, "ChevronDown")
+      .filter(node => !iconsIn(parentRow, "ChevronDown").includes(node));
+    if (tab === "workspace") expect(headerChevrons).toHaveLength(1);
+
+    act(() => button("sessions.expandChildren").props.onPress());
+    expect(iconsIn(parentRow, "Minus")).toHaveLength(1);
+    expect(iconsIn(parentRow, "ChevronDown")).toHaveLength(0);
+    act(() => button("sessions.collapseChildren").props.onPress());
+  }
+  finally {
+    mockRemote.sessions = originalSessions;
+    mockRemote.workspaces = originalWorkspaces;
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+  }
+});
 
 test("a child in one workspace does not enlarge other workspace session gutters", () => {
   renderWorkspaceTab();

@@ -72,18 +72,17 @@ describe("thread row title space", () => {
         expect(expander.classList.contains("absolute")).toBe(false);
         expect(expander.classList.contains("relative")).toBe(true);
         expect(expander.style.left).toBe("");
-        // Sub-conversations disclose with a solid caret, never the chevron the
-        // workspace/section headers use (the two read as one control otherwise).
-        const caret = expander.querySelector("svg")!;
-        expect(caret.classList.contains("lucide-triangle-right")).toBe(true);
-        expect(caret.classList.contains("fill-current")).toBe(true);
-        expect(caret.classList.contains("rotate-90")).toBe(false);
+        // A +/− tree toggle, never the chevron the workspace/section headers
+        // use (the two read as one control otherwise).
+        const toggle = expander.querySelector("svg")!;
+        expect(toggle.classList.contains("lucide-plus")).toBe(true);
+        expect(toggle.classList.contains("fill-current")).toBe(false);
         act(() => expander.click());
         expect(p.onToggleExpanded).toHaveBeenCalledWith(p.thread);
         expect(p.onSelectThread).not.toHaveBeenCalled();
         act(() => root.render(<ThreadListItem {...p} compact={compact} depth={depth} hasChildren expanded />));
         expect(expander.getAttribute("aria-expanded")).toBe("true");
-        expect(caret.classList.contains("rotate-90")).toBe(true);
+        expect(expander.querySelector("svg")!.classList.contains("lucide-minus")).toBe(true);
       }
       else if (spacer) {
         expect(title.previousElementSibling?.tagName).toBe("SPAN");

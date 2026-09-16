@@ -6,6 +6,7 @@ import {
   CircleAlert,
   Folder,
   ListChecks,
+  Minus,
   MoreHorizontal,
   Pin,
   Plus,
@@ -287,10 +288,13 @@ export function SessionList({
             onPress={() => toggleFold(session.sessionId, false)}
             style={styles.iconButton}
           >
+            {/* A +/− tree toggle, never the chevron the workspace headers fold
+                with: on a phone the 44px touch target keeps both controls in the
+                same column, so the glyph is what tells them apart. */}
             {expanded.has(session.sessionId) ? (
-              <ChevronDown size={16} color={colors.inkSoft} />
+              <Minus size={16} color={colors.inkSoft} />
             ) : (
-              <ChevronRight size={16} color={colors.inkSoft} />
+              <Plus size={16} color={colors.inkSoft} />
             )}
           </Pressable>
         ) : (

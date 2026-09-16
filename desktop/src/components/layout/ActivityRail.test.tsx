@@ -153,7 +153,7 @@ describe("activity rail conversation hierarchy", () => {
     }
   });
 
-  it.each([false, true])("uses a different glyph for sub-conversations than for the workspace/section headers (workspace=%s)", async (workspace) => {
+  it.each([false, true])("uses a +/− tree toggle for sub-conversations, never the header chevron (workspace=%s)", async (workspace) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -167,14 +167,14 @@ describe("activity rail conversation hierarchy", () => {
     try {
       const row = container.querySelector<HTMLButtonElement>("button[aria-label=\"parent\"]")!.parentElement!;
       const threadToggle = row.querySelector<HTMLButtonElement>("button[aria-expanded=false]:not([aria-haspopup])")!;
-      expect(threadToggle.querySelector("svg")!.classList.contains("lucide-triangle-right")).toBe(true);
+      expect(threadToggle.querySelector("svg")!.classList.contains("lucide-plus")).toBe(true);
       // The workspace group header keeps its chevron — section toggles unaffected.
       const headerToggle = container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace\"], button[aria-label=\"Expand workspace\"]");
       if (workspace)
         expect(headerToggle!.querySelector("svg")!.classList.contains("lucide-chevron-down")).toBe(true);
       for (const toggle of [headerToggle, container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat section\"]")]) {
         if (toggle)
-          expect(toggle.querySelector("svg")!.classList.contains("lucide-triangle-right")).toBe(false);
+          expect(toggle.querySelector("svg")!.classList.contains("lucide-plus")).toBe(false);
       }
     }
     finally {
