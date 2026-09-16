@@ -46,7 +46,7 @@
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
 | **Configurable Tool Safety** | read, write, edit, shell — approval rules and sandbox tiers (`off` / `manual` / `sandbox`); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
-| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/loop-control-plane.md)) |
+| **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/loop-control-plane.md)) |
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
 | **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
 | **Rust Core** | Agent, IM channel bridge, loop control plane, CLI, and TUI are all written in Rust — high performance with memory safety |
@@ -70,7 +70,7 @@ iex (irm https://dl.future-os.cn/install.ps1)
 ```
 
 Step-by-step installation for every platform (desktop app, toolchains, GUI
-packaging) is in the **[Build & Install](docs/build-and-install.md)** guide.
+packaging) is in the **[Build & Install](docs/guide/build-and-install.md)** guide.
 
 The installers finish by running `future init`.
 
@@ -231,7 +231,7 @@ non-interactive commands never perform it.
 |---|---|
 | Client exits with a connection / gRPC error | Run `future doctor`; check sidecar startup errors and that client/agent use the same user and IPC environment. Start `future agent` manually if needed. Only in explicit TCP mode, check the configured address/port. |
 | Agent replies with an auth / "no model" error | No model configured yet. Run `future config` — see [Configure a model](#configure-a-model). |
-| Build / install problems | See [Build & Install](docs/build-and-install.md) (platform toolchains, linker, GUI packaging). |
+| Build / install problems | See [Build & Install](docs/guide/build-and-install.md) (platform toolchains, linker, GUI packaging). |
 
 ## Community
 

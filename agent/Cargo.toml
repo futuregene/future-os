@@ -84,7 +84,7 @@ libc = "0.2"
 pprof = { version = "0.15", features = ["flamegraph"] }
 
 # Windows: Job Object for process-tree kill; restricted token + ACLs for the
-# Windows shell write protection (desktop/DEV_MD/SANDBOX/WINDOWS.md).
+# Windows shell write protection (docs/internals/desktop/SANDBOX/WINDOWS.md).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",

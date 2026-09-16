@@ -63,7 +63,8 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
     "enabled": true,
     "client_id": "dingxxxxxxxxxxxx",
     "client_secret": "你的-client-secret",
-    "domain": "api.dingtalk.com"
+    "domain": "api.dingtalk.com",
+    "sender_allowlist": ["user-id-1"]
   }
 }
 ```
@@ -79,6 +80,10 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 | `dingtalk.client_id` | 钉钉开发者控制台中的 Client ID（AppKey） |
 | `dingtalk.client_secret` | 钉钉开发者控制台中的 Client Secret（AppSecret） |
 | `dingtalk.domain` | API 域名（默认 `api.dingtalk.com`） |
+| `dingtalk.sender_allowlist` | 私聊和群聊中获准操作 agent 的发送者 ID。空列表拒绝**所有**发送者（含 `/help`）；`["*"]` 信任所有能联系机器人的人 |
+
+> **升级提示：** 已配置的钉钉桥需要填写 `sender_allowlist` 才会接收 prompt——
+> 仅加入群聊并不获得操作 agent 的授权。
 
 ---
 

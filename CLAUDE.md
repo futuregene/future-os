@@ -2,15 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (Android/iOS), CLI, and IM bots. The core is Rust: a gRPC agent backend plus a channel bridge, loop control plane, CLI, and TUI that all connect to it. The desktop app is Tauri + React (TypeScript) and mobile is React Native (Expo). For architecture and module breakdown read `docs/README.md` (the docs index), `docs/directory-layout.md` (what lives under `~/.future/`), and the code directly.
+FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (Android/iOS), CLI, and IM bots. The core is Rust: a gRPC agent backend plus a channel bridge, loop control plane, CLI, and TUI that all connect to it. The desktop app is Tauri + React (TypeScript) and mobile is React Native (Expo). For architecture and module breakdown read `docs/README.md` (the docs index), `docs/guide/directory-layout.md` (what lives under `~/.future/`), and the code directly.
 
 ## Workspace layout
 
-The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `docs/directory-layout.md`):
+The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `docs/guide/directory-layout.md`):
 
 - `agent/` — `future-agent`, the gRPC backend. Owns `~/.future/agent/` (settings, models, auth, JSONL sessions, skills).
 - `channels/` — `future-channel`, the Feishu / DingTalk IM bridge. Owns `~/.future/channels/config.json`.
-- `orchestration/loop/` — `future-loop`, the loop control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns project-local `<cwd>/.future/loop/` by default (`FUTURE_LOOP_ROOT` overrides it); see `docs/loop-control-plane.md`.
+- `orchestration/loop/` — `future-loop`, the loop control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns project-local `<cwd>/.future/loop/` by default (`FUTURE_LOOP_ROOT` overrides it); see `docs/architecture/loop-control-plane.md`.
 - `tui/` — `future-tui`, the terminal UI (a gRPC client of the agent). Owns `~/.future/tui/`.
 - `cli/` — `future-cli`, builds the unified `future` binary that embeds agent/tui/channel/loop.
 - `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
