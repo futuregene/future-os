@@ -571,7 +571,7 @@ pub(crate) fn cmd_reload_config(
     id: &str,
 ) -> String {
     // Re-discover skills and re-read context files, then rebuild system prompt.
-    let (cwd, tools, session_id) = {
+    let (cwd, tools, session_id, session_title) = {
         let sess = session.read();
         let loop_ = match sess.agent_loop.try_read() {
             Ok(l) => l,
@@ -587,6 +587,7 @@ pub(crate) fn cmd_reload_config(
             sess.cwd.clone(),
             loop_.tools.clone(),
             sess.session_id.clone(),
+            sess.session_title(),
         )
     };
 
@@ -615,13 +616,19 @@ pub(crate) fn cmd_reload_config(
 
     // Rebuild system prompt
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let settings =
+        crate::config::load_settings(&crate::utils::default_config_dir().join("settings.json"))
+            .unwrap_or_default();
     let new_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+        auto_session_title: settings.auto_session_title,
+        ui_language: settings.ui_language,
         working_directory: cwd.clone(),
         date: today,
         tools: tools.clone(),
         skills: skills.clone(),
         agent_content: agent_content.clone(),
         session_id: session_id.clone(),
+        session_title,
         ..Default::default()
     });
 

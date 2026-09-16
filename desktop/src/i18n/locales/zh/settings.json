@@ -1,4 +1,9 @@
 {
+  "autoSessionTitle": {
+    "title": "自动生成会话标题",
+    "description": "允许模型按界面语言，将会话主题概括为简短标题。默认关闭，修改后从下一轮对话生效。",
+    "error": "无法更新标题设置：{{message}}"
+  },
   "language": {
     "title": "界面语言",
     "description": "选择应用的显示语言"

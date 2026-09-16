@@ -795,7 +795,12 @@ below New Chat jumps straight to the models page) has three pages:
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`).
+  default, per `store/app_settings.rs`). **Automatic session titles** is off by
+  default. When enabled, the model may replace a generic title with a brief
+  topic summary in the Desktop UI language (not the conversation language),
+  preserving titles explicitly chosen by the user. Changes apply at the next
+  run boundary. Summary titles use at most 32 display columns (roughly 16 CJK
+  characters), with 6–12 Chinese characters or 3–6 English words preferred.
 - **Providers**:
   - **Built-in FutureGene** (read-only): clicking "Connect" runs the GUI's
     built-in device-code OAuth login — authorization completes in the system

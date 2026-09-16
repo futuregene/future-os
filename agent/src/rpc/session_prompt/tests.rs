@@ -1352,6 +1352,26 @@ async fn prompt_persist_failure_aborts_run_with_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn prompt_refreshes_current_session_title_between_runs() {
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
+    let fixture = run_fixture(provider.clone(), "session-title");
+    let mut session = fixture.session;
+    assert_eq!(session.session_title(), "");
+    session.set_session_name("原始标题");
+    session.prompt("one", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    session.set_session_name("更新标题");
+    session.prompt("two", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests[0].system_prompt.contains("原始标题"));
+    assert!(requests[1].system_prompt.contains("更新标题"));
+    assert!(!requests[1].system_prompt.contains("原始标题"));
+    session.set_session_name("");
+    assert_eq!(session.session_title(), "one");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn prompt_second_run_uses_fast_append_path() {
     let fixture = run_fixture(
         ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]),

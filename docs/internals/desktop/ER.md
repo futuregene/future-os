@@ -1003,7 +1003,13 @@ account page and converges the Providers page's Future actions into ordinary
 built-in provider manual-key configuration; it never migrates, clears, or
 rewrites the agent login, key, and model config above.
 - `~/.future/agent/settings.json`: `defaultModel`, `enabledModels` (the model
-  visibility whitelist), etc.
+  visibility whitelist), etc. `autoSessionTitle` (default false) and `uiLanguage`
+  (`zh` / `en`, synchronized from Desktop on startup and language changes) govern
+  automatic session titles. The General settings toggle patches these fields
+  through `session_title_settings`, using strict reads and atomic writes while
+  preserving other keys. The agent reads them at each run boundary; an unknown
+  locale or unreadable config disables automatic titles. These are shared agent
+  preferences, not GUI SQLite data; no database migration is needed.
 
 Key trade-offs:
 

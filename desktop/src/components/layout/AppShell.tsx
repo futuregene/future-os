@@ -46,6 +46,7 @@ import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
+import { useSyncSessionTitleLanguage } from "./hooks/useSyncSessionTitleLanguage";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
 import { useThreadStore } from "./hooks/useThreadStore";
 import { useUnreadThreads } from "./hooks/useUnreadThreads";
@@ -85,6 +86,7 @@ export function AppShell() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
   const { appSettings, changeSettings } = useAppSettings();
+  useSyncSessionTitleLanguage();
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();

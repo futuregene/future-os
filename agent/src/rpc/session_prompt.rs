@@ -1277,7 +1277,13 @@ impl ServerSession {
             std::path::Path::new(cwd),
         );
 
+        // Read preferences at each run boundary; a missing/corrupt config fails closed.
+        let settings =
+            crate::config::load_settings(&crate::utils::default_config_dir().join("settings.json"))
+                .unwrap_or_default();
         crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+            auto_session_title: settings.auto_session_title,
+            ui_language: settings.ui_language,
             working_directory: cwd.replace('\\', "/"),
             date: today,
             tools,
@@ -1285,6 +1291,7 @@ impl ServerSession {
             agent_content,
             memory_content,
             session_id: self.session_id.clone(),
+            session_title: self.session_title(),
             model: model.to_owned(),
             thinking_level: thinking_level.to_owned(),
             prompt_guidelines: vec![
