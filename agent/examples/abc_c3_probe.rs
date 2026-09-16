@@ -251,10 +251,7 @@ async fn main() -> Result<()> {
                     ..
                 } = c
                 {
-                    let source = m
-                        .journal_entry_id()
-                        .map(str::to_string)
-                        .unwrap_or_default();
+                    let source = m.journal_entry_id().map(str::to_string).unwrap_or_default();
                     results
                         .entry(tool_call_id.clone())
                         .or_default()
@@ -338,9 +335,10 @@ async fn main() -> Result<()> {
             };
             m.content = vec![block];
             if !source.is_empty() {
-                m.metadata
-                    .get_or_insert_with(serde_json::Map::new)
-                    .insert(AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(), json!(source));
+                m.metadata.get_or_insert_with(serde_json::Map::new).insert(
+                    AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(),
+                    json!(source),
+                );
             }
             m
         }));
