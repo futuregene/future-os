@@ -99,7 +99,11 @@ function ComposerDockView({
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
-  const editable = !remote.streaming && !remote.busy;
+  // A running reply blocks sending, not drafting the next message. Keep the
+  // short send/upload busy phase locked so its acknowledgement cannot clear edits.
+  const editable = !remote.busy;
+  const canSend = !remote.streaming && !remote.busy && remote.desktopOnline &&
+    (!!message.trim() || attachments.length > 0);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
@@ -277,7 +281,7 @@ function ComposerDockView({
               multiline
               scrollEnabled={!!message && contentHeight > maxInputHeight}
               onChangeText={completion.onChangeText}
-              onSubmitEditing={() => void send()}
+              onSubmitEditing={() => { if (canSend) void send(); }}
               placeholder={t("chat.placeholder")}
               placeholderTextColor={colors.inkMuted}
               spellCheck={false}
@@ -422,18 +426,11 @@ function ComposerDockView({
               <Pressable
                 accessibilityLabel={t("chat.send")}
                 accessibilityRole="button"
-                disabled={
-                  (!message.trim() && attachments.length === 0) ||
-                  remote.busy ||
-                  !remote.desktopOnline
-                }
-                onPress={() => void send()}
+                disabled={!canSend}
+                onPress={() => { if (canSend) void send(); }}
                 style={({ pressed }) => [
                   styles.sendButton,
-                  ((!message.trim() && attachments.length === 0) ||
-                    remote.busy ||
-                    !remote.desktopOnline) &&
-                    styles.sendDisabled,
+                  !canSend && styles.sendDisabled,
                   pressed && styles.sendPressed,
                 ]}
               >
