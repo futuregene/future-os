@@ -26,15 +26,23 @@ test.each([
   expect(markdownImagePath(src!, base)).toBe(expected);
 });
 
-test("uncached local images only download after a click and render inline", async () => {
+test("uncached images in a reply body load themselves", async () => {
   const loader = { scope: "desktop:session", cached: jest.fn(() => null), load: jest.fn(async () => "file:///verified.png") };
-  act(() => { tree = create(render(loader, "![chart](assets/a.png)", "/docs/report.md")); });
-  expect(loader.load).not.toHaveBeenCalled();
-  expect(tree.root.findAllByType(Image)).toHaveLength(0);
-  await act(async () => button("attachment.loadImage").props.onPress());
+  await act(async () => { tree = create(render(loader, "![chart](assets/a.png)", "/docs/report.md")); });
+  // No tap: the image the agent put in its answer is part of the reply.
   expect(loader.load).toHaveBeenCalledWith("/docs/assets/a.png", expect.any(AbortSignal));
   expect(tree.root.findByType(Image).props.source).toEqual({ uri: "file:///verified.png" });
   for (let node = tree.root.findByType(Image).parent; node; node = node.parent) expect(node.type).not.toBe(Text);
+});
+
+// A file preview is the same story: an image written into the document is part
+// of it, so opening a document shows its images without a per-image tap.
+test("images in a file preview load themselves too", async () => {
+  const loader = { scope: "one", cached: jest.fn(() => null), load: jest.fn(async () => "file:///x.png") };
+  await act(async () => { tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+    createElement(MarkdownText, { text: "![chart](./a.png)", mode: "file-preview" }))); });
+  expect(loader.load).toHaveBeenCalledWith("a.png", expect.any(AbortSignal));
+  expect(tree.root.findByType(Image).props.source.uri).toBe("file:///x.png");
 });
 
 test("already verified cached images display without downloading", () => {
@@ -44,11 +52,10 @@ test("already verified cached images display without downloading", () => {
   expect(loader.load).not.toHaveBeenCalled();
 });
 
-test("failed loads offer retry, duplicate taps do not start duplicate work", async () => {
+test("a failed auto-load offers retry, duplicate taps do not start duplicate work", async () => {
   let reject!: (error: Error) => void;
   const loader = { scope: "one", cached: () => null, load: jest.fn(() => new Promise<string>((_, r) => { reject = r; })) };
-  act(() => { tree = create(render(loader)); });
-  act(() => { button("attachment.loadImage").props.onPress(); button("attachment.loadImage").props.onPress(); });
+  await act(async () => { tree = create(render(loader)); });
   expect(loader.load).toHaveBeenCalledTimes(1);
   await act(async () => reject(new Error("offline")));
   expect(button("attachment.retryImage")).toBeDefined();
@@ -59,24 +66,46 @@ test("failed loads offer retry, duplicate taps do not start duplicate work", asy
   expect(button("attachment.retryImage")).toBeDefined();
 });
 
+// A reply re-projects on every streaming delta; the image must not be
+// re-requested on each one.
+test("a streaming re-projection does not re-request the image", async () => {
+  const loader = { scope: "one", cached: () => null, load: jest.fn(async () => "file:///a.png") };
+  await act(async () => { tree = create(render(loader, "![chart](a.png)")); });
+  expect(loader.load).toHaveBeenCalledTimes(1);
+  await act(async () => { tree.update(render(loader, "![chart](a.png)\n\nmore text")); });
+  expect(loader.load).toHaveBeenCalledTimes(1);
+});
+
 test("session/desktop changes cancel loads and never display a previous session's bytes", async () => {
-  let resolve!: (uri: string) => void;
-  let signal!: AbortSignal;
-  const loader: MarkdownImageLoader = { scope: "one", cached: () => null, load: (_, s) => { signal = s; return new Promise(r => { resolve = r; }); } };
-  act(() => { tree = create(render(loader)); });
-  act(() => button("attachment.loadImage").props.onPress());
-  act(() => tree.update(render({ ...loader, scope: "two" })));
-  expect(signal.aborted).toBe(true);
-  await act(async () => resolve("file:///old-session.png"));
+  let resolveFirst!: (uri: string) => void;
+  const signals: AbortSignal[] = [];
+  const loader: MarkdownImageLoader = {
+    scope: "one",
+    cached: () => null,
+    // The first session's transfer is the one that must be discarded; the second
+    // (different scope) never settles here.
+    load: (_path, signal) => {
+      signals.push(signal);
+      return signals.length === 1
+        ? new Promise<string>(r => { resolveFirst = r; })
+        : new Promise<string>(() => {});
+    },
+  };
+  await act(async () => { tree = create(render(loader)); });
+  expect(signals).toHaveLength(1);
+  act(() => { tree.update(render({ ...loader, scope: "two" })); });
+  // The previous session's transfer is cancelled, not merely ignored — and the
+  // stale bytes never reach the screen even though its promise still resolves.
+  expect(signals[0]!.aborted).toBe(true);
+  await act(async () => resolveFirst("file:///old-session.png"));
   expect(tree.root.findAllByType(Image)).toHaveLength(0);
 });
 
 test("unsupported inline images retain the existing open-file fallback", async () => {
   const onOpenFile = jest.fn();
   const loader = { scope: "one", cached: () => null, load: jest.fn(async () => { throw new Error("unsupported"); }) };
-  act(() => { tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+  await act(async () => { tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
     createElement(MarkdownText, { text: "![chart](./a.svg)", onOpenFile }))); });
-  await act(async () => button("attachment.loadImage").props.onPress());
   const fallback = tree.root.findAllByType(Text).find(node => node.props.children === "attachment.open")!;
   act(() => fallback.props.onPress());
   expect(onOpenFile).toHaveBeenCalledWith("a.svg");
