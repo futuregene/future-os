@@ -21,7 +21,7 @@ FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在*
 有效登录和配对会复用，Ctrl+C 关闭入口并退出，不自动后台运行。
 
 完整启动步骤、选项、服务器无 GUI 构建、Agent 生命周期与排障，见
-[Desktop 无头模式使用指南](../../desktop-headless.zh-CN.md)。
+[Desktop 无头模式使用指南](../../guide/desktop-headless.zh-CN.md)。
 
 ## 可以做什么
 
@@ -58,4 +58,4 @@ Remote 控制相同的桌面会话并沿用其权限，配对不会自动开启�
 - **待审批：**检查请求范围并明确批准或拒绝，不要仅为了消除安全提示而切换不受限模式。
 
 另见 [[安装|Installation]]、[[使用 FutureOS|Using-FutureOS]] 和 [[审批与沙箱|Sandbox]]。
-手机端源码构建与 TestFlight 维护说明见仓库 `mobile/README.md`。
+手机端源码构建与 TestFlight 维护说明见仓库 `docs/internals/mobile/README.md`。

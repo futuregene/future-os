@@ -8,6 +8,7 @@ use super::{
 use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
 use crate::types::LLMProvider;
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -932,7 +933,8 @@ async fn call_summary_request(
                 if attempt < MAX_TRANSIENT_RETRIES && is_retryable(&message) {
                     attempt += 1;
                     tracing::warn!(attempt, error = %message, "retrying context compaction request");
-                    tokio::time::sleep(retry_delay(attempt)).await;
+                    await_or_interrupt(tokio::time::sleep(retry_delay(attempt)), interrupted)
+                        .await?;
                     continue;
                 }
                 return Err(SummaryCallError::Other(message));
@@ -944,18 +946,19 @@ async fn call_summary_request(
             if interrupted.load(Ordering::Relaxed) {
                 return Err(SummaryCallError::Cancelled);
             }
-            let event = match summary_interruptible(
-                tokio::time::timeout(SUMMARY_EVENT_TIMEOUT, stream.next()),
-                interrupted,
+            let event = match tokio::time::timeout(
+                SUMMARY_EVENT_TIMEOUT,
+                await_or_interrupt(stream.next(), interrupted),
             )
-            .await?
+            .await
             {
-                Ok(event) => event,
-                Err(_) if complete => break,
+                Ok(Ok(event)) => event,
+                Ok(Err(error)) => return Err(error),
                 Err(_) if attempt < MAX_TRANSIENT_RETRIES => {
                     attempt += 1;
                     tracing::warn!(attempt, "retrying timed-out context compaction stream");
-                    tokio::time::sleep(retry_delay(attempt)).await;
+                    await_or_interrupt(tokio::time::sleep(retry_delay(attempt)), interrupted)
+                        .await?;
                     continue 'attempts;
                 }
                 Err(_) => {
@@ -998,7 +1001,8 @@ async fn call_summary_request(
                     if attempt < MAX_TRANSIENT_RETRIES && is_retryable(&message) {
                         attempt += 1;
                         tracing::warn!(attempt, error = %message, "retrying failed context compaction stream");
-                        tokio::time::sleep(retry_delay(attempt)).await;
+                        await_or_interrupt(tokio::time::sleep(retry_delay(attempt)), interrupted)
+                            .await?;
                         continue 'attempts;
                     }
                     return Err(SummaryCallError::Other(message));
@@ -1019,10 +1023,32 @@ async fn call_summary_request(
         let message = "summary stream ended before a complete response".to_string();
         if attempt < MAX_TRANSIENT_RETRIES {
             attempt += 1;
-            tokio::time::sleep(retry_delay(attempt)).await;
+            await_or_interrupt(tokio::time::sleep(retry_delay(attempt)), interrupted).await?;
             continue;
         }
         return Err(SummaryCallError::Other(message));
+    }
+}
+
+/// Await provider work while polling the run's shared cancellation flag. This
+/// covers connection setup, a silent stream, and retry backoff, so compaction
+/// cannot outlive the runtime's 30-second cancellation acknowledgement window.
+async fn await_or_interrupt<F, T>(
+    future: F,
+    interrupted: &AtomicBool,
+) -> Result<T, SummaryCallError>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(future);
+    loop {
+        if interrupted.load(Ordering::Relaxed) {
+            return Err(SummaryCallError::Cancelled);
+        }
+        tokio::select! {
+            output = &mut future => return Ok(output),
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
     }
 }
 
@@ -2501,6 +2527,18 @@ mod tests {
         }
     }
 
+    struct PendingRequestProvider;
+
+    #[async_trait::async_trait]
+    impl LLMProvider for PendingRequestProvider {
+        async fn stream_model(
+            &self,
+            _request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            std::future::pending().await
+        }
+    }
+
     fn internal_checkpoint(summary: &str, id: &str) -> ProjectedMessage {
         let mut msg = AgentMessage::new_user(
             "user",
@@ -3013,6 +3051,23 @@ mod tests {
     async fn summary_model_respects_interrupt_before_request() {
         let provider = ScriptStreamProvider::new([]);
         let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(true)).await;
+        assert!(matches!(result, Err(SummaryCallError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn summary_model_respects_interrupt_during_connection_setup() {
+        let interrupted = std::sync::Arc::new(AtomicBool::new(false));
+        let signal = interrupted.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            signal.store(true, Ordering::Relaxed);
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            call_summary_model(&PendingRequestProvider, "m", "p".into(), &interrupted),
+        )
+        .await
+        .expect("interrupt must beat the cancellation watchdog");
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
     }
 

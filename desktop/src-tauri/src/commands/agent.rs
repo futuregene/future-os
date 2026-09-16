@@ -39,10 +39,40 @@ pub async fn reset_windows_sandbox() -> Result<usize, crate::AppError> {
 }
 
 #[tauri::command]
-pub async fn agent_prompt(
+pub async fn agent_prompt<R: tauri::Runtime>(
+    webview: tauri::Webview<R>,
     request: agent_bridge::AgentPromptRequest,
+    on_accepted: Option<tauri::ipc::JavaScriptChannelId>,
 ) -> Result<agent_bridge::AgentPromptResponse, crate::AppError> {
-    agent_bridge::agent_prompt_with_model_context(request).await
+    forward_prompt_acceptance(request, on_accepted.map(|id| id.channel_on(webview))).await
+}
+
+pub(crate) async fn forward_prompt_acceptance(
+    request: agent_bridge::AgentPromptRequest,
+    on_accepted: Option<tauri::ipc::Channel<()>>,
+) -> Result<agent_bridge::AgentPromptResponse, crate::AppError> {
+    let Some(channel) = on_accepted else {
+        return agent_bridge::agent_prompt_with_model_context(request).await;
+    };
+    let (accepted_tx, mut accepted_rx) = tokio::sync::oneshot::channel();
+    let prompt = agent_bridge::agent_prompt_with_acceptance(request, Some(accepted_tx));
+    tokio::pin!(prompt);
+    tokio::select! {
+        biased;
+        accepted = &mut accepted_rx => {
+            if accepted.is_ok() {
+                let _ = channel.send(());
+            }
+            prompt.await
+        }
+        result = &mut prompt => {
+            // A very short run can finish in the same poll that sends its ACK.
+            if accepted_rx.try_recv().is_ok() {
+                let _ = channel.send(());
+            }
+            result
+        }
+    }
 }
 
 #[cfg(test)]
@@ -151,16 +181,19 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         // A thread the store has never seen fails before any prompt work — the
         // wrapper's job is just to forward the error (and the message).
-        let error = agent_prompt(agent_bridge::AgentPromptRequest {
-            message: "hi".to_string(),
-            model_context: String::new(),
-            attachments: None,
-            thread_id: "ghost".to_string(),
-            session_id: None,
-            run_id: None,
-            model_id: None,
-            thinking_level: None,
-        })
+        let error = forward_prompt_acceptance(
+            agent_bridge::AgentPromptRequest {
+                message: "hi".to_string(),
+                model_context: String::new(),
+                attachments: None,
+                thread_id: "ghost".to_string(),
+                session_id: None,
+                run_id: None,
+                model_id: None,
+                thinking_level: None,
+            },
+            None,
+        )
         .await
         .expect_err("prompt should fail for a missing thread");
         assert!(!error.to_string().is_empty());

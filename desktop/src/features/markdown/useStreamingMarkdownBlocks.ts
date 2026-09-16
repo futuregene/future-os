@@ -1,3 +1,4 @@
+import type { FutureMarkdownDocument, InlineNode, MarkdownNode } from "@future-os/markdown";
 import type { StreamingMarkdownWorkerRequest, StreamingMarkdownWorkerResponse } from "./streamingMarkdown.worker";
 import type { StreamingMarkdownBlock } from "./streamingMarkdownBlocks";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +25,91 @@ interface Projection {
   text: string;
 }
 
+function appendInlineSuffix(children: InlineNode[], suffix: string): InlineNode[] {
+  return [...children, { type: "text", text: suffix }];
+}
+
+/**
+ * Keep an unparsed suffix inside the current tail block until the worker catches
+ * up. Appending it as a new top-level paragraph makes the live DOM alternate
+ * between one and two blocks; `space-y-3` then adds and removes a line plus a
+ * 12px gap on every worker response, which sticky bottom-follow turns into a
+ * visible whole-page jump.
+ */
+function appendSuffixToNode(node: MarkdownNode, suffix: string): MarkdownNode | null {
+  switch (node.type) {
+    case "paragraph":
+    case "heading":
+      return { ...node, children: appendInlineSuffix(node.children, suffix) };
+    case "code":
+    case "mathBlock":
+      return { ...node, code: node.code + suffix };
+    case "blockquote": {
+      const children = node.children.slice();
+      const last = children[children.length - 1];
+      if (!last)
+        return null;
+      const extended = appendSuffixToNode(last, suffix);
+      if (!extended)
+        return null;
+      children[children.length - 1] = extended;
+      return { ...node, children };
+    }
+    case "list": {
+      const items = node.items.slice();
+      const last = items[items.length - 1];
+      if (!last)
+        return null;
+      const item = { ...last };
+      if (item.blocks?.length) {
+        const blocks = item.blocks.slice();
+        const extended = appendSuffixToNode(blocks[blocks.length - 1]!, suffix);
+        if (!extended)
+          return null;
+        blocks[blocks.length - 1] = extended;
+        item.blocks = blocks;
+      }
+      else {
+        item.children = appendInlineSuffix(item.children, suffix);
+      }
+      items[items.length - 1] = item;
+      return { ...node, items };
+    }
+    case "table": {
+      const rows = node.rows.slice();
+      const lastRow = rows[rows.length - 1]?.slice();
+      if (lastRow?.length) {
+        lastRow[lastRow.length - 1] = appendInlineSuffix(lastRow[lastRow.length - 1]!, suffix);
+        rows[rows.length - 1] = lastRow;
+        return { ...node, rows };
+      }
+      const headers = node.headers.slice();
+      if (!headers.length)
+        return null;
+      headers[headers.length - 1] = appendInlineSuffix(headers[headers.length - 1]!, suffix);
+      return { ...node, headers };
+    }
+    case "futureEmbed":
+    case "thematicBreak":
+      return null;
+  }
+}
+
+function appendProvisionalSuffix(
+  document: FutureMarkdownDocument,
+  raw: string,
+  suffix: string,
+): FutureMarkdownDocument {
+  const nodes = document.nodes.slice();
+  const last = nodes[nodes.length - 1];
+  const extended = last ? appendSuffixToNode(last, suffix) : null;
+  if (extended)
+    nodes[nodes.length - 1] = extended;
+  else
+    nodes.push({ type: "paragraph", children: [{ type: "text", text: suffix }] });
+  return { ...document, raw, nodes };
+}
+
 function provisionalProjection(current: Projection, text: string, live: boolean): StreamingMarkdownBlock[] {
   if (!text.startsWith(current.text) || current.blocks.length === 0)
     return plainStreamingMarkdown(text, live);
@@ -40,11 +126,7 @@ function provisionalProjection(current: Projection, text: string, live: boolean)
     content: tail.content + suffix,
     live,
     document: suffix && tail.document
-      ? {
-          ...tail.document,
-          raw: tail.content + suffix,
-          nodes: [...tail.document.nodes, { type: "paragraph", children: [{ type: "text", text: suffix }] }],
-        }
+      ? appendProvisionalSuffix(tail.document, tail.content + suffix, suffix)
       : tail.document,
   };
   return blocks;

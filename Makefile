@@ -3,6 +3,7 @@
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
+	check-docs test-docs-check \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -353,6 +354,18 @@ endif
 generate-models:
 	python3 scripts/generate_models.py
 
+# Documentation gate. Not wired into `make lint` or CI on purpose: nothing runs
+# it automatically yet, so it is a deliberate, separate decision to add it to a
+# pipeline. Run it before touching docs/.
+check-docs:
+	python3 scripts/check-docs.py
+	python3 scripts/check-docs.py --strict-pending
+
+# Regression tests for the documentation gate itself (includes negative
+# controls, so a checker that stopped detecting violations would fail here).
+test-docs-check:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-check-docs.py
+
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:
 	cd packages/rpc && REGENERATE_PROTO=1 cargo build
@@ -388,6 +401,7 @@ help:
 	@echo "  test-cli-diff / -tui-diff / -tui-tmux  [manual] TS→Rust migration gates"
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
+	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -loop   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"

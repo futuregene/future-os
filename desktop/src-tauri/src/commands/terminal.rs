@@ -3,7 +3,7 @@
 //! Deliberately one command: the webview asks where the loopback terminal
 //! server is and what secret to present, then talks to it directly over HTTP
 //! and WebSocket. Terminal output never crosses the Tauri IPC boundary — that
-//! is the point of the transport (see `desktop/DEV_MD/embedded-terminal.md`).
+//! is the point of the transport (see `docs/internals/desktop/embedded-terminal.md`).
 
 use crate::terminal;
 use crate::AppError;

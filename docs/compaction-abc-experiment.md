@@ -540,6 +540,59 @@ This is the comparison the earlier sections set up: once the exam asks about the
 agent's own output — where real follow-ups point — retaining that output verbatim
 beats summarising it, and it is also free.
 
+## With retrieval: the same six chains, open book
+
+The comparison above is closed-book — it measures what each rule *preserves*. This
+one gives every strategy the lookup interface that matches its own design, so the
+question becomes how much each can *recover*:
+
+| strategy | interface |
+|---|---|
+| C | the archive CLI (`future session history search` / `get`) |
+| codex | the window/item interface (`history.search_contents` / `read_item`) |
+| opencode | the filesystem (`glob` / `grep` / `read` over a materialised tree) |
+
+Restricted to the three real chains, because `ours` needs a session that exists in
+the Agent database and the synthetic fixtures have none:
+
+| arm | closed book | open book | delta | mean lookups |
+|---|---:|---:|---:|---:|
+| **C** | 100/127 (78.7%) | **110/129 (85.3%)** | **+10** | 1.6 |
+| **codex** | 93/127 (73.2%) | **112/129 (86.8%)** | **+19** | 8.3 |
+| opencode | 82/127 (64.6%) | 74/129 (57.4%) | **−8** | 1.0 |
+
+Per chain:
+
+| chain | C | codex | opencode |
+|---|---|---|---|
+| real-stream | 45/49 (was 37/47) | 41/49 (was 33/47) | 24/49 (was 28/47) |
+| real-visual | 30/36 (was 28/36) | 33/36 (was 27/36) | 25/36 (was 26/36) |
+| real-yt | 35/44 (was 35/44) | 38/44 (was 33/47) | 25/44 (was 28/44) |
+
+**Zero false positives everywhere.** The differences are recall, not invention.
+
+Three findings, one of which corrects an earlier claim:
+
+1. **Retrieval helps a summarising strategy far more than an evidence-keeping one.**
+   Codex gains **+19** because its projection retains little and its archive can
+   still answer from the original text; C gains **+10** because its evidence index
+   already carried much of what the questions ask for. The gap between them
+   *narrows* from 5.5 points closed-book to **1.5 points** open-book.
+2. **The advantage survives, but it is much smaller than the closed-book run
+   suggested.** Closed-book C led Codex by 5.5 points; open-book it leads by 1.5.
+   A reviewer should read the closed-book figures as "what each rule keeps", not as
+   "how well each agent answers", which is what this table measures.
+3. **OpenCode gets *worse* with retrieval (−8).** Its recovery path is the
+   filesystem, and the current state of a file does not contain the values that
+   earlier versions overwrote — which is exactly what the buried-value questions
+   ask for. Retrieval can even cost it accuracy by surfacing the current value of
+   something the question asks about historically.
+
+**What this does not show.** The synthetic chains contribute no open-book numbers
+for `ours`, so the comparable set is three chains rather than six. The mean-lookup
+column differs by design (codex's interface needs paging, ours returns an offset),
+so the lookup counts are not a like-for-like efficiency measure.
+
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
 **Yes.** I checked which record kind actually contains each of the original 12 gold

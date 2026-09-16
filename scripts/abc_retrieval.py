@@ -17,7 +17,9 @@ separate "how good is the projection" from "how good is the lookup tool".
 Every mode is given the same overall byte budget for retrieved content.
 """
 
-import json, os, re, shlex, subprocess
+import hashlib
+import json
+import pathlib, os, re, shlex, subprocess
 from pathlib import Path
 
 # ─── shared budgets ──────────────────────────────────────────────────────────
@@ -68,8 +70,16 @@ def codex_windows(root, task, stage):
 
 
 def codex_short_id(record):
-    """Short suffix, as Codex shows in a trailing `[id: ...]` marker."""
-    return record["id"]
+    """Short suffix, as Codex shows in a trailing `[id: ...]` marker.
+
+    Frozen fixtures carry an explicit `id`; real sessions do not, so fall back to a
+    stable identifier derived from the record's own position and content.
+    """
+    if record.get("id"):
+        return record["id"]
+    basis = f"{record.get('role','?')}:{record.get('kind','?')}:{record.get('path','')}:"
+    basis += (record.get("text") or "")[:64]
+    return hashlib.sha1(basis.encode()).hexdigest()[:12]
 
 
 def codex_item(record, max_chars, mode=None, query=None):
@@ -316,6 +326,45 @@ def opencode_dispatch(name, arguments, workspace, budget):
 
 
 # ─── ours ────────────────────────────────────────────────────────────────────
+
+
+# ─── Records-based entry points (real sessions have no frozen fixture) ────────
+
+
+def codex_windows_from_records(records):
+    """One window per tenth of the session, so item ids stay grouped.
+
+    Frozen fixtures have an explicit stage structure; a real session does not, so
+    the records are cut into windows of comparable size.
+    """
+    size = max(1, len(records) // 3)
+    windows = []
+    for index, start in enumerate(range(0, len(records), size)):
+        chunk = records[start:start + size]
+        if chunk:
+            windows.append({"window_id": f"session-w{index}", "items": chunk})
+    return windows
+
+
+def materialize_workspace_from_records(records, directory):
+    """Write the newest version of every path named by a tool result.
+
+    Same rule as the fixture version: only the current state exists on disk, so
+    values an earlier version overwrote are unreachable through this interface.
+    """
+    latest = {}
+    for record in records:
+        if record.get("kind") == "tool_result" and record.get("path"):
+            latest[record["path"]] = record.get("text", "")
+        elif record.get("kind") == "tool_result":
+            # Unnamed results still need somewhere to live, or grep finds nothing.
+            latest.setdefault("tool-output.log", "")
+            latest["tool-output.log"] += "\n" + record.get("text", "")
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, text in latest.items():
+        safe = pathlib.PurePosixPath(str(name).replace("\\", "/")).name or "artifact.log"
+        (directory / safe).write_text(text, encoding="utf-8")
+    return sorted(latest)
 
 
 def our_tools(session_id):

@@ -41,7 +41,7 @@ import { useSessionListScroll } from "./useSessionListScroll";
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
 
-// Column geometry, mirroring the desktop rail (see desktop/DEV_MD/PRODUCT.md §5.2):
+// Column geometry, mirroring the desktop rail (see docs/internals/desktop/PRODUCT.md §5.2):
 // every row is [toggle column 16][gap 4][title], and a child row's start is its
 // parent's title column — so a parent title and its children's titles line up.
 // Leaves carry no toggle column and start at the list inset.

@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { RemoteClient } from "../client";
 import { uploadAttachments } from "../files";
 import { loadPendingContinuation, savePendingContinuation } from "../pendingContinuationStorage";
@@ -504,6 +505,39 @@ describe("usePromptOutbox sendMessage", () => {
     await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
     const engine = h.syncEngineRef.current as unknown as { mutate: jest.Mock };
     expect(engine.mutate).toHaveBeenCalled();
+  });
+
+  it("keeps an acknowledged command id when local cleanup briefly fails", async () => {
+    const removeItem = AsyncStorage.removeItem as jest.MockedFunction<
+      typeof AsyncStorage.removeItem
+    >;
+    removeItem.mockRejectedValueOnce(new Error("storage unavailable"));
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const requestRetry = jest.fn(async (request: { type: string }) => ({
+      data: request.type === "get_prompt_receipt" ? ack() : ack(),
+    }));
+    const h = await mountSend({ engine: fakeEngine(), requestRetry });
+
+    await act(async () => {
+      await h.result.sendMessage("hello");
+    });
+    const retained = await loadPendingPrompt(credentials.pairId);
+    expect(retained?.commandId).toBeTruthy();
+    expect(warning).toHaveBeenCalledWith(
+      "[remote] acknowledged prompt cleanup deferred",
+      expect.objectContaining({ commandId: retained?.commandId }),
+    );
+
+    await act(async () => {
+      await h.result.sendMessage("hello");
+    });
+    expect(requestRetry.mock.calls.filter(([request]) => request.type === "prompt")).toHaveLength(1);
+    expect(requestRetry).toHaveBeenCalledWith(
+      { type: "get_prompt_receipt", promptId: retained?.commandId },
+      "list",
+    );
+    await expect(loadPendingPrompt(credentials.pairId)).resolves.toBeNull();
+    warning.mockRestore();
   });
 
   it("does not receipt-check a foreign prompt when the user sends a new message", async () => {

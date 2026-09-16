@@ -1,4 +1,4 @@
-//! Seatbelt profile smoke tests (desktop/DEV_MD/SANDBOX/MACOS.md).
+//! Seatbelt profile smoke tests (docs/internals/desktop/SANDBOX/MACOS.md).
 //!
 //! These execute real commands under `sandbox-exec` to validate the generated
 //! profile against actual tool behavior: writes land only in writable roots,
@@ -112,7 +112,7 @@ fn credential_paths_are_unreadable() {
     // sandbox/rules.rs (builtin_overrides): the hard-deny blocks the official
     // `future` CLI that skills shell out to. Re-enable both together once the
     // tracked auth.json credential-channel task is completed. See rules.rs and
-    // desktop/DEV_MD/SANDBOX/COMMON.md for the intentionally deferred follow-up.
+    // docs/internals/desktop/SANDBOX/COMMON.md for the intentionally deferred follow-up.
     // let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/auth.json");
     // assert!(!out.status.success(), "auth.json read should be denied");
     let out = run_sandboxed(&default_sandbox(&ws), "cat ~/.future/agent/models.json");

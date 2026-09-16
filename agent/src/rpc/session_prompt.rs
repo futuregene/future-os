@@ -682,7 +682,7 @@ impl ServerSession {
         // checks so all layers agree. No explicit policy (every non-GUI client)
         // → dormant sandbox = legacy behavior. Session rules are cleared at run
         // start and shared into the sandbox so same-run "allow in this
-        // workspace" injections take effect immediately (desktop/DEV_MD/SANDBOX/COMMON.md).
+        // workspace" injections take effect immediately (docs/internals/desktop/SANDBOX/COMMON.md).
         self.session_rules.lock().clear();
         let sandbox = Arc::new(match &run_sandbox_policy {
             Some(policy) => crate::sandbox::ResolvedSandbox::resolve_with_session(
@@ -799,7 +799,7 @@ impl ServerSession {
         );
         debug_assert!(cancellation_installed);
 
-        // Post-hoc escalation channel (desktop/DEV_MD/SANDBOX/COMMON.md): lets run_shell
+        // Post-hoc escalation channel (docs/internals/desktop/SANDBOX/COMMON.md): lets run_shell
         // raise a `sandbox_escalation` approval after a sandbox denial without
         // the tools layer touching RPC internals. Blocks until the user decides.
         let escalation: crate::sandbox::EscalationRequester = {
