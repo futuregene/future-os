@@ -35,6 +35,8 @@ export interface AppSettings {
    * finishes. On by default.
    */
   bellOnComplete: boolean;
+  /** Compact the opening context once, after a new conversation's first answer. Off by default. */
+  autoCompactFirstTurn: boolean;
   /** Community-edition UI hides billing surfaces and treats Future like a normal builtin provider. */
   communityEdition: boolean;
 }
@@ -49,6 +51,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,
+  autoCompactFirstTurn: false,
   communityEdition: false,
 };
 
@@ -65,6 +68,7 @@ export async function updateAppSettings(input: {
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
   bellOnComplete?: boolean;
+  autoCompactFirstTurn?: boolean;
   communityEdition?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });

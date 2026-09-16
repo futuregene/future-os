@@ -795,7 +795,12 @@ below New Chat jumps straight to the models page) has three pages:
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`).
+  default, per `store/app_settings.rs`); **Summarize after the first answer**
+  (off by default). The latter invokes the existing standalone compaction API
+  once when a new conversation's first run completes successfully. Later turns,
+  failed/cancelled first runs, and replayed completion events do not trigger it.
+  Enabling it does not backfill conversations whose first answer already ended.
+  Original messages remain available; compaction failure does not fail the answer.
 
 **Session title suggestions** are exclusively user-triggered from the rename
 window in Desktop and mobile. “Auto-generate” calls the conversation's selected

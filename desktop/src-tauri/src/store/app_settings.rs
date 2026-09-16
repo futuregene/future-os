@@ -33,6 +33,9 @@ pub struct AppSettings {
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
+    /// Compact once after the first successful answer of a new conversation.
+    /// Off by default; later turns never trigger this preference.
+    pub auto_compact_first_turn: bool,
     /// Use the community-edition UI: Future is configured like another
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
@@ -49,6 +52,7 @@ pub struct UpdateAppSettingsInput {
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
     pub bell_on_complete: Option<bool>,
+    pub auto_compact_first_turn: Option<bool>,
     pub community_edition: Option<bool>,
 }
 
@@ -60,6 +64,7 @@ const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
+const KEY_AUTO_COMPACT_FIRST_TURN: &str = "auto_compact_first_turn";
 const KEY_COMMUNITY_EDITION: &str = "community_edition";
 const KEY_DEVICE_ID: &str = "device_id";
 
@@ -160,6 +165,14 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let value = if bell_on_complete { "true" } else { "false" };
         write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
     }
+    if let Some(auto_compact_first_turn) = input.auto_compact_first_turn {
+        let value = if auto_compact_first_turn {
+            "true"
+        } else {
+            "false"
+        };
+        write_value(&tx, KEY_AUTO_COMPACT_FIRST_TURN, value, now)?;
+    }
     if let Some(community_edition) = input.community_edition {
         let value = if community_edition { "true" } else { "false" };
         write_value(&tx, KEY_COMMUNITY_EDITION, value, now)?;
@@ -211,6 +224,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
+    let auto_compact_first_turn = read_value(conn, KEY_AUTO_COMPACT_FIRST_TURN)?
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
         .map(|value| value == "true")
         .unwrap_or(false);
@@ -223,6 +239,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         skill_guide_dismissed,
         skill_intro_dismissed,
         bell_on_complete,
+        auto_compact_first_turn,
         community_edition,
     })
 }
@@ -272,6 +289,7 @@ mod tests {
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
             bell_on_complete: None,
+            auto_compact_first_turn: None,
             community_edition: Some(true),
         }
     }
@@ -338,6 +356,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_compact_first_turn: None,
             community_edition: None,
         })
         .expect("update");
@@ -359,6 +378,33 @@ mod tests {
         .expect("update");
         assert!(!updated.bell_on_complete);
         assert!(!get_app_settings().expect("re-read").bell_on_complete);
+    }
+
+    #[test]
+    fn first_turn_compaction_defaults_off_and_persists_updates() {
+        let (_home, conn) = guarded_conn("settings_first_turn_compaction");
+        drop(conn);
+        assert!(
+            !get_app_settings()
+                .expect("defaults")
+                .auto_compact_first_turn
+        );
+        for enabled in [true, false] {
+            let updated = update_app_settings(UpdateAppSettingsInput {
+                auto_compact_first_turn: Some(enabled),
+                ..Default::default()
+            })
+            .expect("update");
+            assert_eq!(updated.auto_compact_first_turn, enabled);
+            assert_eq!(
+                get_app_settings().expect("reload").auto_compact_first_turn,
+                enabled
+            );
+            assert_eq!(
+                serde_json::to_value(updated).expect("serialize")["autoCompactFirstTurn"],
+                enabled
+            );
+        }
     }
 
     #[test]
@@ -398,6 +444,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_compact_first_turn: None,
             community_edition: None,
         })
         .expect("noop update");
@@ -417,6 +464,7 @@ mod tests {
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
             bell_on_complete: None,
+            auto_compact_first_turn: None,
             community_edition: None,
         })
         .expect("update");

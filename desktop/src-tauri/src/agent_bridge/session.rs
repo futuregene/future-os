@@ -731,6 +731,7 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_compact_first_turn: None,
             community_edition: None,
         })
         .expect("update settings");

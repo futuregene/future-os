@@ -839,7 +839,10 @@ First-version priority:
 - `object_references`
 - `app_settings` (app-level settings key-value table: `approval_tier`
   (`manual`/`sandbox`/`off`), `hidden_models`, `remote_pair_id`,
-  `show_thinking` — see `store/app_settings.rs`; the old `remote_enabled` /
+  `show_thinking`, `auto_compact_first_turn` (boolean, absent means false;
+  opt-in standalone compaction after the first answer only; uses the existing
+  key-value table without a schema migration) — see `store/app_settings.rs`;
+  the old `remote_enabled` /
   `remote_nats_url` keys are no longer read, runtime state lives in memory and
   addresses are derived from the platform environment)
 - `agent_delete_outbox` (the Agent session deletion delivery queue registered

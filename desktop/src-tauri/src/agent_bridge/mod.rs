@@ -825,7 +825,7 @@ pub(crate) async fn agent_prompt_with_acceptance(
     // can no longer wedge the run's visible state.
     match &result {
         Ok(response) if response.complete => {
-            mark_run_completed_if_active(request.run_id.as_deref());
+            mark_run_completed_if_active(request.run_id.as_deref()).await;
         }
         Ok(response) => {
             let error = stream::termination_error(response.termination_kind.as_deref());
