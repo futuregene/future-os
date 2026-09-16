@@ -400,6 +400,83 @@ exactly the questions real follow-up turns ask. The honest statement is narrow: 
 summary's retention value is unmeasurable on a value-exact exam, and its measured value is
 a prompt effect.**
 
+### Continuation exam: the questions real users ask
+
+Every exam above asks for exact values, which is the one thing a summary cannot do. This one
+tests what it is for — supporting continuation — and it takes all three of its inputs from
+the real session, so nothing is synthesised:
+
+| Element | Source |
+|---|---|
+| boundary | the records before a real user turn |
+| question | that user turn, verbatim |
+| reference answer | the assistant turns that followed it, verbatim |
+
+Real follow-up turns are almost entirely about the agent's own prior output — *"why is prime
+agent so fast?"*, *"what did the hand-tuning do?"*, *"why did the loop take so long?"* —
+which is exactly the material a summary is supposed to carry and value-recall cannot reach.
+
+Both arms compress the same boundary through the same code path, differing only in whether
+the summary is generated, and answer with no tools. Scoring is a blind paired judgement with
+the arm labels shuffled.
+
+**The result moved with the sample size, and then stopped meaning anything.**
+
+| Sample | C (with summary) | C (without summary) | Paired |
+|---|---:|---:|---|
+| 18 questions | **1.61** | 1.39 | summary 9, no-summary 6, tie 3 |
+| 27 questions (all eligible) | 1.19 | **1.37** | summary 10, no-summary 11, tie 6 |
+
+On the first 18 questions the summary looked worth +0.22. Adding nine more turned it into
+−0.18. Over the full sample the arms are indistinguishable: 48 % of decided pairs favour the
+summary, which is a coin flip.
+
+**The judge cannot resolve an effect this small, and that is measurable.** The verdicts were
+regenerated on identical answer pairs (the answers are cached), which gives the instrument's
+noise floor directly:
+
+| | |
+|---|---:|
+| mean absolute score spread on identical inputs (0–3 scale) | **0.97** |
+| repeated verdicts that were identical | **11/36 (31 %)** |
+| repeats differing by the maximum 2 points | 10/36 |
+| arm difference being measured | **0.18** |
+| 95 % CI, with summary | [0.79, 1.58] |
+| 95 % CI, without summary | [1.05, 1.69] |
+
+**The instrument's self-disagreement is five times the effect it is being asked to detect,**
+and the two confidence intervals overlap across almost their whole range. The judge also
+flips on the paired verdict itself — one question was judged "B is better" and later "A is
+better" on identical inputs.
+
+### What this establishes
+
+Three exams now fail to find the summary's retention value, for three different reasons, and
+the distinction matters:
+
+| Exam | Outcome | Why |
+|---|---|---|
+| Value recall (closed book) | summary adds **0** values | it is a strict subset of the projection |
+| Compression pressure, generation | **0.4 %** recovery, identical arms | it does not preserve what the originals drop |
+| Continuation, real questions | **no measurable difference** | the judge is too noisy to decide |
+
+The first two are negative findings about the summary: it demonstrably adds no content and
+preserves nothing under pressure. The third is a **limitation of the measurement**, not
+evidence about the summary — it neither supports nor refutes a benefit in the one condition
+where a benefit is plausible.
+
+**What would settle it.** A deterministic rubric rather than a free-form judge: mechanically
+derived items from the held-out continuation (which files, which identifiers, which stated
+blockers the next turns actually referenced), scored by containment. That trades coverage of
+"did it capture the gist" for a noise floor near zero, and on this evidence a scorer with no
+variance is worth more than a richer question it cannot answer reliably.
+
+One incidental finding, relevant to production rather than to the arms: at a 2 048-token
+output cap the answers came back **empty** on several probes, because reasoning consumed the
+entire allowance before any text was emitted. The same failure mode was observed earlier in
+the sticky-summary path. It is a real hazard for any call whose output budget is set without
+regard to reasoning overhead.
+
 ## Why C is only slightly ahead, despite keeping far more
 
 This is a fair challenge to the result, and the exam's own composition answers it.
