@@ -65,7 +65,10 @@ fn message(record: &Value) -> Option<AgentMessage> {
         "tool_result" => vec![ContentBlock::tool_result(
             record.get("call")?.as_str()?,
             record.get("text")?.as_str()?,
-            record.get("error").and_then(Value::as_bool).unwrap_or(false),
+            record
+                .get("error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         )],
         _ => vec![ContentBlock::text(record.get("text")?.as_str()?)],
     };
@@ -102,13 +105,15 @@ async fn main() -> Result<()> {
             "--records" => records_path = args.next(),
             "--model" => model = args.next(),
             "--window" => window = args.next().context("window")?.parse()?,
-            "--previous" => previous = Some(serde_json::from_str(&args.next().context("previous")?)?),
+            "--previous" => {
+                previous = Some(serde_json::from_str(&args.next().context("previous")?)?)
+            }
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
-    let records: Vec<Value> = serde_json::from_str(
-        &std::fs::read_to_string(records_path.context("--records is required")?)?,
-    )?;
+    let records: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(
+        records_path.context("--records is required")?,
+    )?)?;
     let model = model.context("--model is required")?;
     let messages = records.iter().filter_map(message).collect::<Vec<_>>();
     anyhow::ensure!(!messages.is_empty(), "no messages built from records");
