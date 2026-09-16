@@ -449,8 +449,11 @@ impl TestHome {
         let lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // Old ambient-runtime observers must be gone BEFORE publishing the new
-        // HOME and creating its schema, not later when mock_agent is acquired.
+        // Process-lifetime workers and observers must be gone BEFORE publishing
+        // the new HOME and creating its schema, not later when mock_agent is
+        // acquired. Otherwise an old task can resolve this new HOME and lock
+        // its SQLite database during migration.
+        crate::runtime::cancel_test_tasks();
         super::observer::cancel_all_observers();
         let dir = std::env::temp_dir().join(format!(
             "futureos-bridge-test-{}-{}-{}",
@@ -477,6 +480,8 @@ impl TestHome {
 
 impl Drop for TestHome {
     fn drop(&mut self) {
+        crate::runtime::cancel_test_tasks();
+        super::observer::cancel_all_observers();
         match &self.prev_home {
             Some(prev) => std::env::set_var("HOME", prev),
             None => std::env::remove_var("HOME"),
