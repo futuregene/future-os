@@ -78,8 +78,8 @@ never invention.
 
 Readings:
 
-* **C leads on real sessions and on the synthetic chains.** There it is 28/49 against
-  25/49 for both others — those fixtures put their answerable detail in tool
+* **Closed book, C leads on real sessions and on the synthetic chains.** There it is 28/49
+  against 25/49 for both others — those fixtures put their answerable detail in tool
   records, which every rule keeps in some form. The strategies separate only where the
   answering detail lives in the agent's own prose, which is where real questions point.
 * **Codex's compact projection is efficient per token but does not compensate.** It keeps
@@ -94,44 +94,61 @@ Readings:
 Every strategy was re-probed with the lookup interface matching its design, over the same
 projections:
 
-| Strategy | Interface |
-|---|---|
-| C | the archive CLI (`future session history search` / `get`) |
-| Codex | the window/item interface (`history.search_contents` / `read_item`) |
-| OpenCode | the filesystem (`glob` / `grep` / `read` over a materialised tree) |
+| Strategy | Interface | What it reads |
+|---|---|---|
+| C | the archive CLI (`future session history search` / `get`) | the session archive |
+| Codex | the window/item interface (`history.search_contents` / `read_item`) | the session archive, grouped into windows |
+| OpenCode | the filesystem (`glob` / `grep` / `read`) | a materialised working tree |
 
-| Strategy | Closed | Open | Δ | Mean lookups per probe |
-|---|---:|---:|---:|---:|
-| **C** | 129/178 | **129/178** | **0** | 3.61 |
-| **Codex** | 119/178 | **120/178** | **+1** | 3.28 |
-| **OpenCode** | 89/178 | 88/178 | **−1** | 1.78 |
+| Strategy | Closed | Open | Δ | Mean lookups | Data read |
+|---|---:|---:|---:|---:|---:|
+| **C** | 129/178 | **168/178 (94.4 %)** | **+39** | 2.67 | 0.20 MB |
+| **Codex** | 119/178 | **170/178 (95.5 %)** | **+51** | 6.28 | 2.66 MB |
+| **OpenCode** | 89/178 | **117/178 (65.7 %)** | **+28** | 4.33 | 0.54 MB |
+
+Split by workload:
+
+| Workload | C closed → open | Codex closed → open | OpenCode closed → open |
+|---|---|---|---|
+| real sessions | 101/129 → **119/129** | 94/129 → **126/129** | 64/129 → **85/129** |
+| synthetic chains | 28/49 → **49/49** | 25/49 → **44/49** | 25/49 → **32/49** |
 
 Retrieval cost, billed per call:
 
 | Strategy | Retrieval calls | Total | Mean per call |
 |---|---:|---:|---:|
-| C | 65 | ¥0.6920 | **¥0.0106** |
-| Codex | 59 | ¥0.3079 | **¥0.0052** |
-| OpenCode | 32 | ¥0.3493 | **¥0.0109** |
+| C | 48 | ¥0.7113 | **¥0.0148** |
+| Codex | 114 | ¥3.3083 | **¥0.0290** |
+| OpenCode | 78 | ¥1.2088 | **¥0.0155** |
 
-**Retrieval does not move the scores here, in either direction.** All three strategies
-land within one field of their closed-book result. Two reasons, both worth stating:
+**Retrieval changes the result completely, and it changes the ranking.** Closed book,
+C leads by 10 fields; open book, the two are within 2 of each other (168 against 170),
+because both can reach most of what the archive holds. Three findings:
 
-* **The strategies that retain a lot have little left to look up.** C already carries the
-  protected originals, the evidence index and the summary, so its lookups mostly confirm
-  what it holds. Note its cost per lookup is the highest (¥0.0106) because each request
-  carries the largest projection.
-* **OpenCode's recovery path cannot see superseded state.** Its interface is the
-  filesystem, and only the newest version of each file is on disk — so a value an earlier
-  version overwrote is unreachable no matter how many lookups it makes. It spends the
-  fewest lookups (1.78) and gains nothing.
+1. **The gain is inversely proportional to what the projection retained.** C starts
+   highest and gains least (+39); Codex starts lowest of the two and gains most (+51);
+   OpenCode gains +28 and still ends far behind. In other words, **closed book measures
+   what a strategy keeps, open book measures what it can find — and only the first
+   separates these designs.**
+2. **C reaches its result with a fraction of the effort.** It spends 2.67 lookups and
+   reads 0.20 MB where Codex spends 6.28 and reads 2.66 MB — 13× less data for a
+   comparable score. Its evidence index points at the records worth reading, so its
+   lookups are targeted rather than exploratory. On the synthetic chains C is the only
+   arm that reaches a perfect score (49/49).
+3. **The archive bounds the ceiling, not the projection.** Every strategy that can read
+   the archive converges toward it; the remaining differences are about how efficiently
+   each gets there. The exception is OpenCode (65.7 %): its interface is the filesystem,
+   and a file's current state does not contain values that later versions overwrote, so
+   part of the archive is structurally unreachable through that interface, however many
+   lookups it makes.
 
-This corrects an earlier version of this page, which reported that retrieval *helped* C
-by 10 points and *cost* Codex 20. Those numbers came from a Python approximation of C's
-evidence selection and from a 5-call cap that I had invented; with the real code path and
-no cap, the effect is neutral. A lookup interface is not free accuracy — it is a way to
-recover specifics that neither the summary nor the evidence index preserved, and none of
-these three projections lost enough for it to matter on this exam.
+> **Correction.** An earlier revision reported that retrieval was worth only +1 to +10
+> fields, and concluded it was "neutral". That measurement had three defects: the CLI
+> fell back to an agent build that predates the history command, so every lookup returned
+> `unknown command` and 0 bytes; the Codex arm was handed an empty window list and the
+> OpenCode arm was not dispatched at all; and the synthetic chains passed an empty
+> session id. With all three fixed the effect is large and consistent in direction for
+> every strategy.
 
 ## Cost per compaction
 
@@ -246,8 +263,12 @@ real workloads measured, not a universal one.
   256 K and 1 M). The production window comes from the model registry — the `128000`
   constant in `models/future.rs` is only the fallback for a model that declares none.
 * **The open-book numbers use a bounded budget** (32 KB returned per probe, 60-round
-  guard). A different budget would move the lookup counts, though not the conclusion that
-  retrieval is neutral on this exam.
+  guard). A different budget would move the lookup counts.
+* **Synthetic sessions had to be materialised for the open-book pass.** The archive CLI
+  reads the Agent's session database, which contains only real sessions, so the synthetic
+  fixtures were written into an isolated copy of that database as real sessions — registry
+  row, entries and message blocks — before that arm could read them. The production
+  database is never written; the copy is made with SQLite's backup API.
 * **Retrieval cannot recover what no interface stores.** OpenCode's filesystem path sees
   only the newest version of each file, which is a property of that interface rather than
   a tuning issue.

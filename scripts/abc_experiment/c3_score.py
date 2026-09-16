@@ -26,7 +26,11 @@ def covered_sets():
             p = ROOT / "data" / f"{task}-{stage}.json"
             if p.exists():
                 d = json.loads(p.read_text())
-                out[f"{task}__s{stage}"] = (d["archive"] + d["tail"], None)
+                # The fixture names the session it corresponds to, and that session is
+                # written into the isolated database, so the archive CLI can read it.
+                # Passing None here left the model with an empty session id and every
+                # synthetic lookup came back empty.
+                out[f"{task}__s{stage}"] = (d["archive"] + d["tail"], d["source_session"])
     manifest = json.loads((FROZEN / "manifest.json").read_text())
     for name, meta in manifest.items():
         records = json.loads(pathlib.Path(meta["path"]).read_text())["records"]
@@ -47,13 +51,25 @@ def main():
     ap.add_argument("--mode", choices=["closed", "open"], default="closed")
     ap.add_argument("--interface", default="ours")
     ap.add_argument("--model", default="future/deepseek-flash")
-    ap.add_argument("--budget", type=float, default=12.0)
+    ap.add_argument("--budget", type=float, default=25.0)
+    ap.add_argument("--retag-suffix", default="",
+                    help="rename existing rows with this suffix so they re-run")
     argparse.ArgumentParser().parse_args([])
     args = ap.parse_args()
 
     ledger = Ledger(args.root, args.budget)
     ledger.path = args.root / f"score-{args.tag}-calls.json"
     ledger.rows = json.loads(ledger.path.read_text()) if ledger.path.exists() else []
+    if args.retag_suffix:
+        renamed = 0
+        for row in ledger.rows:
+            if not row["id"].endswith(args.retag_suffix):
+                row["id"] = row["id"] + args.retag_suffix
+                row["note"] = "superseded: the CLI lookup fell back to an agent that " \
+                              "predates search_session_history, so it returned nothing"
+                renamed += 1
+        ledger.save()
+        print(f"retired {renamed} rows with {args.retag_suffix}")
 
     def call(identity, messages, max_tokens, tools=None, thinking=False, attempts=3):
         prior = next((r for r in ledger.rows if r["id"] == identity and r.get("state") == "finished"
@@ -109,7 +125,26 @@ def main():
                                 {"role": "user", "content": value + "\n\n" + body}], 8192,
                                thinking=True)["text"]
         else:
-            guide = R.guide(args.interface, session_id=session or "", workspace="")
+            # Each interface needs its own substrate. Passing an empty window list to
+            # the Codex interface, or no working tree to OpenCode, makes every lookup
+            # fail silently and the run measures a broken tool rather than retrieval.
+            task, stage_for_fixture = (chain, stage_index) if chain in (
+                "export", "analysis", "pipeline") else (None, None)
+            windows, workspace = [], None
+            if args.interface == "codex":
+                windows = (R.codex_windows(args.root, task, stage_for_fixture)
+                           if task else R.codex_windows_from_records(covered))
+            elif args.interface == "opencode":
+                workspace = pathlib.Path(f"/tmp/c3-open-ws-{identity}")
+                import shutil as _sh
+                if workspace.exists():
+                    _sh.rmtree(workspace)
+                if task:
+                    R.materialize_workspace(args.root, task, stage_for_fixture, workspace)
+                else:
+                    R.materialize_workspace_from_records(covered, workspace)
+            guide = R.guide(args.interface, session_id=session or "",
+                            workspace=str(workspace or ""))
             tools = R.codex_tools() if args.interface == "codex" else (
                 R.our_tools(session) if args.interface == "ours" else R.opencode_tools())
             conversation = [{"role": "system", "content":
@@ -134,7 +169,9 @@ def main():
                         arguments = {}
                     env = dict(os.environ)
                     if args.interface == "codex":
-                        out, size = R.codex_dispatch(name_, arguments, [], 32768)
+                        out, size = R.codex_dispatch(name_, arguments, windows, 32768)
+                    elif args.interface == "opencode":
+                        out, size = R.opencode_dispatch(name_, arguments, workspace, 32768)
                     else:
                         out, size = R.our_dispatch(arguments.get("command", ""), session or "",
                                                    args.binary, env, str(WT))
@@ -156,6 +193,9 @@ def main():
                 answer = val
                 break
             pos = start + end
+        if workspace is not None and workspace.exists():
+            import shutil as _sh
+            _sh.rmtree(workspace, ignore_errors=True)
         sc = exam.score(answer, p_truth, d_truth)
         sc.update({"chain": chain, "stage": stage_index, "identity": identity,
                    "calls": calls_made, "bytes": returned,
