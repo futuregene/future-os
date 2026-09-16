@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Brain,
   Check,
   ChevronDown,
   ChevronUp,
@@ -518,6 +519,146 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
   );
 }
 
+/** The two slice kinds a folded step run is made of. */
+type StepSegment = Extract<TimelineSegment, { kind: "thinking" | "tool" }>;
+type StepKind = ToolKind | "thinking";
+
+function isStepSegment(segment: TimelineSegment): segment is StepSegment {
+  return segment.kind === "thinking" || segment.kind === "tool";
+}
+
+/**
+ * Whether a step row may be hidden inside a folded run. A failed call and a
+ * still-running one must stay on screen: folding them would bury the only rows
+ * that carry anything the user has not seen yet.
+ */
+function foldableStep(segment: StepSegment): boolean {
+  return segment.kind === "thinking" || (segment.tool.complete && segment.tool.status !== "failed");
+}
+
+function stepKindOf(segment: StepSegment): StepKind {
+  return segment.kind === "thinking" ? "thinking" : toolKind(segment.tool.name);
+}
+
+/** One rendered slice of a reply: a pass-through segment, or a folded step run. */
+type ReplyBlock =
+  | { kind: "segment"; segment: TimelineSegment }
+  | { kind: "steps"; segments: StepSegment[] };
+
+/**
+ * Fold a reply's inline slices into render blocks. A phone has no room for the
+ * desktop's one-line-per-activity transcript: a single long exchange routinely
+ * produces a dozen thinking/tool rows, each a full line, and they crowd out the
+ * prose between them. Consecutive foldable step rows therefore collapse into
+ * one summary line (expanded on tap), while prose, compaction dividers,
+ * failures, and the slice the agent is working on right now pass through
+ * untouched — nothing that is still changing is ever hidden.
+ *
+ * This is a render concern only, exactly like the per-block collapse in
+ * ThinkingRow: the shared projection still carries every slice in stream order,
+ * so the desktop transcript is unaffected.
+ */
+function buildReplyBlocks(segments: TimelineSegment[], streaming?: boolean): ReplyBlock[] {
+  const blocks: ReplyBlock[] = [];
+  // In a streaming reply the last slice is the one being written right now, so
+  // it never joins a run (and a run never grows past it).
+  const liveTail = streaming ? segments.length - 1 : -1;
+  let index = 0;
+  while (index < segments.length) {
+    const segment = segments[index]!;
+    if (index !== liveTail && isStepSegment(segment) && foldableStep(segment)) {
+      const run: StepSegment[] = [segment];
+      let cursor = index + 1;
+      while (cursor !== liveTail && cursor < segments.length) {
+        const next = segments[cursor]!;
+        if (!isStepSegment(next) || !foldableStep(next)) break;
+        run.push(next);
+        cursor += 1;
+      }
+      if (run.length > 1) {
+        blocks.push({ kind: "steps", segments: run });
+        index = cursor;
+        continue;
+      }
+    }
+    blocks.push({ kind: "segment", segment });
+    index += 1;
+  }
+  return blocks;
+}
+
+/** "Thought 2× · Ran a command 3×" — one count per step kind, in first-seen order. */
+function stepRunSummary(
+  t: (key: string, options?: { count: number; action: string }) => string,
+  segments: StepSegment[],
+): string {
+  const order: StepKind[] = [];
+  const counts = new Map<StepKind, number>();
+  for (const segment of segments) {
+    const kind = stepKindOf(segment);
+    if (!counts.has(kind)) order.push(kind);
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return order
+    .map(kind =>
+      t("chat.runCount", {
+        count: counts.get(kind) ?? 0,
+        action: kind === "thinking" ? t("chat.thoughtCompleted") : toolLabel(t, kind, true),
+      }),
+    )
+    .join(" · ");
+}
+
+/**
+ * A folded run of step rows: one summary line while collapsed, the individual
+ * rows once tapped — and each of those still opens its own detail, so the
+ * desktop's two taps survive without the phone spending a line per activity.
+ * The leading glyph follows the run's first slice, so a run that opens on
+ * reasoning reads as reasoning.
+ */
+function StepRunBlock({ segments }: { segments: StepSegment[] }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const first = segments[0]!;
+  return (
+    <View style={styles.inlineTool}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        onPress={() => setExpanded(value => !value)}
+        style={styles.toolHeader}
+      >
+        {first.kind === "thinking" ? (
+          <Brain color={colors.inkMuted} size={14} />
+        ) : (
+          <ToolGlyph kind={toolKind(first.tool.name)} />
+        )}
+        <Text numberOfLines={1} style={[styles.toolText, styles.stepSummaryText]}>
+          {stepRunSummary(t, segments)}
+        </Text>
+        {expanded ? (
+          <ChevronUp color={colors.inkMuted} size={14} />
+        ) : (
+          <ChevronDown color={colors.inkMuted} size={14} />
+        )}
+      </Pressable>
+      {expanded ? (
+        <View style={styles.stepChildren}>
+          {segments.map(segment =>
+            segment.kind === "thinking" ? (
+              // Every folded reasoning slice has already been closed by the
+              // slice after it, so none of them is still streaming.
+              <ThinkingRow key={segment.id} text={segment.text} />
+            ) : (
+              <ToolRow key={segment.id} tool={segment.tool} />
+            ),
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 /** One inline slice of an assistant reply, in stream order (desktop parity). */
 function SegmentBlock({
   segment,
@@ -634,14 +775,18 @@ function TimelineCardView({
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
             <View style={styles.segmentList}>
-              {item.segments.map(segment => (
-                <SegmentBlock
-                  key={segment.id}
-                  segment={segment}
-                  streaming={item.streaming}
-                  onOpenFile={onOpenFile}
-                />
-              ))}
+              {buildReplyBlocks(item.segments, item.streaming).map(block =>
+                block.kind === "steps" ? (
+                  <StepRunBlock key={block.segments[0]!.id} segments={block.segments} />
+                ) : (
+                  <SegmentBlock
+                    key={block.segment.id}
+                    segment={block.segment}
+                    streaming={item.streaming}
+                    onOpenFile={onOpenFile}
+                  />
+                ),
+              )}
             </View>
           ) : item.text.trim().length > 0 ? (
             <MarkdownText text={item.text} onOpenFile={onOpenFile} streaming={item.streaming} />
@@ -850,6 +995,10 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
+  stepSummaryText: { flexShrink: 1 },
+  // Folded rows are indented once, like a tool burst's children, so the
+  // expanded list reads as belonging to the summary line above it.
+  stepChildren: { gap: spacing.xs, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
   inlineToolChild: {
     flexShrink: 1,
     color: colors.inkSoft,
