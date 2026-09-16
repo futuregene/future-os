@@ -1,6 +1,6 @@
 # Mobile issue audit — 2026-09-16
 
-Audited against `origin/main` through `85fa2ac4` (including #663–#665).
+Audited against `origin/main` through `fac02c09` (including #663–#666).
 The supplied report has six items; it repeats number 4 and jumps from 5 to 11.
 A screenshot alone does not establish the installed app's version.
 
