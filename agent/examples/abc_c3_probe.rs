@@ -228,8 +228,36 @@ async fn main() -> Result<()> {
         calls: Vec<ContentBlock>,
     }
     let mut turns: Vec<Turn> = Vec::new();
-    let mut results: std::collections::HashMap<String, Vec<String>> =
+    // (body, the entry id of the record that carried it)
+    let mut results: std::collections::HashMap<String, Vec<(String, String)>> =
         std::collections::HashMap::new();
+    // Pass 1: collect every tool result, wherever it appears. A result arrives in a
+    // later entry than its call, so collecting results here -- and not in the same loop
+    // that emits turns -- is what lets pass 2 attach them. Doing both in one pass
+    // dropped every tool call and result, which emptied the evidence index.
+    for (_, group) in &grouped {
+        for m in group {
+            for c in &m.content {
+                if let ContentBlock::ToolResult {
+                    tool_call_id,
+                    content,
+                    ..
+                } = c
+                {
+                    let source = m
+                        .journal_entry_id()
+                        .map(str::to_string)
+                        .unwrap_or_default();
+                    results
+                        .entry(tool_call_id.clone())
+                        .or_default()
+                        .push((content.clone(), source));
+                }
+            }
+        }
+    }
+
+    // Pass 2: the speaker turns.
     for (_, group) in grouped {
         let role = group[0].role.clone();
         let entry_id = group[0]
@@ -237,21 +265,6 @@ async fn main() -> Result<()> {
             .map(str::to_string)
             .unwrap_or_default();
         if role == "tool" {
-            for m in &group {
-                for c in &m.content {
-                    if let ContentBlock::ToolResult {
-                        tool_call_id,
-                        content,
-                        ..
-                    } = c
-                    {
-                        results
-                            .entry(tool_call_id.clone())
-                            .or_default()
-                            .push(content.clone());
-                    }
-                }
-            }
             continue;
         }
         let mut text = Vec::new();
@@ -285,13 +298,13 @@ async fn main() -> Result<()> {
         if !turn.text.is_empty() {
             content.push(ContentBlock::text(turn.text));
         }
-        let mut answered: Vec<ContentBlock> = Vec::new();
+        let mut answered: Vec<(ContentBlock, String)> = Vec::new();
         for call in &turn.calls {
             if let ContentBlock::ToolCall { id, .. } = call {
                 if let Some(bodies) = results.remove(id) {
                     content.push(call.clone());
-                    for body in bodies {
-                        answered.push(ContentBlock::tool_result(id, body, false));
+                    for (body, source) in bodies {
+                        answered.push((ContentBlock::tool_result(id, body, false), source));
                     }
                 }
             }
@@ -311,12 +324,17 @@ async fn main() -> Result<()> {
         if !speaker.content.is_empty() {
             messages.push(speaker);
         }
-        messages.extend(answered.into_iter().map(|block| {
+        messages.extend(answered.into_iter().map(|(block, source)| {
             let mut m = AgentMessage {
                 role: "tool".to_string(),
                 ..Default::default()
             };
             m.content = vec![block];
+            if !source.is_empty() {
+                m.metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert(AgentMessage::JOURNAL_ENTRY_ID_KEY.to_string(), json!(source));
+            }
             m
         }));
     }

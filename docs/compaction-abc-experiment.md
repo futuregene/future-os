@@ -54,18 +54,18 @@ about ¥0.003.
 
 | Chain | C | Codex | OpenCode |
 |---|---:|---:|---:|
-| export (synth) | **8/16** | **8/16** | **8/16** |
-| analysis (synth) | **8/16** | **8/16** | **8/16** |
-| pipeline (synth) | **9/17** | **9/17** | **9/17** |
+| export (synth) | **9/16** | 8/16 | 8/16 |
+| analysis (synth) | **9/16** | 8/16 | 8/16 |
+| pipeline (synth) | **10/17** | 9/17 | 9/17 |
 | real-yt | **35/44** | 31/44 | 24/44 |
 | real-visual | **27/36** | **27/36** | 25/36 |
 | real-stream | **39/49** | 36/49 | 15/49 |
-| **total** | **126/178 (70.8 %)** | 119/178 (66.9 %) | 89/178 (50.0 %) |
+| **total** | **129/178 (72.5 %)** | 119/178 (66.9 %) | 89/178 (50.0 %) |
 
 | Group | C | Codex | OpenCode |
 |---|---:|---:|---:|
 | **real sessions** | **101/129 (78.3 %)** | 94/129 (72.9 %) | 64/129 (49.6 %) |
-| synthetic chains | 25/49 (51.0 %) | 25/49 (51.0 %) | 25/49 (51.0 %) |
+| synthetic chains | **28/49 (57.1 %)** | 25/49 (51.0 %) | 25/49 (51.0 %) |
 
 **Zero false positives for every strategy on every chain.** The differences are recall,
 never invention.
@@ -78,8 +78,8 @@ never invention.
 
 Readings:
 
-* **C leads on real sessions and ties on synthetic ones.** On the synthetic chains all
-  three are identical (25/49) — those fixtures put their answerable detail in tool
+* **C leads on real sessions and on the synthetic chains.** There it is 28/49 against
+  25/49 for both others — those fixtures put their answerable detail in tool
   records, which every rule keeps in some form. The strategies separate only where the
   answering detail lives in the agent's own prose, which is where real questions point.
 * **Codex's compact projection is efficient per token but does not compensate.** It keeps
@@ -102,7 +102,7 @@ projections:
 
 | Strategy | Closed | Open | Δ | Mean lookups per probe |
 |---|---:|---:|---:|---:|
-| **C** | 126/178 | **126/178** | **0** | 2.72 |
+| **C** | 129/178 | **129/178** | **0** | 3.61 |
 | **Codex** | 119/178 | **120/178** | **+1** | 3.28 |
 | **OpenCode** | 89/178 | 88/178 | **−1** | 1.78 |
 
@@ -110,7 +110,7 @@ Retrieval cost, billed per call:
 
 | Strategy | Retrieval calls | Total | Mean per call |
 |---|---:|---:|---:|
-| C | 58 | ¥0.9232 | **¥0.0159** |
+| C | 65 | ¥0.6920 | **¥0.0106** |
 | Codex | 59 | ¥0.3079 | **¥0.0052** |
 | OpenCode | 32 | ¥0.3493 | **¥0.0109** |
 
@@ -119,7 +119,7 @@ land within one field of their closed-book result. Two reasons, both worth stati
 
 * **The strategies that retain a lot have little left to look up.** C already carries the
   protected originals, the evidence index and the summary, so its lookups mostly confirm
-  what it holds. Note its cost per lookup is the highest (¥0.0159) because each request
+  what it holds. Note its cost per lookup is the highest (¥0.0106) because each request
   carries the largest projection.
 * **OpenCode's recovery path cannot see superseded state.** Its interface is the
   filesystem, and only the newest version of each file is on disk — so a value an earlier
@@ -140,7 +140,7 @@ conversation as ordinary turns, so nothing is warm):
 
 | Strategy | Summaries | Mean cost | Mean input tokens |
 |---|---:|---:|---:|
-| C | 15 | ¥0.1014 | 67 491 |
+| C | 15 | ¥0.1173 | 73 539 |
 | Codex | 18 | ¥0.0286 | 7 079 |
 | OpenCode | 19 | ¥0.0256 | 7 352 |
 
@@ -153,7 +153,80 @@ produced it — the 99.8 % cache hit above turns a 212 911-token read into ¥0.0
 
 A real session's summary is always issued warm, since the conversation it summarises has
 just been sent. **The production cost of C's compaction is therefore the cached figure,
-not the ¥0.1014 in the table above**, which is a driver artefact.
+not the ¥0.1173 in the table above**, which is a driver artefact.
+
+## What is inside a C projection
+
+The ~11 K-token projection is not one block. Measured across all 18 boundaries, split
+exactly by reconstructing each part from the committed checkpoint (no model calls):
+
+| Part | Mean tokens | Share |
+|---|---:|---:|
+| protected originals (user + assistant, verbatim) | 5 155 | **45.8 %** |
+| deterministic tool-evidence index | 2 415 | **21.5 %** |
+| sticky model summary | 1 592 | **14.1 %** |
+| retained recent tail | 2 095 | **18.6 %** |
+| **total** | **11 259** | |
+
+The balance differs by workload, which is worth knowing when reading the scores:
+
+| Workload | Total | Originals | Evidence | Summary | Tail |
+|---|---:|---:|---:|---:|---:|
+| synthetic (n=9) | 9 067 | 63.1 % | 26.4 % | 10.5 % | 0 % |
+| real sessions (n=9) | 13 451 | 34.1 % | 18.1 % | 16.6 % | **31.2 %** |
+
+Two things follow. The evidence index holds a steady ~2.4 K tokens (it has a fixed
+2 K budget and fills it), so it costs the same on a small history and a large one. And
+real sessions carry a much larger recent tail, because their records are finer-grained:
+1582 records for one session means proportionally more of it falls inside the retained
+window.
+
+## Why C is only slightly ahead, despite keeping far more
+
+This is a fair challenge to the result, and the exam's own composition answers it.
+
+### Where the exam's values actually live
+
+| Source | Items | Share | In C | In Codex | In OpenCode |
+|---|---:|---:|---:|---:|---:|
+| tool result | **120** | **67.4 %** | **72/120** | 62/120 | 43/120 |
+| assistant text | 44 | 24.7 % | **44/44** | 43/44 | 32/44 |
+| user text | 14 | 7.9 % | 14/14 | 14/14 | 13/14 |
+| **total** | 178 | | **130** | 119 | 88 |
+
+Three conclusions, and one of them corrects the premise:
+
+1. **On assistant-sourced items C and Codex are effectively tied: 44/44 against 43/44.**
+   C's verbatim retention of assistant prose is perfect, but Codex's whole-history
+   summary recovered almost every one of those 44 values anyway. So the exam cannot
+   reward C's advantage here — not because the advantage is absent, but because Codex
+   does not lose those facts in the first place.
+2. **C's actual lead comes from tool results: 72 against 62.** That is the deterministic
+   evidence index doing the work, and it is where the +10 over Codex originates.
+3. **The exam is 67 % tool-sourced.** Only a quarter of its items can distinguish the
+   two strategies on assistant content, and on those they tie.
+
+### The intuition is right, but it needs a compression ratio
+
+The premise — "if questions target assistant content, C should win by a lot" — is
+correct in principle and was measured earlier under conditions this exam does not
+create:
+
+| Assistant content | Compression | Verbatim retention | Summary-only |
+|---|---:|---:|---:|
+| 160 exact decision codes | 15× | **10/10** | 0/10 |
+| 400 exact decision codes | 39× | **10/10** | 1/10 |
+
+Verbatim retention wins decisively **once the summary is forced to compress hard**. On
+these real sessions the summary is not under that pressure: the model writes 1.6 K tokens
+of summary for a 73 K-token input, and at that ratio it keeps the assistant facts it
+needs. So the two strategies differ mainly on tool results, where C has an index and
+Codex has nothing.
+
+**What would separate them** is a session whose assistant turns carry many exact,
+similar-looking identifiers — the case the fixture above models — or a tighter summary
+budget. This exam contains neither, and its 67 % tool weighting is a property of the two
+real workloads measured, not a universal one.
 
 ## Limits
 
