@@ -101,7 +101,7 @@ export function PreviewModal({
         {preview?.info.previewKind === "image" ? (
           // Pinch to zoom / drag to pan: a phone-sized preview of a screenshot is
           // unreadable without it.
-          <ZoomableImage accessibilityLabel={preview.info.name} uri={preview.uri} />
+          <ZoomableImage key={preview.uri} accessibilityLabel={preview.info.name} uri={preview.uri} />
         ) : preview?.info.previewKind === "markdown" ? (
           <ScrollView contentContainerStyle={styles.previewMarkdown}>
             {!!preview?.truncated && (
