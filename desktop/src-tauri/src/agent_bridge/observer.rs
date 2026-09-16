@@ -356,8 +356,10 @@ pub(super) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate:
         return Ok(false);
     };
     // Bound terminal lifetime by conversation lifetime, exactly like the GUI's
-    // own delete path.
-    crate::close_thread_terminals(&thread.id);
+    // own delete path. The embedded terminal panel is GUI-only (the server
+    // build has no shells to close).
+    #[cfg(feature = "gui")]
+    crate::commands::close_thread_terminals(&thread.id);
     drop_observer(session_id);
     crate::store::delete_thread(&thread.id)?;
     Ok(true)
