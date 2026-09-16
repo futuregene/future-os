@@ -198,6 +198,17 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
         )],
     )?;
     apply_remote_prompt_receipt_migration(conn)?;
+    // Workspace reads require this column. Keep its existing migration identity,
+    // but do not let optional run-archive failures skip it or swallow its errors.
+    apply_migrations(
+        conn,
+        &[(
+            "v1.1.9-workspaces-pinned",
+            "workspaces",
+            "pinned",
+            "ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+        )],
+    )?;
     // Run archiving is optional UI metadata. A failed upgrade must not block
     // the Agent/file-tool main flow; read paths project its missing column as
     // NULL and the archive action reports its own unavailable error.
@@ -1075,6 +1086,34 @@ mod tests {
     }
 
     #[test]
+    fn workspace_pin_migration_failure_rolls_back_and_retries() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        // Simulate the previous schema and fail recording the new migration.
+        conn.execute_batch(
+            "ALTER TABLE workspaces DROP COLUMN pinned;
+             DELETE FROM schema_migrations WHERE version = 'v1.1.9-workspaces-pinned';
+             CREATE TRIGGER reject_workspace_pin_migration BEFORE INSERT ON schema_migrations
+             WHEN NEW.version = 'v1.1.9-workspaces-pinned'
+             BEGIN SELECT RAISE(ABORT, 'blocked workspace migration'); END;",
+        )
+        .unwrap();
+        assert!(
+            apply_schema(&conn).is_err(),
+            "required migration must propagate failure"
+        );
+        assert!(
+            !column_exists(&conn, "workspaces", "pinned").unwrap(),
+            "ALTER rolled back too"
+        );
+        conn.execute_batch("DROP TRIGGER reject_workspace_pin_migration;")
+            .unwrap();
+        apply_schema(&conn).unwrap();
+        apply_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "workspaces", "pinned").unwrap());
+    }
+
+    #[test]
     fn apply_schema_swallows_a_failed_run_archive_migration() {
         // Pre-create schema_migrations with a CHECK that rejects the versioned
         // migration's INSERT, so the migration transaction fails and rolls
@@ -1103,6 +1142,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(recorded, 0);
+        // An optional failure must not skip the required workspace migration,
+        // including an upgrade where the column needs to be added, not just recorded.
+        conn.execute_batch(
+            "ALTER TABLE workspaces DROP COLUMN pinned;
+             DELETE FROM schema_migrations WHERE version = 'v1.1.9-workspaces-pinned';",
+        )
+        .unwrap();
+        apply_schema(&conn).unwrap();
+        assert!(column_exists(&conn, "workspaces", "pinned").unwrap());
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 'v1.1.9-workspaces-pinned'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded, 1);
     }
 
     #[test]

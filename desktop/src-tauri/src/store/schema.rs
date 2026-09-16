@@ -314,25 +314,15 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("approval_requests", "save_suggestion TEXT"),
 ];
 
-/// Database migrations introduced after the v1.1.2 release. Existing entries
-/// are immutable once released; add a new entry for each future release.
-pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[
-    (
-        "v1.1.3-runs-archived-at",
-        "runs",
-        "archived_at",
-        "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
-    ),
-    // A pinned workspace is hoisted above the unpinned groups in the workspace
-    // list (the phone's workspace tab reads the flag from its snapshot). Default
-    // 0 keeps every existing group where its recency sort had it.
-    (
-        "v1.1.9-workspaces-pinned",
-        "workspaces",
-        "pinned",
-        "ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-    ),
-];
+/// Optional run-archive migrations, whose failures do not block startup.
+/// Required migrations belong in `db::apply_schema` with error propagation.
+/// Existing entries are immutable once released.
+pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
+    "v1.1.3-runs-archived-at",
+    "runs",
+    "archived_at",
+    "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
+)];
 
 /// A Desktop thread is a projection owner for at most one Agent session, and
 /// an Agent session has at most one Desktop projection owner. This index is
