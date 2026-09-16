@@ -176,7 +176,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const settingsSink = useRef<Pick<ReturnType<typeof useConversationController>,
     "applySessionSettings" | "handleSessionSettingsEvent"> | null>(null);
   const onSessionState = useCallback((sessionId: string, state: RemoteSessionState) => {
-    settingsSink.current?.applySessionSettings(sessionId, state);
+    settingsSink.current?.applySessionSettings(sessionId, {
+      model: state.model ?? "",
+      thinkingLevel: state.thinkingLevel ?? "off",
+    });
   }, []);
   useEffect(() => {
     selectedRef.current = selectedSessionId;

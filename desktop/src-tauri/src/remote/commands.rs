@@ -2505,8 +2505,8 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn model_catalog_respects_desktop_visibility() {
-        let (_home, bridge) = active_bridge("cmd-model-visibility").await;
         let _agent_lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-model-visibility").await;
         let agent = ensure_mock_agent();
         agent.clear_scripts();
         let models = json!([
