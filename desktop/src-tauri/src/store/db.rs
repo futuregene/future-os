@@ -691,6 +691,53 @@ mod tests {
         assert_eq!(accepted, None);
     }
 
+    /// v1.1.8's `workspaces` table has no `pinned` column: the upgrade must add
+    /// it (defaulting every existing group to unpinned) and record the
+    /// migration once, while a fresh database gets it from `SCHEMA`.
+    #[test]
+    fn workspaces_pinned_migration_upgrades_v1_1_8_and_fresh_databases() {
+        for upgrade in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            if upgrade {
+                conn.execute_batch(
+                    "CREATE TABLE workspaces (
+                        id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                        kind TEXT NOT NULL, path TEXT NOT NULL, description TEXT,
+                        cleanup_status TEXT NOT NULL DEFAULT 'active',
+                        cleanup_requested_at INTEGER, cleaned_at INTEGER,
+                        last_opened_at INTEGER, created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL, deleted_at INTEGER
+                    );
+                    INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                    VALUES ('legacy', 'Keep me', 'user', '/tmp/legacy', 1, 2);",
+                )
+                .unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            assert!(column_exists(&conn, "workspaces", "pinned").unwrap());
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE version = 'v1.1.9-workspaces-pinned'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+                1
+            );
+            if upgrade {
+                let row = conn
+                    .query_row(
+                        "SELECT name, pinned FROM workspaces WHERE id = 'legacy'",
+                        [],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(row, ("Keep me".into(), false));
+            }
+        }
+    }
+
     #[test]
     fn thread_parent_migration_upgrades_v1_1_5_and_fresh_databases() {
         for upgrade in [false, true] {

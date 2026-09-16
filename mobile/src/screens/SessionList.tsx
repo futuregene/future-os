@@ -258,6 +258,7 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
+            {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
           <Pressable
@@ -387,6 +388,22 @@ export function SessionList({
             disabled: !remote.desktopOnline || deleting,
             onPress: () => {
               void remote.newConversation("workspace", menuWorkspace.workspace.id)
+                .catch(() => Alert.alert(t("common.error")));
+            },
+          },
+          {
+            // A workspace group is an ordering shortcut like a pinned
+            // conversation: pinned groups sit under the pinned conversations
+            // and above the unpinned groups (see catalogRows).
+            label: t(menuWorkspace.workspace.pinned ? "sessions.unpin" : "sessions.pin"),
+            icon: <Pin size={18} color={colors.inkSoft} />,
+            disabled: !remote.desktopOnline || deleting,
+            onPress: () => {
+              void remote
+                .setWorkspacePinned(
+                  menuWorkspace.workspace.id,
+                  !menuWorkspace.workspace.pinned,
+                )
                 .catch(() => Alert.alert(t("common.error")));
             },
           },

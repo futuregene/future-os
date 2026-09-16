@@ -50,7 +50,7 @@ export function useSessionCatalog(
   );
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
   const [unreadSessions, setUnreadSessions] = useState<Set<string>>(() => new Set());
-  const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
+  const [workspaces, setWorkspacesLocal] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [approvalTier, setApprovalTier] = useState("off");
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
@@ -346,7 +346,7 @@ export function useSessionCatalog(
       )
         return;
       if (versionGate.current.accept("workspaces", response.data.version))
-        setWorkspaces(response.data.workspaces ?? []);
+        setWorkspacesLocal(response.data.workspaces ?? []);
       markSync("workspaces", "ready");
     } catch {
       if (
@@ -366,7 +366,7 @@ export function useSessionCatalog(
       if (!versionGate.current.accept("workspaces", version)) return;
       markSync("workspaces", "ready");
       revisions.current.workspaces += 1;
-      setWorkspaces(list);
+      setWorkspacesLocal(list);
     },
     [markSync],
   );
@@ -384,7 +384,7 @@ export function useSessionCatalog(
     modelRecoveryRef.current.timer = null;
     setSessions([]);
     sessionsRef.current = [];
-    setWorkspaces([]);
+    setWorkspacesLocal([]);
     setModels([]);
     setTitleOverrides({});
     titleOverridesRef.current = {};
@@ -467,7 +467,7 @@ export function useSessionCatalog(
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       revisions.current.sessions += 1;
       revisions.current.workspaces += 1;
-      setWorkspaces((current) => current.filter((workspace) => workspace.id !== workspaceId));
+      setWorkspacesLocal((current) => current.filter((workspace) => workspace.id !== workspaceId));
       setSessions((current) =>
         current.filter((session) => (session.workspaceId ?? "") !== workspaceId),
       );
@@ -490,7 +490,7 @@ export function useSessionCatalog(
       }
       return removed.some((session) => session.sessionId === selectedRef.current);
     },
-    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions, setWorkspaces],
+    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions],
   );
 
   const setSessionPinned = useCallback(
@@ -513,6 +513,27 @@ export function useSessionCatalog(
       );
     },
     [clientRef, setSessions],
+  );
+
+  const setWorkspacePinned = useCallback(
+    async (workspaceId: string, pinned: boolean) => {
+      const client = clientRef.current;
+      if (!client || !workspaceId) return;
+      const epoch = catalogEpoch.current;
+      await client.request({ type: "set_workspace_pinned", workspaceId, pinned }, "list");
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      revisions.current.workspaces += 1;
+      // The phone's own list order comes from the flag (see catalogRows), so
+      // carrying it here is enough: the group moves on the next render and the
+      // pushed snapshot confirms the same value. The workspace array's own
+      // order stays the desktop's, as the new-conversation picker expects.
+      setWorkspacesLocal((current) =>
+        current.map((workspace) =>
+          workspace.id === workspaceId ? { ...workspace, pinned } : workspace,
+        ),
+      );
+    },
+    [clientRef],
   );
 
   return {
@@ -540,6 +561,7 @@ export function useSessionCatalog(
     deleteSession,
     deleteWorkspace,
     setSessionPinned,
+    setWorkspacePinned,
     reset,
   };
 }

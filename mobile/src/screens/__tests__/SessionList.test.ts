@@ -15,6 +15,7 @@ const mockRemote: {
   desktopOnline: boolean;
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
+  setWorkspacePinned: jest.Mock;
   selectSession: jest.Mock;
   newConversation: jest.Mock;
 } = {
@@ -28,6 +29,7 @@ const mockRemote: {
   desktopOnline: true,
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
+  setWorkspacePinned: jest.fn(),
   selectSession: jest.fn(),
   newConversation: jest.fn(),
 };
@@ -101,6 +103,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
   mockRemote.deleteSession.mockResolvedValue(undefined);
+  mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
   await act(async () => {
     tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
@@ -272,12 +275,12 @@ function renderWorkspaceTab(): void {
 }
 
 /** Select a real app sheet row and finish its iOS dismissal before navigation. */
-function pressWorkspaceMenu(index: number): void {
+function pressWorkspaceMenu(action: string): void {
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   const menu = tree.root.findByType(ActionMenu);
-  const label = menu.props.actions[index].label;
+  expect(menu.props.actions.map((item: { label: string }) => item.label)).toContain(action);
   const modal = menu.findByType(Modal);
-  act(() => button(label).props.onPress());
+  act(() => button(action).props.onPress());
   act(() => modal.props.onDismiss());
 }
 
@@ -446,6 +449,7 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   expect(tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label)).toEqual([
     "sessions.new",
+    "sessions.pin",
     "sessions.selectWorkspaceSessions",
     "sessions.deleteWorkspace",
   ]);
@@ -453,6 +457,23 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   mockRemote.desktopOnline = false;
   renderWorkspaceTab();
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
+});
+
+test("the workspace menu pins a group and offers unpin once it is pinned", async () => {
+  renderWorkspaceTab();
+  pressWorkspaceMenu("sessions.pin");
+  expect(mockRemote.setWorkspacePinned).toHaveBeenCalledWith("w1", true);
+
+  mockRemote.workspaces = [{ ...mockRemote.workspaces[0]!, pinned: true }];
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  pressWorkspaceMenu("sessions.unpin");
+  expect(mockRemote.setWorkspacePinned).toHaveBeenLastCalledWith("w1", false);
+
+  // A refused pin reports the failure instead of leaving the row moved.
+  mockRemote.setWorkspacePinned.mockRejectedValueOnce(new Error("offline"));
+  pressWorkspaceMenu("sessions.unpin");
+  await act(async () => {});
+  expect(dialogText()).toEqual(expect.arrayContaining(["common.error"]));
 });
 
 test("new conversation uses the selected workspace and waits for sheet dismissal", async () => {
@@ -469,7 +490,7 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
 
 test("select all in a workspace selects nested sessions but not other chats", () => {
   renderWorkspaceTab();
-  pressWorkspaceMenu(1);
+  pressWorkspaceMenu("sessions.selectWorkspaceSessions");
   // Only the workspace's two sessions, nested one included — the count text
   // proves nothing else (e.g. the plain chat) was pulled in.
   expect(
@@ -487,7 +508,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockResolvedValue(undefined);
-    pressWorkspaceMenu(2);
+    pressWorkspaceMenu("sessions.deleteWorkspace");
     expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project"]));
     await act(async () => {
       confirmAlert();
@@ -511,7 +532,7 @@ test("promoted workspace pins remain visible, openable and included in workspace
   expect(tree.root.findByType(FlatList).props.data.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1"]);
   act(() => sessionBody("Follow-up").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
-  pressWorkspaceMenu(1);
+  pressWorkspaceMenu("sessions.selectWorkspaceSessions");
   expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
 });
@@ -521,7 +542,7 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockRejectedValue(new Error("offline"));
-    pressWorkspaceMenu(2);
+    pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => {
       confirmAlert();
     });

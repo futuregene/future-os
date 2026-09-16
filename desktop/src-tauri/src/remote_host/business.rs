@@ -664,6 +664,26 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                 }
             }
         }
+        "set_workspace_pinned" => {
+            // Workspace pinning, like pinning a conversation, is durable state:
+            // the flag lives in the store, so it survives a re-pair and reaches
+            // every client through the workspace snapshot.
+            if cmd.workspace_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing workspace_id")).await;
+            } else {
+                match crate::store::pin_workspace(crate::store::PinWorkspaceInput {
+                    workspace_id: cmd.workspace_id.clone(),
+                    pinned: cmd.pinned,
+                }) {
+                    Ok(_) => {
+                        // No explicit event: the workspace snapshot carries the
+                        // flag and republishes on the next heartbeat tick.
+                        reply(sink, true, json!({}), None).await
+                    }
+                    Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
+                }
+            }
+        }
         "delete_workspace" => {
             // Phone parity with the desktop sidebar's workspace delete: reuse the
             // exact command the GUI calls, so the store cascade, the agent-session

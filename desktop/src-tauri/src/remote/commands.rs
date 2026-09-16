@@ -2714,6 +2714,30 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
+        // set_workspace_pinned: missing id, success, and unknown-workspace failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing workspace_id"));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "workspaceId": thread.workspace_id, "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(
+            crate::store::get_workspace(&thread.workspace_id)
+                .unwrap()
+                .unwrap()
+                .pinned
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "workspaceId": "missing-workspace", "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
         // delete_session: missing id, success, and unknown-thread failure.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session" }))

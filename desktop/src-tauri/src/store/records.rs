@@ -267,6 +267,13 @@ pub struct PinThreadInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PinWorkspaceInput {
+    pub workspace_id: String,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteThreadInput {
     pub thread_id: String,
     /// For chat-mode threads only: also delete the temporary workspace
