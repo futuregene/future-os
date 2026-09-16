@@ -58,7 +58,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   active?: boolean;
 }) {
   const Alert = useAppDialog(active);
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const remote = useRemote();
   const selectedDesktop =
     remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId) ??
@@ -543,6 +543,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 
         <RenameModal
           renameOpen={renameTarget !== null}
+          generationKey={renameTarget?.sessionId}
+          onGenerate={renameTarget && remote.desktopOnline
+            ? () => remote.generateTitle(renameTarget.sessionId, i18n.language.startsWith("zh") ? "zh" : "en")
+            : undefined}
           renameValue={renameValue}
           setRenameValue={setRenameValue}
           submitRename={submitRename}

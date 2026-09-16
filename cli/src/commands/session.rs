@@ -429,6 +429,19 @@ fn json_value(sessions: &[Value]) -> Value {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn automatic_title_command_is_not_available() {
+        let (out, cap) = Output::memory();
+        assert!(
+            session(Some("title"), &["s1".into(), "summary".into()], &out)
+                .await
+                .is_err()
+        );
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Unknown command: title"));
+        assert!(!SESSION_HELP.contains("future session title"));
+    }
+
     #[test]
     fn truncate_behavior() {
         assert_eq!(truncate("hello", 10), "hello");

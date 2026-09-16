@@ -395,6 +395,18 @@ export function useSessionCatalog(
     notifiedRuns.current.clear();
   }, [setTitleOverrides]);
 
+  const generateTitle = useCallback(async (sessionId: string, language: string): Promise<string> => {
+    const client = clientRef.current;
+    if (!client || !sessionId) throw new Error("not_connected");
+    const epoch = catalogEpoch.current;
+    const response = await client.request<{ title: string }>(
+      { type: "generate_session_title", sessionId, mode: language }, sessionId, 65_000,
+    );
+    if (clientRef.current !== client || catalogEpoch.current !== epoch) throw new Error("connection_changed");
+    if (!response.success || !response.data?.title?.trim()) throw new Error(response.error || "title_generation_failed");
+    return response.data.title;
+  }, [clientRef]);
+
   const rename = useCallback(
     async (sessionId: string, name: string) => {
       const client = clientRef.current;
@@ -524,6 +536,7 @@ export function useSessionCatalog(
     refreshSettings,
     refreshWorkspaces,
     rename,
+    generateTitle,
     deleteSession,
     deleteWorkspace,
     setSessionPinned,

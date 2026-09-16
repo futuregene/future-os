@@ -608,6 +608,17 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        "generate_session_title" => {
+            match crate::agent_bridge::generate_session_title(
+                cmd.session_id.clone(),
+                cmd.mode.clone(),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "set_session_name" => {
             match crate::agent_bridge::rename_session(cmd.session_id.clone(), cmd.name.clone())
                 .await

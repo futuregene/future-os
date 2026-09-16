@@ -796,6 +796,17 @@ below New Chat jumps straight to the models page) has three pages:
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
   default, per `store/app_settings.rs`).
+
+**Session title suggestions** are exclusively user-triggered from the rename
+window in Desktop and mobile. “Auto-generate” calls the conversation's selected
+model with at most its first three completed question–answer pairs, excluding
+tools, reasoning and later exchanges. Each side is capped at 2000 characters.
+The independent, tool-free request uses the current client's UI language and
+returns a suggestion of at most 32 display columns. It fills the editable input;
+only Save changes the stored title. Generation errors leave the existing input
+unchanged, and late results cannot overwrite a closed/reopened dialog. There is
+no automatic setting, conversation-prompt instruction or title-generation CLI
+command. Generating a suggestion never appends a message or starts a chat run.
 - **Providers**:
   - **Built-in FutureGene** (read-only): clicking "Connect" runs the GUI's
     built-in device-code OAuth login — authorization completes in the system
