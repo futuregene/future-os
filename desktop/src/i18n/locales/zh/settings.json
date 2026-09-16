@@ -227,6 +227,8 @@
     "copyLink": "复制链接",
     "waiting": "在浏览器中完成登录与授权后，这里会自动完成连接…",
     "expired": "授权码已过期，请重试。",
+    "unavailable": "暂时无法连接服务器，请重试。",
+    "invalidResponse": "服务器响应异常，请重试。",
     "denied": "授权被拒绝。",
     "failed": "授权失败。",
     "connectFailed": "连接失败。"

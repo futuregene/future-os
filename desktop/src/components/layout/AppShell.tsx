@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
-import { stopRemote } from "../../features/remote/remoteClient";
+import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
@@ -222,15 +222,36 @@ export function AppShell() {
 
   // Remote credential renewal can be the first place a revoked account key is
   // observed. Recheck the account through the same authoritative profile path.
+  // A freshly issued bridge credential rejected by NATS remains a separate
+  // service-side failure and must not be presented as an account logout.
   useEffect(() => {
-    if (remoteStatus?.phase === "failed" && remoteStatus.reason === "service_authorization")
+    if (remoteStatus?.phase === "failed" && remoteStatus.reason === "account_authorization")
       refreshFutureAuth();
   }, [remoteStatus?.phase, remoteStatus?.reason, refreshFutureAuth]);
 
   useEffect(() => {
-    if (futureSessionStatus === "invalid")
+    if (futureSessionStatus === "signed_out" || futureSessionStatus === "invalid")
       void stopRemote().then(refreshRemote).catch(() => {});
   }, [futureSessionStatus, refreshRemote]);
+
+  // Account reauthentication replaces the rejected FutureOS key. If Remote
+  // stopped specifically because that key was invalid, immediately retry the
+  // persisted pairing with the new key instead of leaving a stale terminal
+  // error for the user to clear manually.
+  const previousFutureSessionStatusRef = useRef(futureSessionStatus);
+  useEffect(() => {
+    const previousStatus = previousFutureSessionStatusRef.current;
+    previousFutureSessionStatusRef.current = futureSessionStatus;
+    if (
+      futureSessionStatus === "authenticated"
+      && previousStatus === "checking"
+      && remoteStatus?.phase === "failed"
+      && remoteStatus.reason === "account_authorization"
+      && Boolean(remoteStatus.pairId)
+    ) {
+      void startRemote({}).then(refreshRemote).catch(() => {});
+    }
+  }, [futureSessionStatus, remoteStatus?.phase, remoteStatus?.reason, remoteStatus?.pairId, refreshRemote]);
 
   const handleRecharge = () => {
     getFutureEnvironment().then(env => openExternalUrl(`${env.platformUrl}/platform/#recharge`)).catch(() => {});
