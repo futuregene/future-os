@@ -270,6 +270,21 @@ const MAX_EVENT_BYTES: usize = 900 * 1024;
 struct EventPublish {
     subject: String,
     payload: Vec<u8>,
+    status_subject: Option<String>,
+}
+
+fn is_catalog_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "agent_start"
+            | "agent_end"
+            | "approval_request"
+            | "approval_decision"
+            | "session_name_changed"
+            | "provider_config_changed"
+            | "run_snapshot"
+            | "error"
+    )
 }
 
 /// Generation-local health reported by async-nats. Keeping this beside the
@@ -1878,6 +1893,9 @@ pub fn publish_event(
     let event = EventPublish {
         subject: format!("p.{pair_id}.evt.{session_id}"),
         payload,
+        // Existing state wildcard permissions cover this low-rate lane. Old
+        // clients ignore the new suffix and keep their full legacy event feed.
+        status_subject: is_catalog_event(event_type).then(|| format!("p.{pair_id}.state.events")),
     };
     if tx.try_send(event).is_err() {
         if let Some(line) = drop_counters.record_drop(
@@ -2005,9 +2023,14 @@ fn spawn_secure_event_publisher(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
-            if let Err(error) =
+            let sent = async {
+                if let Some(subject) = event.status_subject {
+                    secure::publish(&client, &security, subject, event.payload.clone()).await?;
+                }
                 secure::publish(&client, &security, event.subject, event.payload).await
-            {
+            }
+            .await;
+            if let Err(error) = sent {
                 if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
                     eprintln!("{line}");
                 }
@@ -3523,6 +3546,31 @@ mod runtime_tests {
         stop();
     }
 
+    #[test]
+    fn catalog_lane_keeps_status_and_approvals_but_not_token_traffic() {
+        for event in [
+            "agent_start",
+            "agent_end",
+            "approval_request",
+            "approval_decision",
+            "error",
+            "session_name_changed",
+            "provider_config_changed",
+            "run_snapshot",
+        ] {
+            assert!(is_catalog_event(event), "{event}");
+        }
+        for event in [
+            "text_chunk",
+            "thinking_delta",
+            "tool_delta",
+            "toolcall_delta",
+            "tool_end",
+        ] {
+            assert!(!is_catalog_event(event), "{event}");
+        }
+    }
+
     #[tokio::test]
     async fn event_publisher_flushes_in_order_and_reports_failures() {
         let _home = HomeGuard::new("remote-drain");
@@ -3534,6 +3582,7 @@ mod runtime_tests {
 
         for index in 0..3 {
             tx.send(EventPublish {
+                status_subject: None,
                 subject: format!("p.pair_drain.evt.sess.{index}"),
                 payload: format!("{{\"n\":{index}}}").into_bytes(),
             })
@@ -3550,10 +3599,34 @@ mod runtime_tests {
             assert_eq!(published.json()["n"], json!(index));
         }
 
+        // A background status event remains available without subscribing to
+        // every token, while legacy clients retain their original full topic.
+        tx.send(EventPublish {
+            status_subject: Some("p.pair_drain.state.events".to_string()),
+            subject: "p.pair_drain.evt.background".to_string(),
+            payload: br#"{"type":"approval_request","sessionId":"background"}"#.to_vec(),
+        })
+        .await
+        .unwrap();
+        let status = await_publish(
+            &mut tap,
+            "p.pair_drain.state.events",
+            Duration::from_secs(5),
+        )
+        .await;
+        let legacy = await_publish(
+            &mut tap,
+            "p.pair_drain.evt.background",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(status.json(), legacy.json());
+
         // An event over the broker's max_payload cap is refused client-side;
         // the critical publisher exits so the generation supervisor rebuilds
         // it under the shared system-failure budget.
         tx.send(EventPublish {
+            status_subject: None,
             subject: "p.pair_drain.evt.sess.huge".to_string(),
             payload: vec![b'x'; 9 * 1024 * 1024],
         })
@@ -3565,6 +3638,7 @@ mod runtime_tests {
             .expect("publisher not panicked");
         assert!(tx
             .send(EventPublish {
+                status_subject: None,
                 subject: "p.pair_drain.evt.sess.after".to_string(),
                 payload: b"{}".to_vec(),
             })

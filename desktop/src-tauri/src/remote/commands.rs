@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1522,7 +1522,8 @@ mod bridge_tests {
                 "continue_run_v1",
                 "prompt_receipt_v1",
                 "session_files_v1",
-                "skills_v1"
+                "skills_v1",
+                "selective_events_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));

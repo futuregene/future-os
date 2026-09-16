@@ -56,6 +56,7 @@ import {
   type RunCursor,
 } from "./runCursor";
 import type { StreamEvent, RemoteSessionState } from "./types";
+import { retainedSize } from "./retainedSize";
 
 /** Paginated replay pages, merged by the caller (P0 H2 pagination). */
 export interface ReplayResult {
@@ -323,8 +324,9 @@ export class SyncEngine {
     const lanes = [...this.lanes.values()].filter(lane => lane.sessionId !== "");
     let bytes = 0;
     for (const lane of lanes) {
-      lane.cachedBytes ??= JSON.stringify(lane.timeline).length * 2 + lane.cursor.size * 64;
-      bytes += lane.cachedBytes;
+      lane.cachedBytes ??= retainedSize(lane.timeline) + retainedSize(lane.cursor)
+        + [...(lane.timeline?.liveRuns?.values() ?? [])].reduce((total, run) => total + run.projector.estimatedBytes(), 0);
+      bytes += lane.cachedBytes + lane.bufferedBytes;
     }
     let count = lanes.length;
     const evicted: string[] = [];
@@ -335,7 +337,7 @@ export class SyncEngine {
       lane.ops = [];
       lane.replayQueue = [];
       this.lanes.delete(lane.sessionId);
-      bytes -= lane.cachedBytes ?? 0;
+      bytes -= (lane.cachedBytes ?? 0) + lane.bufferedBytes;
       count--;
       evicted.push(lane.sessionId);
     }

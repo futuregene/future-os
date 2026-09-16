@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo-modules-core";
 
 interface FileHandlerNativeModule {
+  hashFile?(fileUrl: string): Promise<string>;
   findSupportedMimeType(fileName: string, mimeTypes: string[]): Promise<string | null>;
   openFile(fileUrl: string, mimeType: string): Promise<void>;
   saveFile?(fileUrl: string): Promise<void>;
@@ -8,6 +9,12 @@ interface FileHandlerNativeModule {
 }
 
 const nativeModule = requireOptionalNativeModule<FileHandlerNativeModule>("FutureFileHandler");
+
+/** Native streaming hash when available; older app binaries use the bounded
+ * JS fallback. Native permission/read failures are not silently bypassed. */
+export async function hashFile(fileUrl: string): Promise<string | null> {
+  return nativeModule?.hashFile ? nativeModule.hashFile(fileUrl) : null;
+}
 
 /** Resolves when Android accepts the chooser, not when a recipient sends it. */
 export async function shareFile(fileUrl: string, mimeType: string, title: string): Promise<void> {

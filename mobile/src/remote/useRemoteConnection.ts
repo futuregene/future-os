@@ -371,6 +371,7 @@ export function useRemoteConnection({
         },
       });
       clientRef.current = client;
+      client.setVisibleSession?.(AppState.currentState === "background" ? "" : selectedRef.current);
       client.setAppActive(AppState.currentState !== "background");
       await client.open();
     },
@@ -475,6 +476,7 @@ export function useRemoteConnection({
       previous = next;
       if (enteredBackground) {
         backgrounded = true;
+        clientRef.current?.setVisibleSession?.("");
         clearPresentationTimer();
         // Keep a picker/quick-switch connection alive. Do not depend on the
         // picker promise still being pending at expiry: Android can deliver
@@ -491,6 +493,7 @@ export function useRemoteConnection({
         // the app. They must not restart history/catalogue sync or handshake.
         if (backgrounded) {
           backgrounded = false;
+          clientRef.current?.setVisibleSession?.(selectedRef.current);
           // The OS can suspend JS before the grace timer fires, then deliver
           // active before overdue timers on resume. Retire the stale socket
           // and in-flight recovery before starting a new foreground attempt.
@@ -507,7 +510,7 @@ export function useRemoteConnection({
       clearPresentationTimer();
       subscription.remove();
     };
-  }, [clientRef, recoverLifecycle]);
+  }, [clientRef, recoverLifecycle, selectedRef]);
 
   useEffect(() => {
     let active = true;

@@ -64,6 +64,7 @@ jest.mock("../client", () => {
     callbacks: Record<string, (...args: never[]) => unknown>;
     close = jest.fn(async () => {});
     setAppActive = jest.fn();
+    setVisibleSession = jest.fn();
     open = jest.fn(async () => {
       this.callbacks.onConnectionState?.("ready" as never);
       this.callbacks.onReconnected?.();
@@ -129,6 +130,7 @@ interface MockClient {
   callbacks: MockClientCallbacks;
   close: jest.Mock;
   setAppActive: jest.Mock;
+  setVisibleSession: jest.Mock;
   open: jest.Mock;
   recoverNow: jest.Mock;
   request: jest.Mock;
@@ -844,6 +846,7 @@ describe("useRemoteConnection", () => {
     });
 
     test("foreground recovery refreshes network and recovers the client", async () => {
+      options.selectedRef.current = "s1";
       await mountConnected();
       await act(async () => {
         appStateListeners()[0]!("background");
@@ -852,6 +855,7 @@ describe("useRemoteConnection", () => {
       });
       expect(client().recoverNow).toHaveBeenCalledWith("foreground");
       expect(options.refreshSettings).toHaveBeenCalledTimes(2);
+      expect(client().setVisibleSession.mock.calls.slice(-2)).toEqual([[""], ["s1"]]);
     });
 
     test("foreground immediately recovers even when the network hint stays offline", async () => {

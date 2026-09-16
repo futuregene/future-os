@@ -4,6 +4,8 @@ import {
   clearSessionDraftIfMatches,
   loadSessionDraft,
   saveSessionDraft,
+  scheduleSessionDraft,
+  flushSessionDraft,
 } from "../draftStorage";
 
 const mockData = new Map<string, string>();
@@ -58,6 +60,40 @@ describe("session draft storage", () => {
   beforeEach(() => {
     mockData.clear();
     jest.clearAllMocks();
+  });
+
+  test("100 rapid edits coalesce, while reads and explicit saves flush/replace the latest draft", async () => {
+    jest.useFakeTimers();
+    try {
+      for (let i = 0; i < 100; i++) scheduleSessionDraft("s1", { text: `edit ${i}`, attachments: [] });
+      expect(mockedAsync.setItem).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(250);
+      expect(mockedAsync.setItem).toHaveBeenCalledTimes(1);
+      scheduleSessionDraft("s1", { text: "latest", attachments: [] });
+      expect(await loadSessionDraft("s1")).toMatchObject({ text: "latest" });
+      scheduleSessionDraft("s1", { text: "obsolete", attachments: [] });
+      await saveSessionDraft("s1", { text: "explicit share", attachments: [] });
+      await jest.runAllTimersAsync();
+      expect(await loadSessionDraft("s1")).toMatchObject({ text: "explicit share" });
+    } finally { await flushSessionDraft("s1"); jest.useRealTimers(); }
+  });
+
+  test("continuous input is persisted within 2s and a send clear cannot be resurrected by a timer", async () => {
+    jest.useFakeTimers();
+    try {
+      for (let i = 0; i < 20; i++) {
+        scheduleSessionDraft("s1", { text: `edit ${i}`, attachments: [] });
+        await jest.advanceTimersByTimeAsync(100);
+      }
+      expect(mockedAsync.setItem).toHaveBeenCalledTimes(1);
+      scheduleSessionDraft("s1", { text: "sent", attachments: [] });
+      await clearSessionDraft("s1");
+      await jest.runAllTimersAsync();
+      expect(await loadSessionDraft("s1")).toBeNull();
+      scheduleSessionDraft("s1", { text: "newer unsent", attachments: [] });
+      await clearSessionDraftIfMatches("s1", { text: "sent", attachments: [] });
+      expect(await loadSessionDraft("s1")).toMatchObject({ text: "newer unsent" });
+    } finally { await flushSessionDraft("s1"); jest.useRealTimers(); }
   });
 
   test("saves and loads a draft with text and attachments", async () => {

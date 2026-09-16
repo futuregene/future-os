@@ -1,4 +1,6 @@
 import ExpoModulesCore
+import Foundation
+import CryptoKit
 import UniformTypeIdentifiers
 
 public final class FileHandlerModule: Module {
@@ -6,6 +8,24 @@ public final class FileHandlerModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("FutureFileHandler")
+
+    AsyncFunction("hashFile") { (url: URL) -> String in
+      guard url.isFileURL, FileSystemUtilities.isReadableFile(self.appContext, url) else {
+        throw Exception(name: "UnreadableFile", description: "The selected file is not readable")
+      }
+      let file = try FileHandle(forReadingFrom: url)
+      defer { try? file.close() }
+      var hash = SHA256()
+      var total = 0
+      while let data = try file.read(upToCount: 64 * 1024), !data.isEmpty {
+        total += data.count
+        guard total <= 10 * 1024 * 1024 else {
+          throw Exception(name: "FileTooLarge", description: "File exceeds the hash size limit")
+        }
+        hash.update(data: data)
+      }
+      return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }.runOnQueue(.global(qos: .utility))
 
     AsyncFunction("openFile") { (url: URL, mimeType: String, promise: Promise) in
       guard FileSystemUtilities.isReadableFile(self.appContext, url), url.isFileURL else {

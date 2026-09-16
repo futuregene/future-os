@@ -22,7 +22,7 @@ HTML = """<!doctype html><meta charset=utf-8><meta name=viewport content='width=
 <title>Mobile performance — private real trace playback</title>
 <style>body{font:16px system-ui;max-width:900px;margin:24px auto;padding:12px}button{padding:14px;margin:8px}pre{white-space:pre-wrap}aside{color:#666}</style>
 <h1>Mobile TS performance / energy proxies</h1><aside>Real historical traces, local read-only SQLite. Controlled playback, not live NATS or native React Native UI. No battery-power claim.</aside>
-<button id=run>Run 3-round real-trace A/B</button><button id=markdown>Measure long real Markdown replies</button><button id=back>Test local return response</button>
+<button id=run>Run 3-round real-trace A/B</button><button id=json>Measure large real JSON decoding</button><button id=markdown>Measure long real Markdown replies</button><button id=back>Test local return response</button>
 <p id=status>Ready. Raw conversation contents are never displayed.</p><pre id=output></pre>
 <script src=/baseline.js></script><script src=/current.js></script><script src=/probe.js></script>"""
 

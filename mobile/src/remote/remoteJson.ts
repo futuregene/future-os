@@ -1,4 +1,5 @@
 import { gunzipSync } from "fflate";
+import { decodeJsonBytes } from "./cooperativeJson";
 
 const GZIP_MAGIC = [0x1f, 0x8b] as const;
 // Command replies are already bounded below the NATS payload cap. Enforce the
@@ -23,6 +24,12 @@ function isGzip(data: Uint8Array): boolean {
     0;
   if (jsonBytes > MAX_REMOTE_JSON_BYTES) throw new Error("remote_json_gzip_too_large");
   return true;
+}
+
+export async function decodeRemoteJsonAsync<T>(data: Uint8Array, current?: () => boolean): Promise<T> {
+  const jsonBytes = isGzip(data) ? gunzipSync(data) : data;
+  if (jsonBytes.length > MAX_REMOTE_JSON_BYTES) throw new Error("remote_json_too_large");
+  return decodeJsonBytes<T>(jsonBytes, current);
 }
 
 /** Decode an automatically selected plain JSON or standard gzip JSON reply. */

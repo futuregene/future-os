@@ -1,12 +1,12 @@
 import { ConnectionGeneration } from "./connectionGeneration";
-import type { Msg, NatsConnection } from "@nats-io/nats-core";
+import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "./secureChannel";
 import { ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
-import { decodeRemoteJson } from "./remoteJson";
+import { decodeRemoteJson, decodeRemoteJsonAsync } from "./remoteJson";
 import type {
   SnapshotVersion,
   Presence,
@@ -79,6 +79,18 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 }
 
 export class RemoteClient {
+  private visibleSessionId = "";
+  private eventSubscriptions = new Map<NatsConnection, { generation: number; selective: boolean; revision: number; subscription?: Subscription }>();
+
+  setVisibleSession(sessionId: string): void {
+    const next = /^[A-Za-z0-9_-]+$/.test(sessionId) ? sessionId : "";
+    if (this.visibleSessionId === next) return;
+    this.visibleSessionId = next;
+    for (const [connection, record] of this.eventSubscriptions) {
+      if (record.selective) this.installEventSubscription(connection);
+    }
+  }
+
   private everReady = false;
   private recoveryDeadline = 0;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
@@ -574,7 +586,7 @@ export class RemoteClient {
       // Install every critical subscription and flush their SUB frames before
       // publishing this generation as ready. Until this barrier succeeds the
       // previous generation remains the sole externally-ready connection.
-      this.subscribeEvents(connection, generation);
+      this.subscribeEvents(connection, generation, confirmation.features?.includes("selective_events_v1") === true);
       this.subscribeLiveness(connection, generation);
       this.subscribeState(connection, generation);
       this.subscribeTransfers(connection, generation);
@@ -601,6 +613,7 @@ export class RemoteClient {
       this.failedGeneration = null;
       this.watchStatus(connection, generation);
       if (previous && previous !== connection) {
+        this.eventSubscriptions.delete(previous);
         this.secureChannels.get(previous)?.destroy();
         this.secureChannels.delete(previous);
         void previous.close().catch(() => undefined);
@@ -628,6 +641,7 @@ export class RemoteClient {
         this.failedGeneration = generation;
       }
       candidate.retire();
+      this.eventSubscriptions.delete(connection);
       if (this.candidateGeneration === candidate) {
         this.candidateGeneration = null;
         this.candidateConnection = null;
@@ -827,6 +841,7 @@ export class RemoteClient {
     this.confirmedBridgeInstanceId = "";
     this.rejectDownloadWaiters(reason);
     if (connection) {
+      this.eventSubscriptions.delete(connection);
       this.secureChannels.get(connection)?.destroy();
       this.secureChannels.delete(connection);
       void connection.close().catch(() => undefined);
@@ -839,7 +854,8 @@ export class RemoteClient {
     subject: string,
     category: string,
     consume: (message: Pick<Msg, "subject" | "data">) => void | Promise<void>,
-  ): void {
+    isCurrent: () => boolean = () => true,
+  ): Subscription {
     const owner =
       this.candidateGeneration?.id === generation
         ? this.candidateGeneration
@@ -848,13 +864,26 @@ export class RemoteClient {
     const subscription = connection.subscribe(subject);
     void (async () => {
       try {
+        let batchBytes = 0;
+        let batchCount = 0;
+        let deadline = Date.now() + 8;
         for await (const message of subscription) {
-          if (!this.isLiveGeneration(generation)) return;
-          owner.deliver(() => {
+          if (!this.isLiveGeneration(generation) || !isCurrent()) return;
+          if (batchCount === 0) deadline = Date.now() + 8;
+          // Buffered NATS iteration advances via microtasks. Yield before the
+          // next decrypt/decode burst so input can run, not just projection.
+          if (batchCount >= 64 || batchBytes >= 256 * 1024 || Date.now() >= deadline) {
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
             if (!this.isLiveGeneration(generation)) return;
+            batchBytes = 0; batchCount = 0; deadline = Date.now() + 8;
+          }
+          batchCount++;
+          batchBytes += message.data.length;
+          owner.deliver(() => {
+            if (!this.isLiveGeneration(generation) || !isCurrent()) return;
             void Promise.resolve()
               .then(() => {
-                if (!this.isLiveGeneration(generation)) return;
+                if (!this.isLiveGeneration(generation) || !isCurrent()) return;
                 const channel = this.secureChannels.get(connection);
                 if (!channel) return;
                 let data: Uint8Array;
@@ -867,12 +896,16 @@ export class RemoteClient {
               })
               .catch((error) => this.failGeneration(error, generation));
           }, message.data.length);
+          // An empty SDK queue already yields to network I/O. Do not introduce
+          // a new wakeup for each slowly arriving token.
+          if (subscription.getPending?.() === 0) { batchCount = 0; batchBytes = 0; }
         }
-        this.failGeneration(new Error(`remote_${category}_subscription_ended`), generation);
+        if (isCurrent()) this.failGeneration(new Error(`remote_${category}_subscription_ended`), generation);
       } catch (error) {
-        this.failGeneration(error, generation);
+        if (isCurrent()) this.failGeneration(error, generation);
       }
     })();
+    return subscription;
   }
 
   private subscribeTransfers(connection: NatsConnection, generation: number): void {
@@ -889,9 +922,22 @@ export class RemoteClient {
     });
   }
 
-  private subscribeEvents(connection: NatsConnection, generation: number): void {
+  private subscribeEvents(connection: NatsConnection, generation: number, selective = false): void {
+    const old = this.eventSubscriptions.get(connection);
+    if (old) { old.revision++; old.subscription?.unsubscribe(); }
+    this.eventSubscriptions.set(connection, { generation, selective, revision: 0 });
+    this.installEventSubscription(connection);
+  }
+
+  private installEventSubscription(connection: NatsConnection): void {
+    const record = this.eventSubscriptions.get(connection)!;
+    const revision = ++record.revision;
+    record.subscription?.unsubscribe();
+    record.subscription = undefined;
+    if (record.selective && !this.visibleSessionId) return;
     const prefix = `p.${this.credentials.pairId}.evt.`;
-    this.subscribe(connection, generation, `${prefix}>`, "event", (message) => {
+    record.subscription = this.subscribe(connection, record.generation,
+      `${prefix}${record.selective ? this.visibleSessionId : ">"}`, "event", (message) => {
       const sessionId = message.subject.slice(prefix.length);
       let event: StreamEvent;
       try {
@@ -904,7 +950,7 @@ export class RemoteClient {
         return;
       }
       this.callbacks.onEvent(event, sessionId);
-    });
+    }, () => this.eventSubscriptions.get(connection) === record && record.revision === revision);
   }
 
   private subscribeLiveness(connection: NatsConnection, generation: number): void {
@@ -931,6 +977,8 @@ export class RemoteClient {
           this.callbacks.onCatalogEpoch?.(confirmation.presence.catalogEpoch);
           this.receivePresence(confirmation.presence);
           this.negotiatedFeatures = new Set(confirmation.features ?? []);
+          const selective = this.negotiatedFeatures.has("selective_events_v1");
+          if (this.eventSubscriptions.get(connection)?.selective !== selective) this.subscribeEvents(connection, generation, selective);
           this.callbacks.onFeatures(confirmation.features ?? []);
           this.callbacks.onReconnected();
         } else this.receivePresence(presence);
@@ -942,7 +990,10 @@ export class RemoteClient {
     const prefix = `p.${this.credentials.pairId}.state.`;
     this.subscribe(connection, generation, `${prefix}>`, "state", (message) => {
       const suffix = message.subject.slice(prefix.length);
-      if (suffix === "sessions") {
+      if (suffix === "events" && this.eventSubscriptions.get(connection)?.selective) {
+        const event = decodeRemoteJson<StreamEvent & { sessionId: string }>(message.data);
+        if (typeof event.sessionId === "string") this.callbacks.onEvent(event, event.sessionId);
+      } else if (suffix === "sessions") {
         const data = decodeRemoteJson<{ sessions?: PresenceSession[]; version?: SnapshotVersion }>(
           message.data,
         );
@@ -1171,7 +1222,10 @@ export class RemoteClient {
     };
     const message = await this.secureRequest(connection,
       `p.${this.credentials.pairId}.cmd.${sessionId || "new"}`, encoder.encode(JSON.stringify(payload)), timeoutMs);
-    const response = decodeRemoteJson<RpcResponse<T>>(message.data);
+    // A valid reply already received on the previous serving socket remains
+    // a valid command acknowledgement during a candidate handoff. Callers own
+    // session/epoch fencing; do not recast a successful command as a failure.
+    const response = await decodeRemoteJsonAsync<RpcResponse<T>>(message.data, () => !this.stopped);
     if (!response.success) {
       const error = new RemoteResponseError(response.error ?? "command_failed");
       throw error;

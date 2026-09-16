@@ -1,4 +1,5 @@
 import type { PropsWithChildren } from "react";
+import { AppState } from "react-native";
 import {
   createContext,
   useCallback,
@@ -185,6 +186,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }, []);
   useEffect(() => {
     selectedRef.current = selectedSessionId;
+    clientRef.current?.setVisibleSession?.(AppState.currentState === "background" ? "" : selectedSessionId);
   }, [selectedSessionId]);
   const {
     timeline,
