@@ -226,12 +226,21 @@ export function useAgentThreadState({
     if (pendingPrompt.targetThreadId !== thread.id)
       return;
 
-    consumedPromptRef.current = pendingPrompt.id;
-    onPromptConsumed(pendingPrompt.id);
+    const promptId = pendingPrompt.id;
+    consumedPromptRef.current = promptId;
     void handleSend({
       attachments: pendingPrompt.attachments ?? [],
       content: pendingPrompt.content,
-    });
+    }).then(
+      () => onPromptConsumed(promptId),
+      () => {
+        // Pre-send validation failures reject before the Agent accepts the
+        // prompt. Keep it staged so revisiting the newly-created conversation
+        // can retry instead of permanently losing its first message.
+        if (consumedPromptRef.current === promptId)
+          consumedPromptRef.current = null;
+      },
+    );
   }, [
     handleSend,
     loadingStore,

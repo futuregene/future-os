@@ -320,9 +320,7 @@ export function AgentThread({
     void handleAbort();
   }, [handleAbort]);
   const handleComposerSend = useCallback(
-    (payload: ComposerSendPayload) => {
-      void handleSend(payload);
-    },
+    (payload: ComposerSendPayload) => handleSend(payload),
     [handleSend],
   );
   const handleCompactContext = useCallback(async () => {

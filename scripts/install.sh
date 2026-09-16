@@ -145,6 +145,54 @@ resolve_asset() {
   fi
 }
 
+# Preserve macOS bundle metadata when ditto is available. The fallback keeps
+# this helper usable in the installer's offline shell regression tests.
+copy_macos_app() { # source-app staged-app
+  if command -v ditto >/dev/null 2>&1; then
+    ditto "$1" "$2"
+  else
+    cp -R "$1" "$2"
+  fi
+}
+
+# Stage a complete app bundle beside its destination, then swap it into place.
+# The old bundle is moved only after staging succeeds and is restored if the
+# final rename fails, avoiding a partially merged or half-copied application.
+replace_macos_app() { # source-app target-app
+  local source_app="$1" target_app="$2" target_parent stage_dir staged_app backup_app had_current=0
+  target_parent="$(dirname "$target_app")"
+  stage_dir="$(mktemp -d "$target_parent/.futureos-install.XXXXXX")" || return 1
+  staged_app="$stage_dir/FutureOS.app"
+  backup_app="$stage_dir/FutureOS.previous.app"
+
+  if ! copy_macos_app "$source_app" "$staged_app"; then
+    rm -rf "$stage_dir"
+    return 1
+  fi
+  if [[ -e "$target_app" || -L "$target_app" ]]; then
+    if ! mv "$target_app" "$backup_app"; then
+      rm -rf "$stage_dir"
+      return 1
+    fi
+    had_current=1
+  fi
+  if mv "$staged_app" "$target_app"; then
+    rm -rf "$stage_dir"
+    return 0
+  fi
+
+  if [[ "$had_current" -eq 1 ]]; then
+    if mv "$backup_app" "$target_app"; then
+      rm -rf "$stage_dir"
+    else
+      warn "failed to restore the previous app; it remains at $backup_app"
+    fi
+  else
+    rm -rf "$stage_dir"
+  fi
+  return 1
+}
+
 install_macos() {
   local filename dmg mnt dmg_arch
   resolve_latest
@@ -171,9 +219,9 @@ install_macos() {
     die "the DMG does not contain FutureOS.app"
   fi
   say "Copying FutureOS.app to /Applications"
-  if ! cp -R "$mnt/FutureOS.app" /Applications/; then
+  if ! replace_macos_app "$mnt/FutureOS.app" "/Applications/FutureOS.app"; then
     hdiutil detach "$mnt" >/dev/null 2>&1 || true
-    die "failed to copy FutureOS.app to /Applications"
+    die "failed to replace FutureOS.app in /Applications; the previous app was preserved"
   fi
   hdiutil detach "$mnt" >/dev/null 2>&1 || true
   run_future_setup "/Applications/FutureOS.app/Contents/MacOS/future"

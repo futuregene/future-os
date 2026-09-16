@@ -71,14 +71,21 @@ afterEach(() => {
   vi.useRealTimers();
   clearThreadMessageSnapshots();
 });
-async function mount() {
+async function mount(options: {
+  pendingPrompt?: {
+    id: string;
+    content: string;
+    targetThreadId: string;
+  } | null;
+  onPromptConsumed?: (id: string) => void;
+} = {}) {
   const view = renderHook(() => useAgentThreadState({
     thread: { id: "lifecycle-thread", agentSessionId: sessionId } as StoredThread,
     loadingStore: false,
     modelId: "p/m",
     thinkingLevel: "off",
-    pendingPrompt: null,
-    onPromptConsumed: noop,
+    pendingPrompt: options.pendingPrompt ?? null,
+    onPromptConsumed: options.onPromptConsumed ?? noop,
     onThreadActivity: noop,
   }));
   hook = view;
@@ -94,6 +101,29 @@ async function begin(view: NonNullable<typeof hook>) {
 }
 
 describe("local send lifecycle", () => {
+  it("consumes a new conversation prompt only after its send settles", async () => {
+    const onPromptConsumed = vi.fn();
+    const view = await mount({
+      pendingPrompt: {
+        id: "first-prompt",
+        content: "first question",
+        targetThreadId: "lifecycle-thread",
+      },
+      onPromptConsumed,
+    });
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    expect(onPromptConsumed).not.toHaveBeenCalled();
+
+    latest = { ...running, status: "completed", endedAt: time + 1000 };
+    await act(async () => {
+      reply.resolve(success);
+      await reply.promise;
+      await Promise.resolve();
+    });
+    expect(onPromptConsumed).toHaveBeenCalledWith("first-prompt");
+    view.unmount();
+  });
+
   it("does not release a preparing send using the previous run's terminal status", async () => {
     latest = { ...running, id: "previous-run", status: "completed" };
     const view = await mount();

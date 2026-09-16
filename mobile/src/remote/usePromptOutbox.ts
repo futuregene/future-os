@@ -33,6 +33,25 @@ function isRecoverableDeliveryError(error: unknown): boolean {
   return isDeferredRequestError(error) || isTransientNatsRequestError(error);
 }
 
+async function clearAcknowledgedPrompt(commandId: string, pairId: string): Promise<void> {
+  try {
+    await clearPendingPrompt(commandId, pairId);
+  } catch (error) {
+    // The Desktop already accepted this command. Keep the durable record with
+    // its original command id so recovery (or a repeated tap) checks the
+    // receipt instead of minting a second command and running it twice.
+    console.warn("[remote] acknowledged prompt cleanup deferred", { commandId, error });
+  }
+}
+
+async function clearAcknowledgedContinuation(commandId: string, pairId: string): Promise<void> {
+  try {
+    await clearPendingContinuation(commandId, pairId);
+  } catch (error) {
+    console.warn("[remote] acknowledged continuation cleanup deferred", { commandId, error });
+  }
+}
+
 function samePendingPrompt(
   pending: PendingPrompt,
   candidate: Omit<PendingPrompt, "version" | "commandId" | "createdAt">,
@@ -299,7 +318,7 @@ export function usePromptOutbox({
             assertCurrentPairing,
             onUploadProgress,
           );
-          await clearPendingPrompt(pending.commandId, credentials.pairId);
+          await clearAcknowledgedPrompt(pending.commandId, credentials.pairId);
           await clearSessionDraftIfMatches(pending.draftKey, pending);
           assertCurrentPairing();
           const nextSessionId = response.sessionId || targetSessionId;
@@ -405,7 +424,7 @@ export function usePromptOutbox({
           true,
         );
         assertCurrentPairing();
-        await clearPendingPrompt(pending.commandId, credentials.pairId);
+        await clearAcknowledgedPrompt(pending.commandId, credentials.pairId);
         await clearSessionDraftIfMatches(pending.draftKey, pending);
         assertCurrentPairing();
         void refreshSessions();
@@ -483,7 +502,7 @@ export function usePromptOutbox({
         }
         try {
           await deliverPendingContinuation(client, pending, checkReceipt, promptReceiptSupported);
-          await clearPendingContinuation(pending.commandId, credentials.pairId);
+          await clearAcknowledgedContinuation(pending.commandId, credentials.pairId);
         } catch (continueError) {
           if (!isRecoverableDeliveryError(continueError)) {
             await clearPendingContinuation(pending.commandId, credentials.pairId);
@@ -531,7 +550,7 @@ export function usePromptOutbox({
         );
         if (clientRef.current !== client || credentialsRef.current?.pairId !== pending.pairId)
           return;
-        await clearPendingContinuation(pending.commandId, credentials.pairId);
+        await clearAcknowledgedContinuation(pending.commandId, credentials.pairId);
         void refreshSessions();
         reconcileSession(receipt.sessionId || pending.sessionId, "reconnect", receipt.runId);
       } catch (recoveryError) {

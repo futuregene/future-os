@@ -19,6 +19,7 @@ use tauri_plugin_shell::ShellExt;
 /// The sidecar child, kept so we can kill it on app exit. `None` when we
 /// attached to an externally-managed agent (or failed to spawn).
 static AGENT_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
+static AGENT_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Set once the user has confirmed a force-quit, so the follow-up programmatic
 /// `app.exit()` closes the window without the `CloseRequested` guard re-prompting.
@@ -28,6 +29,11 @@ static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 /// attempts (clicking the traffic-light again, ⌘Q) are then swallowed instead of
 /// stacking a second dialog. Reset if the user cancels, so a later close re-prompts.
 static QUIT_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+
+// A failed probe can consume its 300 ms connect timeout. Together with the
+// 200 ms gaps, 16 attempts bound the login gate to about eight seconds.
+const LOGIN_AGENT_READY_ATTEMPTS: usize = 16;
+const LOGIN_AGENT_READY_INTERVAL: Duration = Duration::from_millis(200);
 
 /// True if the configured TCP override or the per-user local endpoint accepts
 /// an HTTP/2 connection. Run the async connector on a short-lived helper
@@ -66,6 +72,38 @@ pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     ensure_agent_running_with(app, agent_reachable);
 }
 
+/// Ensure the Agent is reachable before device authorization begins. The token
+/// exchange can return a one-time credential, so discovering a dead Agent only
+/// after that exchange risks losing the credential before it is durably saved.
+pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
+    tokio::task::spawn_blocking(move || {
+        ensure_agent_running(&app);
+        wait_for_agent_ready_with(
+            LOGIN_AGENT_READY_ATTEMPTS,
+            || agent_reachable(&crate::agent_bridge::raw_agent_addr()),
+            || std::thread::sleep(LOGIN_AGENT_READY_INTERVAL),
+        )
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn wait_for_agent_ready_with(
+    attempts: usize,
+    mut reachable: impl FnMut() -> bool,
+    mut wait: impl FnMut(),
+) -> bool {
+    for attempt in 0..attempts {
+        if reachable() {
+            return true;
+        }
+        if attempt + 1 < attempts {
+            wait();
+        }
+    }
+    false
+}
+
 /// [`ensure_agent_running`] with an injectable reachability probe, so the
 /// "already reachable" early-return is testable without a live agent.
 fn ensure_agent_running_with<R: tauri::Runtime>(
@@ -78,7 +116,15 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
         return;
     }
 
+    // Startup and the login gate may race while the sidecar is still binding
+    // its endpoint. Keep one owned child and one spawn attempt at a time.
+    if AGENT_CHILD.lock().unwrap().is_some() || AGENT_SPAWN_IN_PROGRESS.swap(true, Ordering::SeqCst)
+    {
+        return;
+    }
+
     spawn_bundled_agent(app, &configured);
+    AGENT_SPAWN_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
 
 /// Resolve the `future` sidecar and spawn it (or log why we can't). Extracted so
@@ -135,6 +181,7 @@ fn handle_agent_event(event: CommandEvent) {
             eprintln!("FutureOS: bundled agent error: {error}");
         }
         CommandEvent::Terminated(payload) => {
+            AGENT_CHILD.lock().unwrap().take();
             eprintln!("FutureOS: bundled agent exited: {payload:?}");
         }
         // `CommandEvent` is `#[non_exhaustive]` — the wildcard arm is required
@@ -607,6 +654,38 @@ mod tests {
         // a mock handle the spawn always fails (no bundled sidecar), so this is a
         // benign no-op regardless of whether the bare addr happens to be reachable.
         ensure_agent_running(&mock_handle());
+    }
+
+    #[test]
+    fn login_readiness_waits_for_a_started_agent() {
+        let mut probes = 0;
+        let mut waits = 0;
+        assert!(wait_for_agent_ready_with(
+            4,
+            || {
+                probes += 1;
+                probes == 3
+            },
+            || waits += 1,
+        ));
+        assert_eq!(probes, 3);
+        assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn login_readiness_is_bounded_when_startup_fails() {
+        let mut probes = 0;
+        let mut waits = 0;
+        assert!(!wait_for_agent_ready_with(
+            3,
+            || {
+                probes += 1;
+                false
+            },
+            || waits += 1,
+        ));
+        assert_eq!(probes, 3);
+        assert_eq!(waits, 2);
     }
 
     fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {

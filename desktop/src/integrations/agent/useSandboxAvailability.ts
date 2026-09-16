@@ -19,6 +19,9 @@ export interface SandboxAvailability {
   backend?: string;
 }
 
+// Share one probe for this webview process. A full app restart creates a new
+// webview (and bundled Agent), so an environment repaired by the user is
+// re-probed on the next launch without repeatedly probing during one session.
 let sharedProbe: Promise<SandboxProbeResult> | null = null;
 
 const PROBE_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000, 2_000] as const;
