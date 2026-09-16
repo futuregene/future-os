@@ -430,6 +430,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "Share to a conversation",
+        newConversation: "New conversation",
+        existingConversation: "Existing conversation",
         existing: "Existing conversation · {{title}}",
         existingWorkspace: "Existing conversation · {{name}} · {{title}}",
         chat: "New conversation · no workspace",
@@ -935,6 +937,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "分享到会话",
+        newConversation: "新会话",
+        existingConversation: "已有会话",
         existing: "已有会话 · {{title}}",
         existingWorkspace: "已有会话 · {{name}} · {{title}}",
         chat: "新会话 · 非工作区",

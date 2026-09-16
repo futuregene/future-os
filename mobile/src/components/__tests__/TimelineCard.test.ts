@@ -233,30 +233,29 @@ test("a failed run is not tinted", () => {
     expect(StyleSheet.flatten(text.props.style).color).toBe(colors.inkMuted);
 });
 
-// The folded line is apparatus, not prose: it sits against the right edge so the
-// reader's eye line stays with the reply text, and its tap target stays clipped
-// to the glyphs rather than spanning the bubble.
-test("the folded summary hugs the right edge", () => {
+// Activity summaries and individual rows use the same left reading edge.
+test("the folded summary hugs the left edge", () => {
   render(reply({ segments: [thinking("k1"), tool("c1")] }));
   const row = summaryRow(THINK_RUN);
   const style = StyleSheet.flatten(row.props.style);
-  expect(style.alignSelf).toBe("flex-end");
-  expect(style.justifyContent).toBe("flex-end");
+  expect(style.alignSelf).toBe("flex-start");
+  expect(style.justifyContent).toBe("flex-start");
 });
 
-// A step row that is NOT folded — a lone call, a lone burst, the slice still
-// running — must sit on the same rail as a folded run. It did not, while the
-// rail was a per-call-site `align` prop with a left-aligning default: the reply
-// then alternated left/right down one screen, and a streaming row jumped sides
-// the moment it got folded. The prop is gone so this cannot come back.
-test("an unfolded step row sits on the same right rail as a folded run", () => {
+// Lone and live activity rows must not switch to the right rail.
+test("unfolded thinking and tool headers share the left edge", () => {
   // One lone tool call before the prose, one lone reasoning slice after it:
   // neither reaches the two-slice minimum for folding.
   render(reply({
     segments: [tool("c1", { detail: "ls -la" }), prose("p1"), thinking("k1", "why")],
   }));
   for (const label of ["chat.runCompleted", "chat.thoughtCompleted"])
-    expect(railOf(rowButton(label))).toBe("flex-end");
+    expect(railOf(rowButton(label))).toBeUndefined();
+  for (const label of ["chat.runCompleted", "chat.thoughtCompleted"]) {
+    const block = rowButton(label).parent!;
+    expect(StyleSheet.flatten(block.props.style)?.paddingLeft ?? 0).toBe(0);
+    expect(StyleSheet.flatten(block.props.style)?.borderLeftWidth ?? 0).toBe(0);
+  }
 });
 
 // A step row is the only way into the call behind it, so it carries a real touch
@@ -294,24 +293,19 @@ test("the settled footer sits on the same rail as the live timer", () => {
   expect(copy).toBeDefined();
 });
 
-// Opening the run drops its rows back into the reading column: they only exist
-// once the user has asked to read them, and right-aligned prose and commands are
-// hard to read.
-test("the rows opened from the run fall back into the reading column", () => {
+test("opening a run keeps thinking and tools in the left reading column", () => {
   render(reply({
     segments: [thinking("k1", "why it broke"), tool("c1", { detail: "ls -la" })],
   }));
-  // Closed, the summary is a badge on the rail...
-  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-start");
   act(() => summaryRow(THINK_RUN).props.onPress());
 
   // ...and everything it opened is reading content on the left.
   expect(railOf(rowButton("chat.thoughtCompleted"))).toBeUndefined();
-  const thinkingBlock = tree.root.findAll(host => {
-    const style = StyleSheet.flatten(host.props.style) as { borderLeftWidth?: number } | undefined;
-    return style?.borderLeftWidth === 2;
-  })[0]!;
-  expect(railOf(thinkingBlock)).toBeUndefined();
+  act(() => rowButton("chat.thoughtCompleted").props.onPress());
+  const reasoning = tree.root.findAll(host => host.props.children === "why it broke")[0]!;
+  expect(railOf(reasoning)).toBeUndefined();
+  expect(StyleSheet.flatten(reasoning.props.style).borderLeftWidth).toBe(2);
   // The tool row's own expanded command is left-aligned too.
   act(() => rowButton("chat.runCompleted").props.onPress());
   const command = tree.root.findAll(host => host.props.children === "ls -la")[0]!;
@@ -325,18 +319,21 @@ test.each(["read", "write", "edit"])("opening a %s tool reveals its file name", 
   render(reply({
     segments: [tool("c1", {
       name: kind,
-      detail: "/w/agent/src/compaction/semantic.rs",
+      detail: "/w/agent/src/compaction/issue-audit-2026-09-16-with-a-long-filename.md",
       complete: true,
       status: "completed",
     })],
   }));
-  expect(hasText("semantic.rs")).toBe(false);
+  expect(hasText("issue-audit-2026-09-16-with-a-long-filename.md")).toBe(false);
   act(() => rowButton(`chat.${kind}Completed`).props.onPress());
-  expect(hasText("semantic.rs")).toBe(true);
+  expect(hasText("issue-audit-2026-09-16-with-a-long-filename.md")).toBe(true);
   // Revealed content is reading content, so the row left the rail to make room.
   expect(railOf(rowButton(`chat.${kind}Completed`))).toBeUndefined();
-  const target = tree.root.findAll(host => host.props.children === "semantic.rs")[0]!;
+  const target = tree.root.findAll(host => host.props.children === "issue-audit-2026-09-16-with-a-long-filename.md")[0]!;
   expect(StyleSheet.flatten(target.props.style).flex).toBe(1);
+  expect(target.props.numberOfLines).toBeUndefined();
+  expect(StyleSheet.flatten(target.props.style).maxHeight).toBeUndefined();
+  expect(StyleSheet.flatten(target.props.style).overflow).not.toBe("hidden");
 });
 
 // A burst of one file kind is the same story for every child it lists.
@@ -349,14 +346,18 @@ test("opening a file burst lists every child file name", () => {
       count: 2,
       children: [
         { name: "edit", complete: true, status: "completed", detail: "/w/one.rs" },
-        { name: "edit", complete: true, status: "completed", detail: "/w/two.rs" },
+        { name: "edit", complete: true, status: "completed", detail: "/w/issue-audit-2026-09-16-with-a-long-filename.md" },
       ],
     })],
   }));
   // The burst row reads "Edited 2×" (short verb + count), not the bare label.
   act(() => rowButton("chat.stepEdit 2×").props.onPress());
   expect(hasText("one.rs")).toBe(true);
-  expect(hasText("two.rs")).toBe(true);
+  const name = "issue-audit-2026-09-16-with-a-long-filename.md";
+  expect(hasText(name)).toBe(true);
+  const target = tree.root.findAll(host => host.props.children === name)[0]!;
+  expect(target.props.numberOfLines).toBeUndefined();
+  expect(target.props.selectable).toBe(true);
 });
 
 test("a run with no failure carries no alert", () => {
