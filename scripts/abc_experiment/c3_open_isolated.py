@@ -1,3 +1,42 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
 """Run the open-book scoring against a fresh isolated agent.
 
 The CLI reaches the Agent over gRPC. The scoring script passed the ambient environment,
@@ -12,10 +51,10 @@ is never touched.
 """
 import json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 
-WORKTREE = pathlib.Path("/Users/geilige/future-os/.worktrees/session-history-a47313")
-BINARY = pathlib.Path("/Users/geilige/future-os/target/debug/future")
+WORKTREE = globals().get("WORKTREE", WORKTREE)
+BINARY = REPO / "target" / "debug" / "future"
 REAL_HOME = pathlib.Path.home() / ".future" / "agent"
-ROOT = pathlib.Path("/Users/geilige/future-os/.future/research/abc-summary-a47313")
+ROOT = ROOT
 
 
 def free_port():
@@ -65,10 +104,14 @@ def main():
             return 1
         print(f"isolated agent reachable on {port}", flush=True)
 
-        # Prove the interface works before spending anything on scoring.
+        # Prove the interface works before spending anything on scoring. The session is
+        # read from the frozen manifest, which is git-ignored: no real session identifier
+        # belongs in the repository.
+        manifest = json.loads((ROOT / "frozen-sessions" / "manifest.json").read_text())
+        sample = next(iter(manifest.values()))["session"]
         probe = subprocess.run(
-            [str(BINARY), "session", "history", "search", "--session", "20260915-225135-106a7d",
-             "--query", "streaming", "--limit", "3", "--json"],
+            [str(BINARY), "session", "history", "search", "--session", sample,
+             "--query", "the", "--limit", "3", "--json"],
             env=env, capture_output=True, text=True, timeout=300)
         ok = probe.returncode == 0 and '"matches"' in probe.stdout
         print(f"history interface check: exit={probe.returncode} usable={ok}", flush=True)
@@ -86,7 +129,7 @@ def main():
                    "opencode": "ExternalProj"}[tag]
         prefix = f"{tag}__" if tag in ("codex", "opencode") else ""
         cmd = [sys.executable, "-u", str(WORKTREE / "scripts/abc_experiment/c3_score.py"),
-               "--bridge", "/Users/geilige/future-os/target/debug/examples/abc_probe_bridge",
+               "--bridge", str(REPO / "target" / "debug" / "examples" / "abc_probe_bridge"),
                "--binary", str(BINARY), "--mode", mode, "--interface", interface,
                "--projdir", projdir, "--prefix", prefix,
                "--tag", tag, "--retag-suffix", "#pre-lookup-fix"]

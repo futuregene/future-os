@@ -1,3 +1,42 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
 """Run the open-book six-chain comparison against a fresh isolated agent.
 
 `ours` uses `future session history`, which the CLI sends to the Agent over RPC. The
@@ -8,8 +47,8 @@ points the CLI at it — the production agent is never touched.
 """
 import json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 
-WORKTREE = pathlib.Path("/Users/geilige/future-os/.worktrees/session-history-a47313")
-BINARY = pathlib.Path("/Users/geilige/future-os/target/debug/future")
+WORKTREE = globals().get("WORKTREE", WORKTREE)
+BINARY = REPO / "target" / "debug" / "future"
 REAL_HOME = pathlib.Path.home() / ".future" / "agent"
 
 
@@ -62,8 +101,8 @@ def main():
         print(f"isolated agent reachable on {port}\n", flush=True)
 
         cmd = [sys.executable, "-u", str(WORKTREE / "scripts/abc_experiment/six_chain_open.py"),
-               "--root", "/Users/geilige/future-os/.future/research/abc-summary-a47313",
-               "--bridge", "/Users/geilige/future-os/target/debug/examples/abc_probe_bridge",
+               "--root", str(ROOT),
+               "--bridge", str(REPO / "target" / "debug" / "examples" / "abc_probe_bridge"),
                "--binary", str(BINARY), "--budget", "200"] + sys.argv[1:]
         result = subprocess.run(cmd, env=env, cwd=str(WORKTREE))
         return result.returncode

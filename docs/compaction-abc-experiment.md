@@ -471,6 +471,45 @@ blockers the next turns actually referenced), scored by containment. That trades
 "did it capture the gist" for a noise floor near zero, and on this evidence a scorer with no
 variance is worth more than a richer question it cannot answer reliably.
 
+**The rubric has since been built and run.** It scores two deterministic quantities against
+the reference answer the session actually gave: *content recall* (fraction of the reference's
+content terms — ASCII words plus CJK bigrams — that the candidate also contains, i.e.
+ROUGE-style coverage) and *referent recall* (fraction of its concrete paths, identifiers,
+versions, sizes and counts). Both have exactly zero variance: re-scoring identical inputs
+reproduces the numbers bit for bit.
+
+Answers were regenerated for this run with a prompt that forbids tool calls, because the
+free-form run's prompt let the model emit `<tool_calls>` markup that nothing executed — those
+answers were truncated into markup and would have scored as empty. All 38 questions now
+produce a non-empty prose answer and none contains tool markup.
+
+| Arm | Content recall | Content F1 | Referent recall | Chars |
+|---|---:|---:|---:|---:|
+| C (with summary) | **0.199** | 0.146 | **0.242** | 2 208 |
+| C (without summary) | 0.182 | 0.142 | 0.216 | 2 270 |
+
+| | |
+|---|---:|
+| mean paired difference (content recall) | **+0.0172** |
+| sd of the paired differences | 0.0672 |
+| **smallest difference detectable at 80 % power (n=38)** | **0.0305** |
+| paired wins | summary 18, no-summary 20 |
+| sign test | p = 0.871 |
+
+**The measured difference is smaller than the design can resolve.** With a scorer of zero
+variance the binding constraint is no longer the instrument but the effect size relative to
+the sample: to detect 0.017 at 80 % power would take roughly 120 questions, not 38. So the
+rubric removes the judge's noise and thereby exposes the real situation — **the summary's
+benefit on continuation questions, if it exists, is small enough that this exam cannot see
+it at any sample size it was run at.**
+
+That is where this line of investigation stops honestly. Three exams fail to find the
+summary's retention value and one of them was rebuilt specifically to remove the instrument
+that was masking the answer; what remains is an effect size below the resolution of the
+measurement, not a demonstration that the effect is absent. Confirming or refuting a benefit
+of about two percentage points would require a much larger question set than the three real
+sessions can supply.
+
 One incidental finding, relevant to production rather than to the arms: at a 2 048-token
 output cap the answers came back **empty** on several probes, because reasoning consumed the
 entire allowance before any text was emitted. The same failure mode was observed earlier in

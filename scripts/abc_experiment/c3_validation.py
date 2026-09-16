@@ -1,3 +1,42 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
 """Final comparison for the C3 combination validation, against the pre-registered
 criteria.
 
@@ -5,7 +44,7 @@ C3 = sticky summary + overflow trigger + verbatim assistant originals.
 """
 import collections, json, pathlib
 
-root = pathlib.Path("/Users/geilige/future-os/.future/research/abc-summary-a47313")
+root = ROOT
 FIELDS = ["project", "first_limit", "latest_limit", "format", "first_code", "old_version",
           "latest_version", "buried", "validation", "blocker", "deployment", "device"]
 ALL_PROBES = {(t, m, s) for t in ("export", "analysis")

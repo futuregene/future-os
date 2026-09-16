@@ -1,3 +1,42 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
 """Why is C only slightly ahead, if it keeps far more assistant text?
 
 Decomposes the exam by the source of each value (assistant prose / user turn / tool
@@ -10,12 +49,12 @@ advantage no matter how much assistant text it retains.
 """
 import collections, json, pathlib, random, sys
 
-WT = pathlib.Path("/Users/geilige/future-os/.worktrees/session-history-a47313")
+WT = WORKTREE
 sys.path.insert(0, str(WT / "scripts"))
 sys.path.insert(0, str(WT / "scripts/abc_experiment"))
 import realistic_exam as exam
 
-ROOT = pathlib.Path("/Users/geilige/future-os/.future/research/abc-summary-a47313")
+ROOT = ROOT
 FROZEN = ROOT / "frozen-sessions"
 
 
