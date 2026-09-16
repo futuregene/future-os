@@ -5,7 +5,7 @@
 //! its auth configuration. The caller (WebView or foreground terminal) owns
 //! polling and cancellation; this module is stateless.
 
-use std::time::Duration;
+use std::{error::Error as StdError, sync::OnceLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -31,9 +31,12 @@ pub struct FutureLoginStart {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FutureLoginPoll {
-    /// One of: `pending`, `slow_down`, `authorized`, `denied`, `expired`, `error`.
+    /// One of: `pending`, `slow_down`, `retry`, `malformed`, `authorized`,
+    /// `denied`, `expired`, `error`.
     pub status: String,
     pub message: Option<String>,
+    /// Server-requested delay for a retryable response such as HTTP 429.
+    pub retry_after_seconds: Option<u64>,
 }
 
 impl FutureLoginPoll {
@@ -41,6 +44,7 @@ impl FutureLoginPoll {
         FutureLoginPoll {
             status: status.to_string(),
             message: None,
+            retry_after_seconds: None,
         }
     }
 
@@ -48,6 +52,15 @@ impl FutureLoginPoll {
         FutureLoginPoll {
             status: status.to_string(),
             message: Some(message.into()),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn retry(retry_after_seconds: Option<u64>) -> Self {
+        FutureLoginPoll {
+            status: "retry".to_string(),
+            message: None,
+            retry_after_seconds,
         }
     }
 }
@@ -208,14 +221,18 @@ pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
     })
 }
 
-fn client() -> reqwest::Client {
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
     // `Client::builder().timeout().build()` only fails for an invalid config;
     // the default config here is constant, so a failure is an invariant break.
-    crate::install_rustls_provider();
-    reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .expect("default reqwest client config cannot fail to build")
+    CLIENT.get_or_init(|| {
+        crate::install_rustls_provider();
+        reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("default reqwest client config cannot fail to build")
+    })
 }
 
 /// Begin device authorization: fetch a device/user code and open the
@@ -299,30 +316,70 @@ pub(crate) async fn start_with_browser(open: bool) -> Result<FutureLoginStart, A
 /// to `auth.json`; the returned status drives the frontend poll loop.
 pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
     let platform = crate::future_platform::current_platform_url();
-    let response = client()
+    let response = match client()
         .post(format!("{platform}/client/v1/oauth/device/token"))
         .json(&json!({ "device_code": device_code }))
         .send()
         .await
-        .map_err(|error| {
-            AppError::Message(format!("Failed to poll authorization status: {error}"))
-        })?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log_poll_transport_error(&error);
+            return Ok(FutureLoginPoll::retry(None));
+        }
+    };
 
-    let success = response.status().is_success();
-    let body: Value = response.json().await.map_err(|error| {
-        AppError::Message(format!("Failed to parse authorization response: {error}"))
-    })?;
+    let status = response.status();
+    if is_retryable_poll_status(status) {
+        let retry_after_seconds = retry_after_seconds(&response);
+        eprintln!(
+            "FutureOS device authorization poll will retry after HTTP {}{}",
+            status.as_u16(),
+            retry_after_seconds
+                .map(|seconds| format!(" (Retry-After: {seconds}s)"))
+                .unwrap_or_default()
+        );
+        return Ok(FutureLoginPoll::retry(retry_after_seconds));
+    }
 
-    if success {
-        let token: DeviceTokenResponse = serde_json::from_value(body).map_err(|error| {
-            AppError::Message(format!("Failed to parse authorization response: {error}"))
-        })?;
-        let key = token.api_key.unwrap_or_default();
-        if key.trim().is_empty() {
+    let success = status.is_success();
+    let body: Value = match response.json().await {
+        Ok(body) => body,
+        Err(error) if is_retryable_poll_error(&error) => {
+            log_poll_transport_error(&error);
+            return Ok(FutureLoginPoll::retry(None));
+        }
+        Err(error) if success => {
+            eprintln!(
+                "FutureOS device authorization returned an invalid success response: {error}"
+            );
+            return Ok(FutureLoginPoll::of("malformed"));
+        }
+        Err(error) => {
             return Ok(FutureLoginPoll::with_message(
                 "error",
-                "Authorization response did not contain an API key.",
+                format!(
+                    "Authorization request failed (HTTP {}): {error}",
+                    status.as_u16()
+                ),
             ));
+        }
+    };
+
+    if success {
+        let token: DeviceTokenResponse = match serde_json::from_value(body) {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!(
+                    "FutureOS device authorization returned an invalid token response: {error}"
+                );
+                return Ok(FutureLoginPoll::of("malformed"));
+            }
+        };
+        let key = token.api_key.unwrap_or_default();
+        if key.trim().is_empty() {
+            eprintln!("FutureOS device authorization response did not contain an API key");
+            return Ok(FutureLoginPoll::of("malformed"));
         }
         if token
             .token_type
@@ -330,10 +387,8 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
             .map(|kind| kind != "api_key")
             .unwrap_or(false)
         {
-            return Ok(FutureLoginPoll::with_message(
-                "error",
-                "The credential type in the authorization response is not supported.",
-            ));
+            eprintln!("FutureOS device authorization returned an unsupported credential type");
+            return Ok(FutureLoginPoll::of("malformed"));
         }
         // Only report success after the key is durably written. Pin `base_url`
         // to the resolved platform (`{platform}/api`), exactly as the CLI does,
@@ -367,6 +422,63 @@ pub async fn poll(device_code: &str) -> Result<FutureLoginPoll, AppError> {
             message.unwrap_or_else(|| "Authorization failed.".to_string()),
         ),
     })
+}
+
+fn is_retryable_poll_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn retry_after_seconds(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after)
+}
+
+fn parse_retry_after(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds);
+    }
+    let retry_at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    let seconds = retry_at
+        .timestamp()
+        .saturating_sub(chrono::Utc::now().timestamp());
+    Some(seconds.max(0) as u64)
+}
+
+fn is_retryable_poll_error(error: &reqwest::Error) -> bool {
+    error.is_connect()
+        || error.is_timeout()
+        || error.is_request()
+        || error.is_body()
+        || error.is_redirect()
+}
+
+fn log_poll_transport_error(error: &reqwest::Error) {
+    let mut causes = Vec::new();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        causes.push(cause.to_string());
+        source = cause.source();
+    }
+    eprintln!(
+        "FutureOS device authorization poll transport error (connect={}, timeout={}, request={}, body={}, redirect={}): {}{}",
+        error.is_connect(),
+        error.is_timeout(),
+        error.is_request(),
+        error.is_body(),
+        error.is_redirect(),
+        error,
+        if causes.is_empty() {
+            String::new()
+        } else {
+            format!("; caused by: {}", causes.join("; caused by: "))
+        }
+    );
 }
 
 fn error_message_from_body(body: Option<Value>) -> Option<String> {
@@ -558,10 +670,41 @@ mod tests {
         let pending = FutureLoginPoll::of("pending");
         assert_eq!(pending.status, "pending");
         assert!(pending.message.is_none());
+        assert!(pending.retry_after_seconds.is_none());
 
         let denied = FutureLoginPoll::with_message("denied", "nope");
         assert_eq!(denied.status, "denied");
         assert_eq!(denied.message.as_deref(), Some("nope"));
+
+        let retry = FutureLoginPoll::retry(Some(9));
+        assert_eq!(retry.status, "retry");
+        assert_eq!(retry.retry_after_seconds, Some(9));
+    }
+
+    #[test]
+    fn http_client_is_reused() {
+        assert!(std::ptr::eq(client(), client()));
+    }
+
+    #[test]
+    fn retryable_poll_statuses_are_bounded_to_transient_failures() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(is_retryable_poll_status(
+                reqwest::StatusCode::from_u16(status).unwrap()
+            ));
+        }
+        for status in [400, 401, 403, 404, 422] {
+            assert!(!is_retryable_poll_status(
+                reqwest::StatusCode::from_u16(status).unwrap()
+            ));
+        }
+    }
+
+    #[test]
+    fn retry_after_accepts_seconds_and_http_dates() {
+        assert_eq!(parse_retry_after("12"), Some(12));
+        assert!(parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT").unwrap() > 0);
+        assert_eq!(parse_retry_after("not-a-delay"), None);
     }
 
     #[test]
@@ -594,17 +737,37 @@ mod tests {
     // ─── async OAuth + account calls against a mock HTTP server ───────────
 
     fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
+        mock_http_server_with_headers(
+            responses
+                .into_iter()
+                .map(|(status, content_type, body)| (status, content_type, Vec::new(), body))
+                .collect(),
+        )
+    }
+
+    type MockHttpResponse = (
+        u16,
+        &'static str,
+        Vec<(&'static str, &'static str)>,
+        Vec<u8>,
+    );
+
+    fn mock_http_server_with_headers(responses: Vec<MockHttpResponse>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            for (status, content_type, body) in responses {
+            for (status, content_type, headers, body) in responses {
                 let (mut stream, _) = listener.accept().expect("mock accept");
                 let mut sink = [0u8; 8192];
                 let _ = stream.read(&mut sink);
+                let extra_headers = headers
+                    .into_iter()
+                    .map(|(name, value)| format!("{name}: {value}\r\n"))
+                    .collect::<String>();
                 let header = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
                 );
                 let _ = stream.write_all(header.as_bytes());
                 let _ = stream.write_all(&body);
@@ -935,18 +1098,43 @@ mod tests {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-bad");
         let url = mock_http_server(vec![(200, "application/json", b"not json".to_vec())]);
         point_auth(&url);
-        assert!(poll("dc").await.unwrap_err().to_string().contains("parse"));
+        assert_eq!(poll("dc").await.unwrap().status, "malformed");
     }
 
     #[tokio::test]
     async fn poll_network_error() {
         let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-net");
         crate::auth_store::set_future_base_url("http://127.0.0.1:1/api").unwrap();
-        assert!(poll("dc")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("Failed to poll"));
+        assert_eq!(poll("dc").await.unwrap().status, "retry");
+    }
+
+    #[tokio::test]
+    async fn poll_retries_transient_http_status() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-503");
+        let url = mock_http_server(vec![(
+            503,
+            "application/json",
+            b"{\"message\":\"try later\"}".to_vec(),
+        )]);
+        point_auth(&url);
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "retry");
+        assert!(out.message.is_none());
+    }
+
+    #[tokio::test]
+    async fn poll_honors_retry_after_header() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-poll-429");
+        let url = mock_http_server_with_headers(vec![(
+            429,
+            "application/json",
+            vec![("Retry-After", "7")],
+            b"{\"message\":\"slow down\"}".to_vec(),
+        )]);
+        point_auth(&url);
+        let out = poll("dc").await.unwrap();
+        assert_eq!(out.status, "retry");
+        assert_eq!(out.retry_after_seconds, Some(7));
     }
 
     #[tokio::test]
@@ -983,8 +1171,8 @@ mod tests {
         )]);
         point_auth(&url);
         let out = poll("dc").await.unwrap();
-        assert_eq!(out.status, "error");
-        assert!(out.message.unwrap().contains("did not contain an API key"));
+        assert_eq!(out.status, "malformed");
+        assert!(out.message.is_none());
     }
 
     #[tokio::test]
@@ -997,8 +1185,8 @@ mod tests {
         )]);
         point_auth(&url);
         let out = poll("dc").await.unwrap();
-        assert_eq!(out.status, "error");
-        assert!(out.message.unwrap().contains("not supported"));
+        assert_eq!(out.status, "malformed");
+        assert!(out.message.is_none());
     }
 
     #[tokio::test]
@@ -1010,11 +1198,7 @@ mod tests {
             b"{\"api_key\":123}".to_vec(),
         )]);
         point_auth(&url);
-        assert!(poll("dc")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("parse authorization"));
+        assert_eq!(poll("dc").await.unwrap().status, "malformed");
     }
 
     #[tokio::test]

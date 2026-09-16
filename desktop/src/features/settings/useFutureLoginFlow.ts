@@ -14,6 +14,9 @@ export type FutureLoginPhase
     | "error";
 
 const SLOW_DOWN_STEP_MS = 5000;
+const TRANSIENT_RETRY_START_MS = 2000;
+const TRANSIENT_RETRY_MAX_MS = 15000;
+const MALFORMED_RESPONSE_RETRY_LIMIT = 3;
 // Poll faster than the server's suggested interval for snappier "authorized"
 // detection; if the server pushes back with `slow_down` we back off (+5s).
 const FAST_POLL_MS = 2000;
@@ -53,6 +56,9 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
   // effect's deps (which would restart the timer and poll immediately).
   const intervalRef = useRef(FAST_POLL_MS);
   const nextPollAtRef = useRef(0);
+  const transientRetryRef = useRef(TRANSIENT_RETRY_START_MS);
+  const lastPollWasTransientRef = useRef(false);
+  const malformedResponseCountRef = useRef(0);
 
   const begin = useCallback(async () => {
     const attempt = attemptRef.current + 1;
@@ -69,6 +75,9 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
       intervalRef.current = Math.min(Math.max(1, next.interval) * 1000, FAST_POLL_MS);
       nextPollAtRef.current = 0; // first tick polls immediately
       deadlineRef.current = Date.now() + next.expiresIn * 1000;
+      transientRetryRef.current = TRANSIENT_RETRY_START_MS;
+      lastPollWasTransientRef.current = false;
+      malformedResponseCountRef.current = 0;
       setPhase("waiting");
     }
     catch (error) {
@@ -99,7 +108,7 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
         // expiry and fire onAuthorized.
         attemptRef.current += 1;
         setPhase("expired");
-        setMessage(t("futureLogin.expired"));
+        setMessage(t(lastPollWasTransientRef.current ? "futureLogin.unavailable" : "futureLogin.expired"));
         return;
       }
       // Back-off gate: only poll once we're past the reserved slot.
@@ -133,12 +142,48 @@ export function useFutureLoginFlow(onAuthorized: () => void) {
           onAuthorized();
           break;
         case "pending":
+          transientRetryRef.current = TRANSIENT_RETRY_START_MS;
+          lastPollWasTransientRef.current = false;
+          malformedResponseCountRef.current = 0;
           break;
         case "slow_down":
           // RFC 8628: widen the interval by 5s and wait it out — no immediate
           // retry (which is what the gate above enforces).
           intervalRef.current += SLOW_DOWN_STEP_MS;
           nextPollAtRef.current = Date.now() + intervalRef.current;
+          transientRetryRef.current = TRANSIENT_RETRY_START_MS;
+          lastPollWasTransientRef.current = false;
+          malformedResponseCountRef.current = 0;
+          break;
+        case "retry": {
+          // Transport failures and retryable HTTP statuses are expected to be
+          // temporary. Keep the same device code and stay visually in the normal
+          // waiting state; only the final expiry reports unavailability.
+          lastPollWasTransientRef.current = true;
+          const serverDelay = Number.isFinite(result.retryAfterSeconds)
+            ? Math.max(0, result.retryAfterSeconds ?? 0) * 1000
+            : 0;
+          const delay = Math.max(transientRetryRef.current, serverDelay);
+          nextPollAtRef.current = Date.now() + delay;
+          transientRetryRef.current = Math.min(
+            transientRetryRef.current * 2,
+            TRANSIENT_RETRY_MAX_MS,
+          );
+          break;
+        }
+        case "malformed":
+          lastPollWasTransientRef.current = true;
+          malformedResponseCountRef.current += 1;
+          if (malformedResponseCountRef.current >= MALFORMED_RESPONSE_RETRY_LIMIT) {
+            setMessage(t("futureLogin.invalidResponse"));
+            setPhase("error");
+            break;
+          }
+          nextPollAtRef.current = Date.now() + transientRetryRef.current;
+          transientRetryRef.current = Math.min(
+            transientRetryRef.current * 2,
+            TRANSIENT_RETRY_MAX_MS,
+          );
           break;
         case "denied":
           setMessage(result.message ?? t("futureLogin.denied"));

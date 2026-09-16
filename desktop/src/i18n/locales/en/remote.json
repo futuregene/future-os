@@ -6,6 +6,7 @@
   "connect": "Connect",
   "pairAgain": "Pair again",
   "reconnect": "Reconnect",
+  "loginAgain": "Sign in again",
   "disconnect": "Disconnect",
   "pairAndStart": "Pair & start",
   "preparingPairingHint": "Establishing a secure connection. The QR code will appear when it is ready.",
@@ -27,6 +28,7 @@
   "failure": {
     "network": "Network unavailable. Check your connection and try again later. ({{code}})",
     "pairing": "Pairing expired. Pair this device again. ({{code}})",
+    "account": "Your FutureOS sign-in has expired. Sign in again.",
     "serviceLater": "Service temporarily unavailable. Try again later. ({{code}})",
     "serviceSupport": "Service temporarily unavailable. Contact support. ({{code}})",
     "local": "This device encountered a problem. Try again later. ({{code}})"

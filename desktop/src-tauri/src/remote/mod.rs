@@ -129,6 +129,7 @@ fn support_code_for_category(category: &str) -> &'static str {
         "network" | "credential_network" => "NW001",
         "remote_server" => "SV001",
         "service_authorization" => "AU001",
+        "account_authorization" => "AU003",
         "credential_expired" | "credential_connect" => "AU002",
         "slow_consumer" => "RT002",
         "command_subscription" => "RT003",
@@ -602,6 +603,7 @@ pub enum RemoteFailureReason {
     SystemSleep,
     CredentialExpired,
     CredentialRevoked,
+    AccountAuthorization,
     ServiceAuthorization,
     RemoteServer,
     Protocol,
@@ -1228,6 +1230,7 @@ fn start_failure(error: crate::AppError) -> Result<RemoteStatus, crate::AppError
                 reason: Some(match code {
                     "network" => RemoteFailureReason::Network,
                     "revoked" => RemoteFailureReason::CredentialRevoked,
+                    "account_authorization" => RemoteFailureReason::AccountAuthorization,
                     "service_authorization" => RemoteFailureReason::ServiceAuthorization,
                     "server" => RemoteFailureReason::RemoteServer,
                     _ => RemoteFailureReason::Local,
@@ -1749,6 +1752,10 @@ pub fn status() -> RemoteStatus {
                     Some("revoked") => (
                         RemotePhase::Revoked,
                         Some(RemoteFailureReason::CredentialRevoked),
+                    ),
+                    Some("account_authorization") => (
+                        RemotePhase::Failed,
+                        Some(RemoteFailureReason::AccountAuthorization),
                     ),
                     Some("service_authorization" | "service_config") => (
                         RemotePhase::Failed,
@@ -2348,12 +2355,12 @@ fn spawn_credential_refresh(
                         return;
                     }
                     let revoked = pairing::is_invalid_or_revoked_error(&error);
-                    eprintln!("remote: platform rejected authorization; stopping bridge");
+                    eprintln!("remote: platform rejected account authorization; stopping bridge");
                     *SUPERVISOR.last_error_code.lock().unwrap() = Some(
                         if revoked {
                             "revoked"
                         } else {
-                            "service_authorization"
+                            "account_authorization"
                         }
                         .to_string(),
                     );
@@ -2842,6 +2849,7 @@ mod contract_tests {
         assert_eq!(support_code_for_category("credential_network"), "NW001");
         assert_eq!(support_code_for_category("remote_server"), "SV001");
         assert_eq!(support_code_for_category("service_authorization"), "AU001");
+        assert_eq!(support_code_for_category("account_authorization"), "AU003");
         assert_eq!(support_code_for_category("credential_expired"), "AU002");
         assert_eq!(support_code_for_category("credential_connect"), "AU002");
         assert_eq!(support_code_for_category("slow_consumer"), "RT002");
@@ -2938,6 +2946,20 @@ mod contract_tests {
         assert_eq!(
             authz.reason,
             Some(RemoteFailureReason::ServiceAuthorization)
+        );
+
+        // A rejected FutureOS account key asks the user to sign in again; it is
+        // distinct from a freshly issued bridge credential rejected by NATS.
+        let account_authz = start_failure(crate::AppError::Remote {
+            status: 401,
+            code: Some("unauthorized".to_string()),
+            message: "A valid session token is required.".to_string(),
+        })
+        .unwrap();
+        assert_eq!(account_authz.phase, RemotePhase::Failed);
+        assert_eq!(
+            account_authz.reason,
+            Some(RemoteFailureReason::AccountAuthorization)
         );
 
         // A server error is retryable.
@@ -4211,7 +4233,7 @@ mod runtime_tests {
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
         assert_eq!(
             SUPERVISOR.last_error_code.lock().unwrap().as_deref(),
-            Some("service_authorization")
+            Some("account_authorization")
         );
         assert_eq!(pairing::load_creds().unwrap().pair_id, "pair_account");
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
@@ -4893,6 +4915,11 @@ mod runtime_tests {
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
 
         let cases = [
+            (
+                "account_authorization",
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::AccountAuthorization),
+            ),
             (
                 "service_authorization",
                 RemotePhase::Failed,
