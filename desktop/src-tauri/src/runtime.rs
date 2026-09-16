@@ -70,16 +70,31 @@ impl Drop for TestTaskCompletion {
 }
 
 #[cfg(test)]
+fn tracked_test_future<F>(
+    future: F,
+    registration: futures::future::AbortRegistration,
+    done: std::sync::mpsc::Sender<()>,
+) -> impl std::future::Future<Output = ()> + Send
+where
+    F: std::future::Future<Output = ()> + Send,
+{
+    // Own the guard before the first poll. Aborting an unpolled task must also
+    // signal completion, not just disconnect the receiver used by HOME cleanup.
+    let completion = TestTaskCompletion(done);
+    async move {
+        let _completion = completion;
+        let _ = futures::future::Abortable::new(future, registration).await;
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn spawn<F>(future: F) -> JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let (abort, registration) = futures::future::AbortHandle::new_pair();
     let (done, completed) = std::sync::mpsc::channel();
-    let task = spawn_untracked(async move {
-        let _completion = TestTaskCompletion(done);
-        let _ = futures::future::Abortable::new(future, registration).await;
-    });
+    let task = spawn_untracked(tracked_test_future(future, registration, done));
     TEST_TASKS
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -109,11 +124,20 @@ pub(crate) fn cancel_test_tasks() {
 
 #[cfg(test)]
 mod tests {
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[test]
+    fn unpolled_task_drop_still_reports_completion() {
+        let (_abort, registration) = futures::future::AbortHandle::new_pair();
+        let (done, completed) = std::sync::mpsc::channel();
+        let future = super::tracked_test_future(std::future::pending::<()>(), registration, done);
+        drop(future);
+        completed
+            .try_recv()
+            .expect("unpolled task must report completion");
+    }
 
     #[test]
     fn cleanup_waits_for_process_lifetime_tasks() {
-        let _lock = TEST_LOCK
+        let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let _task = super::spawn(std::future::pending::<()>());
@@ -122,7 +146,8 @@ mod tests {
 
     #[test]
     fn background_task_outlives_its_callers_runtime() {
-        let _lock = TEST_LOCK
+        // Other fixtures cancel the shared registry while holding this lock.
+        let _lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let caller = tokio::runtime::Builder::new_current_thread()
