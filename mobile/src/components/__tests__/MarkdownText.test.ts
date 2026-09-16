@@ -1,10 +1,11 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
-import { AccessibilityInfo, Animated, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
 import { SvgXml } from "react-native-svg";
+import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -17,6 +18,19 @@ describe("MarkdownText layout and fidelity", () => {
     return renderer.root;
   }
   afterEach(() => { act(() => renderer?.unmount()); });
+
+  test("large file previews virtualize blocks and bypass the shared message parse cache", () => {
+    const parse = jest.spyOn(parser, "parseFutureMarkdown");
+    const text = Array.from({ length: 2000 }, (_, i) => `Paragraph ${i}: ${"readable words ".repeat(12)}\n\n`).join("");
+    try {
+      act(() => { renderer = create(createElement(MarkdownText, { text, mode: "file-preview" })); });
+      const list = renderer.root.findByType(FlatList);
+      expect(list.props.data).toHaveLength(2000);
+      expect(list.props).toMatchObject({ initialNumToRender: 8, maxToRenderPerBatch: 8, windowSize: 5 });
+      expect(parse).toHaveBeenCalledWith(text, undefined, false);
+      expect(renderer.root.findAllByType(Text)).toHaveLength(8);
+    } finally { parse.mockRestore(); }
+  });
 
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");

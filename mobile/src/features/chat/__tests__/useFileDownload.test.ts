@@ -15,6 +15,13 @@ import { namedExternalFile, TransferCancelledError } from "../../../remote/files
 import type { DownloadInfo } from "../../../remote/types";
 
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
+// Keep these tests focused on async modal/cancellation ordering. Native bounded
+// reads, byte limits, UTF-8 boundaries and handle cleanup have dedicated tests.
+jest.mock("../readPreviewText", () => ({
+  readPreviewText: jest.fn(async (file: { bytes(): Promise<Uint8Array> }) => ({
+    text: new TextDecoder().decode(await file.bytes()), truncated: false,
+  })),
+}));
 jest.mock("future-file-handler", () => ({
   openFile: jest.fn(), saveFile: jest.fn(), shareFile: jest.fn(), findSupportedMimeType: jest.fn(), supportsNativeFileActions: jest.fn(),
 }));
