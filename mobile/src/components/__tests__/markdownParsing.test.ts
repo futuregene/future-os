@@ -45,7 +45,22 @@ describe("Markdown syntax fidelity", () => {
     expect(JSON.stringify(document.nodes[2])).toContain("[^b]");
   });
 
+  test("link/image/task-list prefixes retain stable blocks and references", () => {
+    const project = createStreamingMarkdownParser();
+    const prefix = "[link](https://example.com) ![image](./plot.png)\n\n- [x] Done\n\n";
+    const before = project(prefix + "tail", true);
+    const after = project(prefix + "tail grows", true);
+    expect(after.nodes[0]).toBe(before.nodes[0]);
+    expect(after.nodes[1]).toBe(before.nodes[1]);
+    expect(after).toEqual(parseFutureMarkdown(prefix + "tail grows"));
+  });
+
   test.each([
+    "[old][ref]\n\nmore\n\n> [ref]: https://example.com",
+    "[old][ref]\n\nmore\n\n- [ref]: https://example.com",
+    "[old][two words]\n\nmore\n\n[two\nwords]: ./target.md",
+    "![img](./a.png)\n\n| A | B |\n|---|---|\n| [link](./b.md) | ![x](./c.png) |\n| next | [later][id] |\n\n[id]: ./d.md",
+    "[link](https://example.com)\n\n- [x] done\n- [ ] pending\n\nnext",
     "# Heading\n\n## Other\n\nText **bold *nested* words** ~~old~~ `code`\\\nbreak\n\n---",
     "0. zero\n1. one\n   - [x] checked\n   - [ ] todo\n\n> quote\n>\n> paragraph",
     "| Left | Right |\n|:---|---:|\n| A<br>B | `x` |\n| missing |\n\nAfter",

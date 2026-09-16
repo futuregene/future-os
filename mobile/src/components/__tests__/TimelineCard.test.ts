@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { StyleSheet } from "react-native";
+import { AppState, StyleSheet, type AppStateStatus } from "react-native";
 import { colors } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
@@ -33,6 +33,9 @@ jest.mock("react-i18next", () => {
 });
 
 let tree: ReactTestRenderer;
+beforeEach(() => {
+  (AppState.addEventListener as jest.Mock).mockReturnValue({ remove: jest.fn() });
+});
 afterEach(() => { if (tree) act(() => tree.unmount()); });
 const reply = (fields: Partial<Extract<TimelineItem, { kind: "message" }>>): TimelineItem => ({
   kind: "message", role: "assistant", id: "a", text: "reply", ...fields,
@@ -364,6 +367,41 @@ test("a run with no failure carries no alert", () => {
 
 // The tail of an in-flight reply is the slice being written right now: folding it
 // would hide live progress behind the summary.
+test("only the live tail subscribes to streaming Markdown presentation", () => {
+  render(reply({ streaming: true, segments: [prose("first"), thinking("thought"), prose("tail")] }));
+  const markdown = tree.root.findAll(node => (node.type as unknown) === "MarkdownText");
+  expect(markdown.map(node => node.props.streaming)).toEqual([false, true]);
+});
+
+test("the elapsed-time label ticks once per second and sleeps in background", () => {
+  jest.useFakeTimers();
+  const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;
+  Object.defineProperty(AppState, "currentState", { configurable: true, value: "active" });
+  let change!: (state: AppStateStatus) => void;
+  const remove = jest.fn();
+  const listener = jest.spyOn(AppState, "addEventListener").mockImplementation((_type, callback) => {
+    change = callback as typeof change;
+    return { remove };
+  });
+  const interval = jest.spyOn(global, "setInterval");
+  try {
+    render(reply({ streaming: true, startedAt: Date.now() - 1000 }));
+    expect(interval).toHaveBeenLastCalledWith(expect.any(Function), 1000);
+    act(() => { jest.advanceTimersByTime(0); change("background"); });
+    expect(jest.getTimerCount()).toBe(0);
+    act(() => change("active"));
+    expect(interval).toHaveBeenCalledTimes(2);
+    act(() => tree.unmount());
+    expect(remove).toHaveBeenCalledTimes(1);
+    act(() => jest.advanceTimersByTime(0));
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    listener.mockRestore(); interval.mockRestore();
+    Object.defineProperty(AppState, "currentState", originalActivity);
+    jest.useRealTimers();
+  }
+});
+
 test("the slice a streaming reply is still on stays visible", () => {
   render(reply({ streaming: true, segments: [thinking("k1"), tool("c1"), thinking("k2")] }));
   expect(summaryRow(THINK_RUN)).toBeTruthy();

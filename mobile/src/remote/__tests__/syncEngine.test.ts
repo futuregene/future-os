@@ -101,7 +101,7 @@ class Harness {
 
   /** Wait for the lane to drain. */
   async settle(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
   /** Timeline committed for a session (thrown if the lane never established). */

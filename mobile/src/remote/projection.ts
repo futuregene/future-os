@@ -426,9 +426,10 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
   };
 }
 
-/** A replay owns its dedup set and mutable projectors. Yielding/cancelling it
- * must never mutate the still-visible committed timeline or its accumulators. */
-function createReplayBatch(initial: TimelineState) {
+/** A batch owns its dedup set and mutable projectors. Live frames materialize
+ * one snapshot per contiguous run instead of per token; replay can yield/cancel
+ * without mutating the still-visible committed timeline or its accumulators. */
+export function createStreamEventBatch(initial: TimelineState) {
   const seenEvents = new Set(initial.seenEvents);
   const liveRuns = new Map<string, LiveRunState>();
   for (const [id, run] of initial.liveRuns ?? []) {
@@ -467,7 +468,7 @@ function createReplayBatch(initial: TimelineState) {
 /** Batch folding avoids a growing Set copy and render snapshot per event. */
 export function applyStreamEvents(initial: TimelineState, events: StreamEvent[]): TimelineState {
   if (events.length === 0) return initial;
-  const batch = createReplayBatch(initial);
+  const batch = createStreamEventBatch(initial);
   for (const event of events) batch.append(event);
   return batch.finish();
 }
@@ -483,7 +484,7 @@ export async function applyReplayEvents(
   const isCurrent = options.isCurrent ?? (() => true);
   if (!isCurrent()) throw new Error("stale_sync_lane");
   if (events.length === 0) return initial;
-  const batch = createReplayBatch(initial);
+  const batch = createStreamEventBatch(initial);
   let index = 0;
   while (index < events.length) {
     if (!isCurrent()) throw new Error("stale_sync_lane");
