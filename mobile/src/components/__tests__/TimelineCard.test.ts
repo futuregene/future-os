@@ -7,12 +7,15 @@ jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("lucide-react-native", () => Object.fromEntries([
   "AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy", "FileText", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "X",
 ].map(name => [name, name])));
-// Interpolate the two options the folded step-run summary passes (count/action)
-// so its aggregated line is assertable verbatim; every other key stays bare.
+// Interpolate the options a folded step-run summary passes so its aggregated
+// line is assertable verbatim; every other key stays bare.
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) =>
-      options ? `${key}(${options.action ?? ""})×${options.count ?? ""}` : key,
+    t: (key: string, options?: Record<string, unknown>) => {
+      if (!options) return key;
+      const action = options.action ? `(${options.action})` : "";
+      return `${key}${action}×${options.count ?? ""}`;
+    },
     i18n: { language: "en" },
   }),
 }));
@@ -39,6 +42,16 @@ function rowButton(text: string) {
     typeof node.props.onPress === "function"
     && node.findAll(inner => inner.props.children === text).length > 0)[0]!;
 }
+// A `accessibilityLabel` on a Pressable propagates to every host view under it;
+// count host nodes so the row is counted once.
+function countLabel(label: string) {
+  return tree.root.findAll(node =>
+    typeof node.type === "string" && node.props.accessibilityLabel === label).length;
+}
+/** How many of a mocked glyph are rendered (the mock's components are name strings). */
+function countGlyph(name: string) {
+  return tree.root.findAll(node => (node.type as unknown as string) === name).length;
+}
 
 const prose = (id: string, text = "answer"): TimelineSegment => ({ id, kind: "text", text });
 const thinking = (id: string, text = id): TimelineSegment => ({ id, kind: "thinking", text });
@@ -48,8 +61,14 @@ const tool = (id: string, fields: Partial<TimelineToolRow> = {}): TimelineSegmen
   tool: { name: "shell", complete: true, status: "completed", detail: `cmd ${id}`, ...fields },
 });
 
-const STEPS_SUMMARY =
-  "chat.runCount(chat.thoughtCompleted)×1 · chat.runCount(chat.runCompleted)×1";
+/** A folded summary line: the counts as `stepSummary(<verb>)×<count>`, joined. */
+function stepsSummary(...counts: [key: string, count: number][]) {
+  return counts
+    .map(([kind, count]) => `chat.stepSummary(chat.step${kind})×${count}`)
+    .join(" · ");
+}
+
+const THINK_RUN = stepsSummary(["Think", 1], ["Run", 1]);
 
 // Consecutive thinking/tool rows are one line on a phone (the desktop transcript
 // spends a full line per activity); the individual rows stay one tap away, and
@@ -64,8 +83,8 @@ test("a run of thinking and tool rows folds into one summary line", () => {
     ],
   }));
   // Prose splits the reply into one folded run per stretch of activity.
-  expect(countText(STEPS_SUMMARY)).toBe(1);
-  expect(countText("chat.runCount(chat.thoughtCompleted)×2 · chat.runCount(chat.runCompleted)×2")).toBe(1);
+  expect(countText(THINK_RUN)).toBe(1);
+  expect(countText(stepsSummary(["Think", 2], ["Run", 2]))).toBe(1);
   expect(hasText("chat.thoughtCompleted")).toBe(false);
   expect(hasText("chat.runCompleted")).toBe(false);
 });
@@ -74,7 +93,7 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   render(reply({
     segments: [thinking("k1", "why it broke"), tool("c1", { detail: "ls -la" }), thinking("k2"), tool("c2")],
   }));
-  act(() => rowButton("chat.runCount(chat.thoughtCompleted)×2 · chat.runCount(chat.runCompleted)×2").props.onPress());
+  act(() => rowButton(stepsSummary(["Think", 2], ["Run", 2])).props.onPress());
   expect(countText("chat.thoughtCompleted")).toBe(2);
   expect(countText("chat.runCompleted")).toBe(2);
   // Open children: still just labels — the detail waits for its own tap.
@@ -86,20 +105,45 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   expect(hasText("ls -la")).toBe(true);
 });
 
-// A failed call is the one row the user must not have to dig for.
-test("a failed call stays on screen instead of folding away", () => {
+// A failed call folds like any other — and counts like any other, under its own
+// kind — so the run must still say that something in it failed.
+test("a failed call folds into the run, counts under its kind, and is flagged", () => {
   render(reply({
-    segments: [thinking("k1"), tool("c1", { status: "failed" }), tool("c2")],
+    segments: [thinking("k1"), tool("c1", { status: "failed" }), tool("c2"), tool("c3")],
   }));
+  // Three shell calls ran, one of them badly: folded into one line, counted 3.
+  expect(countText(stepsSummary(["Think", 1], ["Run", 3]))).toBe(1);
+  expect(hasText("chat.runFailed")).toBe(false);
+  // Flagged, not silent: the alert glyph and the count a screen reader reads.
+  expect(countGlyph("TriangleAlert")).toBe(1);
+  expect(countLabel(`${stepsSummary(["Think", 1], ["Run", 3])} · chat.stepsFailed×1`)).toBe(1);
+  // The failed row keeps its own danger label once the run is open.
+  act(() => rowButton(stepsSummary(["Think", 1], ["Run", 3])).props.onPress());
   expect(hasText("chat.runFailed")).toBe(true);
-  expect(countText(STEPS_SUMMARY)).toBe(0);
+});
+
+test("a run with no failure carries no alert", () => {
+  render(reply({ segments: [thinking("k1"), tool("c1")] }));
+  expect(countGlyph("TriangleAlert")).toBe(0);
+});
+
+// The summary counts each kind under a short verb and merges the kinds into one
+// line — a stack of "已运行 5 次 · 已思考 3 次" sentences is what made it unreadable.
+test("every kind in the run is merged into one line of short counts", () => {
+  render(reply({
+    segments: [
+      thinking("k1"), tool("c1"), tool("c2", { name: "read" }),
+      tool("c3", { name: "write" }), tool("c4", { name: "edit" }),
+    ],
+  }));
+  expect(countText(stepsSummary(["Think", 1], ["Run", 1], ["Read", 1], ["Write", 1], ["Edit", 1]))).toBe(1);
 });
 
 // The tail of an in-flight reply is the slice being written right now: folding it
 // would hide live progress behind the summary.
 test("the slice a streaming reply is still on stays visible", () => {
   render(reply({ streaming: true, segments: [thinking("k1"), tool("c1"), thinking("k2")] }));
-  expect(countText(STEPS_SUMMARY)).toBe(1);
+  expect(countText(THINK_RUN)).toBe(1);
   expect(hasText("chat.thinking")).toBe(true);
   expect(hasText("chat.thoughtCompleted")).toBe(false);
 });
