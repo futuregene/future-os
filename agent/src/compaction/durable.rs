@@ -70,22 +70,30 @@ impl CompactionTicket {
     }
 }
 
+/// Journal admission outcome, shared by the deterministic and summary paths.
+enum Admission {
+    /// A recorded identical compaction was replayed; nothing left to compute.
+    Replayed(ContextPreparation, CompactionTicket),
+    /// No usable record: compute now, then commit through the ticket when present.
+    Fresh(Option<CompactionTicket>),
+}
+
+/// Decide whether this compaction was already recorded, and claim the operation
+/// when it was not. `strategy` participates in the idempotency key, so a run that
+/// adds a model summary and one that does not are distinct operations over the
+/// same history and never replay each other's receipt.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_with_journal(
+fn admit(
     manager: &ContextManager,
     prompt: PromptContext,
     raw: &[AgentMessage],
     trigger: CompactionTrigger,
     phase: CompactionPhase,
     instructions: Option<&str>,
-    interrupted: &std::sync::atomic::AtomicBool,
-    on_started: Option<&(dyn Fn() + Sync)>,
     journal: Option<&CompactionJournal>,
     operation_id: &str,
-) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
-    if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(ContextError::Cancelled);
-    }
+    strategy: &str,
+) -> Result<Admission, ContextError> {
     let estimate = prompt
         .messages
         .iter()
@@ -111,6 +119,7 @@ pub(crate) fn prepare_with_journal(
             .barrier()
             .map_err(|e| ContextError::PersistenceFailed(e.to_string()))?;
         let policy = json!({"version":"c-idempotency-v1","evidence":semantic::evidence::policy_identity(),
+            "summaryStrategy":strategy,
             "sessionPolicy":journal.policy,"model":manager.model,"window":manager.context_window,
             "reserve":manager.reserve_tokens,"recent":manager.keep_recent_tokens,
             "fixedInput":prompt.usage.fixed_input_tokens,"outputReserve":prompt.usage.output_reserve_tokens,
@@ -154,15 +163,15 @@ pub(crate) fn prepare_with_journal(
                     if current.is_some_and(|id| id != checkpoint.entry_id) {
                         let mut unchanged = prompt;
                         unchanged.usage.input_tokens = None;
-                        return Ok((
+                        return Ok(Admission::Replayed(
                             ContextPreparation::Unchanged { prompt: unchanged },
-                            Some(CompactionTicket {
+                            CompactionTicket {
                                 journal: journal.clone(),
                                 key: String::new(),
                                 input: String::new(),
                                 cached: Some(value),
                                 operation_id: original,
-                            }),
+                            },
                         ));
                     }
                     let mut replay = project_prompt_context(
@@ -186,15 +195,15 @@ pub(crate) fn prepare_with_journal(
                         checkpoint: Box::new(checkpoint),
                     }
                 };
-                return Ok((
+                return Ok(Admission::Replayed(
                     prepared,
-                    Some(CompactionTicket {
+                    CompactionTicket {
                         journal: journal.clone(),
                         key: String::new(),
                         input: String::new(),
                         cached: Some(value),
                         operation_id: original,
-                    }),
+                    },
                 ));
             }
             CompactionClaim::New { key, input } => {
@@ -208,15 +217,15 @@ pub(crate) fn prepare_with_journal(
             }
         }
     }
-    let result = manager.prepare_evidence(
-        prompt,
-        raw,
-        trigger,
-        phase,
-        instructions,
-        interrupted,
-        on_started,
-    );
+    Ok(Admission::Fresh(ticket))
+}
+
+/// Commit a freshly computed preparation through its ticket, failing the receipt
+/// when the computation failed so a retry never replays a bad record.
+fn commit(
+    result: Result<ContextPreparation, ContextError>,
+    ticket: Option<CompactionTicket>,
+) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
     match result {
         Ok(prepared) => Ok((prepared, ticket)),
         Err(error) => {
@@ -225,5 +234,107 @@ pub(crate) fn prepare_with_journal(
             }
             Err(error)
         }
+    }
+}
+
+/// C admitted durably: no provider is involved anywhere in this path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_with_journal(
+    manager: &ContextManager,
+    prompt: PromptContext,
+    raw: &[AgentMessage],
+    trigger: CompactionTrigger,
+    phase: CompactionPhase,
+    instructions: Option<&str>,
+    interrupted: &std::sync::atomic::AtomicBool,
+    on_started: Option<&(dyn Fn() + Sync)>,
+    journal: Option<&CompactionJournal>,
+    operation_id: &str,
+) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
+    if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ContextError::Cancelled);
+    }
+    match admit(
+        manager,
+        prompt.clone(),
+        raw,
+        trigger,
+        phase,
+        instructions,
+        journal,
+        operation_id,
+        semantic::evidence::ALGORITHM,
+    )? {
+        Admission::Replayed(prepared, ticket) => Ok((prepared, Some(ticket))),
+        Admission::Fresh(ticket) => commit(
+            manager.prepare_evidence(
+                prompt,
+                raw,
+                trigger,
+                phase,
+                instructions,
+                interrupted,
+                on_started,
+            ),
+            ticket,
+        ),
+    }
+}
+
+/// C3 admitted durably: C's projection plus a sticky model summary when a provider
+/// is available. The strategy in the idempotency key reflects what will actually be
+/// computed, so an unavailability downgrade is a distinct operation rather than a
+/// silent replay of a different result.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn prepare_with_journal_summarized(
+    manager: &ContextManager,
+    prompt: PromptContext,
+    raw: &[AgentMessage],
+    trigger: CompactionTrigger,
+    phase: CompactionPhase,
+    instructions: Option<&str>,
+    interrupted: &std::sync::atomic::AtomicBool,
+    on_started: Option<&(dyn Fn() + Sync)>,
+    journal: Option<&CompactionJournal>,
+    operation_id: &str,
+    provider: Option<&dyn crate::types::LLMProvider>,
+    on_fallback: Option<&(dyn Fn(&str) + Sync)>,
+) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
+    if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ContextError::Cancelled);
+    }
+    let strategy = if provider.is_some() {
+        semantic::evidence::ALGORITHM_STICKY
+    } else {
+        semantic::evidence::ALGORITHM
+    };
+    match admit(
+        manager,
+        prompt.clone(),
+        raw,
+        trigger,
+        phase,
+        instructions,
+        journal,
+        operation_id,
+        strategy,
+    )? {
+        Admission::Replayed(prepared, ticket) => Ok((prepared, Some(ticket))),
+        Admission::Fresh(ticket) => commit(
+            manager
+                .prepare_evidence_with_summary(
+                    prompt,
+                    raw,
+                    trigger,
+                    phase,
+                    instructions,
+                    interrupted,
+                    on_started,
+                    provider,
+                    on_fallback,
+                )
+                .await,
+            ticket,
+        ),
     }
 }

@@ -8,8 +8,8 @@ mod budget;
 mod durable;
 mod semantic;
 pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
-pub(crate) use durable::prepare_with_journal;
 pub use durable::CompactionJournal;
+pub(crate) use durable::{prepare_with_journal, prepare_with_journal_summarized};
 
 pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 
@@ -266,6 +266,41 @@ impl ContextManager {
             interrupted,
             on_started,
         )
+    }
+
+    /// C3: C's projection plus a sticky, model-written handoff summary.
+    ///
+    /// The summary is generated from the material being compressed and receives the
+    /// previous summary, so facts accumulate across successive compactions instead of
+    /// being rewritten from scratch. When the provider is absent or the call fails,
+    /// this commits plain C; the fallback is reported through `on_fallback` rather
+    /// than failing the compaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_evidence_with_summary(
+        &self,
+        prompt: PromptContext,
+        raw: &[AgentMessage],
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        instructions: Option<&str>,
+        interrupted: &std::sync::atomic::AtomicBool,
+        on_started: Option<&(dyn Fn() + Sync)>,
+        provider: Option<&dyn crate::types::LLMProvider>,
+        on_fallback: Option<&(dyn Fn(&str) + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::evidence::prepare_with_sticky_summary(
+            self,
+            prompt,
+            raw,
+            trigger,
+            phase,
+            instructions,
+            interrupted,
+            on_started,
+            provider,
+            on_fallback,
+        )
+        .await
     }
 
     /// Explicit legacy semantic API; the runtime defaults to prepare_evidence.

@@ -99,6 +99,18 @@ enum SummaryCallError {
     Other(String),
 }
 
+impl std::fmt::Display for SummaryCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextLimit(reason) => {
+                write!(f, "summary request exceeded the context limit: {reason}")
+            }
+            Self::Cancelled => write!(f, "summary request cancelled"),
+            Self::Other(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare(
     manager: &ContextManager,

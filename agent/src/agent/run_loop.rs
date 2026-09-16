@@ -361,7 +361,7 @@ impl Loop {
                         prompt: projected.clone(),
                     })
                 } else {
-                    crate::compaction::prepare_with_journal(
+                    crate::compaction::prepare_with_journal_summarized(
                         manager,
                         projected.clone(),
                         &messages,
@@ -372,7 +372,10 @@ impl Loop {
                         Some(&emit_automatic_started),
                         ctx.compaction_journal.as_ref(),
                         &automatic_operation_id,
+                        Some(self.provider.as_ref()),
+                        None,
                     )
+                    .await
                     .map(|(prompt, ticket)| {
                         compaction_ticket = ticket;
                         prompt
@@ -612,7 +615,7 @@ impl Loop {
                                 });
                             };
                             let mut recovery_ticket = None;
-                            match crate::compaction::prepare_with_journal(
+                            match crate::compaction::prepare_with_journal_summarized(
                                 manager,
                                 projected,
                                 &messages,
@@ -623,7 +626,10 @@ impl Loop {
                                 Some(&emit_provider_limit_started),
                                 ctx.compaction_journal.as_ref(),
                                 &provider_limit_operation_id,
+                                Some(self.provider.as_ref()),
+                                None,
                             )
+                            .await
                             .map(|(prompt, ticket)| {
                                 recovery_ticket = ticket;
                                 prompt
@@ -1776,6 +1782,7 @@ mod tests {
         requests: parking_lot::Mutex<Vec<Vec<AgentMessage>>>,
         request_times: parking_lot::Mutex<Vec<tokio::time::Instant>>,
         fail_summary: std::sync::atomic::AtomicBool,
+        summary_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl ScriptedProvider {
@@ -1786,6 +1793,7 @@ mod tests {
                 requests: parking_lot::Mutex::new(vec![]),
                 request_times: parking_lot::Mutex::new(vec![]),
                 fail_summary: std::sync::atomic::AtomicBool::new(false),
+                summary_calls: std::sync::atomic::AtomicUsize::new(0),
             })
         }
     }
@@ -1800,8 +1808,12 @@ mod tests {
                 .system_prompt
                 .contains("context summarization agent")
             {
+                self.summary_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if self.fail_summary.load(std::sync::atomic::Ordering::Relaxed) {
-                    panic!("default C unexpectedly called a summary model");
+                    return Err(anyhow::anyhow!(
+                        "summary provider unavailable (test script)"
+                    ));
                 }
                 let events = vec![
                     ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
@@ -3861,7 +3873,67 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn automatic_c_never_calls_summary_model_and_keeps_history() {
+    async fn automatic_c3_records_evidence_and_the_sticky_summary() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let messages = compactable_messages(26_000);
+        let (text, _final_messages) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        // The checkpoint message is journal-internal and not part of the returned
+        // message view, so the observable is that the summary model was consulted
+        // exactly once, and that the projection still carries the evidence index
+        // (checked through the recorded request the agent then sent).
+        assert_eq!(
+            provider
+                .summary_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "C3 must ask the model for exactly one handoff summary"
+        );
+        let sent = provider
+            .requests
+            .lock()
+            .first()
+            .map(|messages| {
+                messages
+                    .iter()
+                    .map(|message| message.text())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        assert!(
+            sent.contains("evidence index"),
+            "the compacted projection must still carry the deterministic evidence index"
+        );
+        assert!(
+            sent.contains("Model handoff summary"),
+            "the compacted projection must carry the model summary"
+        );
+        assert!(
+            !sent.contains(&"x".repeat(2000)),
+            "the summarized middle must no longer be sent verbatim"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn automatic_c3_falls_back_to_evidence_when_the_summary_fails() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         provider
             .fail_summary
