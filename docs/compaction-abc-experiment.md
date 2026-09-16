@@ -299,10 +299,14 @@ appended. 12 probes, uncapped, Codex interface.
 no answer. The summary helped exactly where expected (`buried` misses 8 → 5) but
 cost accuracy elsewhere (`latest_version`, and one probe lost entirely).
 
-The reading: C's evidence index is already the compressed form of the tool layer.
-Adding a second, model-written compression of the same material does not add facts
-— it adds another thing the model can contradict, and one more block that can send
-it searching instead of answering.
+**This verdict applies to a *naive* summary, not to summaries in general.** See
+"Can we copy Codex's "full"?" below: a summary that is *sticky* (each one carries the
+previous one forward) and refreshed on an *overflow trigger* reaches 72/72, matching
+Codex. What fails here is bolting a one-shot summary onto a projection that already
+carries evidence: the summary becomes a second, contradictable account of material the
+evidence index already covers, and it pulls the model toward searching instead of
+answering. The naive variants rebuilt each summary from scratch, so nothing accumulated
+and `buried` improved only modestly while other fields dropped.
 
 ### What remains the honest gap
 
@@ -311,6 +315,84 @@ history** (258 K tokens at stage 1) rather than a curated excerpt. Our summaries
 read clipped material. That difference — input breadth, not summary-vs-evidence —
 is the untested lever. A summary that reads everything costs ~¥0.0094 when the
 prefix is warm, which is now the cheapest known way to buy those 11 fields.
+
+## Can we copy Codex's "full"?
+
+Partly — and the useful part is not "read everything".
+
+**Reading the archive does not work.** C keeps the whole journal, so "everything"
+means 255 K tokens at stage 1 and 2 080 K at stage 8; the provider rejected the
+request from stage 4 on. Codex can summarise "everything" only because its
+compaction **replaces** history, so its live context stays under ~690 K.
+
+The working analogue is the **live** context, chained as Codex chains it:
+
+```
+live(0) = archive + tail                    -> summary_0
+live(N) = [summary_{N-1}] + records since   -> summary_N
+projection(N) = C's projection + summary_N
+```
+
+Two necessary conditions, both found by failing at them first:
+
+* **the summary must be sticky.** My first version rebuilt every summary from C's
+  projection, so its own previous summary was never carried forward; the stage-0
+  value was gone by stage 4.
+* **compaction must be overflow-triggered.** My second version compacted only at
+  probe boundaries, so four stages of records (~1 M tokens) accumulated and the
+  stage-8 request was rejected.
+
+With both, on the same six probes (DeepSeek, both chains, stages 1/4/8):
+
+| Arm | Score | No answer | Requests/probe |
+|---|---:|---:|---:|
+| **C + sticky summary, Codex trigger** | **72/72** | 0 | 7.3 |
+| Codex (user messages + summary) | 72/72 | 0 | 7.8 |
+| C (evidence only) | 70/72 | 0 | 8.5 |
+| C + summary (clipped input) | 70/72 | 0 | 6.2 |
+| A (originals + summary) | 69/72 | 0 | 9.3 |
+| M (`origin/main`) | 53/72 | 1 | 7.8 |
+| C + summary (non-sticky) | 55/72 | 1 | 11.8 |
+| B (no summary) | 50/72 | 1 | 8.2 |
+
+The only field that separates them closes: `buried` goes 4/6 → **6/6** for C, so it
+matches Codex field for field. **The missing ingredient was never assistant
+messages or a bigger summary — it was a cumulative summary carried forward on an
+overflow trigger.**
+
+Cost: ¥7.89 for 8 compactions *uncached* (≈¥0.99 each). Primed, the same request
+hits 99.9% and costs ¥0.065–0.085, because a real session already sent that prefix.
+
+## Was the earlier assistant-message conclusion a coverage artefact?
+
+**Yes.** I checked which record kind actually contains each of the original 12 gold
+values:
+
+| value lives only in | fields |
+|---|---|
+| user text | `project`, `first_limit`, `latest_limit`, `format` |
+| tool results | `old_version`, `latest_version`, `buried`, `validation`, `blocker` |
+| **assistant text** | **`first_code` — one single field** |
+
+A fixture built with four assistant-only facts (a decision, its rationale code, a
+retry budget, a self-correction) then compared two retention rules on the same
+history, closed-book:
+
+| field | source | with assistant text | without |
+|---|---|---|---|
+| decision | assistant | ✅ STREAMING | ❌ UNKNOWN |
+| rationale_code | assistant | ✅ | ❌ UNKNOWN |
+| retry_budget | assistant | ✅ 7 → 3 | ❌ UNKNOWN |
+| self_correction | assistant | ✅ | ❌ UNKNOWN |
+| project / latest_throughput / format | user | ✅ | ✅ |
+| latest_version / buried / validation / blocker | tool | ✅ | ✅ |
+| **total** | | **19/24** | **14/24** |
+
+Dropping assistant text loses **all four** assistant-only fields and nothing else.
+So "Codex keeps no assistant messages and still wins" was an artefact of a
+machine-state-heavy questionnaire, not a property of Codex. Assistant prose carries
+commitments nothing else restates: decisions, rationale, retractions, and
+unresolved questions. Ask "why did you choose this" and the difference is immediate.
 
 ## Does Codex have its own retrieval?
 
