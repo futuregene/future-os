@@ -170,6 +170,7 @@ fn nonempty(value: String) -> Option<String> {
 const BACKGROUND_COMMANDS: &[&str] = &[
     // Cursor replays and health probes.
     "get_events_since",
+    "get_run_snapshot",
     "get_session_events_since",
     "list_streaming_sessions",
     // Panel / catalog reloads.

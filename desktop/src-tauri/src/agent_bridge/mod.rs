@@ -304,6 +304,47 @@ pub async fn get_events_since(
         .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
 }
 
+/// Optional semantic bootstrap. Only explicit legacy/size responses fall back
+/// to raw replay; transport errors and corrupt snapshots must remain failures.
+pub(crate) async fn get_run_snapshot(
+    session_id: String,
+    run_id: String,
+) -> Result<Option<serde_json::Value>, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(crate::agent_proto::RpcCommand {
+            run_id: run_id.clone(),
+            ..base_command("get_run_snapshot", session_id)
+        })
+        .await
+        .map_err(|status| format!("get_run_snapshot failed: {status}"))?
+        .into_inner();
+    if !response.success
+        && (response.error == "unknown command: get_run_snapshot"
+            || matches!(
+                response.error_code.as_str(),
+                "run_snapshot_too_large" | "run_snapshot_unavailable"
+            ))
+    {
+        return Ok(None);
+    }
+    let response = response.ok_or_rpc_error("get_run_snapshot returned an error")?;
+    let data = future_rpc::decode::response_data(&response);
+    let projection = &data["projection"];
+    let cursor = projection["cursor"].as_i64();
+    if data["runSnapshot"] != true
+        || projection["runId"] != run_id
+        || cursor.is_none_or(|cursor| cursor < 0)
+        || data["watermark"].as_i64() != cursor
+        || !projection["events"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty())
+    {
+        return Err("get_run_snapshot returned an invalid projection".into());
+    }
+    Ok(Some(data))
+}
+
 /// One bounded Agent page for a remote continuation with a pinned watermark.
 /// Unlike the native full-tail API, this must not drain subsequent pages.
 pub(crate) async fn get_events_since_page(
@@ -2198,6 +2239,45 @@ mod bridge_tests {
         mock.push_data("sync_future_models", serde_json::json!({"synced": "yes"}));
         let error = sync_future_models().await.expect_err("invalid");
         assert!(error.to_string().contains("invalid sync result"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn run_snapshot_validates_identity_and_only_falls_back_for_explicit_unsupported() {
+        let mock = mock_agent();
+        let snapshot = serde_json::json!({"runSnapshot":true,"watermark":100,"events":[],
+            "projection":{"runId":"r","cursor":100,"events":[{"type":"agent_start","idx":0}]}});
+        mock.push_data("get_run_snapshot", snapshot.clone());
+        assert_eq!(
+            get_run_snapshot("s".into(), "r".into()).await.unwrap(),
+            Some(snapshot.clone())
+        );
+        assert_eq!(mock.requests_of("get_run_snapshot")[0].run_id, "r");
+        mock.push(
+            "get_run_snapshot",
+            Reply::Reject("unknown command: get_run_snapshot".into()),
+        );
+        assert!(get_run_snapshot("s".into(), "r".into())
+            .await
+            .unwrap()
+            .is_none());
+        mock.push(
+            "get_run_snapshot",
+            Reply::Reject("storage unreadable".into()),
+        );
+        assert!(get_run_snapshot("s".into(), "r".into()).await.is_err());
+        mock.push(
+            "get_run_snapshot",
+            Reply::Status(tonic::Code::Unavailable, "offline"),
+        );
+        assert!(get_run_snapshot("s".into(), "r".into()).await.is_err());
+        let mut wrong_run = snapshot.clone();
+        wrong_run["projection"]["runId"] = serde_json::json!("other");
+        mock.push_data("get_run_snapshot", wrong_run);
+        assert!(get_run_snapshot("s".into(), "r".into()).await.is_err());
+        let mut wrong_cursor = snapshot;
+        wrong_cursor["watermark"] = serde_json::json!(101);
+        mock.push_data("get_run_snapshot", wrong_cursor);
+        assert!(get_run_snapshot("s".into(), "r".into()).await.is_err());
     }
 
     // ── get_events_since paging ───────────────────────────────────────

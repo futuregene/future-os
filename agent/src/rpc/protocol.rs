@@ -236,6 +236,7 @@ struct RunState {
     run_sequence: i64,
     events: Vec<SseEvent>,
     projection_events: Vec<SseEvent>,
+    projection_complete: bool,
 }
 
 #[derive(Default)]
@@ -624,6 +625,7 @@ impl SseBroadcaster {
                 run_sequence: -1,
                 events: Vec::new(),
                 projection_events: Vec::new(),
+                projection_complete: true,
             })),
             truncation_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -934,6 +936,11 @@ impl SseBroadcaster {
             .collect::<Vec<_>>();
         run.events.reverse();
         run.projection_events.clear();
+        run.projection_complete = !recovery_failed
+            && recovered
+                .iter()
+                .enumerate()
+                .all(|(index, event)| event.run_id == run.run_id && event.idx == index as i64);
         for event in &recovered {
             apply_to_projection(&mut run.projection_events, event);
         }
@@ -1030,6 +1037,49 @@ impl SseBroadcaster {
         Ok((run.run_id.clone(), events, min_idx, projection))
     }
 
+    /// Capture a resumable semantic snapshot, not the raw token journal. The
+    /// active projection and cursor are cloned under the stamping lock. For an
+    /// older run, one SQLite transaction supplies a consistent immutable prefix.
+    pub(crate) fn run_snapshot(&self, run_id: &str) -> anyhow::Result<RunProjectionSnapshot> {
+        anyhow::ensure!(!run_id.is_empty(), "snapshot requires a run id");
+        let run = self.run.lock();
+        if run.run_id == run_id {
+            anyhow::ensure!(run.projection_complete, "run snapshot prefix is incomplete");
+            if let Some(error) = self.journal_health.error() {
+                anyhow::bail!("run snapshot persistence is unhealthy: {error}");
+            }
+            return Ok(RunProjectionSnapshot {
+                run_id: run.run_id.clone(),
+                epoch: run.epoch,
+                run_sequence: run.run_sequence,
+                cursor: run.idx.saturating_sub(1),
+                events: run.projection_events.clone(),
+            });
+        }
+        // Historical reads must not block active broadcasts while decoding or
+        // folding a long journal. The DB read itself is transaction-scoped.
+        drop(run);
+        let (known, events) = self.read_journal_page(run_id, -1, false, None)?;
+        anyhow::ensure!(known, "run `{run_id}` is not known by this session");
+        anyhow::ensure!(
+            events
+                .iter()
+                .enumerate()
+                .all(|(index, event)| event.run_id == run_id && event.idx == index as i64),
+            "run snapshot prefix is incomplete"
+        );
+        let last = events
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("run snapshot is empty"))?;
+        Ok(RunProjectionSnapshot {
+            run_id: run_id.to_owned(),
+            epoch: last.epoch,
+            run_sequence: last.run_sequence,
+            cursor: last.idx,
+            events: super::run_snapshot::fold_events(events),
+        })
+    }
+
     pub fn session_events_since(&self, since_idx: i64) -> anyhow::Result<Vec<SseEvent>> {
         Ok(self.read_journal_since("", since_idx, true)?.1)
     }
@@ -1105,7 +1155,7 @@ fn is_buffered_delta(event_type: &str) -> bool {
 /// High-frequency deltas are coalesced into their preceding semantic segment;
 /// lifecycle, tool terminal, approval, usage, error, and terminal events keep
 /// their original ordering and cursor.
-fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEvent) {
+pub(super) fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEvent) {
     // `text_delta` (raw provider-stream token) duplicates `text_chunk` (the
     // on_text-derived token); consumers project the latter, so retaining both
     // would duplicate assistant output.
