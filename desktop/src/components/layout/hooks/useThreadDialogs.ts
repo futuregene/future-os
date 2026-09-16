@@ -1,10 +1,10 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredThread } from "../../../integrations/storage/threadStore";
 import type { BatchDeleteDialogState, DeleteDialogState, RenameDialogState } from "../AppShellDialogs";
-import { useState } from "react";
-import i18n from "../../../i18n";
+import { useRef, useState } from "react";
+import i18n, { getLanguage } from "../../../i18n";
 import { invalidateAgentState, prefetchAgentState } from "../../../integrations/agent/agentStateCache";
-import { batchDeleteThreads, deleteThread, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
+import { batchDeleteThreads, deleteThread, generateThreadTitle, getThreadCleanupSummary, renameThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 
 interface UseThreadDialogsParams {
@@ -21,6 +21,7 @@ export interface ThreadDialogs {
   setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   openRename: (thread: StoredThread) => void;
   confirmRename: () => Promise<void>;
+  generateTitle: () => Promise<void>;
   openDelete: (thread: StoredThread) => void;
   confirmDelete: () => Promise<void>;
   openBatchDelete: (threads: StoredThread[]) => void;
@@ -36,6 +37,8 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [batchDeleteDialog, setBatchDeleteDialog] = useState<BatchDeleteDialogState | null>(null);
+  const generationSequenceRef = useRef(0);
+  const generatingDialogRef = useRef<RenameDialogState | null>(null);
 
   function openRename(thread: StoredThread) {
     setRenameDialog({
@@ -46,8 +49,32 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
     });
   }
 
+  async function generateTitle() {
+    if (!renameDialog || renameDialog.submitting || renameDialog.generating || generatingDialogRef.current === renameDialog)
+      return;
+    generatingDialogRef.current = renameDialog;
+    const threadId = renameDialog.thread.id;
+    const generation = ++generationSequenceRef.current;
+    setRenameDialog(current => current ? { ...current, generating: true, generation, error: null } : current);
+    try {
+      const result = await generateThreadTitle(threadId, getLanguage());
+      setRenameDialog(current => current?.generation === generation
+        ? { ...current, value: result.title, generating: false }
+        : current);
+    }
+    catch (error) {
+      setRenameDialog(current => current?.generation === generation
+        ? { ...current, error: errorMessage(error), generating: false }
+        : current);
+    }
+    finally {
+      if (generatingDialogRef.current === renameDialog)
+        generatingDialogRef.current = null;
+    }
+  }
+
   async function confirmRename() {
-    if (!renameDialog || renameDialog.submitting)
+    if (!renameDialog || renameDialog.submitting || renameDialog.generating)
       return;
 
     const nextTitle = renameDialog.value.trim();
@@ -185,6 +212,7 @@ export function useThreadDialogs({ activeThreadId, refreshStore }: UseThreadDial
     setBatchDeleteDialog,
     openRename,
     confirmRename,
+    generateTitle,
     openDelete,
     confirmDelete,
     openBatchDelete,

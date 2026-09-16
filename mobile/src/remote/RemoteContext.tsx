@@ -110,6 +110,7 @@ interface RemoteContextValue {
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
   setApprovalTier(tier: string): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
+  generateTitle(sessionId: string, language: string): Promise<string>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
@@ -162,6 +163,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshSettings,
     refreshWorkspaces,
     rename,
+    generateTitle,
     deleteSession: removeSession,
     deleteWorkspace: removeWorkspace,
     setSessionPinned,
@@ -405,6 +407,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setThinkingLevel,
       setApprovalTier,
       rename,
+      generateTitle,
       deleteSession,
       deleteWorkspace,
       setSessionPinned,
@@ -448,6 +451,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshSessions,
       refreshWorkspaces,
       rename,
+      generateTitle,
       selectSession,
       selectedSessionId,
       selectedTitle,

@@ -10,6 +10,8 @@ export interface MenuAction {
   icon?: ReactNode;
   destructive?: boolean;
   disabled?: boolean;
+  /** Navigate within this sheet without discarding its pending payload. */
+  keepOpen?: boolean;
   onPress(): void;
 }
 
@@ -52,6 +54,10 @@ export function ActionMenu({ title, visible, actions, onClose }: {
                 disabled={action.disabled}
                 onPress={() => {
                   if (pending.current) return;
+                  if (action.keepOpen) {
+                    action.onPress();
+                    return;
+                  }
                   pending.current = action.onPress;
                   onClose();
                   if (Platform.OS !== "ios") setTimeout(flush, 0);

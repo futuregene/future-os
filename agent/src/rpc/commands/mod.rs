@@ -12,6 +12,7 @@ mod observability;
 mod providers;
 mod run_control;
 mod session_lifecycle;
+mod session_title;
 mod settings;
 
 #[cfg(test)]
@@ -181,6 +182,10 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             &cmd,
             id,
         );
+    }
+    // Suggestions are read-only and must not hydrate (or reconcile) a cold runtime.
+    if cmd_type == "generate_session_title" {
+        return session_title::handle(state, &cmd);
     }
     // No default-session fallback: an empty or unknown session_id is an
     // explicit error, never a silent redirect into another conversation.

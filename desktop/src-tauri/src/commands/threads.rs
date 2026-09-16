@@ -42,6 +42,22 @@ pub fn create_thread(
 }
 
 #[tauri::command]
+pub async fn generate_thread_title(
+    thread_id: String,
+    language: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?
+        .ok_or_else(|| crate::AppError::Message("Thread could not be loaded".into()))?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(&thread.id)
+        .to_string();
+    agent_bridge::generate_session_title(session_id, language).await
+}
+
+#[tauri::command]
 pub async fn rename_thread(
     input: store::RenameThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
@@ -881,6 +897,41 @@ mod tests {
         assert!(ids.is_empty());
         script_mock_agent(MockScript::default());
         let _ = thread;
+    }
+
+    #[tokio::test]
+    async fn generate_thread_title_returns_a_draft_without_renaming() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_title_suggestion");
+        let thread = make_thread(&home, Some("sess_title"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "generate_session_title".into(),
+                r#"{"title":"Suggested","model":"selected/model"}"#.into(),
+            )]),
+            ..Default::default()
+        });
+        let result = generate_thread_title(thread.id.clone(), "en".into())
+            .await
+            .unwrap();
+        assert_eq!(result["title"], "Suggested");
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            thread.title
+        );
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("generate_session_title".into(), "no completed pairs".into())]),
+            ..Default::default()
+        });
+        assert!(generate_thread_title(thread.id.clone(), "en".into())
+            .await
+            .is_err());
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            thread.title
+        );
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]

@@ -302,8 +302,7 @@ export const resources = {
           "That message is too long to send. Please shorten it to under 512 KB.",
         noHistory: "No messages yet.",
         loadingHistory: "Loading messages…",
-        syncingLatest:
-          "Syncing latest content… Displayed messages may be incomplete.",
+        syncingLatest: "Syncing…",
         syncRetrying: "Latest content is not yet synced. Retrying…",
         syncWaitingNetwork:
           "Latest content is not yet synced. Waiting for connection…",
@@ -315,6 +314,10 @@ export const resources = {
         thinkingLevel: "Thinking",
         rename: "Rename",
         renameTitle: "Rename session",
+        generateTitle: "Auto-generate",
+        generatingTitle: "Generating…",
+        generateTitleHint: "Use this conversation’s model and up to its first three question–answer pairs. Review, then save.",
+        titleGenerationFailed: "Could not generate title: {{message}}",
         cancel: "Cancel",
         save: "Save",
         truncated:
@@ -427,6 +430,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "Share to a conversation",
+        newConversation: "New conversation",
+        existingConversation: "Existing conversation",
         existing: "Existing conversation · {{title}}",
         existingWorkspace: "Existing conversation · {{name}} · {{title}}",
         chat: "New conversation · no workspace",
@@ -822,7 +827,7 @@ export const resources = {
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",
-        syncingLatest: "正在同步最新内容… 当前显示可能尚未完整。",
+        syncingLatest: "正在同步…",
         syncRetrying: "最新内容尚未同步完成，正在重试…",
         syncWaitingNetwork: "最新内容尚未同步完成，正在等待连接恢复…",
         historyLoadTimedOut: "加载对话超时，请重试。",
@@ -832,6 +837,10 @@ export const resources = {
         thinkingLevel: "思考强度",
         rename: "重命名",
         renameTitle: "重命名会话",
+        generateTitle: "自动生成",
+        generatingTitle: "生成中…",
+        generateTitleHint: "使用本会话模型和最多前三组问答生成，确认后再保存。",
+        titleGenerationFailed: "生成标题失败：{{message}}",
         cancel: "取消",
         save: "保存",
         truncated: "本轮开头已超出实时缓冲，无法回放。",
@@ -928,6 +937,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "分享到会话",
+        newConversation: "新会话",
+        existingConversation: "已有会话",
         existing: "已有会话 · {{title}}",
         existingWorkspace: "已有会话 · {{name}} · {{title}}",
         chat: "新会话 · 非工作区",

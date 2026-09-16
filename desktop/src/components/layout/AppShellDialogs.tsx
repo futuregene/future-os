@@ -12,6 +12,8 @@ export interface DeleteDialogState {
 }
 
 export interface RenameDialogState {
+  generation?: number;
+  generating?: boolean;
   error: string | null;
   submitting: boolean;
   thread: StoredThread;
@@ -33,6 +35,7 @@ interface AppShellDialogsProps {
   onConfirmBatchDeleteThread: () => void;
   onConfirmDeleteThread: () => void;
   onConfirmRenameThread: () => void;
+  onGenerateTitle: () => void;
   renameDialog: RenameDialogState | null;
   setBatchDeleteDialog: Dispatch<SetStateAction<BatchDeleteDialogState | null>>;
   setDeleteDialog: Dispatch<SetStateAction<DeleteDialogState | null>>;
@@ -45,6 +48,7 @@ export function AppShellDialogs({
   onConfirmBatchDeleteThread,
   onConfirmDeleteThread,
   onConfirmRenameThread,
+  onGenerateTitle,
   renameDialog,
   setBatchDeleteDialog,
   setDeleteDialog,
@@ -61,6 +65,8 @@ export function AppShellDialogs({
           setRenameDialog(current => current ? { ...current, error: null, value } : current)}
         onClose={() => setRenameDialog(null)}
         onConfirm={onConfirmRenameThread}
+        onGenerate={onGenerateTitle}
+        generating={renameDialog?.generating ?? false}
         open={Boolean(renameDialog)}
         submitting={renameDialog?.submitting ?? false}
         title={t("appShellDialogs.renameTitle")}
