@@ -277,32 +277,69 @@ test("the live run indicator sits on the right rail", () => {
   expect(style.alignSelf).toBe("flex-end");
 });
 
-// Opening the run keeps the whole thing on the same right-hand rail: the rows it
-// opens, and the detail those rows open in turn, are all right-aligned — the left
-// edge stays the prose's.
-test("the rows and details opened from the run are right-aligned too", () => {
+// Opening the run drops its rows back into the reading column: they only exist
+// once the user has asked to read them, and right-aligned prose and commands are
+// hard to read.
+test("the rows opened from the run fall back into the reading column", () => {
   render(reply({
     segments: [thinking("k1", "why it broke"), tool("c1", { detail: "ls -la" })],
   }));
+  // Closed, the summary is a badge on the rail...
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
   act(() => summaryRow(THINK_RUN).props.onPress());
 
-  const childRow = rowButton("chat.thoughtCompleted");
-  expect(railOf(childRow)).toBe("flex-end");
-  expect(StyleSheet.flatten(childRow.props.style).justifyContent).toBe("flex-end");
-  // The reasoning rail moves to the right side with the block it labels.
+  // ...and everything it opened is reading content on the left.
+  expect(railOf(rowButton("chat.thoughtCompleted"))).toBeUndefined();
   const thinkingBlock = tree.root.findAll(host => {
-    const style = StyleSheet.flatten(host.props.style) as { borderRightWidth?: number } | undefined;
-    return style?.borderRightWidth === 2;
+    const style = StyleSheet.flatten(host.props.style) as { borderLeftWidth?: number } | undefined;
+    return style?.borderLeftWidth === 2;
   })[0]!;
-  const thinkingStyle = StyleSheet.flatten(thinkingBlock.props.style);
-  // The rail is on the right and there is no left one at all.
-  expect(thinkingStyle.borderRightWidth).toBe(2);
-  expect(thinkingStyle.borderLeftWidth).toBeUndefined();
-  expect(thinkingStyle.alignItems).toBe("flex-end");
-  // The tool row's own expanded command text is right-aligned as well.
+  expect(railOf(thinkingBlock)).toBeUndefined();
+  // The tool row's own expanded command is left-aligned too.
   act(() => rowButton("chat.runCompleted").props.onPress());
   const command = tree.root.findAll(host => host.props.children === "ls -la")[0]!;
-  expect(StyleSheet.flatten(command.props.style).textAlign).toBe("right");
+  expect(railOf(command)).toBeUndefined();
+});
+
+// A file tool only becomes useful when its target is visible, and the target is
+// a full-width row: while the row was shrink-wrapped on the rail, the target's
+// `flex: 1` had no space to claim and the file name rendered at zero width.
+test.each(["read", "write", "edit"])("opening a %s tool reveals its file name", kind => {
+  render(reply({
+    segments: [tool("c1", {
+      name: kind,
+      detail: "/w/agent/src/compaction/semantic.rs",
+      complete: true,
+      status: "completed",
+    })],
+  }));
+  expect(hasText("semantic.rs")).toBe(false);
+  act(() => rowButton(`chat.${kind}Completed`).props.onPress());
+  expect(hasText("semantic.rs")).toBe(true);
+  // Revealed content is reading content, so the row left the rail to make room.
+  expect(railOf(rowButton(`chat.${kind}Completed`))).toBeUndefined();
+  const target = tree.root.findAll(host => host.props.children === "semantic.rs")[0]!;
+  expect(StyleSheet.flatten(target.props.style).flex).toBe(1);
+});
+
+// A burst of one file kind is the same story for every child it lists.
+test("opening a file burst lists every child file name", () => {
+  render(reply({
+    segments: [tool("c1", {
+      name: "edit",
+      complete: true,
+      status: "completed",
+      count: 2,
+      children: [
+        { name: "edit", complete: true, status: "completed", detail: "/w/one.rs" },
+        { name: "edit", complete: true, status: "completed", detail: "/w/two.rs" },
+      ],
+    })],
+  }));
+  // The burst row reads "Edited 2×" (short verb + count), not the bare label.
+  act(() => rowButton("chat.stepEdit 2×").props.onPress());
+  expect(hasText("one.rs")).toBe(true);
+  expect(hasText("two.rs")).toBe(true);
 });
 
 test("a run with no failure carries no alert", () => {

@@ -14,7 +14,7 @@ import { Animated, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDim
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
-import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
+import { MarkdownImage, MarkdownImageAutoLoadContext, MarkdownImageBasePathContext } from "./MarkdownImage";
 
 interface MarkdownTextProps {
   /** Message links can fetch local files; file previews never nest previews. */
@@ -354,10 +354,10 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
   }, [mode, onOpenFile, t]);
-  return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
+  return <MarkdownImageBasePathContext value={imageBasePath}><MarkdownImageAutoLoadContext value={mode === "message"}><View style={styles.constrained}>{document.nodes.map((node, index) => (
     <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
       animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
-  ))}</View></MarkdownImageBasePathContext>;
+  ))}</View></MarkdownImageAutoLoadContext></MarkdownImageBasePathContext>;
 }
 
 const monospace = Platform.select({ ios: "Menlo", default: "monospace" });

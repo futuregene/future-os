@@ -425,14 +425,17 @@ function StatusDivider({ label, failed = false }: { label: string; failed?: bool
  * burst carries its child calls on `tool.children` and its count — the row
  * reads "Ran N commands", and tapping it reveals the individual targets.
  *
- * The row and everything it opens hang off the right-hand rail, out of the
- * prose's eye line. That is not a per-call-site option: every step row in a
- * reply aligns the same way, so an unfolded one-off and a folded run cannot
- * disagree (they did, while this was a prop with a left-aligning default).
+ * The row is a badge on the right rail only while nothing of it is revealed.
+ * Once it — or the run around it — is open, it is content being read, and
+ * content sits in the reading column with the rest of the reply: right-aligned
+ * prose and right-aligned commands are hard to read. `opened` is required so a
+ * call site cannot silently pick the wrong rail, which is how the unfolded rows
+ * ended up on the left while folded ones sat on the right.
  */
-function ToolRow({ tool }: { tool: TimelineToolRow }) {
+function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const open = opened || expanded;
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
   const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
@@ -447,13 +450,13 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
         })
       : toolLabel(t, kind, tool.complete);
   return (
-    <View style={styles.inlineTool}>
+    <View style={[styles.inlineTool, !open && styles.railBlock]}>
       <Pressable
         accessibilityRole="button"
         disabled={!expandable}
         hitSlop={expandable ? ROW_HIT_SLOP : undefined}
         onPress={() => setExpanded(value => !value)}
-        style={styles.toolHeader}
+        style={[styles.toolHeader, !open && styles.railRow]}
       >
         <ToolGlyph failed={failed} kind={kind} />
         <Text style={styles.toolText}>{label}</Text>
@@ -517,18 +520,24 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
- * Like a tool row it hangs off the right-hand rail — see ToolRow.
+ * Like a tool row it is a badge on the right rail while collapsed and falls
+ * back into the reading column once opened — see ToolRow.
  */
-function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean }) {
+function ThinkingRow({ text, streaming, opened }: {
+  text: string;
+  streaming?: boolean;
+  opened: boolean;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const open = opened || expanded;
   return (
-    <View style={styles.inlineThinking}>
+    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
       <Pressable
         accessibilityRole="button"
         hitSlop={ROW_HIT_SLOP}
         onPress={() => setExpanded(value => !value)}
-        style={styles.inlineThinkingHeader}
+        style={[styles.inlineThinkingHeader, !open && styles.railRow]}
       >
         <Brain color={colors.inkMuted} size={14} />
         <Text style={styles.inlineThinkingLabel}>
@@ -733,9 +742,9 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
             segment.kind === "thinking" ? (
               // Every folded reasoning slice has already been closed by the
               // slice after it, so none of them is still streaming.
-              <ThinkingRow key={segment.id} text={segment.text} />
+              <ThinkingRow key={segment.id} opened text={segment.text} />
             ) : (
-              <ToolRow key={segment.id} tool={segment.tool} />
+              <ToolRow key={segment.id} opened tool={segment.tool} />
             ),
           )}
         </View>
@@ -758,10 +767,10 @@ function SegmentBlock({
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }
   if (segment.kind === "thinking") {
-    return <ThinkingRow streaming={streaming} text={segment.text} />;
+    return <ThinkingRow opened={false} streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    return <ToolRow tool={segment.tool} />;
+    return <ToolRow opened={false} tool={segment.tool} />;
   }
   // compaction
   return (
@@ -1051,38 +1060,47 @@ const styles = StyleSheet.create({
   },
   segmentList: { gap: spacing.sm, marginTop: spacing.xs },
   inlineThinking: {
-    alignSelf: "flex-end",
-    alignItems: "flex-end",
-    borderRightWidth: 2,
-    borderRightColor: colors.line,
-    paddingRight: spacing.md,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.line,
+    paddingLeft: spacing.md,
     paddingVertical: spacing.xs,
     gap: 2,
+  },
+  // Collapsed reasoning is a badge on the right rail: the rail follows it there.
+  railThinking: {
+    alignSelf: "flex-end",
+    borderLeftWidth: 0,
+    borderRightWidth: 2,
+    borderRightColor: colors.line,
+    paddingLeft: 0,
+    paddingRight: spacing.md,
   },
   inlineThinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-end",
     gap: spacing.sm,
   },
   inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
   inlineThinkingText: {
-    textAlign: "right",
     color: colors.inkSoft,
     fontSize: 13,
     lineHeight: 19,
     marginTop: 2,
   },
   inlineTool: {
-    alignSelf: "flex-end",
     paddingVertical: 2,
     gap: 2,
   },
+  // ── The right rail, for collapsed badges only ───────────────────────────
+  // A step row draws as a badge out of the prose's eye line while it is closed;
+  // `railBlock` is what shrink-wraps it and parks it on the right, and `railRow`
+  // keeps the tap target clipped to the badge instead of spanning the bubble.
+  railBlock: { alignSelf: "flex-end" },
+  railRow: { justifyContent: "flex-end" },
   inlineToolTarget: {
     flex: 1,
     marginLeft: spacing.sm,
     minWidth: 0,
-    textAlign: "right",
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
@@ -1090,11 +1108,12 @@ const styles = StyleSheet.create({
     maxHeight: 18,
     overflow: "hidden",
   },
+  // Opened rows are reading content: left-aligned, and indented like the tool
+  // burst children they belong to.
   inlineToolChildren: {
-    alignItems: "flex-end",
     gap: 2,
     marginTop: 2,
-    paddingRight: spacing.sm,
+    paddingLeft: spacing.md + spacing.sm,
   },
   // The collapsed summary hugs the right edge, out of the prose's eye line. Its
   // gap is tighter than a tool row's: the counts are one cluster, and 8px on each
@@ -1112,18 +1131,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 0,
   },
-  // The expanded rows keep the summary's right-hand rail: no left indent, and
-  // indented a step in from the right instead so they read as belonging to the
-  // line above them.
+  // The expanded rows fall back into the reading column, indented one step so
+  // they read as belonging to the summary line above them.
   stepChildren: {
-    alignItems: "flex-end",
     gap: spacing.xs,
     marginTop: 2,
-    paddingRight: spacing.sm,
+    paddingLeft: spacing.md + spacing.sm,
   },
   inlineToolChild: {
     flexShrink: 1,
-    textAlign: "right",
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
@@ -1173,11 +1189,10 @@ const styles = StyleSheet.create({
   tool: { paddingHorizontal: spacing.xs, paddingVertical: spacing.xs },
   toolHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   toolText: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
-  // The shell command under a tool row: right-aligned like the row, and without
-  // the left indent the left-hand rail used to need.
+  // The shell command under a tool row: left-aligned with the row it belongs to.
   toolDetailText: {
     marginTop: 2,
-    textAlign: "right",
+    paddingLeft: spacing.md + spacing.sm,
     color: colors.inkSoft,
     fontFamily: "monospace",
     fontSize: 12,
