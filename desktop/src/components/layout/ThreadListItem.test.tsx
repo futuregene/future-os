@@ -72,11 +72,18 @@ describe("thread row title space", () => {
         expect(expander.classList.contains("absolute")).toBe(false);
         expect(expander.classList.contains("relative")).toBe(true);
         expect(expander.style.left).toBe("");
+        // Sub-conversations disclose with a solid caret, never the chevron the
+        // workspace/section headers use (the two read as one control otherwise).
+        const caret = expander.querySelector("svg")!;
+        expect(caret.classList.contains("lucide-triangle-right")).toBe(true);
+        expect(caret.classList.contains("fill-current")).toBe(true);
+        expect(caret.classList.contains("rotate-90")).toBe(false);
         act(() => expander.click());
         expect(p.onToggleExpanded).toHaveBeenCalledWith(p.thread);
         expect(p.onSelectThread).not.toHaveBeenCalled();
         act(() => root.render(<ThreadListItem {...p} compact={compact} depth={depth} hasChildren expanded />));
         expect(expander.getAttribute("aria-expanded")).toBe("true");
+        expect(caret.classList.contains("rotate-90")).toBe(true);
       }
       else if (spacer) {
         expect(title.previousElementSibling?.tagName).toBe("SPAN");
@@ -85,6 +92,8 @@ describe("thread row title space", () => {
       else {
         expect(title.previousElementSibling).toBe(select);
       }
+      // Header chevrons stay the headers' own: no row renders one.
+      expect(row.querySelector("svg.lucide-chevron-right, svg.lucide-chevron-down")).toBeNull();
       act(() => select.click());
       expect(p.onSelectThread).toHaveBeenCalledExactlyOnceWith(p.thread);
     }

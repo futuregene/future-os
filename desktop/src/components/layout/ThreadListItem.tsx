@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { ChevronDown, ChevronRight, CircleAlert, MoreHorizontal } from "lucide-react";
+import { CircleAlert, MoreHorizontal, TriangleRight } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -145,7 +145,10 @@ function ThreadListItemImpl({
               onClick={() => onToggleExpanded?.(thread)}
               type="button"
             >
-              {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              {/* A solid caret, not the chevron the workspace/section headers
+                  use: sub-conversations are a different kind of disclosure, and
+                  the same glyph one row apart read as the same control. */}
+              <TriangleRight className={cn("size-3 shrink-0 fill-current transition-transform", expanded && "rotate-90")} />
             </button>
           )
         : !compact && depth > 0
