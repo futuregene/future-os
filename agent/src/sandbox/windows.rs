@@ -1,4 +1,4 @@
-//! Windows sandbox executor (desktop/DEV_MD/SANDBOX/WINDOWS.md), `#[cfg(windows)]` only.
+//! Windows sandbox executor (docs/internals/desktop/SANDBOX/WINDOWS.md), `#[cfg(windows)]` only.
 //!
 //! The product path combines a no-breakaway Job Object, a WRITE_RESTRICTED
 //! token, capability-scoped NTFS ACEs, handle-audited paths, and suspended

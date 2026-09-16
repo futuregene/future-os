@@ -279,7 +279,7 @@ impl ApprovalGate {
     }
 
     /// Post-hoc approval for running a shell command outside the sandbox
-    /// (desktop/DEV_MD/SANDBOX/COMMON.md). Approval means the single re-run happens
+    /// (docs/internals/desktop/SANDBOX/COMMON.md). Approval means the single re-run happens
     /// unsandboxed — "this exact command, once".
     pub fn request_escalation(
         &self,

@@ -6,6 +6,7 @@ import {
   CircleAlert,
   Folder,
   ListChecks,
+  Minus,
   MoreHorizontal,
   Pin,
   Plus,
@@ -39,6 +40,24 @@ import { useSessionListScroll } from "./useSessionListScroll";
 // Keep navigation state when the screen unmounts to open a conversation.
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
+
+// Column geometry, mirroring the desktop rail (see docs/internals/desktop/PRODUCT.md §5.2):
+// every row is [toggle column 16][gap 4][title], and a child row's start is its
+// parent's title column — so a parent title and its children's titles line up.
+// Leaves carry no toggle column and start at the list inset.
+const ROW_INSET = 8;
+const TOGGLE_WIDTH = 16;
+const TOGGLE_GAP = 4;
+const LEVEL_INDENT = TOGGLE_WIDTH + TOGGLE_GAP;
+// Restores the 44x44 touch target around the 16px toggle without letting it
+// reach the title column: 16 back into the list gutter + 4 to its right.
+const TOGGLE_SLOP_LEFT = layout.touchTarget - TOGGLE_WIDTH - TOGGLE_GAP;
+const TOGGLE_SLOP_RIGHT = TOGGLE_GAP;
+
+/** Row start for a session at `depth` (deeper history flattens to three levels). */
+function depthInset(depth: number): number {
+  return ROW_INSET + Math.min(depth, 3) * LEVEL_INDENT;
+}
 
 export function SessionList({
   tab,
@@ -235,7 +254,7 @@ export function SessionList({
             ) : (
               <ChevronDown size={16} color={colors.inkSoft} />
             )}
-            <Folder size={17} color={colors.accent} />
+            <Folder size={16} color={colors.accent} />
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
@@ -260,7 +279,7 @@ export function SessionList({
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
     return (
-      <View style={[styles.row, { marginLeft: Math.min(item.depth, 3) * 12 }, pressedSessionId === session.sessionId && styles.rowPressed]}>
+      <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
         {selecting ? (
           <Pressable
             accessibilityRole="checkbox"
@@ -285,19 +304,24 @@ export function SessionList({
             )}
             accessibilityState={{ expanded: expanded.has(session.sessionId) }}
             onPress={() => toggleFold(session.sessionId, false)}
-            style={styles.iconButton}
+            // The toggle is laid out 16px wide (TOGGLE_WIDTH) so a child's row
+            // start lands on its parent's title column, exactly as on desktop.
+            // hitSlop then restores the 44x44 touch target: 16 into the list's
+            // own gutter on the left, 4 on the right — which stops exactly at
+            // the title column, so it never swallows title taps.
+            hitSlop={{ left: TOGGLE_SLOP_LEFT, right: TOGGLE_SLOP_RIGHT }}
+            style={styles.expander}
           >
+            {/* A +/− tree toggle, never the chevron the workspace headers fold
+                with: on a phone both controls share the 8–24 column, so the
+                glyph is what tells them apart. */}
             {expanded.has(session.sessionId) ? (
-              <ChevronDown size={16} color={colors.inkSoft} />
+              <Minus size={16} color={colors.inkSoft} />
             ) : (
-              <ChevronRight size={16} color={colors.inkSoft} />
+              <Plus size={16} color={colors.inkSoft} />
             )}
           </Pressable>
-        ) : (
-          // Only descendants reserve a tree gutter; unrelated roots keep their
-          // compact inset even when another session gains or expands children.
-          <View testID="session-expander-space" style={{ width: item.depth > 0 ? 44 : selecting ? 0 : 12 }} />
-        )}
+        ) : null}
         <Pressable
           accessibilityRole="button"
           disabled={!remote.desktopOnline || deleting}
@@ -640,7 +664,10 @@ const styles = StyleSheet.create({
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
+    // 4px (not 8): with the 16px folder icon this puts the workspace name on the
+    // same column as the group's first-level titles, the way the desktop rail's
+    // group header does.
+    gap: TOGGLE_GAP,
     paddingLeft: spacing.sm,
     borderRadius: radius.md,
   },
@@ -649,6 +676,15 @@ const styles = StyleSheet.create({
   row: { minHeight: layout.touchTarget, marginBottom: spacing.xs, flexDirection: "row", alignItems: "center", borderRadius: radius.md },
   rowPressed: { backgroundColor: colors.surfaceSubtle },
   iconButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  // 16px wide (not 44) so the title column matches the desktop rail; the 44x44
+  // touch target comes from the Pressable's hitSlop instead.
+  expander: {
+    width: TOGGLE_WIDTH,
+    minHeight: layout.touchTarget,
+    marginRight: TOGGLE_GAP,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   sessionBody: {
     flex: 1,
     minWidth: 0,

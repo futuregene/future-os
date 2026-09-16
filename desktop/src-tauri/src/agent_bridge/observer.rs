@@ -281,10 +281,12 @@ pub fn seed_observers_from_store() {
     }
 }
 
-/// Low-frequency reconciliation for conversations created outside the GUI.
-/// The `session_created` stream is the realtime path and also reconciles once
-/// after every attach/reconnect. This 60-second pass is only the final backstop
-/// for an Agent too old to emit notifications or an unusually long outage.
+/// Low-frequency reconciliation for conversations created or removed outside
+/// the GUI. The `session_created` / `session_deleted` stream is the realtime
+/// path and also reconciles once after every attach/reconnect. This 60-second
+/// pass is only the final backstop for an Agent too old to emit notifications,
+/// an unusually long outage, or an announcement dropped while the GUI was
+/// suspended.
 #[cfg(test)]
 static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -298,6 +300,19 @@ pub fn spawn_session_discovery() {
                 return;
             }
             super::import::import_missing_sessions().await;
+            // Sessions deleted elsewhere leave a thread row whose Agent side is
+            // gone; the same pass that discovers new sessions reconciles those
+            // away. It is a no-op when the Agent is unreachable.
+            match crate::store::reconcile_orphan_sessions().await {
+                Ok(0) => {}
+                Ok(removed) => {
+                    eprintln!(
+                        "FutureOS: removed {removed} conversation(s) deleted outside the GUI"
+                    );
+                    crate::emit_threads_updated();
+                }
+                Err(error) => eprintln!("FutureOS: orphan-session reconcile failed: {error}"),
+            }
         }
     });
 }
@@ -327,6 +342,27 @@ pub(super) async fn reconcile_discovered_session(
         crate::emit_threads_updated();
     }
     Ok(created)
+}
+
+/// Reconcile one Agent session that no longer exists into Desktop: purge its
+/// conversation projection, stop observing it, and invalidate the sidebar.
+///
+/// Children are left alone — each child is a projection of its own Agent
+/// session and keeps working; the sidebar re-roots it (see `buildThreadTree`).
+/// The deletion also tombstones the session, so a late `session_created`
+/// announcement or discovery pass can never resurrect it.
+pub(super) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
+    let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
+        return Ok(false);
+    };
+    // Bound terminal lifetime by conversation lifetime, exactly like the GUI's
+    // own delete path. The embedded terminal panel is GUI-only (the server
+    // build has no shells to close).
+    #[cfg(feature = "gui")]
+    crate::commands::close_thread_terminals(&thread.id);
+    drop_observer(session_id);
+    crate::store::delete_thread(&thread.id)?;
+    Ok(true)
 }
 
 fn ensure_discovered_session_observer(session_id: &str) -> Result<(), String> {
@@ -2266,13 +2302,28 @@ mod tests {
     }
 
     /// The low-frequency reconciliation loop ticks, then stops on the test
-    /// seam; the production interval is 60 seconds.
+    /// seam; the production interval is 60 seconds. Each tick imports new
+    /// sessions AND drops conversations whose Agent session was deleted
+    /// outside the GUI (the backstop for a missed `session_deleted`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn discovery_loop_ticks_and_stops() {
-        let _home = TestHome::new("observer-discovery-loop");
+        let home = TestHome::new("observer-discovery-loop");
         let mock = mock_agent();
+        // The orphan heuristic only reclaims threads that produced base data.
+        let workspace = crate::agent_bridge::test_support::seed_workspace(home.path(), "ws");
+        let doomed =
+            crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess-deleted"));
+        let run = crate::agent_bridge::test_support::seed_run(&doomed.id);
+        crate::store::update_run_status_if_active(crate::store::UpdateRunStatusInput {
+            run_id: run.id,
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("complete the run");
         for _ in 0..8 {
             mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+            mock.push_data("list_session_ids", serde_json::json!({"ids": []}));
         }
         std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
         spawn_session_discovery();
@@ -2281,6 +2332,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
         assert_eq!(discovery_interval(), Duration::from_secs(60));
+        assert!(
+            crate::store::get_thread(&doomed.id).expect("get").is_none(),
+            "a session the Agent no longer lists is reconciled away"
+        );
         let _ = mock;
     }
 

@@ -1,4 +1,4 @@
-//! Path normalization for sandbox boundary decisions (desktop/DEV_MD/SANDBOX/COMMON.md).
+//! Path normalization for sandbox boundary decisions (docs/internals/desktop/SANDBOX/COMMON.md).
 //!
 //! The application-layer boundary checks (write/edit tools, approval shapes)
 //! and the OS sandbox (Seatbelt/bwrap) must agree on what a path *really* is.

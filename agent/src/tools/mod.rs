@@ -2156,7 +2156,7 @@ mod tests {
     #[tokio::test]
     async fn active_policy_scope_allows_temp_dir_writes() {
         // With an active sandbox policy (GUI opt-in), temp dirs are writable
-        // roots (desktop/DEV_MD/SANDBOX/COMMON.md).
+        // roots (docs/internals/desktop/SANDBOX/COMMON.md).
         let workspace = test_path("ws-tmp");
         std::fs::create_dir_all(&workspace).unwrap();
         let tmp_target = test_path("tmp-write.txt");

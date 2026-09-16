@@ -63,7 +63,8 @@ Edit `~/.future/channels/config.json`:
     "enabled": true,
     "client_id": "dingxxxxxxxxxxxx",
     "client_secret": "your-client-secret",
-    "domain": "api.dingtalk.com"
+    "domain": "api.dingtalk.com",
+    "sender_allowlist": ["user-id-1"]
   }
 }
 ```
@@ -79,6 +80,11 @@ Edit `~/.future/channels/config.json`:
 | `dingtalk.client_id` | Client ID (AppKey) from the DingTalk Developer Console |
 | `dingtalk.client_secret` | Client Secret (AppSecret) from the DingTalk Developer Console |
 | `dingtalk.domain` | API domain (default: `api.dingtalk.com`) |
+| `dingtalk.sender_allowlist` | Authorized sender IDs in both DMs and groups. Empty denies **every** sender (including `/help`); `["*"]` trusts everyone who can reach the bot |
+
+> **Upgrade note:** previously configured DingTalk bridges must populate
+> `sender_allowlist` before receiving prompts — group membership alone does
+> not authorize access to the agent.
 
 ---
 

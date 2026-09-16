@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { ChevronDown, ChevronRight, CircleAlert, MoreHorizontal } from "lucide-react";
+import { CircleAlert, Minus, MoreHorizontal, Plus } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
@@ -108,10 +108,11 @@ function ThreadListItemImpl({
         compact ? "h-7" : "h-8",
         active && "bg-surface-subtle text-ink",
       )}
-      // Non-workspace rows (chat + pinned) get a gutter of their own: their
-      // titles carry no leading chevron, so the row padding is the only thing
-      // separating the text from the highlight's left edge — 8px read as flush.
-      style={{ paddingLeft: (compact ? 28 : 16) + depth * 16 }}
+      // Row start = the title column of a leaf (chat/pinned 16, workspace 28,
+      // unchanged); each level adds 16px of toggle + 4px of gap, so a child's
+      // row start lands exactly on its parent's title column — descendant
+      // titles line up with the parent title, level after level.
+      style={{ paddingLeft: (compact ? 28 : 16) + depth * 20 }}
       // Right-click anywhere on the row opens the same actions menu as the
       // `...` button.
       onContextMenu={(event) => {
@@ -135,23 +136,23 @@ function ThreadListItemImpl({
             <button
               aria-expanded={expanded}
               aria-label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
-              className={cn(
-                "z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft",
-                compact ? "absolute top-1/2 -translate-y-1/2" : "relative",
-              )}
-              // Workspace rows already have a gutter; reuse it rather than
-              // consuming another column of title space.
-              style={compact ? { left: 8 + depth * 16 } : undefined}
+              // Always inline in the row's own content flow — same placement as
+              // chat/pinned rows. Absolutely placing it in the row's left gutter
+              // (as workspace rows did) pinned it to the exact column of the
+              // workspace group's own collapse chevron, so a conversation with
+              // sub-conversations read as a second "collapse workspace" toggle.
+              className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
               onClick={() => onToggleExpanded?.(thread)}
               type="button"
             >
-              {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              {/* A +/− tree-node toggle, never the chevron the workspace and
+                  section headers fold with: the same glyph one row apart read
+                  as the same control (see PRODUCT.md §5.2). Both states also
+                  stay inside the existing thin-stroke icon language. */}
+              {expanded ? <Minus className="size-3.5 shrink-0" /> : <Plus className="size-3.5 shrink-0" />}
             </button>
           )
-        : !compact && depth > 0
-            // Align descendants within a tree, but don't indent unrelated roots.
-            ? <span className="pointer-events-none size-4 shrink-0" />
-            : null}
+        : null}
       <span
         className={cn(
           "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",

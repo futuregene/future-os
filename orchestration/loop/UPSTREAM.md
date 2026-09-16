@@ -1,13 +1,13 @@
 # Upstream: LoopX
 
-`future-loop` (this directory) contains code translated, ported, and
-structurally adapted from **LoopX**, a control plane for long-running AI
-agent work.
+The `future-loop` crate (in `orchestration/loop/`) contains code translated,
+ported, and structurally adapted from **LoopX**, a control plane for
+long-running AI agent work.
 
 - **Upstream repository:** <https://github.com/huangruiteng/loopx>
 - **Upstream author:** Ruiteng Huang and LoopX contributors
 - **Upstream license:** Apache License, Version 2.0 (see [`LICENSE`](LICENSE)
-  in this directory). LoopX releases through v0.4.7 were distributed under
+  in `orchestration/loop/`). LoopX releases through v0.4.7 were distributed under
   the MIT License; v0.4.8 is the first Apache-2.0 release (see [`NOTICE`](NOTICE)).
 
 ## Base version

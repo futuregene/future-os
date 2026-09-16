@@ -1658,10 +1658,10 @@ pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(),
         .unwrap_or(cwd)
         .to_string();
 
-    let existing = crate::store::list_workspaces()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|w| w.path == cwd);
+    // Identity is the canonical directory, not the spelling the agent
+    // reported: `/tmp/x` and `/private/tmp/x` are one workspace.
+    let existing =
+        crate::store::find_user_workspace_by_path(std::path::Path::new(cwd)).unwrap_or(None);
 
     let workspace_id = if let Some(ws) = existing {
         ws.id
@@ -4005,7 +4005,13 @@ mod pipeline_tests {
         let created = crate::store::get_workspace(&moved.workspace_id)
             .expect("ws")
             .expect("exists");
-        assert_eq!(created.path, new_dir.display().to_string());
+        // Stored canonicalized, so the agent's spelling and every other
+        // client's map to this one workspace (the temp HOME sits behind
+        // macOS's `/var` → `/private/var` symlink).
+        assert_eq!(
+            created.path,
+            new_dir.canonicalize().expect("canon").display().to_string()
+        );
         assert_eq!(created.name, "brand-new");
     }
 }

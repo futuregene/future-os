@@ -26,7 +26,7 @@ starting the desktop UI. When needed, it prints a browser login QR followed by a
 pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
 are reused. Ctrl+C closes the entry and exits; the process does not daemonize.
 
-See the [Headless Desktop guide](../../desktop-headless.md) for complete startup
+See the [Headless Desktop guide](../../guide/desktop-headless.md) for complete startup
 steps, options, GUI-free server builds, Agent lifetime and troubleshooting.
 
 ## What you can do
@@ -77,4 +77,4 @@ data processing. Only pair devices and use relay deployments you trust.
 
 See [[Installation]], [[Using FutureOS|Using-FutureOS]] and [[Sandbox]]. Mobile
 source-build and TestFlight maintainer instructions live in the repository's
-`mobile/README.md`.
+`docs/internals/mobile/README.md`.

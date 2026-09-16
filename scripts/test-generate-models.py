@@ -16,7 +16,7 @@ spec.loader.exec_module(generator)
 class CatalogTests(unittest.TestCase):
     def test_inspected_source_samples_match_the_actual_shipped_catalog(self):
         root = Path(__file__).resolve().parents[1]
-        evidence = json.loads((root / "docs/bughunt/model-output-provenance-20260911.json").read_text())
+        evidence = json.loads((root / "docs/archives/bughunt/model-output-provenance-20260911.json").read_text())
         catalog = json.loads((root / "agent/src/models/builtin/models.json").read_text())
         by_key = {(model["provider"], model["id"]): model for model in catalog}
         for sample in evidence["samples"]:

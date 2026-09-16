@@ -287,7 +287,7 @@ fn signal_group(pgid: i32, signal: i32) {
 /// Linux reads `/proc`; other unix builds fall back to a `ps` scan for the
 /// session column, and to a parent-chain walk when even that is unavailable.
 /// macOS/Windows teardown is explicitly unverified — see
-/// `desktop/DEV_MD/embedded-terminal.md` §Platforms.
+/// `docs/internals/desktop/embedded-terminal.md` §Platforms.
 #[cfg(unix)]
 pub fn session_members(sid: i32) -> Vec<i32> {
     #[cfg(target_os = "linux")]

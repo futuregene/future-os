@@ -3,7 +3,7 @@
 //! contract lives in `agent_bridge::headless` (shared with any future headless
 //! caller, so it can't drift from the frontend semantics).
 //!
-//! Design: see `desktop/DEV_MD/CONNECTION.md`. The embedded bridge connects
+//! Design: see `docs/internals/desktop/CONNECTION.md`. The embedded bridge connects
 //! with a short-lived, pair-scoped NATS user JWT, mirrors agent events, routes
 //! Web/App commands through the GUI persistence path, publishes presence, and
 //! refreshes credentials before expiry.

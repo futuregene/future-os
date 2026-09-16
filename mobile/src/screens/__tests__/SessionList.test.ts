@@ -54,6 +54,7 @@ jest.mock("lucide-react-native", () =>
       "CircleAlert",
       "Folder",
       "ListChecks",
+      "Minus",
       "MoreHorizontal",
       "Pin",
       "Plus",
@@ -85,6 +86,17 @@ const button = (label: string) =>
 const sessionBody = (title: string) => tree.root.findAll(node =>
   node.props.accessibilityRole === "button" && typeof node.props.onLongPress === "function",
 ).find(node => node.findAllByType(Text).some(text => text.props.children === title))!;
+
+// Mirrors of SessionList's column geometry (see PRODUCT.md §5.2): a row is
+// [toggle 16][gap 4][title]; hitSlop pads the toggle back to 44x44 without
+// reaching the title column.
+const ROW_INSET = 8;
+const TOGGLE_WIDTH = 16;
+const TOGGLE_GAP = 4;
+const TOGGLE_SLOP_LEFT = 44 - TOGGLE_WIDTH - TOGGLE_GAP;
+const TOGGLE_SLOP_RIGHT = TOGGLE_GAP;
+const rowInset = (title: string) =>
+  StyleSheet.flatten(sessionBody(title).parent!.props.style).paddingLeft;
 beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
@@ -284,27 +296,104 @@ function confirmAlert(): void {
   act(() => modal.props.onDismiss());
 }
 
+test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
+  // A 44px touch target keeps the row toggle and the workspace header's fold
+  // control in the same column, so the glyph is the only thing separating them.
+  const originalSessions = mockRemote.sessions;
+  const originalWorkspaces = mockRemote.workspaces;
+  const iconsIn = (node: ReactTestRenderer["root"], name: string) =>
+    node.findAll(candidate => candidate.type === name);
+  try {
+    mockRemote.workspaces = [{ id: "glyph-workspace", name: "Glyph project", path: "/tmp/glyph" }];
+    const common = { mode: tab, workspaceId: "glyph-workspace", streaming: false };
+    mockRemote.sessions = [
+      { ...common, sessionId: "glyph-parent", threadId: "glyph-thread", title: "Glyph parent" },
+      { ...common, sessionId: "glyph-child", threadId: "glyph-thread-child", title: "Glyph child", parentSessionId: "glyph-parent" },
+    ];
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+
+    const parentRow = sessionBody("Glyph parent").parent!;
+    expect(iconsIn(parentRow, "Plus")).toHaveLength(1);
+    expect(iconsIn(parentRow, "ChevronRight")).toHaveLength(0);
+    // The workspace header keeps its chevron; only rows fold with +/−.
+    const headerChevrons = iconsIn(tree.root, "ChevronDown")
+      .filter(node => !iconsIn(parentRow, "ChevronDown").includes(node));
+    if (tab === "workspace") expect(headerChevrons).toHaveLength(1);
+
+    act(() => button("sessions.expandChildren").props.onPress());
+    expect(iconsIn(parentRow, "Minus")).toHaveLength(1);
+    expect(iconsIn(parentRow, "ChevronDown")).toHaveLength(0);
+    act(() => button("sessions.collapseChildren").props.onPress());
+  }
+  finally {
+    mockRemote.sessions = originalSessions;
+    mockRemote.workspaces = originalWorkspaces;
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+  }
+});
+
 test("a child in one workspace does not enlarge other workspace session gutters", () => {
   renderWorkspaceTab();
   mockRemote.workspaces = [...mockRemote.workspaces, { id: "w2", name: "Other", path: "/tmp/other" }];
   mockRemote.sessions = [...mockRemote.sessions, { sessionId: "w2a", threadId: "t2a", title: "Independent", mode: "workspace", workspaceId: "w2", streaming: false }];
   act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
-  const row = sessionBody("Independent").parent!;
-  const gutter = row.findByProps({ testID: "session-expander-space" });
-  expect(StyleSheet.flatten(gutter.props.style).width).toBe(12);
+  expect(rowInset("Independent")).toBe(ROW_INSET);
   act(() => button("sessions.expandChildren").props.onPress());
-  expect(StyleSheet.flatten(sessionBody("Independent").parent!.findByProps({ testID: "session-expander-space" }).props.style).width).toBe(12);
+  expect(rowInset("Independent")).toBe(ROW_INSET);
   act(() => button("sessions.collapseChildren").props.onPress());
+});
+
+test.each(["workspace", "chat"] as const)("a parent's title column is its rows' start for children (%s tab)", tab => {
+  // The desktop rule, mirrored: a row is [toggle 16][gap 4][title], so a child
+  // row starts exactly on its parent's title column and the two titles line up.
+  const originalSessions = mockRemote.sessions;
+  const originalWorkspaces = mockRemote.workspaces;
+  try {
+    mockRemote.workspaces = [{ id: "align-workspace", name: "Align project", path: "/tmp/align" }];
+    const common = { mode: tab, workspaceId: "align-workspace", streaming: false };
+    mockRemote.sessions = [
+      { ...common, sessionId: "align-parent", threadId: "align-thread", title: "Align parent" },
+      { ...common, sessionId: "align-child", threadId: "align-thread-child", title: "Align child", parentSessionId: "align-parent" },
+    ];
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+    act(() => button("sessions.expandChildren").props.onPress());
+
+    const parentInset = rowInset("Align parent");
+    const childInset = rowInset("Align child");
+    expect(parentInset).toBe(ROW_INSET);
+    expect(childInset - parentInset).toBe(TOGGLE_WIDTH + TOGGLE_GAP);
+    // Leaf rows carry no toggle column of their own.
+    expect(StyleSheet.flatten(sessionBody("Align parent").parent!.props.style).paddingLeft).toBe(parentInset);
+
+    // The toggle stays 16px wide for layout, and hitSlop restores 44x44 without
+    // reaching into the title column.
+    const toggle = button("sessions.collapseChildren");
+    expect(StyleSheet.flatten(toggle.props.style)).toMatchObject({ width: TOGGLE_WIDTH, marginRight: TOGGLE_GAP });
+    expect(toggle.props.hitSlop).toEqual({ left: TOGGLE_SLOP_LEFT, right: TOGGLE_SLOP_RIGHT });
+    expect(TOGGLE_WIDTH + TOGGLE_SLOP_LEFT + TOGGLE_SLOP_RIGHT).toBe(44);
+    expect(TOGGLE_WIDTH + TOGGLE_GAP + TOGGLE_SLOP_RIGHT).toBe(TOGGLE_WIDTH + TOGGLE_GAP + 4);
+    act(() => button("sessions.collapseChildren").props.onPress());
+  }
+  finally {
+    mockRemote.sessions = originalSessions;
+    mockRemote.workspaces = originalWorkspaces;
+    act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
+  }
+});
+
+test("the workspace header's name sits on its rows' title column", () => {
+  renderWorkspaceTab();
+  const headerBody = tree.root.findAllByType(Text)
+    .find(node => node.props.children === "Project")!
+    .parent!;
+  // 16px folder icon + 4px gap, matching the row toggle column.
+  expect(StyleSheet.flatten(headerBody.props.style)).toMatchObject({ gap: TOGGLE_GAP });
 });
 
 test.each(["workspace", "chat"] as const)("independent %s sessions keep their gutter when a neighboring tree changes", tab => {
   const originalSessions = mockRemote.sessions;
   const originalWorkspaces = mockRemote.workspaces;
   const update = () => act(() => tree.update(createElement(SessionList, { tab, empty: null, onMenu, onTabChange })));
-  const gutterWidth = (title: string) => StyleSheet.flatten(
-    sessionBody(title).parent!.findByProps({ testID: "session-expander-space" }).props.style,
-  ).width;
-  const rowIndent = (title: string) => StyleSheet.flatten(sessionBody(title).parent!.props.style).marginLeft;
   try {
     mockRemote.workspaces = [{ id: "gutter-workspace", name: "Gutter project", path: "/tmp/gutter" }];
     const common = { mode: tab, workspaceId: "gutter-workspace", streaming: false };
@@ -314,44 +403,38 @@ test.each(["workspace", "chat"] as const)("independent %s sessions keep their gu
     ];
     mockRemote.sessions = roots;
     update();
-    expect(gutterWidth("Independent root")).toBe(12);
-    expect(rowIndent("Independent root")).toBe(0);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
+    expect(rowInset("Neighboring parent")).toBe(ROW_INSET);
 
     mockRemote.sessions = [...roots, {
       ...common, sessionId: "gutter-child", threadId: "gutter-thread-child", title: "Nested child", parentSessionId: "gutter-parent",
     }];
     update();
-    expect(gutterWidth("Independent root")).toBe(12);
-    expect(rowIndent("Independent root")).toBe(0);
-    expect(StyleSheet.flatten(button("sessions.expandChildren").props.style)).toMatchObject({ width: 44, minHeight: 44 });
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
+    expect(StyleSheet.flatten(button("sessions.expandChildren").props.style)).toMatchObject({ width: TOGGLE_WIDTH, marginRight: TOGGLE_GAP });
 
     act(() => button("sessions.expandChildren").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(12);
-    expect(rowIndent("Independent root")).toBe(0);
-    expect(gutterWidth("Nested child")).toBe(44);
-    expect(rowIndent("Nested child")).toBe(12);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
+    expect(rowInset("Nested child")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
     act(() => button("sessions.collapseChildren").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
 
     act(() => button("sessions.search").props.onPress());
     act(() => tree.root.findByType(TextInput).props.onChangeText("Independent"));
-    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
     act(() => button("chat.cancel").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(12);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
 
+    // Selection mode prepends the 44px checkbox and shifts every row by it —
+    // the toggle keeps its own width, so parent/child stay in step.
     act(() => button("sessions.select").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(0);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
     act(() => button("sessions.expandChildren").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(0);
-    expect(gutterWidth("Nested child")).toBe(44);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
+    expect(rowInset("Nested child")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
     act(() => button("sessions.collapseChildren").props.onPress());
     act(() => button("chat.cancel").props.onPress());
-    expect(gutterWidth("Independent root")).toBe(12);
-
-    mockRemote.sessions = roots;
-    update();
-    expect(gutterWidth("Independent root")).toBe(12);
-    expect(gutterWidth("Neighboring parent")).toBe(12);
+    expect(rowInset("Independent root")).toBe(ROW_INSET);
   } finally {
     mockRemote.sessions = originalSessions;
     mockRemote.workspaces = originalWorkspaces;

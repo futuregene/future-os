@@ -308,8 +308,11 @@ async fn execute_unary(
 /// system prompt, tools, disable_tools, ephemeral, disable_builtin_tools,
 /// append system prompt).
 async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Result<(), String> {
-    let cfg = |id: &str, mut cmd: RpcCommand| {
+    // The command name is part of the payload, not implied by the call site:
+    // the Agent dispatches on `type` and rejects an unnamed command.
+    let cfg = |id: &str, cmd_type: &str, mut cmd: RpcCommand| {
         cmd.id = id.to_string();
+        cmd.r#type = cmd_type.to_string();
         cmd.session_id = session_id.to_string();
         cmd
     };
@@ -317,6 +320,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
     if let Some(model) = &args.model {
         let cmd = cfg(
             "cfg1",
+            "set_model",
             RpcCommand {
                 model_id: model.clone(),
                 ..Default::default()
@@ -334,6 +338,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
     if let Some(thinking) = &args.thinking {
         let cmd = cfg(
             "cfg2",
+            "set_thinking_level",
             RpcCommand {
                 level: thinking.clone(),
                 ..Default::default()
@@ -351,6 +356,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
     if let Some(sp) = &args.system_prompt {
         let cmd = cfg(
             "cfg3",
+            "set_system_prompt",
             RpcCommand {
                 system_prompt: sp.clone(),
                 ..Default::default()
@@ -369,6 +375,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
         if !tools.is_empty() {
             let cmd = cfg(
                 "cfg4",
+                "set_tools",
                 RpcCommand {
                     tools: tools.clone(),
                     ..Default::default()
@@ -385,7 +392,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
         }
     }
     if args.no_tools {
-        let cmd = cfg("cfg5", RpcCommand::default());
+        let cmd = cfg("cfg5", "disable_tools", RpcCommand::default());
         let resp = execute_unary(addr, cmd, GRPC_DEADLINE_SEC).await?;
         if !resp.success {
             return Err(if resp.error.is_empty() {
@@ -398,6 +405,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
     if args.no_session {
         let cmd = cfg(
             "cfg6",
+            "set_ephemeral",
             RpcCommand {
                 ephemeral: true,
                 ..Default::default()
@@ -413,7 +421,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
         }
     }
     if args.no_builtin_tools {
-        let cmd = cfg("cfg7", RpcCommand::default());
+        let cmd = cfg("cfg7", "disable_builtin_tools", RpcCommand::default());
         let resp = execute_unary(addr, cmd, GRPC_DEADLINE_SEC).await?;
         if !resp.success {
             return Err(if resp.error.is_empty() {
@@ -428,6 +436,7 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
             let prompt = append.join("\n");
             let cmd = cfg(
                 "cfg8",
+                "append_system_prompt",
                 RpcCommand {
                     system_prompt: prompt,
                     ..Default::default()
@@ -456,33 +465,150 @@ async fn dial_channel(addr: &str) -> Result<tonic::transport::Channel, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Resolve the session one non-interactive run talks to.
+///
+/// A print-mode process is a brand-new client, not an attach to some
+/// process-wide "current" session: the Agent keeps no default session
+/// (sessions are equal peers), so `get_state` with an empty id is rejected.
+/// Mirror the interactive startup path instead — an explicit `--session` is
+/// validated and adopted, `--continue`/`--fork` resolve the most recently
+/// updated session, and anything else mints a fresh session (tagged
+/// `createdBy: "tui"`, so other clients discover it).
+async fn resolve_print_session(grpc_addr: &str, args: &CliArgs) -> Result<String, String> {
+    if args.resume {
+        return Err(
+            "--resume opens a session picker and needs an interactive terminal; use --continue or --session"
+                .to_string(),
+        );
+    }
+    if let Some(entry_id) = &args.fork {
+        let parent = match &args.session {
+            Some(session) => session.clone(),
+            None => most_recent_session_id(grpc_addr).await?,
+        };
+        return fork_print_session(grpc_addr, &parent, entry_id).await;
+    }
+    if let Some(session) = &args.session {
+        // Validate now: `switch_session` is the one command that reports a
+        // missing session without touching the model or the journal.
+        let cmd = switch_session_command(session);
+        let resp = execute_unary(grpc_addr, cmd, GRPC_DEADLINE_SEC).await?;
+        require_success(&resp, "switch_session")?;
+        return Ok(session.clone());
+    }
+    if args.r#continue {
+        return most_recent_session_id(grpc_addr).await;
+    }
+    new_print_session(grpc_addr).await
+}
+
+/// Mint a session for this run, exactly like the interactive client does at
+/// startup (its cwd defaults to the process working directory).
+async fn new_print_session(grpc_addr: &str) -> Result<String, String> {
+    let cmd = RpcCommand {
+        id: now_id(),
+        r#type: "new_session".to_string(),
+        cwd: std::env::current_dir()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default(),
+        created_by: "tui".to_string(),
+        ..Default::default()
+    };
+    let resp = execute_unary(grpc_addr, cmd, GRPC_DEADLINE_SEC).await?;
+    require_success(&resp, "new_session")?;
+    future_rpc::decode::response_data(&resp)
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Agent returned no session for the new conversation".to_string())
+}
+
+/// Fork `entry_id` out of `parent`, the same three fields the CLI sends.
+async fn fork_print_session(
+    grpc_addr: &str,
+    parent: &str,
+    entry_id: &str,
+) -> Result<String, String> {
+    let cmd = RpcCommand {
+        id: now_id(),
+        r#type: "fork".to_string(),
+        session_id: parent.to_string(),
+        parent_session: parent.to_string(),
+        entry_id: entry_id.to_string(),
+        created_by: "tui".to_string(),
+        ..Default::default()
+    };
+    let resp = execute_unary(grpc_addr, cmd, GRPC_DEADLINE_SEC).await?;
+    require_success(&resp, "fork")?;
+    future_rpc::decode::response_data(&resp)
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Fork returned no session".to_string())
+}
+
+/// Most recently updated session, by the canonical `updatedAtMs` the Agent
+/// already sorts by — the client must not re-derive it from a stale shape.
+async fn most_recent_session_id(grpc_addr: &str) -> Result<String, String> {
+    let cmd = RpcCommand {
+        id: now_id(),
+        r#type: "list_sessions".to_string(),
+        ..Default::default()
+    };
+    let resp = execute_unary(grpc_addr, cmd, GRPC_DEADLINE_SEC).await?;
+    require_success(&resp, "list_sessions")?;
+    let data = future_rpc::decode::response_data(&resp);
+    let sessions = data
+        .get("sessions")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut rows = sessions
+        .iter()
+        .filter_map(|session| {
+            let id = session.get("id")?.as_str()?.to_string();
+            let updated_at = session
+                .get("updatedAtMs")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            Some((updated_at, id))
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(updated_at, _)| std::cmp::Reverse(*updated_at));
+    rows.into_iter().next().map(|(_, id)| id).ok_or_else(|| {
+        "No previous session to continue; run without --continue to start a new one.".to_string()
+    })
+}
+
+fn switch_session_command(session_id: &str) -> RpcCommand {
+    RpcCommand {
+        id: now_id(),
+        r#type: "switch_session".to_string(),
+        session_id: session_id.to_string(),
+        ..Default::default()
+    }
+}
+
+/// Unary outcome → `Err`, using the Agent's own message when it supplied one.
+fn require_success(resp: &RpcResponse, command: &str) -> Result<(), String> {
+    if resp.success {
+        return Ok(());
+    }
+    Err(if resp.error.is_empty() {
+        format!("{command} failed")
+    } else {
+        resp.error.clone()
+    })
+}
+
 /// `runPrintMode` — connect, apply CLI options, stream events, prompt, output.
 async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
     let prompt = build_initial_prompt(&args.file_args, &args.messages)
         .ok_or_else(|| "No prompt provided".to_string())?;
 
-    // Get initial state to get the session ID.
-    let state_cmd = RpcCommand {
-        id: now_id(),
-        r#type: "get_state".to_string(),
-        session_id: String::new(),
-        ..Default::default()
-    };
-    let resp = execute_unary(grpc_addr, state_cmd, GRPC_DEADLINE_SEC).await?;
-    if !resp.success {
-        let err = if resp.error.is_empty() {
-            "get_state failed".to_string()
-        } else {
-            resp.error.clone()
-        };
-        return Err(err);
-    }
-    let state: serde_json::Value = serde_json::from_str(&resp.data).map_err(|e| e.to_string())?;
-    let session_id = state
-        .get("sessionId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let session_id = resolve_print_session(grpc_addr, args).await?;
     let is_json_mode = args.mode.as_deref() == Some("json");
 
     // Apply CLI options.
@@ -1278,7 +1404,7 @@ mod tests {
     use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
     use futures_util::stream;
     use futures_util::StreamExt as _;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::net::TcpListener;
     use std::pin::Pin;
     use tonic::transport::Server;
@@ -1289,6 +1415,9 @@ mod tests {
     struct MockAgent {
         state_data: String,
         models_data: String,
+        /// Canned `data` for every other command type
+        /// (new_session / switch_session / list_sessions / fork).
+        command_data: HashMap<String, String>,
         events: Vec<future_rpc::proto::StreamEvent>,
         fail_types: HashSet<String>,
         /// Keep the event stream open (idle) after the canned events instead
@@ -1331,7 +1460,11 @@ mod tests {
             let data = match cmd.r#type.as_str() {
                 "get_state" => self.state_data.clone(),
                 "get_available_models" => self.models_data.clone(),
-                _ => "{}".to_string(),
+                other => self
+                    .command_data
+                    .get(other)
+                    .cloned()
+                    .unwrap_or_else(|| "{}".to_string()),
             };
             let success = !self.fail_types.contains(&cmd.r#type)
                 && !self.fail_silent_types.contains(&cmd.r#type);
@@ -1447,7 +1580,12 @@ mod tests {
 
     #[tokio::test]
     async fn apply_cli_options_sends_all_blocks() {
-        let addr = spawn_mock(MockAgent::default()).await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_mock(MockAgent {
+            seen_commands: seen.clone(),
+            ..Default::default()
+        })
+        .await;
         let a = args(&[
             "--model",
             "sonnet",
@@ -1464,6 +1602,21 @@ mod tests {
             "extra",
         ]);
         apply_cli_options(&addr, "s1", &a).await.unwrap();
+        // Every block must name its command: an unnamed one reaches the Agent
+        // as `unknown command` and the whole print run fails.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "set_model",
+                "set_thinking_level",
+                "set_system_prompt",
+                "set_tools",
+                "disable_tools",
+                "set_ephemeral",
+                "disable_builtin_tools",
+                "append_system_prompt",
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1471,12 +1624,12 @@ mod tests {
         // Each cfg block has its own !success arm; walk all of them with
         // both the "boom" and the empty-error (→ "unknown error") mocks.
         let loud = spawn_mock(MockAgent {
-            fail_types: HashSet::from([String::new()]),
+            fail_types: option_command_types(),
             ..Default::default()
         })
         .await;
         let silent = spawn_mock(MockAgent {
-            fail_silent_types: HashSet::from([String::new()]),
+            fail_silent_types: option_command_types(),
             ..Default::default()
         })
         .await;
@@ -1507,11 +1660,28 @@ mod tests {
         apply_cli_options(&loud, "s1", &a).await.unwrap();
     }
 
+    /// The eight commands `apply_cli_options` can send.
+    fn option_command_types() -> HashSet<String> {
+        [
+            "set_model",
+            "set_thinking_level",
+            "set_system_prompt",
+            "set_tools",
+            "disable_tools",
+            "set_ephemeral",
+            "disable_builtin_tools",
+            "append_system_prompt",
+        ]
+        .iter()
+        .map(|name| name.to_string())
+        .collect()
+    }
+
     #[tokio::test]
     async fn apply_cli_options_propagates_server_errors() {
-        // Every cfg command shares the empty type; failing it errors out.
+        // A rejected option command errors out.
         let addr = spawn_mock(MockAgent {
-            fail_types: HashSet::from([String::new()]),
+            fail_types: HashSet::from(["set_model".to_string()]),
             ..Default::default()
         })
         .await;
@@ -1579,10 +1749,18 @@ mod tests {
 
     // ─── run_print_mode ───────────────────────────────────────────────
 
+    /// Canned reply for the session a non-interactive run mints by default.
+    fn new_session_data() -> HashMap<String, String> {
+        HashMap::from([(
+            "new_session".to_string(),
+            "{\"sessionId\":\"s1\"}".to_string(),
+        )])
+    }
+
     #[tokio::test]
     async fn print_mode_text_stream() {
         let addr = spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             events: vec![
                 stream_event("text_chunk", "{\"text\":\"Hello\"}"),
                 stream_event("error", "{\"error\":\"transient\"}"),
@@ -1599,7 +1777,7 @@ mod tests {
     #[tokio::test]
     async fn print_mode_json_stream() {
         let addr = spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             events: vec![
                 stream_event("text_chunk", "{\"text\":\"Hello\"}"),
                 stream_event("bogus", "not json"), // skipped (continue)
@@ -1610,6 +1788,143 @@ mod tests {
         .await;
         let a = args(&["-p", "hi", "--mode", "json"]);
         run_print_mode(&addr, &a).await.unwrap();
+    }
+
+    /// A non-interactive run resolves its own session: the Agent has no
+    /// default session, so `get_state` with an empty id is never an option.
+    #[tokio::test]
+    async fn print_mode_resolves_its_session() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_mock(MockAgent {
+            command_data: HashMap::from([
+                (
+                    "new_session".to_string(),
+                    "{\"sessionId\":\"s-new\"}".to_string(),
+                ),
+                (
+                    "switch_session".to_string(),
+                    "{\"cancelled\":false}".to_string(),
+                ),
+                (
+                    "list_sessions".to_string(),
+                    serde_json::json!({"sessions": [
+                        {"id": "s-old", "updatedAtMs": 100},
+                        {"id": "s-recent", "updatedAtMs": 900},
+                        {"id": "s-untimed"}
+                    ]})
+                    .to_string(),
+                ),
+                ("fork".to_string(), "{\"sessionId\":\"s-fork\"}".to_string()),
+            ]),
+            seen_commands: seen.clone(),
+            ..Default::default()
+        })
+        .await;
+        let commands = || seen.lock().unwrap().clone();
+
+        // No session option → mint one (and never read "current" state).
+        assert_eq!(
+            resolve_print_session(&addr, &args(&["-p", "hi"])).await,
+            Ok("s-new".to_string())
+        );
+        assert_eq!(commands(), vec!["new_session".to_string()]);
+
+        // --session → adopted after validation, no new session.
+        seen.lock().unwrap().clear();
+        assert_eq!(
+            resolve_print_session(&addr, &args(&["-p", "hi", "--session", "s-given"])).await,
+            Ok("s-given".to_string())
+        );
+        assert_eq!(commands(), vec!["switch_session".to_string()]);
+
+        // --continue → the session with the newest updatedAtMs.
+        seen.lock().unwrap().clear();
+        assert_eq!(
+            resolve_print_session(&addr, &args(&["-p", "hi", "--continue"])).await,
+            Ok("s-recent".to_string())
+        );
+        assert_eq!(commands(), vec!["list_sessions".to_string()]);
+
+        // --fork → forked from the explicit parent.
+        seen.lock().unwrap().clear();
+        assert_eq!(
+            resolve_print_session(
+                &addr,
+                &args(&["-p", "hi", "--session", "s-parent", "--fork", "entry-1"])
+            )
+            .await,
+            Ok("s-fork".to_string())
+        );
+        assert_eq!(commands(), vec!["fork".to_string()]);
+
+        // --resume needs a terminal; it never reaches the agent.
+        seen.lock().unwrap().clear();
+        assert!(
+            resolve_print_session(&addr, &args(&["-p", "hi", "--resume"]))
+                .await
+                .is_err()
+        );
+        assert!(commands().is_empty());
+    }
+
+    #[tokio::test]
+    async fn print_mode_session_resolution_failures() {
+        // An unknown --session fails on validation, before any prompt.
+        let missing = spawn_mock(MockAgent {
+            fail_types: HashSet::from(["switch_session".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            resolve_print_session(&missing, &args(&["-p", "hi", "--session", "gone"])).await,
+            Err("boom".to_string())
+        );
+
+        // --continue with nothing to continue.
+        let empty = spawn_mock(MockAgent {
+            command_data: HashMap::from([(
+                "list_sessions".to_string(),
+                "{\"sessions\": []}".to_string(),
+            )]),
+            ..Default::default()
+        })
+        .await;
+        let err = resolve_print_session(&empty, &args(&["-p", "hi", "--continue"]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("No previous session to continue"), "{err}");
+
+        // --continue when the list itself fails (empty error → default label).
+        let failing = spawn_mock(MockAgent {
+            fail_silent_types: HashSet::from(["list_sessions".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            resolve_print_session(&failing, &args(&["-p", "hi", "--continue"])).await,
+            Err("list_sessions failed".to_string())
+        );
+
+        // --fork without --session needs a parent to fork from.
+        let err = resolve_print_session(&empty, &args(&["-p", "hi", "--fork", "entry-1"]))
+            .await
+            .unwrap_err();
+        assert!(err.contains("No previous session to continue"), "{err}");
+
+        // A fork reply without a session id is an error.
+        let bad_fork = spawn_mock(MockAgent {
+            command_data: HashMap::from([("fork".to_string(), "{}".to_string())]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            resolve_print_session(
+                &bad_fork,
+                &args(&["-p", "hi", "--fork", "e", "--session", "p"])
+            )
+            .await,
+            Err("Fork returned no session".to_string())
+        );
     }
 
     #[tokio::test]
@@ -1667,27 +1982,40 @@ mod tests {
             run_print_mode("127.0.0.1:1", &a).await,
             Err("No prompt provided".to_string())
         );
-        // get_state failure.
-        let failing_state = spawn_mock(MockAgent {
-            fail_types: HashSet::from(["get_state".to_string()]),
+        // new_session failure.
+        let failing_new_session = spawn_mock(MockAgent {
+            fail_types: HashSet::from(["new_session".to_string()]),
             ..Default::default()
         })
         .await;
         let a = args(&["-p", "hi"]);
         assert_eq!(
-            run_print_mode(&failing_state, &a).await,
+            run_print_mode(&failing_new_session, &a).await,
             Err("boom".to_string())
         );
-        // Invalid state JSON.
-        let bad_json = spawn_mock(MockAgent {
-            state_data: "nope".into(),
+        // …with an empty error → the "new_session failed" default.
+        let silent_new_session = spawn_mock(MockAgent {
+            fail_silent_types: HashSet::from(["new_session".to_string()]),
             ..Default::default()
         })
         .await;
-        assert!(run_print_mode(&bad_json, &a).await.is_err());
+        assert_eq!(
+            run_print_mode(&silent_new_session, &a).await,
+            Err("new_session failed".to_string())
+        );
+        // A reply without a session id (non-JSON data decodes to null).
+        let bad_json = spawn_mock(MockAgent {
+            command_data: HashMap::from([("new_session".to_string(), "nope".to_string())]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            run_print_mode(&bad_json, &a).await,
+            Err("Agent returned no session for the new conversation".to_string())
+        );
         // Prompt command failure.
         let failing_prompt = spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             fail_types: HashSet::from(["prompt".to_string()]),
             ..Default::default()
         })
@@ -1698,7 +2026,7 @@ mod tests {
         );
         // …with an empty error → the "prompt failed" default.
         let silent_prompt = spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             fail_silent_types: HashSet::from(["prompt".to_string()]),
             ..Default::default()
         })
@@ -1707,16 +2035,6 @@ mod tests {
             run_print_mode(&silent_prompt, &a).await,
             Err("prompt failed".to_string())
         );
-        // …and get_state with an empty error → "get_state failed".
-        let silent_state = spawn_mock(MockAgent {
-            fail_silent_types: HashSet::from(["get_state".to_string()]),
-            ..Default::default()
-        })
-        .await;
-        assert_eq!(
-            run_print_mode(&silent_state, &a).await,
-            Err("get_state failed".to_string())
-        );
     }
 
     #[tokio::test]
@@ -1724,7 +2042,7 @@ mod tests {
         // stream_events fails at subscribe time (message-bearing status).
         let a = args(&["-p", "hi"]);
         let mock = MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             stream_status_error: Some(tonic::Status::internal("stream boom")),
             ..Default::default()
         };
@@ -1733,7 +2051,7 @@ mod tests {
 
         // Same failure with an empty status message.
         let mock = MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             stream_status_error: Some(tonic::Status::new(tonic::Code::Unknown, "")),
             ..Default::default()
         };
@@ -1742,7 +2060,7 @@ mod tests {
 
         // A stream-level error mid-run → "stream error".
         let mock = MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             events: vec![stream_event("text_chunk", "{\"text\":\"partial\"}")],
             stream_error_after: true,
             ..Default::default()
@@ -1759,7 +2077,7 @@ mod tests {
         // text_chunk with non-JSON data is skipped; an error event without
         // an "error" key renders the default; empty text prints nothing.
         let mock = MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             events: vec![
                 stream_event("text_chunk", "not json"),
                 stream_event("text_chunk", "{\"wrong\":1}"),
@@ -1897,7 +2215,7 @@ mod tests {
             .build()
             .unwrap();
         let addr = mock_rt.block_on(spawn_mock(MockAgent {
-            state_data: "{\"sessionId\":\"s1\"}".into(),
+            command_data: new_session_data(),
             events: vec![
                 stream_event("text_chunk", "{\"text\":\"Hi\"}"),
                 stream_event("agent_end", "{}"),
