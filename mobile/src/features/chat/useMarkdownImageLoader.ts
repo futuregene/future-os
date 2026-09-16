@@ -13,10 +13,11 @@ const imagePreview = (info: DownloadInfo) => info.previewKind === "image"
   && ["image/png", "image/jpeg", "image/webp", "image/bmp"].includes(info.mimeType)
   && info.size > 0 && info.size <= MAX_FILE_BYTES;
 
-/** Inline images load themselves in a reply body (see
- * MarkdownImageAutoLoadContext); the desktop authorization, verified disk cache
- * and encrypted transfer are reused unchanged, and a large transfer on an
- * unknown or cellular network still asks first.
+/** Inline images load themselves, in a reply body and in a file preview alike:
+ * an image written into the Markdown is part of the document the user opened.
+ * The desktop authorization, verified disk cache and encrypted transfer are
+ * reused unchanged, and a large transfer on an unknown or cellular network
+ * still asks first — the guard is about cost, not about permission to read.
  */
 export function useMarkdownImageLoader(remote: Remote, t: TFunction): MarkdownImageLoader {
   const { prepareAttachment, cachedAttachment, downloadAttachment } = remote;

@@ -35,14 +35,14 @@ test("uncached images in a reply body load themselves", async () => {
   for (let node = tree.root.findByType(Image).parent; node; node = node.parent) expect(node.type).not.toBe(Text);
 });
 
-// A document opened in the preview modal is not a reply: its images stay behind
-// a tap, so opening a large file cannot start its data transfer unasked.
-test("images in a file preview still wait for a tap", () => {
+// A file preview is the same story: an image written into the document is part
+// of it, so opening a document shows its images without a per-image tap.
+test("images in a file preview load themselves too", async () => {
   const loader = { scope: "one", cached: jest.fn(() => null), load: jest.fn(async () => "file:///x.png") };
-  act(() => { tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+  await act(async () => { tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
     createElement(MarkdownText, { text: "![chart](./a.png)", mode: "file-preview" }))); });
-  expect(loader.load).not.toHaveBeenCalled();
-  expect(tree.root.findAllByType(Image)).toHaveLength(0);
+  expect(loader.load).toHaveBeenCalledWith("a.png", expect.any(AbortSignal));
+  expect(tree.root.findByType(Image).props.source.uri).toBe("file:///x.png");
 });
 
 test("already verified cached images display without downloading", () => {

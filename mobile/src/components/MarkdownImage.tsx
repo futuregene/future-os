@@ -12,14 +12,6 @@ export interface MarkdownImageLoader {
 }
 export const MarkdownImageLoaderContext = createContext<MarkdownImageLoader | null>(null);
 export const MarkdownImageBasePathContext = createContext<string | undefined>(undefined);
-/**
- * Whether an uncached inline image loads on its own. True in a reply body: an
- * image the agent put in its answer is part of what the user asked to read, and
- * making them tap per image taxed the common case to guard against the rare one.
- * The size/network guard in the loader still applies — this only removes the
- * "tap to load" step, not the cost confirmation for a large transfer.
- */
-export const MarkdownImageAutoLoadContext = createContext(false);
 
 /** Keep relative paths relative to the desktop document, never the downloaded
  * phone cache file. The host canonicalizes and enforces its file-read boundary.
@@ -41,7 +33,6 @@ export function MarkdownImage({ src, alt, href, openTarget }: {
 }) {
   const loader = useContext(MarkdownImageLoaderContext);
   const basePath = useContext(MarkdownImageBasePathContext);
-  const autoLoad = useContext(MarkdownImageAutoLoadContext);
   const url = remoteMarkdownImageUrl(src);
   const path = markdownImagePath(src, basePath);
   const target = classifyMarkdownTarget(href ?? "");
@@ -55,12 +46,11 @@ export function MarkdownImage({ src, alt, href, openTarget }: {
       {alt || basename(src)}
     </Text>
   );
-  return <LocalImage key={`${loader.scope}:${path}`} alt={alt || basename(path)} autoLoad={autoLoad} loader={loader} path={path} onOpen={() => openTarget(href ?? src)} linked={linked} />;
+  return <LocalImage key={`${loader.scope}:${path}`} alt={alt || basename(path)} loader={loader} path={path} onOpen={() => openTarget(href ?? src)} linked={linked} />;
 }
 
-function LocalImage({ alt, autoLoad, loader, path, onOpen, linked }: {
+function LocalImage({ alt, loader, path, onOpen, linked }: {
   alt: string;
-  autoLoad: boolean;
   loader: MarkdownImageLoader;
   path: string;
   onOpen(): void;
@@ -92,12 +82,14 @@ function LocalImage({ alt, autoLoad, loader, path, onOpen, linked }: {
   }, [loader, path]);
   // Load once per mount, and only once: a reply re-projects on every streaming
   // delta, so an unguarded effect here would re-request the image on each tick.
+  // An image written into the Markdown is part of the document either way — in a
+  // reply or in a file preview — so it never waits for a tap.
   const autoStarted = useRef(false);
   useEffect(() => {
-    if (!autoLoad || autoStarted.current || uri) return;
+    if (autoStarted.current || uri) return;
     autoStarted.current = true;
     void load();
-  }, [autoLoad, load, uri]);
+  }, [load, uri]);
   if (uri) return <Pressable accessibilityRole={linked ? "link" : "button"} accessibilityLabel={alt} onPress={onOpen}>
     <LoadedImage key={uri} alt={alt} uri={uri} onFailure={() => { setUri(null); setFailed(true); }} />
   </Pressable>;
