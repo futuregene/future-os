@@ -521,11 +521,17 @@ describe("command dispatchers", () => {
     expect(h.request.mock.calls.map(([command]) => command.providerId)).toEqual(["deepseek", "ambient"]);
   });
 
-  it("abort is a no-op without a client or session", async () => {
+  it("abort is a no-op without a session", async () => {
     const h = await mountController({});
     await act(async () => {
       await current(h).abort();
     });
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it("abort rejects instead of falsely acknowledging when the client is disconnected", async () => {
+    const h = await mountController({ client: null, selected: "s1" });
+    await expect(current(h).abort()).rejects.toThrow("not_connected");
     expect(h.request).not.toHaveBeenCalled();
   });
 

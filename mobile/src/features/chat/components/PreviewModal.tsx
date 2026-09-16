@@ -1,7 +1,6 @@
 import { Download, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
-  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -17,6 +16,7 @@ import type { HistoryAttachment } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import type { PreviewState } from "../useFileDownload";
 import type { ActiveDownload, FileOperation } from "../utils";
+import { ZoomableImage } from "./ZoomableImage";
 
 export function PreviewModal({
   preview,
@@ -99,7 +99,9 @@ export function PreviewModal({
           </Pressable>
         </View>
         {preview?.info.previewKind === "image" ? (
-          <Image resizeMode="contain" source={{ uri: preview.uri }} style={styles.previewImage} />
+          // Pinch to zoom / drag to pan: a phone-sized preview of a screenshot is
+          // unreadable without it.
+          <ZoomableImage accessibilityLabel={preview.info.name} uri={preview.uri} />
         ) : preview?.info.previewKind === "markdown" ? (
           <ScrollView contentContainerStyle={styles.previewMarkdown}>
             {!!preview?.truncated && (
@@ -144,7 +146,6 @@ const styles = StyleSheet.create({
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: colors.surfaceSubtle },
   previewTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
-  previewImage: { flex: 1, width: "100%", height: "100%", backgroundColor: colors.surfaceSubtle },
   previewMarkdown: { padding: spacing.lg },
   previewTruncated: {
     marginBottom: spacing.md,
