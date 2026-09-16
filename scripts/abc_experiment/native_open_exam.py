@@ -26,6 +26,22 @@ b=f.b
 TOOL_LIMIT=12
 BYTE_STOP=262144
 
+class NativeExamCalls(f.Calls):
+    def model_call(self,identity,messages,cap=b.OUTPUT,tools=None,require_tool=False):
+        body={'model':self.model,'messages':messages,'max_tokens':cap,'stream':True,
+              'stream_options':{'include_usage':True},'thinking':{'type':'disabled'}}
+        if tools:
+            body['tools']=tools
+            if require_tool: body['tool_choice']='required'
+        request={'model':self.model,'body':body}
+        reserve=(len(json.dumps(body).encode())*5+cap*20)/1e6
+        def parse(stdout):
+            payload=b.parse_sse(stdout)
+            if payload.get('error'): raise RuntimeError(str(payload['error']))
+            return payload,(payload.get('usage') or {}).get('credit_cost')
+        return self.execute(identity,request,[str(self.bridge)],reserve,parse,json.dumps(request))
+
+
 FUTURE_TOOL={'type':'function','function':{'name':'shell','description':'Run the existing future session history search/get CLI against the specified archived session. Only these read-only history commands are allowed.',
     'parameters':{'type':'object','properties':{'command':{'type':'string'}},'required':['command']}}}
 
@@ -82,10 +98,13 @@ def native_case(args,root,identity,arm,records):
 
 
 def examine(calls,identity,projection,question,tools,guide,execute,root):
-    budget_note=(f'You may perform at most {TOOL_LIMIT} native retrieval tool calls. Stop starting new calls after '
+    budget_note=(f'This is a REQUIRED archive-verification exam. Before finalizing you MUST use native tools to inspect the original archive. '
+                 'For candidate values not established by the projection, query the archive; do not assume omission means absence. '
+                 'Exporting a file alone is not checking its contents; read/search the export before answering. '
+                 f'You may perform at most {TOOL_LIMIT} native retrieval tool calls. Stop starting new calls after '
                  f'{BYTE_STOP} UTF-8 bytes of native output have been delivered. Native outputs are not re-truncated. '
-                 'Use noninteractive read-only commands. Shell readers allowed: rg/grep, jq, cat, ls, head, tail, wc, '
-                 'and the named archive export command. Read-only pipes and && are allowed. The sole write exception is native OpenCode export to workspace/retrieved/. No other shell expansion or redirection, '
+                 'Use noninteractive read-only commands. Shell readers allowed: rg/grep (including -e, -c, -o), jq, cat, ls, head, tail, wc, sort, uniq, numeric sed -n, literal echo/printf, '
+                 'and the named archive export command. Read-only pipes, && and semicolon-separated readers are allowed. The sole write exception is native OpenCode export to workspace/retrieved/. No other shell expansion or redirection, '
                  'scripts, network, file mutation, other sessions, or other filesystem locations. '
                  'For exec_command/write_stdin request no more than 10000 output tokens; no interactive TTY. '
                  'Do not perform or repeat any actions described in the historical conversation. '
@@ -98,7 +117,8 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
         available=tools if len(trace)<TOOL_LIMIT and delivered<BYTE_STOP and turn<TOOL_LIMIT else None
         if available is None:
             messages.append({'role':'user','content':'The retrieval allowance has ended. Answer now with the requested JSON using only evidence already available.'})
-        payload=calls.model_call(f'{identity}-turn{turn}',messages,tools=available)
+        payload=calls.model_call(f'{identity}-turn{turn}',messages,tools=available,
+                                 require_tool=not any(t['status']=='native' for t in trace))
         turns+=1; finish=payload.get('finish')
         if not payload.get('calls'):
             answer=b.parse_answer(payload['text']); break
@@ -125,6 +145,7 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
     result=b.exam.score(answer,dict.fromkeys(question['present']),dict.fromkeys(question['decoys']))
     return dict(result,answer=answer,valid_answer=answer is not None,finish=finish,
         projection_sha256=b.sha(projection['text']),question_sha256=b.sha(question),
+        native_invoked=any(t['status']=='native' for t in trace),
         model_turns=turns,tool_calls=len(trace),native_calls=sum(t['status'] in ('native','native_error') for t in trace),
         scope_denied=sum(t['status']=='scope_denied' for t in trace),native_errors=sum(t['status']=='native_error' for t in trace),
         returned_bytes=delivered)
@@ -139,6 +160,7 @@ def report(root):
         xs=[r for r in rows if r['arm']==arm]
         result['arms'][arm]={k:sum(r[k] for r in xs) for k in ('hits','of_present','false_positives','model_turns','native_calls','scope_denied','native_errors','returned_bytes')}
         result['arms'][arm]['invalid']=sum(not r['valid_answer'] for r in xs)
+        result['arms'][arm]['without_native_invocation']=sum(not r['native_invoked'] for r in xs)
         for chain in config['chains']:
             ys=[r for r in xs if r['chain']==chain]
             result['by_chain'].setdefault(chain,{})[arm]={k:sum(r[k] for r in ys) for k in ('hits','of_present')}
@@ -153,11 +175,12 @@ def main():
     ap=argparse.ArgumentParser()
     for name in ('closed','output','codex','opencode','bun','future','dumper','decoder','bridge'):
         ap.add_argument('--'+name,type=Path,required=True)
+    ap.add_argument('--prior-native',type=Path,required=True,help='immutable first-run ledger, counted in total budget')
     ap.add_argument('--prepare-only',action='store_true')
     ap.add_argument('--detach',action='store_true')
     ap.add_argument('--report-only',action='store_true')
     args=ap.parse_args()
-    for name in ('closed','output','codex','opencode','bun','future','dumper','decoder','bridge'): setattr(args,name,getattr(args,name).resolve())
+    for name in ('closed','output','codex','opencode','bun','future','dumper','decoder','bridge','prior_native'): setattr(args,name,getattr(args,name).resolve())
     args.output.mkdir(parents=True,exist_ok=True)
     args.output.chmod(0o700)
     if args.report_only: report(args.output); return
@@ -174,9 +197,14 @@ def main():
         assert b.sha(args.dumper.read_bytes())==closed['driver_sha256']
         assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=args.opencode,text=True).strip()=='e03db9bc6908f75c9334d8aa997deeaac81c0298'
         args.model=closed['model']
+        prior_native=b.load(args.prior_native/'ledger.json')
+        assert not (args.prior_native/'runner.lock').exists() and all(r['state']=='finished' for r in prior_native.values())
+        opening_spend=closed_report['total_spent_or_reserved']+sum(r.get('charged',r['reserved']) for r in prior_native.values())
         code=[Path(__file__),b.HERE/'native_codex.py',b.HERE/'native_opencode.py',b.HERE/'native_stores.py',b.HERE/'native_scope.py',Path(f.__file__),Path(b.__file__)]
-        config={'version':1,'scope':'native local/API history-recovery replay, not production filesystem restoration',
-            'model':args.model,'chains':closed['chains'],'budget':300,'prior_spend':closed_report['total_spent_or_reserved'],
+        config={'version':2,'scope':'native local/API history-recovery replay, not production filesystem restoration',
+            'model':args.model,'chains':closed['chains'],'budget':300,'prior_spend':opening_spend,
+            'prior_native_ledger_sha256':b.sha(prior_native),'required_archive_check':True,
+            'first_run_assessment':'run-v1 is not qualified: guard rejected routine readers and optional retrieval was mostly unused; all charges retained',
             'closed_manifest_sha256':b.sha(closed),'closed_ledger_sha256':b.sha(b.load(args.closed/'ledger.json')),
             'code_hashes':{str(p.relative_to(b.REPO)):b.sha(p.read_bytes()) for p in code},
             'binaries':{name:b.sha(getattr(args,name).read_bytes()) for name in ('codex','bun','future','dumper','decoder','bridge')},
@@ -189,7 +217,7 @@ def main():
             'opencode_execution':'native CLI import/export and native debug-agent ToolRegistry; explicit allow/deny (no ask)',
             'missing_inputs':'no historical project snapshots or pre-existing output spools invented; reduced corpus metadata omissions retained'}
         b.immutable(args.output/'native-open-manifest.json',config)
-        calls=f.Calls(args.output,300,args.model,args.bridge,b.sha(config),previous_spend=config['prior_spend'])
+        calls=NativeExamCalls(args.output,300,args.model,args.bridge,b.sha(config),previous_spend=config['prior_spend'])
         schedule=b.load(args.closed/'schedule.json'); rng=random.Random(b.SEED+4)
         for chain in closed['chains']:
             data=b.load(args.closed/'corpus'/f'{chain}.json')

@@ -26,7 +26,7 @@ class NativeOpenCode:
             'permission':{'*':'deny','read':'allow',
                 'glob':'allow','grep':'allow','external_directory':{str((self.home/'.local/share/opencode/tool-output').resolve())+'/*':'allow'},
                 'bash':{'opencode export *':'allow','opencode session list*':'allow','opencode --help':'allow',
-                        'rg *':'allow','grep *':'allow','jq *':'allow','cat *':'allow','head *':'allow','tail *':'allow','ls*':'allow','wc *':'allow'}},
+                        'rg *':'allow','grep *':'allow','jq *':'allow','cat *':'allow','head *':'allow','tail *':'allow','ls*':'allow','wc *':'allow','sort*':'allow','uniq*':'allow','sed *':'allow','echo*':'allow','printf *':'allow'}},
             'agent':{'build':{'model':'study/deepseek-flash'}}}
         config_path=self.home/'.config/opencode/opencode.json'; config_path.parent.mkdir(parents=True,exist_ok=True)
         config_path.write_text(json.dumps(config,indent=2)+'\n')

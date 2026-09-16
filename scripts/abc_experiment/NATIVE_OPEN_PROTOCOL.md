@@ -1,4 +1,21 @@
-# Native local/API open-book replay (approved after v3 closed book)
+# Native local/API open-book replay v2 (approved after v3 closed book)
+
+## Amendment after the first instrumented run
+
+The first native run is retained under `native-open/run-v1`, but is NOT qualified
+as the formal comparison: its study guard rejected normal `rg -e/-c`, sort/uniq
+and head syntax, and optional retrieval was often unused. Its CNY 0.92729196 is
+retained in the shared budget. V2 admits these ordinary read-only forms, pipes,
+`&&` and semicolon-separated validated readers. Arbitrary scripts, execution
+hooks, foreign paths, permission escalation and writes remain forbidden.
+
+V2 explicitly requires original-archive checking before a final answer. The
+first successful native invocation is requested with `tool_choice=required`;
+subsequent decisions remain model-driven. The `native_invoked` metric proves a
+native tool ran, not by itself that the right evidence was read; final review
+must inspect traces. This is a required-verification condition, not a claim
+about products' default willingness to retrieve. Do not mix its scores with v1.
+Opening cumulative spend is CNY 42.08420432; the total ceiling remains CNY 300.
 
 ## Scope and authorization
 

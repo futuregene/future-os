@@ -19,6 +19,10 @@ class ScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             work=Path(d)/'work'; home=Path(d)/'home'
             check_shell("opencode export ses_case | jq -r '.messages[].parts[].text // empty' | rg -F -o 'needle'",work,home,'ses_case')
+            check_shell("rg -o -F -e 'one' -e 'two' archive.jsonl | sort | uniq -c",work,home,'ses_case')
+            check_shell("rg -c 'one' archive.jsonl; rg -nF 'two' archive.jsonl | head -c 300; echo '---'",work,home,'ses_case')
+            check_shell("opencode export ses_case > retrieved/archive.json && jq -r '.messages[].parts[].text // empty' retrieved/archive.json | sort -u",work,home,'ses_case')
+            check_shell("grep -o -F 'one' archive.jsonl | head -1",work,home,'ses_case')
             for command in ('cat /etc/passwd','opencode export ses_other','rg --pre rm needle','cat x > y','cat $(env)','rm x'):
                 with self.assertRaises(ValueError): check_shell(command,work,home,'ses_case')
             with self.assertRaises(ValueError): check_tool('exec_command',{'cmd':'cat x','sandbox_permissions':'require_escalated'},work,home,'ses_case')
