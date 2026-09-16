@@ -115,6 +115,34 @@ describe("useTimelineController", () => {
     await flush();
   }
 
+  test("state reads refresh the selected model after reconnect without replaying settings as chat", async () => {
+    options.onSessionState = jest.fn();
+    let model = "p/old";
+    request.mockImplementation(async (command: { type: string }) => ({ data:
+      command.type === "get_state" ? { model, thinkingLevel: "high" } : { entries: [] },
+    }));
+    render();
+    await establish();
+    expect(options.onSessionState).toHaveBeenLastCalledWith("s1", { model: "p/old", thinkingLevel: "high" });
+    model = "p/new";
+    act(() => result.current.reconcileSession("s1", "reconnect"));
+    await flush();
+    expect(options.onSessionState).toHaveBeenLastCalledWith("s1", { model: "p/new", thinkingLevel: "high" });
+  });
+
+  test("a state request started before a live settings event cannot overwrite it", async () => {
+    options.onSessionState = jest.fn();
+    let resolve!: (value: unknown) => void;
+    request.mockImplementation((command: { type: string }) => command.type === "get_state"
+      ? new Promise(yes => { resolve = yes; }) : Promise.resolve({ data: { entries: [] } }));
+    render();
+    await establish();
+    act(() => result.current.handleEvent(evt("model_changed", '{"model":"p/new"}'), "s1"));
+    await act(async () => { resolve({ data: { model: "p/old" } }); });
+    await flush();
+    expect(options.onSessionState).not.toHaveBeenCalled();
+  });
+
   test("background grace stops projection and foreground recovery restores missed text", async () => {
     jest.useFakeTimers();
     const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;

@@ -313,6 +313,50 @@ describe("navigation races", () => {
   });
 });
 
+describe("desktop session setting synchronization", () => {
+  test("live model/thinking changes update only the active conversation, without sending commands back", async () => {
+    const h = await mountController({ selected: "s1" });
+    await act(async () => {
+      current(h).handleSessionSettingsEvent({ type: "model_changed", data: '{"model":"p/org/new"}' }, "s1");
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '{"level":"high"}' }, "s1");
+    });
+    expect(current(h).modelId).toBe("p/org/new");
+    expect(current(h).thinkingLevel).toBe("high");
+    await act(async () => {
+      current(h).handleSessionSettingsEvent({ type: "model_changed", data: '{"model":"background"}' }, "other");
+      current(h).handleSessionSettingsEvent({ type: "model_changed", data: 'not-json' }, "s1");
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '{"level":"invalid"}' }, "s1");
+    });
+    expect(current(h).modelId).toBe("p/org/new");
+    expect(current(h).thinkingLevel).toBe("high");
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
+  test("reconnect state restores missed model changes without closing the conversation", async () => {
+    const h = await mountController({ selected: "s1" });
+    act(() => current(h).applySessionSettings("s1", { model: "p/restored", thinkingLevel: "medium" }));
+    expect(current(h).modelId).toBe("p/restored");
+    expect(current(h).thinkingLevel).toBe("medium");
+    act(() => current(h).applySessionSettings("other", { model: "wrong" }));
+    expect(current(h).modelId).toBe("p/restored");
+    act(() => h.renderer.unmount());
+  });
+
+  test("an old open response cannot overwrite a newer desktop model notification", async () => {
+    let resolve!: (value: unknown) => void;
+    const requestRetry = jest.fn(() => new Promise(yes => { resolve = yes; }));
+    const h = await mountController({ requestRetry });
+    let opening!: Promise<void>;
+    act(() => { opening = current(h).selectSession("s1"); });
+    act(() => current(h).handleSessionSettingsEvent({ type: "model_changed", data: '{"model":"p/new"}' }, "s1"));
+    await act(async () => { resolve({ data: { model: "p/old" } }); await opening; });
+    expect(current(h).modelId).toBe("p/new");
+    expect(current(h).openingSession).toBe(false);
+    act(() => h.renderer.unmount());
+  });
+});
+
 describe("selectSession", () => {
   it("is a no-op when the client is absent", async () => {
     const h = await mountController({ client: null });

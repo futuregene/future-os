@@ -15,6 +15,7 @@ import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
+import { MathFormula } from "./MathFormula";
 
 interface MarkdownTextProps {
   /** Message links can fetch local files; file previews never nest previews. */
@@ -58,13 +59,7 @@ function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: st
           </Text>
         );
       case "mathInline":
-        // React Native has no KaTeX DOM renderer; fall back to the raw TeX
-        // source in monospace so formulas stay legible.
-        return (
-          <Text key={key} style={styles.inlineCode}>
-            {node.code}
-          </Text>
-        );
+        return <MathFormula key={key} code={node.code} inline />;
       case "break":
         return "\n";
       case "link": {
@@ -204,11 +199,15 @@ function renderBlock(
         </View>
       );
     case "code":
-    case "mathBlock":
-      // Math remains selectable TeX until a native formula renderer is added.
       return (
         <View key={key} style={isLast ? undefined : styles.blockSpacing}>
-          <CodeSource code={node.code} language={node.type === "code" ? node.language : undefined} />
+          <CodeSource code={node.code} language={node.language} />
+        </View>
+      );
+    case "mathBlock":
+      return (
+        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
+          <MathFormula code={node.code} />
         </View>
       );
     case "blockquote":
