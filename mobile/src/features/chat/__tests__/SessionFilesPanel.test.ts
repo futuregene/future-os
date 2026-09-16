@@ -68,13 +68,37 @@ test("toggling hidden files keeps ordinary generated Word/Excel files visible", 
   const officeEntries = ["示例销售数据.xlsx", "报告.docx", "gen_excel.py"].map(name => ({
     name, path: `C:\\work\\${name}`, isDir: false, size: 6144,
   }));
-  listFiles.mockResolvedValue({ ...root, entries: officeEntries });
+  const hidden = { name: ".gitignore", path: "C:\\work\\.gitignore", isDir: false, size: 2 };
+  listFiles.mockResolvedValue({ ...root, entries: [...officeEntries, hidden] });
   await mount();
   await press("files.showHidden");
-  expect(entries()).toEqual(officeEntries);
+  expect(entries()).toEqual([...officeEntries, hidden]);
   await press("files.hideHidden");
   expect(entries()).toEqual(officeEntries);
   expect(listFiles).toHaveBeenCalledTimes(1);
+});
+
+test("only offers the hidden-files toggle for directories that have hidden entries", async () => {
+  const eye = () => ["files.showHidden", "files.hideHidden"].flatMap(label => tree.root.findAll(
+    node => node.props.accessibilityLabel === label && node.props.onPress,
+  ));
+  await mount();
+  expect(eye()).toHaveLength(1);
+  const child = {
+    ...root, path: "C:\\work\\reports",
+    entries: [{ name: "drafts", path: "C:\\work\\reports\\drafts", isDir: true, size: 0 }],
+  };
+  listFiles.mockResolvedValue(child);
+  await press("files.openFolder:reports");
+  expect(eye()).toHaveLength(0);
+  expect(button("files.refresh")).toBeTruthy();
+  listFiles.mockResolvedValue(root);
+  await press("files.up");
+  expect(eye()).toHaveLength(1);
+  listFiles.mockResolvedValue({ ...child, entries: [] });
+  await press("files.openFolder:reports");
+  expect(eye()).toHaveLength(0);
+  expect(button("files.refresh")).toBeTruthy();
 });
 
 test("enters a directory, refreshes it, and returns to the session root", async () => {
