@@ -225,8 +225,11 @@ export function useConversationController({
 
   const abort = useCallback(async () => {
     const client = clientRef.current;
-    if (!client || !selectedRef.current) return;
-    await client.request({ type: "abort", sessionId: selectedRef.current }, selectedRef.current);
+    const sessionId = selectedRef.current;
+    if (!sessionId) return;
+    // Do not acknowledge a stop that was never sent after a disconnect.
+    if (!client) throw new Error("not_connected");
+    await client.request({ type: "abort", sessionId }, sessionId);
   }, [clientRef, selectedRef]);
 
   const setModel = useCallback(
