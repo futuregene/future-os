@@ -75,9 +75,9 @@ pub use threads::{
 pub use util::{create_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{
-    create_workspace, delete_workspace, get_or_create_chat_workspace, get_workspace,
-    list_workspaces, purge_soft_deleted_workspaces, rename_workspace, update_chat_workspace_path,
-    WorkspaceRecord,
+    create_workspace, delete_workspace, find_user_workspace_by_path, get_or_create_chat_workspace,
+    get_workspace, list_workspaces, purge_soft_deleted_workspaces, rename_workspace,
+    update_chat_workspace_path, WorkspaceRecord,
 };
 
 pub fn app_data_path() -> Result<AppDataPath, crate::AppError> {

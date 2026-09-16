@@ -48,6 +48,38 @@ pub(super) fn expand_tilde(path: &str) -> Result<PathBuf, crate::AppError> {
     Ok(PathBuf::from(path))
 }
 
+/// Identity spelling of a workspace directory.
+///
+/// One directory must resolve to one workspace row, but clients spell the same
+/// directory differently: `/tmp/x` and `/private/tmp/x` on macOS (symlinked
+/// root), a path with a trailing separator, or a symlinked project directory.
+/// Clients report the spelling their own shell gave them, so identity is the
+/// canonical path resolved here rather than the text a client happened to send.
+///
+/// Falls back to the given path when it cannot be resolved — a workspace may be
+/// created for a directory that does not exist yet.
+pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {
+    match path.canonicalize() {
+        Ok(canonical) => strip_verbatim_prefix(canonical),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Windows `Path::canonicalize` returns the extended-length spelling
+/// (`\\?\D:\...`), which no other tool prints; store the ordinary form instead
+/// (`\\?\UNC\server\share` → `\\server\share`). A canonical POSIX path never
+/// carries the prefix, so this is purely textual and a no-op off Windows.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
+}
+
 pub(super) fn workspace_name_from_path(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
