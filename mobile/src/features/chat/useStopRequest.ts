@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
+import { TimelineVisibleContext } from "../../components/PausedTimeline";
 
 type StopStatus = "idle" | "requesting" | "requested" | "failed";
 type Attempt = { id: number; startedAt: number; inFlight: boolean };
@@ -12,6 +13,7 @@ export function useStopRequest(
   sessionId: string,
   abort: () => Promise<void>,
 ) {
+  const visible = useContext(TimelineVisibleContext);
   const [status, setStatus] = useState<StopStatus>("idle");
   const [scope, setScope] = useState({ streaming, sessionId });
   if (scope.streaming !== streaming || scope.sessionId !== sessionId) {
@@ -24,7 +26,7 @@ export function useStopRequest(
   const nextTickRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!streaming) return;
+    if (!streaming || !visible) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const reset = (state: string | null) => {
       clearInterval(timer);
@@ -51,7 +53,7 @@ export function useStopRequest(
       nextTickRef.current = null;
       lagRef.current = [];
     };
-  }, [streaming]);
+  }, [streaming, visible]);
 
   const log = useCallback((attempt: Attempt, stage: string) => {
     const now = performance.now();

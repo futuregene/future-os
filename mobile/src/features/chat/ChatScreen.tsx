@@ -18,6 +18,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { TimelineCard } from "../../components/TimelineCard";
+import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
 import { modelReference, type TimelineItem } from "../../remote/types";
@@ -423,6 +424,10 @@ export function ChatScreen() {
                 filesOpen ? "no-hide-descendants" : "auto"
               }
             >
+              <PausedTimeline
+                key={conversationKey}
+                paused={filesOpen || fileDownload.preview !== null || fileDownload.activeDownload !== null}
+              >
               <View style={styles.timelineViewport}>
                 {/* Inverted data puts latest at offset zero. Reading-mode native
                   anchoring handles subsequent row layout changes. */}
@@ -580,6 +585,7 @@ export function ChatScreen() {
                 selector={selector}
                 setSelector={setSelector}
               />
+              </PausedTimeline>
             </View>
 
             {filesOpen && (

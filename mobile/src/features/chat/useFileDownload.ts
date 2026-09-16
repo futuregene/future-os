@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { AppAlert as Alert } from "../../components/appAlerts";
 import { downloadWarning } from "./downloadPolicy";
+import { readPreviewText } from "./readPreviewText";
 import * as Sharing from "expo-sharing";
 import { openFile as openNativeFile, saveFile, shareFile, supportsNativeFileActions } from "future-file-handler";
 import { File } from "expo-file-system";
@@ -23,8 +24,6 @@ import {
   confirmDownload,
   deferPresentation,
   formatBytes,
-  MARKDOWN_RENDER_BYTES,
-  plainText,
   showToast,
   type ActiveDownload,
   type DownloadHandle,
@@ -283,15 +282,12 @@ export function useFileDownload(
               cachedFile: local,
             });
           } else {
-            const bytes = await local.bytes();
-            const text = plainText(bytes);
-            if (text === null) {
+            const content = await readPreviewText(local);
+            if (!content) {
               Alert.alert(t("attachment.title"), t("attachment.previewOnDesktop"));
               return;
             }
-            const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
-            const previewText =
-              visible.byteLength === bytes.byteLength ? text : new TextDecoder().decode(visible);
+            const { text: previewText, truncated } = content;
             const markdown = fileType.route === "markdown";
             const richJson = mobilePreviewRoute(attachment.name, local.size) === "json";
             setPreview({
@@ -308,7 +304,7 @@ export function useFileDownload(
               attachment,
               uri: local.uri,
               ...(markdown ? { markdown: previewText } : { text: previewText }),
-              truncated: bytes.byteLength > visible.byteLength,
+              truncated,
             });
           }
           return;
@@ -390,9 +386,9 @@ export function useFileDownload(
             setPreview({ attachment, info, uri: file.uri });
           });
         } else {
-          const bytes = await file.bytes();
-          const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
-          const previewText = new TextDecoder().decode(visible);
+          const content = await readPreviewText(file, handle.controller.signal);
+          if (!content) throw new Error("invalid_text_preview");
+          const { text: previewText, truncated } = content;
           handoffDownloadModal(handle, () =>
             setPreview({
               attachment,
@@ -401,7 +397,7 @@ export function useFileDownload(
               ...(info.previewKind === "markdown"
                 ? { markdown: previewText }
                 : { text: previewText }),
-              truncated: bytes.byteLength > visible.byteLength,
+              truncated,
             }),
           );
         }
@@ -714,9 +710,9 @@ export function useFileDownload(
         if (info.previewKind === "image") {
           handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
         } else {
-          const bytes = await file.bytes();
-          const visible = bytes.slice(0, MARKDOWN_RENDER_BYTES);
-          const previewText = new TextDecoder().decode(visible);
+          const content = await readPreviewText(file, handle.controller.signal);
+          if (!content) throw new Error("invalid_text_preview");
+          const { text: previewText, truncated } = content;
           handoffDownloadModal(handle, () =>
             setPreview({
               attachment,
@@ -725,7 +721,7 @@ export function useFileDownload(
               ...(info.previewKind === "markdown"
                 ? { markdown: previewText }
                 : { text: previewText }),
-              truncated: bytes.byteLength > visible.byteLength,
+              truncated,
             }),
           );
         }
