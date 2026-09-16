@@ -14,6 +14,7 @@ export type RemoteFailureReason
     | "system_sleep"
     | "credential_expired"
     | "credential_revoked"
+    | "account_authorization"
     | "service_authorization"
     | "remote_server"
     | "protocol"
@@ -50,7 +51,7 @@ export interface RemoteStatus {
 }
 
 export interface RemoteFailurePresentation {
-  messageKey: "network" | "pairing" | "serviceLater" | "serviceSupport" | "local";
+  messageKey: "network" | "pairing" | "account" | "serviceLater" | "serviceSupport" | "local";
   supportCode: string;
 }
 
@@ -62,6 +63,7 @@ export type RemoteCustomerState
     | "devicePreparing"
     | "disconnected"
     | "pairingExpired"
+    | "accountAuthorization"
     | "networkUnavailable"
     | "serviceUnavailable"
     | "deviceUnavailable";
@@ -73,6 +75,7 @@ export type RemoteCustomerAction
     | "connect"
     | "retry"
     | "pairAgain"
+    | "loginAgain"
     | "contactSupport";
 
 export interface RemoteConnectionPresentation {
@@ -105,6 +108,8 @@ export function remoteFailurePresentation(
       return { messageKey: "network", supportCode: "NW001" };
     case "credential_revoked":
       return { messageKey: "pairing", supportCode: "PA001" };
+    case "account_authorization":
+      return { messageKey: "account", supportCode: "AU003" };
     case "service_authorization":
       return { messageKey: "serviceSupport", supportCode: "AU001" };
     case "protocol":
@@ -167,6 +172,8 @@ function failedConnectionPresentation(
       return { ...common, customerState: "networkUnavailable", action: "checkNetwork", titleKey: "statusNetworkUnavailable" };
     case "pairing":
       return { ...common, customerState: "pairingExpired", action: "pairAgain", titleKey: "statusPairingExpired" };
+    case "account":
+      return { ...common, customerState: "accountAuthorization", action: "loginAgain", titleKey: "statusDisconnected" };
     case "serviceSupport":
       return { ...common, customerState: "serviceUnavailable", action: "contactSupport", titleKey: "statusServiceUnavailable" };
     case "serviceLater":

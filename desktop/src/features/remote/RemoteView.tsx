@@ -8,6 +8,7 @@ import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitleb
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { openExternalUrl } from "../../integrations/storage/files";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
 import { startWindowDrag } from "../../lib/windowDrag";
 import {
@@ -66,6 +67,11 @@ export function RemoteView({
   const presentation = remoteConnectionPresentation(remoteStatus);
   const connected = presentation?.level === "connected";
   const connecting = presentation?.level === "connecting";
+  const connectionStatusKey = connected
+    ? "statusConnected"
+    : connecting
+      ? "statusConnecting"
+      : "statusDisconnected";
   const reconnecting = connecting && presentation?.action !== "wait";
   // Backend `status()` now includes the persisted pair_id even when stopped, so
   // this is authoritative for "paired" across all states: idle, running, and
@@ -172,7 +178,7 @@ export function RemoteView({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
-        <div className="mx-auto w-full max-w-xl space-y-6">
+        <div className="mx-auto w-full max-w-3xl space-y-6">
           <p className="text-sm text-ink-muted">
             {t("description")}
             {" "}
@@ -189,25 +195,32 @@ export function RemoteView({
             ? (
                 <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <Badge tone={connected ? "success" : connecting ? "warning" : "danger"}>
-                      {presentation ? t(presentation.titleKey) : t("statusDisconnected")}
-                      {presentation?.supportCode ? ` (${presentation.supportCode})` : ""}
+                    <Badge tone={connected ? "accent" : connecting ? "warning" : "danger"}>
+                      {t(connectionStatusKey)}
                     </Badge>
                     <span className="min-w-0 truncate text-sm text-ink-muted">{formatPairId(remoteStatus?.pairId)}</span>
                     <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                       <Button
                         disabled={busy}
-                        onClick={() => void (running && !reconnecting ? handleStop() : handleStart())}
+                        onClick={() => {
+                          if (presentation?.action === "loginAgain") {
+                            emitFutureEvent("show-onboarding", undefined);
+                            return;
+                          }
+                          void (running && !reconnecting ? handleStop() : handleStart());
+                        }}
                         size="sm"
                         variant="secondary"
                       >
-                        {running && !reconnecting
-                          ? t("disconnect")
-                          : presentation?.action === "pairAgain"
-                            ? t("pairAgain")
-                            : presentation?.action === "retry" || presentation?.action === "checkNetwork" || presentation?.action === "contactSupport"
-                              ? t("reconnect")
-                              : t("connect")}
+                        {presentation?.action === "loginAgain"
+                          ? t("loginAgain")
+                          : running && !reconnecting
+                            ? t("disconnect")
+                            : presentation?.action === "pairAgain"
+                              ? t("pairAgain")
+                              : presentation?.action === "retry" || presentation?.action === "checkNetwork" || presentation?.action === "contactSupport"
+                                ? t("reconnect")
+                                : t("connect")}
                       </Button>
                       <Button
                         disabled={busy}

@@ -25,6 +25,17 @@ describe("customer remote status", () => {
   it("keeps customer category, action, and technical code as separate layers", () => {
     expect(remoteConnectionPresentation({
       ...status("failed"),
+      reason: "account_authorization",
+    })).toMatchObject({
+      level: "disconnected",
+      customerState: "accountAuthorization",
+      action: "loginAgain",
+      supportCode: "AU003",
+      titleKey: "statusDisconnected",
+      messageKey: "account",
+    });
+    expect(remoteConnectionPresentation({
+      ...status("failed"),
       reason: "protocol",
     })).toMatchObject({
       level: "disconnected",

@@ -53,7 +53,7 @@ pub fn error_code(error: &crate::AppError) -> Option<&'static str> {
     match error {
         crate::AppError::RemoteTransport(_) => Some("network"),
         crate::AppError::RemoteAuthorization(_) => Some("service_authorization"),
-        error if is_account_authorization_error(error) => Some("service_authorization"),
+        error if is_account_authorization_error(error) => Some("account_authorization"),
         crate::AppError::Remote { code, .. } => match code.as_deref() {
             Some("invalid_remote_credential") => Some("revoked"),
             _ => Some("server"),
