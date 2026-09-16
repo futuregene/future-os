@@ -119,6 +119,80 @@ fn delete_idle_session_removes_the_live_runtime() {
         .is_err());
 }
 
+/// Deleting a session announces it on the global control-plane stream, so
+/// clients mirroring the session list (desktop, paired phone) drop their copy
+/// instead of showing a conversation the Agent can no longer load.
+#[test]
+fn delete_session_publishes_global_session_deleted() {
+    let state = make_app_state();
+    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+
+    let response = parse_response(&handle_command_internal(&state, make_cmd("delete_session")));
+    assert_eq!(response["success"], true);
+
+    // Other tests broadcast on the same global stream concurrently — drain
+    // until THIS session's announcement arrives.
+    for _ in 0..64 {
+        match rx.try_recv() {
+            Ok(event)
+                if event.event_type == "session_deleted" && event.data.contains("default") =>
+            {
+                let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+                assert_eq!(data["sessionId"], "default");
+                return;
+            }
+            Ok(_) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                panic!("session_deleted was not published: delete_session must announce removals")
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("global broadcaster channel closed before session_deleted arrived")
+            }
+        }
+    }
+    panic!("session_deleted for default never arrived on the global stream");
+}
+
+/// A refused deletion (an active run is still draining) must NOT announce the
+/// session as gone — clients would drop a conversation that still exists.
+#[test]
+fn refused_delete_session_does_not_announce_removal() {
+    let state = make_app_state();
+    // A session id unique to this test: the global stream is process-wide and
+    // other tests broadcast their own announcements concurrently, so only an
+    // event carrying THIS id could be ours.
+    const ID: &str = "refuse-delete-announce";
+    let created = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("new_session", ID),
+    ));
+    assert_eq!(created["success"], true);
+    let session = state.get_session(ID).unwrap();
+    session
+        .read()
+        .runtime
+        .begin(Some("run-active"), Some("request-active"))
+        .unwrap();
+    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+
+    let response = parse_response(&handle_command_internal(
+        &state,
+        make_cmd_for("delete_session", ID),
+    ));
+    assert_eq!(response["success"], false);
+    assert!(state.sessions.read().contains_key(ID));
+
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "session_deleted" {
+            assert!(
+                !event.data.contains(ID),
+                "a refused deletion announced the session as deleted"
+            );
+        }
+    }
+}
+
 #[test]
 fn delete_reclaims_taskless_persistence_degraded_session() {
     let state = make_app_state();

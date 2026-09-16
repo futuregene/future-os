@@ -581,29 +581,7 @@ impl RunClient {
             let mut parent_id = config.session.clone();
             if parent_id.is_none() {
                 let sessions = self.list_sessions().await?;
-                let list = sessions
-                    .get("sessions")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                if list.is_empty() {
-                    return Err("No previous session to fork from.".to_string());
-                }
-                let mut rows = list
-                    .iter()
-                    .filter_map(|s| {
-                        let obj = s.as_object()?;
-                        let id = obj.get("id")?.as_str()?.to_string();
-                        let updated = obj
-                            .get("updated_at")
-                            .and_then(Value::as_str)
-                            .map(parse_updated_at)
-                            .unwrap_or(0);
-                        Some((updated, id))
-                    })
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| std::cmp::Reverse(row.0));
-                parent_id = rows.first().map(|(_, id)| id.clone());
+                parent_id = most_recent_session(&sessions).map(|(id, _)| id);
                 if parent_id.is_none() {
                     return Err("No previous session to fork from.".to_string());
                 }
@@ -633,53 +611,17 @@ impl RunClient {
             }
         } else if config.continue_last {
             let sessions = self.list_sessions().await?;
-            let list = sessions
-                .get("sessions")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if !list.is_empty() {
-                let mut rows = list
-                    .iter()
-                    .filter_map(|s| {
-                        let obj = s.as_object()?;
-                        let id = obj.get("id")?.as_str()?.to_string();
-                        let name = obj
-                            .get("session_name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        let updated = obj
-                            .get("updated_at")
-                            .and_then(Value::as_str)
-                            .map(parse_updated_at)
-                            .unwrap_or(0);
-                        Some((updated, id, name))
-                    })
-                    .collect::<Vec<_>>();
-                rows.sort_by_key(|row| std::cmp::Reverse(row.0));
-                if let Some((_, id, name)) = rows.first() {
-                    self.switch_session(id).await?;
-                    session_id = id.clone();
-                    if verbose {
-                        let label = if name.is_empty() {
-                            id.clone()
-                        } else {
-                            name.clone()
-                        };
-                        out.write_err(&format!("Continuing session {label}...\n"));
-                    }
-                } else {
-                    return Err(
-                        "No previous session to continue; run without --continue to start a new one."
-                            .to_string(),
-                    );
-                }
-            } else {
+            let Some((id, name)) = most_recent_session(&sessions) else {
                 return Err(
                     "No previous session to continue; run without --continue to start a new one."
                         .to_string(),
                 );
+            };
+            self.switch_session(&id).await?;
+            session_id = id.clone();
+            if verbose {
+                let label = if name.is_empty() { id } else { name };
+                out.write_err(&format!("Continuing session {label}...\n"));
             }
         } else {
             // Fresh session for every standalone run — isolates model/thinking/
@@ -865,17 +807,31 @@ async fn await_stream(
     }
 }
 
-/// `parse_updated_at(s)` — comparable timestamp for `updated_at` sorting
-/// (the TS uses `new Date(...).getTime()`; this mirrors the ordering, not
-/// the exact epoch). Accepts RFC3339 and `"YYYY-MM-DD HH:MM:SS"`.
-fn parse_updated_at(s: &str) -> i64 {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return dt.timestamp_millis();
-    }
-    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return dt.and_utc().timestamp_millis();
-    }
-    0
+/// `(id, name)` of the most recently updated session in a `list_sessions`
+/// payload, or `None` when there is none.
+///
+/// Reads the canonical `updatedAtMs` / `sessionName` the Agent emits. A client
+/// that read a retired key instead would see every session at timestamp 0 and
+/// silently continue whichever one the Agent happened to list first.
+fn most_recent_session(sessions: &Value) -> Option<(String, String)> {
+    let list = sessions.get("sessions").and_then(Value::as_array)?;
+    let mut rows = list
+        .iter()
+        .filter_map(|session| {
+            let obj = session.as_object()?;
+            let id = obj.get("id")?.as_str()?.to_string();
+            let name = obj
+                .get("sessionName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let updated = obj.get("updatedAtMs").and_then(Value::as_i64).unwrap_or(0);
+            Some((updated, id, name))
+        })
+        .collect::<Vec<_>>();
+    // Ties keep the Agent's own order (newest first), never a random one.
+    rows.sort_by_key(|(updated, _, _)| std::cmp::Reverse(*updated));
+    rows.into_iter().next().map(|(_, id, name)| (id, name))
 }
 
 /// Build the event JSON the TS client pushes: the envelope keys in order,
@@ -1014,11 +970,28 @@ mod tests {
         assert!(millis > 1_000_000_000_000); // past 2001-09-09
     }
 
+    /// The canonical `list_sessions` shape — the same keys the Agent emits,
+    /// not the retired snake_case one. Hand-written snake_case JSON is exactly
+    /// how this selection silently degraded to "whatever came first".
     #[test]
-    fn parse_updated_at_formats() {
-        assert_eq!(parse_updated_at("2026-08-06T12:00:00Z"), 1786017600000);
-        assert_eq!(parse_updated_at("2026-08-06 12:00:00"), 1786017600000);
-        assert_eq!(parse_updated_at("garbage"), 0);
+    fn most_recent_session_reads_the_canonical_shape() {
+        let sessions = serde_json::json!({"sessions": [
+            {"id": "old", "sessionName": "Old", "updatedAtMs": 1786017600000i64},
+            {"id": "new", "sessionName": "Latest", "updatedAtMs": 1786104000000i64},
+            {"id": "untimed"},
+            {"bogus": true}
+        ]});
+        assert_eq!(
+            super::most_recent_session(&sessions),
+            Some(("new".to_string(), "Latest".to_string()))
+        );
+
+        // No usable rows → None, never a panic.
+        assert_eq!(super::most_recent_session(&serde_json::json!({})), None);
+        assert_eq!(
+            super::most_recent_session(&serde_json::json!({"sessions": []})),
+            None
+        );
     }
 
     // ── execute_command surface ─────────────────────────────────────
@@ -1095,7 +1068,7 @@ mod tests {
             agent.responses.insert(
                 "list_sessions".into(),
                 format!(
-                    "{{\"sessions\":[{{\"id\":\"s1\",\"updated_at\":\"2026-08-06 12:00:00\",\"session_name\":\"{name}\"}}]}}"
+                    "{{\"sessions\":[{{\"id\":\"s1\",\"updatedAtMs\":1786017600000,\"sessionName\":\"{name}\"}}]}}"
                 ),
             );
             agent
@@ -1948,10 +1921,10 @@ mod tests {
         agent.responses.insert(
             "list_sessions".into(),
             "{\"sessions\":[\
-                {\"id\":\"old\",\"updated_at\":\"2026-08-01T00:00:00Z\"},\
-                {\"id\":\"new\",\"session_name\":\"Latest\",\"updated_at\":\"2026-08-09T00:00:00Z\"},\
+                {\"id\":\"old\",\"updatedAtMs\":1785542400000},\
+                {\"id\":\"new\",\"sessionName\":\"Latest\",\"updatedAtMs\":1786233600000},\
                 {\"bogus\":true},\
-                {\"id\":\"naive\",\"updated_at\":\"2026-08-08 12:00:00\"}\
+                {\"id\":\"middle\",\"updatedAtMs\":1786147200000}\
             ]}"
             .into(),
         );
@@ -2015,7 +1988,7 @@ mod tests {
         let mut agent = fresh_run_agent();
         agent.responses.insert(
             "list_sessions".into(),
-            "{\"sessions\":[{\"id\":\"s-latest\",\"updated_at\":\"2026-08-09T00:00:00Z\"}]}".into(),
+            "{\"sessions\":[{\"id\":\"s-latest\",\"updatedAtMs\":1786104000000}]}".into(),
         );
         agent
             .responses
@@ -2036,7 +2009,7 @@ mod tests {
         let mut agent = fresh_run_agent();
         agent.responses.insert(
             "list_sessions".into(),
-            "{\"sessions\":[{\"id\":\"s1\",\"updated_at\":\"2026-08-09T00:00:00Z\"}]}".into(),
+            "{\"sessions\":[{\"id\":\"s1\",\"updatedAtMs\":1786233600000}]}".into(),
         );
         agent
             .responses

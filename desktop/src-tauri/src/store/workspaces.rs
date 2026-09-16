@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::db::*;
 use super::records::*;
@@ -84,21 +84,7 @@ pub(super) fn get_or_create_user_workspace_in(
     path: PathBuf,
     description: Option<String>,
 ) -> Result<WorkspaceRecord, crate::AppError> {
-    let normalized_path = path.display().to_string();
-    let existing = conn
-        .query_row(
-            &format!(
-                "SELECT {WORKSPACE_COLUMNS}
-             FROM workspaces
-             WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL
-             LIMIT 1"
-            ),
-            params![normalized_path],
-            workspace_from_row,
-        )
-        .optional()?;
-
-    if let Some(workspace) = existing {
+    if let Some(workspace) = find_user_workspace_in(conn, &path)? {
         return Ok(workspace);
     }
 
@@ -108,10 +94,69 @@ pub(super) fn get_or_create_user_workspace_in(
              id, name, kind, path, description, cleanup_status, last_opened_at,
              created_at, updated_at
          ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)";
-    let args = params![workspace_id, name, normalized_path, description, now];
+    let args = params![
+        workspace_id,
+        name,
+        normalize_workspace_path(&path).display().to_string(),
+        description,
+        now
+    ];
     conn.execute(INSERT_SQL, args)?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
+}
+
+/// Resolve the user workspace for a directory, or `None` when the directory
+/// has no workspace yet. A client's spelling is never taken as identity here:
+/// see [`normalize_workspace_path`].
+pub fn find_user_workspace_by_path(
+    path: &Path,
+) -> Result<Option<WorkspaceRecord>, crate::AppError> {
+    let conn = connect()?;
+    find_user_workspace_in(&conn, path)
+}
+
+/// Connection-injecting variant of [`find_user_workspace_by_path`].
+///
+/// The stored spelling is matched first (one indexed lookup). Only when that
+/// misses are the other rows compared by their canonical path, which is how a
+/// workspace stored under an older aliasing spelling — a pre-normalization row,
+/// or one created before its directory existed — is still found instead of
+/// duplicated.
+pub(super) fn find_user_workspace_in(
+    conn: &Connection,
+    path: &Path,
+) -> Result<Option<WorkspaceRecord>, crate::AppError> {
+    let normalized = normalize_workspace_path(path);
+    let stored = conn
+        .query_row(
+            &format!(
+                "SELECT {WORKSPACE_COLUMNS}
+             FROM workspaces
+             WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL
+             LIMIT 1"
+            ),
+            params![normalized.display().to_string()],
+            workspace_from_row,
+        )
+        .optional()?;
+    if stored.is_some() {
+        return Ok(stored);
+    }
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {WORKSPACE_COLUMNS}
+             FROM workspaces
+             WHERE kind = 'user' AND deleted_at IS NULL"
+    ))?;
+    let rows = stmt.query_map([], workspace_from_row)?;
+    for row in rows {
+        let row = row?;
+        if normalize_workspace_path(Path::new(&row.path)) == normalized {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
 }
 
 pub fn get_or_create_chat_workspace(
@@ -520,6 +565,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// One directory is one workspace, however a client spells it: a path
+    /// reached through a symlink (the macOS `/tmp` → `/private/tmp` shape)
+    /// resolves to the workspace already stored under the other spelling
+    /// instead of creating a second group for the same directory.
+    #[cfg(unix)]
+    #[test]
+    fn create_workspace_resolves_an_aliased_path_to_one_workspace() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_alias");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let base = std::env::temp_dir().join(format!("futureos-wsa-{}", std::process::id()));
+        let real = base.join("real");
+        let alias = base.join("alias");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&real).expect("create real dir");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+
+        let created = create_workspace(CreateWorkspaceInput {
+            name: None,
+            description: None,
+            path: real.display().to_string(),
+            create_directory: Some(true),
+        })
+        .expect("create through the real path");
+
+        // Same directory through the symlink → the same row.
+        let aliased = create_workspace(CreateWorkspaceInput {
+            name: Some("Ignored".to_string()),
+            description: None,
+            path: alias.display().to_string(),
+            create_directory: Some(true),
+        })
+        .expect("create through the alias");
+        assert_eq!(aliased.id, created.id);
+        assert_eq!(
+            list_workspaces()
+                .expect("list")
+                .into_iter()
+                .filter(|workspace| workspace.kind == "user")
+                .count(),
+            1
+        );
+
+        // A legacy row kept under an aliasing spelling is still found: the
+        // lookup compares canonical paths, not the text stored.
+        let conn = connect().expect("connect");
+        conn.execute(
+            "UPDATE workspaces SET path = ?1 WHERE id = ?2",
+            params![alias.display().to_string(), created.id],
+        )
+        .expect("re-spell the stored path");
+        drop(conn);
+        assert_eq!(
+            find_user_workspace_by_path(&real)
+                .expect("find")
+                .map(|workspace| workspace.id),
+            Some(created.id)
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn create_workspace_expands_a_tilde_path() {
         let home = crate::auth_store::test_support::HomeGuard::new("ws_tilde");
@@ -538,7 +647,13 @@ mod tests {
             create_directory: None,
         })
         .expect("create");
-        assert_eq!(created.path, dir.display().to_string());
+        // Stored canonicalized: `~` expands to HOME, and a HOME sitting behind
+        // a symlink (macOS `/var` → `/private/var`) is stored as resolved so
+        // every client's spelling maps to this one workspace.
+        assert_eq!(
+            created.path,
+            dir.canonicalize().unwrap().display().to_string()
+        );
         drop(home);
     }
 

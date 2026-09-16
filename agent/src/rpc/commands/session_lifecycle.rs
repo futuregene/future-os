@@ -255,6 +255,9 @@ pub(crate) fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -
         );
     }
     state.sessions.write().remove(&cmd.session_id);
+    // Only now: the session is gone from memory and disk, so a client that
+    // reconciles on this announcement can never observe a half-deleted one.
+    crate::rpc::publish_session_deleted(&cmd.session_id);
     RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
 }
 
