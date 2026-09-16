@@ -1,12 +1,12 @@
 import type { FutureMarkdownDocument, MarkdownNode } from "@future-os/markdown";
 import type { Root } from "mdast";
-import { parseFutureMarkdown, remarkLatexMath } from "@future-os/markdown";
+import { parseFutureMarkdown, remarkCjkEmphasis, remarkLatexMath } from "@future-os/markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
-const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath);
+const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis);
 
 export interface StreamingMarkdownBlock {
   /** Stable source offset used as the renderer key while later text grows. */

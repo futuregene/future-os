@@ -1,6 +1,51 @@
 import { createStreamingMarkdownParser, parseFutureMarkdown } from "@future-os/markdown";
 
 describe("Markdown syntax fidelity", () => {
+  test.each([
+    ["迁移失败处理不合适：", "新工作区字段迁移被放进了可选集合。"],
+    ["新旧端兼容未完善：", "新手机端连接旧桌面端时仍显示置顶入口。"],
+    ["失效工作区校验不足：", "更新条件排除了已删除记录。"],
+  ])("renders a CJK list label ending in punctuation: %s", (label, body) => {
+    expect(parseFutureMarkdown(`- **${label}**${body}`).nodes).toEqual([{
+      type: "list", ordered: false, start: undefined,
+      items: [{ children: [
+        { type: "strong", children: [{ type: "text", text: label }] },
+        { type: "text", text: body },
+      ], blocks: undefined, checked: undefined }],
+    }]);
+  });
+
+  test.each([
+    ["前**“重点”**后", "strong", "“重点”"],
+    ["前*（重点）*后", "italic", "（重点）"],
+    ["前**注意:**后", "strong", "注意:"],
+    ["前**「重要」**です", "strong", "「重要」"],
+    ["앞**중요：**뒤", "strong", "중요："],
+  ])("supports punctuation at CJK emphasis boundaries: %s", (source, type, text) => {
+    expect(parseFutureMarkdown(source).nodes[0]).toMatchObject({
+      type: "paragraph", children: [
+        { type: "text" }, { type, children: [{ type: "text", text }] }, { type: "text" },
+      ],
+    });
+  });
+
+  test("preserves escapes, code, destinations and ordinary delimiter rules", () => {
+    expect(parseFutureMarkdown(String.raw`\*\*注意：\*\*正文`).nodes[0]).toMatchObject({
+      children: [{ type: "text", text: "**注意：**正文" }],
+    });
+    expect(parseFutureMarkdown("`**注意：**正文`").nodes[0]).toMatchObject({
+      children: [{ type: "code", code: "**注意：**正文" }],
+    });
+    expect(parseFutureMarkdown("```md\n**注意：**正文\n```").nodes[0]).toEqual({
+      type: "code", language: "md", code: "**注意：**正文",
+    });
+    expect(parseFutureMarkdown("[链接](https://example.com/**注意：**正文)").nodes[0]).toMatchObject({
+      children: [{ type: "link", href: "https://example.com/**注意：**正文" }],
+    });
+    for (const source of ["**Warning:**text", "foo_bar_baz", "** 注意：**正文", "**注意： **正文", "**注意：正文"]) {
+      expect(parseFutureMarkdown(source).nodes[0]).toMatchObject({ children: [{ type: "text", text: source }] });
+    }
+  });
   test("settled parse cache evicts by charged bytes and bypasses oversized sources", () => {
     const source = "```\n" + "x".repeat(100000) + "\n```";
     const first = parseFutureMarkdown(source);
@@ -65,6 +110,11 @@ describe("Markdown syntax fidelity", () => {
   });
 
   test.each([
+    "- **迁移失败处理不合适：**新工作区。\n- **新旧端兼容未完善：**新手机端。\n\n下一段",
+    "前**“重点”**后，前*（重点）*后。\n\n> **注意：**正文",
+    "| 项目 | 说明 |\n|---|---|\n| **注意：**正文 | 前**「重要」**です |",
+    "**注意：`code`**正文，**注意：[链接](https://example.com)**正文。",
+    "前***“重点”***后，**注意：*重点*。**正文。",
     "[old][ref]\n\nmore\n\n> [ref]: https://example.com",
     "[old][ref]\n\nmore\n\n- [ref]: https://example.com",
     "[old][two words]\n\nmore\n\n[two\nwords]: ./target.md",

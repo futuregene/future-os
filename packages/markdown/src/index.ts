@@ -8,6 +8,7 @@ export type { MarkdownTarget } from "./localPath";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { remarkLatexMath } from "./remarkLatexMath";
+export { remarkCjkEmphasis } from "./remarkCjkEmphasis";
 export { referenceKey } from "./types";
 export type {
   FutureMarkdownDocument,

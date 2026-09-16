@@ -48,6 +48,14 @@ describe("MarkdownText layout and fidelity", () => {
     expect(root.findAllByType(Text).length).toBeLessThan(50);
   });
 
+  test("CJK list labels ending in punctuation render as bold native Text", () => {
+    const labels = ["迁移失败处理不合适：", "新旧端兼容未完善：", "失效工作区校验不足："];
+    const root = render(labels.map(label => `- **${label}**正文继续。`).join("\n"));
+    const bold = root.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontWeight === "700");
+    expect(bold.map(node => node.props.children.join(""))).toEqual(labels);
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");
