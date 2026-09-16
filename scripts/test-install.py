@@ -99,6 +99,49 @@ printf '%s\\n' "$VERSION" "$ASSET_URL" "$ASSET_SHA"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["1.2.3", "https://dl.future-os.cn/releases/1.2.3/portable.tar.gz", ""])
 
+    def test_macos_bundle_replacement_does_not_merge_stale_files(self):
+        result = self.run_installer("", r'''
+mkdir -p "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"
+printf old > "$TMP/Applications/FutureOS.app/stale"
+printf new > "$TMP/source/FutureOS.app/current"
+replace_macos_app "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"
+test -f "$TMP/Applications/FutureOS.app/current"
+test ! -e "$TMP/Applications/FutureOS.app/stale"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_macos_bundle_staging_failure_preserves_previous_app(self):
+        result = self.run_installer("", r'''
+mkdir -p "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"
+printf old > "$TMP/Applications/FutureOS.app/current"
+copy_macos_app() { return 1; }
+if replace_macos_app "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"; then
+  exit 1
+fi
+test "$(cat "$TMP/Applications/FutureOS.app/current")" = old
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_macos_bundle_activation_failure_restores_previous_app(self):
+        result = self.run_installer("", r'''
+mkdir -p "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"
+printf new > "$TMP/source/FutureOS.app/current"
+printf old > "$TMP/Applications/FutureOS.app/current"
+move_count=0
+mv() {
+  move_count=$((move_count + 1))
+  if [[ "$move_count" -eq 2 ]]; then
+    return 1
+  fi
+  command mv "$@"
+}
+if replace_macos_app "$TMP/source/FutureOS.app" "$TMP/Applications/FutureOS.app"; then
+  exit 1
+fi
+test "$(cat "$TMP/Applications/FutureOS.app/current")" = old
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

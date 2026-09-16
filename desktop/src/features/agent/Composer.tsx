@@ -51,11 +51,9 @@ export type ComposerDragState = "accept" | "reject" | null;
 
 interface ComposerProps {
   /**
-   * Sync send (thread path): the message renders as an optimistic bubble, so
-   * the composer clears immediately. Async send (new-conversation path): the
-   * message has nowhere to live until the thread exists, so the composer only
-   * clears after the promise resolves — a failed creation keeps the draft for
-   * retry (the caller surfaces the error itself, e.g. via toast).
+   * Resolve when the message is accepted, not when the assistant finishes.
+   * Rejecting preserves the submitted draft. New-conversation callers resolve
+   * once the prompt is staged in its newly created thread.
    */
   onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
@@ -326,13 +324,25 @@ function ComposerImpl({
     ) {
       return;
     }
+    const submittedText = editorRef.current?.getContent() ?? "";
+    const submittedDraftKey = draftKeyRef.current;
+    const submittedAttachments = attachments;
     const clearComposer = () => {
-      editorRef.current?.clear();
-      setAttachments([]);
+      // The editor remains editable during delivery. A late ACK must not erase
+      // a revised draft or a different conversation's composer.
+      if (!editorRef.current || draftKeyRef.current !== submittedDraftKey)
+        return;
+      const unchanged = (editorRef.current?.getContent() ?? "") === submittedText;
+      if (unchanged) {
+        editorRef.current?.clear();
+        lastTextRef.current = "";
+      }
+      const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
+      attachmentsRef.current = remaining;
+      setAttachments(remaining);
       setAttachError(null);
-      lastTextRef.current = "";
-      if (draftKeyRef.current)
-        clearComposerDraft(draftKeyRef.current);
+      if (unchanged && remaining.length === 0 && submittedDraftKey)
+        clearComposerDraft(submittedDraftKey);
     };
     const result = onSend({ attachments, content: trimmed });
     if (result) {

@@ -41,6 +41,7 @@ export interface SendPipelineDeps {
   setRecentRun: (run: StoredRun) => void;
   refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
   onThreadActivity: () => void;
+  onAccepted?: () => void;
   // True while this send still owns the foreground view. A newer send or a
   // thread switch flips it false; every view-mutating step re-checks it so a
   // superseded send can't write stale state into the current thread.
@@ -56,7 +57,7 @@ export interface SendPipelineDeps {
  * the `useSendMessage` wrapper that calls this.
  */
 export async function runSendPipeline(
-  { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend }: SendPipelineDeps,
+  { thread, modelId, thinkingLevel, setMessages, setRecentRun, refreshRecentRun, onThreadActivity, isCurrentSend, onAccepted }: SendPipelineDeps,
   { attachments, content }: ComposerSendPayload,
 ): Promise<void> {
   // Validate and prepare images before adding optimistic messages. A failed
@@ -107,6 +108,13 @@ export async function runSendPipeline(
   }
 
   let run: StoredRun | null = null;
+  let accepted = false;
+  const acknowledge = () => {
+    if (accepted)
+      return;
+    accepted = true;
+    onAccepted?.();
+  };
 
   try {
     const referenceContext = await buildReferenceContext(thread.workspaceId, content);
@@ -154,6 +162,7 @@ export async function runSendPipeline(
 
     const agentSessionId = thread.agentSessionId?.trim() || null;
     const reply = await sendPromptToFutureAgent({
+      onAccepted: acknowledge,
       message: content,
       modelContext: referenceContext,
       threadId: thread.id,
@@ -167,6 +176,7 @@ export async function runSendPipeline(
       attachments: attachmentInputs(importedAttachments),
       thinkingLevel,
     });
+    acknowledge();
     await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);
     clearStreamUpdates();
 
@@ -381,6 +391,9 @@ export async function runSendPipeline(
       }));
       onThreadActivity();
     }
+    // A caller waiting for acceptance must preserve its draft on rejection.
+    if (onAccepted && !accepted)
+      throw error;
   }
 }
 

@@ -2815,6 +2815,52 @@ mod pipeline_tests {
         )
     }
 
+    #[cfg(feature = "gui")]
+    #[tokio::test]
+    async fn gui_prompt_notifies_acceptance_before_stream_completion() {
+        let fixture = pipeline_fixture("gui-prompt-ack", "New Chat");
+        fixture.mock.push_data(
+            "new_session",
+            serde_json::json!({"sessionId": "sess-gui-ack"}),
+        );
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        let accepted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = accepted.clone();
+        let channel = tauri::ipc::Channel::new(move |_| {
+            signal.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        // The mock accepts prompts but its default stream remains pending.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::commands::forward_prompt_acceptance(
+                AgentPromptRequest {
+                    message,
+                    model_context: String::new(),
+                    attachments: None,
+                    thread_id,
+                    session_id: None,
+                    run_id: Some(run_id),
+                    model_id: None,
+                    thinking_level: None,
+                },
+                Some(channel),
+            ),
+        )
+        .await;
+        assert!(result.is_err(), "the response must still be streaming");
+        assert!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            "commands reached: {:?}",
+            fixture
+                .mock
+                .requests()
+                .iter()
+                .map(|request| &request.r#type)
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[tokio::test]
     async fn agent_prompt_new_session_full_pipeline() {
         let fixture = pipeline_fixture("pipe-new", "New Chat");

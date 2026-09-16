@@ -488,3 +488,35 @@ describe("runSendPipeline stream/failure edges", () => {
     await send;
   });
 });
+
+describe("send acceptance timing", () => {
+  it("acknowledges before the response finishes and keeps the run active", async () => {
+    vi.mocked(createRun).mockResolvedValue(storedRun());
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    let finish!: (value: Awaited<ReturnType<typeof sendPromptToFutureAgent>>) => void;
+    vi.mocked(sendPromptToFutureAgent).mockImplementation(({ onAccepted }) => {
+      onAccepted?.();
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    const onAccepted = vi.fn();
+    let finished = false;
+    const send = runSendPipeline({ ...makeDeps(vi.fn()), onAccepted }, { content: "hello", attachments: [] })
+      .then(() => { finished = true; });
+    await vi.waitFor(() => expect(onAccepted).toHaveBeenCalledTimes(1));
+    expect(finished).toBe(false);
+    finish({ content: "answer", complete: true, sessionId: "session-1", sessionRecreated: false });
+    await send;
+    expect(onAccepted).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects delivery without acknowledging when the Agent rejects the prompt", async () => {
+    vi.mocked(createRun).mockResolvedValue(storedRun());
+    vi.mocked(getRun).mockResolvedValue(storedRun());
+    vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("Agent unavailable"));
+    const onAccepted = vi.fn();
+    await expect(runSendPipeline({ ...makeDeps(vi.fn()), onAccepted }, { content: "hello", attachments: [] })).rejects.toThrow("Agent unavailable");
+    expect(onAccepted).not.toHaveBeenCalled();
+  });
+});

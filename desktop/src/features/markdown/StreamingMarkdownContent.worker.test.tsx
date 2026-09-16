@@ -70,6 +70,29 @@ it("renders worker ASTs, displays pending source, and finalizes without any UI-t
   }
 });
 
+it("keeps a pending prose suffix in the same DOM block while the worker catches up", () => {
+  vi.stubGlobal("Worker", ParserWorker);
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  let text = "hello";
+  try {
+    act(() => root.render(<StreamingMarkdownContent content={text} live />));
+    act(() => ParserWorker.current.finish());
+    expect(host.querySelector("[data-streamed-block]")?.childElementCount).toBe(1);
+
+    text += " world";
+    act(() => root.render(<StreamingMarkdownContent content={text} live />));
+    expect(host.querySelector("[data-streamed-block]")?.childElementCount).toBe(1);
+    expect(host.querySelector("[data-streamed-block]")?.textContent).toBe(text);
+
+    act(() => ParserWorker.current.finish());
+    expect(host.querySelector("[data-streamed-block]")?.childElementCount).toBe(1);
+  }
+  finally {
+    act(() => root.unmount());
+  }
+});
+
 it("projects the same rich nodes as static parsing for whole-document and split Markdown", async () => {
   const { parseFutureMarkdown: parse } = await import("@future-os/markdown");
   for (const text of [

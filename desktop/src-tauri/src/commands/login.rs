@@ -7,7 +7,15 @@ use crate::future_login::{
 };
 
 #[tauri::command]
-pub async fn start_future_login() -> Result<FutureLoginStart, crate::AppError> {
+pub async fn start_future_login<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<FutureLoginStart, crate::AppError> {
+    if !agent_supervisor::ensure_agent_ready_for_login(app).await {
+        return Err(crate::AppError::Message(
+            "Future Agent could not be started; authorization has not begun. Please retry."
+                .to_string(),
+        ));
+    }
     future_login::start().await
 }
 
@@ -16,16 +24,19 @@ pub async fn poll_future_login<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     device_code: String,
 ) -> Result<FutureLoginPoll, crate::AppError> {
+    // Do this again for every poll: the user may spend minutes in the browser
+    // after `start_future_login`, and the Agent can exit during that gap. Do
+    // not ask the server for a potentially one-time credential until its sole
+    // durable writer is ready. A startup failure remains a transient poll so
+    // the UI keeps the same device code and retries.
+    if !agent_supervisor::ensure_agent_ready_for_login(app.clone()).await {
+        return Ok(FutureLoginPoll {
+            status: "retry".to_string(),
+            message: None,
+            retry_after_seconds: None,
+        });
+    }
     let result = future_login::poll(&device_code).await?;
-    // Make sure the agent is running once credentials land. On a fresh install
-    // the sidecar came up model-less (agent/src/main.rs no longer exits when
-    // nothing is configured) and stays up, so this is usually a cheap no-op probe.
-    // But it also self-heals the case where the initial spawn failed — e.g. a
-    // Windows portable build where Mark-of-the-Web blocked the child on first
-    // launch: `ensure_agent_running` only runs once at startup (no watchdog), so
-    // without this the agent would never come up until the app was restarted.
-    // Safe to call unconditionally: if an agent is already reachable it attaches
-    // instead of spawning a duplicate.
     if result.status == "authorized" {
         // Bring the app window to the front so the user sees the result.
         use tauri::Manager;
@@ -34,8 +45,6 @@ pub async fn poll_future_login<R: tauri::Runtime>(
             let _ = window.show();
             let _ = window.set_focus();
         }
-        let handle = app.clone();
-        std::thread::spawn(move || agent_supervisor::ensure_agent_running(&handle));
         // Credential persistence + live-session refresh completed inside the
         // Agent before `future_login::poll` reported authorization.
     }
@@ -104,14 +113,19 @@ mod tests {
 
     #[tokio::test]
     async fn start_future_login_returns_the_device_code() {
+        let _lock = mock_agent_lock();
         let _home = HomeGuard::new("cmd-login-start");
+        crate::commands::agent_mock::ensure_mock_agent();
         let url = mock_http_server(vec![(
             200,
             "application/json",
             b"{\"device_code\":\"dc-1\",\"user_code\":\"UC-1\",\"verification_uri_complete\":\"https://future-os.cn/oauth/device?user_code=UC-1\",\"expires_in\":1800,\"interval\":5}".to_vec(),
         )]);
         point_auth(&url);
-        let start = start_future_login().await.expect("start");
+        let app = mock_app_with_main_window();
+        let start = start_future_login(app.handle().clone())
+            .await
+            .expect("start");
         assert_eq!(start.user_code, "UC-1");
         assert_eq!(start.device_code, "dc-1");
     }
@@ -188,7 +202,9 @@ mod tests {
 
     #[tokio::test]
     async fn poll_future_login_reports_pending_without_authorization() {
+        let _lock = mock_agent_lock();
         let _home = HomeGuard::new("cmd-login-poll-pending");
+        crate::commands::agent_mock::ensure_mock_agent();
         let app = mock_app_with_main_window();
         // A non-2xx `authorization_pending` body exercises the poll call and
         // the `status != authorized` (no window/spawn) branch.
@@ -203,6 +219,7 @@ mod tests {
             .await
             .expect("poll");
         assert_eq!(result.status, "pending");
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]
@@ -228,9 +245,6 @@ mod tests {
             .expect("poll");
         assert_eq!(result.status, "authorized");
 
-        // The detached ensure_agent_running thread probes the (reachable) mock
-        // agent and returns — give it a beat to run so its line is attributed.
-        std::thread::sleep(std::time::Duration::from_millis(100));
         script_mock_agent(MockScript::default());
     }
 }
