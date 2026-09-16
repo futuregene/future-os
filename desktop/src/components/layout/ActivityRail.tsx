@@ -455,8 +455,12 @@ export function ActivityRail({
                                   >
                                     {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
                                   </button>
+                                  {/* gap-1 (not gap-2): the workspace name then lands on
+                                      the same 48px column as its first-level titles,
+                                      matching the folder icon's role as this header's
+                                      version of the row toggle column. */}
                                   <button
-                                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
                                     onClick={() => onSelectWorkspace(workspace, groupThreads)}
                                     type="button"
                                   >

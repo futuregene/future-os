@@ -36,18 +36,22 @@ function props(): ComponentProps<typeof ThreadListItem> {
 }
 
 describe("thread row title space", () => {
+  // Row start = the leaf title column (chat 16 / workspace 28, unchanged); each
+  // level adds 16px of toggle + 4px of gap, so a child's start is its parent's
+  // title column and descendant titles line up with the parent title.
   it.each([
-    { compact: false, depth: 0, hasChildren: false, padding: 16, spacer: false },
-    { compact: false, depth: 0, hasChildren: true, padding: 16, spacer: false },
-    { compact: false, depth: 1, hasChildren: false, padding: 32, spacer: true },
-    { compact: false, depth: 1, hasChildren: true, padding: 32, spacer: false },
-    { compact: true, depth: 0, hasChildren: false, padding: 28, spacer: false },
-    { compact: true, depth: 0, hasChildren: true, padding: 28, spacer: false },
-    { compact: true, depth: 1, hasChildren: false, padding: 44, spacer: false },
-    { compact: true, depth: 1, hasChildren: true, padding: 44, spacer: false },
-    { compact: true, depth: 2, hasChildren: false, padding: 60, spacer: false },
-    { compact: true, depth: 2, hasChildren: true, padding: 60, spacer: false },
-  ])("uses only the necessary gutter ($compact, depth=$depth, children=$hasChildren)", ({ compact, depth, hasChildren, padding, spacer }) => {
+    { compact: false, depth: 0, hasChildren: false, padding: 16 },
+    { compact: false, depth: 0, hasChildren: true, padding: 16 },
+    { compact: false, depth: 1, hasChildren: false, padding: 36 },
+    { compact: false, depth: 1, hasChildren: true, padding: 36 },
+    { compact: false, depth: 2, hasChildren: false, padding: 56 },
+    { compact: true, depth: 0, hasChildren: false, padding: 28 },
+    { compact: true, depth: 0, hasChildren: true, padding: 28 },
+    { compact: true, depth: 1, hasChildren: false, padding: 48 },
+    { compact: true, depth: 1, hasChildren: true, padding: 48 },
+    { compact: true, depth: 2, hasChildren: false, padding: 68 },
+    { compact: true, depth: 2, hasChildren: true, padding: 68 },
+  ])("uses only the necessary gutter ($compact, depth=$depth, children=$hasChildren)", ({ compact, depth, hasChildren, padding }) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -84,13 +88,13 @@ describe("thread row title space", () => {
         expect(expander.getAttribute("aria-expanded")).toBe("true");
         expect(expander.querySelector("svg")!.classList.contains("lucide-minus")).toBe(true);
       }
-      else if (spacer) {
-        expect(title.previousElementSibling?.tagName).toBe("SPAN");
-        expect(title.previousElementSibling?.classList.contains("size-4")).toBe(true);
-      }
       else {
         expect(title.previousElementSibling).toBe(select);
       }
+      // A child row carries no toggle column of its own: its start (the padding
+      // above) *is* the parent's title column.
+      if (depth > 0)
+        expect(row.querySelector("span.size-4")).toBeNull();
       // Header chevrons stay the headers' own: no row renders one.
       expect(row.querySelector("svg.lucide-chevron-right, svg.lucide-chevron-down")).toBeNull();
       act(() => select.click());

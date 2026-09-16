@@ -108,11 +108,11 @@ function ThreadListItemImpl({
         compact ? "h-7" : "h-8",
         active && "bg-surface-subtle text-ink",
       )}
-      // Workspace rows start past the group header's own chevron (28px = the
-      // header's folder icon), so a row's expand chevron can never land in the
-      // group's collapse column. Non-workspace rows (chat + pinned) get a 16px
-      // gutter of their own — 8px read as flush against the highlight's edge.
-      style={{ paddingLeft: (compact ? 28 : 16) + depth * 16 }}
+      // Row start = the title column of a leaf (chat/pinned 16, workspace 28,
+      // unchanged); each level adds 16px of toggle + 4px of gap, so a child's
+      // row start lands exactly on its parent's title column — descendant
+      // titles line up with the parent title, level after level.
+      style={{ paddingLeft: (compact ? 28 : 16) + depth * 20 }}
       // Right-click anywhere on the row opens the same actions menu as the
       // `...` button.
       onContextMenu={(event) => {
@@ -152,10 +152,7 @@ function ThreadListItemImpl({
               {expanded ? <Minus className="size-3.5 shrink-0" /> : <Plus className="size-3.5 shrink-0" />}
             </button>
           )
-        : !compact && depth > 0
-            // Align descendants within a tree, but don't indent unrelated roots.
-            ? <span className="pointer-events-none size-4 shrink-0" />
-            : null}
+        : null}
       <span
         className={cn(
           "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
