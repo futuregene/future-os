@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { basename, classifyMarkdownTarget, localFilePath, remoteMarkdownImageUrl } from "@future-os/markdown";
@@ -62,7 +62,7 @@ function LocalImage({ alt, loader, path, onOpen, linked }: {
   const [failed, setFailed] = useState(false);
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
-  const load = async () => {
+  const load = useCallback(async () => {
     if (pending.current) return;
     const request = new AbortController();
     pending.current = request;
@@ -79,7 +79,17 @@ function LocalImage({ alt, loader, path, onOpen, linked }: {
         setLoading(false);
       }
     }
-  };
+  }, [loader, path]);
+  // Load once per mount, and only once: a reply re-projects on every streaming
+  // delta, so an unguarded effect here would re-request the image on each tick.
+  // An image written into the Markdown is part of the document either way — in a
+  // reply or in a file preview — so it never waits for a tap.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoStarted.current || uri) return;
+    autoStarted.current = true;
+    void load();
+  }, [load, uri]);
   if (uri) return <Pressable accessibilityRole={linked ? "link" : "button"} accessibilityLabel={alt} onPress={onOpen}>
     <LoadedImage key={uri} alt={alt} uri={uri} onFailure={() => { setUri(null); setFailed(true); }} />
   </Pressable>;
