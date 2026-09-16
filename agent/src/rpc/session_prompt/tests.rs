@@ -364,9 +364,17 @@ impl LLMProvider for ScriptedProvider {
         request: ModelRequest,
     ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
         self.requests.lock().unwrap().push(request.clone());
+        // A C3 summary request carries the agent's own system prompt so the provider
+        // can serve it from cache; recognise it by the instruction appended last.
+        let summary_instruction = request
+            .messages
+            .last()
+            .map(|message| message.text())
+            .unwrap_or_default();
         if request
             .system_prompt
             .contains("context summarization agent")
+            || summary_instruction.contains("handoff summary for another agent")
         {
             let (tx, rx) = mpsc::channel(2);
             tx.send(text_event(

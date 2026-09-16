@@ -237,50 +237,6 @@ fn commit(
     }
 }
 
-/// C admitted durably: no provider is involved anywhere in this path.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_with_journal(
-    manager: &ContextManager,
-    prompt: PromptContext,
-    raw: &[AgentMessage],
-    trigger: CompactionTrigger,
-    phase: CompactionPhase,
-    instructions: Option<&str>,
-    interrupted: &std::sync::atomic::AtomicBool,
-    on_started: Option<&(dyn Fn() + Sync)>,
-    journal: Option<&CompactionJournal>,
-    operation_id: &str,
-) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
-    if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(ContextError::Cancelled);
-    }
-    match admit(
-        manager,
-        prompt.clone(),
-        raw,
-        trigger,
-        phase,
-        instructions,
-        journal,
-        operation_id,
-        semantic::evidence::ALGORITHM,
-    )? {
-        Admission::Replayed(prepared, ticket) => Ok((prepared, Some(ticket))),
-        Admission::Fresh(ticket) => commit(
-            manager.prepare_evidence(
-                prompt,
-                raw,
-                trigger,
-                phase,
-                instructions,
-                interrupted,
-                on_started,
-            ),
-            ticket,
-        ),
-    }
-}
-
 /// C3 admitted durably: C's projection plus a sticky model summary when a provider
 /// is available. The strategy in the idempotency key reflects what will actually be
 /// computed, so an unavailability downgrade is a distinct operation rather than a
@@ -298,6 +254,7 @@ pub(crate) async fn prepare_with_journal_summarized(
     journal: Option<&CompactionJournal>,
     operation_id: &str,
     provider: Option<&dyn crate::types::LLMProvider>,
+    system_prompt: Option<&str>,
     on_fallback: Option<&(dyn Fn(&str) + Sync)>,
 ) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
     if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
@@ -331,6 +288,7 @@ pub(crate) async fn prepare_with_journal_summarized(
                     interrupted,
                     on_started,
                     provider,
+                    system_prompt,
                     on_fallback,
                 )
                 .await,

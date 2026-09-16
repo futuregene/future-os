@@ -8,8 +8,8 @@ mod budget;
 mod durable;
 mod semantic;
 pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
+pub(crate) use durable::prepare_with_journal_summarized;
 pub use durable::CompactionJournal;
-pub(crate) use durable::{prepare_with_journal, prepare_with_journal_summarized};
 
 pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 
@@ -286,6 +286,7 @@ impl ContextManager {
         interrupted: &std::sync::atomic::AtomicBool,
         on_started: Option<&(dyn Fn() + Sync)>,
         provider: Option<&dyn crate::types::LLMProvider>,
+        system_prompt: Option<&str>,
         on_fallback: Option<&(dyn Fn(&str) + Sync)>,
     ) -> Result<ContextPreparation, ContextError> {
         semantic::evidence::prepare_with_sticky_summary(
@@ -298,6 +299,7 @@ impl ContextManager {
             interrupted,
             on_started,
             provider,
+            system_prompt,
             on_fallback,
         )
         .await

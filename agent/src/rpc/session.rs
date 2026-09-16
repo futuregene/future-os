@@ -535,6 +535,9 @@ impl ServerSession {
         )
     }
 
+    /// Manual compaction. Runs on a plain thread (the RPC worker or a test), so a
+    /// temporary current-thread runtime drives the async summary path; the summary
+    /// request itself is only issued when the provider is reachable.
     pub(crate) fn compact_with_operation_id(
         &self,
         instructions: &str,
@@ -546,16 +549,20 @@ impl ServerSession {
             .resolve(&self.model)
             .map(|m| m.context_window)
             .unwrap_or(1_000_000);
-        self.compact_with_policy(
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| anyhow::anyhow!("compaction runtime unavailable: {error}"))?;
+        runtime.block_on(self.compact_with_policy(
             instructions,
             crate::compaction::CompactionTrigger::Manual,
             crate::compaction::CompactionPhase::Standalone,
             context_window,
             operation_id,
-        )
+        ))
     }
 
-    fn compact_with_policy(
+    async fn compact_with_policy(
         &self,
         instructions: &str,
         trigger: crate::compaction::CompactionTrigger,
@@ -609,7 +616,7 @@ impl ServerSession {
             context_window,
             model: self.model.clone(),
         };
-        let (interrupted, current_model, request_tools) = {
+        let (interrupted, current_model, request_tools, provider) = {
             let loop_ = match self.agent_loop.try_read() {
                 Ok(loop_) => loop_,
                 Err(_) => {
@@ -632,6 +639,7 @@ impl ServerSession {
                 loop_.interrupt_flag.clone(),
                 loop_.model.clone(),
                 loop_.tools.clone(),
+                loop_.provider.clone(),
             )
         };
         let budget_system = self.build_system_prompt(
@@ -661,9 +669,11 @@ impl ServerSession {
             model: current_model,
             ..manager
         };
-        // The RPC handler already runs this work off the dispatch thread. C
-        // needs no provider, async model runtime, or auxiliary usage accounting.
-        let prepared = crate::compaction::prepare_with_journal(
+        // Summarised compaction: C's projection plus a sticky handoff summary, so a
+        // user-initiated compaction gets the same retention as an automatic one. The
+        // system prompt is passed through so the summary request reuses the prefix the
+        // session already sent and can be served from the provider cache.
+        let prepared = crate::compaction::prepare_with_journal_summarized(
             &manager,
             prompt,
             &messages,
@@ -684,7 +694,11 @@ impl ServerSession {
             }),
             journal.as_ref(),
             &operation_id,
+            Some(provider.as_ref()),
+            Some(budget_system.as_str()),
+            None,
         )
+        .await
         .map_err(anyhow::Error::from);
         let (prepared, ticket) = match prepared {
             Ok(prepared) => prepared,
@@ -3187,7 +3201,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_with_real_history_reports_summary() {
+    fn manual_compaction_summarises_then_replays_without_calling_the_model_again() {
         let mut session = make_test_session("compact");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         session.agent_loop.try_write().unwrap().provider =
@@ -3260,14 +3274,30 @@ mod tests {
         let started_data: serde_json::Value = serde_json::from_str(&started.data).unwrap();
         let committed_data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
         assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
+        // The first pass asks the model for exactly one handoff summary; the replay
+        // must reuse the recorded checkpoint and ask for nothing.
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "manual compaction must consult the summary model once"
+        );
+        let summary = result["summary"].as_str().unwrap();
+        assert!(
+            summary.contains("Deterministic C evidence index"),
+            "the deterministic evidence index must still be present"
+        );
+        assert!(
+            summary.contains("Model handoff summary"),
+            "the model summary must be committed beside the evidence index"
+        );
         let repeated = session.compact("").unwrap();
         assert_eq!(repeated["checkpointId"], result["checkpointId"]);
         assert_eq!(repeated["reused"], true);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
-        assert!(result["summary"]
-            .as_str()
-            .unwrap()
-            .contains("Deterministic C evidence index"));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a replayed compaction must not summarise again"
+        );
         assert_eq!(
             session
                 .session_manager

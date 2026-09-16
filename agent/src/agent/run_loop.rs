@@ -351,6 +351,16 @@ impl Loop {
                     phase: automatic_phase,
                 });
             };
+            // The summary request must carry the same system prompt the agent turn
+            // sends, otherwise its prefix diverges and the provider bills the whole
+            // conversation again instead of serving it from cache.
+            let compaction_system_prompt = super::history_recall::system_prompt(
+                &ctx.system_prompt,
+                &self.session_id,
+                self.history_recall_allowed
+                    && active_checkpoint.is_some()
+                    && tool_defs.iter().any(|tool| tool.function.name == "shell"),
+            );
             let mut compaction_ticket = None;
             let prepared = if let Some(manager) = &context_manager {
                 if provider_limit_checkpoint_id.is_some() {
@@ -373,6 +383,7 @@ impl Loop {
                         ctx.compaction_journal.as_ref(),
                         &automatic_operation_id,
                         Some(self.provider.as_ref()),
+                        Some(compaction_system_prompt.as_ref()),
                         None,
                     )
                     .await
@@ -627,6 +638,7 @@ impl Loop {
                                 ctx.compaction_journal.as_ref(),
                                 &provider_limit_operation_id,
                                 Some(self.provider.as_ref()),
+                                Some(compaction_system_prompt.as_ref()),
                                 None,
                             )
                             .await
@@ -1804,9 +1816,19 @@ mod tests {
             &self,
             request: crate::llm::schema::ModelRequest,
         ) -> Result<ReceiverStream<ModelStreamEvent>> {
+            // A C3 summary request carries the agent's own system prompt so its prefix
+            // matches what the session already sent and the provider can serve it from
+            // cache. It is therefore recognised by the instruction appended last, not by
+            // the summariser system prompt.
+            let summary_instruction = request
+                .messages
+                .last()
+                .map(|message| message.text())
+                .unwrap_or_default();
             if request
                 .system_prompt
                 .contains("context summarization agent")
+                || summary_instruction.contains("handoff summary for another agent")
             {
                 self.summary_calls
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

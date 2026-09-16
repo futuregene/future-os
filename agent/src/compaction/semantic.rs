@@ -30,7 +30,7 @@ const MAX_TRANSIENT_RETRIES: usize = 2;
 // smaller configured values intact, but cap the manual tail at a useful size.
 const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
-const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
+pub(super) const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
 Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed."#;
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
@@ -432,6 +432,15 @@ fn plan(
     }))
 }
 
+/// Token cost of a bare message, for callers that hold messages rather than
+/// projection entries.
+pub(super) fn projected_token_cost_message(message: &AgentMessage) -> u64 {
+    projected_token_cost(&ProjectedMessage {
+        message: message.clone(),
+        source_entry_ids: Vec::new(),
+    })
+}
+
 pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
     let body: u64 = ConvertToLLM(std::slice::from_ref(&projected.message))
         .iter()
@@ -822,6 +831,72 @@ async fn call_summary_model_bounded(
     max_output_tokens: i32,
     on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
 ) -> Result<String, SummaryCallError> {
+    call_summary_request(
+        provider,
+        move || ModelRequest {
+            model: model.to_string(),
+            system_prompt: SUMMARY_SYSTEM_PROMPT.to_string(),
+            messages: vec![AgentMessage::new_user(
+                "user",
+                serde_json::json!([{ "type": "text", "text": prompt }]),
+            )],
+            tools: Vec::new(),
+        },
+        interrupted,
+        max_output_tokens,
+        on_usage,
+    )
+    .await
+}
+
+/// Send a summary request built from the live conversation as real messages, with
+/// the instruction appended last.
+///
+/// Providers cache on the request prefix. A flattened request shares no prefix with
+/// the turns that already paid for those tokens, so it is billed in full every time;
+/// measured against the provider, the message-array shape reusing a live prefix hit
+/// 99.9% of the cache and cost about 48x less for the same input. The system prompt
+/// is supplied by the caller for the same reason: it must match what the agent turn
+/// sent or the prefix diverges.
+#[allow(clippy::too_many_arguments)]
+async fn call_summary_model_with_messages(
+    provider: &dyn LLMProvider,
+    model: &str,
+    system_prompt: &str,
+    mut messages: Vec<AgentMessage>,
+    instruction: String,
+    interrupted: &AtomicBool,
+    max_output_tokens: i32,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+) -> Result<String, SummaryCallError> {
+    messages.push(AgentMessage::new_user(
+        "user",
+        serde_json::json!([{ "type": "text", "text": instruction }]),
+    ));
+    let system_prompt = system_prompt.to_string();
+    call_summary_request(
+        provider,
+        move || ModelRequest {
+            model: model.to_string(),
+            system_prompt: system_prompt.clone(),
+            messages: messages.clone(),
+            tools: Vec::new(),
+        },
+        interrupted,
+        max_output_tokens,
+        on_usage,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_summary_request(
+    provider: &dyn LLMProvider,
+    make_request: impl Fn() -> ModelRequest,
+    interrupted: &AtomicBool,
+    max_output_tokens: i32,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+) -> Result<String, SummaryCallError> {
     let mut attempt = 0_usize;
     'attempts: loop {
         if interrupted.load(Ordering::Relaxed) {
@@ -831,15 +906,7 @@ async fn call_summary_model_bounded(
             latest: None,
             observer: on_usage,
         };
-        let request = ModelRequest {
-            model: model.to_string(),
-            system_prompt: SUMMARY_SYSTEM_PROMPT.to_string(),
-            messages: vec![AgentMessage::new_user(
-                "user",
-                serde_json::json!([{ "type": "text", "text": prompt }]),
-            )],
-            tools: Vec::new(),
-        };
+        let request = make_request();
         let stream = match summary_interruptible(
             tokio::time::timeout(
                 SUMMARY_EVENT_TIMEOUT,

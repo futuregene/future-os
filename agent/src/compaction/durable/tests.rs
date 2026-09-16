@@ -45,37 +45,53 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
         let release = release.clone();
         let preparations = preparations.clone();
         move || {
-            prepare_with_journal(
-                &manager,
-                project_prompt_context(&raw, None, None, 8000),
-                &raw,
-                CompactionTrigger::Manual,
-                CompactionPhase::Standalone,
-                None,
-                &AtomicBool::new(false),
-                Some(&|| {
-                    preparations.fetch_add(1, Ordering::Relaxed);
-                    started.wait();
-                    release.wait();
-                }),
-                Some(&journal),
-                "first",
-            )
+            // No provider: this is the deterministic C admission path, driven from a
+            // plain thread so the test keeps its concurrency shape.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(prepare_with_journal_summarized(
+                    &manager,
+                    project_prompt_context(&raw, None, None, 8000),
+                    &raw,
+                    CompactionTrigger::Manual,
+                    CompactionPhase::Standalone,
+                    None,
+                    &AtomicBool::new(false),
+                    Some(&|| {
+                        preparations.fetch_add(1, Ordering::Relaxed);
+                        started.wait();
+                        release.wait();
+                    }),
+                    Some(&journal),
+                    "first",
+                    None,
+                    None,
+                    None,
+                ))
         }
     });
     started.wait();
-    let duplicate = prepare_with_journal(
-        &manager,
-        project_prompt_context(&raw, None, None, 8000),
-        &raw,
-        CompactionTrigger::Manual,
-        CompactionPhase::Standalone,
-        None,
-        &AtomicBool::new(false),
-        None,
-        Some(&journal),
-        "concurrent",
-    );
+    let duplicate = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(prepare_with_journal_summarized(
+            &manager,
+            project_prompt_context(&raw, None, None, 8000),
+            &raw,
+            CompactionTrigger::Manual,
+            CompactionPhase::Standalone,
+            None,
+            &AtomicBool::new(false),
+            None,
+            Some(&journal),
+            "concurrent",
+            None,
+            None,
+            None,
+        ));
     assert!(
         matches!(duplicate,Err(ContextError::PersistenceFailed(ref error)) if error.contains("compaction_indeterminate"))
     );
@@ -99,21 +115,28 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
         "s".into(),
         json!({"model":"m"}),
     );
-    let (replayed, ticket) = prepare_with_journal(
-        &manager,
-        project_prompt_context(&raw, Some(&checkpoint), None, 8000),
-        &raw,
-        CompactionTrigger::Manual,
-        CompactionPhase::Standalone,
-        None,
-        &AtomicBool::new(false),
-        Some(&|| {
-            preparations.fetch_add(1, Ordering::Relaxed);
-        }),
-        Some(&journal),
-        "restart",
-    )
-    .unwrap();
+    let (replayed, ticket) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(prepare_with_journal_summarized(
+            &manager,
+            project_prompt_context(&raw, Some(&checkpoint), None, 8000),
+            &raw,
+            CompactionTrigger::Manual,
+            CompactionPhase::Standalone,
+            None,
+            &AtomicBool::new(false),
+            Some(&|| {
+                preparations.fetch_add(1, Ordering::Relaxed);
+            }),
+            Some(&journal),
+            "restart",
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
     let ContextPreparation::Compacted {
         checkpoint: replayed,
         ..
