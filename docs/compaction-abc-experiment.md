@@ -435,6 +435,51 @@ machine-state-heavy questionnaire, not a property of Codex. Assistant prose carr
 commitments nothing else restates: decisions, rationale, retractions, and
 unresolved questions. Ask "why did you choose this" and the difference is immediate.
 
+## Validated combination (C3)
+
+The three ingredients above were validated together, against criteria fixed before
+the run. **C3 = sticky summary + overflow trigger + verbatim assistant originals.**
+
+| # | Criterion | Result | Verdict |
+|---|---|---|---|
+| P1 | accuracy ≥ Codex on the same probes | C3 **144/144** vs Codex 143/144 | **PASS** |
+| P2 | no probe lost, `buried` ≥ 10/12 | 0 lost, **12/12** | **PASS** |
+| P3 | exact identifiers ≥ 9/10 at 15× compression | **10/10** (summary-only: 0/10) | **PASS** |
+| P4 | no field regresses against plain C | none | **PASS** |
+
+Full sample, 12 probes (2 chains × 2 models × stages 1/4/8), uncapped, same
+interface for every arm:
+
+| Arm | Score | Lost | Requests/probe |
+|---|---:|---:|---:|
+| **C3 (combined)** | **144/144** | 0 | **4.2** |
+| Codex | 143/144 | 0 | 8.0 |
+| C (evidence only) | 132/144 | 0 | 8.8 |
+| B (no summary) | 107/144 | 1 | 8.2 |
+
+| field | C3 | Codex | C alone |
+|---|---|---|---|
+| `buried` (value mid-record) | **12/12** | 12/12 | 4/12 |
+| `latest_version` | **12/12** | 11/12 | 10/12 |
+| everything else | 12/12 | 12/12 | 11–12/12 |
+
+**C3 beats Codex on accuracy and uses about half the lookups.** Each ingredient
+contributes something the others cannot supply: the sticky summary gives continuity
+that a one-shot summary lacks (55/72 without it), the overflow trigger keeps
+full-history summarisation bounded (without it the request is rejected from stage
+4), and verbatim assistant originals preserve exact self-reported commitments,
+which is all that survives a 15×+ compression. None of the three reached 144 alone.
+
+Cost: ¥14.70 for C3's own 12 compactions plus probes, ≈¥0.9 per compaction *cold*.
+Primed, the same request hits 99.9% of the prefix cache and costs ¥0.0094 instead
+of ¥0.65 — and a real session has already sent that prefix as ordinary turns.
+
+**Implementation follows.** Two things the validation exposed and the code must
+handle: reasoning can consume the entire output allowance and return an empty
+summary over a large input (retry under a fresh identity; it happened twice), and
+the summary prompt must explicitly ask for a carried-forward historical table or
+values are dropped as stages accumulate.
+
 ## Does Codex have its own retrieval?
 
 **Yes — and this matters for how the comparison should be read.** Codex ships a
