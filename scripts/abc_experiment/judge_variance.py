@@ -1,0 +1,130 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
+"""How much does the judge disagree with itself?
+
+The continuation exam's judge was re-run on identical answer pairs (the answers are cached;
+only the verdict was regenerated). Comparing the two verdicts on the same inputs measures
+the instrument's noise floor, which decides whether the tiny arm differences it reports mean
+anything.
+"""
+import json, pathlib, collections, re
+
+ROOT = ROOT
+rows = json.loads((ROOT / "continuation-calls.json").read_text())
+
+# every judge verdict ever recorded for the same question
+by_question = collections.defaultdict(list)
+for r in rows:
+    ident = r["id"]
+    base = ident.split("#")[0]
+    if not base.startswith("judge__"):
+        continue
+    m = re.search(r"\{.*\}", r.get("text") or "", re.S)
+    if not m:
+        continue
+    try:
+        verdict = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        continue
+    if "A" not in verdict or "B" not in verdict:
+        continue
+    by_question[base].append((ident, verdict))
+
+repeated = {k: v for k, v in by_question.items() if len(v) > 1}
+print(f"questions with a repeated judge verdict: {len(repeated)} of {len(by_question)}")
+
+spread = []
+for question, verdicts in repeated.items():
+    for label in ("A", "B"):
+        vals = [v[1].get(label) for v in verdicts if isinstance(v[1].get(label), int)]
+        if len(vals) > 1:
+            spread.append(max(vals) - min(vals))
+if spread:
+    print(f"\nabsolute score spread on identical inputs (0-3 scale):")
+    print(f"  mean {sum(spread)/len(spread):.2f}   max {max(spread)}")
+    print(f"  identical: {sum(1 for s in spread if s == 0)}/{len(spread)}")
+    for s in sorted(set(spread)):
+        print(f"  differs by {s}: {spread.count(s)}")
+
+print("\nverdicts for the same question across runs:")
+for question, verdicts in list(repeated.items())[:8]:
+    shown = [(ident.split('#')[-1] if '#' in ident else 'first',
+              v.get("A"), v.get("B"), v.get("better")) for ident, v in verdicts]
+    print(f"  {question.replace('judge__', ''):22s} {shown}")
+
+# What does that noise floor imply for the arms?
+results = json.loads((ROOT / "continuation-results.json").read_text())
+for arm in ("summary", "no-summary"):
+    vals = [r["scores"][arm] for r in results if arm in r["scores"]]
+    n = len(vals)
+    mean = sum(vals) / n
+    var = sum((v - mean) ** 2 for v in vals) / max(n - 1, 1)
+    stderr = (var / n) ** 0.5
+    print(f'\n{arm:12s} n={n}  mean {mean:.2f}  stderr {stderr:.2f}  '
+          f'95% CI [{mean - 1.96*stderr:.2f}, {mean + 1.96*stderr:.2f}]')
+
+wins = sum(1 for r in results if r["better"] == "summary")
+losses = sum(1 for r in results if r["better"] == "no-summary")
+ties = sum(1 for r in results if r["better"] == "tie")
+print(f'\npaired: summary {wins}, no-summary {losses}, tie {ties}')
+print(f'  of {wins+losses} decided, summary share {100*wins/max(wins+losses,1):.0f}%')

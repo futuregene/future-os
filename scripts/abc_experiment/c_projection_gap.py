@@ -1,0 +1,149 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
+"""Is C's loss a projection problem or a model problem?
+
+Rebuilds the exact exam items (same seeds) and checks, without any model call,
+whether each item is present in C's projection. That separates two very different
+failures:
+
+  not in projection  -> the retention rule dropped it; a projection fix could help
+  in projection      -> the model failed to confirm a value it was shown; a prompt or
+                        exam-format effect, not a retention limit
+"""
+import json, pathlib, random, sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import realistic_exam as exam
+from realistic_eval import load_real, real_to_messages, sanitize_messages
+import abc_cache_shapes as shapes
+
+ROOT = ROOT
+SYNTH_STAGES = (0, 3, 7)
+REAL_FRACTIONS = (0.4, 0.7, 1.0)
+PROTECTED_CHARS = 64_000 * 4
+
+
+def clip(text, head, tail):
+    if len(text) <= head + tail:
+        return text
+    return text[:head] + f"\n[... {len(text) - head - tail} characters omitted ...]\n" + text[-tail:]
+
+
+def render_c(covered):
+    """The same projection the closed-book run scored."""
+    kept = [r for r in covered if r["kind"] == "text"]
+    tools = [r for r in covered if r["kind"] == "tool_result"][-6:]
+    tail = covered[-24:]
+    blocks = "\n\n".join(clip(shapes._plain([r]), 380, 100) for r in tools)
+    originals = shapes._plain(kept)
+    if len(originals) > PROTECTED_CHARS:
+        originals = clip(originals, PROTECTED_CHARS // 2, PROTECTED_CHARS // 2)
+    return ("<archived-conversation>\n<protected-originals>\n" + originals
+            + "\n</protected-originals>\n\n<deterministic-evidence>\n" + blocks
+            + "\n</deterministic-evidence>\n\n<recent-history>\n"
+            + clip(shapes._plain(tail), 8000, 2000) + "\n</recent-history>\n</archived-conversation>")
+
+
+cfg = json.loads(require(
+        ROOT / "real-sessions.json",
+        "the real-session id list",
+        "See scripts/abc_experiment/README.md: create it with the session ids "
+        "you want to measure.",
+    ).read_text())
+chains = {}
+for name, sid in cfg["chains"].items():
+    records = load_real(sid)
+    chains[name] = [records[:max(1, int(len(records) * f))] for f in REAL_FRACTIONS]
+
+print("For each exam item: is it present in C's projection, and in the raw archive?\n")
+print(f'{"chain":13s} {"stage":>5s} {"items":>6s} {"in proj":>8s} {"in archive":>11s} '
+      f'{"proj-absent":>12s}')
+totals = {"items": 0, "in_proj": 0, "in_archive": 0, "absent": 0}
+examples = []
+for name, stages in chains.items():
+    for stage_index, covered in enumerate(stages):
+        projection = render_c(covered)
+        archive = shapes._plain(covered)
+        present, decoys = exam.build_exam(covered, len(covered), random.Random(9000 + stage_index))
+        in_proj = sum(1 for v in present if v in projection)
+        in_arch = sum(1 for v in present if v in archive)
+        absent = [v for v in present if v not in projection]
+        totals["items"] += len(present)
+        totals["in_proj"] += in_proj
+        totals["in_archive"] += in_arch
+        totals["absent"] += len(absent)
+        print(f'{name:13s} {stage_index+1:>5d} {len(present):>6d} {in_proj:>8d} '
+              f'{in_arch:>11d} {len(absent):>12d}')
+        for v in absent[:3]:
+            examples.append((name, stage_index + 1, v, v in archive))
+
+print("\n=== the values C's projection does not contain ===")
+for name, stage, value, in_archive in examples:
+    where = "in the raw archive" if in_archive else "NOT IN THE ARCHIVE EITHER"
+    print(f'  {name} s{stage}: {value!r:46s} {where}')
+
+print(f'\nsummary: {totals["items"]} exam items')
+print(f'  present in C projection : {totals["in_proj"]:>4d} ({100*totals["in_proj"]/totals["items"]:.0f}%)')
+print(f'  present in raw archive  : {totals["in_archive"]:>4d} ({100*totals["in_archive"]/totals["items"]:.0f}%)')
+print(f'  absent from projection  : {totals["absent"]:>4d}')

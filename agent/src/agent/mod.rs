@@ -1,11 +1,14 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
 mod events;
+mod history_recall;
 mod run_loop;
+
 use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
 use anyhow::{anyhow, Result};
 pub use events::RunEvent;
 use parking_lot::Mutex;
+pub(crate) use run_loop::estimate_usage_cost_with;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -73,6 +76,7 @@ pub struct StreamContext {
     /// Durable checkpoint commit. A successful return means the checkpoint
     /// journal entry was fsync'd and a committed event may be emitted.
     pub on_checkpoint: Option<CheckpointCallback>,
+    pub compaction_journal: Option<crate::compaction::CompactionJournal>,
 }
 
 pub struct Loop {
@@ -87,6 +91,8 @@ pub struct Loop {
     pub config: crate::types::AgentConfig,
     pub verbose: bool,
     pub session_id: String,
+    /// Enabled explicitly on the run snapshot when shell access is permitted.
+    pub(crate) history_recall_allowed: bool,
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub context_manager: Option<crate::compaction::ContextManager>,
@@ -131,6 +137,7 @@ impl Loop {
             config: crate::types::AgentConfig::default(),
             verbose: false,
             session_id: String::new(),
+            history_recall_allowed: false,
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             context_manager: None,

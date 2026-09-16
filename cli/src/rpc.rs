@@ -58,7 +58,9 @@ impl RunClient {
         session_id: Option<&str>,
         timeout_secs: u64,
     ) -> Result<Value, String> {
-        cmd.id = now_id();
+        if cmd.id.is_empty() {
+            cmd.id = now_id();
+        }
         cmd.r#type = r#type.to_string();
         if let Some(sid) = session_id {
             cmd.session_id = sid.to_string();
@@ -99,6 +101,32 @@ impl RunClient {
         // the raw-string form (the only non-JSON producer, `refresh_skills`,
         // discards its result).
         Ok(future_rpc::decode::response_data(&response))
+    }
+
+    /// User-triggered manual compaction. Returns admission only, not a summary.
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        instructions: &str,
+    ) -> Result<Value, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!(
+            "compact-{}-{}-{}",
+            std::process::id(),
+            now_id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.execute_command(
+            "compact",
+            RpcCommand {
+                id,
+                custom_instructions: instructions.to_string(),
+                ..Default::default()
+            },
+            Some(session_id),
+            5,
+        )
+        .await
     }
 
     /// `getAgentInfo()` — `get_agent_info` → `{version, skillsCount}`.
@@ -167,6 +195,48 @@ impl RunClient {
             RpcCommand::default(),
             Some(session_id),
             5,
+        )
+        .await
+    }
+
+    /// Search original visible history. The existing message field carries the literal query.
+    pub async fn search_session_history(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "search_session_history",
+            RpcCommand {
+                message: query.to_string(),
+                limit: Some(limit),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
+    /// Indexed original entry read; offset/limit are UTF-8 bytes, not display-page cursors.
+    pub async fn get_session_history_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_session_history_entry",
+            RpcCommand {
+                entry_id: entry_id.to_string(),
+                offset: Some(offset),
+                limit: Some(limit),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
         )
         .await
     }

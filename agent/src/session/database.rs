@@ -138,6 +138,15 @@ fn open_connection(path: &Path) -> Result<Connection> {
             thinking_level TEXT GENERATED ALWAYS AS (json_extract(current_metadata_json,'$.thinking_level')) VIRTUAL,
             parent_session_id TEXT GENERATED ALWAYS AS (nullif(json_extract(current_metadata_json,'$.parent_session_id'),'')) VIRTUAL
         );
+        CREATE TABLE IF NOT EXISTS compaction_operations (
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            input_key TEXT NOT NULL,
+            input_digest TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('started','completed','failed')),
+            result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+            PRIMARY KEY(session_id,input_key)
+        );
         CREATE TABLE IF NOT EXISTS entries (
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             position INTEGER NOT NULL,

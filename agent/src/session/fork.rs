@@ -60,11 +60,12 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         else {
             return true;
         };
-        if content
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            != Some(2)
-        {
+        if !matches!(
+            content
+                .get("schema_version")
+                .and_then(serde_json::Value::as_u64),
+            Some(2 | 3)
+        ) {
             return true;
         }
         for key in ["covered_from_entry_id", "cutoff_entry_id"] {
@@ -79,6 +80,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
                 return false;
             };
             content.insert(key.to_string(), serde_json::Value::String(new_id.clone()));
+        }
+        if let Some(protected) = content.get_mut("protected_entry_ids") {
+            let Some(ids) = protected.as_array_mut() else {
+                return false;
+            };
+            for id in ids {
+                let Some(mapped) = id.as_str().and_then(|old| id_map.get(old)) else {
+                    return false;
+                };
+                *id = serde_json::Value::String(mapped.clone());
+            }
         }
         true
     });
@@ -435,6 +447,7 @@ mod tests {
         let cutoff = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
         let checkpoint = ContextCheckpoint {
             entry_id: "cp-entry".into(),
+            protected_entry_ids: vec![first.id.clone(), cutoff.id.clone()],
             checkpoint_id: "cp-1".into(),
             covered_from_entry_id: Some(first.id.clone()),
             cutoff_entry_id: Some(cutoff.id.clone()),
@@ -458,6 +471,11 @@ mod tests {
         assert_eq!(remapped.checkpoint_id, "cp-1");
         assert_ne!(remapped.covered_from_entry_id.as_deref(), Some("u1"));
         assert_ne!(remapped.cutoff_entry_id.as_deref(), Some("a1"));
+        assert_eq!(remapped.protected_entry_ids.len(), 2);
+        assert!(remapped
+            .protected_entry_ids
+            .iter()
+            .all(|id| id != "u1" && id != "a1" && forked.entries.iter().any(|e| &e.id == id)));
         assert!(forked
             .entries
             .iter()

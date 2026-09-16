@@ -6,8 +6,15 @@ use crate::types::ContentBlock;
 use chrono::Local;
 
 pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
+    let schema_version = if !checkpoint.protected_entry_ids.is_empty()
+        || checkpoint.algorithm_version.contains("-s2-")
+    {
+        3
+    } else {
+        2
+    };
     let mut content = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": schema_version,
         "checkpoint_id": checkpoint.checkpoint_id,
         "covered_from_entry_id": checkpoint.covered_from_entry_id,
         "cutoff_entry_id": checkpoint.cutoff_entry_id,
@@ -19,6 +26,12 @@ pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
         "model": checkpoint.model,
         "context_window": checkpoint.context_window,
     });
+    if schema_version == 3 {
+        content.as_object_mut().expect("checkpoint object").insert(
+            "protected_entry_ids".into(),
+            serde_json::json!(checkpoint.protected_entry_ids),
+        );
+    }
     if let Some(phase) = checkpoint.phase {
         content
             .as_object_mut()
@@ -85,7 +98,18 @@ fn checkpoint_is_valid(entries: &[SessionEntry], checkpoint: &ContextCheckpoint)
     let Some(cutoff_index) = entries.iter().position(|entry| entry.id == cutoff) else {
         return false;
     };
-    covered_index <= cutoff_index && cutoff_index < checkpoint_index
+    let mut seen = std::collections::HashSet::new();
+    covered_index <= cutoff_index
+        && cutoff_index < checkpoint_index
+        && checkpoint.protected_entry_ids.iter().all(|id| {
+            seen.insert(id)
+                && entries
+                    .iter()
+                    .position(|e| {
+                        &e.id == id && matches!(e.entry_type.as_str(), "user" | "assistant")
+                    })
+                    .is_some_and(|index| index <= cutoff_index)
+        })
 }
 
 pub fn entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
@@ -97,11 +121,13 @@ pub fn entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
 
 fn compaction_entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
     let content = entry.content.as_ref()?.as_object()?;
-    if content
+    let version = content
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        == Some(2)
-    {
+        .and_then(serde_json::Value::as_u64);
+    if matches!(version, Some(2 | 3)) {
+        if version == Some(3) && !content.contains_key("protected_entry_ids") {
+            return None;
+        }
         let summary: Vec<ContentBlock> =
             serde_json::from_value(content.get("summary")?.clone()).ok()?;
         let trigger = serde_json::from_value(
@@ -123,6 +149,10 @@ fn compaction_entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpo
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
             summary,
+            protected_entry_ids: match content.get("protected_entry_ids") {
+                None => Vec::new(),
+                Some(value) => serde_json::from_value(value.clone()).ok()?,
+            },
             tokens_before: content
                 .get("tokens_before")
                 .and_then(serde_json::Value::as_u64)
@@ -196,6 +226,7 @@ fn legacy_checkpoint(entry: &SessionEntry, raw_summary: &str) -> ContextCheckpoi
     ContextCheckpoint {
         entry_id: entry.id.clone(),
         checkpoint_id: format!("legacy_{}", entry.id),
+        protected_entry_ids: Vec::new(),
         covered_from_entry_id: None,
         cutoff_entry_id: None,
         summary: vec![ContentBlock::text(summary)],
@@ -225,6 +256,7 @@ mod tests {
     fn v2_checkpoint_round_trips_through_existing_session_envelope() {
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-cp".into(),
+            protected_entry_ids: vec!["entry-a".into(), "entry-b".into()],
             checkpoint_id: "cp-1".into(),
             covered_from_entry_id: Some("entry-a".into()),
             cutoff_entry_id: Some("entry-b".into()),
@@ -245,12 +277,15 @@ mod tests {
         assert_eq!(parsed.cutoff_entry_id, checkpoint.cutoff_entry_id);
         assert_eq!(parsed.tokens_after, 20);
         assert_eq!(parsed.phase, checkpoint.phase);
+        assert_eq!(parsed.protected_entry_ids, checkpoint.protected_entry_ids);
+        assert_eq!(entry.content.as_ref().unwrap()["schema_version"], 3);
     }
 
     #[test]
     fn optional_phase_is_omitted_instead_of_serialized_as_null() {
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-no-phase".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-no-phase".into(),
             covered_from_entry_id: Some("entry-a".into()),
             cutoff_entry_id: Some("entry-b".into()),
@@ -325,6 +360,7 @@ mod tests {
         let cutoff = SessionEntry::new_user("user", serde_json::json!("cutoff"));
         let valid = ContextCheckpoint {
             entry_id: "entry-valid-cp".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "valid-cp".into(),
             covered_from_entry_id: Some(first.id.clone()),
             cutoff_entry_id: Some(cutoff.id.clone()),
@@ -361,6 +397,30 @@ mod tests {
     }
 
     #[test]
+    fn v3_rejects_missing_or_out_of_range_protected_references() {
+        let first = SessionEntry::new_user("user", serde_json::json!("first"));
+        let later = SessionEntry::new_user("user", serde_json::json!("later"));
+        let mut entry = SessionEntry::new_user("system", serde_json::json!(null));
+        entry.entry_type = ENTRY_TYPE_COMPACTION.into();
+        entry.content = Some(
+            serde_json::json!({"schema_version":3,"checkpoint_id":"cp","covered_from_entry_id":first.id,"cutoff_entry_id":first.id,"summary":[{"type":"text","text":"summary"}],"protected_entry_ids":[later.id]}),
+        );
+        assert!(
+            latest_context_checkpoint(&[first.clone(), later.clone(), entry.clone()]).is_none()
+        );
+        entry.content.as_mut().unwrap()["protected_entry_ids"] = serde_json::json!([first.id]);
+        assert!(latest_context_checkpoint(&[first, later, entry.clone()]).is_some());
+        entry
+            .content
+            .as_mut()
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("protected_entry_ids");
+        assert!(entry_to_checkpoint(&entry).is_none());
+    }
+
+    #[test]
     fn latest_checkpoint_accepts_legacy_compaction_without_range() {
         // A legacy compaction entry (non-v2 schema, string summary) has no
         // range references; checkpoint_is_valid must accept it outright.
@@ -380,6 +440,7 @@ mod tests {
     fn latest_checkpoint_rejects_v2_without_range_refs() {
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-no-range".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-no-range".into(),
             covered_from_entry_id: None,
             cutoff_entry_id: None,
@@ -402,6 +463,7 @@ mod tests {
         let first = SessionEntry::new_user("user", serde_json::json!("first"));
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-dangling-covered".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-dangling-covered".into(),
             covered_from_entry_id: Some("missing-covered".into()),
             cutoff_entry_id: Some(first.id.clone()),

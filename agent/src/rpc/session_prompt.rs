@@ -481,6 +481,8 @@ impl ServerSession {
             snapshot.active_checkpoint = shared.active_checkpoint.clone();
             (system_prompt, shared.verbose, snapshot)
         };
+        run_loop.session_id = self.session_id.clone();
+        run_loop.history_recall_allowed = !self.ephemeral && run_permission_level != "none";
         run_loop.cumulative_input_tokens = self.tokens_in.clone();
         run_loop.cumulative_output_tokens = self.tokens_out.clone();
         run_loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
@@ -732,6 +734,12 @@ impl ServerSession {
             on_tool_result: Some(save_closure.clone()),
             save_callback: Some(save_closure),
             on_checkpoint: (!is_ephemeral).then_some(checkpoint_callback),
+            compaction_journal: (!is_ephemeral).then(|| crate::compaction::CompactionJournal::new(
+                self.session_manager.clone(),self.persistence.clone(),self.session_id.clone(),
+                serde_json::json!({"model":run_model,"thinking":run_thinking_level,"cwd":session_cwd,
+                    "tools":run_loop.tools.iter().map(|t|t.def.clone()).collect::<Vec<_>>(),
+                    "protocol":self.model_registry.read().resolve(&run_model).map(|m|serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat,"thinkingMap":m.thinking_level_map}))}),
+            )),
         };
 
         // Set approval/sandbox hooks on this session's Loop config (these
@@ -1197,7 +1205,7 @@ impl ServerSession {
     /// write/memory guidelines. Read fresh each run (cwd-scoped).
     /// Point the agent loop's cumulative token/cost counters at this session's
     /// shared atomics so streaming updates are tracked per-session.
-    fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
+    pub(super) fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
         r#loop.cumulative_input_tokens = self.tokens_in.clone();
         r#loop.cumulative_output_tokens = self.tokens_out.clone();
         r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
@@ -1241,7 +1249,7 @@ impl ServerSession {
         *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
-    fn build_system_prompt(
+    pub(super) fn build_system_prompt(
         &self,
         cwd: &str,
         tools: Vec<crate::types::AgentTool>,

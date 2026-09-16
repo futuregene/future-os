@@ -1,3 +1,5 @@
+pub(super) mod evidence;
+
 use super::{
     estimate_tokens, AgentMessage, CompactionPhase, CompactionTrigger, ContentBlock,
     ContextCheckpoint, ContextError, ContextManager, ContextPreparation, ContextUsage,
@@ -15,7 +17,7 @@ const TOOL_OUTPUT_LIMIT: usize = 2_000;
 const STRICT_TOOL_OUTPUT_LIMIT: usize = 512;
 const REASONING_LIMIT: usize = 2_000;
 const STRICT_REASONING_LIMIT: usize = 512;
-const SUMMARY_OUTPUT_RESERVE: u64 = 4_096;
+const SUMMARY_OUTPUT_RESERVE: u64 = 8_192;
 const SUMMARY_SAFETY_MARGIN: u64 = 2_048;
 const MIN_SUMMARY_CHUNK_TOKENS: u64 = 128;
 const SUMMARY_EVENT_TIMEOUT: Duration = if cfg!(test) {
@@ -29,7 +31,8 @@ const MAX_TRANSIENT_RETRIES: usize = 2;
 // smaller configured values intact, but cap the manual tail at a useful size.
 const MANUAL_RECENT_TAIL_MAX_TOKENS: u64 = 15_000;
 
-const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language."#;
+pub(super) const SUMMARY_SYSTEM_PROMPT: &str = r#"You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
+Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed."#;
 
 const SUMMARY_TEMPLATE: &str = r#"Output exactly this Markdown structure and keep every section:
 
@@ -71,6 +74,10 @@ enum SerializationMode {
 struct CompactionPlan {
     removed: Vec<ProjectedMessage>,
     retained: Vec<ProjectedMessage>,
+    protected: Vec<ProjectedMessage>,
+    target_tokens: u64,
+    summary_budget: u64,
+    summarized_outputs: usize,
     previous_summary: Option<String>,
     covered_from_entry_id: String,
     cutoff_entry_id: String,
@@ -93,6 +100,18 @@ enum SummaryCallError {
     Other(String),
 }
 
+impl std::fmt::Display for SummaryCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextLimit(reason) => {
+                write!(f, "summary request exceeded the context limit: {reason}")
+            }
+            Self::Cancelled => write!(f, "summary request cancelled"),
+            Self::Other(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn prepare(
     manager: &ContextManager,
@@ -104,6 +123,7 @@ pub(super) async fn prepare(
     interrupted: &AtomicBool,
     fallback: Option<(&dyn LLMProvider, &str)>,
     on_started: Option<&(dyn Fn() + Sync)>,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
 ) -> Result<ContextPreparation, ContextError> {
     let plan = match plan(
         manager,
@@ -112,6 +132,7 @@ pub(super) async fn prepare(
         phase,
         custom_instructions,
         on_started,
+        4096,
     )? {
         PlannedPreparation::Unchanged(prompt) => {
             return Ok(ContextPreparation::Unchanged { prompt });
@@ -119,7 +140,7 @@ pub(super) async fn prepare(
         PlannedPreparation::Compact(plan) => plan,
     };
 
-    let mut semantic = summarize_with_replan(manager, &plan, provider, interrupted).await;
+    let mut semantic = summarize_with_replan(manager, &plan, provider, interrupted, on_usage).await;
     let mut summary_model = manager.model.as_str();
     if !matches!(semantic, Ok(ref summary) if valid_summary(summary))
         && !matches!(semantic, Err(SummaryCallError::Cancelled))
@@ -129,19 +150,21 @@ pub(super) async fn prepare(
                 fallback_model,
                 "retrying context compaction with selected new model"
             );
-            semantic = summarize_with_replan(manager, &plan, fallback_provider, interrupted).await;
+            semantic =
+                summarize_with_replan(manager, &plan, fallback_provider, interrupted, on_usage)
+                    .await;
             summary_model = fallback_model;
         }
     }
     let (summary, algorithm_version) = match semantic {
-        Ok(summary) if valid_summary(&summary) => (summary, "semantic-v1"),
+        Ok(summary) if valid_summary(&summary) => (summary, "semantic-s2-v1"),
         Err(SummaryCallError::Cancelled) => return Err(ContextError::Cancelled),
         Ok(_) => {
             if plan.trigger != CompactionTrigger::ProviderContextLimit {
                 return Err(ContextError::InvalidSummary);
             }
             tracing::warn!("provider context-limit recovery received an invalid semantic summary; using emergency summary");
-            (emergency_summary(&plan), "deterministic-emergency-v1")
+            (emergency_summary(&plan), "deterministic-emergency-s2-v1")
         }
         Err(SummaryCallError::ContextLimit(error)) | Err(SummaryCallError::Other(error)) => {
             if plan.trigger != CompactionTrigger::ProviderContextLimit {
@@ -151,7 +174,7 @@ pub(super) async fn prepare(
                 error,
                 "provider context-limit recovery compaction failed; using emergency summary"
             );
-            (emergency_summary(&plan), "deterministic-emergency-v1")
+            (emergency_summary(&plan), "deterministic-emergency-s2-v1")
         }
     };
     finalize(manager, plan, summary, algorithm_version, summary_model)
@@ -170,12 +193,19 @@ pub(super) fn prepare_deterministic(
         super::default_phase(trigger),
         custom_instructions,
         None,
+        4096,
     )? {
         PlannedPreparation::Unchanged(prompt) => Ok(ContextPreparation::Unchanged { prompt }),
         PlannedPreparation::Compact(plan) => {
             let summary = emergency_summary(&plan);
             let model = manager.model.as_str();
-            finalize(manager, plan, summary, "deterministic-emergency-v1", model)
+            finalize(
+                manager,
+                plan,
+                summary,
+                "deterministic-emergency-s2-v1",
+                model,
+            )
         }
     }
 }
@@ -187,6 +217,7 @@ fn plan(
     phase: CompactionPhase,
     custom_instructions: Option<&str>,
     on_started: Option<&(dyn Fn() + Sync)>,
+    summary_cap: u64,
 ) -> Result<PlannedPreparation, ContextError> {
     if prompt.messages.is_empty() {
         return Ok(PlannedPreparation::Unchanged(prompt));
@@ -198,12 +229,23 @@ fn plan(
     let estimated = prompt
         .messages
         .iter()
-        .flat_map(|projected| ConvertToLLM(std::slice::from_ref(&projected.message)))
-        .map(|message| estimate_tokens(&message).max(0) as u64)
-        .sum::<u64>();
+        .map(projected_token_cost)
+        .sum::<u64>()
+        .saturating_add(prompt.usage.fixed_input_tokens)
+        .max(prompt.usage.estimated_input_tokens);
     let tokens_before = estimated.max(prompt.usage.input_tokens.unwrap_or(0));
     let window = manager.context_window.max(1) as u64;
-    let reserve = manager.reserve_tokens.max(0) as u64;
+    let hard_limit = manager.input_limit(&prompt);
+    if prompt.usage.fixed_input_tokens >= hard_limit {
+        return Err(ContextError::BudgetExceeded(
+            "system/tools and output reservation leave no input room".into(),
+        ));
+    }
+    let threshold = if !manager.enabled && trigger == CompactionTrigger::ModelContextDownshift {
+        hard_limit
+    } else {
+        manager.effective_trigger(&prompt)
+    };
     // A user-selected manual compaction deliberately bypasses the automatic
     // threshold: `/压缩` is an explicit request to compact history, not a
     // suggestion to wait until the next context-limit guard. It still needs a
@@ -213,7 +255,7 @@ fn plan(
         trigger,
         CompactionTrigger::Automatic | CompactionTrigger::ModelContextDownshift
     );
-    if threshold_gated && tokens_before <= window.saturating_sub(reserve) {
+    if threshold_gated && tokens_before < threshold {
         return Ok(PlannedPreparation::Unchanged(prompt));
     }
     let costs = prompt
@@ -239,14 +281,31 @@ fn plan(
                 trigger,
                 CompactionTrigger::Automatic | CompactionTrigger::ProviderContextLimit
             ));
-    let mut cut = turn_aware_cut(
+    let boundary = turn_aware_cut(
         &prompt.messages,
         &costs,
         keep_recent_tokens,
         compact_all_when_every_turn_fits,
     )
-    .or_else(|| allow_full_active_turn.then_some(prompt.messages.len()))
-    .ok_or(ContextError::NoValidBoundary)?;
+    .or_else(|| allow_full_active_turn.then_some(prompt.messages.len()));
+    let Some(mut cut) = boundary else {
+        // A lone new user input may exceed the economic trigger while still
+        // fitting the model. Do not summarize unseen instructions or reject
+        // them merely because no older history can be compacted.
+        if threshold_gated && tokens_before <= hard_limit {
+            return Ok(PlannedPreparation::Unchanged(prompt));
+        }
+        return Err(ContextError::NoValidBoundary);
+    };
+    // A later checkpoint must never move coverage behind the checkpoint
+    // already represented in this projection (including a v2 -> S2 upgrade).
+    if let Some(index) = prompt
+        .messages
+        .iter()
+        .rposition(|item| internal_summary(&item.message).is_some())
+    {
+        cut = cut.max(index + 1);
+    }
     if allow_full_active_turn && costs[cut..].iter().copied().sum::<u64>() > keep_recent_tokens {
         cut = prompt.messages.len();
     }
@@ -264,7 +323,9 @@ fn plan(
     // emitting started/failed lifecycle events for an empty summary request.
     let has_compactable_content = prompt.messages[..cut]
         .iter()
-        .filter(|item| internal_summary(&item.message).is_none())
+        .filter(|item| {
+            internal_summary(&item.message).is_none() && !super::is_protected(&item.message)
+        })
         .any(|item| {
             !serialize_message(&item.message, SerializationMode::Normal)
                 .trim()
@@ -273,12 +334,67 @@ fn plan(
     if !has_compactable_content {
         return Ok(PlannedPreparation::Unchanged(prompt));
     }
+    let removed = prompt.messages[..cut].to_vec();
+    let retained = prompt.messages[cut..].to_vec();
+    let mut seen = std::collections::HashSet::new();
+    let mut protected = removed
+        .iter()
+        .filter_map(|item| super::protected_text(&item.message))
+        .filter(|message| seen.insert(message.journal_entry_id().unwrap().to_string()))
+        .map(|message| ProjectedMessage {
+            source_entry_ids: vec![message.journal_entry_id().unwrap().to_string()],
+            message,
+        })
+        .collect::<Vec<_>>();
+    let summary_budget = (window / 8).clamp(1, summary_cap);
+    let history_room = hard_limit.saturating_sub(prompt.usage.fixed_input_tokens);
+    // 32K is a soft target. Expand up to 64K for protected originals while
+    // preserving headroom; never silently truncate user/assistant text.
+    let maximum_target =
+        super::budget::MAX_EXPANDED_HISTORY.min(history_room.saturating_mul(3) / 4);
+    let base_required = protected
+        .iter()
+        .filter(|p| p.message.role == "user")
+        .chain(retained.iter())
+        .map(projected_token_cost)
+        .sum::<u64>()
+        .saturating_add(summary_budget)
+        .saturating_add(64);
+    let mut output_room = maximum_target.saturating_sub(base_required);
+    let mut summarized_outputs = 0;
+    // Preserve all user directives. If originals outgrow the expanded budget,
+    // keep the newest assistant texts that fit and explicitly summarize the rest.
+    protected.reverse();
+    protected.retain(|item| {
+        if item.message.role == "user" {
+            return true;
+        }
+        let cost = projected_token_cost(item);
+        if cost <= output_room {
+            output_room -= cost;
+            true
+        } else {
+            summarized_outputs += 1;
+            false
+        }
+    });
+    protected.reverse();
+    let required = protected
+        .iter()
+        .chain(retained.iter())
+        .map(projected_token_cost)
+        .sum::<u64>()
+        .saturating_add(summary_budget)
+        .saturating_add(64);
+    if required > maximum_target {
+        return Err(ContextError::BudgetExceeded(format!("protected text and recent history need at least {required} tokens, but compacted history can use {maximum_target}; split large input material or use a new session")));
+    }
+    let target_tokens = super::budget::TARGET_HISTORY
+        .min(maximum_target)
+        .max(required);
     if let Some(on_started) = on_started {
         on_started();
     }
-
-    let removed = prompt.messages[..cut].to_vec();
-    let retained = prompt.messages[cut..].to_vec();
     let covered_from_entry_id = removed
         .iter()
         .flat_map(|message| message.source_entry_ids.iter())
@@ -299,6 +415,10 @@ fn plan(
     Ok(PlannedPreparation::Compact(CompactionPlan {
         removed,
         retained,
+        protected,
+        target_tokens,
+        summary_budget,
+        summarized_outputs,
         previous_summary,
         covered_from_entry_id,
         cutoff_entry_id,
@@ -313,11 +433,53 @@ fn plan(
     }))
 }
 
-fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
-    ConvertToLLM(std::slice::from_ref(&projected.message))
+/// Token cost of a bare message, for callers that hold messages rather than
+/// projection entries.
+pub(super) fn projected_token_cost_message(message: &AgentMessage) -> u64 {
+    projected_token_cost(&ProjectedMessage {
+        message: message.clone(),
+        source_entry_ids: Vec::new(),
+    })
+}
+
+pub(super) fn projected_token_cost(projected: &ProjectedMessage) -> u64 {
+    let body: u64 = ConvertToLLM(std::slice::from_ref(&projected.message))
         .iter()
         .map(|message| estimate_tokens(message).max(0) as u64)
-        .sum()
+        .sum();
+    let images = projected
+        .message
+        .content
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::Image { .. }))
+        .count() as u64;
+    let attachment_images = if images == 0 {
+        projected
+            .message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("attachments"))
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|a| a.get("kind").and_then(serde_json::Value::as_str) == Some("image"))
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let reasoning = projected
+        .message
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Reasoning { text, .. } => Some(estimate_text_tokens(text)),
+            _ => None,
+        })
+        .sum::<u64>();
+    body + reasoning + 6 + (images + attachment_images) * 2_048
 }
 
 fn turn_aware_cut(
@@ -330,8 +492,10 @@ fn turn_aware_cut(
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            (item.message.role == "user" && internal_summary(&item.message).is_none())
-                .then_some(index)
+            (item.message.role == "user"
+                && internal_summary(&item.message).is_none()
+                && !super::is_protected(&item.message))
+            .then_some(index)
         })
         .collect::<Vec<_>>();
     if user_starts.is_empty() {
@@ -413,6 +577,7 @@ async fn summarize_with_replan(
     plan: &CompactionPlan,
     provider: &dyn LLMProvider,
     interrupted: &AtomicBool,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
 ) -> Result<String, SummaryCallError> {
     match summarize_fold(
         manager,
@@ -420,6 +585,7 @@ async fn summarize_with_replan(
         provider,
         interrupted,
         SerializationMode::Normal,
+        on_usage,
     )
     .await
     {
@@ -430,6 +596,7 @@ async fn summarize_with_replan(
                 provider,
                 interrupted,
                 SerializationMode::Strict,
+                on_usage,
             )
             .await
         }
@@ -443,6 +610,7 @@ async fn summarize_fold(
     provider: &dyn LLMProvider,
     interrupted: &AtomicBool,
     mode: SerializationMode,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
 ) -> Result<String, SummaryCallError> {
     let serialized = plan
         .removed
@@ -460,6 +628,7 @@ async fn summarize_fold(
 
     let mut accumulator = plan.previous_summary.clone();
     let mut fold_step = 0_usize;
+    let suffix = format!("\n\nS2 retention: original user directives and selected assistant text are preserved separately. Older assistant outputs may be summarized to fit; carry forward their important facts. Prioritize tool evidence, exact symbols/values, corrections and verification boundaries. Keep canonical headings exactly as shown; write the body in the conversation language. Keep the summary within {} estimated tokens.", plan.summary_budget);
     while !remaining.is_empty() {
         if interrupted.load(Ordering::Relaxed) {
             return Err(SummaryCallError::Cancelled);
@@ -471,6 +640,20 @@ async fn summarize_fold(
                         .to_string(),
                 )
             })?;
+        let framing = summary_prompt(accumulator.as_deref(), "", plan.instructions.as_deref());
+        let window = manager.context_window.max(1) as u64;
+        let fixed = estimate_text_tokens(SUMMARY_SYSTEM_PROMPT)
+            + estimate_text_tokens(&framing)
+            + estimate_text_tokens(&suffix)
+            + plan.summary_budget * 2
+            + SUMMARY_SAFETY_MARGIN.min(window / 8)
+            + 16;
+        let budget = budget.min(window.saturating_sub(fixed));
+        if budget < MIN_SUMMARY_CHUNK_TOKENS {
+            return Err(SummaryCallError::Other(
+                "summary instructions/accumulator leave no safe input room".into(),
+            ));
+        }
         let chunk = take_next_chunk(&mut remaining, budget).ok_or_else(|| {
             SummaryCallError::Other("failed to build context compaction chunk".to_string())
         })?;
@@ -484,8 +667,24 @@ async fn summarize_fold(
             strict,
             "planned context compaction summary fold step"
         );
-        let prompt = summary_prompt(accumulator.as_deref(), &chunk, plan.instructions.as_deref());
-        let summary = call_summary_model(provider, &manager.model, prompt, interrupted).await?;
+        let prompt = format!(
+            "{}{suffix}",
+            summary_prompt(accumulator.as_deref(), &chunk, plan.instructions.as_deref())
+        );
+        let summary = call_summary_model_bounded(
+            provider,
+            &manager.model,
+            prompt,
+            interrupted,
+            (plan.summary_budget * 2) as i32,
+            on_usage,
+        )
+        .await?;
+        if estimate_text_tokens(&summary) > plan.summary_budget {
+            return Err(SummaryCallError::Other(
+                "summary exceeds its reserved text budget".into(),
+            ));
+        }
         if !valid_summary(&summary) {
             return Err(SummaryCallError::Other(
                 "model returned a summary without the required structure".to_string(),
@@ -586,18 +785,56 @@ fn summary_prompt(
     )
 }
 
+#[cfg(test)]
 async fn call_summary_model(
     provider: &dyn LLMProvider,
     model: &str,
     prompt: String,
     interrupted: &AtomicBool,
 ) -> Result<String, SummaryCallError> {
-    let mut attempt = 0_usize;
-    'attempts: loop {
-        if interrupted.load(Ordering::Relaxed) {
-            return Err(SummaryCallError::Cancelled);
+    call_summary_model_bounded(provider, model, prompt, interrupted, 8192, None).await
+}
+
+struct AttemptUsage<'a> {
+    latest: Option<crate::types::Usage>,
+    observer: Option<&'a (dyn Fn(&crate::types::Usage) + Sync)>,
+}
+impl Drop for AttemptUsage<'_> {
+    fn drop(&mut self) {
+        if let (Some(usage), Some(observer)) = (&self.latest, self.observer) {
+            observer(usage);
         }
-        let request = ModelRequest {
+    }
+}
+
+async fn summary_interruptible<T>(
+    future: impl std::future::Future<Output = T>,
+    interrupted: &AtomicBool,
+) -> Result<T, SummaryCallError> {
+    let cancelled = async {
+        while !interrupted.load(Ordering::Relaxed) {
+            tokio::time::sleep(if cfg!(test) {
+                Duration::from_millis(1)
+            } else {
+                Duration::from_millis(50)
+            })
+            .await;
+        }
+    };
+    tokio::select! { result = future => Ok(result), _ = cancelled => Err(SummaryCallError::Cancelled) }
+}
+
+async fn call_summary_model_bounded(
+    provider: &dyn LLMProvider,
+    model: &str,
+    prompt: String,
+    interrupted: &AtomicBool,
+    max_output_tokens: i32,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+) -> Result<String, SummaryCallError> {
+    call_summary_request(
+        provider,
+        move || ModelRequest {
             model: model.to_string(),
             system_prompt: SUMMARY_SYSTEM_PROMPT.to_string(),
             messages: vec![AgentMessage::new_user(
@@ -605,8 +842,87 @@ async fn call_summary_model(
                 serde_json::json!([{ "type": "text", "text": prompt }]),
             )],
             tools: Vec::new(),
+        },
+        interrupted,
+        max_output_tokens,
+        on_usage,
+    )
+    .await
+}
+
+/// Send a summary request built from the live conversation as real messages, with
+/// the instruction appended last.
+///
+/// Providers cache on the request prefix. A flattened request shares no prefix with
+/// the turns that already paid for those tokens, so it is billed in full every time;
+/// measured against the provider, the message-array shape reusing a live prefix hit
+/// 99.9% of the cache and cost about 48x less for the same input. The system prompt
+/// is supplied by the caller for the same reason: it must match what the agent turn
+/// sent or the prefix diverges.
+#[allow(clippy::too_many_arguments)]
+async fn call_summary_model_with_messages(
+    provider: &dyn LLMProvider,
+    model: &str,
+    system_prompt: &str,
+    mut messages: Vec<AgentMessage>,
+    instruction: String,
+    tools: Vec<crate::types::ToolDef>,
+    interrupted: &AtomicBool,
+    max_output_tokens: i32,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+) -> Result<String, SummaryCallError> {
+    messages.push(AgentMessage::new_user(
+        "user",
+        serde_json::json!([{ "type": "text", "text": instruction }]),
+    ));
+    let system_prompt = system_prompt.to_string();
+    call_summary_request(
+        provider,
+        move || ModelRequest {
+            // The same tools as the agent turn: they are part of the cached prefix,
+            // and omitting them is what stopped the summary from being cache-served.
+            model: model.to_string(),
+            system_prompt: system_prompt.clone(),
+            messages: messages.clone(),
+            tools: tools.clone(),
+        },
+        interrupted,
+        max_output_tokens,
+        on_usage,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_summary_request(
+    provider: &dyn LLMProvider,
+    make_request: impl Fn() -> ModelRequest,
+    interrupted: &AtomicBool,
+    max_output_tokens: i32,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+) -> Result<String, SummaryCallError> {
+    let mut attempt = 0_usize;
+    'attempts: loop {
+        if interrupted.load(Ordering::Relaxed) {
+            return Err(SummaryCallError::Cancelled);
+        }
+        let mut attempt_usage = AttemptUsage {
+            latest: None,
+            observer: on_usage,
         };
-        let stream = await_or_interrupt(provider.stream_model(request), interrupted).await?;
+        let request = make_request();
+        let stream = match summary_interruptible(
+            tokio::time::timeout(
+                SUMMARY_EVENT_TIMEOUT,
+                provider.stream_model_with_output_limit(request, max_output_tokens),
+            ),
+            interrupted,
+        )
+        .await?
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("summary request timed out")),
+        };
         let mut stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
@@ -654,24 +970,30 @@ async fn call_summary_model(
             let Some(event) = event else { break };
             match event {
                 ModelStreamEvent::TextDelta { text: delta, .. } => text.push_str(&delta),
-                ModelStreamEvent::Finish { reason, .. } => match reason {
-                    FinishReason::Stop => {
-                        complete = true;
-                        break;
+                ModelStreamEvent::Usage(usage) => attempt_usage.latest = Some(usage),
+                ModelStreamEvent::Finish { reason, usage } => {
+                    if usage.is_some() {
+                        attempt_usage.latest = usage;
                     }
-                    FinishReason::Length => {
-                        return Err(SummaryCallError::ContextLimit(
-                            "summary output reached the provider length limit".to_string(),
-                        ));
+                    match reason {
+                        FinishReason::Stop => {
+                            complete = true;
+                        }
+                        FinishReason::Length => {
+                            return Err(SummaryCallError::ContextLimit(
+                                "summary output reached the provider length limit".to_string(),
+                            ));
+                        }
+                        FinishReason::Cancelled => return Err(SummaryCallError::Cancelled),
+                        other => {
+                            return Err(SummaryCallError::Other(format!(
+                                "summary stream finished with {}",
+                                other.as_str()
+                            )));
+                        }
                     }
-                    FinishReason::Cancelled => return Err(SummaryCallError::Cancelled),
-                    other => {
-                        return Err(SummaryCallError::Other(format!(
-                            "summary stream finished with {}",
-                            other.as_str()
-                        )));
-                    }
-                },
+                }
+                ModelStreamEvent::Error { .. } if complete => break,
                 ModelStreamEvent::Error { message } => {
                     if is_context_limit(&message) {
                         return Err(SummaryCallError::ContextLimit(message));
@@ -816,13 +1138,36 @@ fn serialize_message(message: &AgentMessage, mode: SerializationMode) -> String 
                 let kind = if *is_error { "error" } else { "result" };
                 lines.push(format!(
                     "[Tool {kind} {tool_call_id}]: {}",
-                    truncate(content, limit)
+                    tool_excerpt(content, limit)
                 ));
             }
             _ => {}
         }
     }
-    lines.join("\n")
+    let text = lines.join("\n");
+    if text.is_empty() {
+        return text;
+    }
+    message.journal_entry_id().map_or_else(
+        || text.clone(),
+        |id| format!("[History entry {id}]\n{text}"),
+    )
+}
+
+fn tool_excerpt(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let head = value.chars().take(max_chars / 2).collect::<String>();
+    let tail = value
+        .chars()
+        .rev()
+        .take(max_chars - max_chars / 2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("{head}\n[truncated for compaction] Middle omitted; only head and tail are shown. Missing content is unknown, not evidence of absence. Query the history entry for the full stored output.\n{tail}")
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -979,15 +1324,27 @@ fn join_or_none(values: &[String]) -> String {
     }
 }
 
+fn retention_note(count: usize, algorithm: &str) -> String {
+    let action = if algorithm == evidence::ALGORITHM {
+        "omitted from the active context (not summarized)"
+    } else {
+        "summarized"
+    };
+    format!("\n\n[Retention note: {count} older assistant outputs were {action} to fit. Query original history for their exact text.]")
+}
+
 fn finalize(
     manager: &ContextManager,
     plan: CompactionPlan,
-    summary: String,
+    mut summary: String,
     algorithm_version: &str,
     summary_model: &str,
 ) -> Result<ContextPreparation, ContextError> {
     if summary.trim().is_empty() {
         return Err(ContextError::InvalidSummary);
+    }
+    if plan.summarized_outputs > 0 {
+        summary.push_str(&retention_note(plan.summarized_outputs, algorithm_version));
     }
     let entry_id = crate::utils::generate_entry_id();
     let checkpoint_id = format!("cp_{entry_id}");
@@ -999,16 +1356,30 @@ fn finalize(
         }]),
     );
     super::stamp_internal_checkpoint_message(&mut summary_message, &entry_id);
-    let mut compacted_messages = Vec::with_capacity(plan.retained.len() + 1);
+    let protected_entry_ids = plan
+        .protected
+        .iter()
+        .flat_map(|item| item.source_entry_ids.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut compacted_messages = plan.protected;
     compacted_messages.push(ProjectedMessage {
         message: summary_message,
         source_entry_ids: vec![entry_id.clone()],
     });
     compacted_messages.extend(plan.retained);
-    let tokens_after = compacted_messages
+    let history_after = compacted_messages
         .iter()
         .map(projected_token_cost)
         .sum::<u64>();
+    let tokens_after = history_after.saturating_add(plan.usage.fixed_input_tokens);
+    if history_after > plan.target_tokens
+        || tokens_after > manager.input_limit_for_usage(&plan.usage)
+    {
+        return Err(ContextError::BudgetExceeded(format!("result is {history_after} history tokens ({tokens_after} with overhead), exceeding its admitted budget {}", plan.target_tokens)));
+    }
+    if plan.trigger != CompactionTrigger::Manual && tokens_after >= plan.tokens_before {
+        return Err(ContextError::NoProgress);
+    }
     let window = manager.context_window.max(1) as u64;
     let checkpoint = ContextCheckpoint {
         entry_id,
@@ -1016,6 +1387,7 @@ fn finalize(
         covered_from_entry_id: Some(plan.covered_from_entry_id),
         cutoff_entry_id: Some(plan.cutoff_entry_id),
         summary: vec![ContentBlock::text(summary)],
+        protected_entry_ids,
         tokens_before: plan.tokens_before,
         tokens_after,
         trigger: plan.trigger,
@@ -1066,6 +1438,7 @@ mod tests {
     struct ScriptedProvider {
         replies: Mutex<VecDeque<ScriptedReply>>,
         requests: Mutex<Vec<ModelRequest>>,
+        output_limits: Mutex<Vec<i32>>,
     }
 
     impl ScriptedProvider {
@@ -1073,12 +1446,21 @@ mod tests {
             Self {
                 replies: Mutex::new(replies.into_iter().collect()),
                 requests: Mutex::new(Vec::new()),
+                output_limits: Mutex::new(Vec::new()),
             }
         }
     }
 
     #[async_trait::async_trait]
     impl LLMProvider for ScriptedProvider {
+        async fn stream_model_with_output_limit(
+            &self,
+            request: ModelRequest,
+            limit: i32,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            self.output_limits.lock().push(limit);
+            self.stream_model(request).await
+        }
         async fn stream_model(
             &self,
             request: ModelRequest,
@@ -1163,6 +1545,314 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn s2_counts_request_overhead_and_preserves_originals_across_checkpoints() {
+        let provider = ScriptedProvider::new([
+            ScriptedReply::Summary(VALID_SUMMARY),
+            ScriptedReply::Summary(VALID_SUMMARY),
+        ]);
+        let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window: 1_000_000,
+            model: "m".into(),
+        };
+        let mut original = vec![
+            projected("user", "first exact requirement", "u1").message,
+            projected("assistant", "first exact answer", "a1").message,
+            projected_message(
+                AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result("c1", "x".repeat(990_000), false)],
+                    ..Default::default()
+                },
+                "t1",
+            )
+            .message,
+            projected("user", "new requirement", "u2").message,
+        ];
+        let before = super::super::project_prompt_context(&original, None, None, 1_000_000);
+        assert!(matches!(
+            manager
+                .prepare_semantic(
+                    before,
+                    CompactionTrigger::Automatic,
+                    None,
+                    &provider,
+                    &AtomicBool::new(false)
+                )
+                .await
+                .unwrap(),
+            ContextPreparation::Unchanged { .. }
+        ));
+        let mut prompt = super::super::project_prompt_context(&original, None, None, 1_000_000);
+        super::super::set_request_budget(&mut prompt, &"s".repeat(40_000), &[], 16_000);
+        let (first, checkpoint) = into_compacted(
+            manager
+                .prepare_semantic(
+                    prompt,
+                    CompactionTrigger::Automatic,
+                    None,
+                    &provider,
+                    &AtomicBool::new(false),
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(checkpoint.tokens_after < 32_000 + 10_100);
+        assert_eq!(checkpoint.protected_entry_ids, vec!["u1", "a1"]);
+        assert_eq!(first.messages[0].message.text(), "first exact requirement");
+        assert_eq!(first.messages[1].message.text(), "first exact answer");
+        assert_eq!(*provider.output_limits.lock(), vec![8192]);
+        let replay =
+            super::super::project_prompt_context(&original, Some(&checkpoint), None, 1_000_000);
+        assert_eq!(
+            replay
+                .messages
+                .iter()
+                .map(|m| m.message.text())
+                .collect::<Vec<_>>(),
+            first
+                .messages
+                .iter()
+                .map(|m| m.message.text())
+                .collect::<Vec<_>>()
+        );
+        original.push(projected("assistant", "new exact answer", "a2").message);
+        original.push(
+            projected_message(
+                AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result(
+                        "c2",
+                        "tail".repeat(10_000),
+                        false,
+                    )],
+                    ..Default::default()
+                },
+                "t2",
+            )
+            .message,
+        );
+        let second =
+            super::super::project_prompt_context(&original, Some(&checkpoint), None, 1_000_000);
+        let (second, cp2) = into_compacted(
+            manager
+                .prepare_semantic(
+                    second,
+                    CompactionTrigger::Manual,
+                    None,
+                    &provider,
+                    &AtomicBool::new(false),
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cp2.protected_entry_ids, vec!["u1", "a1", "u2", "a2"]);
+        for text in [
+            "first exact requirement",
+            "first exact answer",
+            "new requirement",
+            "new exact answer",
+        ] {
+            assert!(second.messages.iter().any(|m| m.message.text() == text));
+        }
+        assert!(
+            matches!(&original[2].content[0], ContentBlock::ToolResult { content, .. } if content.len() == 990_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn s2_rejects_oversized_protected_text_before_calling_model() {
+        let provider = ScriptedProvider::new([]);
+        let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window: 1_000_000,
+            model: "m".into(),
+        };
+        let prompt = PromptContext {
+            messages: vec![
+                projected("user", &"x".repeat(300_000), "u"),
+                projected("assistant", "answer", "a"),
+            ],
+            usage: ContextUsage::default(),
+        };
+        let result = manager
+            .prepare_semantic(
+                prompt,
+                CompactionTrigger::Manual,
+                None,
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await;
+        assert!(matches!(result, Err(ContextError::BudgetExceeded(_))));
+        assert!(provider.requests.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn s2_summarizes_oversized_assistant_output_with_an_explicit_notice() {
+        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
+        let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window: 1_000_000,
+            model: "m".into(),
+        };
+        let prompt = PromptContext {
+            messages: vec![
+                projected("user", "must retain this requirement", "u"),
+                projected("assistant", &"x".repeat(300_000), "a"),
+                projected("user", "latest question", "new"),
+            ],
+            usage: ContextUsage::default(),
+        };
+        let (prompt, checkpoint) = into_compacted(
+            manager
+                .prepare_semantic(
+                    prompt,
+                    CompactionTrigger::Manual,
+                    None,
+                    &provider,
+                    &AtomicBool::new(false),
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(checkpoint.protected_entry_ids.contains(&"u".to_string()));
+        assert!(!checkpoint.protected_entry_ids.contains(&"a".to_string()));
+        assert!(prompt
+            .messages
+            .iter()
+            .any(|m| m.message.text() == "must retain this requirement"));
+        assert!(checkpoint
+            .summary
+            .iter()
+            .any(|b| matches!(b,ContentBlock::Text{text} if text.contains("Retention note: 1"))));
+    }
+
+    #[tokio::test]
+    async fn summary_custom_instructions_are_in_the_request_budget() {
+        let provider = ScriptedProvider::new([]);
+        let result = test_manager()
+            .prepare_semantic(
+                test_prompt(),
+                CompactionTrigger::Manual,
+                Some(&"x".repeat(100_000)),
+                &provider,
+                &AtomicBool::new(false),
+            )
+            .await;
+        assert!(matches!(result, Err(ContextError::SummaryFailed(_))));
+        assert!(provider.requests.lock().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn summary_connect_wait_is_interruptible() {
+        struct HangingProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for HangingProvider {
+            async fn stream_model(
+                &self,
+                _: ModelRequest,
+            ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+                std::future::pending().await
+            }
+        }
+        let interrupted = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = interrupted.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+        let result = call_summary_model_bounded(
+            &HangingProvider,
+            "m",
+            "prompt".into(),
+            &interrupted,
+            8192,
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(SummaryCallError::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn summary_usage_observes_final_trailing_usage_once_per_attempt() {
+        let usage = |input, cost| crate::types::Usage {
+            prompt_tokens: input,
+            completion_tokens: 2,
+            credit_cost: Some(cost),
+            ..Default::default()
+        };
+        let provider = ScriptStreamProvider::new([
+            StreamScript::Events(vec![
+                ModelStreamEvent::Usage(usage(10, 0.1)),
+                ModelStreamEvent::Error {
+                    message: "status 503 overload".into(),
+                },
+            ]),
+            StreamScript::Events(vec![
+                ModelStreamEvent::TextDelta {
+                    id: "s".into(),
+                    text: VALID_SUMMARY.into(),
+                },
+                ModelStreamEvent::Usage(usage(20, 0.15)),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: None,
+                },
+                ModelStreamEvent::Usage(usage(25, 0.2)),
+            ]),
+        ]);
+        let observed = Mutex::new(Vec::new());
+        let summary = call_summary_model_bounded(
+            &provider,
+            "m",
+            "prompt".into(),
+            &AtomicBool::new(false),
+            8192,
+            Some(&|u| observed.lock().push(u.clone())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary, VALID_SUMMARY);
+        let observed = observed.lock();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].prompt_tokens, 10);
+        assert_eq!(observed[1].prompt_tokens, 25);
+        assert_eq!(observed[1].credit_cost, Some(0.2));
+    }
+
+    #[test]
+    fn tool_excerpt_keeps_error_tail_and_source_id() {
+        let text = format!("HEAD{}TAIL_ERROR", "x".repeat(5000));
+        let message = projected_message(
+            AgentMessage {
+                role: "tool".into(),
+                content: vec![ContentBlock::tool_result("c", text, false)],
+                ..Default::default()
+            },
+            "entry-source",
+        );
+        let serialized = serialize_message(&message.message, SerializationMode::Normal);
+        assert!(serialized.contains("HEAD"));
+        assert!(serialized.contains("TAIL_ERROR"));
+        assert!(serialized.contains("History entry entry-source"));
+        assert!(serialized.contains("not evidence of absence"));
+        assert!(SUMMARY_SYSTEM_PROMPT.contains("omitted content remains unknown"));
+    }
+
     #[test]
     fn required_summary_structure_is_validated() {
         assert!(valid_summary(
@@ -1213,7 +1903,7 @@ mod tests {
             .await
             .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-v1");
+        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
         assert_eq!(checkpoint.phase, Some(CompactionPhase::PreTurn));
         let requests = provider.requests.lock();
         assert_eq!(requests.len(), 1);
@@ -1281,8 +1971,8 @@ mod tests {
         assert_eq!(checkpoint.phase, Some(CompactionPhase::MidTurn));
         assert_eq!(
             prompt.messages.len(),
-            1,
-            "the structured summary continues the task"
+            2,
+            "the user original and structured summary continue the task"
         );
         assert!(checkpoint.tokens_after < checkpoint.tokens_before);
     }
@@ -1332,7 +2022,7 @@ mod tests {
             .await
             .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-v1");
+        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
         assert_eq!(provider.requests.lock().len(), 2);
     }
 
@@ -1353,7 +2043,7 @@ mod tests {
             .await
             .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-v1");
+        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
         assert_eq!(provider.requests.lock().len(), 2);
     }
 
@@ -1374,7 +2064,7 @@ mod tests {
             .await
             .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-v1");
+        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
         assert_eq!(provider.requests.lock().len(), 2);
     }
 
@@ -1385,7 +2075,19 @@ mod tests {
             ScriptedReply::Summary(VALID_SUMMARY),
         ]);
         let mut prompt = test_prompt();
-        prompt.messages[0] = projected("user", &"x".repeat(30_000), "e1");
+        prompt.messages[0] = projected_message(
+            AgentMessage {
+                role: "assistant".into(),
+                content: vec![ContentBlock::tool_call(
+                    "large",
+                    "write",
+                    serde_json::json!({"path":"large.rs", "content":"x".repeat(30_000)}),
+                    Default::default(),
+                )],
+                ..Default::default()
+            },
+            "e1",
+        );
         test_manager()
             .prepare_semantic(
                 prompt,
@@ -1460,7 +2162,10 @@ mod tests {
             .unwrap();
         let (_, checkpoint) =
             into_compacted(prepared).expect("expected emergency provider-limit compaction");
-        assert_eq!(checkpoint.algorithm_version, "deterministic-emergency-v1");
+        assert_eq!(
+            checkpoint.algorithm_version,
+            "deterministic-emergency-s2-v1"
+        );
         assert!(serde_json::to_string(&checkpoint.summary)
             .unwrap()
             .contains("preserve the exact user constraints"));
@@ -1649,7 +2354,17 @@ mod tests {
 
         assert_eq!(checkpoint.covered_from_entry_id.as_deref(), Some("e1"));
         assert_eq!(checkpoint.cutoff_entry_id.as_deref(), Some("e6"));
-        assert_eq!(prompt.messages.len(), 1, "only the summary should remain");
+        assert_eq!(
+            prompt.messages.len(),
+            7,
+            "all six QA originals and one summary remain"
+        );
+        assert_eq!(
+            checkpoint.protected_entry_ids,
+            vec!["e1", "e2", "e3", "e4", "e5", "e6"]
+        );
+        assert_eq!(prompt.messages[0].message.text(), "你好");
+        assert_eq!(prompt.messages[5].message.text(), "这是完整长诗");
         let requests = provider.requests.lock();
         let summary_input = requests[0].messages[0].text();
         assert!(summary_input.contains("你好，有什么可以帮你？"));
@@ -1843,6 +2558,10 @@ mod tests {
         CompactionPlan {
             removed,
             retained: Vec::new(),
+            protected: Vec::new(),
+            target_tokens: 6000,
+            summary_budget: 1024,
+            summarized_outputs: 0,
             previous_summary: Some("prior summary".to_string()),
             covered_from_entry_id: "e1".to_string(),
             cutoff_entry_id: "e1".to_string(),
@@ -1875,7 +2594,10 @@ mod tests {
             .prepare(test_prompt(), CompactionTrigger::Automatic, None)
             .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected deterministic compaction");
-        assert_eq!(checkpoint.algorithm_version, "deterministic-emergency-v1");
+        assert_eq!(
+            checkpoint.algorithm_version,
+            "deterministic-emergency-s2-v1"
+        );
         assert!(serde_json::to_string(&checkpoint.summary)
             .unwrap()
             .contains("## Objective"));
@@ -1929,6 +2651,7 @@ mod tests {
             CompactionPhase::MidTurn,
             None,
             None,
+            4096,
         );
         // Downshift + MidTurn leaves allow_full_active_turn false (the
         // `matches!` fallthrough arm), but the plan still resolves without
@@ -2194,6 +2917,7 @@ mod tests {
             &provider,
             &AtomicBool::new(false),
             SerializationMode::Normal,
+            None,
         )
         .await;
         assert!(

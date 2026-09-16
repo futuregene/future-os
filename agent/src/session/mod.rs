@@ -19,9 +19,14 @@
 pub const SESSION_TITLE_MAX_WIDTH: usize = 32;
 
 mod checkpoint;
+pub(crate) mod compaction_ops;
+#[cfg(test)]
+mod compaction_ops_tests;
 mod database;
 pub(crate) mod display;
 mod history_index;
+mod history_query;
+pub(crate) use history_query::HISTORY_DEFAULT_BYTES;
 mod legacy_import;
 pub use legacy_import::ImportRecord;
 mod entry;

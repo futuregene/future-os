@@ -4,24 +4,29 @@ use crate::types::{AgentMessage, ContentBlock, ConvertToLLM, Message};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
+mod budget;
+mod durable;
 mod semantic;
+pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
+pub(crate) use durable::prepare_with_journal_summarized;
+pub use durable::CompactionJournal;
+
+pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 
 pub(super) const INTERNAL_CHECKPOINT_METADATA_KEY: &str = "internal_context_checkpoint";
 
-/// Derive compaction budgets without allowing the historical 16K minimum to
-/// consume an entire small model window. The minimum remains useful for large
-/// models, but scales down to at most one quarter of the available context.
-/// A degenerate window <= 1 has no positive reserve that also leaves input
-/// room; return zero budgets rather than inventing unavailable capacity.
+/// Preserve the legacy (reserve, recent) interface while deriving the trigger
+/// from min(80% of the model window, 256K). `reserve` is threshold headroom,
+/// not the model's output cap. Recent history is bounded independently at 8K.
+/// Degenerate windows do not invent capacity.
 pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
     let window = context_window.max(1);
-    let proportional_reserve = ((window as f64 * 0.1) as i32).max(1);
-    let scaled_minimum = 16_384.min((window / 4).max(1));
-    let reserve_tokens = proportional_reserve.max(scaled_minimum).min(window - 1);
-    let usable_context = window.saturating_sub(reserve_tokens).max(1);
-    let keep_recent_tokens = ((window as f64 * 0.2) as i32)
-        .max(reserve_tokens)
-        .min(usable_context);
+    if window <= 1 {
+        return (0, 0);
+    }
+    let threshold = trigger_tokens(window as u64).max(1) as i32;
+    let reserve_tokens = window - threshold;
+    let keep_recent_tokens = (budget::RECENT_HISTORY as i32).min(threshold / 4).max(1);
     (reserve_tokens, keep_recent_tokens)
 }
 
@@ -44,6 +49,50 @@ pub(super) fn stamp_internal_checkpoint_message(message: &mut AgentMessage, entr
         INTERNAL_CHECKPOINT_METADATA_KEY.to_string(),
         serde_json::Value::Bool(true),
     );
+}
+
+pub(super) fn is_protected(message: &AgentMessage) -> bool {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get(INTERNAL_ANCHOR_METADATA_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(super) fn protected_text(original: &AgentMessage) -> Option<AgentMessage> {
+    if !matches!(original.role.as_str(), "user" | "assistant")
+        || original
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(INTERNAL_CHECKPOINT_METADATA_KEY))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let id = original.journal_entry_id()?;
+    let content = original
+        .content
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if content.is_empty() {
+        return None;
+    }
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!(id),
+    );
+    metadata.insert(INTERNAL_ANCHOR_METADATA_KEY.into(), serde_json::json!(true));
+    Some(AgentMessage {
+        role: original.role.clone(),
+        content,
+        metadata: Some(metadata),
+        ..Default::default()
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -106,6 +155,10 @@ pub struct ContextUsage {
     pub reasoning_tokens: Option<u64>,
     pub estimated_input_tokens: u64,
     pub context_window: u64,
+    #[serde(default)]
+    pub fixed_input_tokens: u64,
+    #[serde(default)]
+    pub output_reserve_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +172,10 @@ pub struct ContextCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cutoff_entry_id: Option<String>,
     pub summary: Vec<ContentBlock>,
+    /// Original user/assistant text to retain from the covered prefix. Bodies
+    /// remain in the immutable journal, not duplicated inside this checkpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected_entry_ids: Vec<String>,
     pub tokens_before: u64,
     pub tokens_after: u64,
     pub trigger: CompactionTrigger,
@@ -168,6 +225,12 @@ pub enum ContextError {
     SummaryFailed(String),
     #[error("context compaction was cancelled")]
     Cancelled,
+    #[error("context compaction budget exceeded: {0}")]
+    BudgetExceeded(String),
+    #[error("context compaction made no token progress")]
+    NoProgress,
+    #[error("context compaction durability: {0}")]
+    PersistenceFailed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +243,73 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
+    /// Default runtime compaction (C). The raw journal is used only for bounded
+    /// evidence selection; no LLM provider is accepted or called by this path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_evidence(
+        &self,
+        prompt: PromptContext,
+        raw: &[AgentMessage],
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        instructions: Option<&str>,
+        interrupted: &std::sync::atomic::AtomicBool,
+        on_started: Option<&(dyn Fn() + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::evidence::prepare(
+            self,
+            prompt,
+            raw,
+            trigger,
+            phase,
+            instructions,
+            interrupted,
+            on_started,
+        )
+    }
+
+    /// C3: C's projection plus a sticky, model-written handoff summary.
+    ///
+    /// The summary is generated from the material being compressed and receives the
+    /// previous summary, so facts accumulate across successive compactions instead of
+    /// being rewritten from scratch. When the provider is absent or the call fails,
+    /// this commits plain C; the fallback is reported through `on_fallback` rather
+    /// than failing the compaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_evidence_with_summary(
+        &self,
+        prompt: PromptContext,
+        raw: &[AgentMessage],
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        instructions: Option<&str>,
+        interrupted: &std::sync::atomic::AtomicBool,
+        on_started: Option<&(dyn Fn() + Sync)>,
+        provider: Option<&dyn crate::types::LLMProvider>,
+        system_prompt: Option<&str>,
+        tools: &[crate::types::ToolDef],
+        on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+        on_fallback: Option<&(dyn Fn(&str) + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::evidence::prepare_with_sticky_summary(
+            self,
+            prompt,
+            raw,
+            trigger,
+            phase,
+            instructions,
+            interrupted,
+            on_started,
+            provider,
+            system_prompt,
+            tools,
+            on_usage,
+            on_fallback,
+        )
+        .await
+    }
+
+    /// Explicit legacy semantic API; the runtime defaults to prepare_evidence.
     /// Prepare context with a model-generated semantic summary. The selected
     /// session model/provider is reused with tools disabled; no hidden
     /// compaction model is involved. Provider failures remain observable so
@@ -261,6 +391,33 @@ impl ContextManager {
         fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
         on_started: Option<&(dyn Fn() + Sync)>,
     ) -> Result<ContextPreparation, ContextError> {
+        self.prepare_semantic_observed(
+            prompt,
+            trigger,
+            phase,
+            custom_instructions,
+            provider,
+            interrupted,
+            fallback,
+            on_started,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_semantic_observed(
+        &self,
+        prompt: PromptContext,
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        custom_instructions: Option<&str>,
+        provider: &dyn crate::types::LLMProvider,
+        interrupted: &std::sync::atomic::AtomicBool,
+        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
+        on_started: Option<&(dyn Fn() + Sync)>,
+        on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
         semantic::prepare(
             self,
             prompt,
@@ -271,12 +428,14 @@ impl ContextManager {
             interrupted,
             fallback,
             on_started,
+            on_usage,
         )
         .await
     }
 
     /// Synchronous compatibility path used by legacy callers and unit tests.
-    /// Runtime automatic/manual compaction should use `prepare_semantic`.
+    /// Legacy projection-only utility. Runtime compaction uses `prepare_evidence`
+    /// through the durable wrapper, with access to the full raw journal.
     pub fn prepare(
         &self,
         prompt: PromptContext,
@@ -322,6 +481,43 @@ pub fn project_prompt_context(
     let tail_start = cutoff_index.map_or(0, |index| index.saturating_add(1));
     let mut projected = Vec::with_capacity(messages.len().saturating_sub(tail_start) + 1);
     if let Some(checkpoint) = checkpoint {
+        let protected: HashSet<&str> = checkpoint
+            .protected_entry_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        // Upgrade old semantic checkpoints from the still-intact journal.
+        // Otherwise their already-covered first question could never become
+        // an S2 anchor. Admission still bounds this expanded projection.
+        let recover_legacy_text = !checkpoint.legacy_without_cutoff
+            && checkpoint.protected_entry_ids.is_empty()
+            && matches!(
+                checkpoint.algorithm_version.as_str(),
+                "semantic-v1" | "deterministic-emergency-v1"
+            );
+        for original in &messages[..tail_start] {
+            if recover_legacy_text
+                || original
+                    .journal_entry_id()
+                    .is_some_and(|id| protected.contains(id))
+            {
+                if let Some(mut message) = protected_text(original) {
+                    if recover_legacy_text {
+                        // Eligible for the first S2 checkpoint, not mistaken
+                        // for an already-committed, unchangeable anchor set.
+                        message
+                            .metadata
+                            .as_mut()
+                            .unwrap()
+                            .remove(INTERNAL_ANCHOR_METADATA_KEY);
+                    }
+                    projected.push(ProjectedMessage {
+                        source_entry_ids: vec![message.journal_entry_id().unwrap().to_string()],
+                        message,
+                    });
+                }
+            }
+        }
         let summary = checkpoint
             .summary
             .iter()
@@ -381,7 +577,7 @@ pub fn should_compact(
     if !settings.enabled {
         return false;
     }
-    context_tokens > context_window - settings.reserve_tokens
+    context_tokens >= context_window - settings.reserve_tokens
 }
 
 /// EstimateTokens estimates tokens for a single message.
@@ -835,10 +1031,10 @@ mod tests {
             reserve_tokens: 8000,
             keep_recent_tokens: 5000,
         };
-        // context_tokens (120_000) > context_window (128_000) - reserve (8000) = 120_000
-        // 120_000 > 120_000 is false, so not triggered
-        assert!(!should_compact(120_000, 128_000, &settings));
-        // 120_001 > 120_000 → triggers
+        // Reaching the threshold triggers; remaining below it does not.
+        assert!(!should_compact(119_999, 128_000, &settings));
+        assert!(should_compact(120_000, 128_000, &settings));
+        // Above the threshold also triggers.
         assert!(should_compact(120_001, 128_000, &settings));
     }
 
@@ -903,6 +1099,7 @@ mod tests {
         recent.ensure_journal_entry_id();
         let checkpoint = ContextCheckpoint {
             entry_id: "checkpoint-entry".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-1".into(),
             covered_from_entry_id: Some(covered_id.clone()),
             cutoff_entry_id: Some(covered_id),
@@ -1233,6 +1430,7 @@ mod tests {
         recent.ensure_journal_entry_id();
         let checkpoint = ContextCheckpoint {
             entry_id: covered_id.clone(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-1".to_string(),
             covered_from_entry_id: None,
             cutoff_entry_id: None,
@@ -1263,9 +1461,59 @@ mod tests {
     }
 
     #[test]
+    fn legacy_semantic_checkpoint_recovers_originals_before_s2_upgrade() {
+        let mut user =
+            AgentMessage::new_user("user", serde_json::json!("the original first question"));
+        let first = user.ensure_journal_entry_id();
+        let mut answer = AgentMessage::new_user(
+            "assistant",
+            serde_json::json!("the original verified answer"),
+        );
+        let last = answer.ensure_journal_entry_id();
+        let mut recent = AgentMessage::new_user("user", serde_json::json!("continue"));
+        recent.ensure_journal_entry_id();
+        let checkpoint: ContextCheckpoint = serde_json::from_value(serde_json::json!({
+            "entry_id":"old-cp", "checkpoint_id":"old-cp", "covered_from_entry_id":first,
+            "cutoff_entry_id":last, "summary":[{"type":"text","text":"old lossy summary"}],
+            "tokens_before":100,"tokens_after":10,"trigger":"manual","algorithm_version":"semantic-v1",
+            "model":"m","context_window":1000,"created_at":"2026-09-14T00:00:00Z"
+        })).unwrap();
+        let projection =
+            project_prompt_context(&[user, answer, recent], Some(&checkpoint), None, 1000);
+        assert_eq!(projection.messages.len(), 4);
+        assert_eq!(
+            projection.messages[0].message.text(),
+            "the original first question"
+        );
+        assert_eq!(
+            projection.messages[1].message.text(),
+            "the original verified answer"
+        );
+        assert!(!is_protected(&projection.messages[0].message));
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens: 200,
+            keep_recent_tokens: 128,
+            context_window: 1000,
+            model: "m".into(),
+        };
+        let ContextPreparation::Compacted {
+            checkpoint: next, ..
+        } = manager
+            .prepare(projection, CompactionTrigger::Manual, None)
+            .unwrap()
+        else {
+            panic!("expected upgrade checkpoint")
+        };
+        assert!(next.protected_entry_ids.contains(&first));
+        assert!(next.protected_entry_ids.contains(&last));
+    }
+
+    #[test]
     fn checkpoint_projection_ignores_non_text_summary_blocks() {
         let checkpoint = ContextCheckpoint {
             entry_id: "e".to_string(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp".to_string(),
             covered_from_entry_id: None,
             cutoff_entry_id: None,

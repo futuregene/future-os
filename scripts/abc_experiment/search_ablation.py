@@ -1,0 +1,124 @@
+import os as _os
+import pathlib as _pathlib
+import subprocess as _subprocess
+
+
+def _checkout():
+    """The checkout this script lives in (…/<checkout>/scripts/abc_experiment/x.py)."""
+    return _pathlib.Path(__file__).resolve().parents[2]
+
+
+def _main_checkout():
+    """The main checkout, which owns the shared .future directory.
+
+    `--git-common-dir` resolves to <main>/.git even when running from a worktree, so the
+    research directory is found without depending on any absolute path.
+    """
+    try:
+        out = _subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=_pathlib.Path(__file__).resolve().parent, capture_output=True, text=True,
+            timeout=30)
+        if out.returncode == 0 and out.stdout.strip():
+            return _pathlib.Path(out.stdout.strip()).parent
+    except Exception:
+        pass
+    return _checkout()
+
+
+def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
+    override = _os.environ.get("ABC_ROOT")
+    if override:
+        return _pathlib.Path(override)
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
+
+
+WORKTREE = _checkout()
+REPO = _main_checkout()
+ROOT = _research()
+
+"""Closed-book vs search-enabled, with the search tool held constant.
+
+A/B/C retrieval results come from the original driver (same fixtures, same
+archive CLI, same 5-call / 32 KB budget). Codex/OpenCode/M retrieval results were
+produced by this harness with the identical tool and budget, so the search engine,
+archive, models and questionnaire are all controlled — only the projection varies.
+
+Codex's own history tools are excluded by auth gating (see
+abc_external_provenance.json), so its search arm uses our CLI and is labelled a
+hybrid rather than a measurement of Codex's built-in retrieval.
+"""
+import collections, json, pathlib
+
+root = ROOT
+rows = collections.defaultdict(lambda: {"closed": [], "search": []})
+
+for item in json.loads((root / "SCORED.json").read_text()):
+    rows[item["arm"]]["search" if item["retrieval"] else "closed"].append(
+        {"correct": item["fact_correct"], "delivered": item["delivered"]})
+
+for arm in ("main", "codex", "opencode"):
+    for path in sorted((root / arm / "results").glob("*.json")):
+        data = json.loads(path.read_text())
+        if arm == "opencode" and "v2" not in data["id"]:
+            continue
+        rows[arm]["search" if data.get("retrieval") else "closed"].append(
+            {"correct": data["grade"]["correct"], "delivered": data["status"] == "completed"})
+
+
+def cell(items):
+    if not items:
+        return "—", None, None
+    got = sum(i["correct"] for i in items)
+    full = 12 * len(items)
+    delivered = [i for i in items if i["delivered"]]
+    delivered_got = sum(i["correct"] for i in delivered)
+    text = f'{got}/{full} · {len(delivered)}/{len(items)} delivered'
+    return text, (got, full), (delivered_got, 12 * len(delivered))
+
+
+print(f'{"arm":10s} {"closed-book":>34s} {"with search (same CLI)":>34s}   delta')
+summary = {}
+for arm in ("A", "B", "C", "main", "codex", "opencode"):
+    closed, closed_n, closed_d = cell(rows[arm]["closed"])
+    search, search_n, search_d = cell(rows[arm]["search"])
+    delta = f'{search_n[0] - closed_n[0]:+d}/{closed_n[1]}' if closed_n and search_n else ""
+    summary[arm] = {"closed": closed_n, "closed_delivered": closed_d,
+                    "search": search_n, "search_delivered": search_d}
+    print(f'{arm:10s} {closed:>34s} {search:>34s}   {delta}')
+
+print()
+print("delivered-only accuracy (undelivered probes excluded):")
+for arm, s in summary.items():
+    if not s["search_delivered"]:
+        continue
+    c, cn = s["closed_delivered"]
+    q, qn = s["search_delivered"]
+    print(f'  {arm:9s} closed {c}/{cn}   with search {q}/{qn}')
+
+ledger = json.loads((root / "calls.json").read_text())
+spend = sum(r.get("charged", r["reserved"]) for r in ledger)
+print(f'\nledger: {len(ledger)} requests, CNY {spend:.4f}')

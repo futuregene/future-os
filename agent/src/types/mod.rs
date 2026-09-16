@@ -957,6 +957,18 @@ pub trait LLMProvider: Send + Sync {
         request: crate::llm::schema::ModelRequest,
     ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>;
 
+    /// Request-local generation cap for auxiliary summaries. Real providers
+    /// should override this without mutating the live session configuration.
+    /// The default preserves compatibility for immutable/test providers.
+    async fn stream_model_with_output_limit(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+        _max_output_tokens: i32,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        self.stream_model(request).await
+    }
+
     /// Update thinking level and budget at runtime (after set_thinking_level / cycle_thinking_level).
     fn update_thinking(&self, _level: &str, _budget: i32) {}
 

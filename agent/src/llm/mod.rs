@@ -569,6 +569,32 @@ impl crate::types::LLMProvider for Client {
         Ok(ReceiverStream::new(rx))
     }
 
+    async fn stream_model_with_output_limit(
+        &self,
+        request: schema::ModelRequest,
+        max_output_tokens: i32,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        anyhow::ensure!(
+            max_output_tokens > 0,
+            "summary output limit must be positive"
+        );
+        let mut target = self.target_for_request()?;
+        let capped = if target.capabilities.max_output_tokens > 0 {
+            max_output_tokens.min(target.capabilities.max_output_tokens)
+        } else {
+            max_output_tokens
+        };
+        target.generation.max_output_tokens = Some(capped);
+        let limited = Self {
+            http: self.http.clone(),
+            generation: RwLock::new(target.generation.clone()),
+            target: RwLock::new(Some(target)),
+            live_model: None,
+            adapters: self.adapters.clone(),
+        };
+        limited.stream_model(request).await
+    }
+
     fn snapshot(&self) -> Option<std::sync::Arc<dyn crate::types::LLMProvider>> {
         Some(std::sync::Arc::new(Self {
             http: self.http.clone(),
@@ -1014,6 +1040,37 @@ mod tests {
             )],
             tools: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn summary_output_cap_is_request_local_and_sent_on_the_wire() {
+        let server = mock_server(|_| {
+            (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+        });
+        let mut target = protocol_target(
+            &server.base_url,
+            schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig::default()),
+        );
+        target.generation.max_output_tokens = Some(32_000);
+        target.capabilities.max_output_tokens = 64_000;
+        let client = Client::from_target(target);
+        let _: Vec<_> = client
+            .stream_model_with_output_limit(canonical_request(), 8192)
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let _: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let requests = server.requests.lock().unwrap();
+        let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+        assert_eq!(first["max_tokens"], 8192);
+        assert_eq!(second["max_tokens"], 32_000);
     }
 
     #[tokio::test]

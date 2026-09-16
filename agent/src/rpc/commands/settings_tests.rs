@@ -160,6 +160,26 @@ fn set_sandbox_policy_missing_payload() {
 }
 
 #[test]
+fn compact_rejects_an_active_run_without_starting_a_worker() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let lease = session
+        .read()
+        .runtime
+        .begin(Some("active-run"), Some("active-request"))
+        .unwrap();
+    let response = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "session_busy");
+    assert!(!session
+        .read()
+        .compaction_in_progress
+        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(session.read().runtime.begin_finalizing(&lease));
+    assert!(session.read().runtime.finish(&lease));
+}
+
+#[test]
 fn compact_empty_session_returns_async_ack() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();
@@ -284,6 +304,17 @@ fn compact_ack_does_not_wait_for_the_summary_provider() {
             message.ensure_journal_entry_id();
             messages.push(message);
         }
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace("default", entries)
+            .unwrap();
     }
     let mut events = session.read().broadcaster.subscribe();
     let started_at = std::time::Instant::now();
