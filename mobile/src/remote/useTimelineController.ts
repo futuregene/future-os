@@ -516,7 +516,14 @@ export function useTimelineController({
     }
     timelinesRef.current = next;
     historyPagingRef.current = paging;
-    setTimelines(next);
+    // A deferred prune can run after an engine commit queued a React update
+    // but before the ref-mirroring effect. Remove only evicted keys from the
+    // latest state; replacing it with the ref snapshot would erase that commit.
+    setTimelines((previous) => {
+      const retained = { ...previous };
+      for (const id of removed) delete retained[id];
+      return retained;
+    });
     setHistoryPaging(paging);
     setSyncStatuses((previous) => {
       const next = { ...previous };
@@ -534,9 +541,12 @@ export function useTimelineController({
     // Cache sizing serializes timelines and can be expensive after a long run.
     // Do not do it in the navigation commit's effects: let the native screen
     // update first. Cancel stale cleanup when the user immediately reopens.
-    const timer = setTimeout(() => pruneTimelines(selectedSessionId), 0);
+    const timer = setTimeout(() => {
+      // Selection changes synchronously, before React cleans up this effect.
+      if (selectedRef.current === selectedSessionId) pruneTimelines(selectedSessionId);
+    }, 0);
     return () => clearTimeout(timer);
-  }, [pruneTimelines, selectedSessionId]);
+  }, [pruneTimelines, selectedRef, selectedSessionId]);
 
   const prepareTimelineOpen = useCallback(
     (sessionId: string) => {

@@ -148,6 +148,24 @@ describe("useTimelineController", () => {
     } finally { Object.defineProperty(AppState, "currentState", originalActivity); jest.useRealTimers(); }
   });
 
+  test("cache eviction preserves a queued timeline commit before ref effects run", async () => {
+    options.selectedSessionId = "s1";
+    render();
+    const engine = result.current.syncEngineRef.current!;
+    const prune = jest.spyOn(engine, "pruneCache").mockReturnValue(["old"]);
+    // The hook's subscriber queues setTimelines first. Trigger cleanup in the
+    // same engine commit, before React has mirrored that new state to its ref.
+    const unsubscribe = engine.subscribe(() => result.current.prepareTimelineOpen("s1"));
+    try {
+      act(() => engine.mutate("s1", () => ({ ...emptyTimeline(), items: [
+        { kind: "message", id: "fresh", role: "user", text: "newly committed" },
+      ] })));
+      await flush();
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timeline.items[0]).toMatchObject({ id: "fresh", text: "newly committed" });
+    } finally { unsubscribe(); prune.mockRestore(); }
+  });
+
   test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
     request.mockImplementation(
       async (command: { type: string; sessionId: string }) => ({
