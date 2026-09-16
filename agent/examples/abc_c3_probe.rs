@@ -3,19 +3,15 @@
 //! C3 is the runtime default: C's projection (protected user and assistant originals,
 //! deterministic tool-evidence index, recent tail) **plus** a sticky model-written
 //! handoff summary. `prepare_evidence_with_summary` is the production entry point, so
-//! this driver measures exactly what production commits — including the summary
-//! request's shape, which is what makes it cache-servable:
-//!
-//!   * the live conversation is sent as real messages (not a flattened string),
-//!   * the instruction is appended last, and
-//!   * the agent's own system prompt and tool definitions are reused,
-//!
-//! so the request shares a byte-identical prefix with the turn that already paid for
-//! those tokens.
+//! this driver exercises the production selection function on reduced frozen records.
+//! It is NOT a live agent and does not reproduce the original system prompt, tools,
+//! media or provider metadata. `--system-prompt-file` and `--thinking-level` make
+//! those experiment choices explicit. Logical model requests are returned for audit;
+//! no production prefix-cache guarantee is implied.
 //!
 //! Pass `--previous CHECKPOINT_JSON` to chain compactly: the previous summary is
-//! handed to the next one, which is what makes facts accumulate instead of being
-//! rewritten each round.
+//! handed to the next one. This permits recursive retention but does not guarantee
+//! that individual facts survive every rewrite.
 //!
 //! Usage:
 //!   abc_c3_probe --records FILE --model MODEL --window N [--previous CHECKPOINT_JSON]
@@ -52,6 +48,7 @@ static TOTALS: OnceLock<Arc<Totals>> = OnceLock::new();
 struct Observed {
     inner: future_agent::llm::Client,
     handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    requests: Mutex<Vec<Value>>,
 }
 
 #[async_trait::async_trait]
@@ -60,9 +57,50 @@ impl LLMProvider for Observed {
         &self,
         request: ModelRequest,
     ) -> Result<ReceiverStream<ModelStreamEvent>> {
+        self.observe(request, None).await
+    }
+
+    async fn stream_model_with_output_limit(
+        &self,
+        request: ModelRequest,
+        max_output_tokens: i32,
+    ) -> Result<ReceiverStream<ModelStreamEvent>> {
+        self.observe(request, Some(max_output_tokens)).await
+    }
+}
+
+impl Observed {
+    async fn observe(
+        &self,
+        request: ModelRequest,
+        max_output_tokens: Option<i32>,
+    ) -> Result<ReceiverStream<ModelStreamEvent>> {
         let totals = TOTALS.get().context("totals uninitialized")?.clone();
-        totals.calls.fetch_add(1, Ordering::Relaxed);
-        let stream = self.inner.stream_model(request).await?;
+        // Bound retries before sending, so the driver can be reserved as one
+        // transaction in the experiment ledger.
+        anyhow::ensure!(
+            totals
+                .calls
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n < 3)
+                    .then_some(n + 1))
+                .is_ok(),
+            "experiment summary request limit reached"
+        );
+        self.requests.lock().push(json!({
+            "model": request.model,
+            "system_prompt": request.system_prompt,
+            "messages": request.messages,
+            "tools": request.tools,
+            "max_output_tokens": max_output_tokens,
+        }));
+        let stream = match max_output_tokens {
+            Some(limit) => {
+                self.inner
+                    .stream_model_with_output_limit(request, limit)
+                    .await?
+            }
+            None => self.inner.stream_model(request).await?,
+        };
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let handle = tokio::spawn(async move {
             let mut stream = stream;
@@ -181,6 +219,9 @@ async fn main() -> Result<()> {
     let mut window: i32 = 128_000;
     let mut previous: Option<Value> = None;
     let mut no_summary = false;
+    let mut dump_messages = false;
+    let mut thinking_level: Option<String> = None;
+    let mut system_prompt: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--records" => records_path = args.next(),
@@ -190,6 +231,13 @@ async fn main() -> Result<()> {
                 previous = Some(serde_json::from_str(&args.next().context("previous")?)?)
             }
             "--no-summary" => no_summary = true,
+            "--dump-messages" => dump_messages = true,
+            "--thinking-level" => thinking_level = Some(args.next().context("thinking level")?),
+            "--system-prompt-file" => {
+                system_prompt = Some(std::fs::read_to_string(
+                    args.next().context("system prompt file")?,
+                )?);
+            }
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
@@ -236,7 +284,7 @@ async fn main() -> Result<()> {
     }
     let mut turns: Vec<Turn> = Vec::new();
     // (body, the entry id of the record that carried it)
-    let mut results: std::collections::HashMap<String, Vec<(String, String)>> =
+    let mut results: std::collections::HashMap<String, Vec<(String, String, bool)>> =
         std::collections::HashMap::new();
     // Pass 1: collect every tool result, wherever it appears. A result arrives in a
     // later entry than its call, so collecting results here -- and not in the same loop
@@ -248,14 +296,15 @@ async fn main() -> Result<()> {
                 if let ContentBlock::ToolResult {
                     tool_call_id,
                     content,
-                    ..
+                    is_error,
                 } = c
                 {
                     let source = m.journal_entry_id().map(str::to_string).unwrap_or_default();
-                    results
-                        .entry(tool_call_id.clone())
-                        .or_default()
-                        .push((content.clone(), source));
+                    results.entry(tool_call_id.clone()).or_default().push((
+                        content.clone(),
+                        source,
+                        *is_error,
+                    ));
                 }
             }
         }
@@ -307,8 +356,8 @@ async fn main() -> Result<()> {
             if let ContentBlock::ToolCall { id, .. } = call {
                 if let Some(bodies) = results.remove(id) {
                     content.push(call.clone());
-                    for (body, source) in bodies {
-                        answered.push((ContentBlock::tool_result(id, body, false), source));
+                    for (body, source, is_error) in bodies {
+                        answered.push((ContentBlock::tool_result(id, body, is_error), source));
                     }
                 }
             }
@@ -345,6 +394,10 @@ async fn main() -> Result<()> {
     }
     anyhow::ensure!(!messages.is_empty(), "no messages built from records");
 
+    if dump_messages {
+        println!("{}", serde_json::to_string(&messages)?);
+        return Ok(());
+    }
     let checkpoint = match &previous {
         Some(value) if !value.is_null() => {
             Some(serde_json::from_value(value.clone()).context("previous checkpoint")?)
@@ -363,9 +416,14 @@ async fn main() -> Result<()> {
     let registry = Arc::new(parking_lot::RwLock::new(
         future_agent::models::Registry::new(),
     ));
+    let mut inner = future_agent::llm::Client::from_live_model(model.clone(), registry);
+    if let Some(level) = &thinking_level {
+        inner = inner.with_thinking_level(level);
+    }
     let provider = Observed {
-        inner: future_agent::llm::Client::from_live_model(model.clone(), registry),
+        inner,
         handles: Mutex::new(Vec::new()),
+        requests: Mutex::new(Vec::new()),
     };
     let before = prompt.usage.estimated_input_tokens;
 
@@ -394,7 +452,7 @@ async fn main() -> Result<()> {
                 &AtomicBool::new(false),
                 None,
                 Some(&provider),
-                None,
+                system_prompt.as_deref(),
                 &[],
                 None,
                 // Surface the reason a summary was discarded: without this the
@@ -428,6 +486,8 @@ async fn main() -> Result<()> {
             "estimated_after": after,
             "window": window,
             "model_requests": totals.calls.load(Ordering::Relaxed),
+            "thinking_level": thinking_level,
+            "logical_requests": *provider.requests.lock(),
             "usage": {
                 "input_tokens": totals.input.load(Ordering::Relaxed),
                 "output_tokens": totals.output.load(Ordering::Relaxed),
@@ -438,4 +498,99 @@ async fn main() -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod fidelity_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn observed_forwards_off_and_output_cap_on_the_wire() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let (header_end, length) = loop {
+                let mut buffer = [0_u8; 4096];
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..at]);
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    break (at + 4, length);
+                }
+            };
+            while bytes.len() < header_end + length {
+                let mut buffer = [0_u8; 4096];
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"summary\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            request
+        });
+        let model = future_agent::models::Model {
+            id: "test".into(),
+            provider: "deepseek".into(),
+            api: "openai-completions".into(),
+            base_url: format!("http://{address}"),
+            reasoning: true,
+            max_tokens: 32000,
+            context_window: 128000,
+            ..Default::default()
+        };
+        let mut target = future_agent::llm::schema::ResolvedModelTarget::from_model(
+            &model,
+            "test-key".into(),
+            None,
+            Some(32000),
+        )
+        .unwrap();
+        target.protocol = future_agent::llm::schema::ProtocolConfig::OpenAiChat(
+            future_agent::llm::schema::OpenAiChatConfig {
+                reasoning: future_agent::llm::schema::ChatReasoningFormat::DeepSeek,
+                ..Default::default()
+            },
+        );
+        TOTALS.get_or_init(|| Arc::new(Totals::default()));
+        let provider = Observed {
+            inner: future_agent::llm::Client::from_target(target).with_thinking_level("off"),
+            handles: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+        };
+        let request = ModelRequest {
+            model: "test".into(),
+            system_prompt: "FIXED_BASE".into(),
+            messages: vec![AgentMessage::new_user("user", json!("question"))],
+            tools: vec![],
+        };
+        let mut stream = provider
+            .stream_model_with_output_limit(request, 8192)
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        let body = server.join().unwrap();
+        assert_eq!(body["max_tokens"], 8192);
+        assert_eq!(body["thinking"], json!({"type":"disabled"}));
+        assert_eq!(body["messages"][0]["content"], "FIXED_BASE");
+        assert_eq!(provider.requests.lock().len(), 1);
+    }
 }

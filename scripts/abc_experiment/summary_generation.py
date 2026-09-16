@@ -181,16 +181,25 @@ def main():
             for r in records:
                 if r["kind"] == "text" and r["role"] == "assistant":
                     phrase_values |= set(VALUE.findall(r.get("text", "")))
+            # Define the same target set for BOTH arms before inspecting C3.
+            # A value rescued by C3 must remain in its denominator.
+            baseline = compress(records, args.window, False, f"{chain}__s{index}__n")
+            if baseline is None:
+                raise RuntimeError(f"{chain} s{index}: baseline compaction failed")
+            baseline_text = "\n\n".join(m["text"] for m in baseline["projection"])
+            missing = sorted(v for v in phrase_values if v not in baseline_text)
+            if not missing:
+                continue
             for use_summary in (True, False):
                 identity = f"{chain}__s{index}__{'s' if use_summary else 'n'}"
-                payload = compress(records, args.window, use_summary, identity)
+                payload = compress(records, args.window, True, identity) if use_summary else baseline
                 if payload is None:
-                    continue
+                    raise RuntimeError(f"{identity}: compaction failed")
                 proj = "\n\n".join(m["text"] for m in payload["projection"])
-                missing = sorted(v for v in phrase_values if v not in proj)
-                if not missing:
-                    continue
-                answer = ask(f"gen__{identity}__r", proj + "\n\n" + INSTRUCTION)
+                import hashlib
+                prompt = proj + "\n\n" + INSTRUCTION
+                prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+                answer = ask(f"gen_v2__{identity}__{prompt_hash}", prompt)
                 listed = set(VALUE.findall(answer or ""))
                 recovered = sum(1 for v in missing if v in (answer or ""))
                 # Control: values that ARE in the projection. Without it a low recovery
@@ -199,6 +208,10 @@ def main():
                 found_present = sum(1 for v in available if v in (answer or ""))
                 results.append({"chain": chain, "stage": index,
                                 "arm": "summary" if use_summary else "no-summary",
+                                "target_policy": "missing-from-pure-C",
+                                "prompt_sha256": prompt_hash,
+                                "target_sha256": hashlib.sha256(json.dumps(missing).encode()).hexdigest(),
+                                "retained_target_values": sum(v in proj for v in missing),
                                 "missing": len(missing), "recovered": recovered,
                                 "available": len(available), "found_present": found_present,
                                 "listed": len(listed), "proj_tokens": len(proj) // 4})

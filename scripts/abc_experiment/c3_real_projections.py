@@ -89,15 +89,13 @@ def boundaries(root):
     for task in ("export", "analysis", "pipeline"):
         for stage in SYNTH:
             p = root / "data" / f"{task}-{stage}.json"
-            if not p.exists():
-                continue
-            d = json.loads(p.read_text())
+            d = json.loads(require(p, "synthetic fixture").read_text())
             out.append((task, stage, d["archive"] + d["tail"]))
     frozen = require(root / "frozen-sessions" / "manifest.json", "frozen real sessions",
                      "Run freeze_sessions.py against your own Agent database first.")
     manifest = json.loads(frozen.read_text())
     for name, meta in manifest.items():
-        records = json.loads((FROZEN / meta["path"]).read_text())["records"]
+        records = json.loads((root / "frozen-sessions" / meta["path"]).read_text())["records"]
         # one entry per stage, cumulative
         for index, frac in enumerate(REAL_FRACTIONS):
             out.append((name, index, records[:max(1, int(len(records) * frac))]))
@@ -147,13 +145,12 @@ def main():
                     "--window", str(args.window)]
             if args.no_summary:
                 argv.append("--no-summary")
-            elif previous is not None:
+            if previous is not None:
                 argv += ["--previous", json.dumps(previous)]
             began = time.monotonic()
             run = subprocess.run(argv, capture_output=True, text=True, timeout=2400)
             if run.returncode != 0:
-                print(f"  {identity}: DRIVER FAILED {run.stderr[-400:]}", flush=True)
-                continue
+                raise RuntimeError(f"{identity}: DRIVER FAILED {run.stderr[-400:]}")
             payload = json.loads(run.stdout.strip().splitlines()[-1])
             text = "\n\n".join(m["text"] for m in payload["projection"])
             previous = payload["checkpoint"]

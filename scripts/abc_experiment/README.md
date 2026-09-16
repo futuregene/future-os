@@ -1,5 +1,24 @@
 # Compaction experiment harness
 
+## Current fidelity-corrected closed-book run (v3)
+
+Use [FIDELITY_PROTOCOL.md](FIDELITY_PROTOCOL.md), `fidelity_rerun.py`, and
+`opencode_fidelity.mjs` with the isolated, locked AI SDK 6.0.168. V3 implements
+Codex real-message requests, its byte-based user budget/middle truncation, and
+OpenCode's SDK-based tail-token selection and correct output cap. All arms use
+matched generation settings and tool-pair-safe boundaries. It is closed-book
+only; open-book remains subject to explicit user approval.
+
+[FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md), `four_arm_rerun.py` and
+`four_arm_open.py` are retained as **historical v2**, not an upstream-fidelity
+reference. Likewise, the older six-chain/external score scripts below are
+historical experiments. In particular `external_score.py` used simplified
+external prompts and clipped history. `abc_external_strategies.py` retains old
+helpers for reproducing that history; v3 uses its own corrected Codex budgeting
+and actual SDK lowering instead. Do not mix scores across versions. Private
+artifacts and upstream fixtures belong outside this repository.
+
+
 Drives six compaction strategies over identical frozen inputs and scores the same
 questionnaire against each one. Every model call is reserved in a ledger before it is sent
 and settled to the provider's reported usage afterwards.

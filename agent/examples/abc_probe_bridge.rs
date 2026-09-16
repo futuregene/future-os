@@ -21,7 +21,10 @@ use std::io::{Read, Write};
 const ALLOWED: [&str; 2] = ["future/deepseek-flash", "future/glm-5.3-flash"];
 // Raised from 8192: a strategy that summarizes the whole history needs more
 // room to finish its summary before the response hits the output limit.
-const MAX_OUTPUT_TOKENS: i64 = 65_536;
+// The pinned DeepSeek registry declares 384K output tokens. A fidelity run
+// must not silently substitute the older experiment's 64K ceiling; admission
+// reserves the complete requested bound before each call.
+const MAX_OUTPUT_TOKENS: i64 = 384_000;
 const MAX_REQUEST_BYTES: usize = 8_000_000;
 const MAX_RESPONSE_BYTES: usize = 8_000_000;
 

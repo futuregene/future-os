@@ -120,10 +120,12 @@ def plain(records):
     lines = []
     for record in records:
         if record["kind"] == "tool_call":
-            lines.append(f"[Assistant tool call {record['call']}]: read({_json_args(record)})")
+            lines.append(f"[Assistant tool call {record['call']}]: {record.get('tool', 'read')}({_json_args(record)})")
         elif record["kind"] == "tool_result":
             label = "error" if record.get("error") else "result"
             lines.append(f"[Tool {label} {record['call']}]: {record['text']}")
+        elif record['kind'] == 'summary':
+            lines.append(f"[User]: {CODEX_SUMMARY_PREFIX}\n{record['text']}")
         else:
             lines.append(f"[{record['role'].title()}]: {record['text']}")
     return "\n\n".join(lines)
@@ -132,7 +134,7 @@ def plain(records):
 def _json_args(record):
     import json
 
-    return json.dumps({"path": record.get("path")})
+    return json.dumps(record.get("args", {"path": record.get("path")}))
 
 
 # ─── Codex ───────────────────────────────────────────────────────────────────
@@ -237,15 +239,24 @@ def opencode_entries(records):
     assistant `tool_call` record and the following `tool_result` record become a
     single entry with a completed tool part.
     """
-    entries, index = [], 0
-    while index < len(records):
-        record = records[index]
-        if record["kind"] == "tool_call" and index + 1 < len(records) and records[index + 1]["kind"] == "tool_result":
-            entries.append({"role": "assistant", "records": [record, records[index + 1]], "order": record["order"]})
-            index += 2
+    from collections import Counter
+
+    counts = Counter(r['call'] for r in records if r['kind'] == 'tool_call')
+    entries, owners = [], {}
+    for index, record in enumerate(records):
+        if record['kind'] == 'tool_result' and record.get('call') in owners:
+            owners[record['call']]['records'].append(record)
             continue
-        entries.append({"role": record["role"], "records": [record], "order": record["order"]})
-        index += 1
+        order = record.get('position', record.get('order', index))
+        role = record['role']
+        if entries and entries[-1]['order'] == order and entries[-1]['role'] == role:
+            entry = entries[-1]
+            entry['records'].append(record)
+        else:
+            entry = {'role': role, 'records': [record], 'order': order}
+            entries.append(entry)
+        if record['kind'] == 'tool_call' and counts[record['call']] == 1:
+            owners[record['call']] = entry
     return entries
 
 
@@ -262,9 +273,9 @@ def opencode_serialize(entry):
         if record["kind"] == "text":
             parts.append(f"[Assistant]: {record['text']}")
         elif record["kind"] == "summary":
-            lines.append(f"[User]: {CODEX_SUMMARY_PREFIX}\n{record['text']}")
+            parts.append(f"[Assistant]: {record['text']}")
         elif record["kind"] == "tool_call":
-            parts.append(f"[Assistant tool call]: read({_json_args(record)})")
+            parts.append(f"[Assistant tool call]: {record.get('tool', 'read')}({_json_args(record)})")
         elif record["kind"] == "tool_result":
             if record.get("error"):
                 parts.append(f"[Tool error]: {record['text']}")
@@ -372,7 +383,7 @@ def opencode_build(entries, tail_start, summary):
             continue
         for record in entry["records"]:
             if record["kind"] == "tool_call":
-                tail_parts.append(f"[Assistant tool call]: read({_json_args(record)})")
+                tail_parts.append(f"[Assistant tool call]: {record.get('tool', 'read')}({_json_args(record)})")
             elif record["kind"] == "tool_result":
                 label = "Tool error" if record.get("error") else "Tool result"
                 tail_parts.append(f"[{label}]: {record['text']}")
