@@ -57,9 +57,9 @@ Reproduce with `node scripts/measure-mobile-performance.mjs 85fa2ac4`, then `pyt
 
 ## Validation and limits
 
-- Mobile typecheck + ESLint + **104 suites / 1,442 tests** passed after syncing upstream; tests cover foreground subscription restoration.
+- Mobile typecheck + ESLint + **105 suites / 1,469 tests** passed after syncing upstream; tests cover foreground subscription restoration.
 - Desktop frontend typecheck, ESLint, stylelint + **127 suites / 1,080 tests** passed for shared-package consumers.
-- Desktop Rust on pinned 1.97.0: fmt, clippy all-targets with warnings denied, and cargo tests passed (1,264 library + 1 binary + 5 integration tests; existing ignored tests remain ignored).
+- Desktop Rust on pinned 1.97.0: fmt, clippy all-targets with warnings denied, and cargo tests passed (1,266 library + 1 binary + 5 integration tests; existing ignored tests remain ignored).
 - Android `:future-file-handler:compileReleaseKotlin` printed `BUILD SUCCESSFUL`; the generated worktree class was verified to contain `hashFile`. The command channel timed out after build success rather than returning cleanly, so the compiler output/artifact, not the outer timeout status, is the evidence.
 - iOS Swift syntax parsing passed. Full iOS compilation and device execution are **not verified** because Xcode is not installed here.
 
