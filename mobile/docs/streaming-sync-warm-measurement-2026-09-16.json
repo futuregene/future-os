@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-16",
+  "baselineCommit": "358967e1",
+  "sourceCompletedRuns": 231,
+  "sample": "largest completed run by event count",
+  "originalEvents": 111395,
+  "initialVisibleWatermark": 111193,
+  "finalVisibleWatermark": 111393,
+  "heldBackTerminalEvent": 111394,
+  "controls": ["override activeRun with selected historical run", "filter replay replies to controlled watermark", "omit target run's terminal history mirrors", "inject hidden resend for invalidation case", "strip projector and cursor for display-only case"],
+  "boundary": "Chrome/V8 with production Mobile code, loopback HTTP/DesktopHost/isolated Agent, debug desktop adapter; no fake clock, no invented token events; NOT a live phone/network capture",
+  "bytesNote": "actual HTTP JSON response bytes BEFORE playback cutoff filtering; may include events subsequently held back by the test control",
+  "checks": {"expectedEventCountAndCursorEverySync":true,"streamingAndCompletePrefixEverySync":true,"sameTimelineItemsAfterWarmAndFullRecovery":true,"defaultNavigationBudgetEvicted":false,"noReadOnHiddenInvalidation":true},
+  "cacheBudgetEstimateBytes": {"initial":946208,"afterDelta":948074,"displayOnly":947924},
+  "scenarioConstants": {
+    "cold-prefix":{"since":-1,"received":111194,"replayRequests":112,"replayReplyBytes":38716721},
+    "warm-plus-200":{"since":111193,"received":200,"replayRequests":1,"replayReplyBytes":65830},
+    "warm-empty":{"since":111393,"received":0,"replayRequests":1,"replayReplyBytes":584},
+    "hidden-resend-invalidated":{"since":-1,"received":111394,"replayRequests":112,"replayReplyBytes":38781963},
+    "display-only-cache":{"since":-1,"received":111394,"replayRequests":112,"replayReplyBytes":38781963}
+  },
+  "allScenarios":{"historyRequests":1,"replayChunkRequests":0},
+  "measurementsMs":[
+    {"round":1,"scenario":"cold-prefix","sync":12837.8,"backendReplay":11147.59,"history":22.9,"replayStage":12778,"fetchReplay":11308.3},
+    {"round":1,"scenario":"warm-plus-200","sync":65.6,"backendReplay":14.07,"history":34.8,"replayStage":16.4,"fetchReplay":15.1},
+    {"round":1,"scenario":"warm-empty","sync":38.5,"backendReplay":0.65,"history":30.6,"replayStage":1.4,"fetchReplay":1.4},
+    {"round":1,"scenario":"hidden-resend-invalidated","sync":12711.7,"backendReplay":11179.7,"history":20.1,"replayStage":12686.1,"fetchReplay":11337.8},
+    {"round":1,"scenario":"display-only-cache","sync":12803,"backendReplay":11111.69,"history":22.6,"replayStage":12766.3,"fetchReplay":11270.1},
+    {"round":2,"scenario":"cold-prefix","sync":12805,"backendReplay":11114.47,"history":25.8,"replayStage":12771.2,"fetchReplay":11272},
+    {"round":2,"scenario":"warm-plus-200","sync":57.3,"backendReplay":13.37,"history":33.7,"replayStage":15.8,"fetchReplay":14.7},
+    {"round":2,"scenario":"warm-empty","sync":41.2,"backendReplay":0.72,"history":33,"replayStage":1.5,"fetchReplay":1.4},
+    {"round":2,"scenario":"hidden-resend-invalidated","sync":12723.4,"backendReplay":11103.58,"history":20.8,"replayStage":12696.7,"fetchReplay":11255.7},
+    {"round":2,"scenario":"display-only-cache","sync":12789.5,"backendReplay":11107.67,"history":22.7,"replayStage":12759.8,"fetchReplay":11267.5},
+    {"round":3,"scenario":"cold-prefix","sync":12787.1,"backendReplay":11117.55,"history":22.7,"replayStage":12756.5,"fetchReplay":11273.8},
+    {"round":3,"scenario":"warm-plus-200","sync":63.6,"backendReplay":12.86,"history":37.1,"replayStage":15.5,"fetchReplay":14.4},
+    {"round":3,"scenario":"warm-empty","sync":38.8,"backendReplay":0.69,"history":30.8,"replayStage":1.6,"fetchReplay":1.6},
+    {"round":3,"scenario":"hidden-resend-invalidated","sync":12667.3,"backendReplay":11136.78,"history":19.8,"replayStage":12642.1,"fetchReplay":11291.8},
+    {"round":3,"scenario":"display-only-cache","sync":12644.2,"backendReplay":11088.67,"history":28,"replayStage":12606.9,"fetchReplay":11244.7}
+  ]
+}

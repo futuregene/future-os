@@ -38,14 +38,51 @@ test("reports state/history/replay timings without treating a failed attempt as 
     expect(onTiming).toHaveBeenLastCalledWith({
       sessionId: "s", runId: "r", reason: "open", attempt: 1,
       elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "failure",
+      replayPlan: { mode: "full", sinceIdx: -1, cachedHighWater: -1, prefixDecision: "no-cache" },
     });
     fail = false;
     await jest.advanceTimersByTimeAsync(650);
     expect(onTiming).toHaveBeenLastCalledWith({
       sessionId: "s", runId: "r", reason: "open", attempt: 2,
       elapsedMs: 150, stagesMs: { get_state: 20, history: 30, replay: 100 }, outcome: "success",
+      // Early history is visible now, but the failed first attempt never
+      // established a cursor/projector baseline.
+      replayPlan: { mode: "full", sinceIdx: -1, cachedHighWater: -1, prefixDecision: "baseline-untrusted" },
     });
     expect(engine.streamingFor("s")).toBe(true);
+  } finally { engine.clear(); }
+});
+
+test("idle history-only open does not claim a replay was performed", async () => {
+  const onTiming = jest.fn();
+  const fetchReplay = jest.fn();
+  const engine = new SyncEngine({
+    requestGetState: async () => ({}), requestHistory: async () => history,
+    fetchReplay, onTiming,
+  });
+  try {
+    await engine.open("s");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(fetchReplay).not.toHaveBeenCalled();
+    expect(onTiming.mock.calls.at(-1)?.[0]).not.toHaveProperty("replayPlan");
+  } finally { engine.clear(); }
+});
+
+test("explicit prefix recovery records why a retained cursor is not reused", async () => {
+  const onTiming = jest.fn();
+  const engine = new SyncEngine({
+    requestGetState: async () => ({ activeRun: { runId: "r" } }),
+    requestHistory: async () => history,
+    fetchReplay: async () => ({ ...replay, watermark: 1 }), onTiming,
+  });
+  try {
+    await engine.open("s");
+    await jest.advanceTimersByTimeAsync(0);
+    engine.reconcile("s", "resend", "r");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(onTiming.mock.calls.at(-1)?.[0].replayPlan).toEqual({
+      mode: "full", sinceIdx: -1, cachedHighWater: 1, prefixDecision: "reconcile-requires-full",
+    });
   } finally { engine.clear(); }
 });
 

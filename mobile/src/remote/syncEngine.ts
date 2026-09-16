@@ -87,6 +87,11 @@ export interface SyncDeps {
 export type TimelineSyncStatus = "idle" | "syncing" | "retrying";
 export type SyncStage = "get_state" | "history" | "replay";
 
+export type PrefixReuseDecision =
+  | "reused" | "reconcile-requires-full" | "no-cache" | "baseline-untrusted"
+  | "run-inactive-or-changed" | "not-streaming" | "missing-projector"
+  | "prefix-incomplete" | "missing-assistant" | "truncated";
+
 export interface SyncTiming {
   sessionId: string;
   runId?: string;
@@ -94,6 +99,14 @@ export interface SyncTiming {
   attempt: number;
   elapsedMs: number;
   stagesMs: Partial<Record<SyncStage, number>>;
+  /** History-refresh replay selection, captured before preview/commit mutates
+   * the cache. The first failed guard explains why readable UI wasn't reused. */
+  replayPlan?: {
+    mode: "full" | "incremental";
+    sinceIdx: number;
+    cachedHighWater: number;
+    prefixDecision: PrefixReuseDecision;
+  };
   outcome: "success" | "failure" | "stale";
 }
 
@@ -470,6 +483,7 @@ export class SyncEngine {
     const started = performance.now();
     let stageStarted = started;
     const stagesMs: SyncTiming["stagesMs"] = {};
+    let replayPlan: SyncTiming["replayPlan"];
     let outcome: SyncTiming["outcome"] = "failure";
     const enterStage = (next: SyncStage) => {
       const now = performance.now();
@@ -506,14 +520,17 @@ export class SyncEngine {
         // Refresh durable rows/attachments even on warm opens, but do not
         // download the already-proven active prefix again. Its projector and
         // visible items must be retained together, not just the cursor.
-        const resume = this.canResumeRun(lane, targetRunId, activeRunId, request.reason);
-        const since = resume ? cursorHighWater(lane.cursor, targetRunId) : -1;
+        const prefixDecision = this.runPrefixDecision(lane, targetRunId, activeRunId, request.reason);
+        const resume = prefixDecision === "reused";
+        const cachedHighWater = cursorHighWater(lane.cursor, targetRunId);
+        const since = resume ? cachedHighWater : -1;
         if (resume) base = retainRunPrefix(base, lane.timeline!, targetRunId);
         // A settled durable reply already contains the terminal metadata. Still
         // read replay for its cursor, but never replace that reply with a partial
         // or evicted replay when reopening idle.
         const durableReply = !activeRunId && settledReply;
         if (targetRunId) {
+          replayPlan = { mode: resume ? "incremental" : "full", sinceIdx: since, cachedHighWater, prefixDecision };
           // History is already readable. A cold open must not wait for every
           // replay page before its first paint (or turn a slow replay into a
           // history timeout). This preview does NOT establish the lane or
@@ -582,6 +599,7 @@ export class SyncEngine {
         attempt: lane.retryAttempt + 1,
         elapsedMs: now - started,
         stagesMs,
+        ...(replayPlan ? { replayPlan } : {}),
         outcome: isCurrent() ? outcome : "stale",
       });
     }
@@ -771,20 +789,24 @@ export class SyncEngine {
     }
   }
 
-  private canResumeRun(lane: SessionLane, runId: string, activeRunId: string, reason: ReconcileReason): boolean {
+  private runPrefixDecision(lane: SessionLane, runId: string, activeRunId: string, reason: ReconcileReason): PrefixReuseDecision {
+    if (reason !== "open" && reason !== "reconnect") return "reconcile-requires-full";
     const cached = lane.timeline;
-    const accumulator = cached?.liveRuns?.get(runId);
-    return (reason === "open" || reason === "reconnect")
-      && lane.established && !!runId && runId === activeRunId
-      && cached?.currentRunId === runId && cached.streaming
-      && accumulator?.streaming === true && isPrefixComplete(lane.cursor, runId)
-      && cached.items.some(item => item.id === accumulator.assistantId)
-      && !cached.items.some(item => item.runId === runId && item.kind === "notice" && item.text === "truncated");
+    if (!cached) return "no-cache";
+    if (!lane.established) return "baseline-untrusted";
+    if (!runId || runId !== activeRunId || cached.currentRunId !== runId) return "run-inactive-or-changed";
+    const accumulator = cached.liveRuns?.get(runId);
+    if (!accumulator) return "missing-projector";
+    if (!cached.streaming || !accumulator.streaming) return "not-streaming";
+    if (!isPrefixComplete(lane.cursor, runId)) return "prefix-incomplete";
+    if (!cached.items.some(item => item.id === accumulator.assistantId)) return "missing-assistant";
+    if (cached.items.some(item => item.runId === runId && item.kind === "notice" && item.text === "truncated")) return "truncated";
+    return "reused";
   }
 
   private needsHistory(lane: SessionLane, runId: string, request: ReconcileRequest): boolean {
     // Open/reconnect still refresh durable history. Only their active replay
-    // may reuse a prefix after canResumeRun checks the complete cached unit.
+    // may reuse a prefix after runPrefixDecision checks the complete cached unit.
     if (
       request.reason === "open" ||
       requiresFreshPrefix(request.reason) ||
