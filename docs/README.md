@@ -91,7 +91,7 @@ reference this exact path, so the directory cannot be renamed without updating
 <<<<<<< HEAD
 - [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
 - [Compaction strategy comparison](compaction-abc-experiment.md) ([中文](compaction-abc-experiment.zh-CN.md)) — six strategies on identical fixtures (ours A/B/C, `origin/main`, Codex, OpenCode): accuracy, cost and limits.
-- [Legacy semantic prompts](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — retained explicit A APIs; default C makes no summary-model calls.
+- [Summary prompts and legacy semantic APIs](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — the prompt construction C3 shares with the legacy A path, and the APIs that path alone retains.
 - [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
   for (re)creating the wiki pages; defines scope, style and page inventory.
 - [verification/](verification/errors-outdated-missing.md) — doc↔source

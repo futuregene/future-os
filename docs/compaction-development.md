@@ -1,7 +1,10 @@
 # Compaction developer guide
 
-The default is **C: S2 original-text protection, fixed-budget tool evidence and a
-recent tail**, with no summary-model call. See [policy](compaction.md). The
+The strategy is **C: S2 original-text protection, fixed-budget tool evidence and a
+recent tail**, which needs no summary-model call. The runtime default adds a
+model-written handoff summary on top (C3); the
+[experiment](compaction-abc-experiment.md) measures what it contributes. See
+[policy](compaction.md). The
 [semantic prompt reference](compaction-prompts.md) describes explicit legacy APIs,
 not the default path.
 

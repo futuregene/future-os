@@ -1,9 +1,11 @@
 # C compaction and historical recall
 
-**Runtime compaction defaults to C: S2 original-text protection, a recent tail and
-a deterministic tool-evidence index. No summary LLM is called.** The raw journal
-is neither deleted nor rewritten. Compaction changes the next request's input,
-not an in-flight generation or a provider's internal state.
+**Runtime compaction is strategy C: S2 original-text protection, a recent tail and
+a deterministic tool-evidence index. C needs no summary model.** The runtime
+default (C3) appends a model-written handoff summary to that projection, and what
+that summary contributes is measured in the [experiment](compaction-abc-experiment.md).
+The raw journal is neither deleted nor rewritten. Compaction changes the next
+request's input, not an in-flight generation or a provider's internal state.
 
 See the [A/B/C experiment](compaction-abc-experiment.md) for the evidence behind
 this default and the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
@@ -88,6 +90,16 @@ whenever no provider is reachable or the summary call fails, and the compatibili
 field `summary` then stores evidence alone. Protected originals are rebuilt by
 reference; fork remaps references and invalid ranges are rejected.
 
+**What the summary contributes is measured, not assumed.** Every exam in the
+[experiment](compaction-abc-experiment.md) fails to find a benefit: it adds no value the
+projection does not already carry, closed-book scores are identical with and without it,
+and under compression pressure it preserves at most one of the assistant blocks the
+deterministic path drops. Its only measured effect is a small, statistically insignificant
+open-book difference. That bounds what it is worth on these exams without establishing that
+it is worthless in production — the questions it should help with are not the ones these
+exams ask.
+
+
 ## What the summary reads, and why that is the cheap shape
 
 The summary request sends the live conversation as real messages with the
@@ -122,10 +134,11 @@ do not implement these semantics.
 
 ## Cost and recall
 
-Manual, automatic and provider-limit recovery all use C: **zero summary-model
-calls**. Existing ordinary usage/cost counters are preserved and no auxiliary
-summary tokens are charged. Ordinary requests still pay for evidence and retrieved
-text in their input; local scans also cost time and memory.
+Manual, automatic and provider-limit recovery all use C. Deterministic C makes
+**zero summary-model calls**; the C3 default adds one summary request per
+compaction, charged like any other request. Existing ordinary usage/cost counters
+are preserved. Ordinary requests still pay for evidence and retrieved text in
+their input; local scans also cost time and memory.
 
 One [history recall guide](session-history.md) is added only with a valid checkpoint
 in a persisted session where shell is enabled/permitted. It is not accumulated as

@@ -1,12 +1,18 @@
 # Legacy A semantic calls and prompts
 
-**Default runtime compaction is now C and makes zero summary-model calls. This
-reference covers retained explicit legacy semantic APIs, not current manual,
-automatic or provider-limit recovery.** See [C compaction](compaction.md).
+**Strategy C needs no summary model, and deterministic C makes no summary calls.
+The runtime default is C3 — C plus a model-written handoff summary — so the default
+path does issue one summary request per compaction.** This reference covers that
+shared prompt construction plus the retained explicit legacy A APIs, and is not a
+description of what the default sends. See [C compaction](compaction.md) and the
+[measurement of what the summary contributes](compaction-abc-experiment.md).
 
-The authoritative implementation is [semantic.rs](../agent/src/compaction/semantic.rs):
-`summarize_fold`, `summary_prompt`, `serialize_message`, and
-`call_summary_model_bounded`. The [Chinese companion](compaction-prompts.zh-CN.md)
+`summary_prompt` and `call_summary_model_with_messages` are **shared with the C3
+default path**; `summarize_fold`, `serialize_message` and
+`call_summary_model_bounded` belong to the retained legacy A path alone. The
+authoritative implementations are
+[semantic.rs](../agent/src/compaction/semantic.rs) and
+[semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs). The [Chinese companion](compaction-prompts.zh-CN.md)
 also reproduces the complete output-template constant verbatim.
 
 ## How many calls?
@@ -23,7 +29,10 @@ SSE chunks are stream fragments, not distinct model calls. The user CLI returns
 an ACK, not a final call count. Ordinary answering and history-QA requests must
 not be counted as summary requests.
 
-Explicit legacy semantic calls use the supplied provider/model with tools disabled; default C does not enter this path. Summary text is limited
+Explicit legacy semantic calls use the supplied provider/model with tools disabled.
+The C3 default instead sends the live conversation as real messages with the agent's own
+system prompt and tool definitions, which is what makes its request servable from the
+provider's prefix cache — see [C compaction](compaction.md). Summary text is limited
 to about 4096 estimated tokens; the request-local generation cap is at most 8192,
 scaled for small windows and clamped to the model limit. Ordinary chat output
 settings are not changed.

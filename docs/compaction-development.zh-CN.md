@@ -1,6 +1,6 @@
 # 压缩机制开发文档
 
-默认实现为 **C：S2 原文保护＋固定预算工具证据＋近期尾部**，不调用摘要模型。具体保留／预算规则见[策略说明](compaction.zh-CN.md)。[旧 A Prompt 参考](compaction-prompts.zh-CN.md)属于显式 legacy semantic API，不是默认执行路径。
+核心策略为 **C：S2 原文保护＋固定预算工具证据＋近期尾部**，不需要摘要模型。运行时默认在其上追加模型撰写的交接摘要（C3），其贡献见[对比实验](compaction-abc-experiment.zh-CN.md)。具体保留／预算规则见[策略说明](compaction.zh-CN.md)。[旧 A Prompt 参考](compaction-prompts.zh-CN.md)属于显式 legacy semantic API，不是默认执行路径。
 
 ## 1. 不变量
 
