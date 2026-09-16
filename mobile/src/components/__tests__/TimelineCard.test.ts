@@ -233,29 +233,30 @@ test("a failed run is not tinted", () => {
     expect(StyleSheet.flatten(text.props.style).color).toBe(colors.inkMuted);
 });
 
-// Activity summaries and individual rows use the same left reading edge.
-test("the folded summary hugs the left edge", () => {
+// The folded line is apparatus, not prose: it sits against the right edge so the
+// reader's eye line stays with the reply text, and its tap target stays clipped
+// to the glyphs rather than spanning the bubble.
+test("the folded summary hugs the right edge", () => {
   render(reply({ segments: [thinking("k1"), tool("c1")] }));
   const row = summaryRow(THINK_RUN);
   const style = StyleSheet.flatten(row.props.style);
-  expect(style.alignSelf).toBe("flex-start");
-  expect(style.justifyContent).toBe("flex-start");
+  expect(style.alignSelf).toBe("flex-end");
+  expect(style.justifyContent).toBe("flex-end");
 });
 
-// Lone and live activity rows must not switch to the right rail.
-test("unfolded thinking and tool headers share the left edge", () => {
+// A step row that is NOT folded — a lone call, a lone burst, the slice still
+// running — must sit on the same rail as a folded run. It did not, while the
+// rail was a per-call-site `align` prop with a left-aligning default: the reply
+// then alternated left/right down one screen, and a streaming row jumped sides
+// the moment it got folded. The prop is gone so this cannot come back.
+test("an unfolded step row sits on the same right rail as a folded run", () => {
   // One lone tool call before the prose, one lone reasoning slice after it:
   // neither reaches the two-slice minimum for folding.
   render(reply({
     segments: [tool("c1", { detail: "ls -la" }), prose("p1"), thinking("k1", "why")],
   }));
   for (const label of ["chat.runCompleted", "chat.thoughtCompleted"])
-    expect(railOf(rowButton(label))).toBeUndefined();
-  for (const label of ["chat.runCompleted", "chat.thoughtCompleted"]) {
-    const block = rowButton(label).parent!;
-    expect(StyleSheet.flatten(block.props.style)?.paddingLeft ?? 0).toBe(0);
-    expect(StyleSheet.flatten(block.props.style)?.borderLeftWidth ?? 0).toBe(0);
-  }
+    expect(railOf(rowButton(label))).toBe("flex-end");
 });
 
 // A step row is the only way into the call behind it, so it carries a real touch
@@ -293,12 +294,16 @@ test("the settled footer sits on the same rail as the live timer", () => {
   expect(copy).toBeDefined();
 });
 
-test("opening a run keeps thinking and tools in the left reading column", () => {
+// The summary is the run's badge: tapping it must not move the line under the
+// user's finger. The rows it opens are read, so they land in the reading column.
+test("opening a run leaves the summary on the rail and reads its rows on the left", () => {
   render(reply({
     segments: [thinking("k1", "why it broke"), tool("c1", { detail: "ls -la" })],
   }));
-  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-start");
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
   act(() => summaryRow(THINK_RUN).props.onPress());
+  // The line the user just tapped is still where it was.
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
 
   // ...and everything it opened is reading content on the left.
   expect(railOf(rowButton("chat.thoughtCompleted"))).toBeUndefined();
@@ -312,9 +317,10 @@ test("opening a run keeps thinking and tools in the left reading column", () => 
   expect(railOf(command)).toBeUndefined();
 });
 
-// A file tool only becomes useful when its target is visible, and the target is
-// a full-width row: while the row was shrink-wrapped on the rail, the target's
-// `flex: 1` had no space to claim and the file name rendered at zero width.
+// A file tool only becomes useful when its target is visible. The target takes
+// its own line below the header: inline it claimed the row's leftover width with
+// `flex: 1`, which resolves to zero inside the shrink-wrapped rail badge and hid
+// the file name entirely.
 test.each(["read", "write", "edit"])("opening a %s tool reveals its file name", kind => {
   render(reply({
     segments: [tool("c1", {
@@ -324,16 +330,22 @@ test.each(["read", "write", "edit"])("opening a %s tool reveals its file name", 
       status: "completed",
     })],
   }));
+  expect(railOf(rowButton(`chat.${kind}Completed`))).toBe("flex-end");
   expect(hasText("issue-audit-2026-09-16-with-a-long-filename.md")).toBe(false);
   act(() => rowButton(`chat.${kind}Completed`).props.onPress());
-  expect(hasText("issue-audit-2026-09-16-with-a-long-filename.md")).toBe(true);
+  const name = "issue-audit-2026-09-16-with-a-long-filename.md";
+  expect(hasText(name)).toBe(true);
   // Revealed content is reading content, so the row left the rail to make room.
   expect(railOf(rowButton(`chat.${kind}Completed`))).toBeUndefined();
-  const target = tree.root.findAll(host => host.props.children === "issue-audit-2026-09-16-with-a-long-filename.md")[0]!;
-  expect(StyleSheet.flatten(target.props.style).flex).toBe(1);
+  const target = tree.root.findAll(host => host.props.children === name)[0]!;
+  // The name wraps: nothing clips it to one line of a rail badge.
   expect(target.props.numberOfLines).toBeUndefined();
   expect(StyleSheet.flatten(target.props.style).maxHeight).toBeUndefined();
   expect(StyleSheet.flatten(target.props.style).overflow).not.toBe("hidden");
+  // …and it is a line of its own, not a cell squeezed in beside the label: the
+  // header the user taps holds the glyph, the words and the chevron, nothing else.
+  expect(rowButton(`chat.${kind}Completed`).findAll(inner => inner.props.children === name)).toHaveLength(0);
+  expect(StyleSheet.flatten(target.props.style).flex).toBeUndefined();
 });
 
 // A burst of one file kind is the same story for every child it lists.
