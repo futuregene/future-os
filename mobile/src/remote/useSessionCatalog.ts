@@ -267,16 +267,17 @@ export function useSessionCatalog(
       const client = clientRef.current;
       if (!client) return;
       let list: RemoteModel[] | null = null;
+      let allModelsHidden = false;
       try {
-        list =
-          (await client.requestRetry<ModelsData>({ type: "list_models" }, "list")).data.models ??
-          [];
+        const { data } = await client.requestRetry<ModelsData>({ type: "list_models" }, "list");
+        list = data.models ?? [];
+        allModelsHidden = data.allModelsHidden === true;
       } catch {
         // A connection or Agent warm-up failure shares the same bounded retry.
       }
       if (modelRecoveryRef.current.generation !== generation || clientRef.current !== client)
         return;
-      if (list && list.length > 0) {
+      if (list && (list.length > 0 || allModelsHidden)) {
         setModels(list);
         markSync("models", "ready");
         return;
@@ -393,6 +394,18 @@ export function useSessionCatalog(
     liveRuns.current.clear();
     notifiedRuns.current.clear();
   }, [setTitleOverrides]);
+
+  const generateTitle = useCallback(async (sessionId: string, language: string): Promise<string> => {
+    const client = clientRef.current;
+    if (!client || !sessionId) throw new Error("not_connected");
+    const epoch = catalogEpoch.current;
+    const response = await client.request<{ title: string }>(
+      { type: "generate_session_title", sessionId, mode: language }, sessionId, 65_000,
+    );
+    if (clientRef.current !== client || catalogEpoch.current !== epoch) throw new Error("connection_changed");
+    if (!response.success || !response.data?.title?.trim()) throw new Error(response.error || "title_generation_failed");
+    return response.data.title;
+  }, [clientRef]);
 
   const rename = useCallback(
     async (sessionId: string, name: string) => {
@@ -523,6 +536,7 @@ export function useSessionCatalog(
     refreshSettings,
     refreshWorkspaces,
     rename,
+    generateTitle,
     deleteSession,
     deleteWorkspace,
     setSessionPinned,

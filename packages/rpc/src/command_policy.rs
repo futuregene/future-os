@@ -71,6 +71,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "disable_tools",
     "export_html",
     "fork",
+    "generate_session_title",
     "get_agent_info",
     "get_commands",
     "get_events_since",
@@ -130,6 +131,12 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             CONTROL_TIMEOUT,
             RetryPolicy::Never,
             ExecutionKind::Immediate,
+        ),
+        // User-triggered model call; never retry automatically and spend twice.
+        "generate_session_title" => policy(
+            Duration::from_secs(60),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
         ),
         "compact" => policy(
             CONTROL_TIMEOUT,

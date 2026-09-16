@@ -59,6 +59,12 @@ test("model and thinking sheets only expose their own choices", () => {
   expect(remote.setModel).not.toHaveBeenCalled();
 });
 
+test("an intentionally empty model catalogue removes stale choices and explains the empty sheet", () => {
+  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, remote: { ...props.remote, models: [] } })));
+  expect(options()).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.children === "connection.noModels").length).toBeGreaterThan(0);
+});
+
 test("thinking choices remain selectable after redesign", () => {
   act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector: "thinking" })));
   expect(options()).toHaveLength(6);

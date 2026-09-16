@@ -381,6 +381,42 @@ describe("useSessionCatalog", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  test("hiding every desktop model clears a previous catalogue without warm-up retries, then restores it", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValueOnce({ data: { models: [{ id: "m1" }] } });
+      await act(async () => { await result.current.refreshModels(); });
+      request.mockResolvedValueOnce({ data: { models: [], allModelsHidden: true } });
+      await act(async () => { await result.current.refreshModels(); });
+      expect(result.current.models).toEqual([]);
+      expect(result.current.catalogSync.models).toBe("ready");
+      await act(async () => { await jest.runAllTimersAsync(); });
+      expect(request).toHaveBeenCalledTimes(2);
+      request.mockResolvedValueOnce({ data: { models: [{ id: "m1" }], allModelsHidden: false } });
+      await act(async () => { await result.current.refreshModels(); });
+      expect(result.current.models).toEqual([{ id: "m1" }]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a stale model response cannot resurrect models after all are hidden", async () => {
+    render();
+    let resolve!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(yes => { resolve = yes; }));
+    let stale!: Promise<void>;
+    act(() => { stale = result.current.refreshModels(); });
+    request.mockResolvedValueOnce({ data: { models: [], allModelsHidden: true } });
+    await act(async () => { await result.current.refreshModels(); });
+    await act(async () => {
+      resolve({ data: { models: [{ id: "hidden" }] } });
+      await stale;
+    });
+    expect(result.current.models).toEqual([]);
+    expect(result.current.catalogSync.models).toBe("ready");
+  });
+
   test("refreshModels retries in the background after an empty first answer", async () => {
     jest.useFakeTimers();
     try {
@@ -502,6 +538,21 @@ describe("useSessionCatalog", () => {
     act(() => result.current.reset());
     expect(result.current.sessions).toEqual([]);
     expect(result.current.workspaces).toEqual([]);
+    expect(result.current.titleOverrides).toEqual({});
+  });
+
+  test("title suggestion uses the chosen session and locale without renaming", async () => {
+    render();
+    act(() => void result.current.applySessionSnapshot([session("s1", "running")]));
+    const originalTitle = result.current.sessions[0]!.title;
+    request.mockResolvedValueOnce({ success: true, data: { title: "Suggested" } });
+    let title = "";
+    await act(async () => { title = await result.current.generateTitle("s1", "zh"); });
+    expect(title).toBe("Suggested");
+    expect(request).toHaveBeenCalledWith(
+      { type: "generate_session_title", sessionId: "s1", mode: "zh" }, "s1", 65_000,
+    );
+    expect(result.current.sessions[0]!.title).toBe(originalTitle);
     expect(result.current.titleOverrides).toEqual({});
   });
 

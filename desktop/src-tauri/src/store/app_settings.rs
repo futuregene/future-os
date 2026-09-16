@@ -118,6 +118,7 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
     let mut conn = connect()?;
     let tx = conn.transaction()?;
     let now = now_millis();
+    let model_visibility_changed = input.hidden_models.is_some();
 
     if let Some(approval_tier) = input.approval_tier {
         let tier = normalize_tier(&approval_tier);
@@ -166,6 +167,22 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
+    // Notify paired clients only after commit: their next model read must see
+    // the new visibility. Reconnect also rereads the catalogue if this is lost.
+    if model_visibility_changed {
+        crate::agent_events::publish_event(
+            "_global",
+            "model_visibility_changed",
+            "{}",
+            "",
+            -1,
+            0,
+            &format!("model-visibility-{now}"),
+            "",
+            -1,
+            -1,
+        );
+    }
     Ok(settings)
 }
 

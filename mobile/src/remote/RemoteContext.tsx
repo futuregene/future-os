@@ -29,6 +29,7 @@ import type {
   RemoteCredentials,
   RemoteModel,
   RemoteSession,
+  RemoteSessionState,
   RemoteSkill,
   RemoteWorkspace,
   SessionFileListing,
@@ -109,6 +110,7 @@ interface RemoteContextValue {
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
   setApprovalTier(tier: string): Promise<void>;
   rename(sessionId: string, name: string): Promise<void>;
+  generateTitle(sessionId: string, language: string): Promise<string>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
@@ -161,6 +163,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshSettings,
     refreshWorkspaces,
     rename,
+    generateTitle,
     deleteSession: removeSession,
     deleteWorkspace: removeWorkspace,
     setSessionPinned,
@@ -170,6 +173,16 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // capture the epoch so their eventual ack cannot pull the UI back to a
   // conversation the user has already left.
   const conversationEpochRef = useRef(0);
+  // Connection callbacks are created before the conversation controller. Keep
+  // their settings sink current without rebuilding the connection/sync engine.
+  const settingsSink = useRef<Pick<ReturnType<typeof useConversationController>,
+    "applySessionSettings" | "handleSessionSettingsEvent"> | null>(null);
+  const onSessionState = useCallback((sessionId: string, state: RemoteSessionState) => {
+    settingsSink.current?.applySessionSettings(sessionId, {
+      model: state.model ?? "",
+      thinkingLevel: state.thinkingLevel ?? "off",
+    });
+  }, []);
   useEffect(() => {
     selectedRef.current = selectedSessionId;
   }, [selectedSessionId]);
@@ -198,9 +211,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshModels,
     refreshSessions,
     setTitleOverrides,
+    onSessionState,
   });
 
   const handleLiveEvent = useCallback((event: Parameters<typeof handleEvent>[0], sessionId: string) => {
+    settingsSink.current?.handleSessionSettingsEvent(event, sessionId);
     observeRunEvent(event, sessionId);
     handleEvent(event, sessionId);
   }, [handleEvent, observeRunEvent]);
@@ -267,6 +282,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const {
     modelId,
     thinkingLevel,
+    applySessionSettings,
+    handleSessionSettingsEvent,
     openingSession,
     selectSession,
     newConversation,
@@ -301,6 +318,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     removeWorkspace,
     closeConversation,
   });
+
+  useEffect(() => {
+    settingsSink.current = { applySessionSettings, handleSessionSettingsEvent };
+    return () => { settingsSink.current = null; };
+  }, [applySessionSettings, handleSessionSettingsEvent]);
 
   const { sending, sendMessage, continueRun } = usePromptOutbox({
     clientRef,
@@ -403,6 +425,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setThinkingLevel,
       setApprovalTier,
       rename,
+      generateTitle,
       deleteSession,
       deleteWorkspace,
       setSessionPinned,
@@ -446,6 +469,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshSessions,
       refreshWorkspaces,
       rename,
+      generateTitle,
       selectSession,
       selectedSessionId,
       selectedTitle,

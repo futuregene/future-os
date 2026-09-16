@@ -600,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn conversation_prompt_has_no_title_generation_instructions() {
+        let prompt = build_prompt(&PromptOptions {
+            session_id: "s1".into(),
+            ..Default::default()
+        });
+        assert!(!prompt.contains("Current session title"));
+        assert!(!prompt.contains("Automatic session titles"));
+        assert!(!prompt.contains("future session title"));
+    }
+
+    #[test]
     fn environment_reports_model_and_thinking_level() {
         let prompt = build_prompt(&PromptOptions {
             session_id: "sess-123".to_string(),

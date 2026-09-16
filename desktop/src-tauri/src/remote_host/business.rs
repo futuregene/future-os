@@ -495,7 +495,30 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         },
         "list_models" | "get_available_models" => {
             match crate::agent_bridge::get_available_models().await {
-                Ok(data) => reply(sink, true, data, None).await,
+                Ok(mut data) => match crate::store::get_app_settings() {
+                    Ok(settings) => {
+                        if let Some(models) = data.get_mut("models").and_then(Value::as_array_mut) {
+                            let had_models = !models.is_empty();
+                            models.retain(|model| {
+                                let id = model["id"].as_str().unwrap_or_default();
+                                let provider = model["provider"].as_str().unwrap_or_default();
+                                // Match the desktop picker identity, including raw IDs
+                                // containing slashes and duplicate IDs across providers.
+                                let key = if provider.is_empty() {
+                                    id.to_string()
+                                } else {
+                                    format!("{provider}/{id}")
+                                };
+                                !settings.hidden_models.contains(&key)
+                            });
+                            let all_hidden = had_models && models.is_empty();
+                            // An intentionally empty catalogue is not Agent warm-up.
+                            data["allModelsHidden"] = json!(all_hidden);
+                        }
+                        reply(sink, true, data, None).await;
+                    }
+                    Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
+                },
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
         }
@@ -583,6 +606,17 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                     .await
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        "generate_session_title" => {
+            match crate::agent_bridge::generate_session_title(
+                cmd.session_id.clone(),
+                cmd.mode.clone(),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
         "set_session_name" => {

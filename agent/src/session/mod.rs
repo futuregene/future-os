@@ -14,6 +14,10 @@
 //! Every public item is re-exported here so callers keep using
 //! `crate::session::…` unchanged.
 
+/// Compact summary titles fit the mobile session list's single-line layout.
+/// Measured in approximate Unicode display columns, not UTF-8 bytes.
+pub const SESSION_TITLE_MAX_WIDTH: usize = 32;
+
 mod checkpoint;
 pub(crate) mod compaction_ops;
 #[cfg(test)]
