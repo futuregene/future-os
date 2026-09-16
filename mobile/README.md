@@ -103,7 +103,8 @@ APNs／Android 推送配置；当前没有这条链路。不能把通知权限�
 ### 最新内容同步与流式呈现
 
 进入 streaming 会话的分页延迟基准、优化结果及真机分阶段日志说明见
-[同步性能测量](docs/streaming-sync-performance.md)。
+[同步性能测量](docs/streaming-sync-performance.md)。冷启动／缓存失效改为“语义快照 + 增量”的协议、兼容边界和真实数据 A/B 结果见
+[快照恢复优化](docs/streaming-sync-snapshot-optimization.md)。历史仍只加载最近三个用户 exchange，向上翻页再加载更早内容；完整缓存重开仍仅补增量。
 
 - 重开会话时即使已有缓存消息，也显示“正在同步最新内容…”，直到状态、历史与事件回补
   完成；失败重试或等待连接恢复时保留相应提示。此状态与“模型正在生成”分开。

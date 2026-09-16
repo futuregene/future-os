@@ -74,6 +74,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_agent_info",
     "get_commands",
     "get_events_since",
+    "get_run_snapshot",
     "get_fork_messages",
     "get_last_assistant_text",
     "get_messages",
@@ -160,6 +161,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::ManagedProcess,
         ),
         "get_events_since"
+        | "get_run_snapshot"
         | "list_tool_calls"
         | "get_tool_output"
         | "get_fork_messages"

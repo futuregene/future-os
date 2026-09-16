@@ -330,6 +330,8 @@ export interface RpcResponse<T = unknown> {
 
 export interface RemoteCommand {
   chunkedRead?: boolean;
+  /** Cold run bootstrap from a resumable semantic snapshot, when supported. */
+  preferSnapshot?: boolean;
   replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;

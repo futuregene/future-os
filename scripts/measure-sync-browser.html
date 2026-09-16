@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mobile sync — real browser probe</title>
+<style>body{font:16px system-ui;max-width:1000px;margin:40px auto;padding:0 20px}button{padding:12px 20px}pre{font:13px monospace;white-space:pre-wrap}aside{background:#fff5d6;padding:16px}</style>
+<h1>Mobile synchronization: real-data browser probe</h1>
+<aside>Production mobile SyncEngine, replay pagination and projection. Real DesktopHost → isolated Agent → private SQLite snapshot. Loopback HTTP replaces NATS/E2EE. Completed historical runs are explicitly selected for replay. No fake clock or injected RTT. This is NOT a native phone UI / cellular network measurement. Only metrics are displayed.</aside>
+<p id="status">Ready</p>
+<button>Measure three samples × three rounds</button>
+<pre></pre>
+<script src="/bundle.js"></script>

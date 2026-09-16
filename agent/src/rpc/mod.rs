@@ -4,6 +4,7 @@ mod approval;
 mod commands;
 mod prompt_helpers;
 mod protocol;
+mod run_snapshot;
 mod session;
 mod session_prompt;
 

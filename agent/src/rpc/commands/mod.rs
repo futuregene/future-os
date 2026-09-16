@@ -285,6 +285,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         cmd_type.as_str(),
         "get_state"
             | "get_events_since"
+            | "get_run_snapshot"
             | "get_session_events_since"
             | "get_runtime_metrics"
             | "abort"
@@ -312,6 +313,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "get_state" => observability::handle_get_state(state, &cmd, id),
         "get_messages" => observability::handle_get_messages(&session, id),
         "get_events_since" => observability::handle_get_events_since(&session, &cmd, id),
+        "get_run_snapshot" => observability::handle_get_run_snapshot(&session, &cmd, id),
         "get_session_events_since" => {
             observability::handle_get_session_events_since(&session, &cmd, id)
         }

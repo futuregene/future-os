@@ -19,14 +19,15 @@ function harness() {
     watermark: journal.filter(e => e.runId === run).at(-1)?.idx ?? -1,
   }));
   const onSyncStatus = jest.fn();
+  const onTiming = jest.fn();
   const engine = new SyncEngine({
     isSessionVisible: () => visible,
     requestGetState: async () => ({ activeRun: active ? { runId: active } : null }),
-    requestHistory, fetchReplay, onSyncStatus,
+    requestHistory, fetchReplay, onSyncStatus, onTiming,
   });
   engines.push(engine);
   return {
-    engine, fetchReplay, requestHistory, onSyncStatus,
+    engine, fetchReplay, requestHistory, onSyncStatus, onTiming,
     active: (value: string) => { active = value; },
     visible: (value: boolean) => { visible = value; },
     history: (value: ReturnType<typeof emptyTimeline>) => { history = value; },
@@ -53,6 +54,12 @@ test.each(["open", "reconnect"] as const)("%s resumes a proven active run and ma
   h.engine.restart("s", reason);
   await jest.advanceTimersByTimeAsync(0);
   expect(h.fetchReplay.mock.calls.map(call => call[2])).toEqual([-1, 5]);
+  expect(h.onTiming.mock.calls[0][0].replayPlan).toEqual({
+    mode: "full", sinceIdx: -1, cachedHighWater: -1, prefixDecision: "no-cache",
+  });
+  expect(h.onTiming.mock.calls.at(-1)?.[0].replayPlan).toEqual({
+    mode: "incremental", sinceIdx: 5, cachedHighWater: 5, prefixDecision: "reused",
+  });
   expect(h.requestHistory).toHaveBeenCalledTimes(2);
   expect(h.engine.cursorFor("s").get("r")).toEqual({ highWater: 7, prefixComplete: true });
   expect(h.onSyncStatus).toHaveBeenLastCalledWith("s", "idle");
@@ -91,18 +98,26 @@ test("empty valid tail preserves the prefix and the following live delta appends
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix live" })]);
 });
 
-test.each(["missing projector", "missing assistant", "incomplete cursor", "truncated content"])("%s prevents prefix reuse", async missing => {
+test.each([
+  ["missing projector", "missing-projector"], ["missing assistant", "missing-assistant"],
+  ["incomplete cursor", "prefix-incomplete"], ["truncated content", "truncated"],
+  ["not streaming", "not-streaming"],
+])("%s prevents prefix reuse", async (missing, decision) => {
   const h = harness();
   await h.open();
   if (missing === "incomplete cursor") h.engine.cursorFor("s").set("r", { highWater: 1, prefixComplete: false });
   else h.engine.mutate("s", cached => ({ ...cached,
     ...(missing === "missing projector" ? { liveRuns: new Map() } : {}),
     ...(missing === "missing assistant" ? { items: [] } : {}),
+    ...(missing === "not streaming" ? { streaming: false } : {}),
     ...(missing === "truncated content" ? { items: [...cached.items, { kind: "notice" as const, id: "truncated", runId: "r", tone: "danger" as const, text: "truncated" }] } : {}),
   }));
   await jest.advanceTimersByTimeAsync(0);
   await h.open();
   expect(h.fetchReplay.mock.calls.at(-1)?.[2]).toBe(-1);
+  expect(h.onTiming.mock.calls.at(-1)?.[0].replayPlan).toEqual({
+    mode: "full", sinceIdx: -1, cachedHighWater: 1, prefixDecision: decision,
+  });
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix" })]);
 });
 
@@ -114,6 +129,9 @@ test.each(["open", "reconnect"] as const)("%s refreshes a run that ended while h
   h.engine.restart("s", reason);
   await jest.advanceTimersByTimeAsync(0);
   expect(h.fetchReplay.mock.calls.at(-1)?.[2]).toBe(-1);
+  expect(h.onTiming.mock.calls.at(-1)?.[0].replayPlan).toEqual({
+    mode: "full", sinceIdx: -1, cachedHighWater: 1, prefixDecision: "run-inactive-or-changed",
+  });
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix final", durationMs: 1200, outputTokens: 42, streaming: false })]);
 });
 
@@ -159,6 +177,9 @@ test("a snapshot notification while hidden invalidates the cache without eager n
   h.journal([event("agent_start", 0), text(1, "replacement")]);
   await h.open();
   expect(h.fetchReplay.mock.calls.at(-1)?.[2]).toBe(-1);
+  expect(h.onTiming.mock.calls.at(-1)?.[0].replayPlan).toEqual({
+    mode: "full", sinceIdx: -1, cachedHighWater: 1, prefixDecision: "baseline-untrusted",
+  });
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "replacement" })]);
 });
 
