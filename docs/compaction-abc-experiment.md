@@ -85,6 +85,13 @@ the shape that cached.** Treat ¥0.50/compaction as an upper bound, not Codex's 
 
 ## Prefix caching
 
+### Confirmed end to end at scale
+
+Measured on an isolated agent with the production code path, after the tool-definition
+fix: a session grown to **212,911 tokens** compacted with `cache_read = 212,548` —
+**99.8%** of the request served from cache, `cache_write = 360` (only the newly
+appended instruction). Cold, that request bills about ¥0.53; cached, about ¥0.003.
+
 Measured directly on the provider (`scripts/abc_experiment/cache_test.py`,
 `cache_probe.py`), one chain, stage 1, DeepSeek Flash:
 
@@ -592,6 +599,60 @@ Three findings, one of which corrects an earlier claim:
 for `ours`, so the comparable set is three chains rather than six. The mean-lookup
 column differs by design (codex's interface needs paging, ours returns an offset),
 so the lookup counts are not a like-for-like efficiency measure.
+
+## Where C loses points, and the one fix that addresses it
+
+The two tables above say how much C loses. This says **where**, by rebuilding the
+exam items deterministically and checking, without any model call, whether each item
+is present in C's projection at all. That separates two very different failures:
+
+| | closed book | open book |
+|---|---:|---:|
+| values the exam asked about | 129 | 129 |
+| present in the raw archive | **129 (100%)** | 129 |
+| **dropped by C's projection** | **26 (20%)** | 26 |
+
+So C's loss is not availability and not (mainly) the model: **one fifth of the
+answerable values never reach the projection.** Retrieval recovers only part of that
+(`real-stream` +8, `real-visual` +2, **`real-yt` +0**), and it costs lookups.
+
+### All 26 dropped values have a single cause
+
+| shape | count |
+|---|---:|
+| hex hash / id (commit SHAs, opaque ids) | **23** |
+| size values (`6 GB`, `1 MiB`) | 3 |
+
+and, for every one of them:
+
+> **the value lives in a tool result older than the last six — and C keeps only the
+> last six tool results, each head/tail clipped to 380 + 100 characters.**
+
+C's evidence index therefore cannot see anything an earlier tool call established.
+That is exactly what these exam items ask for: a short hash printed by an early
+`git`/build command, a file size listed once. The head/tail clip compounds it, since
+even within the six kept results these values sit in the omitted middle.
+
+### The fix that follows from the finding
+
+The dropped values are not prose — they are **identifier-shaped tokens**. A value
+index that scans **all** tool results (not just the newest six) and keeps only
+tokens matching those shapes would be cheap in tokens (short strings, not excerpts)
+and would recover most of the 20%:
+
+    hex ids (7-40 chars)  ·  version strings  ·  sizes  ·  PR/issue numbers
+    ·  counts with units  ·  exact numbers
+
+This is a bounded change to `semantic/evidence.rs`: it already computes a bounded
+index, it just selects *which records* to excerpt rather than *which values to
+extract* from all of them. The measurement above gives the target: 26 of 129 items,
+23 of which are hash-shaped.
+
+**Caveat.** The exam is a recognition task with decoys, so "not in the projection"
+is measured exactly, but the mapping from that to a score is not one-to-one: a value
+can be absent from the projection and still be answered correctly from the model's
+own memory, or present and still missed. The 20% figure is the size of the gap in
+the material, not a promise of a 20-point gain.
 
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
