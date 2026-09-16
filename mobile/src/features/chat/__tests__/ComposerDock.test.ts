@@ -20,7 +20,7 @@ jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
 jest.mock("../components/SkillPicker", () => ({ SkillPicker: () => null }));
 
-test("streaming disables editing but one stop press sends a request and exposes its outcome", async () => {
+test("streaming allows drafting while one stop press sends a request and exposes its outcome", async () => {
   let resolve!: () => void;
   const abort = jest.fn(() => new Promise<void>(done => { resolve = done; }));
   const info = jest.spyOn(console, "info").mockImplementation(() => {});
@@ -36,7 +36,7 @@ test("streaming disables editing but one stop press sends a request and exposes 
   act(() => { tree = create(createElement(ComposerDock, props)); });
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
   try {
-    expect(tree.root.findByType(TextInput).props.editable).toBe(false);
+    expect(tree.root.findByType(TextInput).props.editable).toBe(true);
     expect(button("chat.stop").props.disabled).toBe(false);
     act(() => button("chat.stop").props.onPress());
     expect(abort).toHaveBeenCalledTimes(1);
@@ -59,6 +59,59 @@ test("streaming disables editing but one stop press sends a request and exposes 
     act(() => tree.unmount());
     info.mockRestore();
   }
+});
+
+test("streaming keeps the next draft through updates and completion without submitting it", () => {
+  const send = jest.fn(async () => {});
+  const props = {
+    attachments: [], setAttachments: jest.fn(), supportsImages: true,
+    activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: true, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  function Harness({ streaming, busy = false, desktopOnline = true }: { streaming: boolean; busy?: boolean; desktopOnline?: boolean }) {
+    const [message, setMessage] = useState("");
+    return createElement(ComposerDock, {
+      ...props, message, setMessage,
+      remote: { ...props.remote, streaming, busy, desktopOnline },
+    });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness, { streaming: true })); });
+  const input = () => tree.root.findByType(TextInput);
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0];
+  try {
+    const originalInput = input();
+    expect(input().props.editable).toBe(true);
+    act(() => input().props.onChangeText("下一条消息\n  保留空格 "));
+    act(() => input().props.onSubmitEditing());
+    expect(send).not.toHaveBeenCalled();
+    expect(button("chat.send")).toBeUndefined();
+    expect(button("chat.stop")).toBeDefined();
+    for (let i = 0; i < 20; i++) {
+      act(() => tree.update(createElement(Harness, { streaming: true })));
+    }
+    act(() => tree.update(createElement(Harness, { streaming: false })));
+    expect(input()).toBe(originalInput);
+    expect(input().props.value).toBe("下一条消息\n  保留空格 ");
+    expect(send).not.toHaveBeenCalled();
+    expect(button("chat.send")!.props.disabled).toBe(false);
+    act(() => button("chat.send")!.props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+    act(() => input().props.onSubmitEditing());
+    expect(send).toHaveBeenCalledTimes(2);
+    for (const state of [{ busy: true }, { desktopOnline: false }]) {
+      act(() => tree.update(createElement(Harness, { streaming: false, ...state })));
+      expect(button("chat.send")!.props.disabled).toBe(true);
+      act(() => input().props.onSubmitEditing());
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(input().props.value).toBe("下一条消息\n  保留空格 ");
+    }
+  } finally { act(() => tree.unmount()); }
 });
 
 test("only the approval which failed receives the error", () => {

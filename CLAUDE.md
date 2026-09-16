@@ -23,11 +23,12 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 
 ## Development workflow
 
-Development happens in an isolated git worktree (this repo uses `.claude/worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
+Development happens in an isolated git worktree (this repo uses `.worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
 
 - All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree branch.
-- To let the user test locally, merge the worktree branch into the local main branch (`main`) — never edit code directly on `main` and then merge it back into the worktree.
+- **Never commit to `main`, and never merge a worktree branch into it.** PRs are squash-merged, so a branch commit fast-forwarded into local `main` gets a *different* SHA than the squashed commit that lands on `origin/main`. That one local commit then blocks `git merge --ff-only origin/main` permanently, and the only way out is a manual `git reset --hard origin/main` — so "let the user test it" quietly becomes a divergent local `main` that every later PR has to stop and clean up. (Not hypothetical: `git reflog main` showed 12 such fast-forwards against 8 manual resets.) To let the user test a change, point them at the worktree (`cd .worktrees/<name> && make run-mobile-android`, …); to get it onto `main`, let the PR squash-merge and fast-forward from `origin/main` (see *After a PR merges*). If the user explicitly asks for the change on `main` first, do it in a scratch worktree (`git worktree add /tmp/x origin/main`) rather than committing to `main`.
 - Do not merge the local main branch (`main`) into the worktree; if `main` has user changes you need, ask the user rather than merging local main in.
+- **Other sessions work in this repo at the same time**, each in its own worktree and branch (`git worktree list` shows the live ones; `main` may have moved since you last looked). Stay inside your own worktree and branch: never `git worktree remove` or prune someone else's, never commit, reset, rebase, or force on their behalf, and if you find a commit on `main` you did not make, report it instead of cleaning it up.
 
 ### Before opening a PR
 
@@ -54,8 +55,11 @@ During normal development you don't need to run this full suite every time — i
 
 Leave no leftovers — the next session must not inherit a stale worktree, branch, or scratch file:
 
-1. **Update the local main branch**: `git fetch origin main`, then fast-forward it (`git merge --ff-only origin/main` from the main worktree). If the fast-forward is refused, the user has local commits there — stop and tell them; never rebase, reset, or force their branch.
-2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .claude/worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d claude/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete claude/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
+1. **Update the local main branch**: `git fetch origin main`, then fast-forward it (`git merge --ff-only origin/main` from the main worktree). If the fast-forward is refused, identify what local `main` is carrying before concluding anything — do not assume it is the user's work:
+   - `git log --oneline origin/main..main` lists the commits upstream does not have.
+   - A **stale duplicate** is a branch commit that was later squash-merged: its tree matches the squashed commit, and that squashed commit is already an ancestor of `origin/main`. Confirm both (`git diff --stat <local-sha> <squashed-sha>` prints nothing; `git merge-base --is-ancestor <squashed-sha> origin/main` succeeds), then ask the user before dropping it with `git reset --hard origin/main`.
+   - **Anything else is live work** — the user's, or another session's (`git worktree list`, and `git branch --contains <sha>` says whose). Never rebase, reset, or force it: stop and tell the user the commit, its branch, and that it has not been pushed.
+2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d claude/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete claude/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
 3. **Clean up temporary files**: scratch scripts, logs, captured CI output, temp HOME dirs, and any other debris created while working. `git status --short` in every remaining worktree must show no untracked scratch files.
 
 ### GUI Tauri sidecar binaries in a worktree

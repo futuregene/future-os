@@ -59,6 +59,14 @@ function formatDuration(durationMs: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
+/**
+ * A step row draws as one muted 20px line to stay out of the reader's way, but
+ * it is also a control. Extending the touch area vertically reaches the 44px
+ * `layout.touchTarget` without giving the row back the height it was folded to
+ * save — the visual line stays 24px, the tappable one is ~40px.
+ */
+const ROW_HIT_SLOP = { top: spacing.sm, bottom: spacing.sm } as const;
+
 function RunIndicator({ startedAt }: { startedAt?: number }) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
@@ -417,13 +425,17 @@ function StatusDivider({ label, failed = false }: { label: string; failed?: bool
  * burst carries its child calls on `tool.children` and its count — the row
  * reads "Ran N commands", and tapping it reveals the individual targets.
  *
- * `align: "end"` is the folded-run variant: the row and everything it opens
- * live on the right-hand rail, out of the prose's eye line.
+ * The row is a badge on the right rail only while nothing of it is revealed.
+ * Once it — or the run around it — is open, it is content being read, and
+ * content sits in the reading column with the rest of the reply: right-aligned
+ * prose and right-aligned commands are hard to read. `opened` is required so a
+ * call site cannot silently pick the wrong rail, which is how the unfolded rows
+ * ended up on the left while folded ones sat on the right.
  */
-function ToolRow({ tool, align = "start" }: { tool: TimelineToolRow; align?: "start" | "end" }) {
+function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const end = align === "end";
+  const open = opened || expanded;
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
   const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
@@ -438,12 +450,13 @@ function ToolRow({ tool, align = "start" }: { tool: TimelineToolRow; align?: "st
         })
       : toolLabel(t, kind, tool.complete);
   return (
-    <View style={[styles.inlineTool, end && styles.alignedBlock]}>
+    <View style={[styles.inlineTool, !open && styles.railBlock]}>
       <Pressable
         accessibilityRole="button"
         disabled={!expandable}
+        hitSlop={expandable ? ROW_HIT_SLOP : undefined}
         onPress={() => setExpanded(value => !value)}
-        style={[styles.toolHeader, end && styles.alignedRow]}
+        style={[styles.toolHeader, !open && styles.railRow]}
       >
         <ToolGlyph failed={failed} kind={kind} />
         <Text style={styles.toolText}>{label}</Text>
@@ -462,19 +475,19 @@ function ToolRow({ tool, align = "start" }: { tool: TimelineToolRow; align?: "st
             ellipsizeMode="tail"
             numberOfLines={1}
             selectable
-            style={[styles.inlineToolTarget, end && styles.alignedText]}
+            style={styles.inlineToolTarget}
           >
             {detail}
           </Text>
         ) : null}
       </Pressable>
       {expanded && detail && !children && kind === "shell" ? (
-        <Text selectable style={[styles.toolDetailText, end && styles.alignedDetail]}>
+        <Text selectable style={styles.toolDetailText}>
           {detail}
         </Text>
       ) : null}
       {expanded && children ? (
-        <View style={[styles.inlineToolChildren, end && styles.alignedChildren]}>
+        <View style={styles.inlineToolChildren}>
           {children.map((child, index) => {
             const childKind = toolKind(child.name);
             const shellCommand = childKind === "shell" && Boolean(child.detail);
@@ -483,7 +496,7 @@ function ToolRow({ tool, align = "start" }: { tool: TimelineToolRow; align?: "st
                 key={`${child.name}:${child.detail ?? ""}:${index}`}
                 {...(!shellCommand ? { ellipsizeMode: "tail" as const, numberOfLines: 1 } : {})}
                 selectable={shellCommand}
-                style={[styles.inlineToolChild, end && styles.alignedText]}
+                style={styles.inlineToolChild}
               >
                 {child.detail
                   ? toolDetail(childKind, child.detail)
@@ -507,26 +520,24 @@ function ToolRow({ tool, align = "start" }: { tool: TimelineToolRow; align?: "st
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
- * `align: "end"` is the folded-run variant — see ToolRow.
+ * Like a tool row it is a badge on the right rail while collapsed and falls
+ * back into the reading column once opened — see ToolRow.
  */
-function ThinkingRow({
-  text,
-  streaming,
-  align = "start",
-}: {
+function ThinkingRow({ text, streaming, opened }: {
   text: string;
   streaming?: boolean;
-  align?: "start" | "end";
+  opened: boolean;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
-  const end = align === "end";
+  const open = opened || expanded;
   return (
-    <View style={[styles.inlineThinking, end && styles.alignedThinking]}>
+    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
       <Pressable
         accessibilityRole="button"
+        hitSlop={ROW_HIT_SLOP}
         onPress={() => setExpanded(value => !value)}
-        style={[styles.inlineThinkingHeader, end && styles.alignedRow]}
+        style={[styles.inlineThinkingHeader, !open && styles.railRow]}
       >
         <Brain color={colors.inkMuted} size={14} />
         <Text style={styles.inlineThinkingLabel}>
@@ -538,9 +549,7 @@ function ThinkingRow({
           <ChevronDown color={colors.inkMuted} size={14} />
         )}
       </Pressable>
-      {expanded && (
-        <Text style={[styles.inlineThinkingText, end && styles.alignedText]}>{text}</Text>
-      )}
+      {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
     </View>
   );
 }
@@ -680,6 +689,10 @@ function stepRunSummary(
  * point of folding it. A failure is marked the same way — the alert glyph, in
  * the same muted ink as the rest of the line, told apart by its shape and named
  * in the accessibility label rather than shouted in colour.
+ *
+ * The row draws as one 20px line but is a real touch target (`ROW_HIT_SLOP`):
+ * it is the only way into the run behind it, and a target the size of the text
+ * is not enough on a phone.
  */
 function StepRunBlock({ segments }: { segments: StepSegment[] }) {
   const { t } = useTranslation();
@@ -698,6 +711,7 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
         accessibilityLabel={failureNote ? `${summary} · ${failureNote}` : summary}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
+        hitSlop={ROW_HIT_SLOP}
         onPress={() => setExpanded(value => !value)}
         style={[styles.toolHeader, styles.stepSummaryRow]}
       >
@@ -705,8 +719,8 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
           <Fragment key={kind}>
             {index > 0 ? <Text style={styles.toolText}>·</Text> : null}
             {/* The glyph and its count are one unit: `stepSummaryItem` cancels
-                the row gap inside the pair, so `🖥×5` reads as a single token
-                and only the kinds are spaced apart. */}
+                the gap inside the pair, so the wrench and its `×5` read as a
+                single token and only the kinds are spaced apart. */}
             <View style={styles.stepSummaryItem}>
               {kind === "thinking"
                 ? <Brain color={colors.inkMuted} size={14} />
@@ -728,9 +742,9 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
             segment.kind === "thinking" ? (
               // Every folded reasoning slice has already been closed by the
               // slice after it, so none of them is still streaming.
-              <ThinkingRow align="end" key={segment.id} text={segment.text} />
+              <ThinkingRow key={segment.id} opened text={segment.text} />
             ) : (
-              <ToolRow align="end" key={segment.id} tool={segment.tool} />
+              <ToolRow key={segment.id} opened tool={segment.tool} />
             ),
           )}
         </View>
@@ -753,10 +767,10 @@ function SegmentBlock({
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }
   if (segment.kind === "thinking") {
-    return <ThinkingRow streaming={streaming} text={segment.text} />;
+    return <ThinkingRow opened={false} streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    return <ToolRow tool={segment.tool} />;
+    return <ToolRow opened={false} tool={segment.tool} />;
   }
   // compaction
   return (
@@ -1038,9 +1052,15 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   stoppedNoticeText: { color: colors.inkMuted },
+  // The footer is apparatus like the step rows, and it sits on the same right
+  // rail — which is also where the live timer already was, so the reply no longer
+  // jumps to the left edge the moment its run settles. `alignSelf` keeps the copy
+  // button's tap target clipped to the footer instead of spanning the bubble.
   messageFooter: {
+    alignSelf: "flex-end",
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: spacing.md,
     marginTop: spacing.sm,
   },
@@ -1052,17 +1072,37 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     gap: 2,
   },
+  // Collapsed reasoning is a badge on the right rail: the rail follows it there.
+  railThinking: {
+    alignSelf: "flex-end",
+    borderLeftWidth: 0,
+    borderRightWidth: 2,
+    borderRightColor: colors.line,
+    paddingLeft: 0,
+    paddingRight: spacing.md,
+  },
   inlineThinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
   },
   inlineThinkingLabel: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
-  inlineThinkingText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  inlineThinkingText: {
+    color: colors.inkSoft,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 2,
+  },
   inlineTool: {
     paddingVertical: 2,
     gap: 2,
   },
+  // ── The right rail, for collapsed badges only ───────────────────────────
+  // A step row draws as a badge out of the prose's eye line while it is closed;
+  // `railBlock` is what shrink-wraps it and parks it on the right, and `railRow`
+  // keeps the tap target clipped to the badge instead of spanning the bubble.
+  railBlock: { alignSelf: "flex-end" },
+  railRow: { justifyContent: "flex-end" },
   inlineToolTarget: {
     flex: 1,
     marginLeft: spacing.sm,
@@ -1074,32 +1114,35 @@ const styles = StyleSheet.create({
     maxHeight: 18,
     overflow: "hidden",
   },
-  inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
-  // The collapsed summary hugs the right edge, out of the prose's eye line;
-  // `alignSelf` on a stretch container is what keeps the tap target clipped to
-  // the label instead of spanning the full width.
-  // The collapsed summary hugs the right edge, out of the prose's eye line;
-  // the row layout comes from `toolHeader`. `alignSelf` is what keeps the tap
-  // target clipped to the label instead of spanning the full width.
+  // Opened rows are reading content: left-aligned, and indented like the tool
+  // burst children they belong to.
+  inlineToolChildren: {
+    gap: 2,
+    marginTop: 2,
+    paddingLeft: spacing.md + spacing.sm,
+  },
+  // The collapsed summary hugs the right edge, out of the prose's eye line. Its
+  // gap is tighter than a tool row's: the counts are one cluster, and 8px on each
+  // side of the `·` (16px between kinds) read as holes once the glyphs had been
+  // pulled flush against their counts.
   stepSummaryRow: {
     alignSelf: "flex-end",
     justifyContent: "flex-end",
+    gap: spacing.xs,
   },
-  // The icon and its count are one token: no gap between them, so `🖥×5` reads
-  // as a unit. The row's own gap still spaces the kinds and the `·` between them.
+  // The icon and its count are one token: no gap between them, so the wrench and
+  // its `×5` read as a unit. The row's gap spaces the kinds around the `·`.
   stepSummaryItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 0,
   },
-  // The expanded rows keep the summary's right-hand rail: no left indent, and
-  // indented a step in from the right instead so they read as belonging to the
-  // line above them.
+  // The expanded rows fall back into the reading column, indented one step so
+  // they read as belonging to the summary line above them.
   stepChildren: {
-    alignItems: "flex-end",
     gap: spacing.xs,
     marginTop: 2,
-    paddingRight: spacing.sm,
+    paddingLeft: spacing.md + spacing.sm,
   },
   inlineToolChild: {
     flexShrink: 1,
@@ -1107,31 +1150,6 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontSize: 12,
     lineHeight: 18,
-  },
-  // ── Folded-run alignment ───────────────────────────────────────────────
-  // Everything a folded run owns — its summary line, the rows it opens, and the
-  // detail those rows open in turn — hangs off the right edge. The left edge of
-  // the transcript then belongs to the prose alone, which is the point of folding
-  // the apparatus away in the first place.
-  alignedBlock: { alignSelf: "flex-end" },
-  alignedRow: { justifyContent: "flex-end" },
-  alignedText: { textAlign: "right" },
-  // A wrapped command keeps its right alignment but drops the left indent that
-  // belonged to the left-hand rail.
-  alignedDetail: { textAlign: "right", paddingLeft: 0 },
-  alignedChildren: {
-    alignItems: "flex-end",
-    paddingLeft: 0,
-    paddingRight: spacing.sm,
-  },
-  // The reasoning rail moves to the right side with the block it labels.
-  alignedThinking: {
-    alignItems: "flex-end",
-    borderLeftWidth: 0,
-    borderRightWidth: 2,
-    borderRightColor: colors.line,
-    paddingLeft: 0,
-    paddingRight: spacing.md,
   },
   compactionDivider: {
     flexDirection: "row",
@@ -1152,12 +1170,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: spacing.xs,
   },
+  // The live timer is apparatus like the step rows, and it follows the running
+  // row it belongs to onto the same right-hand rail instead of hanging off the
+  // left edge of the reply. It sits outside `segmentList`, so it carries the
+  // same `marginTop` as the settled footer; its own padding is gone.
   runIndicator: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: spacing.sm,
+    alignSelf: "flex-end",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
   },
   runDot: { width: 14, height: 14, borderRadius: radius.pill, backgroundColor: colors.generating },
   runDuration: { color: colors.inkMuted, fontSize: 12 },
@@ -1173,6 +1195,7 @@ const styles = StyleSheet.create({
   tool: { paddingHorizontal: spacing.xs, paddingVertical: spacing.xs },
   toolHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   toolText: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
+  // The shell command under a tool row: left-aligned with the row it belongs to.
   toolDetailText: {
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
