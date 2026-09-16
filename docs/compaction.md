@@ -79,10 +79,30 @@ provider metadata enters the evidence index.
 
 ## Persistence and idempotency
 
-C uses schema 3 with algorithm `deterministic-s2-evidence-v1`. The compatibility
-field `summary` stores evidence, not a generated summary. `model` describes the
-target window, not a model that performed summarization. Protected originals are
-rebuilt by reference; fork remaps references and invalid ranges are rejected.
+The runtime default is C3, algorithm `c3-sticky-summary-v1`: C's projection with a
+model-written handoff summary appended beside the evidence index. The summary is
+sticky — it receives the previous summary — so facts accumulate across successive
+compactions instead of being rewritten each time. Deterministic C
+(`deterministic-s2-evidence-v1`, schema 3) remains the fallback: it is committed
+whenever no provider is reachable or the summary call fails, and the compatibility
+field `summary` then stores evidence alone. Protected originals are rebuilt by
+reference; fork remaps references and invalid ranges are rejected.
+
+## What the summary reads, and why that is the cheap shape
+
+The summary request sends the live conversation as real messages with the
+instruction appended last, and reuses the agent's own system prompt. The
+instruction is appended rather than prepended, and the material is not flattened
+into a single user message, because providers cache on the request prefix: a
+request that reuses the turns the session has already sent can be served from
+cache, while a flattened request shares no prefix and is billed in full every
+time. Measured against the provider, the message-array shape hit 99.9% of the
+cache on a 258 K-token prefix and cost about 48× less than the same input sent
+cold. Reading the live conversation also makes the summary describe the actual
+history rather than an already-lossy index of it.
+
+The reserved summary budget is at most a third of what the evidence budget can
+spare, so a tight budget yields no summary rather than an unusable evidence index.
 
 Old A checkpoints remain readable. At the next needed compaction C reconstructs
 evidence from intact original tool records rather than recursively carrying A's

@@ -16,7 +16,9 @@ Options:
 
 This command returns an asynchronous acknowledgement, NOT a completed summary.
 The Agent reports completion/reuse/failure through its compaction events.
-Default strategy C uses a fixed-budget evidence index, without a summary-model call.
+Compaction keeps every protected original, adds a fixed-budget evidence index, and
+asks the session model for a handoff summary that carries the previous summary
+forward. If the model is unreachable the evidence index alone is committed.
 Active runs are rejected. Identical persisted history and parameters reuse the
 Agent's durable receipt; this command does not replay tools or bypass budgets.
 An unknown transport outcome must not be interpreted as success or cancellation.";
