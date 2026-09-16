@@ -796,7 +796,10 @@ below New Chat jumps straight to the models page) has three pages:
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
   default, per `store/app_settings.rs`). **Automatic session titles** is off by
-  default. When enabled, the model is instructed to replace a generic title
+  default. When disabled, neither the current title nor any title instructions
+  are injected into the system prompt; title and UI-language changes therefore
+  do not alter that prompt. When enabled, a compact instruction tells the model
+  to replace a generic title
   before its first substantive answer once the topic is clear, including in
   discussion-only conversations. The check runs before each answer: enabling
   the feature midway through a conversation also replaces a raw first-message
