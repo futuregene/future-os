@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import * as Crypto from "expo-crypto";
 import * as FS from "expo-file-system";
+import { hashFile as nativeFileSha256 } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { Image, Platform } from "react-native";
@@ -11,6 +12,7 @@ import {
   cachedPreviewForAttachment,
   deleteTemporaryAttachment,
   downloadPrepared,
+  fileSha256,
   namedExternalFile,
   pickAttachments,
   pickFromAlbum,
@@ -22,12 +24,15 @@ import {
   uploadAttachments,
 } from "../files";
 
+jest.mock("future-file-handler", () => ({ hashFile: jest.fn(async () => null) }));
+
 jest.mock("expo-file-system", () => {
   const store = new Map<
     string,
     { bytes?: Uint8Array; size?: number; type?: string; modTime?: number }
   >();
   const dirs = new Set<string>();
+  let readHook: ((size: number) => void) | undefined;
 
   class MockFile {
     uri: string;
@@ -80,6 +85,7 @@ jest.mock("expo-file-system", () => {
       this.uri = uri;
     }
     readBytes(n: number): Uint8Array {
+      readHook?.(n);
       const bytes = store.get(this.uri)?.bytes ?? new Uint8Array(0);
       const slice = bytes.slice(this.offset, this.offset + n);
       this.offset += slice.byteLength;
@@ -135,7 +141,9 @@ jest.mock("expo-file-system", () => {
     ) => {
       store.set(uri, opts);
     },
+    __onRead: (hook: (size: number) => void) => { readHook = hook; },
     __reset: () => {
+      readHook = undefined;
       store.clear();
       dirs.clear();
     },
@@ -201,6 +209,7 @@ const mockFS = FS as unknown as {
     opts?: { bytes?: Uint8Array; size?: number; type?: string; modTime?: number },
   ) => void;
   __reset: () => void;
+  __onRead: (hook: (size: number) => void) => void;
 };
 
 const mockedManipulate = ImageManipulator.manipulateAsync as jest.Mock;
@@ -949,6 +958,55 @@ describe("download & preview cache", () => {
     return `/mock/cache/futureos-previews/${i.contentHash}.jpg`;
   }
 
+  test("10 MiB hashing is incremental, yields, and matches the independent SHA-256 oracle", async () => {
+    jest.useFakeTimers();
+    const bytes = new Uint8Array(10 * 1024 * 1024).fill(37);
+    mockFS.__set("/large.bin", { bytes });
+    const sizes: number[] = [];
+    mockFS.__onRead(size => sizes.push(size));
+    const source = new FS.File("/large.bin");
+    const whole = jest.spyOn(source, "bytes").mockRejectedValue(new Error("whole-file read"));
+    try {
+      const result = fileSha256(source);
+      await Promise.resolve();
+      expect(sizes).toEqual(Array(4).fill(64 * 1024));
+      await jest.runAllTimersAsync();
+      expect(await result).toBe(sha256Hex(bytes));
+      expect(Math.max(...sizes)).toBe(64 * 1024);
+      expect(whole).not.toHaveBeenCalled();
+    } finally { whole.mockRestore(); jest.useRealTimers(); }
+  });
+
+  test("native hashing never copies file bytes into JS and cancellation fences its result", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const source = new FS.File("/native.bin");
+    const read = jest.spyOn(source, "open");
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce(sha256Hex(bytes));
+    expect(await fileSha256(source)).toBe(sha256Hex(bytes));
+    expect(read).not.toHaveBeenCalled();
+    const controller = new AbortController();
+    jest.mocked(nativeFileSha256).mockImplementationOnce(async () => { controller.abort(); return sha256Hex(bytes); });
+    await expect(fileSha256(source, controller.signal)).rejects.toThrow("transfer_cancelled");
+    read.mockRestore();
+  });
+
+  test("downloads four independent chunks at a time but writes out-of-order replies in order", async () => {
+    const bytes = new Uint8Array(Array.from({ length: 20 }, (_, i) => i));
+    const metadata = { ...info, size: bytes.length, contentHash: sha256Hex(bytes) };
+    const client = mockClient();
+    const finish = new Map<number, (bytes: Uint8Array) => void>();
+    client.downloadChunk.mockImplementation((_id: string, index: number) => new Promise<Uint8Array>(resolve => finish.set(index, resolve)));
+    client.request.mockResolvedValue({ success: true, data: {} });
+    const result = downloadPrepared(client as unknown as RemoteClient, metadata);
+    for (let n = 0; n < 20; n++) await Promise.resolve();
+    expect(client.downloadChunk).toHaveBeenCalledTimes(4);
+    for (const index of [3, 2, 1, 0]) finish.get(index)!(bytes.slice(index * 4, index * 4 + 4));
+    for (let n = 0; n < 30; n++) await Promise.resolve();
+    expect(client.downloadChunk).toHaveBeenCalledTimes(5);
+    finish.get(4)!(bytes.slice(16));
+    expect(await (await result).bytes()).toEqual(bytes);
+  });
+
   test("prepareDownload returns the prepared info when not cached", async () => {
     const client = mockClient();
     client.request.mockResolvedValue({ success: true, data: info });
@@ -1253,7 +1311,7 @@ describe("download & preview cache", () => {
         controller.abort(),
       ),
     ).rejects.toThrow("transfer_cancelled");
-    expect(client.downloadChunk).toHaveBeenCalledTimes(1);
+    expect(client.downloadChunk).toHaveBeenCalledTimes(2); // Initial bounded wave, no retry.
     expect(client.request).toHaveBeenCalledWith(
       { type: "download_cancel", transferId: "t1" },
       "transfer",
@@ -1312,7 +1370,7 @@ describe("download & preview cache", () => {
     const client = mockClient();
     client.downloadChunk.mockResolvedValue(fileBytes);
     client.request.mockResolvedValue({ success: true, data: {} });
-    mockedDigest.mockRejectedValue(new Error("digest boom"));
+    mockFS.__onRead(() => { throw new Error("digest boom"); });
 
     await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
       "digest boom",
@@ -1377,14 +1435,7 @@ describe("download & preview cache", () => {
     const client = mockClient();
     const controller = new AbortController();
     client.request.mockResolvedValue({ success: true, data: info });
-    mockedDigest.mockImplementationOnce(async () => {
-      controller.abort();
-      return new Uint8Array(
-        createHash("sha256")
-          .update(Buffer.from(new Uint8Array(8)))
-          .digest(),
-      );
-    });
+    mockFS.__onRead(() => controller.abort());
 
     await expect(
       prepareDownload(
@@ -1406,14 +1457,7 @@ describe("download & preview cache", () => {
     const client = mockClient();
     const controller = new AbortController();
     client.request.mockResolvedValue({ success: true, data: {} });
-    mockedDigest.mockImplementationOnce(async () => {
-      controller.abort();
-      return new Uint8Array(
-        createHash("sha256")
-          .update(Buffer.from(new Uint8Array(8)))
-          .digest(),
-      );
-    });
+    mockFS.__onRead(() => controller.abort());
 
     await expect(
       downloadPrepared(client as unknown as RemoteClient, info, undefined, controller.signal),

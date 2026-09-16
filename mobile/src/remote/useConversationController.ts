@@ -77,6 +77,7 @@ export function useConversationController({
       prepareTimelineOpen(sessionId);
       setSelectedSessionId(sessionId);
       selectedRef.current = sessionId;
+      client.setVisibleSession?.(sessionId);
       setDraft(false);
       setUnreadSessions(previous => {
         if (!previous.has(sessionId)) return previous;

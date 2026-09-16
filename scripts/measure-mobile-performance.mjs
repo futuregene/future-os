@@ -15,7 +15,9 @@ export { emptyTimeline, applyReplayEvents } from './mobile/src/remote/timeline';
 export { createStreamingMarkdownParser, parseFutureMarkdown } from './packages/markdown/src/index';`;
 for (const name of ['Baseline', 'Current']) {
   await build({
-    stdin: { contents: source, resolveDir: root, loader: 'ts' },
+    stdin: { contents: source + (name === 'Current'
+      ? `\nexport { decodeJsonBytes } from './mobile/src/remote/cooperativeJson';`
+      : `\nexport async function decodeJsonBytes(bytes) { return JSON.parse(new TextDecoder().decode(bytes)); }`), resolveDir: root, loader: 'ts' },
     bundle: true, format: 'iife', globalName: `Mobile${name}`, platform: 'browser',
     outfile: path.join(out, `${name.toLowerCase()}.js`),
     alias: {

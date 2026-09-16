@@ -1,4 +1,6 @@
 import { File, FileMode, Directory, Paths } from "expo-file-system";
+import sha256 from "sha256-universal";
+import { hashFile as nativeFileSha256 } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as Crypto from "expo-crypto";
@@ -761,11 +763,34 @@ export function cachedDownload(info: DownloadInfo): File | null {
   return file.exists && file.size === info.size ? file : null;
 }
 
-async function fileSha256(file: File): Promise<string> {
-  const digest = new Uint8Array(
-    await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, await file.bytes()),
-  );
-  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+export async function fileSha256(file: File, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal);
+  if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) throw new Error("invalid_hash_size");
+  const native = await nativeFileSha256(file.uri);
+  throwIfCancelled(signal);
+  if (native !== null) {
+    if (!/^[0-9a-f]{64}$/.test(native)) throw new Error("invalid_native_hash");
+    return native;
+  }
+  const hash = sha256();
+  const handle = file.open(FileMode.ReadOnly);
+  try {
+    const size = file.size;
+    let offset = 0;
+    let deadline = Date.now() + 8;
+    while (offset < size) {
+      throwIfCancelled(signal);
+      const bytes = handle.readBytes(Math.min(64 * 1024, size - offset));
+      if (!bytes.length) throw new Error("hash_read_size_mismatch");
+      hash.update(bytes); offset += bytes.length;
+      if (offset < size && (offset % (256 * 1024) === 0 || Date.now() >= deadline)) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        deadline = Date.now() + 8;
+      }
+    }
+    throwIfCancelled(signal);
+    return hash.digest("hex");
+  } finally { handle.close(); }
 }
 
 async function verifiedCachedDownload(
@@ -776,7 +801,7 @@ async function verifiedCachedDownload(
   const file = cachedDownload(info);
   if (!file) return null;
   try {
-    const hash = await fileSha256(file);
+    const hash = await fileSha256(file, signal);
     throwIfCancelled(signal);
     if (hash === info.contentHash) return file;
   } catch (error) {
@@ -832,20 +857,24 @@ export async function downloadPrepared(
   try {
     const chunks = Math.ceil(info.size / info.chunkBytes);
     let completed = 0;
-    for (let index = 0; index < chunks; index += 1) {
+    // Immutable indexed chunks can be fetched independently. Bound both the
+    // request count and retained bytes; write in order only after a full wave
+    // settles, so failure/cancellation cannot race writes into a removed file.
+    const concurrency = Math.max(1, Math.min(4, Math.floor(2 * 1024 * 1024 / info.chunkBytes)));
+    for (let start = 0; start < chunks; start += concurrency) {
       throwIfCancelled(signal);
-      const bytes = await withTransferRetry(
-        () => client.downloadChunk(info.transferId, index),
-        signal,
-        onWaiting,
-      );
+      const wave = await Promise.all(Array.from({ length: Math.min(concurrency, chunks - start) }, (_, offset) =>
+        withTransferRetry(() => client.downloadChunk(info.transferId, start + offset), signal, onWaiting)
+          .then(bytes => ({ bytes }), error => ({ error }))));
       throwIfCancelled(signal);
-      if (bytes.byteLength !== Math.min(info.chunkBytes, info.size - completed)) {
-        throw new Error("download_size_mismatch");
+      for (const result of wave) {
+        if ("error" in result) throw result.error;
+        const bytes = result.bytes;
+        if (bytes.byteLength !== Math.min(info.chunkBytes, info.size - completed)) throw new Error("download_size_mismatch");
+        handle.writeBytes(bytes);
+        completed += bytes.byteLength;
+        onProgress?.(completed, info.size);
       }
-      handle.writeBytes(bytes);
-      completed += bytes.byteLength;
-      onProgress?.(completed, info.size);
     }
   } catch (error) {
     handle.close();
@@ -866,7 +895,7 @@ export async function downloadPrepared(
   }
   let hash: string;
   try {
-    hash = await fileSha256(file);
+    hash = await fileSha256(file, signal);
     throwIfCancelled(signal);
   } catch (error) {
     file.delete();

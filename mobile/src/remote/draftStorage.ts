@@ -27,6 +27,36 @@ const KEY_PREFIX = "futureos.remote.draft.v1:";
 export const NEW_CONVERSATION_DRAFT_KEY = "draft:new";
 const enqueueOperation = createAsyncOperationQueue();
 
+type PendingDraft = { draft: Omit<SessionDraft, "version">; timer?: ReturnType<typeof setTimeout>; deadline: ReturnType<typeof setTimeout> };
+const pendingDrafts = new Map<string, PendingDraft>();
+function cancelScheduledDraft(sessionId: string): PendingDraft | undefined {
+  const pending = pendingDrafts.get(sessionId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  clearTimeout(pending.deadline);
+  pendingDrafts.delete(sessionId);
+  return pending;
+}
+
+/** Coalesce typing, with a 2s maximum wait even during continuous input. Reads,
+ * explicit saves/clears and navigation remain ordered durability barriers. */
+export function scheduleSessionDraft(sessionId: string, draft: Omit<SessionDraft, "version">): void {
+  if (!sessionId) return;
+  let pending = pendingDrafts.get(sessionId);
+  if (!pending) {
+    pending = { draft, deadline: setTimeout(() => { void flushSessionDraft(sessionId); }, 2000) };
+    pendingDrafts.set(sessionId, pending);
+  }
+  pending.draft = draft;
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(() => { void flushSessionDraft(sessionId); }, 250);
+}
+
+export function flushSessionDraft(sessionId: string): Promise<void> {
+  const pending = cancelScheduledDraft(sessionId);
+  return pending ? saveSessionDraft(sessionId, pending.draft) : Promise.resolve();
+}
+
 function storageKey(sessionId: string): string {
   return `${KEY_PREFIX}${sessionId}`;
 }
@@ -73,6 +103,7 @@ async function loadSessionDraftDirect(sessionId: string): Promise<SessionDraft |
 }
 
 export function loadSessionDraft(sessionId: string): Promise<SessionDraft | null> {
+  void flushSessionDraft(sessionId);
   return enqueueOperation(() => loadSessionDraftDirect(sessionId));
 }
 
@@ -86,6 +117,7 @@ export async function saveSessionDraft(
   draft: Omit<SessionDraft, "version">,
 ): Promise<void> {
   if (!sessionId) return;
+  cancelScheduledDraft(sessionId);
   await enqueueOperation(async () => {
     const hasAttachments = (draft.attachments?.length ?? 0) > 0;
     try {
@@ -106,6 +138,7 @@ export async function saveSessionDraft(
 /** Remove a session's draft (e.g. after its message is sent). */
 export async function clearSessionDraft(sessionId: string): Promise<void> {
   if (!sessionId) return;
+  cancelScheduledDraft(sessionId);
   await enqueueOperation(async () => {
     try {
       await AsyncStorage.removeItem(storageKey(sessionId));
@@ -125,6 +158,7 @@ export async function clearSessionDraftIfMatches(
   expected: Pick<SessionDraft, "text" | "attachments">,
 ): Promise<void> {
   if (!sessionId) return;
+  void flushSessionDraft(sessionId);
   await enqueueOperation(async () => {
     const current = await loadSessionDraftDirect(sessionId);
     if (!current || current.text.trim() !== expected.text.trim()) return;

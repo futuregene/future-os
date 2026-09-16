@@ -46,7 +46,11 @@ const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkG
 // document is rendered read-only (MarkdownContent maps `nodes`; consumers
 // never mutate it), so sharing it across instances is safe. LRU-bounded so a
 // long-lived app doesn't hoard every reply ever parsed.
-const parseCache = new Map<string, FutureMarkdownDocument>();
+const parseCache = new Map<string, { document: FutureMarkdownDocument; bytes: number }>();
+let parseCacheBytes = 0;
+// Charged serialized source/AST size, not an exact VM heap measurement.
+const PARSE_CACHE_BYTES = 8 * 1024 * 1024;
+const MAX_CACHED_SOURCE_CHARS = 128 * 1024;
 // Tuned up after the lazy-mount window was reverted: with the full list
 // re-rendered on every thread switch, a larger cache covers more distinct
 // messages (long conversations, forks, retried replies) before eviction.
@@ -63,12 +67,13 @@ interface ParseContext {
 export function parseFutureMarkdown(raw: string, parsedTree?: Root, cache = true): FutureMarkdownDocument {
   // Mutable streaming fragments must not fill the shared LRU with obsolete
   // prefixes or evict settled messages. Ordinary callers retain caching.
+  cache = cache && raw.length <= MAX_CACHED_SOURCE_CHARS;
   const cached = cache ? parseCache.get(raw) : undefined;
   if (cached) {
     // LRU touch.
     parseCache.delete(raw);
     parseCache.set(raw, cached);
-    return cached;
+    return cached.document;
   }
   const tree = parsedTree ?? parseMdast(raw);
   const context = createParseContext(tree);
@@ -80,11 +85,19 @@ export function parseFutureMarkdown(raw: string, parsedTree?: Root, cache = true
     : tree.children.flatMap((node) => blockToFutureNode(node, context));
   const references = collectReferences(nodes);
   const document = { nodes, raw, references };
-  if (cache && parseCache.size >= PARSE_CACHE_MAX) {
-    const oldest = parseCache.keys().next().value;
-    if (oldest !== undefined) parseCache.delete(oldest);
+  if (cache) {
+    const bytes = JSON.stringify(document).length * 2 + nodes.length * 64;
+    if (bytes <= PARSE_CACHE_BYTES) {
+      while (parseCache.size >= PARSE_CACHE_MAX || parseCacheBytes + bytes > PARSE_CACHE_BYTES) {
+        const oldest = parseCache.keys().next().value;
+        if (oldest === undefined) break;
+        parseCacheBytes -= parseCache.get(oldest)!.bytes;
+        parseCache.delete(oldest);
+      }
+      parseCache.set(raw, { document, bytes });
+      parseCacheBytes += bytes;
+    }
   }
-  if (cache) parseCache.set(raw, document);
   return document;
 }
 

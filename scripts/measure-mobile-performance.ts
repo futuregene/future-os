@@ -12,6 +12,7 @@ type Runtime = {
   applyReplayEvents(state: TimelineState, events: StreamEvent[]): Promise<TimelineState>;
   createStreamingMarkdownParser(): (text: string, streaming: boolean) => FutureMarkdownDocument;
   parseFutureMarkdown(text: string): FutureMarkdownDocument;
+  decodeJsonBytes(bytes: Uint8Array): Promise<unknown>;
 };
 declare const MobileBaseline: Runtime;
 declare const MobileCurrent: Runtime;
@@ -160,6 +161,45 @@ document.querySelector<HTMLButtonElement>("#markdown")!.addEventListener("click"
     status.textContent = `FAILED: ${String(error)}`;
     console.error("MOBILE_MARKDOWN_FAILURE", String(error));
   } finally { button.disabled = false; run.disabled = false; }
+});
+
+document.querySelector<HTMLButtonElement>("#json")!.addEventListener("click", async event => {
+  const button = event.currentTarget as HTMLButtonElement;
+  button.disabled = true;
+  try {
+    const events: StreamEvent[] = await (await fetch("/sample/0")).json();
+    let count = Math.min(50000, events.length);
+    let bytes: Uint8Array;
+    do {
+      bytes = new TextEncoder().encode(JSON.stringify({ events: events.slice(0, count) }));
+      if (bytes.length <= 16 * 1024 * 1024) break;
+      count -= 1000;
+    } while (count > 1000);
+    const expected = await digest(JSON.parse(new TextDecoder().decode(bytes!)));
+    for (let round = 1; round <= 3; round++) {
+      const versions: (keyof typeof runtimes)[] = round % 2 ? ["baseline", "current"] : ["current", "baseline"];
+      for (const version of versions) {
+        status.textContent = `Real JSON: ${count} events, round ${round}, ${version}`;
+        await wait(50);
+        const lags: number[] = [];
+        let next = performance.now() + 16;
+        const timer = setInterval(() => {
+          const now = performance.now(); lags.push(Math.max(0, now - next)); next = now + 16;
+        }, 16);
+        const start = performance.now();
+        const value = await runtimes[version].decodeJsonBytes(bytes!);
+        const elapsedMs = roundMs(performance.now() - start);
+        await wait(20);
+        clearInterval(timer);
+        const hash = await digest(value);
+        if (hash !== expected) throw new Error("real JSON content mismatch");
+        await save({ scenario: "real-large-json", version, round, events: count, bytes: bytes!.length,
+          elapsedMs, heartbeatP95Ms: quantile(lags, .95), heartbeatMaxMs: quantile(lags, 1), digest: hash });
+      }
+    }
+    status.textContent = "COMPLETE: real JSON decoding matches native JSON.parse in both versions. Elapsed time and input delay are different metrics.";
+  } catch (error) { status.textContent = `FAILED: ${String(error)}`; }
+  finally { button.disabled = false; }
 });
 
 run.addEventListener("click", async () => {

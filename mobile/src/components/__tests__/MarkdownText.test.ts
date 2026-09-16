@@ -31,6 +31,22 @@ describe("MarkdownText layout and fidelity", () => {
     } finally { parse.mockRestore(); }
   });
 
+  test("a 5000-row table mounts a bounded internal viewport", () => {
+    const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
+    const root = render(text);
+    expect(root.findByType(FlatList).props.data).toHaveLength(5000);
+    expect(root.findAllByType(Text).length).toBeLessThan(100);
+  });
+
+  test("large code has a bounded viewport while its data preserves the full source", () => {
+    const code = "line with real indentation\n".repeat(5000) + "x".repeat(100000);
+    const root = render(`\`\`\`ts\n${code}\n\`\`\``);
+    const list = root.findByType(FlatList);
+    expect(list.props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
+    expect(list.props.data.every((row: { text: string }) => row.text.length <= 2049)).toBe(true);
+    expect(root.findAllByType(Text).length).toBeLessThan(50);
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");

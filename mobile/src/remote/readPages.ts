@@ -1,4 +1,5 @@
 import type { RemoteClient } from "./client";
+import { decodeJsonBytes } from "./cooperativeJson";
 import { decodeBase64Url } from "./codec";
 import type { RemoteCommand, RpcResponse } from "./types";
 
@@ -69,6 +70,6 @@ export async function requestReadPage<T>(
       storeChunk(part, offset);
     }));
   }
-  const data = JSON.parse(new TextDecoder().decode(bytes)) as T;
+  const data = await decodeJsonBytes<T>(bytes, isCurrent);
   return { ...response, data };
 }

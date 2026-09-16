@@ -97,6 +97,8 @@ export interface RunProjector {
   snapshot: () => AssistantRunProjection;
   /** Independent mutable accumulator for cancellable/cooperative replay. */
   fork: () => RunProjector;
+  /** Conservative size of closure-owned strings/collections for cache budgets. */
+  estimatedBytes: () => number;
 }
 
 interface ProjectorCheckpoint {
@@ -481,6 +483,17 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       lastSequence = Math.max(lastSequence, event.sequence);
     },
     snapshot,
+    estimatedBytes() {
+      let bytes = 256 + content.length * 2 + slots.length * 128 + toolActivities.size * 256;
+      for (const slot of slots) for (const value of Object.values(slot)) {
+        if (typeof value === "string") bytes += 24 + value.length * 2;
+      }
+      for (const tool of toolActivities.values()) for (const value of Object.values(tool)) {
+        if (typeof value === "string") bytes += 24 + value.length * 2;
+      }
+      for (const id of slottedToolIds) bytes += 32 + id.length * 2;
+      return bytes;
+    },
     fork: () => createProjector(options, {
       toolActivities, slots, slottedToolIds,
       openTextIndex: openText ? slots.indexOf(openText) : -1,

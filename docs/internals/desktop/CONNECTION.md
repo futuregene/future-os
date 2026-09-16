@@ -306,8 +306,26 @@ subjects.
 | `evt.{sessionId}` | the Desktop publishes session events |
 | `presence` | the Desktop publishes online status and bridge instance identity |
 | `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots |
+| `state.events` | negotiated low-rate run/approval/configuration notices (`selective_events_v1`) |
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
+
+**Negotiated event interest (2026-09-16):** a Desktop advertising
+`selective_events_v1` also publishes run start/end, approval request/decision,
+rename/provider-config, run-snapshot and error events to `state.events`.
+The original `evt.{sessionId}` feed remains unchanged for older clients. A
+supporting phone subscribes to detailed events only for its selected session;
+the session list/background keeps low-rate notices and catalog snapshots. It
+restores the selected subscription before foreground reconciliation. A Desktop
+without this feature keeps the original wildcard-subscription behavior.
+
+This is a traffic optimization, **not** a new authorization boundary. Both
+lanes retain AEAD topic binding, original event indices and the existing
+pairing-level permission scope. Selected-session notice duplicates are deduped;
+intentional unsubscribe on navigation is not a transport failure. Reopening
+still fills missing details from the durable journal. The platform API, JWT
+scope and Agent authority are unchanged; Desktop-to-broker legacy publication
+is retained, while irrelevant detailed delivery to the phone is avoided.
 
 NATS Core is at-most-once delivery. Existing real-time events must be
 hole-filled by authoritative-log replay, and catalog notices calibrated by

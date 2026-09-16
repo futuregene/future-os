@@ -35,6 +35,7 @@
     "nkeys.js": "^1.1.0",
     "noise-handshake": "4.2.0",
     "sodium-javascript": "0.8.0",
+    "sha256-universal": "1.2.1",
     "@noble/ciphers": "1.3.0",
     "react": "19.2.3",
     "react-i18next": "^17.0.13",

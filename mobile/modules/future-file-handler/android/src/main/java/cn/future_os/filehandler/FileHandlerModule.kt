@@ -9,10 +9,30 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.functions.Queues
 import java.io.File
+import java.security.MessageDigest
 
 class FileHandlerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("FutureFileHandler")
+
+    AsyncFunction("hashFile") { fileUrl: String ->
+      val context = appContext.reactContext ?: error("React context is unavailable")
+      val uri = readableContentUri(fileUrl)
+      val hash = MessageDigest.getInstance("SHA-256")
+      context.contentResolver.openInputStream(uri).use { input ->
+        requireNotNull(input) { "The selected file is not readable" }
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+          val count = input.read(buffer)
+          if (count < 0) break
+          total += count
+          require(total <= 10L * 1024 * 1024) { "File exceeds the hash size limit" }
+          hash.update(buffer, 0, count)
+        }
+      }
+      hash.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }.runOnQueue(Queues.DEFAULT)
 
     AsyncFunction("findSupportedMimeType") { fileName: String, mimeTypes: List<String> ->
       mimeTypes.firstOrNull { canHandle(fileName, it) }

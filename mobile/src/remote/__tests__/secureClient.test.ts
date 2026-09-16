@@ -82,6 +82,7 @@ function fixture() {
     request,
     subscribe: (subject: string) => {
       const queue = new QueuedIteratorImpl<Msg>();
+      Object.assign(queue, { unsubscribe: () => queue.stop() });
       subscriptions.set(subject, queue);
       return queue;
     },
@@ -92,7 +93,7 @@ function fixture() {
     connection: NatsConnection; credentials: RemoteCredentials;
     performHandshake(connection: NatsConnection): Promise<unknown>;
     secureChannels: WeakMap<NatsConnection, SecureChannel>;
-    subscribeEvents(connection: NatsConnection, generation: number): void;
+    subscribeEvents(connection: NatsConnection, generation: number, selective?: boolean): void;
     subscribeState(connection: NatsConnection, generation: number): void;
     subscribeLiveness(connection: NatsConnection, generation: number): void;
     subscribeTransfers(connection: NatsConnection, generation: number): void;
@@ -152,6 +153,56 @@ test("real NATS messages retain routing after decryption across repeated catalog
     await expect(download).resolves.toEqual(bytes);
     expect(f.client.open).not.toHaveBeenCalled();
   } finally { await f.client.close(); }
+});
+
+test("selective event subscriptions retain background approvals/end events and retire old session feeds safely", async () => {
+  const f = fixture();
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1); owner.activate();
+    Object.assign(f.internal, { generation: 1, activeGeneration: owner, state: "ready" });
+    f.client.setVisibleSession("s1");
+    f.internal.subscribeEvents(f.connection, 1, true);
+    f.internal.subscribeState(f.connection, 1);
+    expect(f.subscriptions.has("p.pair_1.evt.>")).toBe(false);
+    expect(f.subscriptions.has("p.pair_1.evt.s1")).toBe(true);
+    for (const type of ["approval_request", "agent_end"]) {
+      const subject = "p.pair_1.state.events";
+      f.subscriptions.get("p.pair_1.state.>")!.push(natsMessage(subject,
+        f.serverChannel().seal(subject, encode({ sessionId: "background", type, runId: "r", data: "{}" }))));
+      await settle();
+      expect(f.callbacks.onEvent).toHaveBeenLastCalledWith(expect.objectContaining({ type }), "background");
+    }
+    const old = f.subscriptions.get("p.pair_1.evt.s1")!;
+    f.client.setVisibleSession("s2");
+    await settle();
+    expect(old.done).toBe(true);
+    expect(f.subscriptions.has("p.pair_1.evt.s2")).toBe(true);
+    f.client.setVisibleSession("");
+    await settle();
+    expect(f.subscriptions.get("p.pair_1.evt.s2")!.done).toBe(true);
+    expect(f.callbacks.onError).not.toHaveBeenCalled();
+    expect(f.callbacks.onConnectionState).not.toHaveBeenCalledWith("reconnecting");
+  } finally { await f.client.close(); }
+});
+
+test("a queued encrypted event burst yields before all records have decoded", async () => {
+  jest.useFakeTimers();
+  const f = fixture();
+  try {
+    await f.pair();
+    const owner = new ConnectionGeneration(1); owner.activate();
+    Object.assign(f.internal, { generation: 1, activeGeneration: owner, state: "ready" });
+    f.internal.subscribeEvents(f.connection, 1);
+    const subject = "p.pair_1.evt.s1";
+    for (let i = 0; i < 500; i++) f.subscriptions.get("p.pair_1.evt.>")!.push(natsMessage(subject,
+      f.serverChannel().seal(subject, encode({ type: "text_chunk", idx: i, data: '{"text":"x"}' }))));
+    let atInput = 500;
+    setTimeout(() => { atInput = (f.callbacks.onEvent as jest.Mock).mock.calls.length; }, 0);
+    await jest.runAllTimersAsync();
+    expect(atInput).toBeLessThan(500);
+    expect(f.callbacks.onEvent).toHaveBeenCalledTimes(500);
+  } finally { await f.client.close(); jest.useRealTimers(); }
 });
 
 test("pairs, persists the bound identity without the invitation secret, encrypts commands and file chunks", async () => {

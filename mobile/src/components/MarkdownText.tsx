@@ -10,8 +10,10 @@ import {
 } from "@future-os/markdown";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import * as Clipboard from "expo-clipboard";
+import { codePreviewRows } from "./codePreviewRows";
 import type { StyleProp, TextStyle } from "react-native";
-import { Animated, FlatList, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
@@ -149,6 +151,28 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
 }
 
 function CodeSource({ code, language }: { code: string; language?: string }) {
+  const { t } = useTranslation();
+  const { fontScale } = useWindowDimensions();
+  const large = code.length > 10000 || code.split("\n", 18).length > 16;
+  const rows = useMemo(() => large ? codePreviewRows(code) : [], [code, large]);
+  const columns = useMemo(() => rows.reduce((max, row) =>
+    row.text.split("\n").reduce((width, line) => Math.max(width, line.length), max), 1), [rows]);
+  if (large) return <View style={styles.codeContainer}>
+    <View style={styles.codeToolbar}>
+      <Text style={styles.codeLanguage}>{language ?? ""}</Text>
+      <Pressable accessibilityRole="button" accessibilityLabel={t("chat.copy")}
+        onPress={() => { void Clipboard.setStringAsync(code).catch(error =>
+          Alert.alert(t("common.error"), error instanceof Error ? error.message : String(error))); }} style={styles.codeCopy}>
+        <Text>{t("chat.copy")}</Text>
+      </Pressable>
+    </View>
+    <ScrollView horizontal nestedScrollEnabled>
+      <FlatList data={rows} nestedScrollEnabled initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
+        style={{ height: 360, width: Math.max(320, columns * 14 * fontScale + 48) }}
+        keyExtractor={(_row, index) => String(index)}
+        renderItem={({ item }) => <Text selectable style={styles.code}>{item.continuation ? "↪ " : ""}{item.text.endsWith("\n") ? item.text.slice(0, -1) : item.text}</Text>} />
+    </ScrollView>
+  </View>;
   return (
     <View style={styles.codeContainer}>
       {language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
@@ -267,12 +291,20 @@ function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: Open
   const [width, setWidth] = useState(0);
   const { fontScale } = useWindowDimensions();
   const cellWidth = Math.max(144 * fontScale, (width - 2) / Math.max(1, node.headers.length));
+  const renderRow = useCallback(({ item, index }: { item: InlineNode[][]; index: number }) => (
+    <MarkdownTableRow cells={item} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} striped={index % 2 === 1} />
+  ), [cellWidth, node.alignments, openTarget]);
   return (
     <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
       <ScrollView horizontal nestedScrollEnabled>
         <View style={styles.table}>
           <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} header />
-          {node.rows.map((row, rowIndex) => (
+          {node.rows.length > 8 ? (
+            <FlatList data={node.rows} renderItem={renderRow} nestedScrollEnabled
+              initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
+              style={{ height: 360, width: cellWidth * node.headers.length }}
+              keyExtractor={(_row, index) => String(index)} />
+          ) : node.rows.map((row, rowIndex) => (
             <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} striped={rowIndex % 2 === 1} />
           ))}
         </View>
@@ -433,6 +465,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceSubtle,
   },
   codeContent: { flexGrow: 1 },
+  codeToolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  codeCopy: { padding: spacing.md, minHeight: 44, justifyContent: "center" },
   codeLanguage: { color: colors.inkMuted, fontSize: 12, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
     padding: spacing.md,

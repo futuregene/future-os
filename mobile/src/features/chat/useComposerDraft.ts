@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import type { TFunction } from "i18next";
 import { useRemote } from "../../remote/RemoteContext";
-import { loadSessionDraft, saveSessionDraft } from "../../remote/draftStorage";
+import { flushSessionDraft, loadSessionDraft, scheduleSessionDraft } from "../../remote/draftStorage";
 import { desktopDraftKey } from "../../remote/desktopDraftKey";
 import { recoverPendingImagePickerAttachments } from "../../remote/files";
 import type { MobileAttachment } from "../../remote/types";
@@ -60,8 +60,15 @@ export function useComposerDraft(remote: Remote, t: TFunction): ComposerDraftApi
   // when removed so they don't accumulate on disk.
   useEffect(() => {
     if (restoringDraftRef.current) return;
-    void saveSessionDraft(draftKey, { text: message, attachments });
+    scheduleSessionDraft(draftKey, { text: message, attachments });
   }, [attachments, draftKey, message]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", state => {
+      if (state !== "active") void flushSessionDraft(draftKey);
+    });
+    return () => { subscription.remove(); void flushSessionDraft(draftKey); };
+  }, [draftKey]);
 
   return { message, setMessage, attachments, setAttachments };
 }

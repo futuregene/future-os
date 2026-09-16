@@ -1,6 +1,15 @@
 import { createStreamingMarkdownParser, parseFutureMarkdown } from "@future-os/markdown";
 
 describe("Markdown syntax fidelity", () => {
+  test("settled parse cache evicts by charged bytes and bypasses oversized sources", () => {
+    const source = "```\n" + "x".repeat(100000) + "\n```";
+    const first = parseFutureMarkdown(source);
+    expect(parseFutureMarkdown(source)).toBe(first);
+    for (let i = 0; i < 30; i++) parseFutureMarkdown(`# ${i}\n\n${source}`);
+    expect(parseFutureMarkdown(source)).not.toBe(first);
+    const large = source + "x".repeat(40000);
+    expect(parseFutureMarkdown(large)).not.toBe(parseFutureMarkdown(large));
+  });
   test("collects images inside links and preserves rich local-file labels", () => {
     const document = parseFutureMarkdown("[![chart](assets/a.png)](https://example.com) [![local](assets/b.png)](./report.md) [**bold**](./report.md)");
     expect(document.references.map(ref => ref.targetId)).toEqual(["assets/a.png", "report.md", "assets/b.png", "report.md"]);
