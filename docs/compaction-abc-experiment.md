@@ -1,10 +1,16 @@
-# Compaction strategy comparison: C, Codex, OpenCode
+# Compaction strategy comparison: C3, Codex, OpenCode
 
 Three retention strategies, measured on six chains, closed book and open book.
 
+**Naming.** **C3** is the runtime default: strategy **C** — protected user and assistant
+originals, a deterministic tool-evidence index and a recent tail — **plus** a model-written
+sticky handoff summary. When a comparison needs the two separated, C3 is the default and
+plain **C** is the same projection with no summary model called. The algorithm identifiers
+are `c3-sticky-summary-v1` and `deterministic-s2-evidence-v1`, matching the code.
+
 | Strategy | What survives compaction | Source |
 |---|---|---|
-| **C** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly sticky handoff summary** written by the session model | this repo (runtime default) |
+| **C3** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly sticky handoff summary** written by the session model | this repo (runtime default) |
 | **Codex** | all user messages (≤20 000 tokens) + a whole-history summary; no assistant text, no tool output | `openai/codex` @ `b13164d8`, `compact.rs::build_compacted_history` + `templates/compact/prompt.md` |
 | **OpenCode** | a summary + a retained tail (`min(15 000, max(2 000, usable/4))`) | `anomalyco/opencode` @ `e03db9bc`, `session/compaction.ts` |
 
@@ -12,9 +18,9 @@ Codex and OpenCode are reimplementations of the selection rules read from those
 commits, not forks. Their prompts were transcribed verbatim and each source file's git
 blob SHA is recorded in [abc_external_provenance.json](../scripts/abc_external_provenance.json).
 
-## How C's summary is generated, and why the request shape matters
+## How C3's summary is generated, and why the request shape matters
 
-C's projection is produced by the production Rust path
+C3's projection is produced by the production Rust path
 (`agent/examples/abc_c3_probe.rs` → `prepare_evidence_with_summary`), so its content is
 exactly what the runtime commits. The summary is **sticky** — each one receives the
 previous one — so facts accumulate across successive compactions instead of being
@@ -47,12 +53,12 @@ about ¥0.003.
   tool results, plus 8 plausible decoys that appear nowhere. The model marks which
   appeared; a projection that dropped a value cannot distinguish it from a decoy. This is
   recognition, not free recall.
-* **Window** — 128 K, the saturation point for C (see limits).
+* **Window** — 128 K, the saturation point for C3 (see limits).
 * **Costs** — the provider's own reported `credit_cost`, billed per call.
 
 ## Closed book: what each strategy keeps
 
-| Chain | C | Codex | OpenCode |
+| Chain | C3 | Codex | OpenCode |
 |---|---:|---:|---:|
 | export (synth) | **9/16** | 8/16 | 8/16 |
 | analysis (synth) | **9/16** | 8/16 | 8/16 |
@@ -62,7 +68,7 @@ about ¥0.003.
 | real-stream | **39/49** | 36/49 | 15/49 |
 | **total** | **129/178 (72.5 %)** | 119/178 (66.9 %) | 89/178 (50.0 %) |
 
-| Group | C | Codex | OpenCode |
+| Group | C3 | Codex | OpenCode |
 |---|---:|---:|---:|
 | **real sessions** | **101/129 (78.3 %)** | 94/129 (72.9 %) | 64/129 (49.6 %) |
 | synthetic chains | **28/49 (57.1 %)** | 25/49 (51.0 %) | 25/49 (51.0 %) |
@@ -72,18 +78,18 @@ never invention.
 
 | Strategy | median projection | 
 |---|---:|
-| C | 8 495 tokens |
+| C3 | 8 495 tokens |
 | Codex | 1 223 tokens |
 | OpenCode | 3 249 tokens |
 
 Readings:
 
-* **Closed book, C leads on real sessions and on the synthetic chains.** There it is 28/49
+* **Closed book, C3 leads on real sessions and on the synthetic chains.** There it is 28/49
   against 25/49 for both others — those fixtures put their answerable detail in tool
   records, which every rule keeps in some form. The strategies separate only where the
   answering detail lives in the agent's own prose, which is where real questions point.
 * **Codex's compact projection is efficient per token but does not compensate.** It keeps
-  ~7× fewer tokens than C and answers 5.4 points worse on real sessions; a small
+  ~7× fewer tokens than C3 and answers 5.4 points worse on real sessions; a small
   projection only helps if it still contains the answer.
 * **OpenCode is weakest (−28.7 points vs C on real sessions).** Consistent with its
   design: summary plus a short tail, with no verbatim originals and no evidence index.
@@ -96,13 +102,13 @@ projections:
 
 | Strategy | Interface | What it reads |
 |---|---|---|
-| C | the archive CLI (`future session history search` / `get`) | the session archive |
+| C3 | the archive CLI (`future session history search` / `get`) | the session archive |
 | Codex | the window/item interface (`history.search_contents` / `read_item`) | the session archive, grouped into windows |
 | OpenCode | the filesystem (`glob` / `grep` / `read`) | a materialised working tree |
 
 | Strategy | Closed | Open | Δ | Mean lookups | Data read |
 |---|---:|---:|---:|---:|---:|
-| **C** | 129/178 | **168/178 (94.4 %)** | **+39** | 2.67 | 0.20 MB |
+| **C3** | 129/178 | **168/178 (94.4 %)** | **+39** | 2.67 | 0.20 MB |
 | **Codex** | 119/178 | **170/178 (95.5 %)** | **+51** | 6.28 | 2.66 MB |
 | **OpenCode** | 89/178 | **117/178 (65.7 %)** | **+28** | 4.33 | 0.54 MB |
 
@@ -117,23 +123,23 @@ Retrieval cost, billed per call:
 
 | Strategy | Retrieval calls | Total | Mean per call |
 |---|---:|---:|---:|
-| C | 48 | ¥0.7113 | **¥0.0148** |
+| C3 | 48 | ¥0.7113 | **¥0.0148** |
 | Codex | 114 | ¥3.3083 | **¥0.0290** |
 | OpenCode | 78 | ¥1.2088 | **¥0.0155** |
 
 **Retrieval changes the result completely, and it changes the ranking.** Closed book,
-C leads by 10 fields; open book, the two are within 2 of each other (168 against 170),
+C3 leads by 10 fields; open book, the two are within 2 of each other (168 against 170),
 because both can reach most of what the archive holds. Three findings:
 
-1. **The gain is inversely proportional to what the projection retained.** C starts
+1. **The gain is inversely proportional to what the projection retained.** C3 starts
    highest and gains least (+39); Codex starts lowest of the two and gains most (+51);
    OpenCode gains +28 and still ends far behind. In other words, **closed book measures
    what a strategy keeps, open book measures what it can find — and only the first
    separates these designs.**
-2. **C reaches its result with a fraction of the effort.** It spends 2.67 lookups and
+2. **C3 reaches its result with a fraction of the effort.** It spends 2.67 lookups and
    reads 0.20 MB where Codex spends 6.28 and reads 2.66 MB — 13× less data for a
    comparable score. Its evidence index points at the records worth reading, so its
-   lookups are targeted rather than exploratory. On the synthetic chains C is the only
+   lookups are targeted rather than exploratory. On the synthetic chains C3 is the only
    arm that reaches a perfect score (49/49).
 3. **The archive bounds the ceiling, not the projection.** Every strategy that can read
    the archive converges toward it; the remaining differences are about how efficiently
@@ -150,7 +156,7 @@ because both can reach most of what the archive holds. Three findings:
 > session id. With all three fixed the effect is large and consistent in direction for
 > every strategy.
 
-## Does C's search need adjusting, and is Codex's search better?
+## Does C3's search need adjusting, and is Codex's search better?
 
 Two questions the open-book results invite, both answerable from the stored runs.
 
@@ -158,16 +164,16 @@ Two questions the open-book results invite, both answerable from the stored runs
 
 | Strategy | Fields gained | Lookups | Data read | KB per field | Fields per lookup |
 |---|---:|---:|---:|---:|---:|
-| **C** | 39 | 48 | 0.20 MB | **4.9** | **0.81** |
+| **C3** | 39 | 48 | 0.20 MB | **4.9** | **0.81** |
 | Codex | 51 | 113 | 2.66 MB | 50.9 | 0.45 |
 
 C recovers a field for every 4.9 KB it reads; Codex needs 50.9 KB, and twice as many
-lookups per field. By that measure **C's interface is roughly ten times more
+lookups per field. By that measure **C3's interface is roughly ten times more
 byte-efficient**, which is what an evidence index pointing at the records worth reading
 should do.
 
 Codex's 2-point lead comes from a single behavioural difference, not a better tool. On
-three probes C made **no tool call at all** — it answered straight from its projection —
+three probes C3 made **no tool call at all** — it answered straight from its projection —
 and lost exactly the values its projection was missing:
 
 | Probe | C closed | C open | C lookups | Codex open | Codex lookups |
@@ -179,9 +185,9 @@ and lost exactly the values its projection was missing:
 Those three probes are the entire gap. **What is worth borrowing from Codex is therefore
 not its interface but its willingness to look things up** — and that willingness comes
 from having little choice: a 1.2 K-token projection cannot answer without searching,
-where C's 8.5 K-token projection often can.
+where C3's 8.5 K-token projection often can.
 
-Where C *does* search, it recovers the gap exactly: on 13 of 18 probes the gain equals
+Where C3 *does* search, it recovers the gap exactly: on 13 of 18 probes the gain equals
 the number of values its projection was missing (`+3` of a gap of 3, and so on).
 
 ### Restricting search to tool records: smaller saving than expected
@@ -221,11 +227,11 @@ conversation as ordinary turns, so nothing is warm):
 
 | Strategy | Summaries | Mean cost | Mean input tokens |
 |---|---:|---:|---:|
-| C | 15 | ¥0.1173 | 73 539 |
+| C3 | 15 | ¥0.1173 | 73 539 |
 | Codex | 18 | ¥0.0286 | 7 079 |
 | OpenCode | 19 | ¥0.0256 | 7 352 |
 
-The cold figures understate C and overstate nothing: C reads the **whole live
+The cold figures understate C3 and overstate nothing: C3 reads the **whole live
 conversation** (67 K tokens on average, up to 128 K) while Codex and OpenCode summarise a
 bounded slice (≈7 K). Cold, reading the whole conversation is expensive; **warm, it is
 the cheapest of the three**, because the prefix was already paid for by the turns that
@@ -233,10 +239,10 @@ produced it — the 99.8 % cache hit above turns a 212 911-token read into ¥0.0
 ¥0.0286 for a 7 K-token *cold* summary.
 
 A real session's summary is always issued warm, since the conversation it summarises has
-just been sent. **The production cost of C's compaction is therefore the cached figure,
+just been sent. **The production cost of C3's compaction is therefore the cached figure,
 not the ¥0.1173 in the table above**, which is a driver artefact.
 
-## What is inside a C projection
+## What is inside a C3 projection
 
 The ~11 K-token projection is not one block. Measured across all 18 boundaries, split
 exactly by reconstructing each part from the committed checkpoint (no model calls):
@@ -262,17 +268,17 @@ real sessions carry a much larger recent tail, because their records are finer-g
 1582 records for one session means proportionally more of it falls inside the retained
 window.
 
-## Ablation: C with the model summary removed
+## Ablation: C3 with the model summary removed
 
-C's projection is four parts, and the summary is the only one that costs a model call.
+C3's projection is four parts, and the summary is the only one that costs a model call.
 Removing it (deterministic evidence index only, no provider involved) isolates what it is
 worth. Both arms use the identical production code path; the ablation simply passes no
 provider.
 
 | Arm | Closed | Open | Mean lookups (open) | Summary cost |
 |---|---:|---:|---:|---:|
-| **C** (with summary) | 129/178 | **168/178** | 2.67 | ¥0.1173 per compaction cold |
-| **C without summary** | **129/178** | 162/178 | 2.22 | **¥0** |
+| **C3** (runtime default) | 129/178 | **168/178** | 2.67 | ¥0.1173 per compaction cold |
+| **C** (deterministic only) | **129/178** | 162/178 | 2.22 | **¥0** |
 
 **Closed book the two are identical — every one of the 18 probes scores the same.** Open
 book the summary is worth **+6**.
@@ -304,7 +310,7 @@ copy beside an exact one contributes nothing.
 The 6-point gain is not an information gain. On all six probes where the arms differ, the
 arm that made **more lookups** scored exactly **3 fields higher**:
 
-| Probe | C | C without summary | Δ | C lookups | No-summary lookups |
+| Probe | C3 | C (no summary) | Δ | C3 lookups | C lookups |
 |---|---:|---:|---:|---:|---:|
 | pipeline s3 | 6/6 | 3/6 | **+3** | **2** | 1 |
 | real-stream s1 | 16/17 | 13/17 | **+3** | **4** | 1 |
@@ -336,7 +342,7 @@ means **the summary's measured value is a prompt effect, not a retention effect.
 
 ### Does the summary earn its cost when the originals are dropped?
 
-The exams above all ran where C retained every assistant block, which makes the summary
+The exams above all ran where C3 retained every assistant block, which makes the summary
 redundant by construction. This test creates the condition where a summary could matter:
 compress hard enough that originals must be dropped, then see whether it preserves them.
 
@@ -362,8 +368,8 @@ exact containment — no judge — across the three real sessions at two windows
 
 | Arm | Dropped values | Recovered | Rate |
 |---|---:|---:|---:|
-| C (with summary) | 257 | **1** | **0.4 %** |
-| C (without summary) | 252 | **1** | **0.4 %** |
+| C3 (runtime default) | 257 | **1** | **0.4 %** |
+| C (deterministic only) | 252 | **1** | **0.4 %** |
 
 **Identical, and both are zero in practice.** The two arms also drop almost the same number
 of values (257 against 252), which is the subset result again seen from another direction:
@@ -387,7 +393,7 @@ Three independent measurements agree:
 | Compression pressure (32 K–4 K) | summary preserves **1** of 93–154 dropped blocks |
 | Generation of dropped values | **0.4 %** recovered, identical with and without the summary |
 
-**C's model summary does not contribute content on any measurement available here.** It
+**C3's model summary does not contribute content on any measurement available here.** It
 retains nothing the projection lacks, and it does not preserve what the projection drops
 when compression pressure forces material out. Its one measured effect is behavioural: in
 the open-book condition it induces the model to search, worth +6.
@@ -422,7 +428,7 @@ the arm labels shuffled.
 
 **The result moved with the sample size, and then stopped meaning anything.**
 
-| Sample | C (with summary) | C (without summary) | Paired |
+| Sample | C3 | C (no summary) | Paired |
 |---|---:|---:|---|
 | 18 questions | **1.61** | 1.39 | summary 9, no-summary 6, tie 3 |
 | 27 questions (all eligible) | 1.19 | **1.37** | summary 10, no-summary 11, tie 6 |
@@ -485,8 +491,8 @@ produce a non-empty prose answer and none contains tool markup.
 
 | Arm | Content recall | Content F1 | Referent recall | Chars |
 |---|---:|---:|---:|---:|
-| C (with summary) | **0.199** | 0.146 | **0.242** | 2 208 |
-| C (without summary) | 0.182 | 0.142 | 0.216 | 2 270 |
+| C3 | **0.199** | 0.146 | **0.242** | 2 208 |
+| C | 0.182 | 0.142 | 0.216 | 2 270 |
 
 | | |
 |---|---:|
@@ -522,7 +528,7 @@ This is a fair challenge to the result, and the exam's own composition answers i
 
 ### Where the exam's values actually live
 
-| Source | Items | Share | In C | In Codex | In OpenCode |
+| Source | Items | Share | In C3 | In Codex | In OpenCode |
 |---|---:|---:|---:|---:|---:|
 | tool result | **120** | **67.4 %** | **72/120** | 62/120 | 43/120 |
 | assistant text | 44 | 24.7 % | **44/44** | 43/44 | 32/44 |
@@ -532,11 +538,11 @@ This is a fair challenge to the result, and the exam's own composition answers i
 Three conclusions, and one of them corrects the premise:
 
 1. **On assistant-sourced items C and Codex are effectively tied: 44/44 against 43/44.**
-   C's verbatim retention of assistant prose is perfect, but Codex's whole-history
+   C3's verbatim retention of assistant prose is perfect, but Codex's whole-history
    summary recovered almost every one of those 44 values anyway. So the exam cannot
-   reward C's advantage here — not because the advantage is absent, but because Codex
+   reward C3's advantage here — not because the advantage is absent, but because Codex
    does not lose those facts in the first place.
-2. **C's actual lead comes from tool results: 72 against 62.** That is the deterministic
+2. **C3's actual lead comes from tool results: 72 against 62.** That is the deterministic
    evidence index doing the work, and it is where the +10 over Codex originates.
 3. **The exam is 67 % tool-sourced.** Only a quarter of its items can distinguish the
    two strategies on assistant content, and on those they tie.
@@ -576,7 +582,7 @@ real workloads measured, not a universal one.
   agent can resume the work.
 * **Synthetic fixtures are tool-heavy.** They reward carrying tool evidence; the real
   sessions are where the strategies separate.
-* **Window sensitivity.** C's protected-original budget scales with the context window,
+* **Window sensitivity.** C3's protected-original budget scales with the context window,
   and containment saturates at 128 K (measured: 65 % at 32 K, 79 % at 128 K, unchanged at
   256 K and 1 M). The production window comes from the model registry — the `128000`
   constant in `models/future.rs` is only the fallback for a model that declares none.
