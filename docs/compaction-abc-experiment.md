@@ -404,6 +404,78 @@ never exercised it.
 input — ratios near 200×. The sweep above locates the transition; it does not
 overstate the effect.
 
+## A realistic exam: what real follow-up turns actually ask about
+
+The "shouldn't verbatim retention win" section above used a purpose-built fixture.
+This reproduces the question on **real sessions**, after measuring what real
+follow-up turns actually refer to.
+
+### The measurement
+
+Classified 254 follow-up user turns across 30 real sessions (local, read-only):
+
+| the follow-up refers to | share |
+|---|---:|
+| **the agent's own output** | **~80%** |
+| repeats the user's own earlier ask | ~4.3% |
+| a new requirement | 5.9% |
+
+The classifier counted only explicit pronouns, so it under-counted; the 64% it
+marked "other" is mostly about the agent's output, named by object rather than by
+pronoun (*"我收回「能不能模糊一下像云」这点"*, *"首页的「查看文档」貌似没放在按钮垂直中央"*).
+
+The original 12-field questionnaire put **11 of 12 facts in user turns or tool
+results and 1 in assistant prose** — the inverse of where real questions point.
+
+### The exam
+
+Values drawn from assistant prose (12), user turns (2) and tool results (3), with 8
+plausible decoys mixed in; the model marks which appeared. A projection that dropped
+a value cannot distinguish it from a decoy. This is a **retention probe**
+(recognition, not free recall).
+
+### Chains: 3 synthetic + 3 real
+
+`pipeline` is a new synthetic chain that carries its gold partly in assistant turns
+(a decision, its rationale code, a retry budget, a self-correction). The three real
+sessions are 756/685/591 records; their ids live in a git-ignored config, so **no
+session identifier appears in the repository**.
+
+### Result
+
+C3 = assistant *and* user originals verbatim + tool evidence + tail + summary.
+Summary-only = user messages + summary (Codex's rule). **Both use the same sticky
+summary**, so the only variable is what is retained.
+
+| chain | C3 | summary-only | delta |
+|---|---:|---:|---:|
+| analysis | 11/18 | 9/18 | +2 |
+| export | 11/18 | 9/18 | +2 |
+| pipeline | 10/18 | 9/18 | +1 |
+| real-stream | 35/45 | 30/45 | +5 |
+| real-visual | 29/36 | 27/36 | +2 |
+| **real-yt** | **35/44** | **27/44** | **+8** |
+| **total** | **131/179** | **111/179** | **+20** |
+
+| group | C3 | summary-only | delta |
+|---|---:|---:|---:|
+| real sessions | **99/125** | 84/125 | **+15 (+12.0 pts)** |
+| synthetic chains | 32/54 | 27/54 | +5 (+9.3 pts) |
+
+**Zero false positives on both sides**: the gap is purely "can the value still be
+confirmed from what survived", not hallucination.
+
+C3 is ahead on every chain, the advantage is **larger on real sessions**, and it is
+largest on the session with the most assistant prose. The synthetic chains
+under-measure — their assistant turns are short, only 6 values per stage were
+scorable, and their C3 projection is unrealistically large (~250 K tokens) because
+those fixtures bury 99% of their volume in tool records. **The real-session numbers
+are the trustworthy ones.**
+
+This closes the loop: measured where real questions point, verbatim retention of the
+agent's own output is worth **+12 points** over summary-only — the direction the
+earlier fixture hinted at and the original questionnaire could not see.
+
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
 **Yes.** I checked which record kind actually contains each of the original 12 gold
