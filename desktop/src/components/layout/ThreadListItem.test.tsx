@@ -66,8 +66,12 @@ describe("thread row title space", () => {
       expect(expander !== null).toBe(hasChildren);
       if (expander) {
         expect(title.previousElementSibling).toBe(expander);
-        expect(expander.classList.contains("absolute")).toBe(compact);
-        expect(expander.style.left).toBe(compact ? `${8 + depth * 16}px` : "");
+        // The expander always sits inline in the row's own content flow, for
+        // workspace (compact) rows too: an absolutely placed workspace expander
+        // landed in the exact column of the workspace group's collapse chevron.
+        expect(expander.classList.contains("absolute")).toBe(false);
+        expect(expander.classList.contains("relative")).toBe(true);
+        expect(expander.style.left).toBe("");
         act(() => expander.click());
         expect(p.onToggleExpanded).toHaveBeenCalledWith(p.thread);
         expect(p.onSelectThread).not.toHaveBeenCalled();

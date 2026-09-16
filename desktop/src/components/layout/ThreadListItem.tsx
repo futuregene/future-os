@@ -108,9 +108,10 @@ function ThreadListItemImpl({
         compact ? "h-7" : "h-8",
         active && "bg-surface-subtle text-ink",
       )}
-      // Non-workspace rows (chat + pinned) get a gutter of their own: their
-      // titles carry no leading chevron, so the row padding is the only thing
-      // separating the text from the highlight's left edge — 8px read as flush.
+      // Workspace rows start past the group header's own chevron (28px = the
+      // header's folder icon), so a row's expand chevron can never land in the
+      // group's collapse column. Non-workspace rows (chat + pinned) get a 16px
+      // gutter of their own — 8px read as flush against the highlight's edge.
       style={{ paddingLeft: (compact ? 28 : 16) + depth * 16 }}
       // Right-click anywhere on the row opens the same actions menu as the
       // `...` button.
@@ -135,13 +136,12 @@ function ThreadListItemImpl({
             <button
               aria-expanded={expanded}
               aria-label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
-              className={cn(
-                "z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft",
-                compact ? "absolute top-1/2 -translate-y-1/2" : "relative",
-              )}
-              // Workspace rows already have a gutter; reuse it rather than
-              // consuming another column of title space.
-              style={compact ? { left: 8 + depth * 16 } : undefined}
+              // Always inline in the row's own content flow — same placement as
+              // chat/pinned rows. Absolutely placing it in the row's left gutter
+              // (as workspace rows did) pinned it to the exact column of the
+              // workspace group's own collapse chevron, so a conversation with
+              // sub-conversations read as a second "collapse workspace" toggle.
+              className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
               onClick={() => onToggleExpanded?.(thread)}
               type="button"
             >
