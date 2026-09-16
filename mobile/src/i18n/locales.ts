@@ -279,10 +279,11 @@ export const resources = {
         readFailed: "Read failed",
         writeFailed: "Write failed",
         editFailed: "Edit failed",
-        // A folded run's counts, and the short verbs they are counted under.
-        // Deliberately not the "Ran a command" forms above: several stack on
-        // one line, and a stack of sentences is what made the line unreadable.
+        // Folded summary: a glyph per kind plus this count — the wording below
+        // is spent on the row's accessibility label, not painted.
+        stepCount: "×{{count}}",
         stepSummary: "{{action}} {{count}}×",
+        stepTool: "Tool calls",
         stepThink: "Thought",
         stepRun: "Ran",
         stepRead: "Read",
@@ -796,9 +797,11 @@ export const resources = {
         readFailed: "读取失败",
         writeFailed: "写入失败",
         editFailed: "编辑失败",
-        // 折叠行的计数文案：动作词用短动词，不再重复“已…”，多个种类叠在一行时
-        // 才读得下去（“运行 5 次 · 思考 3 次”而不是“已运行 5 次 · 已思考 3 次”）。
+        // 折叠摘要：图标 + 次数。下面这些文字只用于无障碍标签，不画在界面上；
+        // 展开后的批次行用短动词（步骤下方的 stepRun/stepRead 等）。
+        stepCount: "×{{count}}",
         stepSummary: "{{action}} {{count}} 次",
+        stepTool: "工具调用",
         stepThink: "思考",
         stepRun: "运行",
         stepRead: "读取",
