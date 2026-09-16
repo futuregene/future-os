@@ -6,6 +6,7 @@ export {
   appendUserMessage,
   applyStreamEvent,
   applyStreamEvents,
+  createStreamEventBatch,
   applyReplayEvents,
   commitAcknowledgedUserMessage,
   emptyTimeline,

@@ -70,8 +70,8 @@ test("a live burst yields to navigation and stops projecting after the session i
         .filter(item => item.kind === "message" && item.role === "assistant")
         .map(item => item.kind === "message" ? item.text : "").join("");
       visible = "";
-    }, 16);
-    await jest.advanceTimersByTimeAsync(16);
+    }, 80);
+    await jest.advanceTimersByTimeAsync(80);
     expect(textAtBack.length).toBeGreaterThan(0);
     expect(textAtBack.length).toBeLessThanOrEqual(64);
     const countAtBack = commits.mock.calls.length;
@@ -107,6 +107,37 @@ test("yielded live batches retain event order, duplicate filtering, terminal eve
     expect(mutation.mock.calls[0]![0].items.at(-1)).toMatchObject({ text: parts.join("") });
     expect(mutation.mock.calls[0]![0].streaming).toBe(false);
     expect(engine.cursorFor("s").get("r")?.highWater).toBe(201);
+  } finally { engine.clear(); }
+});
+
+test("text commits are capped near 12.5Hz but terminal state bypasses the cadence", async () => {
+  const engine = new SyncEngine({
+    requestGetState: async () => ({}), requestHistory: async () => history("prompt"),
+    fetchReplay: async () => ({ events: [] }),
+  });
+  const commits = jest.fn();
+  engine.subscribe(commits);
+  try {
+    await engine.open("s");
+    await jest.advanceTimersByTimeAsync(0);
+    engine.event("s", { type: "agent_start", runId: "r", idx: 0, data: "{}" });
+    await jest.advanceTimersByTimeAsync(0);
+    commits.mockClear();
+    for (let idx = 1; idx <= 100; idx++) {
+      engine.event("s", { type: "text_chunk", runId: "r", idx, data: '{"text":"x"}' });
+      await jest.advanceTimersByTimeAsync(10);
+    }
+    expect(commits.mock.calls.length).toBeGreaterThanOrEqual(10);
+    expect(commits.mock.calls.length).toBeLessThanOrEqual(13);
+    engine.event("s", { type: "approval_request", runId: "r", idx: 101, data: '{"approval_request_id":"a","tool_name":"shell"}' });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(engine.timelineFor("s")!.items.some(item => item.kind === "approval")).toBe(true);
+    engine.event("s", { type: "agent_end", runId: "r", idx: 102, data: "{}" });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(engine.streamingFor("s")).toBe(false);
+    expect(engine.timelineFor("s")!.items.find(item => item.kind === "message" && item.role === "assistant"))
+      .toMatchObject({ text: "x".repeat(100) });
+    expect(engine.cursorFor("s").get("r")?.highWater).toBe(102);
   } finally { engine.clear(); }
 });
 

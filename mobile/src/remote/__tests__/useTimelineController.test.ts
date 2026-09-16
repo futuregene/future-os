@@ -1,4 +1,5 @@
 import { createElement } from "react";
+import { AppState } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { applyStreamEvent, applyStreamEvents, commitAcknowledgedUserMessage, emptyTimeline } from "../timeline";
@@ -113,6 +114,39 @@ describe("useTimelineController", () => {
     });
     await flush();
   }
+
+  test("background grace stops projection and foreground recovery restores missed text", async () => {
+    jest.useFakeTimers();
+    const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;
+    const setActivity = (value: string) => Object.defineProperty(AppState, "currentState", { configurable: true, value });
+    setActivity("active");
+    const events = [evt("agent_start", "{}", "r", 0), evt("text_chunk", '{"text":"prefix"}', "r", 1)];
+    request.mockImplementation(async (command: { type: string; sinceIdx?: number }) => ({ data:
+      command.type === "get_state" ? { activeRun: { runId: "r" } }
+        : command.type === "get_session_entries" ? { entries: [] }
+          : { events: events.filter(event => event.idx! > (command.sinceIdx ?? -1)) },
+    }));
+    options.selectedSessionId = "s1";
+    try {
+      render();
+      await establish();
+      const before = result.current.timeline;
+      setActivity("background");
+      const tail = evt("text_chunk", '{"text":" while hidden"}', "r", 2);
+      events.push(tail);
+      act(() => result.current.handleEvent(tail, "s1"));
+      await act(async () => { await jest.advanceTimersByTimeAsync(1000); });
+      expect(result.current.timeline).toBe(before);
+      const reads = request.mock.calls.length;
+      act(() => result.current.reconcileSession("s1", "reconnect"));
+      await flush();
+      expect(request).toHaveBeenCalledTimes(reads);
+      setActivity("active");
+      act(() => result.current.reconcileSession("s1", "reconnect"));
+      await flush();
+      expect(result.current.timeline.items.at(-1)).toMatchObject({ text: "prefix while hidden" });
+    } finally { Object.defineProperty(AppState, "currentState", originalActivity); jest.useRealTimers(); }
+  });
 
   test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
     request.mockImplementation(

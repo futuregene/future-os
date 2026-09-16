@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
 import { fetchEventsSince } from "./replay";
 import { requestReadPage } from "./readPages";
@@ -281,7 +282,7 @@ export function useTimelineController({
         }
         return;
       }
-      if (sid !== selectedRef.current) {
+      if (sid !== selectedRef.current || AppState.currentState === "background") {
         // Background conversations need catalog/unread/approval status, not
         // token projection or eager history/replay. Opening reloads durable
         // history and the active prefix, including any deferred approvals.
@@ -569,7 +570,10 @@ export function useTimelineController({
 
   useEffect(() => {
     const engine = new SyncEngine({
-      isSessionVisible: (sessionId) => sessionId === selectedRef.current,
+      // The connection has a background grace period for pickers/quick app
+      // switches, but there is no reason to project invisible text during it.
+      // Foreground recovery already reconciles the missed durable suffix.
+      isSessionVisible: (sessionId) => sessionId === selectedRef.current && AppState.currentState !== "background",
       requestGetState: async (sessionId) => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");

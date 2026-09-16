@@ -17,7 +17,7 @@ import {
 import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
 import {
   approvalCommand,
@@ -64,8 +64,17 @@ function RunIndicator({ startedAt }: { startedAt?: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!startedAt) return;
-    const timer = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const updateActivity = (state: string | null) => {
+      clearInterval(timer);
+      if (state !== null && state !== "active") return;
+      // The label only displays whole seconds. Do not wake twice per second
+      // or keep its timer alive while the app is backgrounded.
+      timer = setInterval(() => setNow(Date.now()), 1000);
+    };
+    updateActivity(AppState.currentState);
+    const subscription = AppState.addEventListener("change", updateActivity);
+    return () => { clearInterval(timer); subscription.remove(); };
   }, [startedAt]);
   return (
     <View style={styles.runIndicator}>
@@ -862,7 +871,7 @@ function TimelineCardView({
                   <SegmentBlock
                     key={block.segment.id}
                     segment={block.segment}
-                    streaming={item.streaming}
+                    streaming={item.streaming && block.segment === item.segments?.at(-1)}
                     onOpenFile={onOpenFile}
                   />
                 ),
