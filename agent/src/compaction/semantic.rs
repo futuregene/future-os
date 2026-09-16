@@ -865,6 +865,7 @@ async fn call_summary_model_with_messages(
     system_prompt: &str,
     mut messages: Vec<AgentMessage>,
     instruction: String,
+    tools: Vec<crate::types::ToolDef>,
     interrupted: &AtomicBool,
     max_output_tokens: i32,
     on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
@@ -877,10 +878,12 @@ async fn call_summary_model_with_messages(
     call_summary_request(
         provider,
         move || ModelRequest {
+            // The same tools as the agent turn: they are part of the cached prefix,
+            // and omitting them is what stopped the summary from being cache-served.
             model: model.to_string(),
             system_prompt: system_prompt.clone(),
             messages: messages.clone(),
-            tools: Vec::new(),
+            tools: tools.clone(),
         },
         interrupted,
         max_output_tokens,

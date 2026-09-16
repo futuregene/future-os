@@ -669,6 +669,32 @@ impl ServerSession {
             model: current_model,
             ..manager
         };
+        // Charge the session for the summary request. The compaction is synchronous here
+        // and the caller only receives an acknowledgement, so the cost is folded into the
+        // session's cumulative counters as it is incurred rather than reported per event.
+        let summary_usage: Arc<parking_lot::Mutex<Option<crate::types::Usage>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let record_summary_usage = {
+            let usage = summary_usage.clone();
+            let tokens_in = self.tokens_in.clone();
+            let tokens_out = self.tokens_out.clone();
+            let cache_r = self.tokens_cache_r.clone();
+            let cache_w = self.tokens_cache_w.clone();
+            move |reported: &crate::types::Usage| {
+                use std::sync::atomic::Ordering;
+                tokens_in.fetch_add(reported.prompt_tokens, Ordering::Relaxed);
+                tokens_out.fetch_add(reported.completion_tokens, Ordering::Relaxed);
+                if let Some(read) = reported.cache_read_tokens {
+                    cache_r.fetch_add(read, Ordering::Relaxed);
+                }
+                if let Some(write) = reported.cache_write_tokens {
+                    cache_w.fetch_add(write, Ordering::Relaxed);
+                }
+                // Providers send progressive cost; keep only the final chunk.
+                *usage.lock() = Some(reported.clone());
+            }
+        };
+
         // Summarised compaction: C's projection plus a sticky handoff summary, so a
         // user-initiated compaction gets the same retention as an automatic one. The
         // system prompt is passed through so the summary request reuses the prefix the
@@ -696,10 +722,37 @@ impl ServerSession {
             &operation_id,
             Some(provider.as_ref()),
             Some(budget_system.as_str()),
+            &tool_defs,
+            Some(&record_summary_usage),
             None,
         )
         .await
         .map_err(anyhow::Error::from);
+
+        // Account for the summary request exactly as a model call is accounted for.
+        // The usage is always reported, even when it prices at zero (an unpriced
+        // model, or a provider that reports no credit_cost), so the request is never
+        // invisible; only the cost is conditional.
+        if let Some(usage) = summary_usage.lock().clone() {
+            let cost = usage.credit_cost.unwrap_or_else(|| {
+                crate::agent::estimate_usage_cost_with(
+                    Some(&self.model_registry),
+                    &self.model,
+                    &usage,
+                )
+            });
+            if cost > 0.0 {
+                *self.cumulative_cost.lock() += cost;
+            }
+            tracing::info!(
+                cost,
+                input = usage.prompt_tokens,
+                output = usage.completion_tokens,
+                cache_read = usage.cache_read_tokens.unwrap_or(0),
+                cache_write = usage.cache_write_tokens.unwrap_or(0),
+                "charged a manual compaction summary"
+            );
+        }
         let (prepared, ticket) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -3138,7 +3191,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_c_compaction_preserves_existing_usage_without_model_charges() {
+    fn manual_compaction_charges_the_summary_to_the_session() {
         let mut session = make_test_session("manual-summary-usage");
         session
             .tokens_in
@@ -3175,16 +3228,22 @@ mod tests {
             .unwrap();
         *session.messages.write() = messages;
         session.compact("").unwrap();
+        // The summary is a model request, so it is billed to the session on top of
+        // whatever the session had already spent (the provider reports 100 in, 20 out
+        // and 0.125 credit per call). Reporting zero here would hide the real cost.
         assert_eq!(
             session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
-            100
+            200,
+            "the summary request's input tokens must be charged"
         );
         assert_eq!(
             session
                 .tokens_out
                 .load(std::sync::atomic::Ordering::Relaxed),
-            20
+            40,
+            "the summary request's output tokens must be charged"
         );
+        assert_eq!(*session.cumulative_cost.lock(), 0.25);
         let stored = session.session_manager.load(&session.session_id).unwrap();
         let info = stored
             .entries

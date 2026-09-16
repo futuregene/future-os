@@ -287,6 +287,8 @@ impl ContextManager {
         on_started: Option<&(dyn Fn() + Sync)>,
         provider: Option<&dyn crate::types::LLMProvider>,
         system_prompt: Option<&str>,
+        tools: &[crate::types::ToolDef],
+        on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
         on_fallback: Option<&(dyn Fn(&str) + Sync)>,
     ) -> Result<ContextPreparation, ContextError> {
         semantic::evidence::prepare_with_sticky_summary(
@@ -300,6 +302,8 @@ impl ContextManager {
             on_started,
             provider,
             system_prompt,
+            tools,
+            on_usage,
             on_fallback,
         )
         .await

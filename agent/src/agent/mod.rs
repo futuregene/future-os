@@ -3,10 +3,12 @@
 mod events;
 mod history_recall;
 mod run_loop;
+
 use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
 use anyhow::{anyhow, Result};
 pub use events::RunEvent;
 use parking_lot::Mutex;
+pub(crate) use run_loop::estimate_usage_cost_with;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

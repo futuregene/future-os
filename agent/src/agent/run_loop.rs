@@ -361,6 +361,32 @@ impl Loop {
                     && active_checkpoint.is_some()
                     && tool_defs.iter().any(|tool| tool.function.name == "shell"),
             );
+            // The summary request is billed to the session, but it is not the user's
+            // turn: `last_prompt_tokens` drives the compaction threshold and must keep
+            // describing the conversation the agent actually sent.
+            let compaction_summary_usage: std::sync::Arc<
+                parking_lot::Mutex<Option<crate::types::Usage>>,
+            > = std::sync::Arc::new(parking_lot::Mutex::new(None));
+            let record_summary_usage = {
+                let usage = compaction_summary_usage.clone();
+                let input = self.cumulative_input_tokens.clone();
+                let output = self.cumulative_output_tokens.clone();
+                let cache_read = self.cumulative_cache_read_tokens.clone();
+                let cache_write = self.cumulative_cache_write_tokens.clone();
+                move |reported: &crate::types::Usage| {
+                    use std::sync::atomic::Ordering;
+                    input.fetch_add(reported.prompt_tokens, Ordering::Relaxed);
+                    output.fetch_add(reported.completion_tokens, Ordering::Relaxed);
+                    if let Some(read) = reported.cache_read_tokens {
+                        cache_read.fetch_add(read, Ordering::Relaxed);
+                    }
+                    if let Some(write) = reported.cache_write_tokens {
+                        cache_write.fetch_add(write, Ordering::Relaxed);
+                    }
+                    // Keep only the final chunk: providers send progressive cost.
+                    *usage.lock() = Some(reported.clone());
+                }
+            };
             let mut compaction_ticket = None;
             let prepared = if let Some(manager) = &context_manager {
                 if provider_limit_checkpoint_id.is_some() {
@@ -384,6 +410,8 @@ impl Loop {
                         &automatic_operation_id,
                         Some(self.provider.as_ref()),
                         Some(compaction_system_prompt.as_ref()),
+                        &tool_defs,
+                        Some(&record_summary_usage),
                         None,
                     )
                     .await
@@ -639,6 +667,8 @@ impl Loop {
                                 &provider_limit_operation_id,
                                 Some(self.provider.as_ref()),
                                 Some(compaction_system_prompt.as_ref()),
+                                &tool_defs,
+                                Some(&record_summary_usage),
                                 None,
                             )
                             .await
@@ -1118,6 +1148,26 @@ impl Loop {
                 }
             }
 
+            // Charge the compaction summary once, the same way a model call is
+            // charged: from the final usage chunk, never per progressive chunk.
+            if let Some(summary_usage) = compaction_summary_usage.lock().clone() {
+                let cost = summary_usage
+                    .credit_cost
+                    .unwrap_or_else(|| self.estimate_usage_cost(&summary_usage));
+                if cost > 0.0 {
+                    *self.cumulative_cost.lock() += cost;
+                }
+                // Always reported: a zero-priced summary must not look like no request.
+                tracing::info!(
+                    cost,
+                    input = summary_usage.prompt_tokens,
+                    output = summary_usage.completion_tokens,
+                    cache_read = summary_usage.cache_read_tokens.unwrap_or(0),
+                    cache_write = summary_usage.cache_write_tokens.unwrap_or(0),
+                    "charged a compaction summary"
+                );
+            }
+
             // Apply this LLM call's final cost to cumulative_cost, once per
             // call (total_usage holds the LAST complete usage chunk — adding
             // every intermediate chunk would inflate the total N×). Future
@@ -1587,20 +1637,27 @@ impl Loop {
         } else {
             self.model_ref.as_str()
         };
-        let Some(model) = self
-            .model_registry
-            .as_ref()
-            .and_then(|registry| registry.read().resolve(model_ref))
-        else {
-            return 0.0;
-        };
-        model.cost.estimate(
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            usage.cache_read_tokens.unwrap_or(0),
-            usage.cache_write_tokens.unwrap_or(0),
-        )
+        estimate_usage_cost_with(self.model_registry.as_ref(), model_ref, usage)
     }
+}
+
+/// Estimate a request's cost from the model's per-1M-token prices, for providers
+/// that do not report an authoritative `credit_cost`. Shared so auxiliary requests
+/// (a compaction summary, for example) are priced exactly like a model call.
+pub(crate) fn estimate_usage_cost_with(
+    registry: Option<&std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>>,
+    model_ref: &str,
+    usage: &crate::types::Usage,
+) -> f64 {
+    let Some(model) = registry.and_then(|registry| registry.read().resolve(model_ref)) else {
+        return 0.0;
+    };
+    model.cost.estimate(
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.cache_read_tokens.unwrap_or(0),
+        usage.cache_write_tokens.unwrap_or(0),
+    )
 }
 
 /// Merge a repeated tool-input start (same tool id at the same stream index)

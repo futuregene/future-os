@@ -68,6 +68,8 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
                     "first",
                     None,
                     None,
+                    &[],
+                    None,
                     None,
                 ))
         }
@@ -89,6 +91,8 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
             Some(&journal),
             "concurrent",
             None,
+            None,
+            &[],
             None,
             None,
         ));
@@ -133,6 +137,8 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
             Some(&journal),
             "restart",
             None,
+            None,
+            &[],
             None,
             None,
         ))

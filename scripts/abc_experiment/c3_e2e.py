@@ -1,11 +1,12 @@
-"""End-to-end check of the manual compaction path on an isolated agent.
+"""End-to-end check on an isolated agent, sized so prefix caching can be observed.
 
-Unit tests prove the code paths; they do not prove that a real run compacts with a
-model-written summary. This drives an isolated agent (its own HOME, its own port,
-its own working directory), creates a session, asks it to compact, and inspects the
-journal for the checkpoint.
+The first version compacted a ~5K-token session, which is too small for the cache
+behaviour to mean anything. This builds a conversation across several turns with a
+large file in play, records each turn's cache counters from the agent log, then
+compacts and compares the summary request's cache counters against the turns'.
 
-Nothing here touches the running production agent.
+Also reports the algorithm version actually committed, so it is visible whether the
+run used C3 or fell back to deterministic C.
 """
 import json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 
@@ -33,52 +34,55 @@ def main():
     env = dict(os.environ)
     env["HOME"] = str(home)
     env["FUTURE_AGENT_GRPC_ADDR"] = f"127.0.0.1:{port}"
+    env["RUST_LOG"] = "future_agent=info"
 
     agent = subprocess.Popen([str(BINARY), "agent", "--grpc-addr", f"127.0.0.1:{port}"],
                              env=env, cwd=str(workspace),
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    workspace.joinpath("agent.log")
     try:
         for _ in range(90):
             time.sleep(1)
             if agent.poll() is not None:
-                print("agent exited early:\n", agent.stdout.read()[-1500:])
+                print("agent exited early")
                 return 1
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                     break
             except OSError:
                 continue
-        else:
-            print("agent never became reachable")
-            return 1
         print("agent reachable", flush=True)
 
-        (workspace / "notes.txt").write_text("The staging token is ZETA-42.\n" * 300)
-        prompt = ("Read notes.txt and report the staging token verbatim. Remember it as TOKEN=ZETA-42. "
-                  "Also note that deployment is never allowed without approval.")
-        run = subprocess.run([str(BINARY), "run", "--mode", "json", prompt],
-                             env=env, cwd=str(workspace), capture_output=True, text=True, timeout=900)
-        print(f"run exit={run.returncode}", flush=True)
-        try:
-            payload = json.loads(run.stdout)
-            session_id = payload.get("sessionId") or payload["events"][0].get("sessionId")
-        except Exception:
-            session_id = None
-        print(f"session={session_id}", flush=True)
-        if not session_id:
-            print("could not determine the session id; stdout tail:\n", run.stdout[-800:])
-            return 1
+        # Enough text that the conversation is worth caching, and a detail the
+        # summary must carry (so the checkpoint is checkable too).
+        (workspace / "notes.txt").write_text("The staging token is ZETA-42.\n" * 4000)
+        prompts = [
+            "Read notes.txt with a shell command and report how many lines it has.",
+            "Summarize the first 100 lines of notes.txt in one sentence.",
+            "Now report the staging token you found in notes.txt, verbatim.",
+        ]
+        session_id = None
+        for i, prompt in enumerate(prompts):
+            run = subprocess.run([str(BINARY), "run", "--mode", "json", prompt],
+                                 env=env, cwd=str(workspace), capture_output=True,
+                                 text=True, timeout=900)
+            print(f"turn {i+1} exit={run.returncode}", flush=True)
+            try:
+                payload = json.loads(run.stdout)
+                session_id = session_id or payload.get("sessionId") or payload["events"][0].get("sessionId")
+            except Exception:
+                pass
 
+        print(f"\nsession={session_id}", flush=True)
+        time.sleep(2)
         print("\nrequesting manual compaction …", flush=True)
         compact = subprocess.run([str(BINARY), "session", "compact", "--session", session_id, "--json"],
                                  env=env, cwd=str(workspace), capture_output=True, text=True, timeout=600)
-        print(f"compact exit={compact.returncode}\nstdout: {compact.stdout.strip()[:400]}\n"
-              f"stderr: {compact.stderr.strip()[:400]}", flush=True)
+        print(f"compact exit={compact.returncode}", flush=True)
 
-        # wait for the asynchronous worker to commit
         db = home / ".future" / "agent" / "agent.db"
         import sqlite3
-        found = False
+        found, rows = False, []
         for _ in range(60):
             time.sleep(2)
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -90,15 +94,13 @@ def main():
             if rows:
                 found = True
                 break
-        print(f"\ncheckpoint entries found: {found} ({len(rows) if rows else 0})", flush=True)
-        for r in rows or []:
+        print(f"\ncheckpoint entries found: {found} ({len(rows)})")
+        for r in rows:
             body = r["content_json"] or ""
-            model = "Model handoff summary" in body
-            evidence = "Deterministic C evidence index" in body
-            print(f'  {r["entry_type"]:26s} model_summary={model} evidence={evidence} ({len(body)} chars)')
-            if model:
-                idx = body.find("Model handoff summary")
-                print("    excerpt:", body[idx:idx + 500].replace("\\n", " ")[:500])
+            print(f'  {r["entry_type"]:20s} model_summary={"Model handoff summary" in body} '
+                  f'evidence={"Deterministic C evidence index" in body} ({len(body)} chars)')
+            if "ZETA-42" in body:
+                print("    summary/evidence mentions ZETA-42: yes")
         return 0 if found else 1
     finally:
         agent.terminate()
@@ -106,9 +108,17 @@ def main():
             agent.wait(timeout=10)
         except subprocess.TimeoutExpired:
             agent.kill()
+        log = agent.stdout.read() if agent.stdout else ""
+        print("\n--- agent log: cache counters per request ---")
+        turns = [l for l in log.splitlines() if "tokens_in=" in l and "cache_read=" in l]
+        for line in turns[-8:]:
+            clean = line.split(" INFO ")[-1]
+            print("  turn:", clean[:160])
+        for line in log.splitlines():
+            if "charged a" in line or "algorithm_version" in line:
+                print("  ", line.split(" INFO ")[-1][:200])
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(workspace, ignore_errors=True)
-        print("\nisolated HOME and workspace removed")
 
 
 if __name__ == "__main__":

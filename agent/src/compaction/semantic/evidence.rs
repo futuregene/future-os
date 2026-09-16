@@ -392,6 +392,8 @@ pub(in crate::compaction) async fn prepare_with_sticky_summary(
     on_started: Option<&(dyn Fn() + Sync)>,
     provider: Option<&dyn LLMProvider>,
     system_prompt: Option<&str>,
+    tools: &[crate::types::ToolDef],
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
     on_fallback: Option<&(dyn Fn(&str) + Sync)>,
 ) -> Result<ContextPreparation, ContextError> {
     // The summary reads exactly what the model last saw, so the request reuses a
@@ -438,8 +440,10 @@ pub(in crate::compaction) async fn prepare_with_sticky_summary(
                 &plan,
                 live,
                 system_prompt,
+                tools,
                 reserve,
                 interrupted,
+                on_usage,
             )
             .await
             {
@@ -474,14 +478,17 @@ pub(in crate::compaction) async fn prepare_with_sticky_summary(
 /// cache (measured 99.9% on a 258K-token prefix, ~48x cheaper than the same input
 /// sent cold), while a flattened or differently-framed request is billed in full
 /// every time.
+#[allow(clippy::too_many_arguments)]
 async fn sticky_summary(
     manager: &ContextManager,
     provider: &dyn LLMProvider,
     plan: &CompactionPlan,
     live: Vec<AgentMessage>,
     system_prompt: &str,
+    tools: &[crate::types::ToolDef],
     budget: u64,
     interrupted: &AtomicBool,
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
 ) -> Result<String, SummaryCallError> {
     let instruction = format!(
         "{}Summarize the conversation above into a handoff summary for another agent that will \
@@ -501,9 +508,10 @@ it.",
         system_prompt,
         fit_messages(live, manager),
         instruction,
+        tools.to_vec(),
         interrupted,
         budget.saturating_mul(2) as i32,
-        None,
+        on_usage,
     )
     .await?;
     if text.trim().is_empty() {

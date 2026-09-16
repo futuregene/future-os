@@ -255,6 +255,8 @@ pub(crate) async fn prepare_with_journal_summarized(
     operation_id: &str,
     provider: Option<&dyn crate::types::LLMProvider>,
     system_prompt: Option<&str>,
+    tools: &[crate::types::ToolDef],
+    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
     on_fallback: Option<&(dyn Fn(&str) + Sync)>,
 ) -> Result<(ContextPreparation, Option<CompactionTicket>), ContextError> {
     if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
@@ -289,6 +291,8 @@ pub(crate) async fn prepare_with_journal_summarized(
                     on_started,
                     provider,
                     system_prompt,
+                    tools,
+                    on_usage,
                     on_fallback,
                 )
                 .await,
