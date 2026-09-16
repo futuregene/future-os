@@ -27,10 +27,33 @@ def _main_checkout():
 
 
 def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
     override = _os.environ.get("ABC_ROOT")
     if override:
         return _pathlib.Path(override)
-    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
 
 
 WORKTREE = _checkout()
@@ -53,7 +76,12 @@ import json, pathlib, sqlite3, sys
 DB = pathlib.Path.home() / ".future" / "agent" / "agent.db"
 ROOT = ROOT
 FREEZE = ROOT / "frozen-sessions"
-CFG = json.loads((ROOT / "real-sessions.json").read_text())
+CFG = json.loads(require(
+        ROOT / "real-sessions.json",
+        "the real-session id list",
+        "See scripts/abc_experiment/README.md: create it with the session ids "
+        "you want to measure.",
+    ).read_text())
 
 
 def load(session):
@@ -105,9 +133,11 @@ def main():
             r["id"] = f"{sid}-{r['position']}-{ordinal}"
         path.write_text(json.dumps({"session": sid, "chain": name,
                                     "records": records}, ensure_ascii=False) + "\n")
+        # Relative to the frozen-sessions directory, so the experiment root can be
+        # moved without invalidating the manifest.
         manifest[name] = {"session": sid, "records": len(records),
                           "dangling_tool_calls": dangling, "orphan_results": orphans,
-                          "path": str(path)}
+                          "path": path.name}
         print(f'  {name}: {len(records)} records frozen '
               f'(dropped {dangling} dangling calls, {orphans} orphan results)')
     (FREEZE / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

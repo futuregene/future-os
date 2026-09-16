@@ -385,4 +385,15 @@ C3 的投影由四部分组成，其中摘要是唯一需要模型调用的一�
 
 ## 复现
 
-见 [scripts/abc_experiment/README.md](../scripts/abc_experiment/README.md)。fixture、冻结会话、账本与评分数据都留在本地 git-ignored 的 `.future/research/abc-summary-a47313/`。
+harness 与操作说明见 [scripts/abc_experiment/README.md](../scripts/abc_experiment/README.md)。输入、账本与结果位于 `~/compact-exp`（可用 `ABC_ROOT` 覆盖），之所以放在任何仓库之外，是因为其中包含真实会话数据。
+
+因此复现是**部分的，且恰好沿本文的结构分界**：
+
+| 由什么推导 | 能否仅凭检出复现 |
+|---|---|
+| 三条合成链（`export`、`analysis`、`pipeline`） | **可以**——固定种子的生成器，重新生成逐字节一致 |
+| 一切涉及 `real-yt`、`real-visual`、`real-stream` 的结果 | **不能**——这些是私有对话，从操作者的 Agent 数据库读取并由 `freeze_sessions.py` 快照；其 ID 与快照均不公开 |
+
+具体而言：本文每张表的**合成部分**都能仅凭仓库重建，而**真实会话部分不能**——那是 178 个考题项中的 **129 项（72%）**：闭卷表中的全部真实会话行、整张开卷表（合成链没有可读归档）、消融、延续考卷与构成分析。
+
+缺少必需输入时脚本会**报错停止而非跳过**，因此部分运行不会被误认为完整运行。第三方要复现真实会话结果，需按 README 的步骤**替换为你自己的会话**；绝对数值会不同，但对比结论应当成立。

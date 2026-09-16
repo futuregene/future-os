@@ -1,9 +1,45 @@
 # Compaction experiment harness
 
-Drives six compaction strategies over identical frozen fixtures and scores the
-same questionnaire against each one. Everything here is synthetic; no private
-conversation is read, and every model call is reserved in a ledger before it is
-sent and settled to the provider's reported usage afterwards.
+Drives six compaction strategies over identical frozen inputs and scores the same
+questionnaire against each one. Every model call is reserved in a ledger before it is sent
+and settled to the provider's reported usage afterwards.
+
+## Inputs and where they live
+
+The experiment root defaults to **`~/compact-exp`**; `ABC_ROOT` overrides it. It is
+deliberately outside any repository, because parts of it are real session data and large
+ledgers that must never be committed. Scripts **stop with an error** when an input they need
+is absent — they do not skip it, because a partial run otherwise looks like a complete one.
+
+| Input | Reproducible from the repo? | How to supply it |
+|---|---|---|
+| `data/*.json` (3 synthetic chains × 8 stages) | **Yes** | `python3 scripts/abc_compaction_experiment.py prepare --root DIR` and `python3 scripts/abc_experiment/build_pipeline_chain.py`. Both are seeded, and regenerating produces byte-identical fixtures. |
+| `frozen-sessions/` (3 real sessions) | **No** | Private. Create `real-sessions.json` with your own session ids, then run `freeze_sessions.py`. See below. |
+| `synthetic-session-db/` | Yes | `make_synthetic_sessions.py`; it copies the local Agent database and writes the synthetic sessions into the copy. |
+| ledgers, projections, results | Derived | Produced by the runs; see "Running it". |
+
+**Scripts that only use the synthetic chains** run on a fresh checkout with nothing but
+`prepare`. **Scripts that use real sessions cannot** — they need your own conversations,
+because the report's real-session numbers come from private sessions that are not and will
+not be published.
+
+### Supplying real sessions
+
+1. Create `~/compact-exp/real-sessions.json`:
+
+   ```json
+   {"chains": {"my-session-a": "<session-id>", "my-session-b": "<session-id>"}}
+   ```
+
+   Session ids are the ones in `future session list` / the Agent database. `excluded` is
+   optional and records ids that were deliberately not measured.
+
+2. Run `python3 scripts/abc_experiment/freeze_sessions.py`. It snapshots each session once
+   to `frozen-sessions/<name>.json`; every later step reads the snapshot, so results stay
+   reproducible even while the live session keeps changing.
+
+Chain names are free-form, but a few scripts default to `real-yt`, `real-visual`,
+`real-stream` (the names used in the report) and take `--chains` to override.
 
 | Arm | Strategy |
 |---|---|

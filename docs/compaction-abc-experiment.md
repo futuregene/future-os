@@ -599,6 +599,25 @@ real workloads measured, not a universal one.
 
 ## Reproducing
 
-See [scripts/abc_experiment/README.md](../scripts/abc_experiment/README.md). Fixtures,
-frozen sessions, ledgers and scoring stay in the local, git-ignored
-`.future/research/abc-summary-a47313/`.
+The harness and its instructions are in
+[scripts/abc_experiment/README.md](../scripts/abc_experiment/README.md). Inputs, ledgers and
+results live in `~/compact-exp` (override with `ABC_ROOT`), outside any repository because
+they include real session data.
+
+Reproducibility is therefore **partial, and split along this page's own structure**:
+
+| Derived from | Reproducible from a checkout? |
+|---|---|
+| The three synthetic chains (`export`, `analysis`, `pipeline`) | **Yes** — seeded generators, byte-identical on regeneration |
+| Everything involving `real-yt`, `real-visual`, `real-stream` | **No** — these are private conversations, read from the operator's Agent database and snapshotted by `freeze_sessions.py`; the ids and the snapshots are not published |
+
+Concretely: the synthetic half of every table here can be rebuilt from the repository alone,
+and the real-session half cannot. That is **129 of the 178 exam items (72 %)** — every
+real-session row in the closed-book table, the entire open-book table (the synthetic chains
+have no archive to read), the ablation, the continuation exam and the composition
+breakdowns.
+
+Scripts stop with an error when a required input is missing rather than skipping it, so a
+partial run cannot be mistaken for a complete one. Third-party reproduction of the
+real-session results requires substituting **your own** sessions through the steps in the
+README; the absolute numbers will differ, and the comparisons should hold.

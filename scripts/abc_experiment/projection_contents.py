@@ -27,10 +27,33 @@ def _main_checkout():
 
 
 def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
     override = _os.environ.get("ABC_ROOT")
     if override:
         return _pathlib.Path(override)
-    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
 
 
 WORKTREE = _checkout()
@@ -50,7 +73,8 @@ ROOT = ROOT
 FROZEN = ROOT / "frozen-sessions"
 PROJ = ROOT / "C3proj" / "projections"
 
-manifest = json.loads((FROZEN / "manifest.json").read_text())
+manifest = json.loads(require(FROZEN / "manifest.json", "frozen real sessions",
+                                "Run freeze_sessions.py first.").read_text())
 manifest["synthetic"] = None  # fixtures handled separately below
 
 print(f'{"projection":18s} {"text blocks":>12s} {"in proj":>9s} '
@@ -60,7 +84,7 @@ for path in sorted(PROJ.glob("*.json")):
     chain = identity.rsplit("__s", 1)[0]
     stage = int(identity.rsplit("__s", 1)[1])
     if chain in manifest and manifest[chain]:
-        records = json.loads(pathlib.Path(manifest[chain]["path"]).read_text())["records"]
+        records = json.loads((FROZEN / manifest[chain]["path"]).read_text())["records"]
         records = records[:max(1, int(len(records) * (0.4, 0.7, 1.0)[stage]))]
     else:
         # synthetic fixture: the records live in the driver's input file

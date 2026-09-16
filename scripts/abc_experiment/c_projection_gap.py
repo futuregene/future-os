@@ -27,10 +27,33 @@ def _main_checkout():
 
 
 def _research():
+    """The experiment root: fixtures, frozen sessions, ledgers and results.
+
+    Deliberately outside any repository -- it holds real session data and large ledgers
+    that must never be committed. `ABC_ROOT` overrides the default.
+    """
     override = _os.environ.get("ABC_ROOT")
     if override:
         return _pathlib.Path(override)
-    return _main_checkout() / ".future" / "research" / "abc-summary-a47313"
+    return _pathlib.Path.home() / "compact-exp"
+
+
+def require(path, what, how=""):
+    """Return `path` or stop immediately with an explanation.
+
+    Inputs used to be skipped when absent, so a run without them produced a partial result
+    that looked complete. Failing here is the difference between "the numbers are wrong"
+    and "the numbers are missing".
+    """
+    path = _pathlib.Path(path)
+    if path.exists():
+        return path
+    raise SystemExit(
+        f"missing {what}:\n  {path}\n"
+        + (f"  {how}\n" if how else "")
+        + "  Set ABC_ROOT to the experiment root, or see "
+          "scripts/abc_experiment/README.md."
+    )
 
 
 WORKTREE = _checkout()
@@ -82,7 +105,12 @@ def render_c(covered):
             + clip(shapes._plain(tail), 8000, 2000) + "\n</recent-history>\n</archived-conversation>")
 
 
-cfg = json.loads((ROOT / "real-sessions.json").read_text())
+cfg = json.loads(require(
+        ROOT / "real-sessions.json",
+        "the real-session id list",
+        "See scripts/abc_experiment/README.md: create it with the session ids "
+        "you want to measure.",
+    ).read_text())
 chains = {}
 for name, sid in cfg["chains"].items():
     records = load_real(sid)
