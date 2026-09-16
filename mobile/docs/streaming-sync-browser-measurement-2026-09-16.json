@@ -1,0 +1,27 @@
+{
+  "date": "2026-09-16",
+  "codeBase": "937b70f2",
+  "agentBinaryVersion": "future v0.0.2-a0373412+local.dirty",
+  "desktopProfile": "test, unoptimized + debuginfo, no-default-features",
+  "browser": "Chrome 153.0.8010.37 / V8 15.3.76.10 / macOS",
+  "transport": "loopback HTTP adapter -> production DesktopHost -> real gRPC -> isolated Agent -> SQLite backup",
+  "scenario": "explicit completed-run cold reconcile via production Mobile SyncEngine; no fake activeRun, fake clock, injected RTT, or mobile native UI",
+  "sourceCompletedRuns": 229,
+  "units": {"time": "milliseconds", "size": "actual serialized response bytes excluding HTTP headers"},
+  "samples": {
+    "largest": {"events": 111395, "cursor": 111394, "replayRequests": 112, "chunkRequests": 0, "replayReplyBytes": 38782350, "maxReplayReplyBytes": 402591, "historyReplyBytes": 238002},
+    "second": {"events": 65632, "cursor": 65631, "replayRequests": 66, "chunkRequests": 0, "replayReplyBytes": 23479228, "maxReplayReplyBytes": 400398, "historyReplyBytes": 111673},
+    "median_completed": {"events": 2228, "cursor": 2227, "replayRequests": 3, "chunkRequests": 0, "replayReplyBytes": 860817, "maxReplayReplyBytes": 396425, "historyReplyBytes": 199211}
+  },
+  "measurements": [
+    {"sample":"largest","round":1,"syncMs":12759.2,"firstCommitMs":62.3,"stateMs":38.4,"historyMs":23.7,"replayStageMs":12696.7,"fetchReplayMs":11322.8,"backendReplayMs":11165.63,"firstReplayRequestMs":3669.6},
+    {"sample":"second","round":1,"syncMs":7586.8,"firstCommitMs":74,"stateMs":62.3,"historyMs":11.7,"replayStageMs":7512.8,"fetchReplayMs":6616.3,"backendReplayMs":6523.43,"firstReplayRequestMs":2156.7},
+    {"sample":"median_completed","round":1,"syncMs":255.7,"firstCommitMs":41.6,"stateMs":20.3,"historyMs":21.3,"replayStageMs":214.1,"fetchReplayMs":207.4,"backendReplayMs":203.05,"firstReplayRequestMs":113},
+    {"sample":"largest","round":2,"syncMs":12698.4,"firstCommitMs":27.9,"stateMs":6.6,"historyMs":21.3,"replayStageMs":12670.4,"fetchReplayMs":11251.5,"backendReplayMs":11096.72,"firstReplayRequestMs":3638.9},
+    {"sample":"second","round":2,"syncMs":7543.7,"firstCommitMs":21.6,"stateMs":9.4,"historyMs":12.1,"replayStageMs":7522.1,"fetchReplayMs":6622.8,"backendReplayMs":6530.17,"firstReplayRequestMs":2170.8},
+    {"sample":"median_completed","round":2,"syncMs":238.7,"firstCommitMs":39,"stateMs":17.4,"historyMs":21.6,"replayStageMs":199.7,"fetchReplayMs":193.3,"backendReplayMs":189.63,"firstReplayRequestMs":108.5},
+    {"sample":"largest","round":3,"syncMs":12801.3,"firstCommitMs":26.7,"stateMs":6.3,"historyMs":20.3,"replayStageMs":12774.6,"fetchReplayMs":11269.3,"backendReplayMs":11112.4,"firstReplayRequestMs":3617.8},
+    {"sample":"second","round":3,"syncMs":7585.7,"firstCommitMs":28.5,"stateMs":13,"historyMs":15.4,"replayStageMs":7557.1,"fetchReplayMs":6653.6,"backendReplayMs":6560.28,"firstReplayRequestMs":2164.3},
+    {"sample":"median_completed","round":3,"syncMs":246.3,"firstCommitMs":35.1,"stateMs":13,"historyMs":22,"replayStageMs":211.2,"fetchReplayMs":204.2,"backendReplayMs":199.93,"firstReplayRequestMs":115.5}
+  ]
+}

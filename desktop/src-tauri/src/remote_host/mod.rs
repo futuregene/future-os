@@ -7,6 +7,8 @@ pub(crate) mod files;
 pub(crate) mod pairing;
 mod read_pages;
 mod session_files;
+#[cfg(test)]
+mod sync_measurement;
 use crate::remote::services::{BusinessHost, ReplySink};
 struct DesktopHost;
 impl BusinessHost for DesktopHost {
