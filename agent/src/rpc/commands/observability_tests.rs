@@ -303,6 +303,80 @@ fn get_events_since_rejects_unknown_run() {
 }
 
 #[test]
+fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let b = session.read().broadcaster.clone();
+    b.start_run("snapshot-run".into(), 1);
+    b.broadcast(SseEvent::new(
+        "agent_start",
+        serde_json::json!({"started_at_ms":1}),
+    ));
+    for _ in 0..3000 {
+        b.broadcast(SseEvent::new("text_chunk", serde_json::json!({"text":"x"})));
+    }
+    let read = || {
+        let mut cmd = make_cmd("get_run_snapshot");
+        cmd.run_id = "snapshot-run".into();
+        parse_response(&handle_command_internal(&state, cmd))
+    };
+    let active = read();
+    assert_eq!(active["success"], true);
+    assert_eq!(active["data"]["watermark"], 3000);
+    assert_eq!(active["data"]["runSnapshot"], true);
+    assert_eq!(
+        active["data"]["projection"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // Switch the live run: the same historical bootstrap is now folded from
+    // the real journal, not a partial ring or a different run's projection.
+    b.start_run("next".into(), 2);
+    let historical = read();
+    assert_eq!(historical["success"], true);
+    assert_eq!(historical["data"], active["data"]);
+    // A missing interior journal event must not become a trusted snapshot.
+    state
+        .session_manager
+        .test_execute("DELETE FROM run_events WHERE run_id='snapshot-run' AND idx=10");
+    assert_eq!(read()["success"], false);
+    b.start_run("snapshot-run".into(), 3);
+    assert_eq!(
+        read()["success"],
+        false,
+        "recovered live projection must not hide a journal gap"
+    );
+}
+
+#[test]
+fn get_run_snapshot_rejects_unknown_and_explicitly_falls_back_for_empty_or_oversize() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    let b = session.read().broadcaster.clone();
+    let read = |run: &str| {
+        let mut cmd = make_cmd("get_run_snapshot");
+        cmd.run_id = run.into();
+        parse_response(&handle_command_internal(&state, cmd))
+    };
+    assert_eq!(read("absent")["success"], false);
+    b.start_run("empty".into(), 1);
+    assert_eq!(read("empty")["error_code"], "run_snapshot_unavailable");
+    // Memory-only avoids writing this intentionally oversized fixture to disk.
+    let b = Arc::new(SseBroadcaster::new());
+    session.write().broadcaster = b.clone();
+    b.start_run("large".into(), 1);
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text":"x".repeat(EVENTS_PAGE_BYTE_BUDGET)}),
+    ));
+    let response = read("large");
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error_code"], "run_snapshot_too_large");
+}
+
+#[test]
 fn page_events_tail_unlimited_without_max_events() {
     let events = vec![chunk_event(10); 3];
     for max_events in [0, -1] {

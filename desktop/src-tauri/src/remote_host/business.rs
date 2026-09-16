@@ -127,6 +127,32 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
             }
         }
         "get_events_since" => {
+            // A cold/rebuild caller can restore the current semantic result
+            // instead of transferring every historical token. Keep ordinary
+            // tails, pinned pages and old clients on the existing replay path.
+            if cmd.prefer_snapshot
+                && cmd.chunked_read
+                && cmd.since_idx == -1
+                && cmd.offset == 0
+                && cmd.replay_until_idx.is_none()
+            {
+                match crate::agent_bridge::get_run_snapshot(
+                    cmd.session_id.clone(),
+                    cmd.run_id.clone(),
+                )
+                .await
+                {
+                    Ok(Some(snapshot)) => {
+                        reply(sink, true, snapshot, None).await;
+                        return;
+                    }
+                    Ok(None) => {} // explicit old Agent or exceptional size fallback
+                    Err(error) => {
+                        reply(sink, false, Value::Null, Some(&error.to_string())).await;
+                        return;
+                    }
+                }
+            }
             // P1c: replay buffered events for the current in-progress run, so late-joining clients can catch up on missed prefix events.
             let offset = cmd.offset.max(0) as usize;
             let limit = if cmd.limit > 0 {

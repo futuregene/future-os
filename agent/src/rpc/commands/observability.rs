@@ -195,6 +195,56 @@ pub(crate) fn handle_get_events_since(
     )
 }
 
+/// Opt-in bootstrap for clients that understand a projection + cursor. Existing
+/// replay requests retain their raw event contract. This additive command uses
+/// the generic JSON response carrier; no protobuf fields are added/reused.
+pub(crate) fn handle_get_run_snapshot(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    let broadcaster = session.read().broadcaster.clone();
+    let snapshot = match broadcaster.run_snapshot(&cmd.run_id) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return RpcResponse::build_fail(id, "get_run_snapshot", &error.to_string()),
+    };
+    // No visible semantic events yet: the legacy raw read is small and handles
+    // this boundary without manufacturing a restorable projection.
+    if snapshot.events.is_empty() {
+        return RpcResponse::build_fail_code(
+            id,
+            "get_run_snapshot",
+            "run_snapshot_unavailable",
+            "run snapshot has no semantic events yet",
+            serde_json::json!({}),
+        );
+    }
+    let payload = serde_json::json!({
+        "runSnapshot": true,
+        "events": [],
+        "watermark": snapshot.cursor,
+        "nextSinceIdx": snapshot.cursor,
+        "hasMore": false,
+        "projection": crate::rpc::payloads::ProjectionPayload {
+            run_id: snapshot.run_id, cursor: snapshot.cursor,
+            events: snapshot.events.iter().map(crate::rpc::replay_event_payload).collect(),
+        },
+    });
+    // Leave room below both the Agent's gRPC and Desktop's immutable snapshot
+    // budgets. Exceptional huge runs fall back explicitly to paged replay,
+    // never a silently truncated projection with a falsely advanced cursor.
+    if serde_json::to_vec(&payload).expect("snapshot JSON").len() > EVENTS_PAGE_BYTE_BUDGET {
+        return RpcResponse::build_fail_code(
+            id,
+            "get_run_snapshot",
+            "run_snapshot_too_large",
+            "run snapshot exceeds the bootstrap byte budget",
+            serde_json::json!({}),
+        );
+    }
+    RpcResponse::ok(id, "get_run_snapshot", payload)
+}
+
 pub(crate) fn handle_get_session_events_since(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,

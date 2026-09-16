@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", default)]
 pub(crate) struct IncomingCmd {
     pub(crate) chunked_read: bool,
+    pub(crate) prefer_snapshot: bool,
     pub(crate) reply_id: String,
     pub(crate) replay_until_idx: Option<i64>,
     pub(crate) bridge_instance_id: String,
@@ -62,6 +63,7 @@ impl Default for IncomingCmd {
     fn default() -> Self {
         Self {
             chunked_read: false,
+            prefer_snapshot: false,
             reply_id: String::new(),
             replay_until_idx: None,
             bridge_instance_id: String::new(),

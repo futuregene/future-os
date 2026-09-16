@@ -82,6 +82,65 @@ describe("fetchEventsSince", () => {
   });
 });
 
+test("cold bootstrap restores folded prefix and reads only the fixed-window suffix", async () => {
+  const snapshot = { runId: "r", cursor: 1000, events: [event("agent_start", 0), event("text_chunk", 1000)] };
+  const { client, request } = clientReturning([
+    { runSnapshot: true, projection: snapshot, events: [], watermark: 1000 },
+    { events: [event("text_chunk", 1001)], watermark: 1002, nextSinceIdx: 1001, hasMore: true },
+    { events: [event("agent_end", 1002)], watermark: 1002 },
+  ]);
+  const result = await fetchEventsSince(client, "s", "r", -1);
+  expect(request.mock.calls[0][0]).toMatchObject({ preferSnapshot: true, sinceIdx: -1 });
+  expect(request.mock.calls[1][0]).toMatchObject({ sinceIdx: 1000, offset: 0 });
+  expect(request.mock.calls[1][0]).not.toHaveProperty("preferSnapshot");
+  expect(request.mock.calls[1][0]).not.toHaveProperty("replayUntilIdx");
+  expect(request.mock.calls[2][0]).toMatchObject({ sinceIdx: 1001, replayUntilIdx: 1002 });
+  expect(result).toEqual({ events: [], watermark: 1002, projection: {
+    ...snapshot, cursor: 1002, events: [...snapshot.events, event("text_chunk", 1001), event("agent_end", 1002)],
+  } });
+  expect(snapshot.cursor).toBe(1000); // never mutate the captured response
+});
+
+test("empty snapshot tail keeps the snapshot boundary, and warm reads never ask for a snapshot", async () => {
+  const snapshot = { runId: "r", cursor: 1000, events: [event("agent_start", 0), event("text_chunk", 1000)] };
+  const { client, request } = clientReturning([
+    { runSnapshot: true, projection: snapshot, events: [], watermark: 1000 },
+    { events: [], watermark: 1000 },
+    { events: [], watermark: 1000 },
+  ]);
+  const result = await fetchEventsSince(client, "s", "r", -1);
+  expect(result.projection).toEqual(snapshot);
+  expect(result.watermark).toBe(1000);
+  expect(await fetchEventsSince(client, "s", "r", 1000)).toEqual({ events: [], watermark: 1000 });
+  expect(request.mock.calls[2][0]).not.toHaveProperty("preferSnapshot");
+});
+
+test.each([
+  { runId: "other", cursor: 1, events: [event("agent_start", 0)] },
+  { runId: "r", cursor: 2, events: [event("agent_start", 0)] },
+  { runId: "r", cursor: 1, events: [event("agent_start", 2)] },
+  { runId: "r", cursor: 1, events: [event("agent_start", 1), event("text_chunk", 0)] },
+  { runId: "r", cursor: 1, events: [{ ...event("agent_start", 0), runId: "other" }] },
+  { runId: "r", cursor: 1, events: [] },
+])("invalid snapshot identity/boundaries never seed a tail", async projection => {
+  const { client, request } = clientReturning([{ runSnapshot: true, projection, watermark: 1 }]);
+  await expect(fetchEventsSince(client, "s", "r", -1)).rejects.toThrow("replay_projection_invalid");
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+test.each([
+  { events: [event("text_chunk", 3)], watermark: 3 },
+  { events: [], watermark: 0 },
+  { events: [event("text_chunk", 2)] },
+  { events: [{ ...event("text_chunk", 2), runId: "other" }], watermark: 2 },
+  { events: [event("text_chunk", 2)], watermark: 2, truncated: true },
+])("invalid tail rejects the entire snapshot transaction", async tail => {
+  const { client } = clientReturning([
+    { runSnapshot: true, projection: { runId: "r", cursor: 1, events: [event("agent_start", 0)] }, watermark: 1 }, tail,
+  ]);
+  await expect(fetchEventsSince(client, "s", "r", -1)).rejects.toThrow("replay_prefix_invalid");
+});
+
 test("new Desktop replay advances event cursors while pinning the first page watermark", async () => {
   const { client, request } = clientReturning([
     { events: [event("a", 4)], hasMore: true, nextSinceIdx: 4, watermark: 9 },
