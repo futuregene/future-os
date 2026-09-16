@@ -133,7 +133,7 @@ export interface Commit {
 /** A synchronous timeline mutation (approval decision, optimistic bubble…). */
 type Mutator = (timeline: TimelineState) => TimelineState;
 
-type Op = { kind: "event"; event: StreamEvent } | { kind: "mutate"; apply: Mutator };
+type Op = { kind: "event"; event: StreamEvent; bytes: number } | { kind: "mutate"; apply: Mutator };
 
 interface ReconcileRequest {
   reason: ReconcileReason;
@@ -165,6 +165,8 @@ interface SessionLane {
 const MAX_REPLAY_QUEUE = 6;
 const RECONCILE_RETRY_MAX_MS = 30_000;
 const LIVE_EVENT_FRAME_MS = 16;
+const LIVE_OP_BATCH_SIZE = 64;
+const LIVE_OP_BUDGET_MS = 8;
 
 export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
@@ -204,7 +206,7 @@ export class SyncEngine {
       if (bytes > 8 * 1024 * 1024) return;
     }
     lane.bufferedBytes += bytes;
-    lane.ops.push({ kind: "event", event });
+    lane.ops.push({ kind: "event", event, bytes });
     // First contact already queued an immediate reconcile step, which will
     // drain this op. Established lanes collect live deltas for one display
     // frame so React Native receives one timeline commit instead of one per
@@ -719,12 +721,21 @@ export class SyncEngine {
     let timeline = lane.timeline ?? emptyTimeline();
     const ops = lane.ops;
     lane.ops = [];
-    lane.bufferedBytes = 0;
+    const deadline = Date.now() + LIVE_OP_BUDGET_MS;
     const beforeStreaming = timeline.streaming;
     let flipRunId: string | undefined;
     let changed = false;
 
     for (let index = 0; index < ops.length; index += 1) {
+      // A burst can contain thousands of tokens. Draining it in one promise
+      // microtask starves native back/touch events, even though navigation
+      // itself never awaits the run. Commit a bounded prefix, then yield via
+      // a timer (not another promise) so the UI can leave the conversation.
+      if (index >= LIVE_OP_BATCH_SIZE || (index > 0 && Date.now() >= deadline)) {
+        lane.ops.unshift(...ops.slice(index));
+        this.scheduleLiveFlush(lane);
+        break;
+      }
       const op = ops[index];
       if (!op) continue;
       if (op.kind === "mutate") {
@@ -738,7 +749,6 @@ export class SyncEngine {
       const event = op.event;
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
       const verdict = nextEvent(lane.cursor, event.runId, event.idx);
-      if (verdict.kind === "dup") continue;
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));
@@ -762,6 +772,8 @@ export class SyncEngine {
         }
         break;
       }
+      lane.bufferedBytes -= op.bytes;
+      if (verdict.kind === "dup") continue;
       if (verdict.kind === "apply") {
         advanceCursor(lane.cursor, event.runId!, verdict.idx);
         timeline = applyStreamEvent(timeline, event);

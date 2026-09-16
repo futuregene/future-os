@@ -530,7 +530,11 @@ export function useTimelineController({
   }, []);
 
   useEffect(() => {
-    pruneTimelines(selectedSessionId);
+    // Cache sizing serializes timelines and can be expensive after a long run.
+    // Do not do it in the navigation commit's effects: let the native screen
+    // update first. Cancel stale cleanup when the user immediately reopens.
+    const timer = setTimeout(() => pruneTimelines(selectedSessionId), 0);
+    return () => clearTimeout(timer);
   }, [pruneTimelines, selectedSessionId]);
 
   const prepareTimelineOpen = useCallback(

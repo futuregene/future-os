@@ -157,6 +157,41 @@ describe("useTimelineController", () => {
     expect(result.current.canLoadOlderTimeline).toBe(true);
   });
 
+  test("back navigation defers cache sizing and cancels stale cleanup on reopen", async () => {
+    jest.useFakeTimers();
+    request.mockImplementation(async (command: { type: string }) => ({
+      data: command.type === "get_state" ? {} : { entries: [userEntry("u", "history")] },
+    }));
+    options.selectedSessionId = "s1";
+    try {
+      render();
+      await establish();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const prune = jest.spyOn(result.current.syncEngineRef.current!, "pruneCache");
+      const navigate = (id: string) => {
+        options.selectedSessionId = id;
+        options.selectedRef.current = id;
+        act(() => renderer!.update(createElement(Harness)));
+      };
+      navigate("");
+      expect(result.current.timeline.items).toHaveLength(0);
+      expect(prune).not.toHaveBeenCalled();
+      navigate("s1");
+      expect(prune).not.toHaveBeenCalled();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(prune.mock.calls).toEqual([["s1"]]);
+      navigate("");
+      expect(prune).toHaveBeenCalledTimes(1);
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(prune.mock.calls).toEqual([["s1"], [""]]);
+      navigate("s1");
+      act(() => renderer!.unmount());
+      renderer = null;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally { jest.useRealTimers(); }
+  });
+
   test("slow active-run replay does not trigger the 15-second history timeout", async () => {
     jest.useFakeTimers();
     options.selectedSessionId = "s1";

@@ -45,6 +45,71 @@ test("evicting a pending lane fences its late history result", async () => {
   } finally { engine.clear(); }
 });
 
+test("a live burst yields to navigation and stops projecting after the session is hidden", async () => {
+  let visible = "s";
+  const engine = new SyncEngine({
+    isSessionVisible: sid => sid === visible,
+    requestGetState: async () => ({}), requestHistory: async () => history("prompt"), fetchReplay: jest.fn(),
+  });
+  const commits = jest.fn();
+  engine.subscribe(commits);
+  try {
+    await engine.open("s");
+    await jest.advanceTimersByTimeAsync(0);
+    engine.event("s", { type: "agent_start", runId: "r", idx: 0, data: "{}" });
+    await jest.advanceTimersByTimeAsync(16);
+    commits.mockClear();
+    for (let idx = 1; idx <= 512; idx++) {
+      engine.event("s", { type: "text_chunk", runId: "r", idx, data: '{"text":"x"}' });
+    }
+    // Simulate a back event queued behind the first live frame. It must run
+    // before the whole burst drains, without stopping the remote agent.
+    let textAtBack = "";
+    setTimeout(() => {
+      textAtBack = engine.timelineFor("s")!.items
+        .filter(item => item.kind === "message" && item.role === "assistant")
+        .map(item => item.kind === "message" ? item.text : "").join("");
+      visible = "";
+    }, 16);
+    await jest.advanceTimersByTimeAsync(16);
+    expect(textAtBack.length).toBeGreaterThan(0);
+    expect(textAtBack.length).toBeLessThanOrEqual(64);
+    const countAtBack = commits.mock.calls.length;
+    const timelineAtBack = engine.timelineFor("s");
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(commits).toHaveBeenCalledTimes(countAtBack);
+    expect(engine.timelineFor("s")).toBe(timelineAtBack);
+  } finally { engine.clear(); }
+});
+
+test("yielded live batches retain event order, duplicate filtering, terminal events, and mutations", async () => {
+  const engine = new SyncEngine({
+    requestGetState: async () => ({}), requestHistory: async () => history("prompt"), fetchReplay: async () => ({ events: [] }),
+  });
+  try {
+    await engine.open("s");
+    await jest.advanceTimersByTimeAsync(0);
+    engine.event("s", { type: "agent_start", runId: "r", idx: 0, data: "{}" });
+    await jest.advanceTimersByTimeAsync(16);
+    const parts = Array.from({ length: 200 }, (_, i) => `${i},`);
+    parts.forEach((text, i) => {
+      const event = { type: "text_chunk", runId: "r", idx: i + 1, data: JSON.stringify({ text }) };
+      engine.event("s", event);
+      engine.event("s", event);
+    });
+    engine.event("s", { type: "agent_end", runId: "r", idx: 201, data: "{}" });
+    const mutation = jest.fn((timeline: TimelineState) => timeline);
+    engine.mutate("s", mutation);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mutation).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(mutation.mock.calls[0]![0].items.at(-1)).toMatchObject({ text: parts.join("") });
+    expect(mutation.mock.calls[0]![0].streaming).toBe(false);
+    expect(engine.cursorFor("s").get("r")?.highWater).toBe(201);
+  } finally { engine.clear(); }
+});
+
 test("one opening state request feeds controls and history without another network round trip", async () => {
   const state = { model: "provider/model" };
   const requestGetState = jest.fn(async () => {
