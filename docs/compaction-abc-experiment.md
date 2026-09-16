@@ -506,18 +506,18 @@ measures what each retention rule preserves on its own.
 
 | chain | C | Codex | OpenCode |
 |---|---:|---:|---:|
-| export (synth) | 6/16 | **7/16** | **7/16** |
-| analysis (synth) | **7/16** | **7/16** | 6/16 |
-| pipeline (synth) | 9/17 | 9/17 | 9/17 |
+| export (synth) | **9/16** | 7/16 | 7/16 |
+| analysis (synth) | **9/16** | 7/16 | 6/16 |
+| pipeline (synth) | **10/17** | 9/17 | 9/17 |
 | real-yt | **35/44** | 33/44 | 28/44 |
 | real-visual | **28/36** | 27/36 | 26/36 |
-| real-stream | **37/47** | 33/47 | 28/47 |
-| **total** | **122/176 (69.3%)** | 116/176 (65.9%) | 104/176 (59.1%) |
+| real-stream | **39/49** | 33/47 | 28/47 |
+| **total** | **129/178 (72.5%)** | 116/176 (65.9%) | 104/176 (59.1%) |
 
 | group | C | Codex | OpenCode |
 |---|---:|---:|---:|
-| real sessions | **100/127 (78.7%)** | 93/127 (73.2%) | 82/127 (64.6%) |
-| synthetic chains | 22/49 (44.9%) | **23/49 (46.9%)** | 22/49 (44.9%) |
+| real sessions | **101/129 (78.3%)** | 93/127 (73.2%) | 82/127 (64.6%) |
+| synthetic chains | **28/49 (57.1%)** | 23/49 (46.9%) | 22/49 (44.9%) |
 
 **Zero false positives for every arm** on all six chains: the differences are
 retention, never hallucination.
@@ -533,11 +533,11 @@ Readings:
 * **C leads overall and on every real session, while calling no model at all.**
   Codex and OpenCode each pay ~¥0.027 per compaction for a summary, and both lose
   ground on the workload real questions come from.
-* **On the synthetic chains all three are within noise (44.9–46.9%).** Those
-  fixtures put almost all of their answerable detail in tool records, which all
-  three retain; the arms separate only when the answering detail sits in the
-  agent's own prose.
-* **OpenCode is weakest on real sessions (−14.1 pts vs C)**, consistent with its
+* **On the synthetic chains C now leads as well** (28/49 vs 23/49 and 22/49) once
+  its own selector is measured instead of the harness approximation. Those fixtures
+  put almost all of their answerable detail in tool records, which is exactly what
+  C's evidence index selects for.
+* **OpenCode is weakest on real sessions (−13.7 pts vs C)**, consistent with its
   design: a summary plus a short tail, with no verbatim originals and no evidence
   index.
 * Codex's small projection (1.2 K) is efficient per token but does not compensate —
@@ -558,6 +558,13 @@ question becomes how much each can *recover*:
 | C | the archive CLI (`future session history search` / `get`) |
 | codex | the window/item interface (`history.search_contents` / `read_item`) |
 | opencode | the filesystem (`glob` / `grep` / `read` over a materialised tree) |
+
+> **Caveat on the C row.** The C arm in this run was rendered by the Python
+> approximation, not by C's own selector (see "Where C loses points, measured on the
+> real code"). Re-measuring the closed-book C column with the real selector changed
+> the real-session total by only 0.4 points (78.7% → 78.3%), so the comparison below
+> is unlikely to move much — but the C figures here have not been re-run directly.
+> The codex and opencode rows are transcriptions of those agents either way.
 
 Restricted to the three real chains, because `ours` needs a session that exists in
 the Agent database and the synthetic fixtures have none:
@@ -600,59 +607,126 @@ for `ours`, so the comparable set is three chains rather than six. The mean-look
 column differs by design (codex's interface needs paging, ours returns an offset),
 so the lookup counts are not a like-for-like efficiency measure.
 
-## Where C loses points, and the one fix that addresses it
+## Where C loses points, measured on the real code
 
-The two tables above say how much C loses. This says **where**, by rebuilding the
-exam items deterministically and checking, without any model call, whether each item
-is present in C's projection at all. That separates two very different failures:
+The tables above say how much C loses. This says **where** — and it had to be
+re-measured, because the C projections used throughout the earlier sections were
+produced by a Python approximation in the harness (last six tool results, fixed
+character clipping), not by C's own selector.
 
-| | closed book | open book |
+C is our own code and needs no provider, so it can be measured directly:
+`agent/examples/abc_c_probe.rs` calls `prepare_evidence` at every boundary and dumps
+the projection. **No model calls are involved in producing these projections**, so
+the measurement is free and exact.
+
+### First, what the real selector actually does
+
+`semantic/evidence.rs::build` walks **every** tool result up to the coverage cutoff,
+groups them by `(tool, target)`, and keeps each group's **first and last** entry,
+errors first and newest-first after that, rendering each as a bounded JSON row until
+the 2 K evidence budget is full. It is not a sliding window over recent results.
+
+That distinction matters: the approximation kept only the newest few records, so
+every number derived from it under-measures the real selector. Corrected totals, same
+exam and same seeds:
+
+| chain | approximation | real C @32K | **real C @128K** |
+|---|---:|---:|---:|
+| export (synth) | 6/16 | 9/16 | **9/16** |
+| analysis (synth) | 7/16 | 9/16 | **9/16** |
+| pipeline (synth) | 9/17 | 10/17 | **10/17** |
+| real-yt | 35/44 | 35/44 | 35/44 |
+| real-visual | 28/36 | 29/36 | 27/36 |
+| real-stream | 37/47 | 19/49 | **39/49** |
+| **total** | **122/176 (69.3%)** | 111/178 (62.4%) | **129/178 (72.5%)** |
+
+| group | approximation | real C @128K |
 |---|---:|---:|
-| values the exam asked about | 129 | 129 |
-| present in the raw archive | **129 (100%)** | 129 |
-| **dropped by C's projection** | **26 (20%)** | 26 |
+| real sessions | 100/127 (78.7%) | **101/129 (78.3%)** |
+| synthetic chains | 22/49 (44.9%) | **28/49 (57.1%)** |
 
-So C's loss is not availability and not (mainly) the model: **one fifth of the
-answerable values never reach the projection.** Retrieval recovers only part of that
-(`real-stream` +8, `real-visual` +2, **`real-yt` +0**), and it costs lookups.
+Zero false positives in every run. **The real-session figure is essentially
+unchanged** (78.7% → 78.3%), so the headline comparison holds; the synthetic chains
+were the part the approximation under-measured badly.
 
-### All 26 dropped values have a single cause
+### The window matters more than expected
+
+C's protected-original budget scales with the context window, so the window is a
+first-class variable. Sweeping it, with no model calls:
+
+| context window | exam values present in the projection |
+|---:|---:|
+| 32 000 | 84/129 (65%) |
+| 128 000 | 102/129 (79%) |
+| 256 000 | 102/129 (79%) |
+| 1 000 000 | 102/129 (79%) |
+
+Containment **saturates at 128 K**, so the 128 K column above is also the figure for
+a 1 M-token model. At 32 K the projection kept 132 of 1107 records on one session and
+dropped 35 text records outright — which is why that column is so much worse.
+
+**The production window is not a constant.** Both compaction paths take it from the
+model registry: `rpc/session.rs` resolves `model.context_window` (falling back to
+1 000 000), and `run_loop.rs` refreshes it from the resolved model each turn. The
+`128000` in `models/future.rs` is only the value used when a model declares no
+context length. For reference, the configurations on this machine declare 1 M
+(Azure `gpt-6-astra`), 262 K (`Qwen3.8-27B-oQ4`) and 128 K (`claude-opus-4-8`) — all
+at or above the saturation point.
+
+### What the real selector drops
+
+Rebuilding the exam items deterministically and checking containment, at a realistic
+window:
+
+| | value |
+|---|---:|
+| values the exam asked about | 129 |
+| present in the raw archive | **129 (100%)** |
+| **absent from the real C projection** | **27 (21%)** |
+
+Every loss has the same cause, and it is **not** clipping:
+
+| where the value sits | count |
+|---|---:|
+| its source record was **not selected at all** (always a `tool_result`) | **27** |
+| its record was kept but the value sat in a clipped middle | **0** |
+
+By shape:
 
 | shape | count |
 |---|---:|
-| hex hash / id (commit SHAs, opaque ids) | **23** |
+| hex hash / id (commit SHAs, opaque ids) | **24** |
 | size values (`6 GB`, `1 MiB`) | 3 |
 
-and, for every one of them:
+So the gap is a **selection** effect: these records lose the competition for the 2 K
+evidence budget to the grouping and error-priority rules. The values are short
+identifier-shaped tokens printed once by an early `git`/build command, and nothing in
+the selector gives them priority over a later, larger record.
 
-> **the value lives in a tool result older than the last six — and C keeps only the
-> last six tool results, each head/tail clipped to 380 + 100 characters.**
+### The bounded fix this points to
 
-C's evidence index therefore cannot see anything an earlier tool call established.
-That is exactly what these exam items ask for: a short hash printed by an early
-`git`/build command, a file size listed once. The head/tail clip compounds it, since
-even within the six kept results these values sit in the omitted middle.
-
-### The fix that follows from the finding
-
-The dropped values are not prose — they are **identifier-shaped tokens**. A value
-index that scans **all** tool results (not just the newest six) and keeps only
-tokens matching those shapes would be cheap in tokens (short strings, not excerpts)
-and would recover most of the 20%:
+Since the dropped values are identifier-shaped tokens rather than prose, a value index
+— scanning every tool result but keeping only tokens of those shapes — costs very few
+tokens (short strings, not excerpts) and directly targets the measured gap:
 
     hex ids (7-40 chars)  ·  version strings  ·  sizes  ·  PR/issue numbers
-    ·  counts with units  ·  exact numbers
+    ·  counts with units
 
-This is a bounded change to `semantic/evidence.rs`: it already computes a bounded
-index, it just selects *which records* to excerpt rather than *which values to
-extract* from all of them. The measurement above gives the target: 26 of 129 items,
-23 of which are hash-shaped.
+`semantic/evidence.rs` already builds a bounded index; the change is to select *which
+values to extract* from all records, not only *which records to excerpt*. The
+measurement gives the target: 27 of 129 items, 24 of them hash-shaped.
 
-**Caveat.** The exam is a recognition task with decoys, so "not in the projection"
-is measured exactly, but the mapping from that to a score is not one-to-one: a value
-can be absent from the projection and still be answered correctly from the model's
-own memory, or present and still missed. The 20% figure is the size of the gap in
-the material, not a promise of a 20-point gain.
+**Not yet implemented, and not yet justified by score.** Two caveats:
+
+* the exam is a recognition task with decoys, so "absent from the projection" is
+  measured exactly but does **not** map one-to-one onto lost points — a value can be
+  absent and still answered from the model's own memory, or present and still missed;
+* with the real selector C already reaches 72.5% of these items, so the headroom is
+  smaller than the earlier (approximation-based) figure suggested.
+
+Any change to the selection rule must also bump the algorithm identifier, because the
+policy identity participates in the compaction receipt key — otherwise a recorded
+receipt would replay against a projection built by different rules.
 
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
@@ -828,6 +902,15 @@ that measured factor. Each arm keeps its own output budget: OpenCode hard-codes
   my budget interacting with an interface that needs more rounds, not a weak tool.
   The *interface-shape* finding (no match position ⇒ more rounds) is what this
   experiment supports; the 11/144 figure should not be read as Codex's capability.
+- **The real chains are not frozen, and one of them moved during these runs.** They are
+  read live from the local Agent database. `real-stream` received new entries while the
+  experiments were running, so its record count grew (609 → 921 → 1582 blocks over the
+  day; its last entry is stamped 14:02 on the measurement day) and its numbers differ
+  between runs. `real-yt` and `real-visual` stopped writing days earlier and are stable.
+  Treat the real-session comparisons as a snapshot, and re-derive rather than reuse any
+  figure involving `real-stream`. Freezing the three sessions into the git-ignored
+  research directory before measuring is the fix; the numbers in this page predate it.
+
 - Prefix caching was measured only in isolation (see "Prefix caching"). Its effect
   on the full A/B/C/M comparison is inferred, not re-measured end to end.
 

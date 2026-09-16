@@ -1,0 +1,93 @@
+"""Classify what real C drops, at a realistic context window.
+
+The window sweep shows containment saturates at 128K (102/129) and that 32K is far
+worse (84/129), so this classifies the losses at the realistic setting. For each exam
+value the real C projection lacks: its shape, the kind of record that holds it, and
+whether that record was kept, excerpted, or dropped outright.
+"""
+import collections, json, pathlib, random, re, subprocess, sys
+
+WT = pathlib.Path("/Users/geilige/future-os/.worktrees/session-history-a47313")
+sys.path.insert(0, str(WT / "scripts"))
+sys.path.insert(0, str(WT / "scripts/abc_experiment"))
+import realistic_exam as exam
+from realistic_eval import load_real
+
+ROOT = pathlib.Path("/Users/geilige/future-os/.future/research/abc-summary-a47313")
+DRIVER = pathlib.Path("/Users/geilige/future-os/target/debug/examples/abc_c_probe")
+WINDOW = 128_000
+cfg = json.loads((ROOT / "real-sessions.json").read_text())
+
+HEXISH = re.compile(r"^[0-9a-f]{6,40}$", re.I)
+SIZEISH = re.compile(r"^\d+(?:\.\d+)?\s?(?:MiB|MB|GB|GiB|KB|B)$", re.I)
+COUNTISH = re.compile(r"^[\d,]+\s?(?:项|个|条|套件|次|tests?)$", re.I)
+
+
+def kind_of(value):
+    if HEXISH.match(value):
+        return "hex hash / id"
+    if SIZEISH.match(value):
+        return "size"
+    if COUNTISH.match(value):
+        return "count with unit"
+    if value.isdigit():
+        return "bare number"
+    return "other"
+
+
+def run(records_file):
+    out = subprocess.run([str(DRIVER), "--records", str(records_file),
+                          "--model", "future/deepseek-flash", "--window", str(WINDOW)],
+                         capture_output=True, text=True, timeout=900)
+    return json.loads(out.stdout.strip().splitlines()[-1]) if out.returncode == 0 else None
+
+
+shapes = collections.Counter()
+origins = collections.Counter()
+detail = []
+for name, sid in cfg["chains"].items():
+    records = load_real(sid)
+    for index, frac in enumerate((0.4, 0.7, 1.0)):
+        covered = records[:max(1, int(len(records) * frac))]
+        identity = f"{name}__s{index}"
+        rf = ROOT / "Creal" / "input" / f"{identity}.json"
+        payload = run(rf)
+        if payload is None:
+            continue
+        proj = payload["projection"]
+        text = "\n\n".join(m["text"] for m in proj)
+        kept_ids = {e for m in proj for e in (m.get("sourceEntryIds") or [])}
+
+        present, _ = exam.build_exam(covered, len(covered), random.Random(9000 + index))
+        for value in present:
+            if value in text:
+                continue
+            src = None
+            for i, r in enumerate(covered):
+                if value in (r.get("text") or ""):
+                    src = (i, r)
+                    break
+            if src is None:
+                origins["NOT FOUND IN SESSION"] += 1
+                continue
+            i, r = src
+            entry_id = f"{sid}-{r.get('position', i)}-{i}"
+            kept = entry_id in kept_ids
+            record_kind = f'{r["kind"]}/{r["role"]}'
+            shapes[kind_of(value)] += 1
+            if kept:
+                origins[f"kept record ({record_kind}) but value clipped or not selected"] += 1
+            else:
+                origins[f"record dropped ({record_kind})"] += 1
+            detail.append((identity, value, kind_of(value), record_kind, kept))
+
+print(f"real C at window={WINDOW:,}\n")
+print("dropped values by shape:")
+for k, n in shapes.most_common():
+    print(f'  {k:18s} {n:>3d}')
+print("\nwhy they are missing:")
+for k, n in origins.most_common():
+    print(f'  {n:>3d}  {k}')
+print("\nsample:")
+for identity, value, kind, record_kind, kept in detail[:14]:
+    print(f'  {identity:16s} {value[:26]:26s} {kind:16s} {record_kind:18s} kept={kept}')
