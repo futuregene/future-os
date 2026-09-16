@@ -363,6 +363,47 @@ overflow trigger.**
 Cost: ¥7.89 for 8 compactions *uncached* (≈¥0.99 each). Primed, the same request
 hits 99.9% and costs ¥0.065–0.085, because a real session already sent that prefix.
 
+## Shouldn't keeping assistant text beat Codex?
+
+**It does — but only when the summary is actually compressed.** The tie reported
+above is real, and it is not evidence that verbatim retention is worthless.
+
+Codex drops assistant text from what it *retains*, yet its summary **reads** it:
+the summarisation input is the whole live history. The information therefore passes
+through once, and survives whenever the summary is large relative to its source.
+On the assistant-coverage fixture the agent's own messages were **568 characters
+(≈142 tokens)**, the summary reproduced its rationale sentence nearly verbatim, and
+both rules scored **17/28** — **8/12** on assistant-only fields.
+
+Two things follow.
+
+1. **The headline comparison could not have detected this.** The original 12-field
+   questionnaire contains exactly **one** assistant-only value (`first_code`), so
+   "Codex 143/144 vs C 132/144" says nothing about assistant handling either way.
+2. **Under compression pressure the difference is decisive.** Give the agent *N*
+   distinct decision codes, bound the summary to ~200 words, then ask for 10 of
+   them exactly:
+
+| assistant content | assistant tokens | summary output | ratio | ours: verbatim retention | Codex rule: summary only |
+|---|---:|---:|---:|---:|---:|
+| 40 decisions | 2 174 | 4 088 | no pressure | 10/10 | 10/10 |
+| 160 decisions | 8 659 | 564 | **15×** | **10/10** | **0/10** |
+| 400 decisions | 21 629 | 549 | **39×** | **10/10** | **1/10** |
+
+While the summary is as large as the material it covers, nothing is lost and the
+rules tie. The moment it must compress — 15× and beyond — the exact identifiers go
+first, and an exact-code question finds **nothing**. Verbatim retention keeps every
+one.
+
+This is the property C already has: assistant prose sits in the protected-original
+set and is rebuilt from the journal on every round. The earlier comparison simply
+never exercised it.
+
+**Production sits further into that regime, not outside it.** C's evidence slot is
+2 K tokens; the Codex arm's summaries ran 1.1–1.5 K tokens against a 258 K-token
+input — ratios near 200×. The sweep above locates the transition; it does not
+overstate the effect.
+
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
 **Yes.** I checked which record kind actually contains each of the original 12 gold
