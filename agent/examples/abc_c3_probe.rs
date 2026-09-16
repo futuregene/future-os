@@ -211,7 +211,14 @@ async fn main() -> Result<()> {
     // moved up to sit behind their call.
     let mut grouped: Vec<(i64, Vec<AgentMessage>)> = Vec::new();
     for record in &records {
-        let position = record.get("position").and_then(Value::as_i64).unwrap_or(0);
+        // Real sessions carry `position`; the synthetic fixtures carry `order`. Using a
+        // single missing-value default put every synthetic record in one group, which
+        // produced a user message containing tool_calls and a provider rejection.
+        let position = record
+            .get("position")
+            .or_else(|| record.get("order"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         if let Some(message) = message(record) {
             match grouped.last_mut() {
                 Some((last, bucket)) if *last == position => bucket.push(message),

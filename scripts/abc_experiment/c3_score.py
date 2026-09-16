@@ -118,6 +118,7 @@ def main():
         body, p_truth, d_truth = exam.exam_body(present, decoys, random.Random(1000 + stage_index))
 
         calls_made, returned = 0, 0
+        workspace = None
         if args.mode == "closed":
             answer_text = call(f"{args.tag}__{identity}__closed",
                                [{"role": "system", "content": CLOSED_SYSTEM.replace(

@@ -82,8 +82,9 @@ def main():
         # The projection each arm is scored against has to match the arm. Defaulting to
         # C's directory silently scores C's projection with the other arm's interface,
         # which measures an interface difference rather than the strategy.
-        projdir = {"c3": "C3proj", "codex": "ExternalProj", "opencode": "ExternalProj"}[tag]
-        prefix = "" if tag == "c3" else f"{tag}__"
+        projdir = {"c3": "C3proj", "cdet": "Cdet", "codex": "ExternalProj",
+                   "opencode": "ExternalProj"}[tag]
+        prefix = f"{tag}__" if tag in ("codex", "opencode") else ""
         cmd = [sys.executable, "-u", str(WORKTREE / "scripts/abc_experiment/c3_score.py"),
                "--bridge", "/Users/geilige/future-os/target/debug/examples/abc_probe_bridge",
                "--binary", str(BINARY), "--mode", mode, "--interface", interface,

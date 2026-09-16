@@ -262,6 +262,78 @@ real sessions carry a much larger recent tail, because their records are finer-g
 1582 records for one session means proportionally more of it falls inside the retained
 window.
 
+## Ablation: C with the model summary removed
+
+C's projection is four parts, and the summary is the only one that costs a model call.
+Removing it (deterministic evidence index only, no provider involved) isolates what it is
+worth. Both arms use the identical production code path; the ablation simply passes no
+provider.
+
+| Arm | Closed | Open | Mean lookups (open) | Summary cost |
+|---|---:|---:|---:|---:|
+| **C** (with summary) | 129/178 | **168/178** | 2.67 | ¥0.1173 per compaction cold |
+| **C without summary** | **129/178** | 162/178 | 2.22 | **¥0** |
+
+**Closed book the two are identical — every one of the 18 probes scores the same.** Open
+book the summary is worth **+6**.
+
+### Why the summary adds nothing closed-book
+
+The exam asks about exact values, and the summary is a lossy paraphrase of material that
+is already retained verbatim. Measuring containment across all 18 projections (no model
+calls):
+
+| | Values present |
+|---|---:|
+| deterministic projection (originals + evidence + tail) | **130/178 (73.0 %)** |
+| model summary | 74/178 (41.6 %) |
+| **either** | **130/178** |
+| **values the summary adds that the rest lacks** | **0** |
+
+Every value in the summary is also in the deterministic projection. The summary is a
+subset, so it cannot raise a score that the rest of the projection already sets — it can
+only lose information. That is why the two arms tie exactly.
+
+This is the same effect the earlier compression sweep found, from the other direction:
+verbatim retention beats summarisation precisely because a summary is a lossy copy. Here
+the lossy copy is *added to* the verbatim material rather than replacing it, and a lossy
+copy beside an exact one contributes nothing.
+
+### Why it gains +6 open-book: it changes search behaviour
+
+The 6-point gain is not an information gain. On all six probes where the arms differ, the
+arm that made **more lookups** scored exactly **3 fields higher**:
+
+| Probe | C | C without summary | Δ | C lookups | No-summary lookups |
+|---|---:|---:|---:|---:|---:|
+| pipeline s3 | 6/6 | 3/6 | **+3** | **2** | 1 |
+| real-stream s1 | 16/17 | 13/17 | **+3** | **4** | 1 |
+| real-visual s1 | 15/15 | 12/15 | **+3** | **2** | 1 |
+| real-yt s0 | 14/14 | 11/14 | **+3** | **2** | 1 |
+| real-stream s0 | 12/15 | 15/15 | −3 | 1 | **2** |
+| real-visual s0 | 9/12 | 12/12 | −3 | 1 | **3** |
+
+The correlation is 6 out of 6, in both directions. The summary does not supply the missing
+values — it supplies enough context that the model decides to go and look. This is the
+same behaviour that separates C from Codex in the open-book comparison above, and it
+means **the summary's measured value is a prompt effect, not a retention effect.**
+
+### What this implies for the design
+
+* **The summary is not paying for itself on this exam.** It costs a model call per
+  compaction and contributes no value the projection does not already contain. Its only
+  measured benefit is indirect.
+* **The honest caveat is that this exam is a value-recall probe.** It asks "did this exact
+  string appear", which is the task verbatim retention is best at and summarisation is
+  worst at. A summary should help on questions the exam does not ask: what the objective
+  was, why a decision was made, what remains open. Those are exactly the questions real
+  follow-up turns ask (measured earlier at ~80 % "about the agent's own output"), and they
+  are not scored here.
+* **Do not remove the summary on this evidence.** The measurement bounds what it is worth
+  on a recall exam; it does not establish that it is worthless in production. What it does
+  establish is that the summary's *retention* contribution is zero and its *behavioural*
+  contribution is real, which is a narrower and more useful claim.
+
 ## Why C is only slightly ahead, despite keeping far more
 
 This is a fair challenge to the result, and the exam's own composition answers it.
