@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react-native";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -40,6 +41,7 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import { useStopRequest } from "../useStopRequest";
 import { SkillPicker } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
@@ -98,6 +100,11 @@ function ComposerDockView({
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
   const editable = !remote.streaming && !remote.busy;
+  const stopRequest = useStopRequest(
+    remote.streaming,
+    remote.selectedSessionId,
+    remote.abort,
+  );
   const inputRef = useRef<TextInput>(null);
   const completion = useSkillCompletion(
     message,
@@ -388,16 +395,28 @@ function ComposerDockView({
             </Pressable>
             {remote.streaming ? (
               <Pressable
-                accessibilityLabel={t("chat.stop")}
+                accessibilityLabel={t(
+                  stopRequest.status === "requesting" ? "chat.stopping" : "chat.stop",
+                )}
                 accessibilityRole="button"
-                onPress={() => void remote.abort()}
-                style={[styles.sendButton, styles.stopButton]}
+                accessibilityState={{
+                  busy: stopRequest.status === "requesting",
+                  disabled: stopRequest.status === "requesting",
+                }}
+                disabled={stopRequest.status === "requesting"}
+                onPress={() => void stopRequest.stop()}
+                android_ripple={{ color: "#ffffff40" }}
+                style={({ pressed }) => [
+                  styles.sendButton,
+                  styles.stopButton,
+                  pressed && styles.sendPressed,
+                ]}
               >
-                <Square
-                  color={colors.surface}
-                  fill={colors.surface}
-                  size={14}
-                />
+                {stopRequest.status === "requesting" ? (
+                  <ActivityIndicator color={colors.surface} size="small" />
+                ) : (
+                  <Square color={colors.surface} fill={colors.surface} size={14} />
+                )}
               </Pressable>
             ) : (
               <Pressable
@@ -422,6 +441,17 @@ function ComposerDockView({
               </Pressable>
             )}
           </View>
+          {remote.streaming && stopRequest.status !== "idle" && (
+            <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
+              {t(
+                stopRequest.status === "failed"
+                  ? "chat.stopFailed"
+                  : stopRequest.status === "requesting"
+                    ? "chat.stopping"
+                    : "chat.stopRequested",
+              )}
+            </Text>
+          )}
         </View>
       </View>
     </View>
@@ -592,7 +622,13 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.accent,
   },
-  stopButton: { backgroundColor: colors.danger },
+  stopButton: { backgroundColor: colors.danger, overflow: "hidden" },
+  stopStatus: {
+    color: colors.inkSoft,
+    fontSize: 12,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
   sendDisabled: { backgroundColor: colors.accentDisabled },
   sendPressed: { opacity: 0.78 },
 });

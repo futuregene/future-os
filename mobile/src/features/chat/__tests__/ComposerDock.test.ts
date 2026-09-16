@@ -20,6 +20,47 @@ jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
 jest.mock("../components/SkillPicker", () => ({ SkillPicker: () => null }));
 
+test("streaming disables editing but one stop press sends a request and exposes its outcome", async () => {
+  let resolve!: () => void;
+  const abort = jest.fn(() => new Promise<void>(done => { resolve = done; }));
+  const info = jest.spyOn(console, "info").mockImplementation(() => {});
+  const props = {
+    message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true, connectionPresentation: { level: "connected" }, models: [], modelId: "model", streaming: true, abort },
+    openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+  try {
+    expect(tree.root.findByType(TextInput).props.editable).toBe(false);
+    expect(button("chat.stop").props.disabled).toBe(false);
+    act(() => button("chat.stop").props.onPress());
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(button("chat.stopping").props.disabled).toBe(true);
+    expect(button("chat.stopping").props.accessibilityState.busy).toBe(true);
+    for (let i = 0; i < 100; i++) {
+      act(() => tree.update(createElement(ComposerDock, { ...props, pendingApprovals: [] })));
+    }
+    expect(abort).toHaveBeenCalledTimes(1);
+    await act(async () => resolve());
+    expect(button("chat.stop").props.disabled).toBe(false);
+    expect(tree.root.findAllByType(Text).some(node => node.props.children === "chat.stopRequested")).toBe(true);
+    abort.mockRejectedValueOnce(new Error("not_connected"));
+    await act(async () => button("chat.stop").props.onPress());
+    expect(tree.root.findAllByType(Text).some(node => node.props.children === "chat.stopFailed")).toBe(true);
+    expect(button("chat.stop").props.disabled).toBe(false);
+    act(() => tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, streaming: false } })));
+    expect(tree.root.findAllByType(Text).some(node => node.props.children === "chat.stopFailed")).toBe(false);
+  } finally {
+    act(() => tree.unmount());
+    info.mockRestore();
+  }
+});
+
 test("only the approval which failed receives the error", () => {
   type Props = ComponentProps<typeof ComposerDock>;
   const props = {
