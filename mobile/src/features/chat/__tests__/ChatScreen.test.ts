@@ -64,7 +64,8 @@ jest.mock("../useComposerDraft", () => ({
 jest.mock("../useAttachmentPicker", () => ({
   useAttachmentPicker: () => ({}),
 }));
-jest.mock("../useFileDownload", () => ({ useFileDownload: () => ({}) }));
+const mockFileDownload: { preview: unknown; activeDownload: unknown } = { preview: null, activeDownload: null };
+jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
 jest.mock("../useSendMessage", () => ({ useSendMessage: () => ({}) }));
 jest.mock("../useRename", () => ({ useRename: () => ({}) }));
 jest.mock("../components/ChatTopBar", () => ({ ChatTopBar: "ChatTopBar" }));
@@ -96,6 +97,8 @@ beforeEach(() => {
     .spyOn(BackHandler, "addEventListener")
     .mockReturnValue({ remove: removeBack });
   jest.useFakeTimers();
+  mockFileDownload.preview = null;
+  mockFileDownload.activeDownload = null;
   mockRemote.canLoadOlderTimeline = true;
   mockRemote.desktopOnline = true;
   mockRemote.timelineSyncStatus = "idle";
@@ -123,6 +126,33 @@ const olderCollision = () => {
     },
   }));
 };
+
+test.each(["files", "preview", "download"])("%s retains the list while covered and catches up without remounting", surface => {
+  const original = mockRemote.timeline;
+  const list = tree.root.findByType(FlatList);
+  const before = list.props.data;
+  try {
+    if (surface === "files") act(() => tree.root.findByType(ChatTopBar).props.onFiles());
+    else {
+      if (surface === "preview") mockFileDownload.preview = {};
+      else mockFileDownload.activeDownload = {};
+      act(() => tree.update(createElement(ChatScreen)));
+    }
+    mockRemote.timeline = { items: [...original.items, { id: "covered", kind: "message", role: "assistant", text: "arrived while covered" }] };
+    act(() => tree.update(createElement(ChatScreen)));
+    expect(tree.root.findByType(FlatList).props.data).toBe(before);
+    if (surface === "files") {
+      expect(tree.root.findAll(node => node.props.accessibilityElementsHidden === true).length).toBeGreaterThan(0);
+      act(() => tree.root.findByType(ChatTopBar).props.onBack());
+    } else {
+      mockFileDownload.preview = null;
+      mockFileDownload.activeDownload = null;
+      act(() => tree.update(createElement(ChatScreen)));
+    }
+    expect(tree.root.findByType(FlatList)).toBe(list);
+    expect(list.props.data[0]).toMatchObject({ id: "covered", text: "arrived while covered" });
+  } finally { mockRemote.timeline = original; }
+});
 
 test("file browsing owns system back while the header still returns directly to chat", () => {
   expect(BackHandler.addEventListener).toHaveBeenCalledTimes(1);

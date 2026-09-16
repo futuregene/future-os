@@ -5,12 +5,13 @@ import {
   classifyMarkdownTarget,
   localFilePath,
   createStreamingMarkdownParser,
+  parseFutureMarkdown,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { StyleProp, TextStyle } from "react-native";
-import { Animated, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Animated, FlatList, Linking, Platform, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
@@ -337,7 +338,11 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
   const reveal = useStreamingText(text, mode === "message" && streaming);
   const displayedText = mode === "message" ? reveal.text : text;
   const projectingStream = streaming || displayedText !== text;
-  const document = useMemo(() => project(displayedText, projectingStream), [project, displayedText, projectingStream]);
+  const document = useMemo(() => mode === "file-preview"
+    // Large file ASTs should die with the preview, not occupy the shared
+    // 512-entry message cache after the modal closes.
+    ? parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024)
+    : project(displayedText, projectingStream), [mode, project, displayedText, projectingStream]);
   const [initialBlockCount] = useState(document.nodes.length);
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
@@ -354,6 +359,21 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
   }, [mode, onOpenFile, t]);
+  const renderPreviewBlock = useCallback(({ item, index }: { item: MarkdownNode; index: number }) => (
+    <MarkdownBlock node={item} openTarget={openTarget} isLast={index === document.nodes.length - 1} animate={false} />
+  ), [document.nodes.length, openTarget]);
+  if (mode === "file-preview") return <MarkdownImageBasePathContext value={imageBasePath}>
+    <FlatList
+      data={document.nodes}
+      renderItem={renderPreviewBlock}
+      keyExtractor={(_item, index) => String(index)}
+      initialNumToRender={8}
+      maxToRenderPerBatch={8}
+      windowSize={5}
+      style={styles.previewList}
+      contentContainerStyle={styles.constrained}
+    />
+  </MarkdownImageBasePathContext>;
   return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
     <MarkdownBlock key={index} node={node} openTarget={openTarget} isLast={index === document.nodes.length - 1}
       animate={mode === "message" && projectingStream && !reveal.reduceMotion && index >= initialBlockCount} />
@@ -375,6 +395,7 @@ const styles = StyleSheet.create({
   // bubble/segment layout owns outer spacing.
   noBottom: { marginBottom: 0 },
   constrained: { minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
+  previewList: { flex: 1, minWidth: 0, width: "100%" },
   blockSpacing: { marginBottom: spacing.sm },
   bodyText: { color: colors.ink, ...chatTypography },
   paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },

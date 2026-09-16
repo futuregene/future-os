@@ -14,11 +14,12 @@ import {
   Wrench,
   X,
 } from "lucide-react-native";
-import { Fragment, memo, useEffect, useRef, useState } from "react";
+import { Fragment, memo, useContext, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { AppState, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
+import { TimelineVisibleContext } from "./PausedTimeline";
 import {
   approvalCommand,
   approvalDeletes,
@@ -69,9 +70,10 @@ const ROW_HIT_SLOP = { top: spacing.sm, bottom: spacing.sm } as const;
 
 function RunIndicator({ startedAt }: { startedAt?: number }) {
   const { t } = useTranslation();
+  const visible = useContext(TimelineVisibleContext);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!startedAt) return;
+    if (!startedAt || !visible) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const updateActivity = (state: string | null) => {
       clearInterval(timer);
@@ -83,7 +85,7 @@ function RunIndicator({ startedAt }: { startedAt?: number }) {
     updateActivity(AppState.currentState);
     const subscription = AppState.addEventListener("change", updateActivity);
     return () => { clearInterval(timer); subscription.remove(); };
-  }, [startedAt]);
+  }, [startedAt, visible]);
   return (
     <View style={styles.runIndicator}>
       <View style={styles.runDot} />
