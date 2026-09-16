@@ -676,9 +676,14 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
                     pinned: cmd.pinned,
                 }) {
                     Ok(_) => {
-                        // No explicit event: the workspace snapshot carries the
-                        // flag and republishes on the next heartbeat tick.
-                        reply(sink, true, json!({}), None).await
+                        // Reply through the same versioned source as pulls/pushes.
+                        // A delayed acknowledgement must not overwrite a newer pin.
+                        match crate::remote_host::catalog::workspaces() {
+                            Some((payload, _)) => reply(sink, true, payload, None).await,
+                            None => {
+                                reply(sink, false, Value::Null, Some("catalog_unavailable")).await
+                            }
+                        }
                     }
                     Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
                 }

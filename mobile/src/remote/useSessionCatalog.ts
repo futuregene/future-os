@@ -518,22 +518,19 @@ export function useSessionCatalog(
   const setWorkspacePinned = useCallback(
     async (workspaceId: string, pinned: boolean) => {
       const client = clientRef.current;
-      if (!client || !workspaceId) return;
+      if (!client || !workspaceId) throw new Error("Workspace unavailable");
       const epoch = catalogEpoch.current;
-      await client.request({ type: "set_workspace_pinned", workspaceId, pinned }, "list");
-      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
-      revisions.current.workspaces += 1;
-      // The phone's own list order comes from the flag (see catalogRows), so
-      // carrying it here is enough: the group moves on the next render and the
-      // pushed snapshot confirms the same value. The workspace array's own
-      // order stays the desktop's, as the new-conversation picker expects.
-      setWorkspacesLocal((current) =>
-        current.map((workspace) =>
-          workspace.id === workspaceId ? { ...workspace, pinned } : workspace,
-        ),
+      const response = await client.request<WorkspacesData>(
+        { type: "set_workspace_pinned", workspaceId, pinned }, "list",
       );
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      if (!response.data?.version || !Array.isArray(response.data.workspaces))
+        throw new Error("Invalid workspace snapshot");
+      // Acknowledgements, pulls and pushes share one version gate. Never apply
+      // the requested flag over a snapshot that may already reflect a later write.
+      applyWorkspaces(response.data.workspaces, response.data.version);
     },
-    [clientRef],
+    [applyWorkspaces, clientRef],
   );
 
   return {

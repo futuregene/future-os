@@ -752,39 +752,96 @@ describe("useSessionCatalog", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  test("setWorkspacePinned carries the flag for the list to order by", async () => {
+  const workspaceSnapshot = (revision: number, pinned: boolean, epoch = "source") => ({
+    version: { epoch, revision },
+    workspaces: [{ id: "w", name: "Workspace", path: "/w", pinned }],
+  });
+  function renderWorkspaceCatalog() {
     render();
     act(() => {
-      result.current.setWorkspaces([
-        { id: "w1", name: "One", path: "/one" },
-        { id: "w2", name: "Two", path: "/two" },
-      ]);
+      result.current.setCatalogEpoch("source");
+      const initial = workspaceSnapshot(1, false);
+      result.current.setWorkspaces(initial.workspaces, initial.version);
     });
-    request.mockResolvedValueOnce({ data: {} });
-    await act(async () => {
-      await result.current.setWorkspacePinned("w2", true);
-    });
-    expect(request).toHaveBeenLastCalledWith(
-      { type: "set_workspace_pinned", workspaceId: "w2", pinned: true },
-      "list",
-    );
-    expect(result.current.workspaces.map((workspace) => [workspace.id, workspace.pinned])).toEqual([
-      ["w1", undefined],
-      ["w2", true],
-    ]);
+  }
 
-    request.mockResolvedValueOnce({ data: {} });
-    await act(async () => {
-      await result.current.setWorkspacePinned("w2", false);
-    });
-    expect(result.current.workspaces.map((workspace) => workspace.pinned)).toEqual([undefined, false]);
+  test("workspace pin acknowledgements update through the versioned snapshot", async () => {
+    renderWorkspaceCatalog();
+    for (const [revision, pinned] of [[2, true], [3, false]] as const) {
+      request.mockResolvedValueOnce({ data: workspaceSnapshot(revision, pinned) });
+      await act(async () => { await result.current.setWorkspacePinned("w", pinned); });
+      expect(result.current.workspaces[0]?.pinned).toBe(pinned);
+      expect(request).toHaveBeenLastCalledWith(
+        { type: "set_workspace_pinned", workspaceId: "w", pinned }, "list",
+      );
+    }
   });
 
-  test("setWorkspacePinned ignores an empty id", async () => {
-    render();
-    await act(async () => {
-      await result.current.setWorkspacePinned("", true);
+  test("a late pin acknowledgement cannot undo a newer unpin or its repeated push", async () => {
+    renderWorkspaceCatalog();
+    let finishPin!: (response: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finishPin = resolve; }));
+    let pin!: Promise<void>;
+    act(() => { pin = result.current.setWorkspacePinned("w", true); });
+    // The server committed the pin; its push arrives before its acknowledgement.
+    act(() => {
+      const snapshot = workspaceSnapshot(2, true);
+      result.current.setWorkspaces(snapshot.workspaces, snapshot.version);
     });
+    request.mockResolvedValueOnce({ data: workspaceSnapshot(3, false) });
+    await act(async () => { await result.current.setWorkspacePinned("w", false); });
+    await act(async () => {
+      finishPin({ data: workspaceSnapshot(2, true) });
+      await pin;
+    });
+    expect(result.current.workspaces[0]?.pinned).toBe(false);
+    act(() => {
+      const snapshot = workspaceSnapshot(3, false);
+      result.current.setWorkspaces(snapshot.workspaces, snapshot.version);
+    });
+    expect(result.current.workspaces[0]?.pinned).toBe(false);
+  });
+
+  test("an in-flight old workspace pull cannot undo an acknowledged pin", async () => {
+    renderWorkspaceCatalog();
+    let finishRead!: (response: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finishRead = resolve; }));
+    let read!: Promise<void>;
+    act(() => { read = result.current.refreshWorkspaces(); });
+    request.mockResolvedValueOnce({ data: workspaceSnapshot(3, true) });
+    await act(async () => { await result.current.setWorkspacePinned("w", true); });
+    await act(async () => { finishRead({ data: workspaceSnapshot(2, false) }); await read; });
+    expect(result.current.workspaces[0]?.pinned).toBe(true);
+  });
+
+  test.each(["client", "epoch"])("workspace pin replies cannot cross a changed %s", async change => {
+    renderWorkspaceCatalog();
+    let finish!: (response: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    let pin!: Promise<void>;
+    act(() => { pin = result.current.setWorkspacePinned("w", true); });
+    act(() => {
+      if (change === "client") clientRef.current = { request } as unknown as RemoteClient;
+      else result.current.setCatalogEpoch("replacement");
+    });
+    await act(async () => { finish({ data: workspaceSnapshot(2, true) }); await pin; });
+    expect(result.current.workspaces[0]?.pinned).toBe(false);
+  });
+
+  test("workspace pin failures and malformed replies leave the catalog intact", async () => {
+    renderWorkspaceCatalog();
+    request.mockRejectedValueOnce(new Error("offline"));
+    await expect(result.current.setWorkspacePinned("w", true)).rejects.toThrow("offline");
+    request.mockResolvedValueOnce({ data: {} });
+    await expect(result.current.setWorkspacePinned("w", true)).rejects.toThrow("Invalid workspace snapshot");
+    expect(result.current.workspaces[0]?.pinned).toBe(false);
+  });
+
+  test("setWorkspacePinned rejects an empty id or missing connection", async () => {
+    render();
+    await expect(result.current.setWorkspacePinned("", true)).rejects.toThrow("Workspace unavailable");
+    clientRef.current = null;
+    await expect(result.current.setWorkspacePinned("w", true)).rejects.toThrow("Workspace unavailable");
     expect(request).not.toHaveBeenCalled();
   });
   test("versioned pulls and pushes converge at one commit point and report sync readiness", async () => {
