@@ -91,6 +91,21 @@ function countIconsNamed(host: ReactTestInstance, name: string) {
   return host.findAll(node => node.type === name).length;
 }
 
+/**
+ * The rail a row sits on: walk up from its label to the nearest container that
+ * declares an `alignSelf` other than `stretch` — the default every layer inherits,
+ * which says nothing about which side the row is on. The first real value is the
+ * row's own block, and asserting on it does not depend on how many composite
+ * layers the row happens to render through.
+ */
+function railOf(host: ReactTestInstance): unknown {
+  for (let node: ReactTestInstance | null = host; node; node = node.parent) {
+    const alignSelf = (StyleSheet.flatten(node.props.style) as { alignSelf?: string } | undefined)?.alignSelf;
+    if (alignSelf && alignSelf !== "stretch") return alignSelf;
+  }
+  return undefined;
+}
+
 const THINK_RUN = { tools: 1, thinking: 1 };
 
 // Consecutive thinking/tool rows are one line on a phone (the desktop transcript
@@ -177,11 +192,12 @@ test("a run of reasoning alone omits the zero tool count", () => {
 });
 
 // The glyph sits flush against its own count (no gap), while the kinds stay
-// spaced apart by the row: "🖥×5 · 🧠×3" reads as two tokens, not four.
+// spaced apart by the row's own gap — tight enough that the `·` is a separator
+// rather than a hole in the line.
 test("each glyph sits tight against its count", () => {
   render(reply({ segments: [thinking("k1"), tool("c1")] }));
   const row = summaryRow(THINK_RUN);
-  expect(StyleSheet.flatten(row.props.style).gap).toBe(8);
+  expect(StyleSheet.flatten(row.props.style).gap).toBe(4);
   const groups = row.findAll(node =>
     typeof node.type !== "string" && StyleSheet.flatten(node.props.style)?.gap === 0);
   // One per kind (the tool group and the reasoning group).
@@ -219,9 +235,46 @@ test("a failed run is not tinted", () => {
 // to the glyphs rather than spanning the bubble.
 test("the folded summary hugs the right edge", () => {
   render(reply({ segments: [thinking("k1"), tool("c1")] }));
-  const style = StyleSheet.flatten(summaryRow(THINK_RUN).props.style);
+  const row = summaryRow(THINK_RUN);
+  const style = StyleSheet.flatten(row.props.style);
   expect(style.alignSelf).toBe("flex-end");
   expect(style.justifyContent).toBe("flex-end");
+});
+
+// A step row that is NOT folded — a lone call, a lone burst, the slice still
+// running — must sit on the same rail as a folded run. It did not, while the
+// rail was a per-call-site `align` prop with a left-aligning default: the reply
+// then alternated left/right down one screen, and a streaming row jumped sides
+// the moment it got folded. The prop is gone so this cannot come back.
+test("an unfolded step row sits on the same right rail as a folded run", () => {
+  // One lone tool call before the prose, one lone reasoning slice after it:
+  // neither reaches the two-slice minimum for folding.
+  render(reply({
+    segments: [tool("c1", { detail: "ls -la" }), prose("p1"), thinking("k1", "why")],
+  }));
+  for (const label of ["chat.runCompleted", "chat.thoughtCompleted"])
+    expect(railOf(rowButton(label))).toBe("flex-end");
+});
+
+// A step row is the only way into the call behind it, so it carries a real touch
+// target even though it draws as a single 20px line.
+test("every step row extends its touch area beyond its drawn line", () => {
+  render(reply({ segments: [tool("c1"), tool("c2"), prose("p1"), thinking("k1", "why")] }));
+  expect(summaryRow({ tools: 2 }).props.hitSlop).toEqual({ top: 8, bottom: 8 });
+  // Expanded rows and the lone reasoning slice carry it too.
+  act(() => summaryRow({ tools: 2 }).props.onPress());
+  expect(rowButton("chat.runCompleted").props.hitSlop).toEqual({ top: 8, bottom: 8 });
+  expect(rowButton("chat.thoughtCompleted").props.hitSlop).toEqual({ top: 8, bottom: 8 });
+});
+
+// The live timer is part of the same apparatus and follows it onto the right
+// rail, instead of hanging off the left edge of the reply it belongs to.
+test("the live run indicator sits on the right rail", () => {
+  render(reply({ streaming: true, startedAt: Date.now() - 1000 }));
+  const indicator = tree.root.findAll(node => node.props.children === "1s"
+    || node.props.children === "chat.generating")[0]!;
+  const style = StyleSheet.flatten(indicator.parent!.props.style);
+  expect(style.alignSelf).toBe("flex-end");
 });
 
 // Opening the run keeps the whole thing on the same right-hand rail: the rows it
@@ -234,6 +287,7 @@ test("the rows and details opened from the run are right-aligned too", () => {
   act(() => summaryRow(THINK_RUN).props.onPress());
 
   const childRow = rowButton("chat.thoughtCompleted");
+  expect(railOf(childRow)).toBe("flex-end");
   expect(StyleSheet.flatten(childRow.props.style).justifyContent).toBe("flex-end");
   // The reasoning rail moves to the right side with the block it labels.
   const thinkingBlock = tree.root.findAll(host => {
@@ -241,7 +295,9 @@ test("the rows and details opened from the run are right-aligned too", () => {
     return style?.borderRightWidth === 2;
   })[0]!;
   const thinkingStyle = StyleSheet.flatten(thinkingBlock.props.style);
-  expect(thinkingStyle.borderLeftWidth).toBe(0);
+  // The rail is on the right and there is no left one at all.
+  expect(thinkingStyle.borderRightWidth).toBe(2);
+  expect(thinkingStyle.borderLeftWidth).toBeUndefined();
   expect(thinkingStyle.alignItems).toBe("flex-end");
   // The tool row's own expanded command text is right-aligned as well.
   act(() => rowButton("chat.runCompleted").props.onPress());
