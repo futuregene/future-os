@@ -4,6 +4,7 @@ import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, Scroll
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
+import { SvgXml } from "react-native-svg";
 import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
 jest.mock("react-i18next", () => ({
@@ -125,9 +126,13 @@ describe("MarkdownText layout and fidelity", () => {
     } finally { open.mockRestore(); }
   });
 
-  test("math and Mermaid remain honest source fallbacks, not missing content", () => {
+  test("inline and display math render as native vectors while Mermaid retains its source fallback", () => {
     const root = render("Formula $x^2$\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD; A-->B;\n```");
     expect(root.findAllByType(ScrollView)).toHaveLength(2);
+    const formulas = root.findAllByType(SvgXml);
+    expect(formulas).toHaveLength(2);
+    expect(formulas.every(node => node.props.xml.includes("<path"))).toBe(true);
+    expect(formulas.map(node => node.props.accessibilityLabel)).toEqual(["x^2", "\\frac{a}{b}"]);
     const output = JSON.stringify(renderer.toJSON());
     expect(output).toContain("x^2");
     expect(output).toContain("frac{a}{b}");

@@ -1,5 +1,5 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { RemoteClient } from "./client";
 import {
   cachedPreviewForAttachment,
@@ -20,6 +20,7 @@ import type {
   RemoteSessionState,
   RemoteSkill,
   SessionFileListing,
+  StreamEvent,
   ThinkingLevel,
 } from "./types";
 
@@ -65,6 +66,28 @@ export function useConversationController({
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
   const [openingSession, setOpeningSession] = useState(false);
+  const settingsRevision = useRef(0);
+
+  const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel">) => {
+    if (!sessionId || sessionId !== selectedRef.current) return;
+    settingsRevision.current += 1;
+    if (typeof state.model === "string") setModelId(state.model);
+    if (state.thinkingLevel !== undefined) setThinkingLevelState(state.thinkingLevel);
+  }, [selectedRef]);
+
+  const handleSessionSettingsEvent = useCallback((event: StreamEvent, sessionId: string) => {
+    if (event.type !== "model_changed" && event.type !== "thinking_level_changed") return;
+    try {
+      const data: unknown = JSON.parse(event.data);
+      if (!data || typeof data !== "object") return;
+      if (event.type === "model_changed" && "model" in data && typeof data.model === "string") {
+        applySessionSettings(sessionId, { model: data.model });
+      } else if ("level" in data && typeof data.level === "string"
+        && ["off", "minimal", "low", "medium", "high", "xhigh"].includes(data.level)) {
+        applySessionSettings(sessionId, { thinkingLevel: data.level as ThinkingLevel });
+      }
+    } catch { /* Ignore malformed notifications; the next state read recovers. */ }
+  }, [applySessionSettings]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -85,12 +108,13 @@ export function useConversationController({
         next.delete(sessionId);
         return next;
       });
+      const revision = settingsRevision.current;
       try {
         const engine = syncEngineRef.current;
         const state = engine
           ? await engine.open(sessionId)
           : (await client.requestRetry<RemoteSessionState>({ type: "get_state", sessionId }, sessionId)).data;
-        if (!isCurrent()) return;
+        if (!isCurrent() || settingsRevision.current !== revision) return;
         const currentModel = state.model ?? "";
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
@@ -237,6 +261,7 @@ export function useConversationController({
     async (nextModelId: string) => {
       const client = clientRef.current;
       const sessionId = selectedRef.current;
+      settingsRevision.current += 1;
       setModelId(nextModelId);
       await saveLastModel(nextModelId);
       if (client && clientRef.current === client && sessionId) {
@@ -258,6 +283,7 @@ export function useConversationController({
     async (level: ThinkingLevel) => {
       const client = clientRef.current;
       const sessionId = selectedRef.current;
+      settingsRevision.current += 1;
       setThinkingLevelState(level);
       await saveLastThinking(level);
       if (client && clientRef.current === client && sessionId) {
@@ -319,6 +345,8 @@ export function useConversationController({
   return {
     modelId,
     thinkingLevel,
+    applySessionSettings,
+    handleSessionSettingsEvent,
     openingSession,
     selectSession,
     newConversation,
