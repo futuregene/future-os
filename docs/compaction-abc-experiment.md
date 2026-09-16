@@ -447,30 +447,45 @@ C3 = assistant *and* user originals verbatim + tool evidence + tail + summary.
 Summary-only = user messages + summary (Codex's rule). **Both use the same sticky
 summary**, so the only variable is what is retained.
 
-| chain | C3 | summary-only | delta |
-|---|---:|---:|---:|
-| analysis | 11/18 | 9/18 | +2 |
-| export | 11/18 | 9/18 | +2 |
-| pipeline | 10/18 | 9/18 | +1 |
-| real-stream | 35/45 | 30/45 | +5 |
-| real-visual | 29/36 | 27/36 | +2 |
-| **real-yt** | **35/44** | **27/44** | **+8** |
-| **total** | **131/179** | **111/179** | **+20** |
+| chain | C3 | summary-only | delta | C3 proj | SO proj |
+|---|---:|---:|---:|---:|---:|
+| analysis (synth) | 10/18 | 9/18 | +1 | 11.1 K | 1.3 K |
+| export (synth) | 10/18 | 9/18 | +1 | 11.2 K | 1.4 K |
+| pipeline (synth) | 9/18 | 9/18 | **0** | 4.7 K | 1.0 K |
+| real-stream | 35/45 | 29/45 | +6 | 8.3 K | 2.4 K |
+| real-visual | 28/36 | 27/36 | +1 | 4.8 K | 0.9 K |
+| **real-yt** | **34/44** | **27/44** | **+7** | 8.5 K | 2.0 K |
+| **total** | **126/179** | **110/179** | **+16** | | |
 
 | group | C3 | summary-only | delta |
 |---|---:|---:|---:|
-| real sessions | **99/125** | 84/125 | **+15 (+12.0 pts)** |
-| synthetic chains | 32/54 | 27/54 | +5 (+9.3 pts) |
+| real sessions | **97/125** | 83/125 | **+14 (+11.2 pts)** |
+| synthetic chains | 29/54 | 27/54 | +2 (+3.7 pts) |
+
+Both rules render through the **same truncation** C's evidence index uses (head and
+tail, not whole blocks), so every projection now sits at 4.7–11 K tokens and the
+synthetic and real numbers are directly comparable. `summary-only` is small because
+it keeps almost nothing besides the summary, which is the point of the comparison.
 
 **Zero false positives on both sides**: the gap is purely "can the value still be
 confirmed from what survived", not hallucination.
 
-C3 is ahead on every chain, the advantage is **larger on real sessions**, and it is
-largest on the session with the most assistant prose. The synthetic chains
-under-measure — their assistant turns are short, only 6 values per stage were
-scorable, and their C3 projection is unrealistically large (~250 K tokens) because
-those fixtures bury 99% of their volume in tool records. **The real-session numbers
-are the trustworthy ones.**
+Two honest readings:
+
+* **The real-session gap is the trustworthy one: +11.2 points.** It is largest on the
+  session with the most assistant prose (`real-yt`, +7) and smallest where the
+  session is mostly tool traffic (`real-visual`, +1).
+* **The synthetic chains barely separate (0 to +1).** That is not a contradiction —
+  their assistant turns are deliberately short, so there is little verbatim content
+  for retention to save, and only 6 values per stage were scorable. They measure the
+  tool-heavy workload; the real sessions measure the workload real questions come
+  from.
+
+So the earlier claim needs one amendment: C3 is not ahead "on every chain" — it ties
+on `pipeline`, where the fixture gives assistant prose almost no unique facts. The
+advantage tracks **how much of the workload's answerable detail lives in the agent's
+own output**, which is ~80% of real follow-ups and near zero in the original
+questionnaire.
 
 This closes the loop: measured where real questions point, verbatim retention of the
 agent's own output is worth **+12 points** over summary-only — the direction the

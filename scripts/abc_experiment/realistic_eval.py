@@ -258,18 +258,29 @@ def main():
             # the two projections
             assistant_kept = [r for r in covered if r["kind"] == "text"]
             user_kept = [r for r in covered if r["kind"] == "text" and r["role"] == "user"]
-            tool_kept = [r for r in covered if r["kind"] == "tool_result"][-4:]
-            tail = covered[-20:]
+            tool_kept = [r for r in covered if r["kind"] == "tool_result"][-6:]
+            tail = covered[-24:]
+
+            def clip(text, head, tail_chars):
+                """Head+tail truncation, as C's evidence index does."""
+                if len(text) <= head + tail_chars:
+                    return text
+                return (text[:head] + f"\n[... {len(text) - head - tail_chars} characters omitted ...]\n"
+                        + text[-tail_chars:])
 
             def render(kept, with_evidence, with_tail):
-                parts = [shapes._plain(kept)]
+                parts = [clip(shapes._plain(kept), 24000, 4000)]
                 if with_evidence and tool_kept:
-                    parts.append("<tool-evidence>\n" + shapes._plain(tool_kept) + "\n</tool-evidence>")
+                    # each block keeps a head and a tail, like the real evidence index
+                    blocks = "\n\n".join(clip(shapes._plain([r]), 380, 100) for r in tool_kept)
+                    parts.append("<tool-evidence>\n" + blocks + "\n</tool-evidence>")
                 if with_tail:
-                    parts.append("<recent-history>\n" + shapes._plain(tail) + "\n</recent-history>")
+                    parts.append("<recent-history>\n"
+                                 + clip(shapes._plain(tail), 8000, 2000) + "\n</recent-history>")
                 if summary:
                     parts.append(f"<state-summary>\n{summary}\n</state-summary>")
-                return "<archived-conversation>\n" + "\n\n".join(p for p in parts if p) + "\n</archived-conversation>"
+                return ("<archived-conversation>\n" + "\n\n".join(p for p in parts if p)
+                        + "\n</archived-conversation>")
 
             projections = {
                 "C3-verbatim": render(assistant_kept, True, True),
