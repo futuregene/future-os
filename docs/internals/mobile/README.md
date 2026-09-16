@@ -146,8 +146,19 @@ offline push.
   position; the list's reverse enter animation is not replayed. In the
   workspace and conversation lists, independent sessions keep compact spacing
   without widening when other sessions appear or child sessions expand; only
-  the parent session shows an expand button, and child sessions keep hierarchy
-  indentation plus expand-button placeholder space.
+  the parent session shows an expand button, and a child session's title shares
+  its parent's title column. That button is a +/− tree-node toggle (collapsed
+  `+`, expanded `−`; the chevron remains the workspace group-header collapse
+  icon and both sit in columns 8–24, distinguished by icon), clearly different
+  from the workspace header's collapse arrow: shape is the only reliable
+  distinction.
+  The column rule matches desktop (see `docs/internals/desktop/PRODUCT.md`
+  §5.2): start 8 with +20 per level (toggle column 16 + gap 4); the toggle
+  layout is 16 wide and the 44×44 touch target is completed with `hitSlop`
+  (16 on the left falls inside the list padding, 4 on the right stops at the
+  title column without covering the title).
+  Workspace group headers use a 4px folder→name gap so the group name lines up
+  with its first-level conversation titles.
 - The input area stays two rows (text + toolbar); narrow screens merge model
   settings without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body

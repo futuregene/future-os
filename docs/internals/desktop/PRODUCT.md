@@ -568,8 +568,8 @@ workspace or an ordinary Chat — is gathered in the top "Pinned" section;
 unpinning returns it to its own group.
 
 Conversations display as a tree of at most three levels following the Agent's
-parent-child session relations (excluding the Workspace title level), with the
-expand arrow in workspace style and collapsed by default; clicking the title
+parent-child session relations (excluding the Workspace title level), collapsed
+by default; clicking the title
 still opens the conversation directly. Forks and loop-derived execution
 sessions use the same relations. Child conversations group with their root even
 when their working directories differ; pinned children enter the pinned section
@@ -578,15 +578,31 @@ do not hide surviving children; deeper historical levels are flattened into the
 third level, with no Agent relations deleted or rewritten. Batch select-all
 includes collapsed children in the current group; delete does not auto-cascade.
 
-Title-space priority: in ordinary conversations and the pinned section,
-top-level rows without children reserve no expand-arrow placeholder, while
-child rows keep the placeholder to align same-level titles; workspace expand
-arrows reuse the existing left indent without further squeezing title width.
-Ordinary conversations and the pinned section (non-workspace) keep a 16px
-starting margin between the title and the highlight left edge — titles are not
-flush against the edge. Expand arrows stay on the left; other sessions
-appearing or expanding children never change unrelated top-level rows' title
-origins.
+A child conversation's expand toggle must be a **+ / − tree-node toggle**
+(collapsed `+`, expanded `−`), which is a different icon from the workspace /
+section-header collapse **chevron**; when they share a column (on mobile both
+controls sit in columns 8–24) only the icon distinguishes them, so they must not
+use the same icon, nor a filled glyph that breaks the product's hairline style.
+
+**Column rule**: a row = `[toggle column 16px][gap 4px][title]`, and **a child
+row's start equals its parent's title column**, so a parent title and its child
+titles share a column at every level; a leaf row has no toggle column, so its
+title starts at the row start.
+Desktop row starts: conversations (including pinned) 16, workspaces 28 (both
+unchanged), +20 per level; a group header is
+`[chevron 8][4][folder 28][4][name 48]` — the folder occupies the toggle column
+so the name's 48 lines up with first-level conversation titles (see
+ActivityRail).
+Mobile starts at 8 with +20 per level; the toggle layout is 16 wide (not 44),
+with the 44×44 touch target completed by `hitSlop` (16 on the left falls inside
+the list padding, 4 on the right stops at the title column).
+
+Title-space priority: rows without children reserve no expand-arrow placeholder,
+and child rows align to their parent title by row-start indent (no placeholder
+whitespace). Ordinary conversations and the pinned section (non-workspace) keep
+a 16px starting margin between the title and the highlight left edge — titles
+are not flush against the edge; other sessions appearing or expanding children
+never change unrelated top-level rows' title origins.
 
 A conversation row's **whole row is clickable** to enter it; the row-end
 operation menu (rename / pin / delete) does not accidentally enter. The
