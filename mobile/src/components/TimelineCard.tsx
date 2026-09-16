@@ -427,9 +427,9 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
   const label = failed
     ? failedToolLabel(t, kind)
     : tool.count != null && tool.count > 1
-      ? t("chat.runCount", {
+      ? t("chat.stepSummary", {
           count: tool.count,
-          action: toolLabel(t, kind, true),
+          action: t(STEP_LABEL_KEYS[kind]),
         })
       : toolLabel(t, kind, tool.complete);
   return (
@@ -523,17 +523,33 @@ function ThinkingRow({ text, streaming }: { text: string; streaming?: boolean })
 type StepSegment = Extract<TimelineSegment, { kind: "thinking" | "tool" }>;
 type StepKind = ToolKind | "thinking";
 
+/**
+ * The short label each step kind is counted under in a folded summary. These are
+ * deliberately *not* the single-row labels: "已运行" / "Ran a command" read as a
+ * sentence, and a summary stacks one per kind, so the bare verb keeps the line a
+ * glance instead of a sentence ("运行 5 次 · 思考 3 次", not "已运行 5 次 · 已思考 3 次").
+ */
+const STEP_LABEL_KEYS: Record<StepKind, string> = {
+  thinking: "chat.stepThink",
+  shell: "chat.stepRun",
+  read: "chat.stepRead",
+  write: "chat.stepWrite",
+  edit: "chat.stepEdit",
+};
+
 function isStepSegment(segment: TimelineSegment): segment is StepSegment {
   return segment.kind === "thinking" || segment.kind === "tool";
 }
 
 /**
- * Whether a step row may be hidden inside a folded run. A failed call and a
- * still-running one must stay on screen: folding them would bury the only rows
- * that carry anything the user has not seen yet.
+ * Whether a step row may be hidden inside a folded run. Everything that has
+ * stopped counts — a failure included: it is counted under its kind and flagged
+ * on the summary line, so the run still folds ("运行 5 次" covers a failed run)
+ * without the failure going quiet. A call that is still running stays on screen:
+ * it is live progress, and folding it would hide work in flight.
  */
 function foldableStep(segment: StepSegment): boolean {
-  return segment.kind === "thinking" || (segment.tool.complete && segment.tool.status !== "failed");
+  return segment.kind === "thinking" || segment.tool.complete;
 }
 
 function stepKindOf(segment: StepSegment): StepKind {
@@ -549,10 +565,10 @@ type ReplyBlock =
  * Fold a reply's inline slices into render blocks. A phone has no room for the
  * desktop's one-line-per-activity transcript: a single long exchange routinely
  * produces a dozen thinking/tool rows, each a full line, and they crowd out the
- * prose between them. Consecutive foldable step rows therefore collapse into
- * one summary line (expanded on tap), while prose, compaction dividers,
- * failures, and the slice the agent is working on right now pass through
- * untouched — nothing that is still changing is ever hidden.
+ * prose between them. Consecutive step rows that have stopped therefore collapse
+ * into one summary line (expanded on tap), while prose, compaction dividers and
+ * the slice the agent is working on right now pass through untouched — nothing
+ * that is still changing is ever hidden.
  *
  * This is a render concern only, exactly like the per-block collapse in
  * ThinkingRow: the shared projection still carries every slice in stream order,
@@ -601,9 +617,9 @@ function stepRunSummary(
   }
   return order
     .map(kind =>
-      t("chat.runCount", {
+      t("chat.stepSummary", {
         count: counts.get(kind) ?? 0,
-        action: kind === "thinking" ? t("chat.thoughtCompleted") : toolLabel(t, kind, true),
+        action: t(STEP_LABEL_KEYS[kind]),
       }),
     )
     .join(" · ");
@@ -614,27 +630,44 @@ function stepRunSummary(
  * rows once tapped — and each of those still opens its own detail, so the
  * desktop's two taps survive without the phone spending a line per activity.
  * The leading glyph follows the run's first slice, so a run that opens on
- * reasoning reads as reasoning.
+ * reasoning reads as reasoning — unless something in the run failed, which the
+ * line flags ahead of any kind hint ("did anything break?" beats "was this
+ * reasoning or a command?").
  */
 function StepRunBlock({ segments }: { segments: StepSegment[] }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const first = segments[0]!;
+  const summary = stepRunSummary(t, segments);
+  // A failed call folds like any other — and is counted like any other, under its
+  // own kind — so the counts alone cannot tell the user it happened. The line
+  // carries the alert glyph / danger tint, and names the count to screen readers
+  // (a marker carried only by colour reads to no one).
+  const failedCount = segments.filter(
+    segment => segment.kind === "tool" && segment.tool.status === "failed",
+  ).length;
+  const failureNote = failedCount > 0 ? t("chat.stepsFailed", { count: failedCount }) : null;
   return (
     <View style={styles.inlineTool}>
       <Pressable
+        accessibilityLabel={failureNote ? `${summary} · ${failureNote}` : summary}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
         onPress={() => setExpanded(value => !value)}
         style={styles.toolHeader}
       >
-        {first.kind === "thinking" ? (
+        {failureNote ? (
+          <TriangleAlert color={colors.danger} size={14} />
+        ) : first.kind === "thinking" ? (
           <Brain color={colors.inkMuted} size={14} />
         ) : (
           <ToolGlyph kind={toolKind(first.tool.name)} />
         )}
-        <Text numberOfLines={1} style={[styles.toolText, styles.stepSummaryText]}>
-          {stepRunSummary(t, segments)}
+        <Text
+          numberOfLines={1}
+          style={[styles.toolText, styles.stepSummaryText, failureNote ? styles.stepFailureText : null]}
+        >
+          {summary}
         </Text>
         {expanded ? (
           <ChevronUp color={colors.inkMuted} size={14} />
@@ -996,6 +1029,7 @@ const styles = StyleSheet.create({
   },
   inlineToolChildren: { gap: 2, marginTop: 2, paddingLeft: spacing.md + spacing.sm },
   stepSummaryText: { flexShrink: 1 },
+  stepFailureText: { color: colors.danger },
   // Folded rows are indented once, like a tool burst's children, so the
   // expanded list reads as belonging to the summary line above it.
   stepChildren: { gap: spacing.xs, marginTop: 2, paddingLeft: spacing.md + spacing.sm },

@@ -282,7 +282,16 @@ export const resources = {
         readFailed: "Read failed",
         writeFailed: "Write failed",
         editFailed: "Edit failed",
-        runCount: "{{action}} {{count}}×",
+        // A folded run's counts, and the short verbs they are counted under.
+        // Deliberately not the "Ran a command" forms above: several stack on
+        // one line, and a stack of sentences is what made the line unreadable.
+        stepSummary: "{{action}} {{count}}×",
+        stepThink: "Thought",
+        stepRun: "Ran",
+        stepRead: "Read",
+        stepWrite: "Wrote",
+        stepEdit: "Edited",
+        stepsFailed: "{{count}} failed",
         copy: "Copy",
         copyResponse: "Copy response",
         tokens: "{{formattedCount}} tokens",
@@ -793,7 +802,15 @@ export const resources = {
         readFailed: "读取失败",
         writeFailed: "写入失败",
         editFailed: "编辑失败",
-        runCount: "{{action}} {{count}} 次",
+        // 折叠行的计数文案：动作词用短动词，不再重复“已…”，多个种类叠在一行时
+        // 才读得下去（“运行 5 次 · 思考 3 次”而不是“已运行 5 次 · 已思考 3 次”）。
+        stepSummary: "{{action}} {{count}} 次",
+        stepThink: "思考",
+        stepRun: "运行",
+        stepRead: "读取",
+        stepWrite: "写入",
+        stepEdit: "编辑",
+        stepsFailed: "{{count}} 次失败",
         copy: "复制",
         copyResponse: "复制回复",
         tokens: "{{formattedCount}} tokens",
