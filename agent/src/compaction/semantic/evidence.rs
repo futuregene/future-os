@@ -506,7 +506,7 @@ it.",
         provider,
         &manager.model,
         system_prompt,
-        fit_messages(live, manager),
+        fit_messages(live, manager, budget.saturating_mul(2)),
         instruction,
         tools.to_vec(),
         interrupted,
@@ -531,46 +531,58 @@ it.",
 /// starts with almost no headroom. Dropping from the middle preserves the protected
 /// originals at the head (which the summary must not lose) and the current work at
 /// the tail, and only when the whole thing genuinely does not fit.
-fn fit_messages(messages: Vec<AgentMessage>, manager: &ContextManager) -> Vec<AgentMessage> {
+fn fit_messages(
+    messages: Vec<AgentMessage>,
+    manager: &ContextManager,
+    max_output: u64,
+) -> Vec<AgentMessage> {
     let window = manager.context_window.max(1) as u64;
-    let budget = window
-        .saturating_sub(manager.reserve_tokens.max(0) as u64)
-        .saturating_sub(window / 4)
-        .max(window / 4);
+    // Headroom for what THIS request asks the provider to generate, plus the same small
+    // margin the runtime uses. An earlier version withheld a quarter of the window,
+    // which dropped ~470 of 480 messages on a conversation that fit the window
+    // perfectly well -- and dropping from the middle is what stops the request from
+    // being served out of the prefix cache.
+    let margin = 2_048_u64.min(window / 16);
+    let budget = window.saturating_sub(max_output).saturating_sub(margin);
     let cost = |messages: &[AgentMessage]| {
         messages
             .iter()
             .map(super::projected_token_cost_message)
             .sum::<u64>()
     };
-    if cost(&messages) <= budget || messages.len() <= 10 {
+    if cost(&messages) <= budget {
         return messages;
     }
-    let mut head = 2_usize;
-    let mut tail = 8_usize;
+    // Genuinely larger than one request can carry. Keep the leading originals (which
+    // remain a valid cache prefix) and as much of the newest history as fits; the tail
+    // grows while it is affordable, so nothing is dropped that could have been kept.
+    let head = 2.min(messages.len());
+    let mut tail = 0_usize;
     loop {
-        if head + tail >= messages.len() {
-            return messages;
+        let next = tail + 1;
+        if head + next > messages.len() {
+            break;
         }
         let candidate: Vec<AgentMessage> = messages[..head]
             .iter()
             .cloned()
-            .chain(messages[messages.len() - tail..].iter().cloned())
+            .chain(messages[messages.len() - next..].iter().cloned())
             .collect();
-        if cost(&candidate) <= budget {
-            return candidate;
+        if cost(&candidate) > budget {
+            break;
         }
-        // Grow the tail first: recent work matters more than breadth of history,
-        // and the head is already the minimum that keeps the originals meaningful.
-        if tail + 8 < messages.len() / 2 {
-            tail += 8;
-        } else if head > 0 {
-            head -= 1;
-            tail = 8;
-        } else {
-            return candidate;
-        }
+        tail = next;
     }
+    if tail == 0 {
+        // Even the leading originals plus one message exceed the budget; send the
+        // originals alone rather than nothing.
+        return messages[..head].to_vec();
+    }
+    messages[..head]
+        .iter()
+        .cloned()
+        .chain(messages[messages.len() - tail..].iter().cloned())
+        .collect()
 }
 
 #[cfg(test)]

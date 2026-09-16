@@ -350,3 +350,84 @@ fn notes_cancellation_and_missing_boundaries_are_explicit() {
     .unwrap()
     .contains("selector does not interpret"));
 }
+
+/// Confirms the suspicion directly: at the size where compaction actually fires, does
+/// `fit_messages` truncate? Dropping from the middle breaks the cache prefix, so if it
+/// truncates here the request stops being cache-served exactly when it matters.
+#[test]
+fn fit_messages_truncates_at_the_compaction_trigger() {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 32_000,
+        keep_recent_tokens: 4_000,
+        context_window: 1_000_000,
+        model: "m".into(),
+    };
+    // The trigger is the window minus the output reservation and margin; the same
+    // quantity the runtime compares the estimate against.
+    let margin = 2_048_u64.min(manager.context_window as u64 / 16);
+    let trigger = (manager.context_window as u64)
+        .saturating_sub(32_000)
+        .saturating_sub(margin);
+    // A conversation sitting exactly at the trigger threshold.
+    let per_message = 2_000;
+    let count = (trigger as usize / per_message).max(12);
+    let messages: Vec<AgentMessage> = (0..count)
+        .map(|_i| AgentMessage::new_user("user", serde_json::json!("x".repeat(per_message * 4))))
+        .collect();
+    let cost: u64 = messages
+        .iter()
+        .map(super::super::projected_token_cost_message)
+        .sum();
+    let fitted = fit_messages(messages.clone(), &manager, 2_048);
+    eprintln!(
+        "trigger={trigger} conversation={cost} messages={} fitted={}",
+        messages.len(),
+        fitted.len()
+    );
+    assert_eq!(
+        fitted.len(),
+        messages.len(),
+        "a conversation that fits the window must not be truncated; truncating drops \
+         the middle and destroys prefix-cache reuse"
+    );
+}
+
+/// When the conversation genuinely exceeds one request, keep the leading originals
+/// plus as much of the newest history as fits — not a hard-coded handful.
+#[test]
+fn fit_messages_keeps_the_newest_history_when_it_must_drop() {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 32_000,
+        keep_recent_tokens: 4_000,
+        context_window: 1_000_000,
+        model: "m".into(),
+    };
+    // Twice the window: dropping is unavoidable.
+    let per_message = 2_000;
+    let count = 1_000; // ~2M tokens
+    let messages: Vec<AgentMessage> = (0..count)
+        .map(|_i| AgentMessage::new_user("user", serde_json::json!("x".repeat(per_message * 4))))
+        .collect();
+    let fitted = fit_messages(messages.clone(), &manager, 2_048);
+    eprintln!("messages={} fitted={}", messages.len(), fitted.len());
+    assert!(
+        fitted.len() > 8,
+        "should keep far more than a token few messages: kept {}",
+        fitted.len()
+    );
+    assert!(
+        fitted.len() < messages.len(),
+        "an oversized conversation must still be reduced"
+    );
+    // The kept messages must be the leading originals plus the newest ones.
+    let kept_tokens: u64 = fitted
+        .iter()
+        .map(super::super::projected_token_cost_message)
+        .sum();
+    assert!(
+        kept_tokens <= 1_000_000_u64 - 2_048 - 2_048,
+        "the kept set must fit the window: {kept_tokens}"
+    );
+}
