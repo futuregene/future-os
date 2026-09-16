@@ -617,6 +617,32 @@ pub async fn set_session_thinking_level(
     Ok(())
 }
 
+/// Generate a suggestion only; saving remains the user's separate rename action.
+pub async fn generate_session_title(
+    session_id: String,
+    language: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let command = crate::agent_proto::RpcCommand {
+        mode: language,
+        ..base_command("generate_session_title", session_id)
+    };
+    let response = client
+        .execute_command(command)
+        .await
+        .map_err(|status| map_rpc_error("Title generation failed", status))?
+        .into_inner()
+        .ok_or_rpc_error("Title generation failed")?;
+    let data = future_rpc::decode::response_data(&response);
+    if data["title"]
+        .as_str()
+        .is_none_or(|title| title.trim().is_empty())
+    {
+        return Err("Model returned an empty title".into());
+    }
+    Ok(data)
+}
+
 /// Rename a session: update the agent's session name, then mirror to the GUI store.
 pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;

@@ -17,6 +17,8 @@ interface RenameDialogProps {
   onChange: (value: string) => void;
   onConfirm: () => void;
   onClose: () => void;
+  onGenerate?: () => void;
+  generating?: boolean;
 }
 
 /**
@@ -35,6 +37,8 @@ export function RenameDialog({
   onChange,
   onConfirm,
   onClose,
+  onGenerate,
+  generating = false,
 }: RenameDialogProps) {
   const { t } = useTranslation("layout");
   const inputId = useId();
@@ -46,7 +50,7 @@ export function RenameDialog({
           <Button disabled={submitting} onClick={onClose} type="button" variant="ghost">
             {t("common:cancel")}
           </Button>
-          <Button disabled={submitting} onClick={onConfirm} type="button" variant="primary">
+          <Button disabled={submitting || generating} onClick={onConfirm} type="button" variant="primary">
             {submitting ? t("appShellDialogs.saving") : t("common:save")}
           </Button>
         </>
@@ -61,7 +65,7 @@ export function RenameDialog({
       <TextInput
         autoFocus
         className="mt-2"
-        disabled={submitting}
+        disabled={submitting || generating}
         id={inputId}
         onChange={event => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -72,7 +76,17 @@ export function RenameDialog({
         }}
         value={value}
       />
-      {error ? <div className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}
+      {onGenerate
+        ? (
+            <div className="mt-3 space-y-2">
+              <Button disabled={submitting || generating} onClick={onGenerate} type="button" variant="secondary">
+                {t(generating ? "appShellDialogs.generatingTitle" : "appShellDialogs.generateTitle")}
+              </Button>
+              <p className="text-xs text-ink-muted">{t("appShellDialogs.generateTitleHint")}</p>
+            </div>
+          )
+        : null}
+      {error ? <div role="alert" className="mt-2 text-xs leading-5 text-danger">{error}</div> : null}
     </Dialog>
   );
 }

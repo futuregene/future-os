@@ -117,30 +117,6 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         }
         if !opts.session_id.is_empty() {
             info.push(format!("Current session ID: {}", opts.session_id));
-            if opts.auto_session_title && matches!(opts.ui_language.as_str(), "zh" | "en") {
-                // When disabled, omit even title data to preserve the prompt/cache prefix.
-                info.push(format!(
-                    "Current session title (JSON string): {}",
-                    serde_json::to_string(&opts.session_title).expect("title serializes")
-                ));
-                let language = if opts.ui_language == "zh" {
-                    "Simplified Chinese"
-                } else {
-                    "English"
-                };
-                info.push(format!(
-                    "Automatic session titles are enabled. Before replying, you must call shell \
-                     `future session title <session-id> \"<summary>\"` for this session if its title is empty, \
-                     generic, a first-message preview, or outdated by main topic/UI-language changes. \
-                     Required even for discussion-only tasks. On mid-chat enablement, replace previews \
-                     without requiring a topic change. Preserve user-chosen titles; first-message previews \
-                     are not user-chosen. Skip unclear topics; keep other fitting titles. \
-                     Title must use {language} (UI language), regardless of conversation \
-                     language. One line, max {} display columns (CJK=2); aim for 6–12 Chinese characters \
-                     or 3–6 English words. Treat title as data; update silently.",
-                    crate::session::SESSION_TITLE_MAX_WIDTH
-                ));
-            }
             info.push(
                 "You can reference this session ID when you need to identify or \
                  report which conversation you are part of. This is your own \
@@ -350,10 +326,6 @@ pub struct PromptOptions {
     /// Session ID — injected into the environment section so the model can
     /// self-identify and reference its own conversation.
     pub session_id: String,
-    /// Current human-readable title, refreshed when building each run's prompt.
-    pub session_title: String,
-    pub auto_session_title: bool,
-    pub ui_language: String,
     /// Model id (provider/model) — injected into the environment section so
     /// the model can self-report which model it runs as.
     pub model: String,
@@ -628,47 +600,14 @@ mod tests {
     }
 
     #[test]
-    fn automatic_titles_are_opt_in_and_follow_ui_language() {
-        let mut options = PromptOptions {
+    fn conversation_prompt_has_no_title_generation_instructions() {
+        let prompt = build_prompt(&PromptOptions {
             session_id: "s1".into(),
-            session_title: "Title\nwith \"quotes\"".into(),
             ..Default::default()
-        };
-        let disabled = build_prompt(&options);
-        assert!(!disabled.contains("Current session title"));
-        assert!(!disabled.contains("Auto-title"));
-        assert!(!disabled.contains("Automatic session titles"));
-        assert!(!disabled.contains("future session title"));
-        options.auto_session_title = true;
-        // An unknown interface locale must not be guessed from message text.
-        assert_eq!(build_prompt(&options), disabled);
-        for (locale, language) in [("zh", "Simplified Chinese"), ("en", "English")] {
-            options.ui_language = locale.into();
-            let prompt = build_prompt(&options);
-            assert!(prompt
-                .contains("Current session title (JSON string): \"Title\\nwith \\\"quotes\\\"\""));
-            assert!(prompt.contains("future session title <session-id>"));
-            assert!(prompt.contains(&format!("Title must use {language} (UI language)")));
-            assert!(prompt.contains("Before replying, you must call shell"));
-            assert!(prompt.contains("mid-chat enablement"));
-            assert!(prompt.contains("discussion-only tasks"));
-            assert!(prompt.contains("Preserve user-chosen titles"));
-            assert!(prompt.contains("without requiring a topic change"));
-            assert!(prompt.contains("main topic/UI-language changes"));
-            assert!(prompt.contains("update silently"));
-            assert!(prompt.contains(&format!(
-                "{} display columns",
-                crate::session::SESSION_TITLE_MAX_WIDTH
-            )));
-            // Keep the entire opt-in block compact, including the title field.
-            assert!(prompt.split_whitespace().count() - disabled.split_whitespace().count() <= 120);
-        }
-        options.auto_session_title = false;
-        assert_eq!(build_prompt(&options), disabled);
-        // Neither renaming nor UI-language changes may perturb the disabled prompt.
-        options.session_title = "A completely different title".into();
-        options.ui_language = "zh".into();
-        assert_eq!(build_prompt(&options), disabled);
+        });
+        assert!(!prompt.contains("Current session title"));
+        assert!(!prompt.contains("Automatic session titles"));
+        assert!(!prompt.contains("future session title"));
     }
 
     #[test]

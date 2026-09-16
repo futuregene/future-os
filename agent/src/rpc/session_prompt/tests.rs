@@ -1351,52 +1351,20 @@ async fn prompt_persist_failure_aborts_run_with_error() {
     assert!(result.is_err());
 }
 
-#[allow(clippy::await_holding_lock)] // Keep title preferences isolated across runs.
 #[tokio::test(flavor = "current_thread")]
-async fn prompt_refreshes_current_session_title_only_when_enabled() {
-    let home = crate::test_support::TestHome::new();
-    let mut settings = crate::config::Settings {
-        auto_session_title: true,
-        ui_language: "zh".into(),
-        ..Default::default()
-    };
-    settings.save(&home.settings_path()).unwrap();
-    let provider = ScriptedProvider::new(vec![
-        text_turn("first"),
-        text_turn("second"),
-        text_turn("third"),
-        text_turn("fourth"),
-    ]);
+async fn renaming_does_not_change_conversation_system_prompt() {
+    let provider = ScriptedProvider::new(vec![text_turn("first"), text_turn("second")]);
     let fixture = run_fixture(provider.clone(), "session-title");
     let mut session = fixture.session;
-    assert_eq!(session.session_title(), "");
     session.set_session_name("原始标题");
     session.prompt("one", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
     session.set_session_name("更新标题");
     session.prompt("two", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
-    settings.auto_session_title = false;
-    settings.save(&home.settings_path()).unwrap();
-    session.prompt("three", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
-    session.set_session_name("关闭后改名");
-    settings.ui_language = "en".into();
-    settings.save(&home.settings_path()).unwrap();
-    session.prompt("four", &[], &[], None, None).unwrap();
-    wait_for_run_end(&session).await;
     let requests = provider.requests.lock().unwrap();
-    assert!(requests[0].system_prompt.contains("原始标题"));
-    assert!(requests[1].system_prompt.contains("更新标题"));
-    assert!(!requests[1].system_prompt.contains("原始标题"));
-    assert!(!requests[2].system_prompt.contains("Current session title"));
-    assert!(!requests[2].system_prompt.contains("更新标题"));
-    assert!(!requests[2]
-        .system_prompt
-        .contains("Automatic session titles"));
-    assert_eq!(requests[2].system_prompt, requests[3].system_prompt);
-    session.set_session_name("");
-    assert_eq!(session.session_title(), "one");
+    assert!(!requests[0].system_prompt.contains("原始标题"));
+    assert_eq!(requests[0].system_prompt, requests[1].system_prompt);
 }
 
 #[tokio::test(flavor = "current_thread")]

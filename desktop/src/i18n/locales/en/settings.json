@@ -1,9 +1,4 @@
 {
-  "autoSessionTitle": {
-    "title": "Automatic session titles",
-    "description": "Let the model summarize the conversation with a short title in your UI language. Off by default; changes apply from the next run.",
-    "error": "Could not update title preferences: {{message}}"
-  },
   "language": {
     "title": "Language",
     "description": "Choose the display language of the app"

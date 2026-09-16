@@ -95,7 +95,7 @@ function TimelineFlexSpacer() {
 }
 
 export function ChatScreen() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
   const connection = controls.connectionPresentation;
@@ -659,6 +659,10 @@ export function ChatScreen() {
 
           <RenameModal
             renameOpen={rename.renameOpen}
+            generationKey={remote.selectedSessionId}
+            onGenerate={remote.selectedSessionId && remote.desktopOnline
+              ? () => remote.generateTitle(remote.selectedSessionId, i18n.language.startsWith("zh") ? "zh" : "en")
+              : undefined}
             renameValue={rename.renameValue}
             setRenameValue={rename.setRenameValue}
             submitRename={rename.submitRename}

@@ -6,7 +6,6 @@ import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../lib/platform";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
-import { SessionTitleSetting } from "./SessionTitleSetting";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
 export function GeneralPage({
@@ -88,7 +87,6 @@ export function GeneralPage({
               />
             )
           : null}
-        <SessionTitleSetting />
         <SettingsRow
           title={t("showThinking.title")}
           description={t("showThinking.description")}

@@ -1,6 +1,6 @@
 //! `future session` — 1:1 port of cli/src/commands/session.ts.
 //!
-//! list / info / title / rename / delete agent sessions via gRPC.
+//! list / info / rename / delete agent sessions via gRPC.
 
 use crate::output::Output;
 use crate::rpc::{grpc_addr, RunClient};
@@ -16,12 +16,9 @@ pub const SESSION_HELP: &str = "future session — manage agent sessions
 Usage:
   future session list [--json]                       List all sessions
   future session info <id>                           Show session details + stats
-  future session title <id> <title>                  Set a compact summary title
   future session rename <id> <name>                  Give a session a readable name
   future session delete <id>                         Delete a session
 
-Titles must be nonempty, single-line, and at most 32 display columns (about 16 Chinese characters).
-Use your current session ID from the system prompt to update your own title.
 Session data is stored in ~/.future/agent/agent.db";
 
 fn help(out: &Output) {
@@ -315,24 +312,7 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
     Ok(())
 }
 
-// ─── Title / Rename ──────────────────────────────────────────────────────
-
-fn validate_title(title: &str) -> Result<&str, String> {
-    let title = title.trim();
-    if title.is_empty()
-        || title.chars().any(char::is_control)
-        || title.contains(['\u{2028}', '\u{2029}'])
-    {
-        return Err("Title must be nonempty and single-line (no control characters).".to_string());
-    }
-    let max_width = future_agent::session::SESSION_TITLE_MAX_WIDTH;
-    if future_agent::session::truncate_visible(title, max_width) != title {
-        return Err(format!(
-            "Title is too long: use at most {max_width} display columns (about 16 Chinese characters)."
-        ));
-    }
-    Ok(title)
-}
+// ─── Rename ──────────────────────────────────────────────────────────────
 
 /// `rename(sessionId, name)`.
 async fn rename(session_id: &str, name: &str, out: &Output) -> Result<(), String> {
@@ -402,9 +382,7 @@ pub async fn session(
     if target_id.is_empty() {
         out.log_err(&format!(
             "Usage: future session {subcommand} <session-id>{}",
-            if subcommand == "title" {
-                " <title>"
-            } else if subcommand == "rename" {
+            if subcommand == "rename" {
                 " <name>"
             } else {
                 ""
@@ -416,11 +394,6 @@ pub async fn session(
     match subcommand {
         "info" => {
             info(&target_id, out).await?;
-        }
-        "title" => {
-            let name = args[1..].join(" ");
-            let title = validate_title(&name)?;
-            rename(&target_id, title, out).await?;
         }
         "rename" => {
             // `const name = args.slice(1).join(" ");`
@@ -456,41 +429,17 @@ fn json_value(sessions: &[Value]) -> Value {
 mod tests {
     use super::*;
 
-    #[test]
-    fn compact_title_validation() {
-        assert_eq!(validate_title("  修复登录  ").unwrap(), "修复登录");
-        assert!(validate_title(&"中".repeat(16)).is_ok());
-        assert!(validate_title(&"中".repeat(17)).is_err());
-        assert!(validate_title(&"a".repeat(32)).is_ok());
-        assert!(validate_title(&"a".repeat(33)).is_err());
-        for invalid in ["", "   ", "a\nb", "a\tb", "a\u{2028}b"] {
-            assert!(validate_title(invalid).is_err(), "{invalid:?}");
-        }
-        assert!(SESSION_HELP.contains(&format!(
-            "{} display columns",
-            future_agent::session::SESSION_TITLE_MAX_WIDTH
-        )));
-    }
-
     #[tokio::test]
-    async fn title_dispatches_compact_summary_to_existing_rename_rpc() {
-        let _guard = crate::test_env::lock_env().await;
-        let agent = crate::test_server::MockAgent::respond("set_session_name", "{}");
-        let (agent, _env) = mock_env(agent).await;
-        let (out, _) = Output::memory();
-        session(Some("title"), &["s1".into(), "  修复登录  ".into()], &out)
-            .await
-            .unwrap();
-        let seen = agent.seen_of("set_session_name");
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].session_id, "s1");
-        assert_eq!(seen[0].name, "修复登录");
+    async fn automatic_title_command_is_not_available() {
+        let (out, cap) = Output::memory();
         assert!(
-            session(Some("title"), &["s1".into(), "中".repeat(17)], &out)
+            session(Some("title"), &["s1".into(), "summary".into()], &out)
                 .await
                 .is_err()
         );
-        assert_eq!(agent.seen_of("set_session_name").len(), 1);
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(stderr.contains("Unknown command: title"));
+        assert!(!SESSION_HELP.contains("future session title"));
     }
 
     #[test]

@@ -795,21 +795,18 @@ below New Chat jumps straight to the models page) has three pages:
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`). **Automatic session titles** is off by
-  default. When disabled, neither the current title nor any title instructions
-  are injected into the system prompt; title and UI-language changes therefore
-  do not alter that prompt. When enabled, a compact instruction tells the model
-  to replace a generic title
-  before its first substantive answer once the topic is clear, including in
-  discussion-only conversations. The check runs before each answer: enabling
-  the feature midway through a conversation also replaces a raw first-message
-  preview without requiring a topic change. Vague openings do not trigger a
-  summary title; ordinary follow-ups retain a fitting title, while material topic or UI-language
-  changes trigger an update. Titles use the Desktop UI language (not the
-  conversation language), preserving titles explicitly chosen by the user.
-  These are model-driven instructions, not a deterministic scheduler. Preference
-  changes apply at the next run boundary. Summary titles use at most 32 display columns (roughly 16 CJK
-  characters), with 6–12 Chinese characters or 3–6 English words preferred.
+  default, per `store/app_settings.rs`).
+
+**Session title suggestions** are exclusively user-triggered from the rename
+window in Desktop and mobile. “Auto-generate” calls the conversation's selected
+model with at most its first three completed question–answer pairs, excluding
+tools, reasoning and later exchanges. Each side is capped at 2000 characters.
+The independent, tool-free request uses the current client's UI language and
+returns a suggestion of at most 32 display columns. It fills the editable input;
+only Save changes the stored title. Generation errors leave the existing input
+unchanged, and late results cannot overwrite a closed/reopened dialog. There is
+no automatic setting, conversation-prompt instruction or title-generation CLI
+command. Generating a suggestion never appends a message or starts a chat run.
 - **Providers**:
   - **Built-in FutureGene** (read-only): clicking "Connect" runs the GUI's
     built-in device-code OAuth login — authorization completes in the system

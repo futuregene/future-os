@@ -97,6 +97,10 @@ export async function createThread(input: {
   return invokeCommand<StoredThread>("create_thread", { input });
 }
 
+export async function generateThreadTitle(threadId: string, language: string) {
+  return invokeCommand<{ title: string; model: string }>("generate_thread_title", { threadId, language });
+}
+
 export async function renameThread(input: { threadId: string; title: string }) {
   return invokeCommand<StoredThread>("rename_thread", { input });
 }

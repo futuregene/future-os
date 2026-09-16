@@ -91,12 +91,6 @@ pub struct Settings {
     /// change takes effect without restarting the agent.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
-    /// Opt-in automatic session summary titles, controlled by Desktop settings.
-    #[serde(default)]
-    pub auto_session_title: bool,
-    /// Desktop UI locale. Empty means unknown: do not automatically rename.
-    #[serde(default)]
-    pub ui_language: String,
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
@@ -181,8 +175,6 @@ impl Default for Settings {
             max_turns: 0,
             default_permission_level: default_permission_level(),
             default_model: String::new(),
-            auto_session_title: false,
-            ui_language: String::new(),
         }
     }
 }
@@ -199,15 +191,6 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.max_turns, 0);
         assert_eq!(s.default_permission_level, "all");
-        assert!(!s.auto_session_title);
-        assert!(s.ui_language.is_empty());
-        let legacy: Settings = serde_json::from_str("{}").unwrap();
-        assert!(!legacy.auto_session_title);
-        assert!(legacy.ui_language.is_empty());
-        let enabled: Settings =
-            serde_json::from_str(r#"{"autoSessionTitle":true,"uiLanguage":"zh"}"#).unwrap();
-        assert!(enabled.auto_session_title);
-        assert_eq!(enabled.ui_language, "zh");
     }
 
     #[test]

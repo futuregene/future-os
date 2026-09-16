@@ -375,19 +375,6 @@ impl ServerSession {
         self.session_name.clone()
     }
 
-    /// Match the catalog's first-message preview until an explicit title is set.
-    pub fn session_title(&self) -> String {
-        if !self.session_name.is_empty() {
-            return self.session_name.clone();
-        }
-        self.messages
-            .read()
-            .iter()
-            .find(|message| message.role == "user")
-            .map(|message| crate::session::truncate_visible(message.display_text().trim(), 40))
-            .unwrap_or_default()
-    }
-
     pub fn set_session_name(&mut self, name: &str) {
         self.session_name = name.to_string();
     }
