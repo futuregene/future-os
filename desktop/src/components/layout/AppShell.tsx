@@ -327,6 +327,7 @@ export function AppShell() {
     setBatchDeleteDialog,
     openRename,
     confirmRename,
+    generateTitle,
     openDelete,
     confirmDelete,
     openBatchDelete,
@@ -745,6 +746,7 @@ export function AppShell() {
         onConfirmBatchDeleteThread={() => void confirmBatchDelete()}
         onConfirmDeleteThread={() => void confirmDelete()}
         onConfirmRenameThread={() => void confirmRename()}
+        onGenerateTitle={() => void generateTitle()}
       />
       <WorkspaceDialogs
         deleteDialog={workspaceDeleteDialog}

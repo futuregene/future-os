@@ -505,6 +505,21 @@ describe("useSessionCatalog", () => {
     expect(result.current.titleOverrides).toEqual({});
   });
 
+  test("title suggestion uses the chosen session and locale without renaming", async () => {
+    render();
+    act(() => void result.current.applySessionSnapshot([session("s1", "running")]));
+    const originalTitle = result.current.sessions[0]!.title;
+    request.mockResolvedValueOnce({ success: true, data: { title: "Suggested" } });
+    let title = "";
+    await act(async () => { title = await result.current.generateTitle("s1", "zh"); });
+    expect(title).toBe("Suggested");
+    expect(request).toHaveBeenCalledWith(
+      { type: "generate_session_title", sessionId: "s1", mode: "zh" }, "s1", 65_000,
+    );
+    expect(result.current.sessions[0]!.title).toBe(originalTitle);
+    expect(result.current.titleOverrides).toEqual({});
+  });
+
   test("rename trims the name and updates both the override and the session", async () => {
     render();
     act(

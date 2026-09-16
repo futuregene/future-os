@@ -990,6 +990,7 @@ mod gui {
                 initialize_app_store,
                 get_app_settings,
                 update_app_settings,
+                generate_thread_title,
                 clear_app_data,
                 get_future_environment,
                 set_future_environment,
