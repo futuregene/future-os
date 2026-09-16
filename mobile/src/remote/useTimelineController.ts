@@ -260,7 +260,7 @@ export function useTimelineController({
     (event: StreamEvent, sessionId: string) => {
       const sid = sessionId || "";
       if (!sid) return;
-      if (event.type === "provider_config_changed") {
+      if (event.type === "provider_config_changed" || event.type === "model_visibility_changed") {
         void refreshModels();
         return;
       }

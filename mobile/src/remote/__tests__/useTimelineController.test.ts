@@ -350,10 +350,13 @@ describe("useTimelineController", () => {
       expect(request).not.toHaveBeenCalled();
     });
 
-    test("provider_config_changed triggers a model refresh", () => {
+    test.each(["provider_config_changed", "model_visibility_changed"])("%s refreshes models without reconciling a global timeline", type => {
       render();
-      result.current.handleEvent(evt("provider_config_changed", "{}"), "s1");
-      expect(options.refreshModels).toHaveBeenCalled();
+      const reconcile = jest.spyOn(result.current.syncEngineRef.current!, "reconcile");
+      result.current.handleEvent(evt(type, "{}"), "_global");
+      expect(options.refreshModels).toHaveBeenCalledTimes(1);
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
     });
 
     test("run_snapshot reconciles the session as resend", () => {

@@ -171,6 +171,41 @@ describe("independent file operations", () => {
     act(() => h.tree.unmount());
   });
 
+  test.each([
+    ["报告.doc", "application/msword"],
+    ["报告.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["示例销售数据.xls", "application/vnd.ms-excel"],
+    ["示例销售数据.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ])("generated Office file %s offers actions and can save/share without an installed reader", async (name, mimeType) => {
+    const metadata: DownloadInfo = { ...pdfInfo, name, mimeType };
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(async () => metadata),
+      downloadAttachment: jest.fn(async () => localFile),
+    };
+    const h = await mount(remote);
+    const path = `C:\\work\\${name}`;
+    await act(async () => { await h.api.openFileLink(path); });
+    expect(remote.prepareAttachment).toHaveBeenLastCalledWith(
+      { path, name }, "original", expect.any(AbortSignal), expect.any(Function),
+    );
+    expect(h.api.fileAction?.info).toEqual(metadata);
+    expect(remote.downloadAttachment).not.toHaveBeenCalled();
+    await act(async () => { await h.api.openOrShare(metadata, null, "save"); });
+    expect(LegacyFileSystem.StorageAccessFramework.createFileAsync).toHaveBeenLastCalledWith(
+      "content://documents/tree/downloads", name, mimeType,
+    );
+    expect(LegacyFileSystem.StorageAccessFramework.writeAsStringAsync).toHaveBeenCalled();
+    await act(async () => { await h.api.openOrShare(metadata, null, "share"); });
+    expect(shareFile).toHaveBeenLastCalledWith(`file:///cache/named/${name}`, mimeType, "attachment.share");
+    expect(findSupportedMimeType).not.toHaveBeenCalled();
+    jest.mocked(findSupportedMimeType).mockResolvedValueOnce(mimeType);
+    await act(async () => { await h.api.openOrShare(metadata, null, "open"); });
+    expect(openFile).toHaveBeenLastCalledWith(`file:///cache/named/${name}`, mimeType);
+    expect(Alert.alert).not.toHaveBeenCalled();
+    act(() => h.tree.unmount());
+  });
+
   test("sharing uses the actual named file and MIME without a VIEW query", async () => {
     const h = await mount({});
     await act(async () => { await h.api.openOrShare(pdfInfo, localFile, "share"); });
