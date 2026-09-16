@@ -1,3 +1,4 @@
+import { Channel } from "@tauri-apps/api/core";
 import { invokeCommand } from "../tauri/invoke";
 
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -58,6 +59,7 @@ export interface AgentPromptInput {
   modelId?: string | null;
   attachments?: AttachmentInput[];
   thinkingLevel?: string | null;
+  onAccepted?: () => void;
 }
 
 export async function sendPromptToFutureAgent({
@@ -69,8 +71,11 @@ export async function sendPromptToFutureAgent({
   modelId,
   attachments,
   thinkingLevel,
+  onAccepted,
 }: AgentPromptInput) {
+  const acceptance = onAccepted ? new Channel<null>(() => onAccepted()) : undefined;
   const response = await invokeCommand<AgentPromptResponse>("agent_prompt", {
+    ...(acceptance ? { onAccepted: acceptance } : {}),
     request: {
       attachments: attachments ?? [],
       message,

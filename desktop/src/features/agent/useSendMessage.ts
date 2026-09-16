@@ -45,9 +45,12 @@ export function useSendMessage({
   // Object identity identifies this send even before createRun completes.
   const localSendRef = useRef<{ runId: string | null } | null>(null);
 
-  const handleSend = useCallback(async (payload: ComposerSendPayload) => {
-    if (!thread)
+  const handleSend = useCallback(async (payload: ComposerSendPayload, onAccepted?: () => void) => {
+    if (!thread) {
+      if (onAccepted)
+        throw new Error("No active conversation");
       return;
+    }
     // One prompt at a time per session. `sendingRef` guards a send this
     // view started; `activeRunId` guards a run already in flight that this view
     // is only re-attached to (backgrounded, reloaded, or remote-driven). Every
@@ -56,7 +59,10 @@ export function useSendMessage({
     // ("already running") and leave a stray failed run. Reject it up front, with
     // visible feedback instead of a silent drop.
     if (sendingRef.current || activeRunId) {
-      emitFutureEvent("toast", { message: i18n.t("agent:thread.alreadyRunning"), tone: "info" });
+      const message = i18n.t("agent:thread.alreadyRunning");
+      emitFutureEvent("toast", { message, tone: "info" });
+      if (onAccepted)
+        throw new Error(message);
       return;
     }
     sendingRef.current = true;
@@ -71,6 +77,7 @@ export function useSendMessage({
       await runSendPipeline(
         {
           isCurrentSend,
+          onAccepted,
           modelId,
           onThreadActivity,
           refreshRecentRun,
