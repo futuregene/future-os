@@ -1,10 +1,10 @@
 //! Process-wide session lifecycle observer.
 //!
 //! Subscribes to the Agent's global control-plane stream for
-//! `session_created` announcements and imports sessions minted by other
-//! clients (TUI/CLI/channels) within milliseconds — the discovery polls in
-//! `observer.rs` remain the backstop for missed events and agents too old to
-//! emit the event.
+//! `session_created` / `session_deleted` announcements, importing sessions
+//! minted by other clients (TUI/CLI/channels) and dropping sessions they
+//! removed within milliseconds — the discovery polls in `observer.rs` remain
+//! the backstop for missed events and agents too old to emit the event.
 //!
 //! Sessions created by this Desktop installation (`creatorId == deviceId`) are
 //! skipped: the GUI manages those threads and their session links itself, and
@@ -42,7 +42,7 @@ async fn observe_once(backoff: &mut Duration) -> Result<(), crate::AppError> {
     let mut client = connect_agent().await?;
     let mut stream = client
         .stream_events(crate::agent_proto::StreamRequest {
-            event_types: vec!["session_created".to_string()],
+            event_types: vec!["session_created".to_string(), "session_deleted".to_string()],
             global_events: true,
             ..Default::default()
         })
@@ -64,10 +64,11 @@ async fn observe_once(backoff: &mut Duration) -> Result<(), crate::AppError> {
         .await
         .map_err(|error| format!("global session events stream closed: {error}"))?
     {
-        if event.r#type != "session_created" {
-            continue;
+        match event.r#type.as_str() {
+            "session_created" => handle_session_created(&event.data).await,
+            "session_deleted" => handle_session_deleted(&event.data),
+            _ => {}
         }
-        handle_session_created(&event.data).await;
     }
     Err(crate::AppError::Message(
         "global session events stream ended".to_string(),
@@ -139,6 +140,40 @@ async fn handle_session_created(data: &str) {
     }
 }
 
+/// Parse one `session_deleted` payload and drop Desktop's mirror of that
+/// session. Deliberately unfiltered by creator: the Agent refuses to delete a
+/// session while a run is draining, so a deletion that did happen is
+/// authoritative for every client, including this installation's own (whose
+/// row is already gone → no-op). Failures are logged, never propagated — one
+/// bad event must not tear down the whole stream.
+fn handle_session_deleted(data: &str) {
+    let payload: serde_json::Value = match serde_json::from_str(data) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("FutureOS: malformed session_deleted payload: {error}");
+            return;
+        }
+    };
+    let Some(session_id) = payload
+        .get("sessionId")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())
+    else {
+        eprintln!("FutureOS: session_deleted payload omitted sessionId");
+        return;
+    };
+    match super::observer::reconcile_deleted_session(session_id) {
+        Ok(true) => {
+            eprintln!("FutureOS: removed session {session_id} deleted outside the GUI");
+            crate::emit_threads_updated();
+        }
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("FutureOS: could not remove deleted session {session_id}: {error}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{mock_agent, stream_event, TestHome};
@@ -204,6 +239,74 @@ mod tests {
             r#"{"sessionId":"s-tui","createdBy":"desktop","creatorId":"desktop_other","cwd":"/tmp"}"#,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn handle_session_deleted_removes_the_local_conversation() {
+        let home = TestHome::new("session-events-deleted");
+        let _mock = mock_agent();
+        let workspace = super::super::test_support::seed_workspace(home.path(), "ws-deleted");
+        let thread = super::super::test_support::seed_thread(&workspace.id, Some("s-gone"));
+        let run = super::super::test_support::seed_run(&thread.id);
+        assert!(crate::store::get_thread(&thread.id).expect("get").is_some());
+
+        // Malformed / half-formed announcements are logged and ignored.
+        handle_session_deleted("not json");
+        handle_session_deleted(r#"{"createdBy":"tui"}"#);
+        assert!(crate::store::get_thread(&thread.id).expect("get").is_some());
+
+        handle_session_deleted(r#"{"sessionId":"s-gone"}"#);
+        assert!(crate::store::get_thread(&thread.id).expect("get").is_none());
+        assert!(
+            crate::store::is_agent_session_tombstoned("s-gone").expect("tombstone"),
+            "the deleted session is fenced against re-import"
+        );
+        assert!(
+            crate::store::get_run(&run.id).expect("get run").is_none(),
+            "the conversation's runs go with it"
+        );
+
+        // A repeat announcement (or one for a session this GUI never had) is a
+        // no-op.
+        handle_session_deleted(r#"{"sessionId":"s-gone"}"#);
+        handle_session_deleted(r#"{"sessionId":"s-never-seen"}"#);
+    }
+
+    #[tokio::test]
+    async fn observe_once_applies_a_deleted_announcement() {
+        let _home = TestHome::new("session-events-stream-deleted");
+        let mock = mock_agent();
+        mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+        mock.push_data(
+            "get_state",
+            serde_json::json!({
+                "sessionId": "s-live",
+                "sessionName": "Live",
+                "cwd": "",
+                "model": "future/k3"
+            }),
+        );
+        mock.push_plain_stream(super::super::test_support::StreamScript::Events(
+            vec![
+                stream_event(
+                    "",
+                    0,
+                    "session_created",
+                    r#"{"sessionId":"s-live","createdBy":"tui"}"#,
+                ),
+                stream_event("", 1, "session_deleted", r#"{"sessionId":"s-live"}"#),
+            ],
+            None,
+        ));
+        let mut backoff = Duration::from_secs(5);
+        let result = observe_once(&mut backoff).await;
+        assert!(result.is_err(), "stream ends → Err");
+        assert!(
+            crate::store::find_thread_by_agent_session("s-live")
+                .expect("find")
+                .is_none(),
+            "a session announced and then deleted outside the GUI leaves no thread"
+        );
     }
 
     #[tokio::test]

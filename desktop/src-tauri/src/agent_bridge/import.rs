@@ -222,6 +222,8 @@ fn create_historical_run(
 
 /// Decide whether a session should be imported as a chat or workspace thread.
 ///
+/// - a session that belongs to another one → it inherits the parent's mode and
+///   workspace (see below)
 /// - `$HOME/.future/workspaces/chat/…` → chat (GUI-managed)
 /// - empty cwd                            → chat (assign a chat cwd, best-effort write-back)
 /// - anything else                        → workspace (real project directory)
@@ -234,6 +236,17 @@ fn thread_mode(
     summary: &AgentSessionSummary,
     title: &str,
 ) -> (String, Option<String>, Option<String>, Option<String>) {
+    // A conversation that belongs to another one hangs under it, in the
+    // parent's workspace: forking copies the parent's cwd, so deriving a
+    // workspace from the child's own cwd would open a second group for the
+    // same directory — or an empty one, when the child lives in the parent's
+    // chat directory. Inheriting also keeps the child's workspace path equal
+    // to the cwd its Agent session actually runs in, so the first prompt does
+    // not look like cwd drift and silently replace the session.
+    if let Some(parent) = parent_thread(summary) {
+        return (parent.mode, Some(parent.workspace_id), None, None);
+    }
+
     // Normalise: trim trailing whitespace + separators so the path
     // behaves as the user intended and `file_name()` is meaningful.
     let cwd = clean_cwd(&summary.cwd);
@@ -266,6 +279,18 @@ fn thread_mode(
         Some(cwd.to_string()),
         Some(name),
     )
+}
+
+/// The local thread a session's parent session maps to, if Desktop already
+/// knows it. Absent parent — a lineage minted elsewhere, or one whose
+/// conversation has not been imported yet — falls back to cwd-derived mode;
+/// parenthood itself is recorded separately by `sync_thread_parent_session`.
+fn parent_thread(summary: &AgentSessionSummary) -> Option<store::ThreadRecord> {
+    let parent = summary.parent_session_id.trim();
+    if parent.is_empty() {
+        return None;
+    }
+    store::find_thread_by_agent_session(parent).ok().flatten()
 }
 
 /// Returns `true` when `cwd` is strictly under the desktop chat workspace
@@ -540,11 +565,19 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
     Ok(created)
 }
 
+/// Imports running at once — bounds the RPC load of a cold start with many
+/// sessions (each import may fetch the session's entries).
+const IMPORT_CONCURRENCY: usize = 4;
+
 /// Discover agent sessions not yet in the GUI DB and import them. Runs in the
 /// background on startup — failures are logged but never block the UI.
 ///
-/// Concurrency is bounded by a semaphore (4 parallel imports). Each import may
-/// fetch session entries (one extra RPC) to create per-reply run records.
+/// Each import may fetch session entries (one extra RPC) to create per-reply
+/// run records. Imports run in generations — parents before their own
+/// children, up to [`IMPORT_CONCURRENCY`] in parallel within a generation — so
+/// a child always sees the parent conversation it attaches to. Without that
+/// order a fork whose parent is imported in the same pass could land in the
+/// Agent list first and open a workspace group of its own.
 pub async fn import_missing_sessions() {
     let sessions = list_agent_sessions().await;
     if sessions.is_empty() {
@@ -552,36 +585,37 @@ pub async fn import_missing_sessions() {
     }
 
     let total = sessions.len();
-    let semaphore = Arc::new(Semaphore::new(4));
-    let mut handles = Vec::new();
-
-    for summary in sessions {
-        let permit = semaphore.clone().acquire_owned().await;
-        handles.push(tokio::spawn(async move {
-            let _permit = permit;
-            import_one(&summary).await
-        }));
-    }
-
+    let semaphore = Arc::new(Semaphore::new(IMPORT_CONCURRENCY));
     let mut imported = 0usize;
     let mut total_runs = 0usize;
-    for handle in handles {
-        match handle.await {
-            // `import_one` returns the created run count: 0 for an already-known
-            // session (title-heal only), >= 1 for a genuinely new import. Only
-            // count the latter, so the summary log fires when something actually
-            // landed — steady-state runs (all sessions known) stay silent.
-            Ok(Ok(runs)) => {
-                total_runs += runs;
-                if runs > 0 {
-                    imported += 1;
+
+    for generation in generations(sessions) {
+        let mut handles = Vec::new();
+        for summary in generation {
+            let permit = semaphore.clone().acquire_owned().await;
+            handles.push(tokio::spawn(async move {
+                let _permit = permit;
+                import_one(&summary).await
+            }));
+        }
+        for handle in handles {
+            match handle.await {
+                // `import_one` returns the created run count: 0 for an already-known
+                // session (title-heal only), >= 1 for a genuinely new import. Only
+                // count the latter, so the summary log fires when something actually
+                // landed — steady-state runs (all sessions known) stay silent.
+                Ok(Ok(runs)) => {
+                    total_runs += runs;
+                    if runs > 0 {
+                        imported += 1;
+                    }
                 }
-            }
-            Ok(Err(error)) => {
-                eprintln!("FutureOS: session import error: {error}");
-            }
-            Err(join_error) => {
-                eprintln!("FutureOS: session import panic: {join_error}");
+                Ok(Err(error)) => {
+                    eprintln!("FutureOS: session import error: {error}");
+                }
+                Err(join_error) => {
+                    eprintln!("FutureOS: session import panic: {join_error}");
+                }
             }
         }
     }
@@ -598,6 +632,45 @@ pub async fn import_missing_sessions() {
         // New threads landed in the store — let the sidebar know.
         crate::emit_threads_updated();
     }
+}
+
+/// Split sessions into generations: index 0 holds every session whose parent
+/// is outside the batch, later ones hold their descendants, and a whole
+/// generation is imported before the next starts.
+///
+/// A lineage that leaves the batch (the parent lives on another machine),
+/// loops, or nests absurdly deep terminates: the walk stops at the first
+/// ancestor it cannot follow, and each step is bounded.
+fn generations(sessions: Vec<AgentSessionSummary>) -> Vec<Vec<AgentSessionSummary>> {
+    const MAX_DEPTH: usize = 64;
+    let present: std::collections::HashSet<String> =
+        sessions.iter().map(|session| session.id.clone()).collect();
+    let parents: HashMap<String, String> = sessions
+        .iter()
+        .filter(|session| !session.parent_session_id.is_empty())
+        .map(|session| (session.id.clone(), session.parent_session_id.clone()))
+        .collect();
+
+    let mut batches: Vec<Vec<AgentSessionSummary>> = Vec::new();
+    for session in sessions {
+        let mut generation = 0usize;
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut current = session.id.clone();
+        while let Some(parent) = parents.get(&current).cloned() {
+            // Only ancestors inside this batch order the import; a lineage
+            // leaving the batch (parent on another machine) is not waited on.
+            if generation >= MAX_DEPTH || !visited.insert(current) || !present.contains(&parent) {
+                break;
+            }
+            current = parent;
+            generation += 1;
+        }
+        if batches.len() <= generation {
+            batches.resize_with(generation + 1, Vec::new);
+        }
+        batches[generation].push(session);
+    }
+    batches
 }
 
 // ─── tests ──────────────────────────────────────────────────────────────────
@@ -1300,6 +1373,147 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    // ── parent/child workspace inheritance ───────────────────────────
+
+    fn summary_with_parent(id: &str, cwd: &str, parent: &str) -> AgentSessionSummary {
+        AgentSessionSummary {
+            id: id.to_string(),
+            name: None,
+            cwd: cwd.to_string(),
+            model: "future/k3".to_string(),
+            first_message: Some(format!("first message for {id}")),
+            parent_session_id: parent.to_string(),
+            is_streaming: false,
+        }
+    }
+
+    /// A child conversation hangs in its parent's workspace instead of opening
+    /// a group of its own (a fork copies the parent's cwd, so the derived
+    /// group would be a duplicate of the parent's — or empty).
+    #[tokio::test]
+    async fn thread_mode_inherits_the_parent_workspace() {
+        let home = super::super::test_support::TestHome::new("import-child-workspace");
+        let _mock = super::super::test_support::mock_agent();
+        let parent_workspace = super::super::test_support::seed_workspace(home.path(), "project");
+        super::super::test_support::seed_thread(&parent_workspace.id, Some("sess-parent"));
+
+        // The child's cwd is a different directory — still no new workspace.
+        let child = summary_with_parent("sess-child", "/elsewhere/other", "sess-parent");
+        let (mode, workspace_id, path, name) = thread_mode(&child, "Child");
+        assert_eq!(mode, "workspace");
+        assert_eq!(workspace_id.as_deref(), Some(parent_workspace.id.as_str()));
+        assert!(path.is_none() && name.is_none());
+
+        // A chat parent: the child inherits the chat workspace too, so the
+        // workspace path stays equal to the cwd its Agent session runs in.
+        let chat_thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Chat parent".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-chat-parent".to_string()),
+        })
+        .expect("chat thread");
+        let chat_child = summary_with_parent("sess-chat-child", "", "sess-chat-parent");
+        let (mode, workspace_id, path, _) = thread_mode(&chat_child, "Child");
+        assert_eq!(mode, "chat");
+        assert_eq!(
+            workspace_id.as_deref(),
+            Some(chat_thread.workspace_id.as_str())
+        );
+        assert!(path.is_none());
+
+        // Unknown parent (or none) → the cwd still decides.
+        let orphan = summary_with_parent("sess-orphan", "/elsewhere/other", "sess-unknown");
+        let (mode, workspace_id, path, _) = thread_mode(&orphan, "Orphan");
+        assert_eq!(mode, "workspace");
+        assert!(workspace_id.is_none());
+        assert_eq!(path.as_deref(), Some("/elsewhere/other"));
+        assert_eq!(
+            thread_mode(&summary("sess-solo", "/elsewhere/other"), "Solo").0,
+            "workspace"
+        );
+    }
+
+    /// Importing a child in the same pass as its parent must still attach it
+    /// to the parent: generations put ancestors first.
+    #[tokio::test]
+    async fn import_missing_sessions_imports_parents_before_children() {
+        let home = super::super::test_support::TestHome::new("import-generations");
+        let mock = super::super::test_support::mock_agent();
+        // The child is listed FIRST — a cold Agent list has no ordering
+        // guarantee, so only the generation split can order the imports.
+        mock.push_typed_data(
+            "list_sessions",
+            serde_json::json!({"sessions": [
+                {"id": "sess-child", "sessionName": null, "cwd": "/tmp/proj", "model": "future/k3",
+                 "updatedAtMs": 200, "parentSessionId": "sess-parent", "firstMessage": "child", "queryCount": 1, "isStreaming": false},
+                {"id": "sess-parent", "sessionName": null, "cwd": "/tmp/proj", "model": "future/k3",
+                 "updatedAtMs": 100, "parentSessionId": null, "firstMessage": "parent", "queryCount": 1, "isStreaming": false}
+            ]}),
+        );
+        for index in 0..2 {
+            mock.push_typed_data(
+                "get_session_entries",
+                serde_json::json!({"entries": [{
+                    "id": format!("reply-{index}"), "role": "assistant", "kind": "assistant",
+                    "runId": format!("history-{index}"), "blocks": [{"kind": "text", "text": "ok"}],
+                    "createdAtMs": 1000
+                }]}),
+            );
+        }
+        import_missing_sessions().await;
+        settle_spawns().await;
+
+        let parent = crate::store::find_thread_by_agent_session("sess-parent")
+            .expect("find parent")
+            .expect("parent thread");
+        let child = crate::store::find_thread_by_agent_session("sess-child")
+            .expect("find child")
+            .expect("child thread");
+        assert_eq!(child.parent_session_id.as_deref(), Some("sess-parent"));
+        assert_eq!(
+            child.workspace_id, parent.workspace_id,
+            "the child conversation joins its parent's workspace"
+        );
+        // One workspace group for the directory, not one per conversation.
+        let groups = crate::store::list_workspaces()
+            .expect("workspaces")
+            .into_iter()
+            .filter(|workspace| workspace.kind == "user")
+            .count();
+        assert_eq!(groups, 1);
+        super::super::observer::drop_observer("sess-parent");
+        super::super::observer::drop_observer("sess-child");
+        let _ = home;
+    }
+
+    /// Generations: ancestors first, a lineage leaving the batch does not
+    /// stall, and a cycle terminates.
+    #[test]
+    fn generations_order_ancestors_first() {
+        let batch = generations(vec![
+            summary_with_parent("c", "/x", "b"),
+            summary_with_parent("b", "/x", "a"),
+            summary_with_parent("a", "/x", ""),
+            summary_with_parent("outside", "/x", "not-in-batch"),
+            summary_with_parent("loop-1", "/x", "loop-2"),
+            summary_with_parent("loop-2", "/x", "loop-1"),
+        ]);
+        let ids = |index: usize| -> Vec<String> {
+            let mut ids = batch[index]
+                .iter()
+                .map(|session| session.id.clone())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(0), vec!["a", "outside"]);
+        assert_eq!(ids(1), vec!["b"]);
+        assert_eq!(ids(2), vec!["c", "loop-1", "loop-2"]);
     }
 
     #[tokio::test]
