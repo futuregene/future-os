@@ -1,4 +1,5 @@
 import { createElement } from "react";
+import { AppState } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { applyStreamEvent, applyStreamEvents, commitAcknowledgedUserMessage, emptyTimeline } from "../timeline";
@@ -114,6 +115,57 @@ describe("useTimelineController", () => {
     await flush();
   }
 
+  test("background grace stops projection and foreground recovery restores missed text", async () => {
+    jest.useFakeTimers();
+    const originalActivity = Object.getOwnPropertyDescriptor(AppState, "currentState")!;
+    const setActivity = (value: string) => Object.defineProperty(AppState, "currentState", { configurable: true, value });
+    setActivity("active");
+    const events = [evt("agent_start", "{}", "r", 0), evt("text_chunk", '{"text":"prefix"}', "r", 1)];
+    request.mockImplementation(async (command: { type: string; sinceIdx?: number }) => ({ data:
+      command.type === "get_state" ? { activeRun: { runId: "r" } }
+        : command.type === "get_session_entries" ? { entries: [] }
+          : { events: events.filter(event => event.idx! > (command.sinceIdx ?? -1)) },
+    }));
+    options.selectedSessionId = "s1";
+    try {
+      render();
+      await establish();
+      const before = result.current.timeline;
+      setActivity("background");
+      const tail = evt("text_chunk", '{"text":" while hidden"}', "r", 2);
+      events.push(tail);
+      act(() => result.current.handleEvent(tail, "s1"));
+      await act(async () => { await jest.advanceTimersByTimeAsync(1000); });
+      expect(result.current.timeline).toBe(before);
+      const reads = request.mock.calls.length;
+      act(() => result.current.reconcileSession("s1", "reconnect"));
+      await flush();
+      expect(request).toHaveBeenCalledTimes(reads);
+      setActivity("active");
+      act(() => result.current.reconcileSession("s1", "reconnect"));
+      await flush();
+      expect(result.current.timeline.items.at(-1)).toMatchObject({ text: "prefix while hidden" });
+    } finally { Object.defineProperty(AppState, "currentState", originalActivity); jest.useRealTimers(); }
+  });
+
+  test("cache eviction preserves a queued timeline commit before ref effects run", async () => {
+    options.selectedSessionId = "s1";
+    render();
+    const engine = result.current.syncEngineRef.current!;
+    const prune = jest.spyOn(engine, "pruneCache").mockReturnValue(["old"]);
+    // The hook's subscriber queues setTimelines first. Trigger cleanup in the
+    // same engine commit, before React has mirrored that new state to its ref.
+    const unsubscribe = engine.subscribe(() => result.current.prepareTimelineOpen("s1"));
+    try {
+      act(() => engine.mutate("s1", () => ({ ...emptyTimeline(), items: [
+        { kind: "message", id: "fresh", role: "user", text: "newly committed" },
+      ] })));
+      await flush();
+      expect(result.current.timelinePending).toBe(false);
+      expect(result.current.timeline.items[0]).toMatchObject({ id: "fresh", text: "newly committed" });
+    } finally { unsubscribe(); prune.mockRestore(); }
+  });
+
   test("navigation evicts inactive UI history and paging state, then reloads it on demand", async () => {
     request.mockImplementation(
       async (command: { type: string; sessionId: string }) => ({
@@ -155,6 +207,41 @@ describe("useTimelineController", () => {
     await flush();
     expect(result.current.timelinePending).toBe(false);
     expect(result.current.canLoadOlderTimeline).toBe(true);
+  });
+
+  test("back navigation defers cache sizing and cancels stale cleanup on reopen", async () => {
+    jest.useFakeTimers();
+    request.mockImplementation(async (command: { type: string }) => ({
+      data: command.type === "get_state" ? {} : { entries: [userEntry("u", "history")] },
+    }));
+    options.selectedSessionId = "s1";
+    try {
+      render();
+      await establish();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const prune = jest.spyOn(result.current.syncEngineRef.current!, "pruneCache");
+      const navigate = (id: string) => {
+        options.selectedSessionId = id;
+        options.selectedRef.current = id;
+        act(() => renderer!.update(createElement(Harness)));
+      };
+      navigate("");
+      expect(result.current.timeline.items).toHaveLength(0);
+      expect(prune).not.toHaveBeenCalled();
+      navigate("s1");
+      expect(prune).not.toHaveBeenCalled();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(prune.mock.calls).toEqual([["s1"]]);
+      navigate("");
+      expect(prune).toHaveBeenCalledTimes(1);
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(prune.mock.calls).toEqual([["s1"], [""]]);
+      navigate("s1");
+      act(() => renderer!.unmount());
+      renderer = null;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(prune).toHaveBeenCalledTimes(2);
+    } finally { jest.useRealTimers(); }
   });
 
   test("slow active-run replay does not trigger the 15-second history timeout", async () => {

@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
 import { fetchEventsSince } from "./replay";
 import { requestReadPage } from "./readPages";
@@ -281,7 +282,7 @@ export function useTimelineController({
         }
         return;
       }
-      if (sid !== selectedRef.current) {
+      if (sid !== selectedRef.current || AppState.currentState === "background") {
         // Background conversations need catalog/unread/approval status, not
         // token projection or eager history/replay. Opening reloads durable
         // history and the active prefix, including any deferred approvals.
@@ -515,7 +516,14 @@ export function useTimelineController({
     }
     timelinesRef.current = next;
     historyPagingRef.current = paging;
-    setTimelines(next);
+    // A deferred prune can run after an engine commit queued a React update
+    // but before the ref-mirroring effect. Remove only evicted keys from the
+    // latest state; replacing it with the ref snapshot would erase that commit.
+    setTimelines((previous) => {
+      const retained = { ...previous };
+      for (const id of removed) delete retained[id];
+      return retained;
+    });
     setHistoryPaging(paging);
     setSyncStatuses((previous) => {
       const next = { ...previous };
@@ -530,8 +538,15 @@ export function useTimelineController({
   }, []);
 
   useEffect(() => {
-    pruneTimelines(selectedSessionId);
-  }, [pruneTimelines, selectedSessionId]);
+    // Cache sizing serializes timelines and can be expensive after a long run.
+    // Do not do it in the navigation commit's effects: let the native screen
+    // update first. Cancel stale cleanup when the user immediately reopens.
+    const timer = setTimeout(() => {
+      // Selection changes synchronously, before React cleans up this effect.
+      if (selectedRef.current === selectedSessionId) pruneTimelines(selectedSessionId);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [pruneTimelines, selectedRef, selectedSessionId]);
 
   const prepareTimelineOpen = useCallback(
     (sessionId: string) => {
@@ -565,7 +580,10 @@ export function useTimelineController({
 
   useEffect(() => {
     const engine = new SyncEngine({
-      isSessionVisible: (sessionId) => sessionId === selectedRef.current,
+      // The connection has a background grace period for pickers/quick app
+      // switches, but there is no reason to project invisible text during it.
+      // Foreground recovery already reconciles the missed durable suffix.
+      isSessionVisible: (sessionId) => sessionId === selectedRef.current && AppState.currentState !== "background",
       requestGetState: async (sessionId) => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");

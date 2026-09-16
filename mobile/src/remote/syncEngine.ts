@@ -38,7 +38,7 @@
  */
 
 import {
-  applyStreamEvent,
+  createStreamEventBatch,
   applyReplayEvents,
   emptyTimeline,
   normalizeReplayEvents,
@@ -133,7 +133,7 @@ export interface Commit {
 /** A synchronous timeline mutation (approval decision, optimistic bubble…). */
 type Mutator = (timeline: TimelineState) => TimelineState;
 
-type Op = { kind: "event"; event: StreamEvent } | { kind: "mutate"; apply: Mutator };
+type Op = { kind: "event"; event: StreamEvent; bytes: number } | { kind: "mutate"; apply: Mutator };
 
 interface ReconcileRequest {
   reason: ReconcileReason;
@@ -164,7 +164,11 @@ interface SessionLane {
 
 const MAX_REPLAY_QUEUE = 6;
 const RECONCILE_RETRY_MAX_MS = 30_000;
-const LIVE_EVENT_FRAME_MS = 16;
+// Text needs readable updates, not display-refresh-rate React commits. Control
+// events bypass this coalescing window; backlog continuations yield separately.
+const LIVE_EVENT_FRAME_MS = 80;
+const LIVE_OP_BATCH_SIZE = 64;
+const LIVE_OP_BUDGET_MS = 8;
 
 export class SyncEngine {
   private lanes = new Map<string, SessionLane>();
@@ -204,12 +208,25 @@ export class SyncEngine {
       if (bytes > 8 * 1024 * 1024) return;
     }
     lane.bufferedBytes += bytes;
-    lane.ops.push({ kind: "event", event });
+    lane.ops.push({ kind: "event", event, bytes });
     // First contact already queued an immediate reconcile step, which will
     // drain this op. Established lanes collect live deltas for one display
     // frame so React Native receives one timeline commit instead of one per
     // token, while retaining every event and its cursor in order.
-    if (!establishing) this.scheduleLiveFlush(lane);
+    if (!establishing) {
+      if (["text_chunk", "thinking_delta", "tool_delta", "toolcall_delta"].includes(event.type)) {
+        this.scheduleLiveFlush(lane);
+      } else {
+        // Approval, failure and terminal state must not wait behind the text
+        // cadence. Drain in order, including any text already queued.
+        this.liveFlushLanes.delete(lane);
+        if (this.liveFlushLanes.size === 0 && this.liveFlushTimer) {
+          clearTimeout(this.liveFlushTimer);
+          this.liveFlushTimer = null;
+        }
+        this.loop(lane);
+      }
+    }
   }
 
   /** Enqueue a reconcile. Repeats of the same reason+run are folded. */
@@ -361,7 +378,7 @@ export class SyncEngine {
     return lane;
   }
 
-  private scheduleLiveFlush(lane: SessionLane): void {
+  private scheduleLiveFlush(lane: SessionLane, delay = LIVE_EVENT_FRAME_MS): void {
     this.liveFlushLanes.add(lane);
     if (this.liveFlushTimer) return;
     this.liveFlushTimer = setTimeout(() => {
@@ -371,7 +388,7 @@ export class SyncEngine {
       for (const pending of lanes) {
         if (this.isCurrent(pending)) this.loop(pending);
       }
-    }, LIVE_EVENT_FRAME_MS);
+    }, delay);
   }
 
   private invalidateBaseline(lane: SessionLane): void {
@@ -719,15 +736,37 @@ export class SyncEngine {
     let timeline = lane.timeline ?? emptyTimeline();
     const ops = lane.ops;
     lane.ops = [];
-    lane.bufferedBytes = 0;
+    const deadline = Date.now() + LIVE_OP_BUDGET_MS;
     const beforeStreaming = timeline.streaming;
     let flipRunId: string | undefined;
     let changed = false;
+    let batch: ReturnType<typeof createStreamEventBatch> | null = null;
+    const flushBatch = () => {
+      if (!batch) return;
+      timeline = batch.finish();
+      batch = null;
+    };
+    const append = (event: StreamEvent) => {
+      batch ??= createStreamEventBatch(timeline);
+      batch.append(event);
+      changed = true;
+      if (event.type === "agent_end") flipRunId = event.runId ?? flipRunId;
+    };
 
     for (let index = 0; index < ops.length; index += 1) {
+      // A burst can contain thousands of tokens. Draining it in one promise
+      // microtask starves native back/touch events, even though navigation
+      // itself never awaits the run. Commit a bounded prefix, then yield via
+      // a timer (not another promise) so the UI can leave the conversation.
+      if (index >= LIVE_OP_BATCH_SIZE || (index > 0 && Date.now() >= deadline)) {
+        lane.ops.unshift(...ops.slice(index));
+        this.scheduleLiveFlush(lane, 0);
+        break;
+      }
       const op = ops[index];
       if (!op) continue;
       if (op.kind === "mutate") {
+        flushBatch();
         const next = op.apply(timeline);
         if (next !== timeline) {
           timeline = next;
@@ -738,7 +777,6 @@ export class SyncEngine {
       const event = op.event;
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
       const verdict = nextEvent(lane.cursor, event.runId, event.idx);
-      if (verdict.kind === "dup") continue;
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));
@@ -762,11 +800,11 @@ export class SyncEngine {
         }
         break;
       }
+      lane.bufferedBytes -= op.bytes;
+      if (verdict.kind === "dup") continue;
       if (verdict.kind === "apply") {
         advanceCursor(lane.cursor, event.runId!, verdict.idx);
-        timeline = applyStreamEvent(timeline, event);
-        changed = true;
-        if (event.type === "agent_end") flipRunId = event.runId ?? flipRunId;
+        append(event);
         // A run whose first seen event has idx > 0 (mid-run join or an
         // out-of-order first delivery) has an unknown prefix (H3) — reconcile
         // it from -1 so the missing prefix is recovered.
@@ -775,12 +813,11 @@ export class SyncEngine {
         }
       } else {
         // untracked — no cursor, apply as-is (dedup lives in the reducer).
-        timeline = applyStreamEvent(timeline, event);
-        changed = true;
-        if (event.type === "agent_end") flipRunId = event.runId ?? flipRunId;
+        append(event);
       }
     }
 
+    flushBatch();
     if (changed) {
       lane.timeline = timeline;
       this.commit(lane);
