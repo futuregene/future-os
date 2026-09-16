@@ -19,6 +19,12 @@ function thread(id: string, parentSessionId?: string): StoredThread {
   return { id, parentSessionId, agentSessionId: id, title: id, mode: "chat", workspaceId: id, status: "active", pinned: false, readonly: false, createdAt: 0, updatedAt: 0 };
 }
 
+/**
+ * Toggle column (16) + gap (4) — the indent one tree level adds, and the offset
+ * from a row's start to its title, mirroring ThreadListItem/PRODUCT.md §5.2.
+ */
+const TOGGLE_COLUMN = 20;
+
 function workspaceThread(id: string, workspaceId: string): StoredThread {
   return { ...thread(id), mode: "workspace", workspaceId };
 }
@@ -145,7 +151,67 @@ describe("activity rail conversation hierarchy", () => {
       act(() => expander.click());
       expect(row("child")).not.toBeNull();
       expectCompactRoots();
+      // Descendant titles line up with the parent title: each level adds the
+      // toggle column (16) + gap (4), so a child's row start *is* the parent's
+      // title column — parent padding + toggle + gap.
+      const parentRow = row("parent");
+      const parentTitleOffset = Number.parseFloat(parentRow.style.paddingLeft) + TOGGLE_COLUMN;
+      expect(Number.parseFloat(row("child").style.paddingLeft)).toBe(parentTitleOffset);
       expect(p.onSelectThread).not.toHaveBeenCalled();
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("keeps the workspace header's name on its first-level title column", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const p = {
+      ...props([{ ...thread("first-level", "row-a"), mode: "workspace", workspaceId: "ws" }]),
+      workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      // The folder icon fills the header's toggle column, so the name must sit
+      // one 4px gap behind it — the same column as the group's row titles.
+      const select = [...container.querySelectorAll("button")].find(button => button.textContent === "Workspace")!;
+      expect(select.classList.contains("gap-1")).toBe(true);
+      expect(select.classList.contains("gap-2")).toBe(false);
+      expect(container.querySelector<HTMLButtonElement>("button[aria-label=\"first-level\"]")!.parentElement!.style.paddingLeft).toBe("28px");
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it.each([false, true])("uses a +/− tree toggle for sub-conversations, never the header chevron (workspace=%s)", async (workspace) => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const parent = workspace ? workspaceThread("parent", "ws") : thread("parent");
+    const p = {
+      ...props([parent, { ...thread("child", "parent"), mode: parent.mode, workspaceId: parent.workspaceId }]),
+      workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      const row = container.querySelector<HTMLButtonElement>("button[aria-label=\"parent\"]")!.parentElement!;
+      const threadToggle = row.querySelector<HTMLButtonElement>("button[aria-expanded=false]:not([aria-haspopup])")!;
+      expect(threadToggle.querySelector("svg")!.classList.contains("lucide-plus")).toBe(true);
+      // The workspace group header keeps its chevron — section toggles unaffected.
+      const headerToggle = container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace\"], button[aria-label=\"Expand workspace\"]");
+      if (workspace)
+        expect(headerToggle!.querySelector("svg")!.classList.contains("lucide-chevron-down")).toBe(true);
+      for (const toggle of [headerToggle, container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat section\"]")]) {
+        if (toggle)
+          expect(toggle.querySelector("svg")!.classList.contains("lucide-plus")).toBe(false);
+      }
     }
     finally {
       act(() => root.unmount());
