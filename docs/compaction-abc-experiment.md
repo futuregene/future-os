@@ -491,6 +491,55 @@ This closes the loop: measured where real questions point, verbatim retention of
 agent's own output is worth **+12 points** over summary-only — the direction the
 earlier fixture hinted at and the original questionnaire could not see.
 
+## Six chains: our C against Codex and OpenCode
+
+Same three strategies, three synthetic chains plus three real sessions, one
+identical exam per boundary (assistant-weighted, with decoys). No retrieval: this
+measures what each retention rule preserves on its own.
+
+| chain | C | Codex | OpenCode |
+|---|---:|---:|---:|
+| export (synth) | 6/16 | **7/16** | **7/16** |
+| analysis (synth) | **7/16** | **7/16** | 6/16 |
+| pipeline (synth) | 9/17 | 9/17 | 9/17 |
+| real-yt | **35/44** | 33/44 | 28/44 |
+| real-visual | **28/36** | 27/36 | 26/36 |
+| real-stream | **37/47** | 33/47 | 28/47 |
+| **total** | **122/176 (69.3%)** | 116/176 (65.9%) | 104/176 (59.1%) |
+
+| group | C | Codex | OpenCode |
+|---|---:|---:|---:|
+| real sessions | **100/127 (78.7%)** | 93/127 (73.2%) | 82/127 (64.6%) |
+| synthetic chains | 22/49 (44.9%) | **23/49 (46.9%)** | 22/49 (44.9%) |
+
+**Zero false positives for every arm** on all six chains: the differences are
+retention, never hallucination.
+
+| strategy | median projection | compaction cost |
+|---|---:|---:|
+| C | 5.3 K tokens | **¥0** (no model call) |
+| Codex | 1.2 K tokens | ¥0.027 per compaction |
+| OpenCode | 3.3 K tokens | ¥0.026 per compaction |
+
+Readings:
+
+* **C leads overall and on every real session, while calling no model at all.**
+  Codex and OpenCode each pay ~¥0.027 per compaction for a summary, and both lose
+  ground on the workload real questions come from.
+* **On the synthetic chains all three are within noise (44.9–46.9%).** Those
+  fixtures put almost all of their answerable detail in tool records, which all
+  three retain; the arms separate only when the answering detail sits in the
+  agent's own prose.
+* **OpenCode is weakest on real sessions (−14.1 pts vs C)**, consistent with its
+  design: a summary plus a short tail, with no verbatim originals and no evidence
+  index.
+* Codex's small projection (1.2 K) is efficient per token but does not compensate —
+  it retains only what its summary kept.
+
+This is the comparison the earlier sections set up: once the exam asks about the
+agent's own output — where real follow-ups point — retaining that output verbatim
+beats summarising it, and it is also free.
+
 ## Was the earlier assistant-message conclusion a coverage artefact?
 
 **Yes.** I checked which record kind actually contains each of the original 12 gold
