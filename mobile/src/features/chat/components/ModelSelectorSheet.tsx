@@ -56,6 +56,9 @@ export function ModelSelectorSheet({
                 </Pressable>
               </View>
               <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
+                {selector === "model" && remote.models.length === 0 && (
+                  <Text style={styles.selectorOptionLabel}>{t("connection.noModels")}</Text>
+                )}
                 {selector === "model" && remote.models.map(model => {
                       const selected = modelReference(model) === remote.modelId;
                       return (

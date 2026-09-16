@@ -383,6 +383,8 @@ export interface SessionsData {
 
 export interface ModelsData {
   models: RemoteModel[];
+  /** Desktop deliberately hid every model; unlike warm-up, this is final. */
+  allModelsHidden?: boolean;
 }
 
 export interface WorkspacesData {

@@ -192,6 +192,7 @@ interface TimelineControllerOptions {
   refreshModels(): Promise<void>;
   refreshSessions(): Promise<void>;
   setTitleOverrides: Dispatch<SetStateAction<Record<string, string>>>;
+  onSessionState?(sessionId: string, state: RemoteSessionState): void;
 }
 
 export function useTimelineController({
@@ -202,7 +203,12 @@ export function useTimelineController({
   refreshModels,
   refreshSessions,
   setTitleOverrides,
+  onSessionState,
 }: TimelineControllerOptions) {
+  const onSessionStateRef = useRef(onSessionState);
+  useEffect(() => { onSessionStateRef.current = onSessionState; }, [onSessionState]);
+  const settingsRevisionRef = useRef(0);
+  const settingsReadRef = useRef(0);
   const [timelines, setTimelines] = useState<Record<string, TimelineState>>({});
   const [timelineErrors, setTimelineErrors] = useState<
     Record<string, "timeout">
@@ -261,8 +267,12 @@ export function useTimelineController({
     (event: StreamEvent, sessionId: string) => {
       const sid = sessionId || "";
       if (!sid) return;
-      if (event.type === "provider_config_changed") {
+      if (event.type === "provider_config_changed" || event.type === "model_visibility_changed") {
         void refreshModels();
+        return;
+      }
+      if (event.type === "model_changed" || event.type === "thinking_level_changed") {
+        if (sid === selectedRef.current) settingsRevisionRef.current += 1;
         return;
       }
       if (event.type === "run_snapshot") {
@@ -587,12 +597,21 @@ export function useTimelineController({
       requestGetState: async (sessionId) => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
-        return (
+        const revision = settingsRevisionRef.current;
+        const read = ++settingsReadRef.current;
+        const epoch = historyEpochRef.current;
+        const state = (
           await client.requestRetry<RemoteSessionState>(
             { type: "get_state", sessionId },
             sessionId,
           )
         ).data;
+        if (clientRef.current === client && selectedRef.current === sessionId
+          && settingsRevisionRef.current === revision && settingsReadRef.current === read
+          && historyEpochRef.current === epoch) {
+          onSessionStateRef.current?.(sessionId, state);
+        }
+        return state;
       },
       requestHistory: loadHistory,
       fetchReplay: async (sessionId, runId, sinceIdx, isCurrent) => {

@@ -57,8 +57,23 @@ test("loads the session root, toggles dotfiles, and opens the exact desktop file
   expect(entries().map((item: { name: string }) => item.name)).toEqual(["reports", "notes.md"]);
   await press("files.showHidden");
   expect(entries()).toHaveLength(3);
+  await press("files.hideHidden");
+  expect(entries().map((item: { name: string }) => item.name)).toEqual(["reports", "notes.md"]);
   await press("files.openFile:notes.md");
   expect(onOpenFile).toHaveBeenCalledWith("C:\\work\\notes.md");
+  expect(listFiles).toHaveBeenCalledTimes(1);
+});
+
+test("toggling hidden files keeps ordinary generated Word/Excel files visible", async () => {
+  const officeEntries = ["示例销售数据.xlsx", "报告.docx", "gen_excel.py"].map(name => ({
+    name, path: `C:\\work\\${name}`, isDir: false, size: 6144,
+  }));
+  listFiles.mockResolvedValue({ ...root, entries: officeEntries });
+  await mount();
+  await press("files.showHidden");
+  expect(entries()).toEqual(officeEntries);
+  await press("files.hideHidden");
+  expect(entries()).toEqual(officeEntries);
   expect(listFiles).toHaveBeenCalledTimes(1);
 });
 

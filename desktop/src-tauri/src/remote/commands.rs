@@ -2504,6 +2504,80 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn model_catalog_respects_desktop_visibility() {
+        let _agent_lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-model-visibility").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let models = json!([
+            { "id": "shared", "provider": "p1" },
+            { "id": "shared", "provider": "p2" },
+            { "id": "org/model", "provider": "p1" },
+            { "id": "bare" }
+        ]);
+        for cmd_type in ["list_models", "get_available_models"] {
+            crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                hidden_models: Some(vec![
+                    "p1/shared".into(),
+                    "p1/org/model".into(),
+                    "bare".into(),
+                ]),
+                ..Default::default()
+            })
+            .unwrap();
+            agent.script("list_models", true, json!({ "models": models }), "");
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": cmd_type }))
+                .await;
+            assert_eq!(reply["success"], true, "{reply}");
+            assert_eq!(reply["data"]["models"].as_array().unwrap().len(), 1);
+            assert_eq!(reply["data"]["models"][0]["id"], "shared");
+            assert_eq!(reply["data"]["models"][0]["provider"], "p2");
+            assert_eq!(reply["data"]["allModelsHidden"], false);
+
+            crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                hidden_models: Some(vec![
+                    "p1/shared".into(),
+                    "p2/shared".into(),
+                    "p1/org/model".into(),
+                    "bare".into(),
+                ]),
+                ..Default::default()
+            })
+            .unwrap();
+            agent.script("list_models", true, json!({ "models": models }), "");
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": cmd_type }))
+                .await;
+            assert_eq!(reply["data"]["models"], json!([]));
+            assert_eq!(reply["data"]["allModelsHidden"], true);
+
+            // Empty Agent catalogues still mean warm-up, even with hidden IDs.
+            agent.script("list_models", true, json!({ "models": [] }), "");
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": cmd_type }))
+                .await;
+            assert_eq!(reply["data"]["allModelsHidden"], false);
+
+            crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+                hidden_models: Some(vec![]),
+                ..Default::default()
+            })
+            .unwrap();
+            agent.script("list_models", true, json!({ "models": models }), "");
+            let reply = bridge
+                .call(json!({ "id": unique("cmd"), "type": cmd_type }))
+                .await;
+            let visible = reply["data"]["models"].as_array().unwrap();
+            assert_eq!(visible.len(), 4);
+            assert_eq!(visible[2]["id"], "org/model");
+            assert_eq!(visible[3]["id"], "bare");
+            assert_eq!(reply["data"]["allModelsHidden"], false);
+        }
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
     async fn session_control_commands() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-session-ctl").await;
