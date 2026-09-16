@@ -634,7 +634,7 @@ function normalizeIdentifier(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function collectReferences(nodes: MarkdownNode[]) {
+export function collectReferences(nodes: MarkdownNode[]) {
   const references: FutureReference[] = [];
   for (const node of nodes) {
     collectBlockReferences(node, references);

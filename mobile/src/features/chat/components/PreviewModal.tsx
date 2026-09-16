@@ -103,12 +103,12 @@ export function PreviewModal({
           // unreadable without it.
           <ZoomableImage key={preview.uri} accessibilityLabel={preview.info.name} uri={preview.uri} />
         ) : preview?.info.previewKind === "markdown" ? (
-          <ScrollView contentContainerStyle={styles.previewMarkdown}>
+          <View style={styles.previewDocument}>
             {!!preview?.truncated && (
               <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
             )}
             <MarkdownText mode="file-preview" imageBasePath={preview?.attachment.path} text={preview?.markdown ?? ""} />
-          </ScrollView>
+          </View>
         ) : preview?.info.previewKind === "json" ? (
           <JsonPreview
             invalidMessage={detail => t("attachment.jsonInvalid", { detail })}
@@ -147,6 +147,7 @@ const styles = StyleSheet.create({
   pressed: { backgroundColor: colors.surfaceSubtle },
   previewTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 16, fontWeight: "700" },
   previewMarkdown: { padding: spacing.lg },
+  previewDocument: { flex: 1, minHeight: 0, padding: spacing.lg },
   previewTruncated: {
     marginBottom: spacing.md,
     padding: spacing.md,

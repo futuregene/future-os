@@ -68,17 +68,36 @@ export function formatBytes(bytes: number): string {
   return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 }
 
-export function plainText(bytes: Uint8Array): string | null {
-  // Binary formats such as PDF contain NUL or C0 control bytes. The desktop
-  // repeats a stricter UTF-8 check before it transfers a durable attachment.
-  if (bytes.some(byte => byte === 0 || (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13))) {
-    return null;
+export function plainText(bytes: Uint8Array, truncated = false): string | null {
+  // Mobile's fast-text-encoding fallback rejects fatal/stream options. Validate
+  // UTF-8 ourselves before using the common no-options decoder, including a
+  // preview boundary that splits an otherwise valid code point.
+  let end = bytes.length;
+  for (let i = 0; i < bytes.length;) {
+    const first = bytes[i]!;
+    if (first < 0x80) {
+      if (first < 32 && first !== 9 && first !== 10 && first !== 13) return null;
+      i++;
+      continue;
+    }
+    const count = first >= 0xc2 && first <= 0xdf ? 2
+      : first >= 0xe0 && first <= 0xef ? 3
+        : first >= 0xf0 && first <= 0xf4 ? 4 : 0;
+    if (!count) return null;
+    for (let j = 1; j < count && i + j < bytes.length; j++) {
+      const next = bytes[i + j]!;
+      if (next < 0x80 || next > 0xbf) return null;
+      if (j === 1 && ((first === 0xe0 && next < 0xa0) || (first === 0xed && next >= 0xa0)
+        || (first === 0xf0 && next < 0x90) || (first === 0xf4 && next >= 0x90))) return null;
+    }
+    if (i + count > bytes.length) {
+      if (!truncated) return null;
+      end = i;
+      break;
+    }
+    i += count;
   }
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return null;
-  }
+  return new TextDecoder().decode(bytes.subarray(0, end));
 }
 
 export function confirmDownload(title: string, message: string, cancel: string, download: string) {

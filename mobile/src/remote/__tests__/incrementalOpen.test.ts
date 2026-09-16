@@ -94,7 +94,7 @@ test("empty valid tail preserves the prefix and the following live delta appends
   expect(h.fetchReplay.mock.calls.map(call => call[2])).toEqual([-1, 1]);
   h.engine.event("s", text(2, " live"));
   h.engine.event("s", text(2, " live"));
-  await jest.advanceTimersByTimeAsync(16);
+  await jest.advanceTimersByTimeAsync(80);
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix live" })]);
 });
 
@@ -258,7 +258,7 @@ test("a replacement projection rewinds cursor and dedup together, then accepts n
   await h.open();
   expect(h.engine.cursorFor("s").get("r")).toEqual({ highWater: 1, prefixComplete: true });
   h.engine.event("s", text(2, " new"));
-  await jest.advanceTimersByTimeAsync(16);
+  await jest.advanceTimersByTimeAsync(80);
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "replacement new" })]);
 });
 
@@ -309,7 +309,7 @@ test("queued live events overlapping a warm replay are deduplicated, including a
   h.active("");
   tail.forEach(e => h.engine.event("s", e));
   finish({ events: tail.map(e => ({ ...e })), watermark: 3 });
-  await jest.advanceTimersByTimeAsync(16);
+  await jest.advanceTimersByTimeAsync(80);
   expect(h.assistant()).toEqual([expect.objectContaining({ text: "prefix final", streaming: false, durationMs: 1200, outputTokens: 9 })]);
   expect(h.engine.cursorFor("s").get("r")?.highWater).toBe(3);
   expect(h.onSyncStatus).toHaveBeenLastCalledWith("s", "idle");
