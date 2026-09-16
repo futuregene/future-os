@@ -1052,9 +1052,15 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   stoppedNoticeText: { color: colors.inkMuted },
+  // The footer is apparatus like the step rows, and it sits on the same right
+  // rail — which is also where the live timer already was, so the reply no longer
+  // jumps to the left edge the moment its run settles. `alignSelf` keeps the copy
+  // button's tap target clipped to the footer instead of spanning the bubble.
   messageFooter: {
+    alignSelf: "flex-end",
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: spacing.md,
     marginTop: spacing.sm,
   },

@@ -277,6 +277,20 @@ test("the live run indicator sits on the right rail", () => {
   expect(style.alignSelf).toBe("flex-end");
 });
 
+// The footer is the settled form of that same timer — duration and tokens, with
+// the copy button beside them — so it lands on the same rail. It did not, so a
+// reply jumped from the right edge to the left the instant its run finished.
+test("the settled footer sits on the same rail as the live timer", () => {
+  render(reply({ durationMs: 5100, outputTokens: 1234 }));
+  const footer = tree.root.findAll(node => node.props.children === "5s · chat.tokens")[0]!;
+  const style = StyleSheet.flatten(footer.parent!.props.style);
+  expect(style.alignSelf).toBe("flex-end");
+  expect(style.justifyContent).toBe("flex-end");
+  // The copy button rides along in the same group, so its target stays clipped.
+  const copy = tree.root.findAll(node => node.props.accessibilityLabel === "chat.copyResponse")[0]!;
+  expect(copy).toBeDefined();
+});
+
 // Opening the run drops its rows back into the reading column: they only exist
 // once the user has asked to read them, and right-aligned prose and commands are
 // hard to read.
