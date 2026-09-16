@@ -164,6 +164,10 @@ pub(crate) mod test_support {
             let lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
+            // `HOME` and the SQLite pool are process-global. A task started by
+            // an earlier test may outlive its caller runtime, so it must be
+            // cancelled and observed before this fixture publishes a new path.
+            crate::runtime::cancel_test_tasks();
             let previous = std::env::var("HOME").ok();
             let dir = std::env::temp_dir().join(format!(
                 "futureos-test-{}-{}",
@@ -184,6 +188,10 @@ pub(crate) mod test_support {
         /// the temp dir. Split from [`Drop`] so the absent-`HOME` arm is
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
+            // Keep the fixture path valid until every process-lifetime task
+            // started under it has stopped. Restoring HOME first would let a
+            // late task resolve another test's database instead.
+            crate::runtime::cancel_test_tasks();
             match &self.previous {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),

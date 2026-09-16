@@ -1,8 +1,8 @@
 //! Shared process-lifetime task runtime, including synchronous store entry points.
 #[cfg(all(feature = "gui", test))]
-pub(crate) use tauri::async_runtime::JoinHandle;
-#[cfg(feature = "gui")]
-pub(crate) use tauri::async_runtime::{set, spawn};
+pub(crate) use tauri::async_runtime::{set, JoinHandle};
+#[cfg(all(feature = "gui", not(test)))]
+pub(crate) use tauri::async_runtime::{set, JoinHandle};
 
 #[cfg(not(feature = "gui"))]
 pub(crate) use tokio::task::JoinHandle;
@@ -17,28 +17,114 @@ pub(crate) fn set(handle: tokio::runtime::Handle) {
         .expect("Desktop runtime already initialized");
 }
 
-#[cfg(not(feature = "gui"))]
-pub(crate) fn spawn<F>(future: F) -> JoinHandle<F::Output>
+fn spawn_untracked<F>(future: F) -> JoinHandle<()>
 where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
 {
-    // Never bind long-lived observers to an incidental caller's runtime.
-    // Synchronous test cleanup waits for those observers; using a test's
-    // current-thread runtime here would deadlock that cleanup.
-    static FALLBACK: std::sync::LazyLock<tokio::runtime::Runtime> =
-        std::sync::LazyLock::new(|| {
-            tokio::runtime::Runtime::new().expect("create Desktop task runtime")
-        });
-    HANDLE
-        .get_or_init(|| FALLBACK.handle().clone())
-        .spawn(future)
+    #[cfg(feature = "gui")]
+    {
+        tauri::async_runtime::spawn(future)
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        // Never bind long-lived observers to an incidental caller's runtime.
+        // Synchronous test cleanup waits for those observers; using a test's
+        // current-thread runtime here would deadlock that cleanup.
+        static FALLBACK: std::sync::LazyLock<tokio::runtime::Runtime> =
+            std::sync::LazyLock::new(|| {
+                tokio::runtime::Runtime::new().expect("create Desktop task runtime")
+            });
+        HANDLE
+            .get_or_init(|| FALLBACK.handle().clone())
+            .spawn(future)
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) fn spawn<F>(future: F) -> JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    spawn_untracked(future)
+}
+
+/// Process-lifetime tasks outlive the `#[tokio::test]` runtime that started
+/// them. Keep their cancellation handles in one registry so a test fixture can
+/// prove none still touches the process-global HOME or SQLite pool before it
+/// switches to another fixture.
+#[cfg(test)]
+type TestTask = (futures::future::AbortHandle, std::sync::mpsc::Receiver<()>);
+
+#[cfg(test)]
+static TEST_TASKS: std::sync::LazyLock<std::sync::Mutex<Vec<TestTask>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+#[cfg(test)]
+struct TestTaskCompletion(std::sync::mpsc::Sender<()>);
+
+#[cfg(test)]
+impl Drop for TestTaskCompletion {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn spawn<F>(future: F) -> JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (abort, registration) = futures::future::AbortHandle::new_pair();
+    let (done, completed) = std::sync::mpsc::channel();
+    let task = spawn_untracked(async move {
+        let _completion = TestTaskCompletion(done);
+        let _ = futures::future::Abortable::new(future, registration).await;
+    });
+    TEST_TASKS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .push((abort, completed));
+    task
+}
+
+/// Stop every process-lifetime test task and wait until its future has been
+/// dropped. Call this before changing HOME: otherwise a task created by an
+/// earlier test can resolve the newly published HOME and lock its database.
+#[cfg(test)]
+pub(crate) fn cancel_test_tasks() {
+    let tasks = std::mem::take(
+        &mut *TEST_TASKS
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()),
+    );
+    for (abort, _) in &tasks {
+        abort.abort();
+    }
+    for (_, completed) in tasks {
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("process-lifetime test task must stop before changing HOME");
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cleanup_waits_for_process_lifetime_tasks() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let _task = super::spawn(std::future::pending::<()>());
+        super::cancel_test_tasks();
+    }
+
     #[test]
     fn background_task_outlives_its_callers_runtime() {
+        let _lock = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let caller = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -56,6 +142,7 @@ mod tests {
         completed
             .recv_timeout(std::time::Duration::from_secs(3))
             .unwrap();
-        drop(task);
+        task.abort();
+        super::cancel_test_tasks();
     }
 }
