@@ -334,6 +334,72 @@ means **the summary's measured value is a prompt effect, not a retention effect.
   establish is that the summary's *retention* contribution is zero and its *behavioural*
   contribution is real, which is a narrower and more useful claim.
 
+### Does the summary earn its cost when the originals are dropped?
+
+The exams above all ran where C retained every assistant block, which makes the summary
+redundant by construction. This test creates the condition where a summary could matter:
+compress hard enough that originals must be dropped, then see whether it preserves them.
+
+**Compression pressure.** Sweeping the window and counting assistant text blocks whose
+distinctive phrase survives anywhere in the projection:
+
+| Window | Assistant blocks | Kept verbatim | Carried by summary | Lost |
+|---:|---:|---:|---:|---:|
+| 128 000 | 446 | **446** | 0 | **0** |
+| 32 000 | 446 | 333 | **1** | 112 |
+| 8 000 | 277 | 184 | **0** | 93 |
+| 4 000 | 277 | 123 | **0** | 154 |
+
+At the production-relevant window nothing is dropped at all. Under real pressure (32 K and
+below) between 93 and 154 assistant blocks are dropped, and the summary carries **at most
+one** of them verbatim.
+
+**Generation test.** Containment tests exact strings, and a summary paraphrases, so the
+test above understates it. This one asks the model to *generate*: from its projection,
+list every exact identifier, path, version, size and count it can find. The question names
+none of them, so a projection that lost a value cannot recover it by matching. Scored by
+exact containment — no judge — across the three real sessions at two windows:
+
+| Arm | Dropped values | Recovered | Rate |
+|---|---:|---:|---:|
+| C (with summary) | 257 | **1** | **0.4 %** |
+| C (without summary) | 252 | **1** | **0.4 %** |
+
+**Identical, and both are zero in practice.** The two arms also drop almost the same number
+of values (257 against 252), which is the subset result again seen from another direction:
+adding the summary changes what is retained by about 2 %.
+
+**One honest caveat on the control.** The same run measured how many *present* values the
+model listed, to check the task was possible. That control is too noisy to support any
+claim: at 32 K the summary arm listed 20 % against the other arm's 51.5 %, and at 16 K the
+order reversed (72.1 % against 25.6 %). The model's listing behaviour varies far more
+between runs than any summary effect, so the control is reported here only to show the task
+was doable, and **no conclusion is drawn from it about whether the summary helps or harms
+precise generation.**
+
+### What the ablation establishes
+
+Three independent measurements agree:
+
+| Measurement | Result |
+|---|---|
+| Value recall, closed book | summary adds **0** values; arms score identically |
+| Compression pressure (32 K–4 K) | summary preserves **1** of 93–154 dropped blocks |
+| Generation of dropped values | **0.4 %** recovered, identical with and without the summary |
+
+**C's model summary does not contribute content on any measurement available here.** It
+retains nothing the projection lacks, and it does not preserve what the projection drops
+when compression pressure forces material out. Its one measured effect is behavioural: in
+the open-book condition it induces the model to search, worth +6.
+
+What this does **not** establish is that the summary is worthless in production. Every exam
+used here asks for exact values, which is precisely what a summary is worst at and what
+verbatim retention is best at. A summary should help with questions this exam never asks —
+what the objective was, why a decision was made, what remains unresolved — and those are
+exactly the questions real follow-up turns ask. The honest statement is narrow: **the
+summary's retention value is unmeasurable on a value-exact exam, and its measured value is
+a prompt effect.**
+
 ## Why C is only slightly ahead, despite keeping far more
 
 This is a fair challenge to the result, and the exam's own composition answers it.
