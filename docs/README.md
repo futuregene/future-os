@@ -106,5 +106,20 @@ Reserved for future doc↔code audit reports.
   Transport details belong in troubleshooting/CLI and the repository guides.
 - Verify changed claims against current source and update both languages.
   Historical verification notes retain original evidence, not a permanent PASS.
-- [Documentation check](../scripts/check-docs.py): run `python3 scripts/check-docs.py`
-  for placement, bilingual pairing, local links, wiki targets and fences.
+- [Documentation check](../scripts/check-docs.py): `make check-docs` (or
+  `python3 scripts/check-docs.py`) enforces placement, bilingual pairing, local
+  links, wiki targets and fences. Two modes:
+  - default — findings are errors; entries in `BILINGUAL_PENDING` are allowed
+    and reported as a count, so a mid-migration tree can still be checked.
+  - `--strict-pending` — final-acceptance mode: the debt list must be empty, so
+    every document really has both languages.
+  - `--scope docs/guide,docs/architecture` — report only findings about those
+    paths, for working on one slice at a time. Findings are filtered by the
+    file they are about, not by their wording.
+- Every `.md` under `docs/` needs both languages (any new `docs/` subdirectory
+  inherits this; `docs/wiki/` pairs by `en/`+`zh/` and `docs/dist/` by the `-en`
+  suffix). Exceptions are the files listed in `WHITELIST`/`EXTRA_PAIR_SCOPED`.
+- `make test-docs-check` runs the gate's own regression tests, including
+  negative controls (they fail if the checker stops detecting violations).
+- Nothing runs the checker automatically: it is not wired into CI or
+  `make lint`. Add it to a pipeline only as a deliberate decision.
