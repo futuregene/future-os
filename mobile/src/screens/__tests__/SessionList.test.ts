@@ -1,6 +1,17 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, BackHandler, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import {
+  Animated,
+  BackHandler,
+  FlatList,
+  Modal,
+  PanResponder,
+  StyleSheet,
+  Text,
+  TextInput,
+  type GestureResponderEvent,
+  type PanResponderGestureState,
+} from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
@@ -79,6 +90,61 @@ jest.mock("react-i18next", () => ({
 let tree: ReactTestRenderer;
 const onMenu = jest.fn();
 const onTabChange = jest.fn();
+// Slide-out/settle animations resolve immediately here; the tab actually
+// changing is what these tests are about.
+const finishedAnimation = {
+  start: (callback?: (result: { finished: boolean }) => void) => callback?.({ finished: true }),
+  stop: () => {},
+  reset: () => {},
+} as Animated.CompositeAnimation;
+
+/**
+ * Render one page of the list and drive its swipe the way its controller
+ * receives it. The view's responder props hide the gesture state (PanResponder
+ * derives it from touch history), so the pan config is captured from
+ * PanResponder.create — exactly how the zoom controller's test drives its pinch.
+ */
+function swipeHarness(tab: "workspace" | "chat") {
+  const pan = jest.spyOn(PanResponder, "create");
+  jest.spyOn(Animated, "timing").mockImplementation(() => finishedAnimation);
+  const tabChange = jest.fn();
+  let rendered!: ReactTestRenderer;
+  act(() => {
+    rendered = create(
+      createElement(SessionList, { tab, empty: null, onMenu, onTabChange: tabChange }),
+    );
+  });
+  const handlers = pan.mock.calls.at(-1)![0];
+  rendered.root
+    .findAll(node => node.props.testID === "session-list-page")[0]!
+    .props.onLayout({ nativeEvent: { layout: { width: 320, height: 600, x: 0, y: 0 } } });
+  const gesture = (dx: number, dy: number) => ({ dx, dy, vx: 0, vy: 0 }) as PanResponderGestureState;
+  return {
+    rendered,
+    tabChange,
+    press: (label: string) => {
+      act(() =>
+        rendered.root
+          .findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!
+          .props.onPress(),
+      );
+    },
+    /** Returns whether the page claimed the drag, as the list would. */
+    drag: (dx: number, dy = 0) => {
+      const event = {} as GestureResponderEvent;
+      const state = gesture(dx, dy);
+      let claimed = false;
+      act(() => {
+        claimed = handlers.onMoveShouldSetPanResponder!(event, state);
+        if (!claimed) return;
+        handlers.onPanResponderGrant!(event, state);
+        handlers.onPanResponderMove!(event, state);
+        handlers.onPanResponderRelease!(event, state);
+      });
+      return claimed;
+    },
+  };
+}
 const button = (label: string) =>
   tree.root.findAll(
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
@@ -163,6 +229,38 @@ test("tabs, search and selection share one toolbar with full touch targets", () 
   expect(onTabChange).toHaveBeenCalledWith("workspace");
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search").length).toBeGreaterThan(0);
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select").length).toBeGreaterThan(0);
+});
+
+test("a horizontal swipe pages the list between workspaces and conversations", () => {
+  const fromConversations = swipeHarness("chat");
+  // Conversations is the right-hand page: dragging right leaves it ...
+  expect(fromConversations.drag(120, 4)).toBe(true);
+  expect(fromConversations.tabChange).toHaveBeenCalledWith("workspace");
+  act(() => fromConversations.rendered.unmount());
+
+  const fromWorkspaces = swipeHarness("workspace");
+  // ... dragging left opens it from the workspaces page ...
+  expect(fromWorkspaces.drag(-120, 4)).toBe(true);
+  expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("chat");
+  fromWorkspaces.tabChange.mockClear();
+  // ... and dragging right has no page behind the workspaces page.
+  expect(fromWorkspaces.drag(120, 4)).toBe(true);
+  expect(fromWorkspaces.tabChange).not.toHaveBeenCalled();
+  act(() => fromWorkspaces.rendered.unmount());
+});
+
+test("a vertical drag stays with the list, and search/selection keep the tabs put", () => {
+  const harness = swipeHarness("workspace");
+  expect(harness.drag(-120, 60)).toBe(false);
+  // The tab bar is hidden while searching or selecting, so a swipe there would
+  // change mode unseen rather than move between two visible pages.
+  harness.press("sessions.search");
+  expect(harness.drag(-120, 4)).toBe(false);
+  harness.press("chat.cancel");
+  harness.press("sessions.select");
+  expect(harness.drag(-120, 4)).toBe(false);
+  expect(harness.tabChange).not.toHaveBeenCalled();
+  act(() => harness.rendered.unmount());
 });
 
 test("search replaces tabs in place and cancel clears the filter", () => {

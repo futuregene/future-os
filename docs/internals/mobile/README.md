@@ -159,6 +159,12 @@ offline push.
   title column without covering the title).
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
+  The workspace and conversation lists are the two pages of one horizontal
+  swipe: left from workspaces into conversations, right back into workspaces.
+  A drag that is not clearly horizontal stays a list scroll, and the swipe is
+  off while the toolbar is searching or selecting (the tab bar is hidden then,
+  so the swipe would change mode unseen); the tabs themselves still switch on
+  tap.
 - The input area stays two rows (text + toolbar); narrow screens merge model
   settings without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body
