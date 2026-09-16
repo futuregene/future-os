@@ -1,7 +1,7 @@
 //! macOS Seatbelt (sandbox-exec) profile compiled from the approval rules.
 //!
 //! The rule engine is first-match-wins with the highest-priority layer first
-//! (desktop/DEV_MD/SANDBOX/COMMON.md). SBPL is last-match-wins. So we emit a permissive base
+//! (docs/internals/desktop/SANDBOX/COMMON.md). SBPL is last-match-wins. So we emit a permissive base
 //! (reads open, writes to workspace+temp) and then every rule from
 //! **lowest** priority to **highest** (layers reversed, and reversed within
 //! each layer) — the last SBPL match then equals the engine's first match.

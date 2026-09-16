@@ -2,7 +2,7 @@
 //! process and served to the app's own webview over a loopback-only
 //! HTTP/WebSocket listener.
 //!
-//! Architecture (see `desktop/DEV_MD/embedded-terminal.md`): this is the
+//! Architecture (see `docs/internals/desktop/embedded-terminal.md`): this is the
 //! opencode transport model, not a Tauri-IPC message pump.
 //!
 //! * `session`/`manager` own the PTY children and a bounded output buffer with

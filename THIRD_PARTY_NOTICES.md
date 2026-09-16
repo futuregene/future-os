@@ -1,5 +1,7 @@
 # Third-Party Notices
 
+> ([中文](THIRD_PARTY_NOTICES.zh-CN.md))
+
 FutureOS as a whole is distributed under the [MIT License](LICENSE). The
 components below carry their own licenses and attributions, which are
 retained in the locations indicated.

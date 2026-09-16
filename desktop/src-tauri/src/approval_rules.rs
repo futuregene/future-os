@@ -1,4 +1,4 @@
-//! Workspace approval-rule file writes (desktop/DEV_MD/SANDBOX/COMMON.md).
+//! Workspace approval-rule file writes (docs/internals/desktop/SANDBOX/COMMON.md).
 //!
 //! "Allow in this workspace" appends an `allow` rule to
 //! `${WORKSPACE}/.future/approval_rule.json`. The agent reads this file

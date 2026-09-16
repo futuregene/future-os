@@ -1,5 +1,7 @@
 # Security Policy
 
+> ([中文](SECURITY.zh-CN.md))
+
 FutureOS is a local-first AI agent. This document describes its trust model,
 current controls and limitations, and vulnerability reporting.
 
@@ -67,12 +69,12 @@ for the three sandbox tiers. See the [sandbox guide](docs/wiki/en/Sandbox.md).
   missing protected paths and new glob matches during a command are only checked
   afterward, not dynamically blocked or rolled back. Complex overlapping rules
   can fail preparation. Implementation availability is not certification of all
-  distributions/architectures; see [Linux boundaries and validation](desktop/DEV_MD/SANDBOX/LINUX.md).
+  distributions/architectures; see [Linux boundaries and validation](docs/internals/desktop/SANDBOX/LINUX.md).
 - **Windows write protection only.** Shell reads/network remain open. Existing
   ACLs and parent-directory deletion rights can weaken the write boundary.
   Additional access is approved for concrete file/subtree write capabilities;
   Windows does not use macOS/Linux whole-command unsandboxing. See
-  [Windows boundaries](desktop/DEV_MD/SANDBOX/WINDOWS.md).
+  [Windows boundaries](docs/internals/desktop/SANDBOX/WINDOWS.md).
 - **Credential exception.** `auth.json` is currently omitted from the sandbox's
   built-in hard-deny list so official CLI-based skills can authenticate. This can
   also expose it to arbitrary shell reads; it is not per-binary trust or a secure

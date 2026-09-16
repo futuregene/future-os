@@ -1,5 +1,5 @@
 //! OS-level sandbox + path-based approval rules.
-//! Shared contract: desktop/DEV_MD/SANDBOX/COMMON.md; backend details live in
+//! Shared contract: docs/internals/desktop/SANDBOX/COMMON.md; backend details live in
 //! MACOS.md, LINUX.md and WINDOWS.md in the same directory.
 //!
 //! Every approval is about a file-path access: [`rules::RuleSet`] resolves a

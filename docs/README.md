@@ -3,21 +3,49 @@
 > Navigation index for the `docs/` directory. Links resolve within this repo;
 > the user-facing wiki lives under [docs/wiki/](wiki/en/Home.md) (en) and
 > [docs/wiki/zh/Home.md](wiki/zh/Home.md) (zh).
+>
+> Every document under `docs/` ships in two languages (`name.md` = en,
+> `name.zh-CN.md` = zh); `scripts/check-docs.py` enforces directory placement,
+> bilingual pairing, links and fences. Historical archives under
+> `archives/` keep their original dates and commit boundaries.
 
-## Top-level guides
+## Guides (`guide/`)
 
 | Doc | What it covers |
 |---|---|
-| [Build & Install](build-and-install.md) ([中文](build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
-| [Loop Control Plane](loop-control-plane.md) ([中文](loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
-| [Long-Run Evidence Ledger](long-run-evidence-ledger.md) ([中文](long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
-| [Headless Desktop](desktop-headless.md) ([中文](desktop-headless.zh-CN.md)) | Foreground `--headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
-| [TUI](tui.md) ([中文](tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
-| [Directory layout](directory-layout.md) ([中文](directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
-| [Channels configuration](channels-config.md) ([中文](channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
+| [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
+| [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
+| [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
+| [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `--headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
+| [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
+| [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) | Mobile end-to-end latency measurement and diagnosis |
 
 The repo-root [README](../README.md) ([中文](../README.zh-CN.md)) is the
 entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
+
+## Architecture (`architecture/`)
+
+| Doc | What it covers |
+|---|---|
+| [Loop Control Plane](architecture/loop-control-plane.md) ([中文](architecture/loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
+| [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
+| [SQLite migration](architecture/sqlite-migration.zh-CN.md) | Agent/desktop SQLite storage layout and migration policy (zh only for now) |
+| [Response outcomes](architecture/response-outcomes.zh-CN.md) | End-of-response outcome semantics (stop / refusal / filter / pause) (zh only for now) |
+| [loop/](architecture/loop/README.md) | The `future-loop` crate: [architecture](architecture/loop/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/loop/UPSTREAM.md), [decision-kernel snapshot](architecture/loop/snapshots.md) |
+| [Shared packages](architecture/packages.md) | `packages/` conventions: npm/workspace packages and crate boundaries |
+| [RPC crate](architecture/rpc.md) | `packages/rpc` — the protobuf wire contract (single source of truth) |
+
+## Internals (`internals/`)
+
+Per-module working docs, previously scattered under `desktop/DEV_MD/`,
+`mobile/docs/`, `tui/`, `packages/`, `orchestration/loop/` and `tests/`.
+
+- [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
+- [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync performance/audits, harmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`)
+- [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
+- [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)
+- [Windows installer/update](internals/desktop-windows.md) (formerly `desktop/src-tauri/windows/README.md`)
+- [Provider protocol tests](internals/provider-protocol.md) (formerly `tests/provider-protocol/README.md`)
 
 ## Wiki (user-facing app guide)
 
@@ -34,33 +62,49 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
   [飞书](wiki/zh/Feishu.md), [钉钉](wiki/zh/DingTalk.md),
   [模型目录](wiki/zh/Models.md) *(自动生成)*
 
-## Packaging readmes (`docs/dist/`)
+## Packaging readmes (`dist/`)
 
 These files are copied verbatim into the release packages as `Readme.txt`
 (macOS / Windows / Linux portable). They are **live artifacts** — edit them
-only together with the packaging pipelines.
+only together with the packaging pipelines, and note that the release workflows
+reference this exact path, so the directory cannot be renamed without updating
+`.github/workflows/build-{macos-signed,windows-signed,linux}.y*ml`.
 
 - [readme-macos.txt](dist/readme-macos.txt) / [en](dist/readme-macos-en.txt)
 - [readme-windows.txt](dist/readme-windows.txt) / [en](dist/readme-windows-en.txt)
 - [readme-linux.txt](dist/readme-linux.txt) / [en](dist/readme-linux-en.txt)
 
-## Internal working docs (not user-facing)
+## Archives (`archives/`)
 
-- [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
-  for (re)creating the wiki pages; defines scope, style and page inventory.
-- [verification/](verification/errors-outdated-missing.md) — doc↔source
-  historical verification snapshots (fact inventory, error/outdated/missing list).
-  Their conclusions apply only to the recorded dates/commits, not current source.
+Historical audit snapshots; their conclusions apply only to the recorded
+dates/commits, not current source. Kept for provenance — do not rewrite them
+to match today's code.
+
+- [bughunt/](archives/bughunt/README.md) — bug-hunt evidence and fix records
+  (agent / apps / cli / loop-tui), incl. model-output provenance JSONs
+- [verification/](archives/verification/errors-outdated-missing.md) —
+  doc↔source verification snapshots (fact inventory, error/outdated/missing
+  lists, sandbox/e2ee/latency audits)
+
+## Maintainers (`maintainers/`)
+
+- [wiki-prompt.md](maintainers/wiki-prompt.md) ([中文](maintainers/wiki-prompt.zh-CN.md)) —
+  generation prompt for (re)creating the wiki pages; defines scope, style and
+  page inventory.
+
+## Audits (`audits/`)
+
+Reserved for future doc↔code audit reports.
 
 ## How the docs stay correct
 
 - `docs/wiki/{en,zh}/Models.md` are generated by
   `make generate-models` (scripts/generate_models.py) — never hand-edit.
 - The wiki pages are authored to the scope in
-  [wiki-prompt.md](wiki-prompt.md): macOS/Windows/Linux desktop, Android/iOS
+  [wiki-prompt.md](maintainers/wiki-prompt.md): macOS/Windows/Linux desktop, Android/iOS
   Remote, platform-specific sandboxing, no separate TUI page, CLI named `future`.
   Transport details belong in troubleshooting/CLI and the repository guides.
 - Verify changed claims against current source and update both languages.
   Historical verification notes retain original evidence, not a permanent PASS.
 - [Documentation check](../scripts/check-docs.py): run `python3 scripts/check-docs.py`
-  for local links, wiki targets, fences and bilingual page inventory.
+  for placement, bilingual pairing, local links, wiki targets and fences.

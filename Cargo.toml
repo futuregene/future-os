@@ -1,7 +1,7 @@
 # Workspace root for the two Rust binaries (agent / channels).
 #
 # The remote-control bridge is embedded in the desktop Tauri backend
-# (desktop/src-tauri/src/remote/) — see desktop/DEV_MD/remote-control-*.md. The
+# (desktop/src-tauri/src/remote/) — see docs/internals/desktop/remote-control-*.md. The
 # former standalone `remote/` crate is gone; only `desktop/web/` (the
 # verification web client served by the embedded bridge) remains.
 #

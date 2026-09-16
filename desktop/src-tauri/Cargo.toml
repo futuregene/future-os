@@ -97,7 +97,7 @@ ignore = "0.4"
 fuzzy-matcher = "0.3"
 # Cross-platform native resource-manager clipboard paths (Finder/Explorer/Linux file managers).
 arboard = { version = "3.6", default-features = false, optional = true }
-# Embedded terminal (see desktop/DEV_MD/embedded-terminal.md): a PTY session
+# Embedded terminal (see docs/internals/desktop/embedded-terminal.md): a PTY session
 # registry served to the app's own webview over a loopback-only HTTP/WebSocket
 # listener — the opencode transport model. `portable-pty` is the cross-platform
 # PTY abstraction (wezterm); the WebSocket upgrade rides tokio-tungstenite, the

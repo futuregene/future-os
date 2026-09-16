@@ -1,5 +1,5 @@
 //! Platform-independent derivation of the Windows shell-sandbox enforcement plan
-//! from the resolved rule set (desktop/DEV_MD/SANDBOX/WINDOWS.md).
+//! from the resolved rule set (docs/internals/desktop/SANDBOX/WINDOWS.md).
 //!
 //! The Win32 executor (`windows.rs`, `#[cfg(windows)]`) turns this plan into a
 //! restricted token + a set of NTFS ACEs + a job object. Keeping the derivation
@@ -40,7 +40,7 @@ pub struct UnenforcedWindowsRule {
 /// A literal/subtree write denial that can be projected to an NTFS ACE. `Ask`
 /// is retained separately from `Deny` for rule diagnostics. The current runner
 /// rejects explicit ask carveout grants too: NTFS deny-wins prevents reopening
-/// them with a narrower capability. See desktop/DEV_MD/SANDBOX/WINDOWS.md §3.
+/// them with a narrower capability. See docs/internals/desktop/SANDBOX/WINDOWS.md §3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsWriteCarveout {
     pub path: PathBuf,
