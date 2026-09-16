@@ -99,5 +99,18 @@ Linux 便携包）。它们是**活文档**——只与打包流水线同步修�
   CLI 名为 `future`。传输细节归入排障/CLI 与仓库指南。
 - 变更声明须对照当前源码核验并同时更新两种语言。
   历史核验记录保留原始证据，而非永久 PASS。
-- [文档检查](../scripts/check-docs.py)：运行 `python3 scripts/check-docs.py`
-  校验目录归属、双语配对、本地链接、wiki 目标与围栏。
+- [文档检查](../scripts/check-docs.py)：`make check-docs`（或
+  `python3 scripts/check-docs.py`）强制校验目录归属、双语配对、本地链接、
+  wiki 目标与代码围栏。两种模式：
+  - 默认——问题即错误；`BILINGUAL_PENDING` 中的条目允许存在并只报告数量，
+    因此迁移途中的文档树仍可校验。
+  - `--strict-pending`——终验模式：债务清单必须为空，即每篇文档确实都有两种语言。
+  - `--scope docs/guide,docs/architecture`——只报告这些路径下的问题，便于分片工作。
+    过滤依据是问题**所属文件**，而不是报错文本。
+- `docs/` 下的每个 `.md` 都需要两种语言（新增的 `docs/` 子目录自动继承该要求；
+  `docs/wiki/` 按 `en/`+`zh/` 配对，`docs/dist/` 按 `-en` 后缀配对）。
+  例外为 `WHITELIST` / `EXTRA_PAIR_SCOPED` 中列出的文件。
+- `make test-docs-check` 运行该校验器自身的回归测试，含反向用例
+  （一旦校验器不再能发现问题，测试就会失败）。
+- 当前没有任何流程自动运行它：**未接入 CI，也未接入 `make lint`**。
+  若要接入流水线，应当作为一次明确的决定。

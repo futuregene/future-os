@@ -13,16 +13,25 @@ Rules
    desktop/CLAUDE.md). The only documentation .txt files are the
    release-package readmes under docs/dist/ (path is frozen: the signed and
    portable release workflows copy these files verbatim).
-2. Bilingual pairing:
-   - Pairing-scope directories (docs/ itself, guide/, architecture/,
-     internals/, archives/, maintainers/, audits/): name.md must have
-     name.zh-CN.md and vice versa. Files whose missing pair is scheduled for
-     the bilingualization PR are listed in BILINGUAL_PENDING and do not fail;
-     an entry whose pair has landed fails, so the list can only shrink.
-   - wiki: en/ and zh/ must contain the same basenames.
-   - packaging: each readme must have its -en counterpart and vice versa.
+2. Bilingual pairing. Every .md under docs/ needs both languages, plus the
+   extra paths in EXTRA_PAIR_SCOPED:
+   - default rule: name.md <-> name.zh-CN.md.
+   - docs/wiki/: en/ and zh/ must contain the same basenames.
+   - docs/dist/: each readme needs its -en counterpart and vice versa.
+   The rule is "all of docs/" rather than a list of known directories, so a
+   newly added docs/ subdirectory inherits the bilingual requirement instead
+   of silently escaping it.
+   Files whose pair is still being written are listed in BILINGUAL_PENDING.
+   That list is temporary debt: an entry is a warning in a normal run and a
+   failure under --strict-pending, which additionally requires the list to be
+   empty — i.e. bilingualization fully complete.
 3. Structure: local markdown links resolve, wiki [[...]] targets resolve,
    code fences are closed (kept from the original checker).
+
+Each finding carries the path it is *about* (`Diagnostic.path`), so --scope
+filters by affected file. Filtering on the printed message instead would drop
+findings whose text does not begin with a path (bilingual-pairing diagnostics
+did), silently passing a scoped run that should have failed.
 """
 
 from pathlib import Path
@@ -38,6 +47,28 @@ LINK = re.compile(r"!?\[[^\]\n]*\]\((<[^>\n]+>|[^)\n]+)\)")
 WIKI = re.compile(r"\[\[([^]\n]+)\]\]")
 FENCE = re.compile(r"^\s*(?:>\s*)*(`{3,}|~{3,})(.*)$")
 INLINE_CODE = re.compile(r"(`+).*?\1")
+
+
+class Diagnostic:
+    """One finding: `path` is the affected repo-relative file (used by
+    --scope), `message` is the line to print."""
+
+    __slots__ = ("path", "message")
+
+    def __init__(self, path, message):
+        self.path = path
+        self.message = message
+
+    def __str__(self):
+        return self.message
+
+    def __repr__(self):
+        return f"Diagnostic({self.path!r}, {self.message!r})"
+
+
+def diagnostic(path, message):
+    return Diagnostic(path, message)
+
 
 # Files allowed to live outside docs/ (repo-root level, plus desktop/CLAUDE.md).
 WHITELIST = {
@@ -69,8 +100,9 @@ EXTRA_PAIR_SCOPED = {
     "THIRD_PARTY_NOTICES.md",
 }
 
-# Directories (recursively) where name.md <-> name.zh-CN.md pairing applies.
-PAIR_SCOPE_DIRS = {"guide", "architecture", "internals", "archives", "maintainers", "audits"}
+# docs/ subtrees that enforce bilingual coverage by a different rule and are
+# therefore excluded from the name.md <-> name.zh-CN.md check.
+PAIR_BY_OTHER_RULE = ("docs/wiki/", "docs/dist/")
 
 # Docs whose missing language pair is scheduled for the bilingualization PR.
 # Each entry is the path of the existing file (relative to the repo root,
@@ -129,7 +161,7 @@ def check_file(root, relative, submodule_paths):
     is_wiki = Path(relative).parts[:2] == ("docs", "wiki")
     for number, line, error in prose_lines(path.read_text(encoding="utf-8")):
         if error:
-            errors.append(f"{relative}:{number}: {error}")
+            errors.append(diagnostic(relative, f"{relative}:{number}: {error}"))
         for match in LINK.finditer(line):
             target = match[1].strip()
             if target.startswith("<"):
@@ -143,7 +175,9 @@ def check_file(root, relative, submodule_paths):
             if not destination.exists():
                 if in_submodule(destination, submodule_paths):
                     continue
-                errors.append(f"{relative}:{number}: missing local target {target}")
+                errors.append(
+                    diagnostic(relative, f"{relative}:{number}: missing local target {target}")
+                )
         if is_wiki:
             for match in WIKI.finditer(line):
                 target = match[1].rsplit("|", 1)[-1].split("#", 1)[0]
@@ -153,7 +187,9 @@ def check_file(root, relative, submodule_paths):
                 if not destination.suffix:
                     destination = destination.with_suffix(".md")
                 if not destination.is_file():
-                    errors.append(f"{relative}:{number}: missing wiki page {target}")
+                    errors.append(
+                        diagnostic(relative, f"{relative}:{number}: missing wiki page {target}")
+                    )
     return errors
 
 
@@ -165,14 +201,19 @@ def md_pair(relative):
 
 
 def in_pair_scope(relative):
-    if relative in EXTRA_PAIR_SCOPED or relative.replace(".zh-CN.md", ".md", 1) in EXTRA_PAIR_SCOPED:
+    """Does the name.md <-> name.zh-CN.md rule apply to this file?
+
+    Deliberately "all of docs/" rather than an allowlist of directories: a new
+    docs/ subdirectory must inherit the requirement. An allowlist let
+    docs/verification/ escape the check entirely.
+    """
+    if not relative.endswith(".md"):
+        return False
+    if relative in EXTRA_PAIR_SCOPED or md_pair(relative) in EXTRA_PAIR_SCOPED:
         return True
-    if relative.startswith("docs/"):
-        rest = relative[len("docs/"):]
-        if "/" not in rest:
-            return True  # docs/ root itself (README.md etc.)
-        return rest.split("/", 1)[0] in PAIR_SCOPE_DIRS
-    return False
+    if not relative.startswith("docs/"):
+        return False
+    return not relative.startswith(PAIR_BY_OTHER_RULE)
 
 
 def check_packaging_pairs(docs):
@@ -188,7 +229,9 @@ def check_packaging_pairs(docs):
         else:
             pair = Path(rel).with_name(Path(name).stem + "-en.txt")
         if not (ROOT / pair).is_file():
-            errors.append(f"packaging bilingual readme missing: {pair.as_posix()}")
+            errors.append(
+                diagnostic(pair.as_posix(), f"packaging bilingual readme missing: {pair.as_posix()}")
+            )
     return errors
 
 
@@ -203,46 +246,67 @@ def check_bilingual_pairs(docs, strict_pending=False):
         if pair in existing:
             continue
         if rel in BILINGUAL_PENDING:
-            continue  # scheduled for the bilingualization PR
-        errors.append(f"bilingual pair missing: {rel} (expected {pair})")
+            continue  # debt recorded below (warning, or failure under --strict-pending)
+        errors.append(
+            diagnostic(rel, f"bilingual pair missing: {rel} (expected {pair})")
+        )
     for rel in sorted(BILINGUAL_PENDING):
-        # Debt-list hygiene is reported as a warning during the bilingualization
+        # Debt-list hygiene: reported as a warning during the bilingualization
         # work (several workers land pairs concurrently, so the hand-owned list
         # is transiently ahead of the tree) and enforced as a hard failure by
-        # the final acceptance run, which passes --strict-pending.
+        # the final acceptance run.
         bucket = errors if strict_pending else warnings
         if rel not in existing:
-            bucket.append(f"BILINGUAL_PENDING entry does not exist: {rel}")
+            bucket.append(
+                diagnostic(rel, f"BILINGUAL_PENDING entry does not exist: {rel}")
+            )
         elif md_pair(rel) in existing:
             bucket.append(
-                f"BILINGUAL_PENDING entry is stale — pair landed, remove it: {rel}"
+                diagnostic(
+                    rel,
+                    f"BILINGUAL_PENDING entry is stale — pair landed, remove it: {rel}",
+                )
             )
+    if strict_pending:
+        # --strict-pending means "this repository's documentation is complete":
+        # any outstanding debt is a failure even though the list is self-
+        # consistent. Without this, a scoped list could hold a missing pair
+        # indefinitely and still report success.
+        for rel in sorted(BILINGUAL_PENDING):
+            if rel in existing and md_pair(rel) not in existing:
+                errors.append(
+                    diagnostic(
+                        rel,
+                        f"bilingual debt remains: {rel} still has no {md_pair(rel)}",
+                    )
+                )
     english = {p.name for p in (ROOT / "docs/wiki/en").glob("*.md")}
     chinese = {p.name for p in (ROOT / "docs/wiki/zh").glob("*.md")}
     for name in sorted(english ^ chinese):
-        errors.append(f"wiki bilingual page missing: {name}")
+        page = f"docs/wiki/{'en' if name in english else 'zh'}/{name}"
+        errors.append(diagnostic(page, f"wiki bilingual page missing: {page}"))
     return errors, warnings
 
 
-def scoped(errors, scope):
-    """Keep only diagnostics attributable to `scope` path prefixes.
+def scoped(diagnostics, scope):
+    """Keep only findings about files inside `scope` path prefixes.
 
     Concurrent workers each own a slice of the tree. A global verdict would
-    fail every one of them for a peer's in-flight state — and make the
-    BILINGUAL_PENDING hygiene check fire for entries outside the slice — so
-    slices validate with `--scope` while the unscoped run stays authoritative
-    for final acceptance.
+    fail every one of them for a peer's in-flight state, so slices validate
+    with --scope while the unscoped run stays authoritative for final
+    acceptance. Filtering uses the finding's affected path, not its printed
+    text.
     """
     if not scope:
-        return errors
-    kept = []
-    for error in errors:
-        subject = error.split(":", 1)[0].split(" ", 1)[0]
-        if error.startswith("Checked"):
-            continue
-        if any(subject == prefix or subject.startswith(prefix.rstrip("/") + "/") for prefix in scope):
-            kept.append(error)
-    return kept
+        return diagnostics
+
+    def in_scope(path):
+        return any(
+            path == prefix or path.startswith(prefix.rstrip("/") + "/")
+            for prefix in scope
+        )
+
+    return [item for item in diagnostics if in_scope(item.path)]
 
 
 def main():
@@ -254,7 +318,10 @@ def main():
     parser.add_argument(
         "--strict-pending",
         action="store_true",
-        help="treat BILINGUAL_PENDING hygiene (stale/missing entries) as failures",
+        help=(
+            "require complete bilingual coverage: BILINGUAL_PENDING must be "
+            "empty and every entry valid (final-acceptance mode)"
+        ),
     )
     args = parser.parse_args()
     scope = [part for part in (args.scope or "").split(",") if part]
@@ -272,15 +339,19 @@ def main():
     for rel in docs:
         if rel.endswith(".txt"):
             if rel.startswith("docs/") and not rel.startswith("docs/dist/"):
-                errors.append(f"{rel}: documentation .txt outside docs/dist/")
+                errors.append(
+                    diagnostic(rel, f"{rel}: documentation .txt outside docs/dist/")
+                )
             continue
         if not rel.startswith("docs/"):
             if rel in WHITELIST:
                 continue
-            errors.append(f"{rel}: markdown file outside docs/ (not whitelisted)")
+            errors.append(
+                diagnostic(rel, f"{rel}: markdown file outside docs/ (not whitelisted)")
+            )
     for rel in sorted(WHITELIST):
         if not (ROOT / rel).is_file():
-            errors.append(f"whitelist entry does not exist: {rel}")
+            errors.append(diagnostic(rel, f"whitelist entry does not exist: {rel}"))
     submodule_paths = load_submodule_paths(ROOT)
     for rel in docs:
         if (ROOT / rel).is_file():
@@ -292,9 +363,9 @@ def main():
     warnings = scoped(warnings, scope)
     if warnings:
         print("warnings:", file=sys.stderr)
-        print("\n".join(warnings), file=sys.stderr)
+        print("\n".join(str(item) for item in warnings), file=sys.stderr)
     if errors:
-        print("\n".join(errors), file=sys.stderr)
+        print("\n".join(str(item) for item in errors), file=sys.stderr)
         return 1
     if scope:
         print(
