@@ -302,8 +302,7 @@ export const resources = {
           "That message is too long to send. Please shorten it to under 512 KB.",
         noHistory: "No messages yet.",
         loadingHistory: "Loading messages…",
-        syncingLatest:
-          "Syncing latest content… Displayed messages may be incomplete.",
+        syncingLatest: "Syncing…",
         syncRetrying: "Latest content is not yet synced. Retrying…",
         syncWaitingNetwork:
           "Latest content is not yet synced. Waiting for connection…",
@@ -427,6 +426,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "Share to a conversation",
+        newConversation: "New conversation",
+        existingConversation: "Existing conversation",
         existing: "Existing conversation · {{title}}",
         existingWorkspace: "Existing conversation · {{name}} · {{title}}",
         chat: "New conversation · no workspace",
@@ -822,7 +823,7 @@ export const resources = {
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",
-        syncingLatest: "正在同步最新内容… 当前显示可能尚未完整。",
+        syncingLatest: "正在同步…",
         syncRetrying: "最新内容尚未同步完成，正在重试…",
         syncWaitingNetwork: "最新内容尚未同步完成，正在等待连接恢复…",
         historyLoadTimedOut: "加载对话超时，请重试。",
@@ -928,6 +929,8 @@ export const resources = {
       },
       share: {
         chooseDestination: "分享到会话",
+        newConversation: "新会话",
+        existingConversation: "已有会话",
         existing: "已有会话 · {{title}}",
         existingWorkspace: "已有会话 · {{name}} · {{title}}",
         chat: "新会话 · 非工作区",

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working with code in this repository.
 
 FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (Android/iOS), CLI, and IM bots. The core is Rust: a gRPC agent backend plus a channel bridge, loop control plane, CLI, and TUI that all connect to it. The desktop app is Tauri + React (TypeScript) and mobile is React Native (Expo). For architecture and module breakdown read `docs/README.md` (the docs index), `docs/guide/directory-layout.md` (what lives under `~/.future/`), and the code directly.
 
@@ -23,8 +23,9 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 
 ## Development workflow
 
-Development happens in an isolated git worktree (this repo uses `.worktrees/<name>` on a `claude/*` branch), never in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
+Development happens in an isolated git worktree at `.worktrees/<name>` on a matching `<type>/<name>` branch — `<type>` is the same Conventional Commits type the PR title will use (`feat/`, `fix/`, `perf/`, `refactor/`, `docs/`, `chore/`, `test/`, `ci/`), `<name>` is the short slug of the worktree directory. Never work in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
 
+- Create it with `git worktree add --no-track .worktrees/<name> -b <type>/<name> origin/main`. `--no-track` matters: without it the new branch tracks `origin/main`, and a bare `git push` would then target `main`.
 - All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree branch.
 - **Never commit to `main`, and never merge a worktree branch into it.** PRs are squash-merged, so a branch commit fast-forwarded into local `main` gets a *different* SHA than the squashed commit that lands on `origin/main`. That one local commit then blocks `git merge --ff-only origin/main` permanently, and the only way out is a manual `git reset --hard origin/main` — so "let the user test it" quietly becomes a divergent local `main` that every later PR has to stop and clean up. (Not hypothetical: `git reflog main` showed 12 such fast-forwards against 8 manual resets.) To let the user test a change, point them at the worktree (`cd .worktrees/<name> && make run-mobile-android`, …); to get it onto `main`, let the PR squash-merge and fast-forward from `origin/main` (see *After a PR merges*). If the user explicitly asks for the change on `main` first, do it in a scratch worktree (`git worktree add /tmp/x origin/main`) rather than committing to `main`.
 - Do not merge the local main branch (`main`) into the worktree; if `main` has user changes you need, ask the user rather than merging local main in.
@@ -59,7 +60,7 @@ Leave no leftovers — the next session must not inherit a stale worktree, branc
    - `git log --oneline origin/main..main` lists the commits upstream does not have.
    - A **stale duplicate** is a branch commit that was later squash-merged: its tree matches the squashed commit, and that squashed commit is already an ancestor of `origin/main`. Confirm both (`git diff --stat <local-sha> <squashed-sha>` prints nothing; `git merge-base --is-ancestor <squashed-sha> origin/main` succeeds), then ask the user before dropping it with `git reset --hard origin/main`.
    - **Anything else is live work** — the user's, or another session's (`git worktree list`, and `git branch --contains <sha>` says whose). Never rebase, reset, or force it: stop and tell the user the commit, its branch, and that it has not been pushed.
-2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d claude/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete claude/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
+2. **Delete the merged branch everywhere**: remove its worktree (`git worktree remove .worktrees/<name>` — confirm `git -C <path> status --short` is clean first; investigate before reaching for `--force`), then `git branch -d <type>/<name>` and drop the remote branch (`gh pr merge --delete-branch` already does this; otherwise `git push origin --delete <type>/<name>`). Finish with `git worktree prune` and `git fetch --prune`.
 3. **Clean up temporary files**: scratch scripts, logs, captured CI output, temp HOME dirs, and any other debris created while working. `git status --short` in every remaining worktree must show no untracked scratch files.
 
 ### GUI Tauri sidecar binaries in a worktree
