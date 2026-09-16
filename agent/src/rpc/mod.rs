@@ -94,6 +94,19 @@ pub fn publish_session_created_with_creator(
     ));
 }
 
+/// Announce that a session no longer exists, so clients holding a mirror of
+/// it (the desktop's conversation list, a paired phone) can drop their copy
+/// immediately instead of showing a conversation the Agent cannot load. Fired
+/// by `delete_session` only after the session is gone from memory and disk —
+/// there is nothing to reconcile against afterwards, so the payload carries
+/// just the identity.
+pub fn publish_session_deleted(session_id: &str) {
+    GLOBAL_EVENTS_BROADCASTER.broadcast(SseEvent::new(
+        "session_deleted",
+        serde_json::json!({"sessionId": session_id}),
+    ));
+}
+
 /// Map one broadcaster/journal event into its replay payload carrier. The
 /// wire type lives in the future-rpc crate; the mapping needs the
 /// agent-internal `SseEvent`, so this adapter stays on the agent side.
