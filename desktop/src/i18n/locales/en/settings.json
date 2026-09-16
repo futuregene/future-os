@@ -230,6 +230,8 @@
     "copyLink": "Copy link",
     "waiting": "Once you finish signing in and authorizing in your browser, the connection completes automatically here…",
     "expired": "The authorization code has expired, please try again.",
+    "unavailable": "The server is temporarily unavailable. Please try again.",
+    "invalidResponse": "The server returned an invalid response. Please try again.",
     "denied": "Authorization was denied.",
     "failed": "Authorization failed.",
     "connectFailed": "Connection failed."

@@ -140,6 +140,8 @@ export interface FutureLoginStart {
 export type FutureLoginStatus
   = | "pending"
     | "slow_down"
+    | "retry"
+    | "malformed"
     | "authorized"
     | "denied"
     | "expired"
@@ -148,6 +150,8 @@ export type FutureLoginStatus
 export interface FutureLoginPoll {
   status: FutureLoginStatus;
   message?: string | null;
+  /** Server-requested delay for a retryable response such as HTTP 429. */
+  retryAfterSeconds?: number | null;
 }
 
 export async function startFutureLogin() {

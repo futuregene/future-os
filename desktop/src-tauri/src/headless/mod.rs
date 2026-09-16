@@ -245,7 +245,7 @@ async fn ensure_login(options: &Options) -> Result<(), AppError> {
 }
 
 async fn wait_for_login<F, Fut>(
-    mut interval: Duration,
+    interval: Duration,
     expires: Duration,
     mut poll: F,
 ) -> Result<(), AppError>
@@ -253,14 +253,56 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<future_login::FutureLoginPoll, AppError>>,
 {
+    let last_poll_was_transient = std::cell::Cell::new(false);
     tokio::time::timeout(expires, async {
+        let mut normal_interval = interval;
+        let mut next_interval = interval;
+        let mut transient_interval = Duration::from_secs(2);
+        let max_transient_interval = Duration::from_secs(15);
+        let mut malformed_responses = 0;
         loop {
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(next_interval).await;
             let response = poll().await?;
             match response.status.as_str() {
                 "authorized" => return Ok(()),
-                "pending" => {}
-                "slow_down" => interval = interval.saturating_add(Duration::from_secs(5)),
+                "pending" => {
+                    last_poll_was_transient.set(false);
+                    next_interval = normal_interval;
+                    transient_interval = Duration::from_secs(2);
+                    malformed_responses = 0;
+                }
+                "slow_down" => {
+                    last_poll_was_transient.set(false);
+                    normal_interval = normal_interval.saturating_add(Duration::from_secs(5));
+                    next_interval = normal_interval;
+                    transient_interval = Duration::from_secs(2);
+                    malformed_responses = 0;
+                }
+                "retry" => {
+                    last_poll_was_transient.set(true);
+                    let server_interval = response
+                        .retry_after_seconds
+                        .map(Duration::from_secs)
+                        .unwrap_or_default();
+                    next_interval = transient_interval.max(server_interval).min(expires);
+                    transient_interval = transient_interval
+                        .saturating_mul(2)
+                        .min(max_transient_interval);
+                }
+                "malformed" => {
+                    last_poll_was_transient.set(true);
+                    malformed_responses += 1;
+                    if malformed_responses >= 3 {
+                        return Err(
+                            "Platform authorization server returned invalid responses. Restart to try again."
+                                .into(),
+                        );
+                    }
+                    next_interval = transient_interval;
+                    transient_interval = transient_interval
+                        .saturating_mul(2)
+                        .min(max_transient_interval);
+                }
                 "denied" => return Err("Platform authorization was denied.".into()),
                 "expired" => {
                     return Err("Platform authorization expired. Restart to try again.".into())
@@ -270,7 +312,15 @@ where
         }
     })
     .await
-    .map_err(|_| AppError::from("Platform authorization expired. Restart to try again."))?
+    .map_err(|_| {
+        if last_poll_was_transient.get() {
+            AppError::from(
+                "Platform authorization server is temporarily unavailable. Restart to try again.",
+            )
+        } else {
+            AppError::from("Platform authorization expired. Restart to try again.")
+        }
+    })?
 }
 
 fn print_invitation(label: &str, link: &str, options: &Options) -> Result<(), AppError> {
@@ -454,12 +504,32 @@ mod tests {
                 Ok(future_login::FutureLoginPoll {
                     status,
                     message: None,
+                    retry_after_seconds: None,
                 })
             }
         })
         .await
         .unwrap();
         assert_eq!(started.elapsed(), Duration::from_secs(11));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn login_wait_retries_transient_failures_with_backoff() {
+        let started = tokio::time::Instant::now();
+        let mut replies = ["retry", "retry", "pending", "authorized"].into_iter();
+        wait_for_login(Duration::from_secs(1), Duration::from_secs(60), || {
+            let status = replies.next().unwrap().to_string();
+            async move {
+                Ok(future_login::FutureLoginPoll {
+                    status,
+                    message: None,
+                    retry_after_seconds: None,
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(started.elapsed(), Duration::from_secs(8));
     }
 
     #[tokio::test(start_paused = true)]
@@ -470,6 +540,7 @@ mod tests {
                     Ok(future_login::FutureLoginPoll {
                         status: status.into(),
                         message: None,
+                        retry_after_seconds: None,
                     })
                 })
                 .await
@@ -480,11 +551,23 @@ mod tests {
             Ok(future_login::FutureLoginPoll {
                 status: "pending".into(),
                 message: None,
+                retry_after_seconds: None,
             })
         })
         .await
         .unwrap_err();
         assert!(expired.to_string().contains("expired"));
+        let unavailable =
+            wait_for_login(Duration::from_secs(1), Duration::from_secs(3), || async {
+                Ok(future_login::FutureLoginPoll {
+                    status: "retry".into(),
+                    message: None,
+                    retry_after_seconds: None,
+                })
+            })
+            .await
+            .unwrap_err();
+        assert!(unavailable.to_string().contains("temporarily unavailable"));
         assert!(
             wait_for_login(Duration::from_secs(1), Duration::from_secs(3), || async {
                 Err("network failed".into())

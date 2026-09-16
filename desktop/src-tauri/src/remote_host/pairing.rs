@@ -386,7 +386,7 @@ mod tests {
                 code: None,
                 message: "rejected".into(),
             };
-            assert_eq!(error_code(&error), Some("service_authorization"));
+            assert_eq!(error_code(&error), Some("account_authorization"));
             assert!(!is_invalid_or_revoked_error(&error));
         }
     }
