@@ -62,6 +62,8 @@ export interface RemoteWorkspace {
   name: string;
   path: string;
   description?: string;
+  /** Pinned to the top of the workspace list (desktop `workspaces.pinned`). */
+  pinned?: boolean;
 }
 
 export interface PresenceSession {

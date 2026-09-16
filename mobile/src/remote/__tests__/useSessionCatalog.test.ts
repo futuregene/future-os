@@ -751,6 +751,42 @@ describe("useSessionCatalog", () => {
     });
     expect(request).not.toHaveBeenCalled();
   });
+
+  test("setWorkspacePinned carries the flag for the list to order by", async () => {
+    render();
+    act(() => {
+      result.current.setWorkspaces([
+        { id: "w1", name: "One", path: "/one" },
+        { id: "w2", name: "Two", path: "/two" },
+      ]);
+    });
+    request.mockResolvedValueOnce({ data: {} });
+    await act(async () => {
+      await result.current.setWorkspacePinned("w2", true);
+    });
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "set_workspace_pinned", workspaceId: "w2", pinned: true },
+      "list",
+    );
+    expect(result.current.workspaces.map((workspace) => [workspace.id, workspace.pinned])).toEqual([
+      ["w1", undefined],
+      ["w2", true],
+    ]);
+
+    request.mockResolvedValueOnce({ data: {} });
+    await act(async () => {
+      await result.current.setWorkspacePinned("w2", false);
+    });
+    expect(result.current.workspaces.map((workspace) => workspace.pinned)).toEqual([undefined, false]);
+  });
+
+  test("setWorkspacePinned ignores an empty id", async () => {
+    render();
+    await act(async () => {
+      await result.current.setWorkspacePinned("", true);
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
   test("versioned pulls and pushes converge at one commit point and report sync readiness", async () => {
     render();
     act(() => {

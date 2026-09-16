@@ -115,6 +115,7 @@ interface RemoteContextValue {
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
   continueRun(sessionId: string, runId: string): Promise<void>;
@@ -168,6 +169,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     deleteSession: removeSession,
     deleteWorkspace: removeWorkspace,
     setSessionPinned,
+    setWorkspacePinned,
     reset: resetCatalog,
   } = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
   // Changes whenever the user navigates between conversations. Long uploads
@@ -431,6 +433,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       deleteSession,
       deleteWorkspace,
       setSessionPinned,
+      setWorkspacePinned,
       decideApproval,
       clearError,
       continueRun,
@@ -477,6 +480,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectedTitle,
       sendMessage,
       setSessionPinned,
+      setWorkspacePinned,
       listSkills,
       listSessionFiles,
       prepareAttachment,
