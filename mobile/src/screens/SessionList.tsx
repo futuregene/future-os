@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Animated,
   BackHandler,
   FlatList,
   Pressable,
@@ -36,10 +37,23 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
 import { catalogRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
+import { useTabSwipe, type PageDirection } from "./useTabSwipe";
 
 // Keep navigation state when the screen unmounts to open a conversation.
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
+
+// The list's two pages, in the order the toolbar's tab control shows them and
+// the horizontal swipe reads them: workspaces are the left page, conversations
+// the right one.
+const TABS = ["workspace", "chat"] as const;
+type Tab = (typeof TABS)[number];
+
+/** The page beside `tab` in a swipe direction, or null at either end of the row. */
+function adjacentTab(tab: Tab, direction: PageDirection): Tab | null {
+  const index = TABS.indexOf(tab) + (direction === "next" ? 1 : -1);
+  return TABS[index] ?? null;
+}
 
 // Column geometry, mirroring the desktop rail (see docs/internals/desktop/PRODUCT.md §5.2):
 // every row is [toggle column 16][gap 4][title], and a child row's start is its
@@ -66,9 +80,9 @@ export function SessionList({
   empty,
   onMenu,
 }: {
-  tab: "chat" | "workspace";
+  tab: Tab;
   active?: boolean;
-  onTabChange: (tab: "chat" | "workspace") => void;
+  onTabChange: (tab: Tab) => void;
   empty: ReactNode;
   onMenu: (session: RemoteSession) => void;
 }) {
@@ -121,6 +135,18 @@ export function SessionList({
     });
     return () => subscription.remove();
   }, [active, selecting, searching]);
+
+  // Swiping the list pages it: left from workspaces into conversations, right
+  // back out of them. Ignored while the toolbar is searching or selecting — the
+  // tab bar is hidden then, so the swipe would change mode unseen.
+  const swipe = useTabSwipe({
+    enabled: !searching && !selecting,
+    hasPage: direction => adjacentTab(tab, direction) !== null,
+    onSwitch: direction => {
+      const next = adjacentTab(tab, direction);
+      if (next) onTabChange(next);
+    },
+  });
 
   const toggleSelection = (id: string) =>
     setSelected(current => {
@@ -500,7 +526,7 @@ export function SessionList({
         ) : (
           <>
             <View style={styles.tabs}>
-              {(["workspace", "chat"] as const).map(value => (
+              {TABS.map(value => (
                 <Pressable
                   key={value}
                   accessibilityRole="tab"
@@ -546,35 +572,45 @@ export function SessionList({
           </>
         )}
       </View>
-      <FlatList
-        key={query.trim() ? `${listKey}:search` : listKey}
-        data={rows}
-        renderItem={renderRow}
-        keyExtractor={row => row.key}
-        ref={listRef}
-        contentOffset={initialOffset}
-        onLayout={onLayout}
-        onContentSizeChange={onContentSizeChange}
-        onScrollBeginDrag={onScrollBeginDrag}
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentContainerStyle={rows.length ? styles.list : styles.empty}
-        ListEmptyComponent={
-          query.trim() ? (
-            <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
-          ) : (
-            <>{empty}</>
-          )
-        }
-      />
+      <Animated.View
+        testID="session-list-page"
+        onLayout={event => swipe.measure(event.nativeEvent.layout.width)}
+        style={[styles.page, { transform: [{ translateX: swipe.translateX }] }]}
+        {...swipe.panHandlers}
+      >
+        <FlatList
+          key={query.trim() ? `${listKey}:search` : listKey}
+          data={rows}
+          renderItem={renderRow}
+          keyExtractor={row => row.key}
+          ref={listRef}
+          contentOffset={initialOffset}
+          onLayout={onLayout}
+          onContentSizeChange={onContentSizeChange}
+          onScrollBeginDrag={onScrollBeginDrag}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={rows.length ? styles.list : styles.empty}
+          ListEmptyComponent={
+            query.trim() ? (
+              <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
+            ) : (
+              <>{empty}</>
+            )
+          }
+        />
+      </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // The swipeable page: the list keeps its own layout inside it, and the
+  // transform that slides it is the only thing this view adds.
+  page: { flex: 1 },
   tools: {
     minHeight: layout.touchTarget + spacing.xs * 2 + spacing.md,
     flexDirection: "row",
