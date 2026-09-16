@@ -1,5 +1,7 @@
 // Browser entry: import production Mobile synchronization/projection code.
 // Only transport is adapted to the isolated DesktopHost's loopback HTTP probe.
+// Preserve the original raw-replay baseline; use measure-sync-snapshot.ts for
+// the current default bootstrap and its A/B comparison.
 import { SyncEngine } from "../mobile/src/remote/syncEngine";
 import { fetchEventsSince } from "../mobile/src/remote/replay";
 import { requestReadPage } from "../mobile/src/remote/readPages";
@@ -19,7 +21,7 @@ async function measure(sample: Sample, round: number) {
   const client = {
     async requestRetry<T>(command: RemoteCommand) {
       const started = performance.now();
-      const response = await fetch("/rpc", { method: "POST", headers: { "Content-Type": "application/json", "X-Sync-Measurement": "1" }, body: JSON.stringify(command) });
+      const response = await fetch("/rpc", { method: "POST", headers: { "Content-Type": "application/json", "X-Sync-Measurement": "1" }, body: JSON.stringify({ ...command, preferSnapshot: false }) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const bytes = await response.arrayBuffer();
       const parseStarted = performance.now();

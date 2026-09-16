@@ -39,7 +39,7 @@ def wait_port(port, process):
     raise TimeoutError(f"child did not open loopback port {port}")
 
 
-def serve(binary):
+def serve(binary, agent_binary=None):
     os.umask(0o077)
     OUT.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / "scripts" / "measure-sync-browser.html", OUT / "index.html")
@@ -73,7 +73,8 @@ def serve(binary):
                    SYNC_MEASURE_SAMPLES=json.dumps(samples), SYNC_MEASURE_WEB_ROOT=str(OUT), SYNC_MEASURE_WEB_PORT=str(web_port))
         try:
             with (OUT / "agent.log").open("w") as agent_log, (OUT / "probe.log").open("w") as probe_log:
-                agent = subprocess.Popen([shutil.which("future"), "agent", "--grpc-addr", f"127.0.0.1:{agent_port}"],
+                agent_command = [agent_binary] if agent_binary else [shutil.which("future"), "agent"]
+                agent = subprocess.Popen([*agent_command, "--grpc-addr", f"127.0.0.1:{agent_port}"],
                                          env=env, cwd=home, stdout=agent_log, stderr=subprocess.STDOUT)
                 children.append(agent)
                 wait_port(agent_port, agent)
@@ -83,7 +84,7 @@ def serve(binary):
                 wait_port(web_port, probe)
                 info = {"pid":os.getpid(), "agentPid":agent.pid, "probePid":probe.pid, "url":f"http://127.0.0.1:{web_port}",
                         "samples":[{"label":s["label"],"events":s["expected_events"]} for s in samples],
-                        "sourceCompletedRuns":len(runs), "agentVersion":subprocess.check_output([shutil.which("future"),"--version"],text=True).strip()}
+                        "sourceCompletedRuns":len(runs), "agentVersion":subprocess.check_output([agent_binary or shutil.which("future"),"--version"],text=True).strip()}
                 (OUT / "ready.json").write_text(json.dumps(info,indent=2))
                 print(json.dumps(info), flush=True)
                 # Hard lifetime bound; stop manually after reading the measurements.
@@ -104,15 +105,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--test-binary", required=True)
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--agent-binary", help="Standalone future-agent to measure (default: installed future agent)")
     args = parser.parse_args()
     if args.serve:
         try:
-            serve(args.test_binary)
+            serve(args.test_binary, args.agent_binary)
         except KeyboardInterrupt:
             pass
     else:
         OUT.mkdir(parents=True, exist_ok=True)
         with (OUT / "runner.log").open("w") as log:
-            process = subprocess.Popen([sys.executable, __file__, "--serve", "--test-binary", args.test_binary],
+            command = [sys.executable, __file__, "--serve", "--test-binary", args.test_binary]
+            if args.agent_binary:
+                command.extend(["--agent-binary", str(Path(args.agent_binary).resolve())])
+            process = subprocess.Popen(command,
                                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({"runnerPid":process.pid,"statusFile":str(OUT/"ready.json"),"log":str(OUT/"runner.log")}))

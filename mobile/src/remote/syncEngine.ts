@@ -102,7 +102,7 @@ export interface SyncTiming {
   /** History-refresh replay selection, captured before preview/commit mutates
    * the cache. The first failed guard explains why readable UI wasn't reused. */
   replayPlan?: {
-    mode: "full" | "incremental";
+    mode: "full" | "incremental" | "snapshot";
     sinceIdx: number;
     cachedHighWater: number;
     prefixDecision: PrefixReuseDecision;
@@ -549,6 +549,7 @@ export class SyncEngine {
           }
           enterStage("replay");
           const replay = await this.replayInto(lane, base, targetRunId, since);
+          if (replay.usedSnapshot && replayPlan) replayPlan.mode = "snapshot";
           if (!isCurrent()) throw new Error("stale_sync_lane");
           base = durableReply ? base : replay.timeline;
           lane.cursor = replay.cursor;
@@ -631,7 +632,7 @@ export class SyncEngine {
     base: TimelineState,
     runId: string,
     since: number,
-  ): Promise<{ timeline: TimelineState; cursor: RunCursor }> {
+  ): Promise<{ timeline: TimelineState; cursor: RunCursor; usedSnapshot?: boolean }> {
     const version = lane.baselineVersion;
     const isCurrent = () => this.isCurrent(lane) && lane.baselineVersion === version;
     const result = await this.deps.fetchReplay(lane.sessionId, runId, since, isCurrent);
@@ -661,16 +662,18 @@ export class SyncEngine {
       const stripped = freshRunBase(base, runId);
       const projected = await applyReplayEvents(emptyTimeline(), events, { isCurrent });
       advanceCursor(cursor, runId, cursorIdx, true);
-      const settled = events.some((ev) => ev.type === "agent_end");
       return {
         cursor,
+        usedSnapshot: true,
         timeline: {
           ...stripped,
-          items: [...stripped.items, ...projected.items],
+          // A snapshot can carry the same user_message already supplied by
+          // durable history. Keep its authoritative row/attachments once.
+          items: mergeLiveInto(stripped, projected).items,
           liveRuns: new Map([...(stripped.liveRuns ?? []), ...(projected.liveRuns ?? [])]),
           seenEvents: new Set([...stripped.seenEvents, ...projected.seenEvents]),
           currentRunId: projected.currentRunId,
-          streaming: !settled,
+          streaming: projected.streaming,
         },
       };
     }

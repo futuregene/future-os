@@ -1,6 +1,8 @@
 // Controlled historical trace playback. Production Mobile SyncEngine/replay,
 // real HTTP/DesktopHost/Agent reads; activeRun and visible watermark are test
 // controls, NOT observations of a currently streaming run. No invented tokens.
+// Keep raw bootstrap for this cutoff-based cache experiment. Snapshot bootstrap
+// is measured separately by measure-sync-snapshot.ts on an immutable full run.
 import { SyncEngine, type SyncTiming } from "../mobile/src/remote/syncEngine";
 import { fetchEventsSince, type EventsPage } from "../mobile/src/remote/replay";
 import { requestReadPage } from "../mobile/src/remote/readPages";
@@ -40,7 +42,7 @@ async function runRound(sample: Sample, round: number) {
   const client = {
     async requestRetry<T>(command: RemoteCommand) {
       const start = performance.now();
-      const response = await fetch("/rpc", { method: "POST", headers: { "Content-Type": "application/json", "X-Sync-Measurement": "1" }, body: JSON.stringify(command) });
+      const response = await fetch("/rpc", { method: "POST", headers: { "Content-Type": "application/json", "X-Sync-Measurement": "1" }, body: JSON.stringify({ ...command, preferSnapshot: false }) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const bytes = await response.arrayBuffer();
       const parsed = JSON.parse(new TextDecoder().decode(bytes));

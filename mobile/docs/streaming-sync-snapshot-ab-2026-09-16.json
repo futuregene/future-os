@@ -1,0 +1,40 @@
+{
+  "date": "2026-09-16",
+  "baseCommit": "6809f472",
+  "candidate": "base plus this worktree's semantic snapshot bootstrap changes",
+  "agentBinaryVersion": "future-agent 0.0.0-6809f472+local.dirty",
+  "agentBinarySha256": "6d938c79bee1da7d93b7360493ac9d4ef6380f7db29cf4f1bf7b01adc0a920ea",
+  "agentBuild": "cargo build -p future-agent --release (Rust 1.97.0)",
+  "desktopBuild": "cargo test --no-default-features, unoptimized + debuginfo",
+  "browser": "Chrome 153.0.8010.37 / V8 on macOS",
+  "transport": "loopback HTTP adapter to real DesktopHost and isolated real Agent gRPC; not NATS/E2EE",
+  "sourceCompletedRuns": 236,
+  "method": "Three completed-run samples, three cold rounds, both modes on the same SQLite backup and binaries; raw-baseline only forces preferSnapshot=false. Round 2 reverses mode order. No fake activeRun, clock, or RTT. Compare complete timeline.items hashes and committed cursor.",
+  "units": {"time":"milliseconds","bytes":"received HTTP JSON body bytes, including base64 when chunked; excluding HTTP framing"},
+  "samples": {
+    "largest": {"sourceEvents":111395,"highWater":111394,"projectedEvents":787,"rawRequests":112,"snapshotRequests":6,"snapshotChunks":4,"rawReplyBytes":38782350,"snapshotReplyBytes":1204056},
+    "second": {"sourceEvents":65632,"highWater":65631,"projectedEvents":474,"rawRequests":66,"snapshotRequests":5,"snapshotChunks":3,"rawReplyBytes":23479228,"snapshotReplyBytes":817317},
+    "median_completed": {"sourceEvents":2244,"highWater":2243,"projectedEvents":60,"rawRequests":3,"snapshotRequests":2,"snapshotChunks":0,"rawReplyBytes":765522,"snapshotReplyBytes":61157}
+  },
+  "allChecks": {"sameDisplay":true,"completeSourceCursor":true,"successfulSync":true,"noRawEventReplayInSnapshotMode":true},
+  "measurements": [
+    {"sample":"largest","round":1,"mode":"raw-baseline","syncMs":12846,"fetchReplayMs":11508.7,"backendReplayMs":11341.08},
+    {"sample":"largest","round":1,"mode":"snapshot","syncMs":427.6,"fetchReplayMs":393.8,"backendReplayMs":375.15},
+    {"sample":"second","round":1,"mode":"raw-baseline","syncMs":7587.4,"fetchReplayMs":6710,"backendReplayMs":6611.44},
+    {"sample":"second","round":1,"mode":"snapshot","syncMs":271.3,"fetchReplayMs":235.9,"backendReplayMs":218.18},
+    {"sample":"median_completed","round":1,"mode":"raw-baseline","syncMs":236.9,"fetchReplayMs":179.9,"backendReplayMs":176.16},
+    {"sample":"median_completed","round":1,"mode":"snapshot","syncMs":48.9,"fetchReplayMs":11.3,"backendReplayMs":9.67},
+    {"sample":"largest","round":2,"mode":"snapshot","syncMs":402.6,"fetchReplayMs":373.8,"backendReplayMs":356.55},
+    {"sample":"largest","round":2,"mode":"raw-baseline","syncMs":12821.1,"fetchReplayMs":11431.2,"backendReplayMs":11263.48},
+    {"sample":"second","round":2,"mode":"snapshot","syncMs":277.6,"fetchReplayMs":247,"backendReplayMs":229.72},
+    {"sample":"second","round":2,"mode":"raw-baseline","syncMs":7487.3,"fetchReplayMs":6663.5,"backendReplayMs":6565.55},
+    {"sample":"median_completed","round":2,"mode":"snapshot","syncMs":60,"fetchReplayMs":12.9,"backendReplayMs":11.05},
+    {"sample":"median_completed","round":2,"mode":"raw-baseline","syncMs":226.2,"fetchReplayMs":182.4,"backendReplayMs":178.52},
+    {"sample":"largest","round":3,"mode":"raw-baseline","syncMs":12790,"fetchReplayMs":11519.6,"backendReplayMs":11351.81},
+    {"sample":"largest","round":3,"mode":"snapshot","syncMs":410.9,"fetchReplayMs":375.3,"backendReplayMs":356.9},
+    {"sample":"second","round":3,"mode":"raw-baseline","syncMs":7607.4,"fetchReplayMs":6788.8,"backendReplayMs":6684.59},
+    {"sample":"second","round":3,"mode":"snapshot","syncMs":267.2,"fetchReplayMs":234.8,"backendReplayMs":217.76},
+    {"sample":"median_completed","round":3,"mode":"raw-baseline","syncMs":227.5,"fetchReplayMs":186.6,"backendReplayMs":182.6},
+    {"sample":"median_completed","round":3,"mode":"snapshot","syncMs":51.8,"fetchReplayMs":12.1,"backendReplayMs":10.37}
+  ]
+}

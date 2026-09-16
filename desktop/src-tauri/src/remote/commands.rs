@@ -1998,6 +1998,121 @@ mod bridge_tests {
         bridge.stop();
     }
 
+    #[tokio::test]
+    async fn mobile_snapshot_bootstrap_is_opt_in_chunked_and_legacy_safe() {
+        use base64::Engine as _;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("snapshot-bootstrap").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("snapshot-session");
+        let snapshot = json!({"runSnapshot":true,"events":[],"watermark":2000,"nextSinceIdx":2000,"hasMore":false,
+        "projection":{"runId":"r","cursor":2000,"events":[
+            {"type":"agent_start","idx":0,"data":"{}"},
+            {"type":"text_chunk","idx":2000,"data":json!({"text":"x".repeat(600_000)}).to_string()}
+        ]}});
+        agent.script_for("get_run_snapshot", &session, true, snapshot.clone(), "");
+        let mut reply = bridge
+            .call(
+                json!({"id":unique("cmd"),"type":"get_events_since","sessionId":session,
+            "runId":"r","sinceIdx":-1,"limit":1000,"chunkedRead":true,"preferSnapshot":true}),
+            )
+            .await;
+        assert_eq!(reply["success"], true);
+        let id = reply["data"]["readChunk"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = &reply["data"]["readChunk"];
+            assert_eq!(chunk["offset"].as_u64().unwrap() as usize, bytes.len());
+            bytes.extend(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(chunk["data"].as_str().unwrap())
+                    .unwrap(),
+            );
+            if bytes.len() == chunk["totalBytes"].as_u64().unwrap() as usize {
+                break;
+            }
+            reply = bridge
+                .call(
+                    json!({"id":unique("cmd"),"type":"get_read_chunk","sessionId":session,
+                "runId":"r","replyId":id,"offset":bytes.len()}),
+                )
+                .await;
+            assert_eq!(reply["success"], true);
+        }
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            snapshot
+        );
+        assert!(!agent
+            .requests()
+            .iter()
+            .any(|(command, sid)| command == "get_events_since" && sid == &session));
+        // An old Agent explicitly declining the new command keeps the old
+        // bounded raw replay path, instead of wedging cold opens.
+        agent.script_for(
+            "get_run_snapshot",
+            &session,
+            false,
+            json!(null),
+            "unknown command: get_run_snapshot",
+        );
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({"runId":"r","events":[{"type":"agent_start","idx":0}]}),
+        );
+        let legacy = bridge
+            .call(
+                json!({"id":unique("cmd"),"type":"get_events_since","sessionId":session,
+            "runId":"r","sinceIdx":-1,"chunkedRead":true,"preferSnapshot":true}),
+            )
+            .await;
+        assert_eq!(legacy["success"], true);
+        assert!(legacy["data"]["runSnapshot"].is_null());
+        assert_eq!(legacy["data"]["events"].as_array().unwrap().len(), 1);
+        // Transport/storage failures must not silently trigger full downloads.
+        agent.script_for(
+            "get_run_snapshot",
+            &session,
+            false,
+            json!(null),
+            "storage unavailable",
+        );
+        let failed = bridge
+            .call(
+                json!({"id":unique("cmd"),"type":"get_events_since","sessionId":session,
+            "runId":"r","sinceIdx":-1,"chunkedRead":true,"preferSnapshot":true}),
+            )
+            .await;
+        assert_eq!(failed["success"], false);
+        // Snapshot preference cannot change an incremental request's semantics.
+        let before = agent
+            .requests()
+            .iter()
+            .filter(|(command, _)| command == "get_run_snapshot")
+            .count();
+        let tail = bridge
+            .call(
+                json!({"id":unique("cmd"),"type":"get_events_since","sessionId":session,
+            "runId":"r","sinceIdx":2000,"chunkedRead":true,"preferSnapshot":true}),
+            )
+            .await;
+        assert_eq!(tail["success"], true);
+        assert_eq!(
+            agent
+                .requests()
+                .iter()
+                .filter(|(command, _)| command == "get_run_snapshot")
+                .count(),
+            before
+        );
+        bridge.stop();
+    }
+
     /// A session the Agent no longer has (created but never prompted, or dropped
     /// by a restart) must read as EMPTY history over the remote bridge, exactly
     /// as the desktop UI already answers it. Forwarding the rejection instead
