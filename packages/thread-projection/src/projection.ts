@@ -383,11 +383,32 @@ export function entriesToTurns(
   let acc: ExchangeAcc | null = null;
   for (const entry of entries) {
     if (isCompactionDivider(entry)) {
-      if (acc) {
-        flush(acc);
-        acc = null;
+      const divider = dividerMessage(entry, now);
+      const phase = entry.checkpoint?.phase;
+      // Durable checkpoints do not end the current turn. Flushing here would
+      // orphan (and drop) every following assistant/tool entry until the next
+      // user message. Keep automatic checkpoints inline, including released
+      // v2 checkpoints without a phase. Manual standalone compaction and the
+      // old destructive summary format remain exchange boundaries.
+      const inTurn =
+        entry.checkpoint?.schemaVersion === 2 &&
+        phase !== "standalone" &&
+        (phase === "pre_turn" ||
+          phase === "mid_turn" ||
+          entry.checkpoint.trigger !== "manual");
+      if (acc?.userMessage && inTurn) {
+        acc.segments.push(...(divider.segments ?? []));
+        // A reload may stop at the checkpoint before any reply is persisted.
+        // Give that marker-only snapshot a stable identity as well.
+        acc.assistantEntryId ??= entry.checkpoint?.checkpointId || entryKey(entry);
+        acc.assistantCreatedAt ??= divider.createdAt;
+      } else {
+        if (acc) {
+          flush(acc);
+          acc = null;
+        }
+        nodes.push({ kind: "standalone", message: divider });
       }
-      nodes.push({ kind: "standalone", message: dividerMessage(entry, now) });
       continue;
     }
     if (entry.role === "user") {
