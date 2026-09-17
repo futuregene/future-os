@@ -8,6 +8,7 @@ import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
 import { SettingsLink } from "../../features/settings/SettingsPrimitives";
+import { checkForUpdate } from "../../update/update";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 const mockRemote = {
@@ -34,7 +35,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ChevronLeft", "ChevronRight", "ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -99,16 +100,20 @@ test("settings uses a full-screen scrollable page and can be dismissed", () => {
   expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
 });
 
-test("iOS device navigation waits until the settings modal has dismissed", () => {
+test("iOS update checking waits until the settings modal has dismissed", async () => {
+  jest.mocked(checkForUpdate).mockRejectedValueOnce(new Error("offline"));
   act(() => button("sessions.settings").props.onPress());
   const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
-  const manage = modal.findAllByType(SettingsLink).find(node => node.props.label === "desktops.title")!;
-  act(() => manage.props.onPress());
+  const links = modal.findAllByType(SettingsLink);
+  expect(links.some(node => node.props.label === "desktops.title" || node.props.label === "sessions.unpair")).toBe(false);
+  const update = links.find(node => node.props.label === "update.check")!;
+  act(() => update.props.onPress());
+  expect(checkForUpdate).not.toHaveBeenCalled();
+  await act(async () => modal.props.onDismiss());
+  expect(checkForUpdate).toHaveBeenCalledTimes(1);
+  act(() => modal.props.onDismiss());
+  expect(checkForUpdate).toHaveBeenCalledTimes(1);
   expect(onManageDesktops).not.toHaveBeenCalled();
-  act(() => modal.props.onDismiss());
-  expect(onManageDesktops).toHaveBeenCalledTimes(1);
-  act(() => modal.props.onDismiss());
-  expect(onManageDesktops).toHaveBeenCalledTimes(1);
 });
 
 test("session ellipsis and long-press callback use the shared app action sheet", async () => {

@@ -522,7 +522,8 @@ export const resources = {
       },
       desktopSettings: {
         currentDesktop: "Current desktop",
-        sharedHint: "Saved on this desktop; synced across both clients.",
+        boundDesktop: "Paired desktop: {{name}}",
+        sharedHint: "Desktop settings apply only to this paired device and sync across both clients.",
         preferences: "Automation and approvals",
         automation: "Automation",
         language: "Language",
@@ -1059,7 +1060,8 @@ export const resources = {
       },
       desktopSettings: {
         currentDesktop: "当前桌面端",
-        sharedHint: "保存在当前桌面端，两端同步生效。",
+        boundDesktop: "已绑定设备：{{name}}",
+        sharedHint: "桌面端设置仅作用于此绑定设备，两端同步生效。",
         preferences: "自动化与审批",
         automation: "自动化",
         language: "语言",
