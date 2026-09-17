@@ -115,9 +115,14 @@ export function SessionList({
     [remote.sessions, remote.workspaces, tab, collapsed, expanded, query],
   );
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
+  // Pinned sessions are shortcuts promoted above the groups (and, on the
+  // workspace tab, out of their own workspace), so batch selection skips them:
+  // they carry no checkbox while selecting and select-all never sweeps them up.
+  const selectableSessions = visibleSessions.filter(session => !session.pinned);
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
-    visibleSessions.length > 0 && visibleSessions.every(session => selected.has(session.sessionId));
+    selectableSessions.length > 0
+    && selectableSessions.every(session => selected.has(session.sessionId));
 
   useEffect(() => {
     if (!active || (!selecting && !searching)) return;
@@ -206,10 +211,14 @@ export function SessionList({
   };
 
   /** Every session in a workspace, flattened — folds must not hide rows from a
-   * "select all in this workspace", which is the point of the action. */
+   * "select all in this workspace", which is the point of the action. Pinned
+   * sessions are promoted out of the workspace into the shortcut rows above the
+   * groups, so they are left out of the batch. */
   const sessionsInWorkspace = (workspaceId: string): RemoteSession[] =>
     remote.sessions.filter(
-      session => session.mode === "workspace" && (session.workspaceId ?? "") === workspaceId,
+      session => session.mode === "workspace"
+        && !session.pinned
+        && (session.workspaceId ?? "") === workspaceId,
     );
 
   const selectWorkspaceSessions = (workspaceId: string) => {
@@ -302,25 +311,34 @@ export function SessionList({
     }
     const session = item.session;
     const checked = selected.has(session.sessionId);
+    // A pinned session is a shortcut outside the tab's own groups: it keeps no
+    // checkbox and cannot join the batch, so select-all never includes it.
+    const selectable = !session.pinned;
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
     return (
       <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
-        {selecting ? (
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityLabel={session.title || t("sessions.unnamed")}
-            accessibilityState={{ checked, disabled: deleting || !remote.desktopOnline }}
-            disabled={deleting || !remote.desktopOnline}
-            onPress={() => toggleSelection(session.sessionId)}
-            style={styles.iconButton}
-          >
-            <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-              {checked && <Check size={13} color={colors.surface} />}
-            </View>
-          </Pressable>
-        ) : null}
+        {selecting
+          ? selectable
+            ? (
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={session.title || t("sessions.unnamed")}
+                  accessibilityState={{ checked, disabled: deleting || !remote.desktopOnline }}
+                  disabled={deleting || !remote.desktopOnline}
+                  onPress={() => toggleSelection(session.sessionId)}
+                  style={styles.iconButton}
+                >
+                  <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
+                    {checked && <Check size={13} color={colors.surface} />}
+                  </View>
+                </Pressable>
+              )
+            // A pinned shortcut keeps the checkbox column's width (no box) so
+            // its title stays on the column the group rows beside it use.
+            : <View style={styles.iconButton} />
+          : null}
         {item.hasChildren ? (
           <Pressable
             accessibilityRole="button"
@@ -352,11 +370,13 @@ export function SessionList({
         <Pressable
           accessibilityRole="button"
           disabled={!remote.desktopOnline || deleting}
-          onPress={() =>
-            selecting
-              ? toggleSelection(session.sessionId)
-              : void remote.selectSession(session.sessionId)
-          }
+          onPress={() => {
+            if (!selecting) {
+              void remote.selectSession(session.sessionId);
+              return;
+            }
+            if (selectable) toggleSelection(session.sessionId);
+          }}
           onLongPress={() => {
             if (!selecting) onMenu(session);
           }}
@@ -458,7 +478,7 @@ export function SessionList({
               onPress={() =>
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const session of visibleSessions) {
+                  for (const session of selectableSessions) {
                     if (allSelected) next.delete(session.sessionId);
                     else next.add(session.sessionId);
                   }

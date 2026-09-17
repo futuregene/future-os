@@ -39,6 +39,29 @@ describe("rail selection", () => {
     h.unmount();
   });
 
+  it("never sweeps a pinned thread into a batch selection", () => {
+    const plain = thread("plain");
+    const pinned = { ...thread("pinned"), pinned: true };
+    const onBatchDeleteThreads = vi.fn();
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads,
+      onSelectThread: vi.fn(),
+      threadScopes: new Map([[plain.id, "chat"], [pinned.id, "chat"]]),
+      visibleThreads: [plain, pinned],
+    }));
+
+    act(() => h.current.enterSelectionMode("chat"));
+    // The pinned thread sits in the pinned section, not in this group: no
+    // checkbox, no row toggle, and select-all skips it.
+    expect(h.current.isThreadInScope(pinned)).toBe(false);
+    act(() => h.current.handleRowSelect(pinned));
+    act(() => h.current.selectAll());
+    expect([...h.current.selectedThreadIds]).toEqual([plain.id]);
+    act(() => h.current.deleteSelected());
+    expect(onBatchDeleteThreads).toHaveBeenCalledWith([plain]);
+    h.unmount();
+  });
+
   it("routes row activation to selection without opening the thread", () => {
     const item = thread("item");
     const onSelectThread = vi.fn();
