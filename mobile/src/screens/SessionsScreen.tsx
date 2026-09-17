@@ -17,7 +17,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -392,7 +391,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           transparent
           visible={newOpen}
         >
-          <DialogSurface>
+          <DialogSurface footer={
+            <Button
+              disabled={newMode === "workspace" && !workspaceId}
+              label={t("sessions.new")}
+              onPress={startConversation}
+            />
+          }>
               <View style={styles.dialogHeader}>
                 <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
@@ -424,11 +429,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                 ))}
               </View>
               {newMode === "workspace" && (
-                <ScrollView
-                  bounces={false}
-                  contentContainerStyle={styles.workspaceOptionsContent}
-                  style={styles.workspaceOptions}
-                >
+                <View style={styles.workspaceOptionsContent}>
                   {remote.workspaces.map((workspace) => (
                     <Pressable
                       key={workspace.id}
@@ -449,13 +450,8 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                   {remote.workspaces.length === 0 && (
                     <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
                   )}
-                </ScrollView>
+                </View>
               )}
-              <Button
-                disabled={newMode === "workspace" && !workspaceId}
-                label={t("sessions.new")}
-                onPress={startConversation}
-              />
           </DialogSurface>
         </Modal>
 
@@ -601,7 +597,6 @@ const styles = StyleSheet.create({
   },
   modeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   modeOptionText: { flexShrink: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
-  workspaceOptions: { maxHeight: 180 },
   workspaceOptionsContent: { gap: spacing.xs },
   workspaceOption: {
     minHeight: layout.touchTarget,
