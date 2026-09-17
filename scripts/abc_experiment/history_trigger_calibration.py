@@ -17,6 +17,7 @@ import sys
 
 import autonomous_open_exam as a
 import interface_open_exam as e
+import production_shape as ps
 from recall_guidance import Guidance
 b=a.b
 
@@ -114,11 +115,13 @@ def run_case(calls,job,engine,guide,root):
 
 def main():
     parser=argparse.ArgumentParser()
-    for name in ('prior','output','future','bridge','codex-source','opencode-source'):
+    for name in ('prior','output','future','bridge','codex-source','opencode-source',
+                 'shape-probe','base-prompt'):
         parser.add_argument('--'+name,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
     args=parser.parse_args()
-    for key in ('prior','output','future','bridge','codex_source','opencode_source'): setattr(args,key,getattr(args,key).resolve())
+    for key in ('prior','output','future','bridge','codex_source','opencode_source',
+                'shape_probe','base_prompt'): setattr(args,key,getattr(args,key).resolve())
     args.output.mkdir(parents=True,exist_ok=True); args.output.chmod(0o700)
     if args.detach:
         if (args.output/'runner.lock').exists(): raise RuntimeError('runner already active')
@@ -129,7 +132,8 @@ def main():
     try:
         prior=b.load(args.prior/'verified-report.json'); ledger=b.load(args.prior/'ledger.json')
         assert prior['complete'] and prior['artifact_consistent'] and all(row['state']=='finished' for row in ledger.values())
-        guides=Guidance(b.REPO,args.codex_source,args.opencode_source)
+        guides=Guidance(b.REPO,args.codex_source,args.opencode_source,
+            shape_factory=lambda sid: ps.RequestShape(args.shape_probe,args.base_prompt,sid))
         allocation=jobs(); budget=min(300,prior['total_spent_or_reserved']+2)
         config={'version':1,'kind':'synthetic history-trigger calibration, not the 72-case benchmark','model':'future/deepseek-flash',
             'opening_spend':prior['total_spent_or_reserved'],'total_budget':budget,'additional_calibration_cap':2,

@@ -382,6 +382,7 @@ async fn main() -> Result<()> {
     let mut trigger = CompactionTrigger::Automatic;
     let mut phase = CompactionPhase::PreTurn;
     let mut print_limits = false;
+    let mut print_request_shape = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--records" => records_path = args.next(),
@@ -396,6 +397,7 @@ async fn main() -> Result<()> {
             }
             "--dump-messages" => dump_messages = true,
             "--print-limits" => print_limits = true,
+            "--print-request-shape" => print_request_shape = true,
             "--thinking-level" => thinking_level = Some(args.next().context("thinking level")?),
             "--instructions" => instructions = Some(args.next().context("instructions")?),
             "--trigger" => trigger = parse_trigger(&args.next().context("trigger")?)?,
@@ -417,6 +419,45 @@ async fn main() -> Result<()> {
         }
     }
     let model_id = model.context("--model is required")?;
+    // `--print-request-shape` emits the request a session turn sends: the system prompt
+    // built by production's own `history_recall::system_prompt`, and the tool definitions
+    // production installs. A harness that builds either by hand drifts from them silently,
+    // which is exactly what this mode exists to prevent.
+    if print_request_shape {
+        let base = base_system_prompt.as_deref().unwrap_or_default();
+        // The tools production installs by default. `coding_tools()` is the set the
+        // runtime builds a session with; the recall guidance needs `shell` among them.
+        let installed: Vec<ToolDef> = if tools.is_empty() {
+            future_agent::tools::coding_tools()
+                .into_iter()
+                .map(|tool| tool.def)
+                .collect()
+        } else {
+            tools.clone()
+        };
+        let enables = |enabled: bool| {
+            let prompt = history_recall::system_prompt(base, &session_id, enabled);
+            serde_json::json!({
+                "system_prompt": prompt,
+                "system_prompt_chars": prompt.len(),
+                "recall_guidance": prompt.len() != base.len(),
+                "tools": installed,
+            })
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "base_system_prompt_chars": base.len(),
+                // Before the first checkpoint and after it. Production sends the second
+                // once a checkpoint exists, which is the state every replay starts from.
+                "no_checkpoint": enables(false),
+                "with_checkpoint": enables(recall_allowed),
+                "session_id": session_id,
+                "tool_source": if tools.is_empty() { "installed" } else { "tools file" },
+            }))?
+        );
+        return Ok(());
+    }
     // `--print-limits` reports what the registry and the budget rules imply for this model
     // and tool set, so a harness can schedule against production's own numbers instead of
     // hard-coding a window.

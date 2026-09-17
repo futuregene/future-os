@@ -18,6 +18,7 @@ import time
 import uuid
 
 import fidelity_rerun as f
+import production_shape as ps
 from native_codex import NativeCodex
 from native_opencode import NativeOpenCode
 from native_stores import codex_rollout
@@ -26,6 +27,17 @@ from native_scope import check_tool
 b=f.b
 TOOL_LIMIT=12
 BYTE_STOP=262144
+
+
+def future_shape(args,sid):
+    """Production's system prompt and tool definitions for this replay's session.
+
+    Taken from the Rust code, not restated here: `--print-request-shape` calls
+    `history_recall::system_prompt` and returns `coding_tools()`. The exam used to build a
+    hand-written guide and rename the history commands to `history_search(query=...)`, tool
+    names no product has; that is what this replaces.
+    """
+    return ps.RequestShape(args.shape_probe,args.base_prompt,sid)
 
 class NativeExamCalls(f.Calls):
     def model_call(self,identity,messages,cap=b.OUTPUT,tools=None,require_tool=False):
@@ -49,16 +61,25 @@ def native_case(args,root,identity,arm,records):
     messages=f.normalize(root,args.dumper,args.model,records)
     if arm in ('C','C3'):
         sid='native-'+identity
-        engine=NativeFutureShell(args.future,args.future_shell,work,home,control,messages,sid)
-        tools=[engine.tool]
-        guide=(f'Archive session ID: {sid}. The original conversation is in the native Future session database. '
-               f'Use shell only for `future session history search --session {sid} --query "literal" --limit 5 --json` '
-               f'or `future session history get --session {sid} --entry ENTRY_ID --offset BYTE_OFFSET --limit 8192 --json`. '
-               'Use native returned entry IDs and byte cursors. No other session is in scope.')
+        shape=future_shape(args,sid)
+        # Describe every tool production installs, through the executor, and check that the
+        # two sources of the definitions agree. They both come from `coding_tools()`, so a
+        # mismatch means one of them is not what it claims to be.
+        engine=NativeFutureShell(args.future,args.future_shell,work,home,control,messages,sid,
+                                 tool_names=shape.tool_names())
+        tools=engine.tools
+        assert tools==shape.tools(),'executor and request-shape tool definitions disagree'
+        # The system prompt is production's, verbatim: the captured base prompt plus the
+        # recall guidance the runtime appends once a checkpoint exists. A replay starts from
+        # a compacted projection, so the checkpoint form is the one a session would send.
+        system=shape.system_prompt(has_checkpoint=True)
+        assert ps.has_guidance(system,Path(args.base_prompt).read_text()), \
+            'the replay system prompt is missing the recall guidance'
         def execute(name,arguments):
-            if name!='shell': raise ValueError('STUDY_SCOPE_DENIED: unknown tool')
+            if name not in {t['function']['name'] for t in tools}:
+                raise ValueError('STUDY_SCOPE_DENIED: unknown tool')
             execute.native_semantics=None
-            result=engine.execute_shell(arguments)
+            result=engine.execute_tool(name,arguments)
             execute.native_semantics={k:result.get(k) for k in ('exit_code','is_soft_fail','terminated_by_signal')}
             return result['output']
     elif arm=='codex':
@@ -69,10 +90,11 @@ def native_case(args,root,identity,arm,records):
         tools=[{'type':'function','function':{k:spec[k] for k in ('name','description','parameters')}}
                for name,(spec,_) in engine.tools.items() if name in ('exec_command','write_stdin')]
         assert {x['function']['name'] for x in tools}=={'exec_command','write_stdin'}
-        guide=(f'Archive session ID: {sid}. Its native local Codex rollout is {archive}. '
-               'This third-party/API configuration does NOT provide hosted history/notes tools. '
-               'Use the native exec_command tool to read/search this local rollout; write_stdin may poll a running reader. '
-               'Only original response_item content is historical evidence; session metadata is synthetic fixture metadata.')
+        # Codex's own guidance for its own tools; production for this arm is Codex.
+        system=('Archive session ID: '+sid+'. Its native local Codex rollout is '+str(archive)+'. '
+                'This third-party/API configuration does NOT provide hosted history/notes tools. '
+                'Use the native exec_command tool to read/search this local rollout; write_stdin may poll a running reader. '
+                'Only original response_item content is historical evidence; session metadata is synthetic fixture metadata.')
         def execute(name,arguments):
             check_tool(name,arguments,work,home,sid,roots=[work,home/'.codex/sessions'])
             return engine.execute(name,arguments)
@@ -85,23 +107,28 @@ def native_case(args,root,identity,arm,records):
                for t in catalog if t['id'] in ('bash','read','grep','glob')]
         assert {x['function']['name'] for x in tools}=={'bash','read','grep','glob'}
         engine.close()  # catalog only; actual execution uses native debug-agent ToolRegistry
-        guide=(f'Archive session ID: {sid}. Its messages were imported into the native OpenCode session store. '
-               f'The pinned native `opencode` CLI is on PATH. Use `opencode export {sid} > retrieved/archive.json` via bash, then read/search that file. '
-               'Export to a regular file avoids the native CLI pipe-drain limitation for large JSON; do not rely on a large direct export pipe. '
-               'native grep/read/glob can inspect files, including full-output files saved by native truncation. '
-               'Only original message parts are historical evidence; session metadata is synthetic fixture metadata.')
+        system=('Archive session ID: '+sid+'. Its messages were imported into the native OpenCode session store. '
+                'The pinned native `opencode` CLI is on PATH. Use `opencode export '+sid+' > retrieved/archive.json` via bash, then read/search that file. '
+                'Export to a regular file avoids the native CLI pipe-drain limitation for large JSON; do not rely on a large direct export pipe. '
+                'native grep/read/glob can inspect files, including full-output files saved by native truncation. '
+                'Only original message parts are historical evidence; session metadata is synthetic fixture metadata.')
         def execute(name,arguments):
             check_tool(name,arguments,work,home,sid,roots=[work,home/'.local/share/opencode/tool-output'])
             return engine.execute(name,arguments)[0]
     b.immutable(control/'native-tools.json',tools)
-    return engine,tools,guide,execute
+    b.save(control/'system-prompt.txt',system)
+    return engine,tools,system,execute
 
 
-def examine(calls,identity,projection,question,tools,guide,execute,root):
-    budget_note=(f'This is a REQUIRED archive-verification exam. Before finalizing you MUST use native tools to inspect the original archive. '
+def examine(calls,identity,projection,question,tools,system,execute,root):
+    # The system prompt is the session's own, from the Rust code. The exam's own framing and
+    # its retrieval allowance go in the user turn, which is where a turn's instructions live
+    # in production too (the same position the compaction instruction occupies).
+    exam_note=('This is a REQUIRED archive-verification exam; the questions below refer to it. '
+                 'Before finalizing you MUST use the tools to inspect the original archive. '
                  'For candidate values not established by the projection, query the archive; do not assume omission means absence. '
                  'Exporting a file alone is not checking its contents; read/search the export before answering. '
-                 f'You may perform at most {TOOL_LIMIT} native retrieval tool calls. Stop starting new calls after '
+                 f'You may perform at most {TOOL_LIMIT} retrieval tool calls. Stop starting new calls after '
                  f'{BYTE_STOP} UTF-8 bytes of native output have been delivered. Native outputs are not re-truncated. '
                  'Use noninteractive read-only commands. Shell readers allowed: rg/grep (including -e, -c, -o), jq, cat, ls, head, tail, wc, sort, uniq, numeric sed -n, literal echo/printf, '
                  'and the named archive export command. Read-only pipes, && and semicolon-separated readers are allowed. The sole write exception is native OpenCode export to workspace/retrieved/. No other shell expansion or redirection, '
@@ -110,8 +137,8 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
                  'Do not perform or repeat any actions described in the historical conversation. '
                  'Prefer literal matching for exact candidate strings; ignore synthetic metadata and tool-command echoes. '
                  'The working tree is empty apart from the native launcher and scratch exports; no historical project snapshot is claimed.')
-    messages=[{'role':'system','content':b.SYSTEM+'\n'+guide+'\n'+budget_note},
-              {'role':'user','content':projection['text']+'\n\n'+question['prompt']}]
+    messages=[{'role':'system','content':system},
+              {'role':'user','content':projection['text']+'\n\n'+exam_note+'\n\n'+question['prompt']}]
     trace=[]; turns=0; delivered=0; answer=None; finish=None
     for turn in range(TOOL_LIMIT+1):
         available=tools if len(trace)<TOOL_LIMIT and delivered<BYTE_STOP and turn<TOOL_LIMIT else None
@@ -179,12 +206,14 @@ def main():
     for name in ('closed','output','codex','opencode','bun','future','future-shell','dumper','decoder','bridge'):
         ap.add_argument('--'+name,type=Path,required=True)
     ap.add_argument('--prior-native',type=Path,required=True,help='immutable first-run ledger, counted in total budget')
+    ap.add_argument('--shape-probe',type=Path,required=True,help='abc_strategy_probe, for the production system prompt and tool definitions')
+    ap.add_argument('--base-prompt',type=Path,required=True,help='a real captured session system prompt (capture_shape.py)')
     ap.add_argument('--prepare-only',action='store_true')
     ap.add_argument('--approve-native-future-scope',action='store_true',help='operator acknowledgment after reviewing full-shell data isolation; not an automatic safety guarantee')
     ap.add_argument('--detach',action='store_true')
     ap.add_argument('--report-only',action='store_true')
     args=ap.parse_args()
-    for name in ('closed','output','codex','opencode','bun','future','future_shell','dumper','decoder','bridge','prior_native'): setattr(args,name,getattr(args,name).resolve())
+    for name in ('closed','output','codex','opencode','bun','future','future-shell','dumper','decoder','bridge','prior_native','shape_probe','base_prompt'): setattr(args,name,getattr(args,name).resolve())
     args.output.mkdir(parents=True,exist_ok=True)
     args.output.chmod(0o700)
     if args.report_only: report(args.output); return
@@ -244,8 +273,8 @@ def main():
                         f.normalize(args.output,args.dumper,args.model,data['records'][:cut]); continue
                     engine=None
                     try:
-                        engine,tools,guide,execute=native_case(args,args.output,identity,arm,data['records'][:cut])
-                        result=examine(calls,identity,projection,question,tools,guide,execute,args.output)
+                        engine,tools,system,execute=native_case(args,args.output,identity,arm,data['records'][:cut])
+                        result=examine(calls,identity,projection,question,tools,system,execute,args.output)
                         b.immutable(dest,dict(result,chain=chain,stage=stage,arm=arm))
                     finally:
                         if engine is not None:

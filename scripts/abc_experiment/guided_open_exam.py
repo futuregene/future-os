@@ -15,13 +15,20 @@ import subprocess
 import sys
 
 import autonomous_open_exam as a
+import production_shape as ps
 from recall_guidance import Guidance
 b=a.b; e=a.e; f=a.f; t=a.t
 
 
 def guided_base(closed_body,guidance):
     body=copy.deepcopy(closed_body)
-    if guidance: body['messages'][0]['content']+='\n\n'+guidance
+    # Production's guidance begins with its own separator, so concatenating it directly keeps
+    # the appended text byte-exact. Adding another one here would leave four newlines where
+    # the session has two.
+    if guidance:
+        if not guidance.startswith('\n'):
+            guidance='\n\n'+guidance
+        body['messages'][0]['content']+=guidance
     return body
 
 
@@ -67,12 +74,14 @@ def report(root):
 
 def main():
     parser=argparse.ArgumentParser()
-    for key in ('closed','prior','output','future','dumper','bridge','codex-source','opencode-source'):
+    for key in ('closed','prior','output','future','dumper','bridge','codex-source','opencode-source',
+                'shape-probe','base-prompt'):
         parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
     parser.add_argument('--spent-after',type=Path,action='append',default=[],help='verified later-run ledgers in chronological order; preserve all intervening costs')
     args=parser.parse_args()
-    for key in ('closed','prior','output','future','dumper','bridge','codex_source','opencode_source'):
+    for key in ('closed','prior','output','future','dumper','bridge','codex_source','opencode_source',
+                'shape_probe','base_prompt'):
         setattr(args,key,getattr(args,key).resolve())
     args.output.mkdir(parents=True,exist_ok=True); args.output.chmod(0o700)
     if args.detach:
@@ -87,7 +96,8 @@ def main():
             checkout=getattr(args,key)
             assert subprocess.check_output(['git','-C',str(checkout),'rev-parse','HEAD'],text=True).strip()==sha
             assert not subprocess.check_output(['git','-C',str(checkout),'status','--porcelain'],text=True).strip()
-        guides=Guidance(b.REPO,args.codex_source,args.opencode_source)
+        guides=Guidance(b.REPO,args.codex_source,args.opencode_source,
+        shape_factory=lambda sid: ps.RequestShape(args.shape_probe,args.base_prompt,sid))
         frozen=b.load(args.closed/'fidelity-manifest.json'); prior=b.load(args.prior/'verified-report.json')
         prior_manifest=b.load(args.prior/'manifest.json'); prior_ledger=b.load(args.prior/'ledger.json')
         assert prior['complete'] and prior['artifact_consistent'] and not prior['prior_answer_injected'] and not prior['forced_tool_choice']

@@ -15,6 +15,7 @@ import sys
 
 import autonomous_open_exam as a
 import guided_open_exam as g
+import production_shape as ps
 from recall_guidance import Guidance
 import nonuse_diagnosis as d
 b=a.b; e=a.e; f=a.f; t=a.t
@@ -97,11 +98,13 @@ def report(root):
 
 def main():
     parser=argparse.ArgumentParser()
-    for key in ('source','prior','output','future','dumper','bridge','codex-source','opencode-source'):
+    for key in ('source','prior','output','future','dumper','bridge','codex-source','opencode-source',
+                'shape-probe','base-prompt'):
         parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
     args=parser.parse_args()
-    for key in ('source','prior','output','future','dumper','bridge','codex_source','opencode_source'):
+    for key in ('source','prior','output','future','dumper','bridge','codex_source','opencode_source',
+                'shape_probe','base_prompt'):
         setattr(args,key,getattr(args,key).resolve())
     args.output.mkdir(parents=True,exist_ok=True); args.output.chmod(0o700)
     if args.detach:
@@ -119,7 +122,8 @@ def main():
         for key,sha in upstream.items():
             assert subprocess.check_output(['git','-C',str(getattr(args,key)),'rev-parse','HEAD'],text=True).strip()==sha
             assert not subprocess.check_output(['git','-C',str(getattr(args,key)),'status','--porcelain'],text=True).strip()
-        guides=Guidance(b.REPO,args.codex_source,args.opencode_source)
+        guides=Guidance(b.REPO,args.codex_source,args.opencode_source,
+        shape_factory=lambda sid: ps.RequestShape(args.shape_probe,args.base_prompt,sid))
         for key,text in guides.source.items(): b.immutable(args.output/'guidance-sources'/f'{key}.json',{'text':text})
         b.immutable(args.output/'guidance-adaptations.json',guides.adaptations())
         ledger=b.load(args.source/'ledger.json'); index={row['identity']:key for key,row in ledger.items()}

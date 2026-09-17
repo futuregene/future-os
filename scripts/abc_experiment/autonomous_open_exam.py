@@ -15,13 +15,29 @@ import sys
 import time
 
 import interface_open_exam as e
+import production_shape as ps
+from native_future_shell import NativeFutureShell
 b=e.b; f=e.f; t=e.t
 QUERY_LIMIT=64
 BYTE_STOP=262144
 
 
-def schemas(arm):
-    return t.FUTURE_TOOLS if arm in ('C','C3') else t.CODEX_TOOLS if arm=='codex' else t.FILE_TOOLS
+def schemas(arm,shape=None):
+    """The tools this arm's own product offers.
+
+    The Future arms must be given production's real definitions — the shell tool plus the
+    file tools — because that is what a session has. This used to hand them an invented pair
+    (`history_search` / `history_get`, see `interface_open_tools.FUTURE_TOOLS`) that no
+    product exposes, and the recall guidance had to be rewritten to name them; a replay built
+    that way measures an interface the model will never see in production. Without a shape
+    the Future arms refuse rather than quietly falling back to it.
+    """
+    if arm in ('C','C3'):
+        if shape is None:
+            raise ValueError('Future arms need production_shape.RequestShape for their tools; '
+                             'invented adapter schemas are not production')
+        return shape.tools()
+    return t.CODEX_TOOLS if arm=='codex' else t.FILE_TOOLS
 
 
 def open_body(closed_body,tools):
@@ -129,10 +145,15 @@ def report(root):
 
 def main():
     parser=argparse.ArgumentParser()
-    for key in ('closed','prior','output','future','dumper','bridge'): parser.add_argument('--'+key,type=Path,required=True)
+    for key in ('closed','prior','output','future','dumper','bridge','shape-probe','base-prompt','executor'):
+        parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
     args=parser.parse_args()
-    for key in ('closed','prior','output','future','dumper','bridge'): setattr(args,key,getattr(args,key).resolve())
+    for key in ('closed','prior','output','future','dumper','bridge','shape_probe','base_prompt','executor'):
+        setattr(args,key,getattr(args,key).resolve())
+    # One shape is enough for the tool definitions, which do not depend on the session id;
+    # the guidance is built per session by the guided variant.
+    args.shape=ps.RequestShape(args.shape_probe,args.base_prompt,'autonomous-schema')
     args.output.mkdir(parents=True,exist_ok=True); args.output.chmod(0o700)
     if args.detach:
         if (args.output/'runner.lock').exists(): raise RuntimeError('runner already active')
@@ -159,7 +180,7 @@ def main():
                     q=b.load(args.closed/'questions'/f'{chain}-{stage}.json')
                     assert body['model']==frozen['model'] and body['max_tokens']==8192 and body['thinking']=={'type':'disabled'}
                     assert body['messages']==[{'role':'system','content':b.SYSTEM},{'role':'user','content':projection['text']+'\n\n'+q['prompt']}]
-                    proposed=open_body(body,schemas(arm)); assert_initial_parity(body,proposed,schemas(arm))
+                    proposed=open_body(body,schemas(arm,args.shape)); assert_initial_parity(body,proposed,schemas(arm,args.shape))
                     b.immutable(args.output/'closed-requests'/f'{identity}.json',request)
                     b.immutable(args.output/'initial-open-bodies'/f'{identity}.json',proposed)
                     jobs.append({'identity':identity,'chain':chain,'stage':stage,'arm':arm,'cut':cut,'step':schedule[chain].index(cut),
@@ -168,9 +189,11 @@ def main():
         config={'version':1,'design':'same frozen closed request + optional tools, no prior answer/checklist/forced query',
             'model':frozen['model'],'chains':frozen['chains'],'jobs':jobs,'budget':300,'opening_spend':prior['total_spent_or_reserved'],
             'closed_manifest_sha256':b.sha(frozen),'closed_ledger_sha256':b.sha(closed_ledger),'prior_ledger_sha256':b.sha(prior_ledger),
-            'code_hashes':{str(path.relative_to(b.REPO)):b.sha(path.read_bytes()) for path in (Path(__file__),Path(e.__file__),Path(t.__file__),Path(f.__file__),Path(b.__file__),b.HERE/'native_stores.py',b.HERE/'native_codex.py')},
+            'future_tools':'production coding_tools() definitions from --shape-probe; dispatched through the production tool handlers',
+            'shape_probe_sha256':b.sha(args.shape_probe.read_bytes()),'base_prompt_sha256':b.sha(args.base_prompt.read_bytes()),
+            'code_hashes':{str(path.relative_to(b.REPO)):b.sha(path.read_bytes()) for path in (Path(__file__),Path(e.__file__),Path(t.__file__),Path(f.__file__),Path(b.__file__),b.HERE/'native_stores.py',b.HERE/'native_codex.py',b.HERE/'native_future_shell.py')},
             'binaries':{key:{'path':str(getattr(args,key)),'sha256':b.sha(getattr(args,key).read_bytes())} for key in ('future','dumper','bridge')},
-            'tool_schemas':{arm:schemas(arm) for arm in b.ARMS},'logical_query_limit':QUERY_LIMIT,'byte_stop':BYTE_STOP,
+            'tool_schemas':{arm:schemas(arm,args.shape) for arm in b.ARMS},'logical_query_limit':QUERY_LIMIT,'byte_stop':BYTE_STOP,
             'initial_request_diff_allowlist':['tools','tool_choice'],'backend_policy':'unchanged interface-v1 local replicas/observed file fragments; no export or shell substitutes',
             'measurement_limit':'frozen lexical scoring (including known numeric-substring ambiguity), single draw, only three independent real sessions; no minimum tool-use requirement'}
         b.immutable(args.output/'manifest.json',config)
@@ -187,9 +210,16 @@ def main():
             try:
                 if arm in ('C','C3'):
                     messages=f.normalize(args.output,args.dumper,frozen['model'],records); case=args.output/'cases'/identity
-                    engine=e.NativeFuture(args.future,case/'workspace',case/'home',case/'control',messages,'autonomous-'+identity)
+                    # Production's own tools and handlers: the model is offered the real
+                    # definitions and its calls run through the real code, rather than through
+                    # the invented `history_search`/`history_get` adapters.
+                    tools=schemas(arm,args.shape)
+                    engine=NativeFutureShell(args.future,args.executor,case/'workspace',case/'home',case/'control',
+                                             messages,'autonomous-'+identity,
+                                             tool_names=[t_['function']['name'] for t_ in tools])
+                    assert engine.tools==tools,'executor and shape tool definitions disagree'
                     b.immutable(args.output/'database-proofs'/f'{identity}.json',e.database_proof(engine,messages))
-                    dispatch=lambda name,arguments:e.future_call(engine,name,arguments); lookup=[t.body(row) for row in records]
+                    dispatch=engine.execute_tool; lookup=[t.body(row) for row in records]
                 elif arm=='codex':
                     backend=t.CodexHistory(records,[end for end in schedule[chain] if end<=job['cut']])
                     dispatch=backend.call; lookup=[row['content'] for row in backend.flat]
@@ -199,7 +229,7 @@ def main():
                     b.immutable(args.output/'file-visibility'/f'{identity}.json',{'paths':list(backend.files),
                         'invalidated':backend.invalidated,'unmapped_results':backend.unmapped_results,
                         'content_sha256':b.sha(backend.files)})
-                result=answer(calls,identity,body,schemas(arm),dispatch,args.output)
+                result=answer(calls,identity,body,schemas(arm,args.shape),dispatch,args.output)
                 # Closed answer and gold labels are only read now, after generation.
                 baseline=b.load(args.closed/'scores'/f'{chain}-{stage}-{arm}-closed.json')
                 question=b.load(args.closed/'questions'/f'{chain}-{stage}.json')
