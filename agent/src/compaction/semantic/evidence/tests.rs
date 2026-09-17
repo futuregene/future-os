@@ -202,7 +202,7 @@ fn current_c_rebuilds_old_evidence_without_using_a_prior_model_summary() {
         .collect::<String>();
     assert!(text.contains("version=old") && text.contains("version=new"));
     assert!(!text.contains("PRIOR_MODEL_SUMMARY_SENTINEL"));
-    assert_eq!(checkpoint.algorithm_version, ALGORITHM);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_DETERMINISTIC);
     assert!(checkpoint.protected_entry_ids.contains(&"u".into()));
     assert_eq!(
         crate::session::checkpoint_to_entry(&checkpoint)
@@ -471,9 +471,9 @@ async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
         panic!("checkpoint expected")
     };
     let text = summary_text(&checkpoint);
-    assert_eq!(checkpoint.algorithm_version, ALGORITHM);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_DETERMINISTIC);
     assert!(
-        text.starts_with("Deterministic C evidence index; no model summary was generated."),
+        text.starts_with("Deterministic tool-evidence index; no model summary was generated."),
         "{text}"
     );
     assert!(!text.contains("followed by a model-written handoff summary"));
@@ -489,10 +489,10 @@ async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
         panic!("checkpoint expected")
     };
     let text = summary_text(&checkpoint);
-    assert_eq!(checkpoint.algorithm_version, ALGORITHM_STICKY);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_SUMMARIZED);
     assert!(
         text.starts_with(
-            "Deterministic C evidence index, followed by a model-written handoff summary of \
+            "Deterministic tool-evidence index, followed by a model-written handoff summary of \
              the same history."
         ),
         "{text}"
@@ -501,7 +501,7 @@ async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
         !text.contains("no model summary was generated"),
         "the index must not deny the summary it carries: {text}"
     );
-    assert!(text.contains(STICKY_HEADER) && text.contains("## Objective"));
+    assert!(text.contains(HANDOFF_SUMMARY_HEADER) && text.contains("## Objective"));
 
     // A failed summary falls back to plain C, and the header says so again.
     let ContextPreparation::Compacted { checkpoint, .. } =
@@ -510,10 +510,10 @@ async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
         panic!("checkpoint expected")
     };
     let text = summary_text(&checkpoint);
-    assert_eq!(checkpoint.algorithm_version, ALGORITHM);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_DETERMINISTIC);
     assert!(
-        text.starts_with("Deterministic C evidence index; no model summary was generated."),
+        text.starts_with("Deterministic tool-evidence index; no model summary was generated."),
         "{text}"
     );
-    assert!(!text.contains(STICKY_HEADER));
+    assert!(!text.contains(HANDOFF_SUMMARY_HEADER));
 }

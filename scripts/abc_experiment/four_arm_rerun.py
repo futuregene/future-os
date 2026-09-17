@@ -193,7 +193,7 @@ def project(calls, driver, arm, records, fresh, previous, identity):
             p = json.loads(stdout.strip().splitlines()[-1])
             text = "\n\n".join(m["text"] for m in p["projection"])
             p["text"] = text
-            p["summary_used"] = (p.get("checkpoint") or {}).get("algorithm_version") == "c3-sticky-summary-v1"
+            p["summary_used"] = (p.get("checkpoint") or {}).get("algorithm_version") == "summarized-evidence-v1"
             u = p["usage"]
             cost = u["cost"] if u["input_tokens"] or p["model_requests"] == 0 else None
             return p, cost

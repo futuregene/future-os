@@ -152,7 +152,7 @@ def main():
             rows = con.execute(
                 "SELECT entry_type, content_json FROM entries "
                 "WHERE content_json LIKE '%Model handoff summary%' "
-                "   OR content_json LIKE '%Deterministic C evidence index%'").fetchall()
+                "   OR content_json LIKE '%Deterministic tool-evidence index%'").fetchall()
             if rows:
                 found = True
                 break
@@ -160,7 +160,7 @@ def main():
         for r in rows:
             body = r["content_json"] or ""
             print(f'  {r["entry_type"]:20s} model_summary={"Model handoff summary" in body} '
-                  f'evidence={"Deterministic C evidence index" in body} ({len(body)} chars)')
+                  f'evidence={"Deterministic tool-evidence index" in body} ({len(body)} chars)')
             if "ZETA-42" in body:
                 print("    summary/evidence mentions ZETA-42: yes")
         return 0 if found else 1

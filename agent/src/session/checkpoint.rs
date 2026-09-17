@@ -271,7 +271,7 @@ mod tests {
             "checkpoint_id": "cp",
             "summary": [{"type": "text", "text": "summary"}],
             "trigger": "automatic",
-            "algorithm_version": "deterministic-s2-evidence-v1"
+            "algorithm_version": "deterministic-evidence-v1"
         }));
         assert!(entry_to_checkpoint(&entry).is_none());
     }
@@ -351,7 +351,7 @@ mod tests {
         let mut entry = SessionEntry::new_user("system", serde_json::json!(null));
         entry.entry_type = ENTRY_TYPE_COMPACTION.into();
         entry.content = Some(
-            serde_json::json!({"schema_version":3,"checkpoint_id":"cp","covered_from_entry_id":first.id,"cutoff_entry_id":first.id,"summary":[{"type":"text","text":"summary"}],"protected_entry_ids":[later.id],"algorithm_version":"deterministic-s2-evidence-v1"}),
+            serde_json::json!({"schema_version":3,"checkpoint_id":"cp","covered_from_entry_id":first.id,"cutoff_entry_id":first.id,"summary":[{"type":"text","text":"summary"}],"protected_entry_ids":[later.id],"algorithm_version":"deterministic-evidence-v1"}),
         );
         assert!(
             latest_context_checkpoint(&[first.clone(), later.clone(), entry.clone()]).is_none()

@@ -237,12 +237,12 @@ fn commit(
     }
 }
 
-/// C3 admitted durably: C's projection plus a sticky model summary when a provider
+/// The summarised strategy admitted durably: the deterministic projection plus a model
 /// is available. The strategy in the idempotency key reflects what will actually be
 /// computed, so an unavailability downgrade is a distinct operation rather than a
 /// silent replay of a different result.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn prepare_with_journal_summarized(
+pub(crate) async fn prepare_with_journal_and_summary(
     manager: &ContextManager,
     prompt: PromptContext,
     raw: &[AgentMessage],
@@ -263,9 +263,9 @@ pub(crate) async fn prepare_with_journal_summarized(
         return Err(ContextError::Cancelled);
     }
     let strategy = if provider.is_some() {
-        semantic::evidence::ALGORITHM_STICKY
+        semantic::evidence::ALGORITHM_SUMMARIZED
     } else {
-        semantic::evidence::ALGORITHM
+        semantic::evidence::ALGORITHM_DETERMINISTIC
     };
     match admit(
         manager,

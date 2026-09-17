@@ -262,7 +262,7 @@ def main():
             check("compacted input below 32K on fixture", checkpoint["tokens_after"] < 32_000)
             check("S2 schema persisted", checkpoint["schema_version"] == 3)
             check("protected references persisted", {"u1", "a1"}.issubset(checkpoint["protected_entry_ids"]))
-            check("C algorithm persisted", checkpoint["algorithm_version"] == "deterministic-s2-evidence-v1")
+            check("C algorithm persisted", checkpoint["algorithm_version"] == "deterministic-evidence-v1")
             check("only normal model usage counted", info["tokens_in"] == 300 and info["tokens_out"] == 30)
             check("no summary model cost", abs(info["total_cost"] - 0.006) < 1e-9)
             stop_agent(process)

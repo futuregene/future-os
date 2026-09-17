@@ -896,7 +896,7 @@ fn text_estimators_agree_on_unicode_costs() {
 }
 
 fn retention_note(count: usize, algorithm: &str) -> String {
-    let action = if algorithm == evidence::ALGORITHM {
+    let action = if algorithm == evidence::ALGORITHM_DETERMINISTIC {
         "omitted from the active context (not summarized)"
     } else {
         "summarized"
@@ -1137,7 +1137,10 @@ mod tests {
         assert_eq!(checkpoint.protected_entry_ids, vec!["u1", "a1"]);
         assert_eq!(first.messages[0].message.text(), "first exact requirement");
         assert_eq!(first.messages[1].message.text(), "first exact answer");
-        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
+        assert_eq!(
+            checkpoint.algorithm_version,
+            evidence::ALGORITHM_DETERMINISTIC
+        );
         let replay =
             super::super::project_prompt_context(&original, Some(&checkpoint), None, 1_000_000);
         assert_eq!(
@@ -1529,7 +1532,10 @@ mod tests {
             into_compacted(prepared).expect("manual compaction must not be threshold-gated");
         assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
         assert_eq!(checkpoint.phase, Some(CompactionPhase::Standalone));
-        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
+        assert_eq!(
+            checkpoint.algorithm_version,
+            evidence::ALGORITHM_DETERMINISTIC
+        );
     }
 
     #[tokio::test]
@@ -1641,7 +1647,10 @@ mod tests {
         // verbatim (asserted above), and the index carries the tool evidence the model no
         // longer has to be told about. The legacy assertion that the *request input* held
         // the conversation is therefore replaced by the projection's own contents.
-        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
+        assert_eq!(
+            checkpoint.algorithm_version,
+            evidence::ALGORITHM_DETERMINISTIC
+        );
     }
 
     #[tokio::test]

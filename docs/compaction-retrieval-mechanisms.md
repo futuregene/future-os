@@ -5,7 +5,7 @@ Chinese detailed guide: [compaction-retrieval-mechanisms.zh-CN.md](compaction-re
 ## Scope and versions
 
 C and C3 use the **same native historical-retrieval backend**. They differ in
-whether the compacted projection includes a sticky model summary, not in which
+whether the compacted projection includes a model handoff summary, not in which
 journal they can search. Compaction changes the model's projection; it does not
 remove the original journal. Previously deleted data cannot be recovered.
 

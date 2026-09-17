@@ -1,7 +1,7 @@
 //! Dump the projection produced by the real C3 path in this checkout.
 //!
 //! C3 is the runtime default: C's projection (protected user and assistant originals,
-//! deterministic tool-evidence index, recent tail) **plus** a sticky model-written
+//! deterministic tool-evidence index, recent tail) **plus** a model-written
 //! handoff summary. `prepare_evidence_with_summary` is the production entry point, so
 //! this driver exercises the production selection function on reduced frozen records.
 //! It is NOT a live agent and does not reproduce the original media or provider

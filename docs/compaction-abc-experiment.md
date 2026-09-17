@@ -4,13 +4,13 @@ Three retention strategies, measured on six chains, closed book and open book.
 
 **Naming.** **C3** is the runtime default: strategy **C** — protected user and assistant
 originals, a deterministic tool-evidence index and a recent tail — **plus** a model-written
-sticky handoff summary. When a comparison needs the two separated, C3 is the default and
+handoff summary. When a comparison needs the two separated, C3 is the default and
 plain **C** is the same projection with no summary model called. The algorithm identifiers
-are `c3-sticky-summary-v1` and `deterministic-s2-evidence-v1`, matching the code.
+are `summarized-evidence-v1` and `deterministic-evidence-v1`, matching the code.
 
 | Strategy | What survives compaction | Source |
 |---|---|---|
-| **C3** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly sticky handoff summary** written by the session model | this repo (runtime default) |
+| **C3** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly handoff summary** written by the session model | this repo (runtime default) |
 | **Codex** | all user messages (≤20 000 tokens) + a whole-history summary; no assistant text, no tool output | `openai/codex` @ `b13164d8`, `compact.rs::build_compacted_history` + `templates/compact/prompt.md` |
 | **OpenCode** | a summary + a retained tail (`min(15 000, max(2 000, usable/4))`) | `anomalyco/opencode` @ `e03db9bc`, `session/compaction.ts` |
 
@@ -26,7 +26,7 @@ it runs is the runtime's own. The projection content is that function's output o
 frozen records; it is not byte-identical to a production checkpoint, because the driver
 rebuilds messages from a reduced export and the model summary appended to it is written
 under the experiment's request shape, not the session's (see below). Read the mechanism
-in [C compaction](compaction.md). The summary is **sticky** — each one receives the
+in [C compaction](compaction.md). The summary is **cumulative** — each one receives the
 previous one — so facts accumulate across successive compactions instead of being
 rewritten from scratch.
 
@@ -269,7 +269,7 @@ exactly by reconstructing each part from the committed checkpoint (no model call
 |---|---:|---:|
 | protected originals (user + assistant, verbatim) | 5 155 | **45.8 %** |
 | deterministic tool-evidence index | 2 415 | **21.5 %** |
-| sticky model summary | 1 592 | **14.1 %** |
+| model handoff summary | 1 592 | **14.1 %** |
 | retained recent tail | 2 095 | **18.6 %** |
 | **total** | **11 259** | |
 
@@ -537,7 +537,7 @@ sessions can supply.
 One incidental finding, relevant to production rather than to the arms: at a 2 048-token
 output cap the answers came back **empty** on several probes, because reasoning consumed the
 entire allowance before any text was emitted. The same failure mode was observed earlier in
-the sticky-summary path. It is a real hazard for any call whose output budget is set without
+the handoff-summary path. It is a real hazard for any call whose output budget is set without
 regard to reasoning overhead.
 
 ## Why C is only slightly ahead, despite keeping far more

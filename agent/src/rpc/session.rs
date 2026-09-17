@@ -723,13 +723,13 @@ impl ServerSession {
             }
         };
 
-        // Summarised compaction: C's projection plus a sticky handoff summary, so a
+        // Summarised compaction: C's projection plus a handoff summary, so a
         // user-initiated compaction gets the same retention as an automatic one. The
         // system prompt is passed through so the summary request reuses the prefix the
         // session already sent and can be served from the provider cache. The prompt
         // passed here is the session's own (recall guidance included when a checkpoint
         // exists), not the base prompt, for exactly that reason.
-        let prepared = crate::compaction::prepare_with_journal_summarized(
+        let prepared = crate::compaction::prepare_with_journal_and_summary(
             &manager,
             prompt,
             &messages,
@@ -3525,7 +3525,7 @@ mod tests {
         );
         let summary = result["summary"].as_str().unwrap();
         assert!(
-            summary.contains("Deterministic C evidence index"),
+            summary.contains("Deterministic tool-evidence index"),
             "the deterministic evidence index must still be present"
         );
         assert!(

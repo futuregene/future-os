@@ -397,7 +397,7 @@ impl Loop {
                         prompt: projected.clone(),
                     })
                 } else {
-                    crate::compaction::prepare_with_journal_summarized(
+                    crate::compaction::prepare_with_journal_and_summary(
                         manager,
                         projected.clone(),
                         &messages,
@@ -654,7 +654,7 @@ impl Loop {
                                 });
                             };
                             let mut recovery_ticket = None;
-                            match crate::compaction::prepare_with_journal_summarized(
+                            match crate::compaction::prepare_with_journal_and_summary(
                                 manager,
                                 projected,
                                 &messages,
@@ -3952,7 +3952,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn automatic_c3_records_evidence_and_the_sticky_summary() {
+    async fn automatic_compaction_records_evidence_and_the_handoff_summary() {
         let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
         let mut loop_ = Loop::new(provider.clone(), "mock");
         loop_.context_manager = Some(crate::compaction::ContextManager {

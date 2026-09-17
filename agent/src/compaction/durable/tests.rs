@@ -51,7 +51,7 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(prepare_with_journal_summarized(
+                .block_on(prepare_with_journal_and_summary(
                     &manager,
                     project_prompt_context(&raw, None, None, 8000),
                     &raw,
@@ -79,7 +79,7 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(prepare_with_journal_summarized(
+        .block_on(prepare_with_journal_and_summary(
             &manager,
             project_prompt_context(&raw, None, None, 8000),
             &raw,
@@ -104,7 +104,7 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
     let ContextPreparation::Compacted { checkpoint, .. } = prepared else {
         panic!("checkpoint expected")
     };
-    assert_eq!(checkpoint.algorithm_version, "deterministic-s2-evidence-v1");
+    assert_eq!(checkpoint.algorithm_version, "deterministic-evidence-v1");
     ticket
         .unwrap()
         .finish(
@@ -123,7 +123,7 @@ fn concurrent_claim_prepares_once_then_reuses_after_restart_without_a_provider()
         .enable_all()
         .build()
         .unwrap()
-        .block_on(prepare_with_journal_summarized(
+        .block_on(prepare_with_journal_and_summary(
             &manager,
             project_prompt_context(&raw, Some(&checkpoint), None, 8000),
             &raw,

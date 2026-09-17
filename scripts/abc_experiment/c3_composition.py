@@ -75,7 +75,7 @@ import collections, json, pathlib
 ROOT = ROOT
 PROJ = ROOT / "C3proj" / "projections"
 
-EVIDENCE_MARK = "Deterministic C evidence index"
+EVIDENCE_MARK = "Deterministic tool-evidence index"
 SUMMARY_MARK = "Model handoff summary"
 
 

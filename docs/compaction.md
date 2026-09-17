@@ -1,9 +1,17 @@
-# C compaction and historical recall
+# Runtime compaction
 
-**Runtime compaction is strategy C: S2 original-text protection, a recent tail and
-a deterministic tool-evidence index. C needs no summary model.** The runtime
-default (C3) appends a model-written handoff summary to that projection, and what
-that summary contributes is measured in the [experiment](compaction-abc-experiment.md).
+**Two strategies, and the runtime default is the second:**
+
+| Strategy | What it is | `algorithm_version` |
+|---|---|---|
+| deterministic | protected originals + a recent tail + a deterministic tool-evidence index; **no model call** | `deterministic-evidence-v1` |
+| summarised | the same projection **plus** a model-written handoff summary | `summarized-evidence-v1` |
+
+Only these two are written, and only these two are read. The older names in the
+experiment docs — `C` for the deterministic projection and `C3` for the summarised
+one — refer to these same two strategies, and are kept there because the recorded
+measurements use them.
+
 The raw journal is neither deleted nor rewritten. Compaction changes the next
 request's input, not an in-flight generation or a provider's internal state.
 
@@ -88,11 +96,11 @@ provider metadata enters the evidence index.
 
 ## Persistence and idempotency
 
-The runtime default is C3, algorithm `c3-sticky-summary-v1`: C's projection with a
+The runtime default is C3, algorithm `summarized-evidence-v1`: C's projection with a
 model-written handoff summary appended beside the evidence index. The summary is
-sticky — it receives the previous summary — so facts accumulate across successive
+cumulative — it receives the previous summary — so facts accumulate across successive
 compactions instead of being rewritten each time. Deterministic C
-(`deterministic-s2-evidence-v1`, schema 3) remains the fallback: it is committed
+(`deterministic-evidence-v1`, schema 3) remains the fallback: it is committed
 whenever no provider is reachable or the summary call fails, and the compatibility
 field `summary` then stores evidence alone. The evidence index is headed by a sentence
 that says what the message contains — that no summary was generated when the index
