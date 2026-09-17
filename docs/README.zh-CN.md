@@ -17,6 +17,7 @@
 | [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `futureos-headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、loop） |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.md) | 移动端端到端延迟测量与诊断（暂缺中文） |
+| [截图工具](guide/screenshots.zh-CN.md) | 在没有显示器的机器上截取真实桌面端 / 手机端界面（`make screenshots-*`） |
 
 仓库根 [README](../README.zh-CN.md)（[en](../README.md)）为入口；
 [wiki](wiki/zh/Home.md) 是面向用户的应用指南。

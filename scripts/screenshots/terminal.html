@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>Terminal</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #1b1d23;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font: 13px/1.6 "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  .win {
+    width: 860px;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+    background: #101216;
+  }
+  .bar {
+    height: 34px;
+    background: #2a2d35;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .r { background: #ff5f57; } .y { background: #febc2e; } .g { background: #28c840; }
+  .title { color: #9aa3b2; margin-left: 10px; font-size: 12px; }
+  pre { margin: 0; padding: 18px 20px 22px; color: #dfe3ea; white-space: pre-wrap; }
+  .prompt { color: #7ee787; }
+  .err { color: #ff7b72; }
+  .dim { color: #9aa3b2; }
+</style>
+</head>
+<body>
+  <div class="win">
+    <div class="bar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">lixin@mac — zsh — 96×24</span>
+    </div>
+    <pre id="out"></pre>
+  </div>
+  <script>
+    // The transcript is real CLI output captured from the built binaries.
+    const LINES = __LINES__;
+    const target = document.getElementById("out");
+    target.innerHTML = LINES.map(({ text, cls }) =>
+      `<span class="${cls || ""}">${text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</span>`
+    ).join("\n");
+  </script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+  @page { size: A4; margin: 15mm 14mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    color: #1c1f24; font-size: 10.6pt; line-height: 1.72; margin: 0;
+  }
+  h1 { font-size: 25pt; margin: 0 0 6px; letter-spacing: -0.5px; }
+  h2 {
+    font-size: 15pt; margin: 22px 0 8px; padding-bottom: 6px;
+    border-bottom: 2px solid #2b6cff; color: #12305e;
+  }
+  h3 { font-size: 12.2pt; margin: 0 0 5px; color: #101418; }
+  h3 .num {
+    display: inline-block; min-width: 25px; margin-right: 8px; padding: 1px 7px;
+    background: #eaf0ff; color: #2b6cff; border-radius: 6px;
+    font-size: 10.6pt; text-align: center;
+  }
+  p { margin: 0 0 7px; }
+  code { background: #f2f4f8; border-radius: 4px; padding: 0 4px; font-size: 9.6pt; }
+  .cover { border-bottom: 3px solid #101418; padding-bottom: 16px; margin-bottom: 6px; }
+  .cover .sub { color: #5a6472; font-size: 11.4pt; }
+  .cover .meta { margin-top: 9px; color: #7a8492; font-size: 9.4pt; }
+  .lead { background: #f6f8fb; border-left: 4px solid #2b6cff; padding: 11px 13px; margin: 12px 0 6px; }
+  .lead p:last-child { margin-bottom: 0; }
+  section.item { break-inside: avoid-page; padding-top: 6px; }
+  .prose { color: #262b33; }
+  figure { margin: 7px 0 2px; text-align: center; }
+  figure img {
+    max-width: 100%; max-height: 300px; width: auto;
+    border: 1px solid #dfe3ea; border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(16,20,24,.08);
+  }
+  figure.phone img { max-height: 360px; }
+  figcaption { color: #6b7480; font-size: 8.6pt; margin-top: 3px; }
+  .pair { display: flex; gap: 12px; justify-content: center; align-items: flex-start; }
+  .pair figure { flex: 1; }
+  .pair img { max-height: 340px; width: auto; }
+  .tag { display: inline-block; font-size: 8.2pt; color: #2b6cff; background: #eef3ff;
+         border-radius: 10px; padding: 1px 8px; margin-left: 4px; vertical-align: 2px; }
+  .tag.removed { color: #b3261e; background: #fdecea; }
+  ul { margin: 4px 0 8px 20px; padding: 0; }
+  li { margin-bottom: 2px; }
+  .note { color: #6b7480; font-size: 9.2pt; }
+  .toc { columns: 2; column-gap: 24px; font-size: 10pt; }
+  footer { margin-top: 22px; border-top: 1px solid #dfe3ea; padding-top: 9px; color: #6b7480; font-size: 8.8pt; }

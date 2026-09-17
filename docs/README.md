@@ -18,7 +18,8 @@
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
 | [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
-| [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) | Mobile end-to-end latency measurement and diagnosis |
+| [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
+| [Screenshot harness](guide/screenshots.md) ([中文](guide/screenshots.zh-CN.md)) | Capturing product screenshots of the real desktop/mobile UI without a display (`make screenshots-*`) |
 
 The repo-root [README](../README.md) ([中文](../README.zh-CN.md)) is the
 entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
