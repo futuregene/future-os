@@ -201,8 +201,10 @@ jobs:
           # The signed updater artifact is this exact .deb, so verify its
           # payload before signing. Also guard the separately published
           # portable archive against silently dropping the standalone entry.
-          deb_contents="$(dpkg-deb --contents "$release_deb")"
-          grep -Eq '^-rwx[^ ]* .* \./usr/bin/futureos-headless$' <<< "$deb_contents" || {
+          deb_extract_dir="$(mktemp -d)"
+          dpkg-deb --extract "$release_deb" "$deb_extract_dir"
+          [[ -x "$deb_extract_dir/usr/bin/futureos-headless" ]] || {
+            dpkg-deb --contents "$release_deb" >&2
             echo "The .deb does not contain executable /usr/bin/futureos-headless." >&2
             exit 1
           }
