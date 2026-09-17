@@ -1,0 +1,850 @@
+{
+  "_comment": [
+    "Scenario table for scripts/screenshots/capture.py.",
+    "Each step is one cdp.mjs step; a 'shot' path is relative to the output directory.",
+    "Element taps are data, not code: prefer 'tap' (aria-label) and use 'tapText'",
+    "only where the target has no accessible name. Keep steps minimal — a",
+    "scenario should read like a short script someone could replay by hand."
+  ],
+  "desktop": {
+    "port": 5299,
+    "terminalPort": 7391,
+    "url": "http://localhost:5299/shot/",
+    "settle": 800,
+    "touch": false,
+    "viewport": {
+      "w": 1280,
+      "h": 860,
+      "mobile": false
+    },
+    "scenarios": {
+      "rail-tree": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开 整理两篇文献的结论对比表 的子对话"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "shot": "d-rail-tree.png"
+          }
+        ]
+      },
+      "rail-pin-menu": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "单细胞转录组 的操作"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-rail-pin-menu.png"
+          }
+        ]
+      },
+      "search": {
+        "url": "http://localhost:5299/shot/?press=meta%2Bf",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "搜索此对话"
+          },
+          {
+            "type": "效应量"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-search.png"
+          }
+        ]
+      },
+      "rename": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "hover": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "tap": "整理两篇文献的结论对比表 的操作"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "重命名"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-rename-dialog.png"
+          },
+          {
+            "tap": "自动生成"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "d-rename-suggest.png"
+          }
+        ]
+      },
+      "steps-folded": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -1400
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "shot": "d-steps-folded.png"
+          }
+        ]
+      },
+      "steps-expanded": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -1400
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "工具调用 5 次"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-steps-expanded.png"
+          }
+        ]
+      },
+      "inline-image": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -300
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "shot": "d-inline-image.png"
+          }
+        ]
+      },
+      "image-preview": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -300
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "放大查看效应量对比"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-image-preview.png"
+          }
+        ]
+      },
+      "terminal": {
+        "url": "http://localhost:5299/shot/?press=meta%2Bj",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "shot": "d-terminal.png"
+          }
+        ]
+      },
+      "settings-general": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-settings-general.png"
+          }
+        ]
+      },
+      "settings-providers": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "提供商"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-settings-providers.png"
+          }
+        ]
+      },
+      "custom-model": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "提供商"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-custom-model.png"
+          }
+        ]
+      },
+      "community-edition": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "环境"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-community.png"
+          }
+        ]
+      },
+      "community-account": {
+        "url": "http://localhost:5299/shot/?settings=communityEdition:true",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "账号"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "d-community-account.png"
+          }
+        ]
+      },
+      "remote": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "手机遥控"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "d-remote.png"
+          }
+        ]
+      }
+    },
+    "ready": "!!document.querySelector('[aria-label]')",
+    "readyTimeout": 45000
+  },
+  "mobile": {
+    "port": 8099,
+    "assetsPort": 7392,
+    "url": "http://localhost:8099/",
+    "settle": 600,
+    "viewport": {
+      "w": 390,
+      "h": 844,
+      "mobile": true
+    },
+    "scenarios": {
+      "list": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "m-list.png"
+          }
+        ]
+      },
+      "workspaces": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "shot": "m-workspaces.png"
+          }
+        ]
+      },
+      "pin-workspace": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "tap": "管理工作区「单细胞转录组」"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "m-ws-menu.png"
+          },
+          {
+            "tapText": "置顶"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "shot": "m-pin.png"
+          }
+        ]
+      },
+      "chat": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-chat.png"
+          }
+        ]
+      },
+      "steps-folded": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -430
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "shot": "m-steps.png"
+          }
+        ]
+      },
+      "steps-expanded": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -430
+            ]
+          },
+          {
+            "wait": 700
+          },
+          {
+            "tap": "工具调用"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "scroll": [
+              0,
+              -260
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "shot": "m-steps-expanded.png"
+          }
+        ]
+      },
+      "image": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -270
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "tap": "效应量对比"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-image.png"
+          }
+        ]
+      },
+      "slash-skills": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "/"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "m-slash.png"
+          }
+        ],
+        "note": "Composer focus via eval: a touch tap on the textarea opens the thinking-level sheet first."
+      },
+      "files": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "会话文件"
+          },
+          {
+            "wait": 3000
+          },
+          {
+            "shot": "m-files.png"
+          }
+        ]
+      },
+      "rename": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "重命名"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "tap": "自动生成"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-rename.png"
+          }
+        ]
+      },
+      "desktops": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "已配对的桌面端"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "shot": "m-desktops-list.png"
+          }
+        ]
+      },
+      "settings": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "shot": "m-settings.png"
+          }
+        ]
+      },
+      "share-intake": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "m-share.png"
+          },
+          {
+            "tapText": "已有会话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "m-share-existing.png"
+          }
+        ],
+        "url": "http://localhost:8099/?share=1"
+      },
+      "new-conversation": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-newconv.png"
+          }
+        ]
+      },
+      "share-existing-conversation": {
+        "url": "http://localhost:8099/?share=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "已有会话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "m-share-existing.png"
+          }
+        ]
+      }
+    },
+    "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",
+    "readyTimeout": 60000
+  }
+}

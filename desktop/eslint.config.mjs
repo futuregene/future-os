@@ -28,15 +28,21 @@ export default antfu(
   },
   tailwindcss.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}"],
     // v4 moved per-rule options into shared settings: `callees` → `functions`
     // (class strings are composed via `cn`), `config` → `cssConfigPath`.
+    // These are global (not scoped to `src/**`): the plugin loads the project's
+    // CSS entry for *any* linted file, and without the path it falls back to a
+    // non-existent `src/style.css` and the whole run errors out. That matters as
+    // soon as a second file scope is linted (e.g. the screenshot harness).
     settings: {
       tailwindcss: {
         cssConfigPath,
         functions: ["cn"],
       },
     },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}", "shot/**/*.{ts,tsx}"],
     rules: {
       "no-alert": "off",
       "no-console": "error",

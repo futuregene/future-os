@@ -4,6 +4,6 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src"],
+  "include": ["src", "shot", "vite.shot.config.ts"],
   "references": []
 }
