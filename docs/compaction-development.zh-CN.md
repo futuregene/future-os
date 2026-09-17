@@ -59,7 +59,7 @@
 
 ## 4. 持久化与幂等
 
-继续使用 schema 3；摘要调用成功时算法为 `c3-sticky-summary-v1`，失败回退与纯 C 为 `deterministic-s2-evidence-v1`。字段名 `summary` 为兼容保留，存储证据索引（有摘要时还包括摘要），不是模型调用证明。目标模型信息只用于预算／配置。
+只写入 schema 3，也只读取 schema 3。本构建的 `algorithm_version` 只有两个可能取值；携带其它值（旧 schema，或已发布的字符串协议标记）的记录根本不被当作 checkpoint，会话 journal 会被全量投影，下一次压缩重新覆盖（见 [C 压缩](compaction.zh-CN.md)）。字段名 `summary` 为兼容保留，存储证据索引（有摘要时还包括摘要），不是模型调用证明。目标模型信息只用于预算／配置。
 
 ```text
 absent → started → completed（checkpoint 与收据原子提交）

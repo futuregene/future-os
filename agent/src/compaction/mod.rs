@@ -186,11 +186,6 @@ pub struct ContextCheckpoint {
     pub model: String,
     pub context_window: u64,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Legacy compacted JSONL already discarded its covered prefix, so it has
-    /// no resolvable cutoff. In that case projection prefixes the summary and
-    /// keeps every remaining message entry.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub legacy_without_cutoff: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -339,20 +334,11 @@ pub fn project_prompt_context(
     context_window: u64,
 ) -> PromptContext {
     let cutoff_index = checkpoint.and_then(|checkpoint| {
-        if checkpoint.legacy_without_cutoff {
-            // A legacy string marker is itself a message entry, while the
-            // later structured legacy compaction entry is projection-invisible.
-            // Skip the former when present to avoid prefixing the summary twice.
-            messages.iter().position(|message| {
-                message.journal_entry_id() == Some(checkpoint.entry_id.as_str())
-            })
-        } else {
-            checkpoint.cutoff_entry_id.as_deref().and_then(|cutoff| {
-                messages
-                    .iter()
-                    .position(|message| message.journal_entry_id() == Some(cutoff))
-            })
-        }
+        checkpoint.cutoff_entry_id.as_deref().and_then(|cutoff| {
+            messages
+                .iter()
+                .position(|message| message.journal_entry_id() == Some(cutoff))
+        })
     });
     let tail_start = cutoff_index.map_or(0, |index| index.saturating_add(1));
     let mut projected = Vec::with_capacity(messages.len().saturating_sub(tail_start) + 1);
@@ -362,31 +348,12 @@ pub fn project_prompt_context(
             .iter()
             .map(String::as_str)
             .collect();
-        // Upgrade old semantic checkpoints from the still-intact journal.
-        // Otherwise their already-covered first question could never become
-        // an S2 anchor. Admission still bounds this expanded projection.
-        let recover_legacy_text = !checkpoint.legacy_without_cutoff
-            && checkpoint.protected_entry_ids.is_empty()
-            && matches!(
-                checkpoint.algorithm_version.as_str(),
-                "semantic-v1" | "deterministic-emergency-v1"
-            );
         for original in &messages[..tail_start] {
-            if recover_legacy_text
-                || original
-                    .journal_entry_id()
-                    .is_some_and(|id| protected.contains(id))
+            if original
+                .journal_entry_id()
+                .is_some_and(|id| protected.contains(id))
             {
-                if let Some(mut message) = protected_text(original) {
-                    if recover_legacy_text {
-                        // Eligible for the first S2 checkpoint, not mistaken
-                        // for an already-committed, unchangeable anchor set.
-                        message
-                            .metadata
-                            .as_mut()
-                            .unwrap()
-                            .remove(INTERNAL_ANCHOR_METADATA_KEY);
-                    }
+                if let Some(message) = protected_text(original) {
                     projected.push(ProjectedMessage {
                         source_entry_ids: vec![message.journal_entry_id().unwrap().to_string()],
                         message,
@@ -988,7 +955,6 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
 
         let projected =
@@ -1294,106 +1260,6 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_projection_legacy_without_cutoff_skips_marker_entry() {
-        let mut covered = AgentMessage::new_user("user", serde_json::json!("old"));
-        covered.ensure_journal_entry_id();
-        let covered_id = covered.journal_entry_id().unwrap().to_string();
-        let mut recent = AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("recent")],
-            ..Default::default()
-        };
-        recent.ensure_journal_entry_id();
-        let checkpoint = ContextCheckpoint {
-            entry_id: covered_id.clone(),
-            protected_entry_ids: Vec::new(),
-            checkpoint_id: "cp-1".to_string(),
-            covered_from_entry_id: None,
-            cutoff_entry_id: None,
-            summary: vec![ContentBlock::text("summary")],
-            tokens_before: 100,
-            tokens_after: 10,
-            trigger: CompactionTrigger::Automatic,
-            phase: None,
-            algorithm_version: "v1".to_string(),
-            model: "model".to_string(),
-            context_window: 200,
-            created_at: chrono::Utc::now(),
-            legacy_without_cutoff: true,
-        };
-
-        let projected = project_prompt_context(
-            &[covered.clone(), recent.clone()],
-            Some(&checkpoint),
-            None,
-            200,
-        );
-        // The legacy marker entry is skipped; summary + recent remain.
-        assert_eq!(projected.messages.len(), 2);
-        assert_eq!(
-            serde_json::to_value(&projected.messages[1].message).unwrap(),
-            serde_json::to_value(&recent).unwrap()
-        );
-    }
-
-    #[test]
-    fn legacy_semantic_checkpoint_recovers_originals_before_s2_upgrade() {
-        let mut user =
-            AgentMessage::new_user("user", serde_json::json!("the original first question"));
-        let first = user.ensure_journal_entry_id();
-        let mut answer = AgentMessage::new_user(
-            "assistant",
-            serde_json::json!("the original verified answer"),
-        );
-        let last = answer.ensure_journal_entry_id();
-        let mut recent = AgentMessage::new_user("user", serde_json::json!("continue"));
-        recent.ensure_journal_entry_id();
-        let checkpoint: ContextCheckpoint = serde_json::from_value(serde_json::json!({
-            "entry_id":"old-cp", "checkpoint_id":"old-cp", "covered_from_entry_id":first,
-            "cutoff_entry_id":last, "summary":[{"type":"text","text":"old lossy summary"}],
-            "tokens_before":100,"tokens_after":10,"trigger":"manual","algorithm_version":"semantic-v1",
-            "model":"m","context_window":1000,"created_at":"2026-09-14T00:00:00Z"
-        })).unwrap();
-        let raw = vec![user.clone(), answer.clone(), recent.clone()];
-        let projection = project_prompt_context(&raw, Some(&checkpoint), None, 1000);
-        assert_eq!(projection.messages.len(), 4);
-        assert_eq!(
-            projection.messages[0].message.text(),
-            "the original first question"
-        );
-        assert_eq!(
-            projection.messages[1].message.text(),
-            "the original verified answer"
-        );
-        assert!(!is_protected(&projection.messages[0].message));
-        let manager = ContextManager {
-            enabled: true,
-            reserve_tokens: 200,
-            keep_recent_tokens: 128,
-            context_window: 1000,
-            model: "m".into(),
-        };
-        let ContextPreparation::Compacted {
-            checkpoint: next, ..
-        } = manager
-            .prepare_evidence(
-                projection,
-                &raw,
-                CompactionTrigger::Manual,
-                CompactionPhase::Standalone,
-                None,
-                &std::sync::atomic::AtomicBool::new(false),
-                None,
-            )
-            .unwrap()
-        else {
-            panic!("expected upgrade checkpoint")
-        };
-        assert!(next.protected_entry_ids.contains(&first));
-        assert!(next.protected_entry_ids.contains(&last));
-    }
-
-    #[test]
     fn checkpoint_projection_ignores_non_text_summary_blocks() {
         let checkpoint = ContextCheckpoint {
             entry_id: "e".to_string(),
@@ -1413,7 +1279,6 @@ mod tests {
             model: "model".to_string(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
 
         let projected = project_prompt_context(&[], Some(&checkpoint), None, 200);

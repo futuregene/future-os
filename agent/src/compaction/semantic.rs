@@ -967,7 +967,6 @@ fn finalize(
         model: summary_model.to_string(),
         context_window: window,
         created_at: chrono::Utc::now(),
-        legacy_without_cutoff: false,
     };
     tracing::info!(
         trigger = ?checkpoint.trigger,

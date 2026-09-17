@@ -2081,7 +2081,6 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
         model: "model".into(),
         context_window: 200,
         created_at: chrono::Utc::now(),
-        legacy_without_cutoff: false,
     };
     let cp_entry = checkpoint_to_entry(&checkpoint);
 

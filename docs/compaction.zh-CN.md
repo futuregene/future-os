@@ -71,7 +71,9 @@ future session compact --help
 
 C3 为摘要正文增加独立预算 `min(W/16, 4096)` estimated tokens，并增加 512 tokens 的槽位余量，而不是从 2K 证据槽中拿三分之一。该预算仍受总容量约束，也可能减少可保留的 assistant 原文。摘要输出上限是正文预算的两倍，以容纳推理开销；空摘要、超长摘要或请求失败会回退确定性证据。
 
-旧 A checkpoint 继续可读，且**不会被跳过**。`project_prompt_context` 会从仍在库中的 journal 重新投影覆盖范围内的每一段 user／assistant 原文——并清掉保护标记，让新算法可以重新挑选它们；随后 `plan` 拒绝把覆盖范围退回到投影中已有的 checkpoint 之前。旧摘要是被**替换**而不是被继承：该范围会重新摘要一次（该会话多一次摘要调用，不是每回合一次），`protected_entry_ids` 也是在整个范围上重新推导而非沿用，因此保留率通常反而更好。被旧版本从物理上删除的历史（`legacy_without_cutoff`，即已发布的字符串协议）无可恢复：那种情况下旧摘要被串进新摘要，已经不在 journal 里的文本无法找回。
+只读取当前的 checkpoint schema。由已退役算法写出的 checkpoint——旧 `schema_version`，或已发布的字符串协议标记——**不会被识别**：`latest_context_checkpoint` 跳过它，`project_prompt_context` 因此没有边界、把会话自己的 journal 全量投影，下一次压缩即用当前算法重新覆盖这段历史。那条退役记录留在 journal 里，是一条没人读取的惰性条目，既不能使 prompt 变短也不能使其变长。
+
+这是有意取舍：沿用旧 checkpoint 等于继承它的有损摘要和作者当时“该保护什么”的判断，而当前算法的存在意义就是重做这件事；早先那种“把被覆盖原文捞回来重摘”的做法虽然让 prompt 保持小，但也把退役摘要留在了循环里。代价是**一次输入等于整个 journal 的请求**——通常因该回合刚发过而命中前缀缓存——以及该会话**多一次摘要调用**（仅一次）。`MAX_EXPANDED_HISTORY` 仍会约束结果，所以“不可丢弃部分”放不下的会话会明确失败，而不是被静默截断。
 
 `compaction_operations` 保存内容寻址收据。键包含原始 user/system/assistant/tool 条目的身份／内容、相关配置、预算、模式／阶段、备注和 C 策略版本。checkpoint、用量和 session-info 更新不算原始历史变化；C 使用新版本键，不复用旧 A 的结果。
 

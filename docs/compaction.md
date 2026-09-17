@@ -150,16 +150,21 @@ cache whenever a checkpoint already existed.
 The reserved summary budget is at most a third of what the evidence budget can
 spare, so a tight budget yields no summary rather than an unusable evidence index.
 
-Old A checkpoints remain readable, and are **not skipped**. `project_prompt_context`
-re-projects every user/assistant original in the covered range from the intact journal —
-clearing the protected marker so the new algorithm may re-select them — and `plan` then
-refuses to move coverage behind the checkpoint already in the projection. The old summary
-is replaced rather than carried: the range is re-summarised once (one extra summary call
-for that session, not per turn), and `protected_entry_ids` is re-derived over the whole
-range instead of inherited, so retention usually improves. Data physically discarded by
-old versions (`legacy_without_cutoff`, the released string protocol) has nothing to
-recover; there the old summary is carried into the new one, and text no longer present in
-the journal cannot come back.
+Only the current checkpoint schema is read. A checkpoint written by a retired algorithm — an
+older `schema_version`, or the released string-protocol marker — is not recognised:
+`latest_context_checkpoint` skips it, `project_prompt_context` sees no boundary and projects
+the session's own journal in full, and the next compaction re-covers that history with the
+current algorithm. The retired row stays in the journal as an inert entry that nothing
+reads, so it can neither shrink nor expand a prompt.
+
+That is a deliberate trade. Carrying an old checkpoint forward would mean inheriting its
+lossy summary and its author's idea of what to protect, which is what the current
+algorithms exist to redo; recovering the covered originals to re-summarise them (what this
+build used to do) kept the prompt small but also kept the retired summary in the loop. The
+cost is one request whose input is the full journal — normally served from the prefix cache
+because the turn just sent it — and one extra summary call for that session, once.
+`MAX_EXPANDED_HISTORY` still bounds the result, so a session whose never-dropped text does
+not fit fails explicitly instead of being silently truncated.
 
 `compaction_operations` keys original user/system/assistant/tool identity and
 contents, relevant configuration, budgets, mode/phase, note and C policy version.

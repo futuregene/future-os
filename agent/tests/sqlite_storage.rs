@@ -230,8 +230,12 @@ fn dangling_checkpoint_is_not_imported() {
     let legacy = dir.path().join("sessions");
     let mut checkpoint = entry("cp");
     checkpoint["type"] = json!("compaction");
-    checkpoint["content"] =
-        json!({"schema_version":2,"covered_from_entry_id":"e","cutoff_entry_id":"missing"});
+    checkpoint["content"] = json!({
+        "schema_version":3,
+        "protected_entry_ids":[],
+        "covered_from_entry_id":"e",
+        "cutoff_entry_id":"missing"
+    });
     write_source(&legacy, "s", &[entry("e"), checkpoint]);
     let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
     store.import_legacy(&legacy, None).unwrap();
@@ -240,6 +244,24 @@ fn dangling_checkpoint_is_not_imported() {
         store.import_records().unwrap()[0].error_kind.as_deref(),
         Some("dangling_checkpoint")
     );
+}
+
+#[test]
+fn a_retired_schema_checkpoint_imports_as_an_inert_entry() {
+    // Import validates only the current schema. A row from a retired one is copied
+    // through as an ordinary journal entry: no reader recognises it, so a range that no
+    // longer resolves cannot expand or truncate the session's prompt.
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("sessions");
+    let mut checkpoint = entry("cp");
+    checkpoint["type"] = json!("compaction");
+    checkpoint["content"] =
+        json!({"schema_version":2,"covered_from_entry_id":"e","cutoff_entry_id":"missing"});
+    write_source(&legacy, "s", &[entry("e"), checkpoint]);
+    let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+    store.import_legacy(&legacy, None).unwrap();
+    assert_eq!(store.ids(false).unwrap(), ["s"]);
+    assert!(store.import_records().unwrap()[0].error_kind.is_none());
 }
 
 #[test]

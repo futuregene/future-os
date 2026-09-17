@@ -481,9 +481,10 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
         .filter_map(|(index, entry)| entry["id"].as_str().map(|id| (id, index)))
         .collect();
     for (index, entry) in result.entries.iter().enumerate() {
-        if entry["type"] == "compaction"
-            && matches!(entry["content"]["schema_version"].as_u64(), Some(2 | 3))
-        {
+        // Only the current schema is validated. A row from a retired schema is imported as
+        // an inert journal entry: nothing reads it, so a dangling range in it cannot affect
+        // the child session's prompt.
+        if entry["type"] == "compaction" && entry["content"]["schema_version"].as_u64() == Some(3) {
             let content = &entry["content"];
             let start = content["covered_from_entry_id"]
                 .as_str()
@@ -491,8 +492,10 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
             let end = content["cutoff_entry_id"]
                 .as_str()
                 .and_then(|id| positions.get(id));
-            let protected_valid = match content.get("protected_entry_ids") {
-                Some(value) => value.as_array().is_some_and(|ids| {
+            let protected_valid = content
+                .get("protected_entry_ids")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|ids| {
                     ids.iter().all(|id| {
                         id.as_str()
                             .and_then(|id| positions.get(id))
@@ -504,9 +507,7 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
                                     )
                             })
                     })
-                }),
-                None => content["schema_version"] != 3,
-            };
+                });
             if !protected_valid
                 || !matches!((start, end), (Some(start), Some(end)) if start <= end && *end < index)
             {

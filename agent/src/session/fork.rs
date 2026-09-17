@@ -44,11 +44,13 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             }
         }
     }
-    // V2 checkpoints reference message-entry ids. Forks deliberately re-id
-    // their copied entries, so rewrite both ends through the same complete map
-    // before the child is saved. A checkpoint whose range is not wholly inside
-    // the fork is dropped instead of leaving a dangling cutoff that could make
-    // the child's first prompt unexpectedly expand to the full transcript.
+    // Checkpoints reference message-entry ids. Forks deliberately re-id their copied
+    // entries, so rewrite both ends through the same complete map before the child is
+    // saved. A current-schema checkpoint whose range is not wholly inside the fork is
+    // dropped instead of leaving a dangling cutoff that could make the child's first prompt
+    // unexpectedly expand to the full transcript. A row written by a retired schema is
+    // carried through untouched: nothing reads it, so it neither needs remapping nor can it
+    // dangle.
     entries.retain_mut(|entry| {
         if entry.entry_type != super::ENTRY_TYPE_COMPACTION {
             return true;
@@ -64,7 +66,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             content
                 .get("schema_version")
                 .and_then(serde_json::Value::as_u64),
-            Some(2 | 3)
+            Some(3)
         ) {
             return true;
         }
@@ -460,7 +462,6 @@ mod tests {
             model: "test-model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
         let checkpoint_entry = checkpoint_to_entry(&checkpoint);
         let fork_point = checkpoint_entry.id.clone();
@@ -502,15 +503,16 @@ mod tests {
     }
 
     #[test]
-    fn fork_keeps_compaction_entry_with_legacy_schema_version() {
+    fn fork_carries_a_retired_schema_compaction_entry_untouched() {
         let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
-        cp.content = Some(serde_json::json!({ "schema_version": 1 }));
+        cp.content = Some(serde_json::json!({ "schema_version": 2, "cutoff_entry_id": "u1" }));
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
         parent.entries = vec![user, cp, a1.clone()];
         let forked = fork_session(&parent, &a1.id);
-        // Non-v2 schema checkpoint is kept untouched.
+        // Inert: no reader recognises this schema, so there is nothing to remap and
+        // nothing that can dangle.
         assert_eq!(
             forked
                 .entries
@@ -519,18 +521,23 @@ mod tests {
                 .count(),
             1
         );
+        assert!(crate::session::latest_context_checkpoint(&forked.entries).is_none());
     }
 
     #[test]
-    fn fork_drops_v2_compaction_missing_range_key() {
+    fn fork_drops_a_current_checkpoint_missing_range_key() {
         let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
-        cp.content = Some(serde_json::json!({ "schema_version": 2, "cutoff_entry_id": "u1" }));
+        cp.content = Some(serde_json::json!({
+            "schema_version": 3,
+            "protected_entry_ids": [],
+            "cutoff_entry_id": "u1"
+        }));
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
         parent.entries = vec![user, cp, a1.clone()];
         let forked = fork_session(&parent, &a1.id);
-        // A v2 checkpoint missing one range key is dropped.
+        // A checkpoint missing one range key is dropped.
         assert_eq!(
             forked
                 .entries
@@ -542,19 +549,20 @@ mod tests {
     }
 
     #[test]
-    fn fork_drops_v2_compaction_referencing_out_of_fork_id() {
+    fn fork_drops_a_current_checkpoint_referencing_out_of_fork_id() {
         let mut parent = Session::new("/tmp/test", "m");
         let user = make_entry("u1", ENTRY_TYPE_USER, "user", "hi");
         let mut cp = make_entry("cp", ENTRY_TYPE_COMPACTION, "system", "x");
         cp.content = Some(serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
+            "protected_entry_ids": [],
             "covered_from_entry_id": "u1",
             "cutoff_entry_id": "not-in-fork"
         }));
         let a1 = make_entry("a1", ENTRY_TYPE_ASSISTANT, "assistant", "answer");
         parent.entries = vec![user, cp, a1.clone()];
         let forked = fork_session(&parent, &a1.id);
-        // A v2 checkpoint whose range references an id absent from the fork is
+        // A checkpoint whose range references an id absent from the fork is
         // dropped rather than leaving a dangling cutoff.
         assert_eq!(
             forked

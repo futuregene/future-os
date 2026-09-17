@@ -78,11 +78,13 @@ against the retained raw tail; never read beyond actual covered originals.
 
 ## 4. Persistence and idempotency
 
-Schema 3 remains, with algorithm `c3-sticky-summary-v1` when the summary call
-succeeds and `deterministic-s2-evidence-v1` when it does not (plain C, and the
-fallback after a failed call). Compatibility field `summary` contains the evidence
-index — plus the handoff summary when there is one — not proof of an LLM call.
-Model identity records the target budget/configuration.
+Schema 3 remains the only schema written, and the only one read. Those two algorithms are
+the only values `algorithm_version` can take from this build; a checkpoint carrying
+anything else — an older schema, or the released string-protocol marker — is not
+recognised as a checkpoint at all, and the session's journal is projected in full so the
+next compaction re-covers it (see [C compaction](compaction.md)). Compatibility field
+`summary` contains the evidence index — plus the handoff summary when there is one — not
+proof of an LLM call. Model identity records the target budget/configuration.
 
 ```text
 absent -> started -> completed (checkpoint + receipt transaction)

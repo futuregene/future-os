@@ -1,20 +1,23 @@
-//! Structured context-checkpoint persistence and legacy read compatibility.
+//! Structured context-checkpoint persistence.
+//!
+//! Only the current schema is read. A checkpoint written by a retired algorithm (schema 2,
+//! or the released string-protocol marker) is **not** recognised: `latest_context_checkpoint`
+//! skips it and the session's own journal is projected in full, so the next compaction
+//! re-covers that history with the current algorithm. That is deliberate — carrying a
+//! legacy checkpoint forward would mean carrying its lossy summary and its author's idea of
+//! what to protect, which is exactly what the current algorithms exist to redo.
 
 use super::{SessionEntry, ENTRY_TYPE_COMPACTION, ENTRY_TYPE_SYSTEM};
-use crate::compaction::{CompactionTrigger, ContextCheckpoint};
+use crate::compaction::ContextCheckpoint;
 use crate::types::ContentBlock;
 use chrono::Local;
 
+/// The only checkpoint schema this build writes and reads.
+const SCHEMA_VERSION: u64 = 3;
+
 pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
-    let schema_version = if !checkpoint.protected_entry_ids.is_empty()
-        || checkpoint.algorithm_version.contains("-s2-")
-    {
-        3
-    } else {
-        2
-    };
     let mut content = serde_json::json!({
-        "schema_version": schema_version,
+        "schema_version": SCHEMA_VERSION,
         "checkpoint_id": checkpoint.checkpoint_id,
         "covered_from_entry_id": checkpoint.covered_from_entry_id,
         "cutoff_entry_id": checkpoint.cutoff_entry_id,
@@ -26,12 +29,14 @@ pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
         "model": checkpoint.model,
         "context_window": checkpoint.context_window,
     });
-    if schema_version == 3 {
-        content.as_object_mut().expect("checkpoint object").insert(
-            "protected_entry_ids".into(),
-            serde_json::json!(checkpoint.protected_entry_ids),
-        );
-    }
+    // Always present, even when empty: the schema says "this range protected nothing",
+    // which is different from an older schema that had no such field. (Deriving the version
+    // from whether the list happened to be empty once wrote schema 2 for a current
+    // algorithm, which then read back as a legacy checkpoint.)
+    content.as_object_mut().expect("checkpoint object").insert(
+        "protected_entry_ids".into(),
+        serde_json::json!(checkpoint.protected_entry_ids),
+    );
     if let Some(phase) = checkpoint.phase {
         content
             .as_object_mut()
@@ -60,26 +65,13 @@ pub fn latest_context_checkpoint(entries: &[SessionEntry]) -> Option<ContextChec
         .filter(|entry| entry.entry_type == ENTRY_TYPE_COMPACTION)
         .filter_map(compaction_entry_to_checkpoint)
         .find(|checkpoint| checkpoint_is_valid(entries, checkpoint))
-        .or_else(|| {
-            // The released string protocol only ever placed its marker at the
-            // beginning of the surviving message history. Restrict the
-            // compatibility heuristic to that first message so a real later
-            // user prompt beginning with the same text is never reclassified.
-            entries
-                .iter()
-                .find(|entry| matches!(entry.entry_type.as_str(), "user" | "assistant" | "tool"))
-                .and_then(legacy_string_checkpoint)
-        })
 }
 
-/// Reject a torn, partially copied, or otherwise dangling v2 checkpoint. The
+/// Reject a torn, partially copied, or otherwise dangling checkpoint. The
 /// caller scans newest-to-oldest, so returning false naturally falls back to
 /// the previous valid checkpoint instead of expanding the prompt from a bad
-/// cutoff. Legacy checkpoints have no range references and remain readable.
+/// cutoff.
 fn checkpoint_is_valid(entries: &[SessionEntry], checkpoint: &ContextCheckpoint) -> bool {
-    if checkpoint.legacy_without_cutoff {
-        return true;
-    }
     let (Some(covered_from), Some(cutoff)) = (
         checkpoint.covered_from_entry_id.as_deref(),
         checkpoint.cutoff_entry_id.as_deref(),
@@ -112,148 +104,86 @@ fn checkpoint_is_valid(entries: &[SessionEntry], checkpoint: &ContextCheckpoint)
         })
 }
 
+/// Read a checkpoint entry. Anything that is not the current schema — an older
+/// `schema_version`, a missing `protected_entry_ids`, or a retired algorithm's string
+/// marker — is not a checkpoint as far as this build is concerned, so the caller keeps
+/// looking (and, finding none, projects the whole journal).
 pub fn entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
-    if entry.entry_type == ENTRY_TYPE_COMPACTION {
-        return compaction_entry_to_checkpoint(entry);
-    }
-    legacy_string_checkpoint(entry)
+    (entry.entry_type == ENTRY_TYPE_COMPACTION)
+        .then(|| compaction_entry_to_checkpoint(entry))
+        .flatten()
 }
 
 fn compaction_entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
     let content = entry.content.as_ref()?.as_object()?;
-    let version = content
+    if content
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64);
-    if matches!(version, Some(2 | 3)) {
-        if version == Some(3) && !content.contains_key("protected_entry_ids") {
-            return None;
-        }
-        let summary: Vec<ContentBlock> =
-            serde_json::from_value(content.get("summary")?.clone()).ok()?;
-        let trigger = serde_json::from_value(
-            content
-                .get("trigger")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!("automatic")),
-        )
-        .ok()?;
-        return Some(ContextCheckpoint {
-            entry_id: entry.id.clone(),
-            checkpoint_id: content.get("checkpoint_id")?.as_str()?.to_string(),
-            covered_from_entry_id: content
-                .get("covered_from_entry_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-            cutoff_entry_id: content
-                .get("cutoff_entry_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned),
-            summary,
-            protected_entry_ids: match content.get("protected_entry_ids") {
-                None => Vec::new(),
-                Some(value) => serde_json::from_value(value.clone()).ok()?,
-            },
-            tokens_before: content
-                .get("tokens_before")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default(),
-            tokens_after: content
-                .get("tokens_after")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default(),
-            trigger,
-            phase: content
-                .get("phase")
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok()),
-            algorithm_version: content
-                .get("algorithm_version")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("v2")
-                .to_string(),
-            model: content
-                .get("model")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            context_window: content
-                .get("context_window")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_default(),
-            created_at: entry.timestamp.with_timezone(&chrono::Utc),
-            legacy_without_cutoff: false,
-        });
-    }
-
-    let raw_summary = content.get("summary").and_then(serde_json::Value::as_str)?;
-    Some(legacy_checkpoint(entry, raw_summary))
-}
-
-fn legacy_string_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpoint> {
-    if entry.entry_type != "user" || entry.role != "user" {
-        return None;
-    }
-    // Modern user entries carry their owning run id. Never reinterpret their
-    // literal text as the released legacy compaction protocol; genuine legacy
-    // marker entries predate run provenance and therefore have no such stamp.
-    if entry
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get("run_id"))
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|run_id| !run_id.is_empty())
+        .and_then(serde_json::Value::as_u64)
+        != Some(SCHEMA_VERSION)
     {
         return None;
     }
-    let text = match entry.content.as_ref()? {
-        serde_json::Value::String(text) => text.as_str(),
-        serde_json::Value::Array(blocks) => blocks
-            .iter()
-            .find_map(|block| block.get("text").and_then(serde_json::Value::as_str))?,
-        _ => return None,
-    };
-    text.starts_with("[Context compaction:")
-        .then(|| legacy_checkpoint(entry, text))
-}
-
-fn legacy_checkpoint(entry: &SessionEntry, raw_summary: &str) -> ContextCheckpoint {
-    let summary = raw_summary
-        .strip_prefix("[Context compaction:")
-        .and_then(|value| value.strip_suffix(']'))
-        .map(str::trim)
-        .unwrap_or(raw_summary)
-        .to_string();
-    ContextCheckpoint {
+    let summary: Vec<ContentBlock> =
+        serde_json::from_value(content.get("summary")?.clone()).ok()?;
+    let trigger = serde_json::from_value(
+        content
+            .get("trigger")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!("automatic")),
+    )
+    .ok()?;
+    Some(ContextCheckpoint {
         entry_id: entry.id.clone(),
-        checkpoint_id: format!("legacy_{}", entry.id),
-        protected_entry_ids: Vec::new(),
-        covered_from_entry_id: None,
-        cutoff_entry_id: None,
-        summary: vec![ContentBlock::text(summary)],
-        tokens_before: entry
-            .content
-            .as_ref()
-            .and_then(|content| content.get("tokens_in"))
+        checkpoint_id: content.get("checkpoint_id")?.as_str()?.to_string(),
+        covered_from_entry_id: content
+            .get("covered_from_entry_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        cutoff_entry_id: content
+            .get("cutoff_entry_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        summary,
+        protected_entry_ids: serde_json::from_value(content.get("protected_entry_ids")?.clone())
+            .ok()?,
+        tokens_before: content
+            .get("tokens_before")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or_default(),
-        tokens_after: 0,
-        trigger: CompactionTrigger::Automatic,
-        phase: None,
-        algorithm_version: "legacy".to_string(),
-        model: String::new(),
-        context_window: 0,
+        tokens_after: content
+            .get("tokens_after")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default(),
+        trigger,
+        phase: content
+            .get("phase")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
+        algorithm_version: content
+            .get("algorithm_version")
+            .and_then(serde_json::Value::as_str)?
+            .to_string(),
+        model: content
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        context_window: content
+            .get("context_window")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default(),
         created_at: entry.timestamp.with_timezone(&chrono::Utc),
-        legacy_without_cutoff: true,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compaction::CompactionTrigger;
     use chrono::TimeZone;
 
     #[test]
-    fn v2_checkpoint_round_trips_through_existing_session_envelope() {
+    fn checkpoint_round_trips_through_existing_session_envelope() {
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-cp".into(),
             protected_entry_ids: vec!["entry-a".into(), "entry-b".into()],
@@ -269,7 +199,6 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-            legacy_without_cutoff: false,
         };
         let entry = checkpoint_to_entry(&checkpoint);
         let parsed = entry_to_checkpoint(&entry).unwrap();
@@ -298,14 +227,17 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
         let entry = checkpoint_to_entry(&checkpoint);
         assert!(entry.content.unwrap().get("phase").is_none());
     }
 
     #[test]
-    fn released_v2_checkpoint_without_phase_remains_readable() {
+    fn a_retired_schema_is_not_read_as_a_checkpoint() {
+        // Schema 2 predates `protected_entry_ids`. Ignoring it is deliberate: the covered
+        // range stays in the journal, so the next compaction re-covers it with the current
+        // algorithm instead of inheriting the retired one's summary and its idea of what to
+        // protect.
         let first = SessionEntry::new_user("user", serde_json::json!("first"));
         let mut entry = SessionEntry::new_user("user", serde_json::json!(null));
         entry.id = "entry-cp-old-v2".into();
@@ -320,26 +252,43 @@ mod tests {
             "tokens_before": 100,
             "tokens_after": 10,
             "trigger": "automatic",
-            "algorithm_version": "v2",
+            "algorithm_version": "semantic-v1",
             "model": "model",
             "context_window": 200
         }));
-        let parsed = entry_to_checkpoint(&entry).unwrap();
-        assert_eq!(parsed.checkpoint_id, "cp-old-v2");
-        assert_eq!(parsed.phase, None);
+        assert!(entry_to_checkpoint(&entry).is_none());
+        assert!(latest_context_checkpoint(&[first, entry]).is_none());
     }
 
     #[test]
-    fn legacy_compaction_entry_is_read_only_compatible() {
+    fn a_schema_2_entry_with_no_protected_list_is_not_a_checkpoint() {
+        // The current schema always carries the list, even when empty; its absence marks
+        // an older writer.
+        let mut entry = SessionEntry::new_user("user", serde_json::json!(null));
+        entry.entry_type = ENTRY_TYPE_COMPACTION.into();
+        entry.content = Some(serde_json::json!({
+            "schema_version": 3,
+            "checkpoint_id": "cp",
+            "summary": [{"type": "text", "text": "summary"}],
+            "trigger": "automatic",
+            "algorithm_version": "deterministic-s2-evidence-v1"
+        }));
+        assert!(entry_to_checkpoint(&entry).is_none());
+    }
+
+    #[test]
+    fn a_released_string_protocol_entry_is_not_a_checkpoint() {
+        // The released protocol stored its summary as a plain entry with no range, so
+        // there is nothing to project against. Treating it as ordinary content is what the
+        // journal shows; nothing may silently claim the covered prefix back.
         let mut entry = SessionEntry::new_user("user", serde_json::json!("ignored"));
         entry.entry_type = ENTRY_TYPE_COMPACTION.into();
         entry.content = Some(serde_json::json!({
             "summary": "[Context compaction: old summary]",
             "tokens_in": 99
         }));
-        let parsed = entry_to_checkpoint(&entry).unwrap();
-        assert!(parsed.legacy_without_cutoff);
-        assert_eq!(parsed.tokens_before, 99);
+        assert!(entry_to_checkpoint(&entry).is_none());
+        assert!(latest_context_checkpoint(&[entry]).is_none());
     }
 
     #[test]
@@ -373,7 +322,6 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
         let dangling = ContextCheckpoint {
             entry_id: "entry-dangling-cp".into(),
@@ -403,7 +351,7 @@ mod tests {
         let mut entry = SessionEntry::new_user("system", serde_json::json!(null));
         entry.entry_type = ENTRY_TYPE_COMPACTION.into();
         entry.content = Some(
-            serde_json::json!({"schema_version":3,"checkpoint_id":"cp","covered_from_entry_id":first.id,"cutoff_entry_id":first.id,"summary":[{"type":"text","text":"summary"}],"protected_entry_ids":[later.id]}),
+            serde_json::json!({"schema_version":3,"checkpoint_id":"cp","covered_from_entry_id":first.id,"cutoff_entry_id":first.id,"summary":[{"type":"text","text":"summary"}],"protected_entry_ids":[later.id],"algorithm_version":"deterministic-s2-evidence-v1"}),
         );
         assert!(
             latest_context_checkpoint(&[first.clone(), later.clone(), entry.clone()]).is_none()
@@ -421,23 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_checkpoint_accepts_legacy_compaction_without_range() {
-        // A legacy compaction entry (non-v2 schema, string summary) has no
-        // range references; checkpoint_is_valid must accept it outright.
-        let mut entry = SessionEntry::new_user("user", serde_json::json!("ignored"));
-        entry.entry_type = ENTRY_TYPE_COMPACTION.into();
-        entry.role = ENTRY_TYPE_SYSTEM.into();
-        entry.content = Some(serde_json::json!({
-            "summary": "[Context compaction: old summary]",
-            "tokens_in": 99
-        }));
-        let parsed = latest_context_checkpoint(&[entry]).expect("legacy checkpoint is valid");
-        assert!(parsed.legacy_without_cutoff);
-        assert_eq!(parsed.tokens_before, 99);
-    }
-
-    #[test]
-    fn latest_checkpoint_rejects_v2_without_range_refs() {
+    fn latest_checkpoint_rejects_a_checkpoint_without_range_refs() {
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-no-range".into(),
             protected_entry_ids: Vec::new(),
@@ -453,13 +385,12 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
         assert!(latest_context_checkpoint(&[checkpoint_to_entry(&checkpoint)]).is_none());
     }
 
     #[test]
-    fn latest_checkpoint_rejects_v2_with_dangling_covered_from() {
+    fn latest_checkpoint_rejects_a_checkpoint_with_dangling_covered_from() {
         let first = SessionEntry::new_user("user", serde_json::json!("first"));
         let checkpoint = ContextCheckpoint {
             entry_id: "entry-dangling-covered".into(),
@@ -476,27 +407,24 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
         let entries = vec![first, checkpoint_to_entry(&checkpoint)];
         assert!(latest_context_checkpoint(&entries).is_none());
     }
 
     #[test]
-    fn non_user_entry_is_not_a_legacy_string_checkpoint() {
+    fn only_a_compaction_entry_can_be_a_checkpoint() {
         let assistant = SessionEntry::new_assistant(serde_json::json!("hi"), vec![]);
         assert!(entry_to_checkpoint(&assistant).is_none());
-    }
-
-    #[test]
-    fn legacy_string_marker_in_user_text_is_readable() {
+        // A user message that merely looks like the released marker is content, not a
+        // checkpoint: the writer that produced those markers is gone, and inferring a
+        // checkpoint from a string would let ordinary text claim a covered prefix.
         let user = SessionEntry::new_user(
             "user",
             serde_json::json!("[Context compaction: legacy text]"),
         );
-        let parsed = entry_to_checkpoint(&user).expect("legacy marker is readable");
-        assert!(parsed.legacy_without_cutoff);
-        assert_eq!(parsed.checkpoint_id, format!("legacy_{}", user.id));
+        assert!(entry_to_checkpoint(&user).is_none());
+        assert!(latest_context_checkpoint(&[user]).is_none());
     }
 
     #[test]
