@@ -29,8 +29,9 @@ development and distribution maintenance.
   collapse state survives restarts.
 - Workspaces can be pinned too (the group menu in the workspace tab). A pinned
   group sits below the pinned conversations and above every unpinned group; the
-  flag lives in the desktop store, so it survives a re-pair, and the workspace
-  tab orders the groups from it. The menu requires the desktop's
+  flag lives in the desktop store, so it survives a re-pair and the desktop rail
+  orders its groups by it as well (the same rule, from the same column). The
+  menu requires the desktop's
   `workspace_pinning_v1` capability; older desktops do not expose the action.
   Pin acknowledgements carry the same versioned workspace snapshot as pushes
   and reads, so late replies cannot undo a newer pin state.

@@ -74,6 +74,7 @@ export function WorkspaceHeaderMenu({
   onOpenChange,
   onRename,
   onSelect,
+  onTogglePin,
 }: {
   workspace: StoredWorkspace;
   open: boolean;
@@ -81,6 +82,7 @@ export function WorkspaceHeaderMenu({
   onOpenChange: (open: boolean) => void;
   onRename: (workspace: StoredWorkspace) => void;
   onSelect?: () => void;
+  onTogglePin: (workspace: StoredWorkspace) => void;
 }) {
   const { t } = useTranslation("layout");
   const revealLabel = t("activityRail.revealInFinder");
@@ -128,6 +130,9 @@ export function WorkspaceHeaderMenu({
             >
               <ThreadMenuItem icon={<Pencil className="size-3.5" />} onClick={() => onRename(workspace)} onClose={() => onOpenChange(false)}>
                 {t("activityRail.rename")}
+              </ThreadMenuItem>
+              <ThreadMenuItem icon={<Pin className="size-3.5" />} onClick={() => onTogglePin(workspace)} onClose={() => onOpenChange(false)}>
+                {workspace.pinned ? t("activityRail.unpin") : t("activityRail.pin")}
               </ThreadMenuItem>
               <ThreadMenuItem icon={<FolderOpen className="size-3.5" />} onClick={() => void openPath(workspace.path).catch(() => {})} onClose={() => onOpenChange(false)}>
                 {revealLabel}

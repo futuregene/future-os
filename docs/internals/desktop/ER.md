@@ -102,6 +102,7 @@ Field draft:
 | `kind` | `user` or `temporary` |
 | `path` | local directory path |
 | `description` | optional description |
+| `pinned` | pinned or not (leads the workspace list; toggled from the group menu) |
 | `cleanup_status` | `active`, `pending_cleanup`, `cleaned` |
 | `cleanup_requested_at` | when cleanup was requested |
 | `cleaned_at` | when cleanup actually completed |
@@ -134,6 +135,13 @@ Notes:
   one is a `temporary` Workspace, additionally mark
   `cleanup_status = 'pending_cleanup'`. Backend:
   `store::workspaces::{rename_workspace, delete_workspace}`.
+- Pinning (change `pinned`) is supported. It is an ordering flag, not activity:
+  `last_opened_at` / `updated_at` stay put, so unpinning returns the group to
+  its recency position. `list_workspaces` still returns recency order (the new
+  conversation picker reads its first entry as the most recently used
+  workspace); the workspace list surfaces — the desktop rail and the phone's
+  workspace tab — order their groups by the flag themselves. Backend:
+  `store::workspaces::pin_workspace`.
 
 ### 4.2 Thread
 

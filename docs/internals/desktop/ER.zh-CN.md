@@ -77,6 +77,7 @@ Workspace 表示一个项目或工作上下文。
 | `kind` | `user` 或 `temporary` |
 | `path` | 本地目录路径 |
 | `description` | 可选描述 |
+| `pinned` | 是否置顶（置顶分组排在列表最前；分组菜单切换） |
 | `cleanup_status` | `active`、`pending_cleanup`、`cleaned` |
 | `cleanup_requested_at` | 请求清理时间 |
 | `cleaned_at` | 实际清理完成时间 |
@@ -98,6 +99,7 @@ Workspace 表示一个项目或工作上下文。
 - 删除 Workspace 对话不删除 Workspace 目录。
 - 清理普通 Chat 时，可以把对应临时 Workspace 标记为 `pending_cleanup`，清理完成后标记为 `cleaned`。
 - 支持重命名（改 `name`）与删除 Workspace。删除是**软删除**：在一个事务里给 Workspace 置 `deleted_at`，并把其名下未删除的 Thread 级联软删除（`status = 'deleted'` + `deleted_at`）；磁盘目录与文件不动。若被删的是 `temporary` Workspace，额外标记 `cleanup_status = 'pending_cleanup'`。对应后端 `store::workspaces::{rename_workspace, delete_workspace}`。
+- 支持置顶（改 `pinned`）：这是排序标记而非活动，`last_opened_at` / `updated_at` 不变，因此取消置顶会回到原本的最近位置。`list_workspaces` 仍按最近打开时间返回（新对话选择器把首项当作「最近使用的工作区」，移动端工作区标签页与桌面侧栏各自按该标记排序分组）。对应后端 `store::workspaces::pin_workspace`。
 
 ### 4.2 Thread
 

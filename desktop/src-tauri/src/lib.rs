@@ -1011,6 +1011,7 @@ mod gui {
                 list_workspaces,
                 create_workspace,
                 rename_workspace,
+                pin_workspace,
                 delete_workspace,
                 ensure_workspace_git,
                 save_pasted_image,

@@ -70,6 +70,7 @@ import {
   listWorkspaces,
   markThreadOpened,
   pinThread,
+  pinWorkspace,
   renameThread,
   renameWorkspace,
   restoreThread,
@@ -254,6 +255,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("rename_workspace", { input: { workspaceId: "w", name: "n" } });
     await deleteWorkspace("w");
     expect(invokeMock).toHaveBeenLastCalledWith("delete_workspace", { workspaceId: "w" });
+    await pinWorkspace({ workspaceId: "w", pinned: true });
+    expect(invokeMock).toHaveBeenLastCalledWith("pin_workspace", { input: { workspaceId: "w", pinned: true } });
     await getRecentThread();
     expect(invokeMock).toHaveBeenLastCalledWith("get_recent_thread", undefined);
     await markThreadOpened("t");
