@@ -553,7 +553,7 @@ const styles = StyleSheet.create({
     ...chatTypography,
     includeFontPadding: false,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
+    paddingTop: spacing.md,
     paddingBottom: spacing.sm,
   },
   input: {
