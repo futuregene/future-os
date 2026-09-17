@@ -154,37 +154,52 @@ function renderCodeTokens(tokens: CodeToken[] | null, fallback: string): ReactNo
     : token.text) : fallback;
 }
 
+/** Collapsed height of a long block, in wrapped lines. The source chunks bound
+ * the mounted characters; this bounds the painted height, which one long CJK
+ * paragraph can otherwise blow past. 16 keeps the previous fixed viewport's
+ * worth of text (its 360dp held ~17 unwrapped lines) without clipping a line. */
+const collapsedCodeLines = 16;
+
 function CodeSource({ code, language }: { code: string; language?: string }) {
   const { t } = useTranslation();
-  const { fontScale } = useWindowDimensions();
+  const [expanded, setExpanded] = useState(false);
   const large = code.length > 10000 || code.split("\n", 18).length > 16;
   const rows = useMemo(() => large ? codePreviewRows(code) : [], [code, large]);
   const tokens = useMemo(() => highlightCode(code, language), [code, language]);
   const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
-  const columns = useMemo(() => rows.reduce((max, row) =>
-    row.text.split("\n").reduce((width, line) => Math.max(width, line.length), max), 1), [rows]);
-  if (large) return <View style={styles.codeContainer}>
-    <View style={styles.codeToolbar}>
-      <Text style={styles.codeLanguage}>{language ?? ""}</Text>
-      <Pressable accessibilityRole="button" accessibilityLabel={t("chat.copy")}
-        onPress={() => { void Clipboard.setStringAsync(code).catch(error =>
-          Alert.alert(t("common.error"), error instanceof Error ? error.message : String(error))); }} style={styles.codeCopy}>
-        <Text>{t("chat.copy")}</Text>
-      </Pressable>
-    </View>
-    <ScrollView horizontal nestedScrollEnabled>
-      <FlatList data={rows} nestedScrollEnabled initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
-        style={{ height: 360, width: Math.max(320, columns * 14 * fontScale + 48) }}
-        keyExtractor={(_row, index) => String(index)}
-        renderItem={({ item, index }) => <Text selectable style={styles.code}>{item.continuation ? "↪ " : ""}{renderCodeTokens(rowTokens[index] ?? null, item.text.endsWith("\n") ? item.text.slice(0, -1) : item.text)}</Text>} />
-    </ScrollView>
-  </View>;
+  // Wrapping (never a horizontal scroll view) keeps a phone-width block
+  // readable; an explicit toggle, not a nested vertical viewport, is what makes
+  // the tail of a long block reachable — an inner scroll region loses the
+  // gesture to the surrounding message list.
+  const collapsed = large && !expanded;
   return (
     <View style={styles.codeContainer}>
-      {language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
-      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
+      {large ? (
+        <View style={styles.codeToolbar}>
+          <Text style={styles.codeLanguage}>{language ?? ""}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={t("chat.copy")}
+            onPress={() => { void Clipboard.setStringAsync(code).catch(error =>
+              Alert.alert(t("common.error"), error instanceof Error ? error.message : String(error))); }} style={styles.codeCopy}>
+            <Text>{t("chat.copy")}</Text>
+          </Pressable>
+        </View>
+      ) : language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
+      {large ? rows.slice(0, collapsed ? 1 : rows.length).map((row, index) => (
+        <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
+          ellipsizeMode={collapsed ? "tail" : undefined}>
+          {row.continuation ? "↪ " : ""}
+          {renderCodeTokens(rowTokens[index] ?? null, row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text)}
+        </Text>
+      )) : (
         <Text selectable style={styles.code}>{renderCodeTokens(tokens, code)}</Text>
-      </ScrollView>
+      )}
+      {large ? (
+        <Pressable accessibilityRole="button"
+          accessibilityLabel={t(collapsed ? "chat.expandCode" : "chat.collapseCode")}
+          onPress={() => setExpanded(value => !value)} style={styles.codeToggle}>
+          <Text>{t(collapsed ? "chat.expandCode" : "chat.collapseCode")}</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -475,9 +490,9 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: colors.surfaceSubtle,
   },
-  codeContent: { flexGrow: 1 },
   codeToolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   codeCopy: { padding: spacing.md, minHeight: 44, justifyContent: "center" },
+  codeToggle: { padding: spacing.sm, minHeight: 44, alignItems: "center", justifyContent: "center", borderTopWidth: 1, borderTopColor: colors.lineSoft },
   codeLanguage: { color: colors.inkMuted, fontSize: 12, paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   code: {
     padding: spacing.md,

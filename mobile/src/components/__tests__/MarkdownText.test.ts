@@ -47,13 +47,25 @@ describe("MarkdownText layout and fidelity", () => {
       sum + StyleSheet.flatten(cell.props.style).width, 0));
   });
 
-  test("large code has a bounded viewport while its data preserves the full source", () => {
+  test("large code previews a bounded wrapped head and expands to the whole source", () => {
     const code = "line with real indentation\n".repeat(5000) + "x".repeat(100000);
     const root = render(`\`\`\`ts\n${code}\n\`\`\``);
-    const list = root.findByType(FlatList);
-    expect(list.props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
-    expect(list.props.data.every((row: { text: string }) => row.text.length <= 2049)).toBe(true);
-    expect(root.findAllByType(Text).length).toBeLessThan(50);
+    const rows = () => root.findAllByType(Text).filter(node => node.props.selectable);
+    expect(rows()).toHaveLength(1);
+    const head = rows()[0]!.props.children[1] as string;
+    expect(rows()[0]!.props).toMatchObject({ numberOfLines: 16, ellipsizeMode: "tail" });
+    expect(head.length).toBeLessThanOrEqual(2048);
+    expect(code.startsWith(head)).toBe(true);
+    const toggle = root.findAll(node => node.props.accessibilityLabel === "chat.expandCode" && typeof node.props.onPress === "function")[0]!;
+    act(() => toggle.props.onPress());
+    const expanded = rows();
+    expect(expanded.length).toBeGreaterThan(40);
+    expect(expanded.every(node => node.props.numberOfLines === undefined && node.props.ellipsizeMode === undefined)).toBe(true);
+    // Every chunk is painted: the tail is reachable by scrolling the message, not an inner viewport.
+    const painted = expanded.map(node => node.props.children[1] as string).join("");
+    expect(painted.length).toBeGreaterThan(code.length - 500);
+    expect(painted.endsWith(code.slice(-200))).toBe(true);
+    expect(root.findAll(node => node.props.accessibilityLabel === "chat.collapseCode" && typeof node.props.onPress === "function").length).toBe(1);
   });
 
   test("CJK list labels ending in punctuation render as bold native Text", () => {
@@ -110,16 +122,21 @@ describe("MarkdownText layout and fidelity", () => {
     expect(wider[3]).toBe(widths[3]);
   });
 
-  test("code is selectable, horizontally scrollable and uses an iOS-safe monospace font", () => {
+  test("code wraps to the block width, stays selectable and uses an iOS-safe monospace font", () => {
     const code = `const veryLongLine = '${"x".repeat(200)}';\n  indented();`;
     const root = render(`\`\`\`typescript\n${code}\n\`\`\``);
-    expect(root.findByType(ScrollView).props.horizontal).toBe(true);
-    const text = root.findByType(ScrollView).findAllByType(Text).find(node => node.props.selectable)!;
+    // No scroll container of either axis: the surrounding message list scrolls.
+    expect(root.findAllByType(ScrollView)).toHaveLength(0);
+    const text = root.findAllByType(Text).find(node => node.props.selectable)!;
     const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
       .map(node => node.props.children).join("");
     expect(source).toContain("const");
     expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
+    // Wrapping is the native Text behaviour once nothing pins a fixed width.
+    expect(text.props.numberOfLines).toBeUndefined();
+    expect(StyleSheet.flatten(text.props.style).width).toBeUndefined();
+    for (let parent = text.parent; parent; parent = parent.parent) expect(parent.type).not.toBe(ScrollView);
     expect(StyleSheet.flatten(text.props.style).fontFamily).toBe(Platform.OS === "ios" ? "Menlo" : "monospace");
     expect(root.findAllByType(Text).some(node => node.props.children === "typescript")).toBe(true);
   });
@@ -131,16 +148,20 @@ describe("MarkdownText layout and fidelity", () => {
       && StyleSheet.flatten(node.props.style)?.color === codeColors.string)).toBe(true);
   });
 
-  test("virtualized highlighted code copies the unmodified source", async () => {
+  test("copying a large highlighted block yields the unmodified source", async () => {
     const code = '// first\n' + 'const value = "text";\n'.repeat(40);
     const copy = jest.spyOn(Clipboard, "setStringAsync").mockResolvedValue(true);
     try {
       const root = render(`\`\`\`ts\n${code}\n\`\`\``);
-      expect(root.findByType(FlatList).props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
-      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
+      const preview = root.findAllByType(Text).filter(node => node.props.selectable);
+      expect(preview).toHaveLength(1);
+      expect(preview[0]!.props.numberOfLines).toBe(16); // The painted preview is clipped; the copy is not.
       const button = root.findAll(node => node.props.accessibilityLabel === "chat.copy" && typeof node.props.onPress === "function")[0]!;
       await act(async () => { button.props.onPress(); });
       expect(copy).toHaveBeenCalledWith(code);
+      const toggle = root.findAll(node => node.props.accessibilityLabel === "chat.expandCode" && typeof node.props.onPress === "function")[0]!;
+      act(() => toggle.props.onPress());
+      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
     } finally { copy.mockRestore(); }
   });
 
@@ -175,7 +196,8 @@ describe("MarkdownText layout and fidelity", () => {
 
   test("inline and display math render as native vectors while Mermaid retains its source fallback", () => {
     const root = render("Formula $x^2$\n\n$$\n\\frac{a}{b}\n$$\n\n```mermaid\ngraph TD; A-->B;\n```");
-    expect(root.findAllByType(ScrollView)).toHaveLength(2);
+    // Only the math block scrolls; code wraps in place.
+    expect(root.findAllByType(ScrollView)).toHaveLength(1);
     const formulas = root.findAllByType(SvgXml);
     expect(formulas).toHaveLength(2);
     expect(formulas.every(node => node.props.xml.includes("<path"))).toBe(true);
