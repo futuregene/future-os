@@ -35,8 +35,14 @@ describe("MarkdownText layout and fidelity", () => {
   test("a 5000-row table mounts a bounded internal viewport", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    expect(root.findByType(FlatList).props.data).toHaveLength(5000);
+    const list = root.findByType(FlatList);
+    expect(list.props.data).toHaveLength(5000);
     expect(root.findAllByType(Text).length).toBeLessThan(100);
+    const headerCells = root.findByType(ScrollView).findAllByType(View)
+      .filter(node => StyleSheet.flatten(node.props.style)?.paddingHorizontal === 8).slice(0, 2);
+    expect(headerCells).toHaveLength(2);
+    expect(StyleSheet.flatten(list.props.style).width).toBe(headerCells.reduce((sum, cell) =>
+      sum + StyleSheet.flatten(cell.props.style).width, 0));
   });
 
   test("large code has a bounded viewport while its data preserves the full source", () => {
@@ -78,7 +84,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("wide tables scroll as a unit with aligned columns, including missing cells", () => {
-    const root = render("| A | B | C | D |\n|:---|:---:|---:|---|\n| one<br>two | **bold** | 3 | 4 |\n| missing |");
+    const root = render("| A long heading | B long heading | C long heading | D |\n|:---|:---:|---:|---|\n| one<br>two | **bold** | 3 | 4 |\n| missing |");
     const scroll = root.findByType(ScrollView);
     expect(scroll.props).toMatchObject({ horizontal: true, nestedScrollEnabled: true });
     const container = root.findAllByType(View).find(node => node.props.onLayout)!;
@@ -86,13 +92,20 @@ describe("MarkdownText layout and fidelity", () => {
     const cells = scroll.findAllByType(View).filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number");
     expect(cells).toHaveLength(12);
     const widths = cells.map(node => StyleSheet.flatten(node.props.style).width);
-    expect(new Set(widths).size).toBe(1);
-    expect(widths[0]).toBeGreaterThanOrEqual(144);
+    expect(widths.slice(4, 8)).toEqual(widths.slice(0, 4));
+    expect(widths.slice(8, 12)).toEqual(widths.slice(0, 4));
+    expect(widths[3]).toBeLessThan(widths[0]);
+    expect(widths.slice(0, 4).reduce((sum, width) => sum + width, 0)).toBeGreaterThan(320);
     expect(scroll.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.textAlign === "right")).toHaveLength(2); // The padded empty cell needs no Text.
     expect(JSON.stringify(renderer.toJSON())).not.toContain("<br>");
     // A wider orientation updates all rows together.
     act(() => container.props.onLayout({ nativeEvent: { layout: { width: 1602 } } }));
-    expect(scroll.findAllByType(View).filter(node => StyleSheet.flatten(node.props.style)?.width === 400)).toHaveLength(12);
+    const wider = scroll.findAllByType(View).filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number")
+      .map(node => StyleSheet.flatten(node.props.style).width);
+    expect(wider.slice(4, 8)).toEqual(wider.slice(0, 4));
+    expect(wider.slice(8, 12)).toEqual(wider.slice(0, 4));
+    expect(wider[0]).toBeGreaterThan(widths[0]);
+    expect(wider[3]).toBe(widths[3]);
   });
 
   test("code is selectable, horizontally scrollable and uses an iOS-safe monospace font", () => {
