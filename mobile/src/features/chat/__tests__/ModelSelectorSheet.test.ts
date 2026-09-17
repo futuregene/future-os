@@ -39,6 +39,14 @@ test("bottom sheet is bounded, scrollable and has an explicit accessible close a
   expect(setSelector).toHaveBeenCalledWith(null);
 });
 
+test.each(["model", "thinking"] as const)("system back dismisses only the %s sheet without changing a setting", selector => {
+  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector })));
+  act(() => tree.root.findByType(Modal).props.onRequestClose());
+  expect(setSelector).toHaveBeenCalledWith(null);
+  expect(remote.setModel).not.toHaveBeenCalled();
+  expect(remote.setThinkingLevel).not.toHaveBeenCalled();
+});
+
 test("model selection exposes checked state and preserves the provider-qualified identity", () => {
   expect(options()[0]!.props.accessibilityState.checked).toBe(true);
   expect(options()[1]!.props.accessibilityState.checked).toBe(false);

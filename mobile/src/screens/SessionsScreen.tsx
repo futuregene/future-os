@@ -36,7 +36,7 @@ import { DisconnectedScreen } from "./DisconnectedScreen";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
-import { SettingsScreen } from "../features/settings/SettingsScreen";
+import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 
 type Tab = "workspace" | "chat";
 
@@ -74,6 +74,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<SettingsScreenHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
@@ -458,11 +459,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
         <Modal
           animationType="slide"
           presentationStyle="fullScreen"
-          onRequestClose={() => setSettingsOpen(false)}
+          onRequestClose={() => settingsRef.current?.goBack()}
           onDismiss={flushPendingSettingsAction}
           visible={settingsOpen}
         >
           {settingsOpen ? <SettingsScreen
+            ref={settingsRef}
             key={`${remote.credentials?.pairId}:${remote.desktopOnline}`}
             onClose={() => setSettingsOpen(false)}
             onCheckUpdate={() => afterSettings(() => void checkUpdate())}

@@ -70,6 +70,21 @@ test("opens pairing only when there are no saved desktops", () => {
   mockRemote.desktops = desktops;
 });
 
+test("pairing returns to device management before the conversation list", () => {
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(App)); });
+  try {
+    act(() => tree.root.findByType(SessionsScreen).props.onManageDesktops());
+    act(() => tree.root.findByType(DesktopsScreen).props.onAdd());
+    expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(0);
+    act(() => tree.root.findByType(PairingScreen).props.onBack());
+    expect(tree.root.findAllByType(DesktopsScreen)).toHaveLength(1);
+    expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(0);
+    act(() => tree.root.findByType(DesktopsScreen).props.onBack());
+    expect(tree.root.findAllByType(SessionsScreen)).toHaveLength(1);
+  } finally { act(() => tree.unmount()); }
+});
+
 test.each(["", "existing-session"])("a share remounts the composer even when destination %s is already open", sessionId => {
   mockRemote.selectedSessionId = sessionId;
   mockRemote.draft = !sessionId;

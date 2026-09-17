@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { CameraView } from "expo-camera";
-import { Modal, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { BackHandler, Modal, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { PairingScreen } from "../PairingScreen";
@@ -57,6 +57,19 @@ test("manual entry pauses QR scanning and resumes it after dismissing", () => {
   expect(tree.root.findAllByType(DialogSurface)).toHaveLength(1);
   act(() => tree.root.findByType(Modal).props.onRequestClose());
   expect(tree.root.findByType(CameraView).props.onBarcodeScanned).toEqual(expect.any(Function));
+  expect(onBack).not.toHaveBeenCalled();
+});
+
+test("system back from pairing returns to its parent", () => {
+  act(() => tree.unmount());
+  const subscribe = jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: jest.fn() });
+  try {
+    act(() => { tree = create(createElement(PairingScreen, { onBack, onPaired })); });
+    const handler = subscribe.mock.calls.at(-1)![1];
+    act(() => { expect(handler({ type: "hardwareBackPress", timeStamp: 1 })).toBe(true); });
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(onPaired).not.toHaveBeenCalled();
+  } finally { subscribe.mockRestore(); }
 });
 
 test("manual entry submits from the keyboard without adding another confirmation step", async () => {
