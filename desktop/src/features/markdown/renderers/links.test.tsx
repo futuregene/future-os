@@ -115,17 +115,14 @@ describe("safeImage", () => {
     cleanup();
   });
 
-  it("expands tall images without injecting buttons into image links", () => {
+  it("previews tall images without injecting buttons into image links", () => {
     const { container, root, cleanup } = mount(<SafeImage alt="chart" src="https://x/tall.png" />);
     const img = container.querySelector("img")!;
-    Object.defineProperty(img, "naturalHeight", { value: 1600 });
-    act(() => img.dispatchEvent(new Event("load")));
     expect(img.className).toContain("max-h-80");
-    click(container.querySelector("button")!);
-    expect(img.className).toContain("max-h-none");
-    expect(container.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
-    click(container.querySelector("button")!);
-    expect(img.className).toContain("max-h-80");
+    click(img);
+    expect(document.querySelector("[role=dialog] img")?.getAttribute("src")).toBe("https://x/tall.png");
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(document.querySelector("[role=dialog]")).toBeNull();
     act(() => root.render(<SafeImage alt="chart" linked src="https://x/tall.png" />));
     expect(container.querySelector("button")).toBeNull();
     cleanup();
