@@ -1,15 +1,15 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform } from "react-native";
+import { Modal, Platform, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import { NativeFileActionSheet } from "../components/NativeFileActionSheet";
 import { PreviewModal } from "../components/PreviewModal";
-import type { FileAction, FileOperation } from "../utils";
+import type { ActiveDownload, FileAction, FileOperation } from "../utils";
 import type { PreviewState } from "../useFileDownload";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-jest.mock("lucide-react-native", () => ({ Download: "Download", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
+jest.mock("lucide-react-native", () => ({ Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
 jest.mock("../../../components/MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("../../../components/JsonPreview", () => ({ JsonPreview: "JsonPreview" }));
 
@@ -58,12 +58,115 @@ test.each<FileOperation>(["open", "save", "share"])("preview %s uses the origina
     downloadOriginal, flushPendingPreviewAction: jest.fn(), t,
   })); });
   try {
+    expect(tree.root.findAll(node => node.props.accessibilityLabel === `attachment.${operation}`)).toHaveLength(0);
+    const more = tree.root.findAll(node => node.props.accessibilityLabel === "common.more" && typeof node.props.onPress === "function")[0]!;
+    act(() => more.props.onPress());
+    expect(tree.root.findAllByType(Modal)).toHaveLength(1);
     const button = tree.root.findAll(node => node.props.accessibilityLabel === `attachment.${operation}` && typeof node.props.onPress === "function")[0]!;
     act(() => button.props.onPress());
     expect(dismissPreviewThen).toHaveBeenCalledTimes(1);
+    expect(tree.root.findAll(node => node.props.accessibilityLabel === `attachment.${operation}`)).toHaveLength(0);
     expect(downloadOriginal).not.toHaveBeenCalled();
     act(() => pending());
     if (operation === "save") expect(downloadOriginal).toHaveBeenCalledWith(preview.attachment);
     else expect(downloadOriginal).toHaveBeenCalledWith(preview.attachment, operation);
   } finally { act(() => tree.unmount()); }
+});
+
+describe("preview overflow menu", () => {
+  const preview: PreviewState = {
+    attachment: { path: "/notes.txt", name: "notes.txt" },
+    info: { ...action.info, name: "A very long filename for a narrow phone.txt", previewKind: "text", variant: "preview" },
+    uri: "file:///preview.txt", text: "Preview content",
+  };
+  const activeDownload: ActiveDownload = {
+    id: "download", fileName: "notes.txt", phase: "sharing", completedBytes: 3, totalBytes: 3,
+  };
+  const props = {
+    preview, activeDownload: null, closePreview: jest.fn(), dismissPreviewThen: jest.fn(),
+    downloadOriginal: jest.fn(), flushPendingPreviewAction: jest.fn(), t,
+  };
+  let tree: ReactTestRenderer;
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+  const openMenu = () => act(() => button("common.more").props.onPress());
+  const menus = () => tree.root.findAllByType(View).filter(node => node.props.accessibilityViewIsModal);
+  beforeEach(() => {
+    jest.clearAllMocks();
+    act(() => { tree = create(createElement(PreviewModal, props)); });
+  });
+  afterEach(() => act(() => tree.unmount()));
+
+  test("keeps the title and only two 44-point controls in a single header row", () => {
+    const title = tree.root.findAllByType(Text).find(node => node.props.children === preview.info.name)!;
+    expect(title.props.numberOfLines).toBe(1);
+    const header = tree.root.findAllByType(View).find(node => typeof node.props.onLayout === "function")!;
+    expect(StyleSheet.flatten(header.props.style)).toMatchObject({ flexDirection: "row", minHeight: 60 });
+    const controls = header.findAll(node => node.props.accessibilityRole === "button" && typeof node.props.style === "function");
+    expect(controls.map(node => node.props.accessibilityLabel)).toEqual(["common.more", "common.close"]);
+    for (const control of controls) {
+      expect(StyleSheet.flatten(control.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
+    }
+    expect(menus()).toHaveLength(0);
+  });
+
+  test.each(["backdrop", "back", "escape"])("%s dismisses only the menu and leaves the preview open", method => {
+    openMenu();
+    expect(menus()).toHaveLength(1);
+    expect(tree.root.findAllByType(Modal)).toHaveLength(1);
+    const hiddenContent = tree.root.findAllByType(View).find(node => node.props.accessibilityElementsHidden)!;
+    expect(hiddenContent.props.importantForAccessibility).toBe("no-hide-descendants");
+    act(() => {
+      if (method === "backdrop") tree.root.findAll(node => node.props.testID === "preview-menu-backdrop" && node.props.onPress)[0]!.props.onPress();
+      else if (method === "escape") menus()[0]!.props.onAccessibilityEscape();
+      else tree.root.findByType(Modal).props.onRequestClose();
+    });
+    expect(menus()).toHaveLength(0);
+    expect(props.closePreview).not.toHaveBeenCalled();
+    expect(props.dismissPreviewThen).not.toHaveBeenCalled();
+    act(() => tree.root.findByType(Modal).props.onRequestClose());
+    expect(props.closePreview).toHaveBeenCalledTimes(1);
+  });
+
+  test("closing and changing previews do not retain the expanded menu", () => {
+    openMenu();
+    act(() => tree.update(createElement(PreviewModal, { ...props, preview: null })));
+    act(() => tree.update(createElement(PreviewModal, props)));
+    expect(menus()).toHaveLength(0);
+    openMenu();
+    act(() => tree.update(createElement(PreviewModal, { ...props, preview: { ...preview, uri: "file:///other.txt" } })));
+    expect(menus()).toHaveLength(0);
+    act(() => button("common.close").props.onPress());
+    expect(props.closePreview).toHaveBeenCalledTimes(1);
+  });
+
+  test("active downloads close the menu and disable and dim its trigger, but not close", () => {
+    openMenu();
+    act(() => tree.update(createElement(PreviewModal, { ...props, activeDownload })));
+    expect(menus()).toHaveLength(0);
+    const more = button("common.more");
+    expect(more.props.disabled).toBe(true);
+    expect(more.props.accessibilityState).toMatchObject({ disabled: true, busy: true });
+    expect(StyleSheet.flatten(more.props.style({ pressed: false })).opacity).toBe(0.4);
+    act(() => button("common.close").props.onPress());
+    expect(props.closePreview).toHaveBeenCalledTimes(1);
+    act(() => tree.update(createElement(PreviewModal, props)));
+    expect(menus()).toHaveLength(0);
+    expect(button("common.more").props.disabled).toBe(false);
+  });
+
+  test("positions the floating menu below the measured header without reflowing content", () => {
+    const header = tree.root.findAllByType(View).find(node => typeof node.props.onLayout === "function")!;
+    act(() => header.props.onLayout({ nativeEvent: { layout: { height: 72 } } }));
+    openMenu();
+    const overlay = tree.root.findAllByType(View).find(node => StyleSheet.flatten(node.props.style)?.paddingTop === 76)!;
+    expect(StyleSheet.flatten(overlay.props.style)).toMatchObject({ position: "absolute", top: 0, bottom: 0 });
+    expect(StyleSheet.flatten(menus()[0]!.props.style)).toMatchObject({ maxWidth: 240, flexShrink: 1 });
+  });
+
+  test("native dismissal still flushes the pending preview action", () => {
+    openMenu();
+    act(() => tree.root.findByType(Modal).props.onDismiss());
+    expect(props.flushPendingPreviewAction).toHaveBeenCalledTimes(1);
+    expect(menus()).toHaveLength(0);
+  });
 });
