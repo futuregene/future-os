@@ -443,6 +443,37 @@ describe("applyRunMetadata", () => {
     expect(base!.some(message => message.id === "a2-partial")).toBe(false);
   });
 
+  it("does not assign a stray failed run to a canonical in-flight reply", () => {
+    const result = applyRunMetadata(
+      [user("u1"), assistant("partial", { content: "still working", runId: "active" })],
+      [
+        run("stray", { status: "failed", errorMessage: "Future Agent run no longer active" }),
+        run("active", { status: "running" }),
+      ],
+    );
+    expect(result[1]?.runId).toBeUndefined();
+    expect(result[1]?.status).not.toBe("failed");
+    expect(result[1]?.terminationTitle).toBeUndefined();
+    expect(streamingBubbleBase(result, "active", "stream_active", "still working"))
+      .toEqual([result[0]]);
+  });
+
+  it("does not let a canonical active run reserve an unrelated legacy reply", () => {
+    const result = applyRunMetadata(
+      [
+        user("u1"),
+        assistant("legacy-1"),
+        user("u2"),
+        assistant("legacy-2"),
+        user("u3"),
+        assistant("partial", { runId: "active" }),
+      ],
+      [run("active", { status: "running" }), run("settled", { status: "completed" })],
+    );
+    expect(result[3]?.runId).toBe("settled");
+    expect(result[5]?.runId).toBeUndefined();
+  });
+
   it("still stamps the newest exchange when the active run has no persisted entry yet", () => {
     // Exchanges == settled runs here: the active run's first LLM call hasn't
     // completed, so its exchange has no entry on disk and the newest assistant

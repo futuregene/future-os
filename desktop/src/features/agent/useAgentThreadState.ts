@@ -27,6 +27,11 @@ interface UseAgentThreadStateInput {
   onThreadActivity: () => void;
 }
 
+// A keyed thread view can unmount before acceptance (e.g. during attachment
+// preparation). Keep pending-prompt ownership across those remounts until the
+// send settles; an instance-local ref alone permits a second submission.
+const pendingPromptSends = new Set<string>();
+
 // The run this thread is actively executing, or null.
 function activeRunIdOf(recentRun: StoredRun | null): string | null {
   return recentRun && !matchesSettledRun(recentRun.status)
@@ -216,7 +221,7 @@ export function useAgentThreadState({
   useEffect(() => {
     if (!thread || loadingThread || loadingStore || !pendingPrompt)
       return;
-    if (consumedPromptRef.current === pendingPrompt.id)
+    if (consumedPromptRef.current === pendingPrompt.id || pendingPromptSends.has(pendingPrompt.id))
       return;
     // Only deliver the prompt to the thread it was composed for. A fast thread
     // switch during the (async) message load can make `thread` the newly-opened
@@ -228,19 +233,16 @@ export function useAgentThreadState({
 
     const promptId = pendingPrompt.id;
     consumedPromptRef.current = promptId;
+    pendingPromptSends.add(promptId);
     void handleSend({
       attachments: pendingPrompt.attachments ?? [],
       content: pendingPrompt.content,
-    }).then(
-      () => onPromptConsumed(promptId),
-      () => {
-        // Pre-send validation failures reject before the Agent accepts the
-        // prompt. Keep it staged so revisiting the newly-created conversation
-        // can retry instead of permanently losing its first message.
-        if (consumedPromptRef.current === promptId)
-          consumedPromptRef.current = null;
-      },
-    );
+    }, () => onPromptConsumed(promptId)).catch(() => {
+      // Pre-send validation/acceptance failures keep the prompt staged so
+      // revisiting the conversation can retry instead of losing its first message.
+      if (consumedPromptRef.current === promptId)
+        consumedPromptRef.current = null;
+    }).finally(() => pendingPromptSends.delete(promptId));
   }, [
     handleSend,
     loadingStore,
