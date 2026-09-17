@@ -529,6 +529,7 @@ export const resources = {
         error: "Something went wrong.",
         back: "Back",
         close: "Close",
+        more: "More actions",
         version: "Version {{version}}",
       },
       thinking: {
@@ -1021,6 +1022,7 @@ export const resources = {
         error: "操作失败，请重试。",
         back: "返回",
         close: "关闭",
+        more: "更多操作",
         version: "版本 {{version}}",
       },
       thinking: {
