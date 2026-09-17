@@ -81,21 +81,6 @@ type SessionsMap = Arc<
     >,
 >;
 
-/// Load the first readable project-context file (CLAUDE.md / AGENTS.md /
-/// GEMINI.md) in `cwd`. A file that exists but cannot be read (e.g. it is a
-/// directory) is skipped, falling through to the next candidate name.
-fn load_project_context(cwd: &str) -> String {
-    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-        let p = std::path::Path::new(cwd).join(fname);
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                return content;
-            }
-        }
-    }
-    String::new()
-}
-
 /// Transport crates that log per-frame / per-handshake detail at DEBUG. Raising
 /// the root level to `debug` for `--verbose` would otherwise bury the Agent's
 /// own logs under every HTTP/2 frame h2 sends and every TLS record rustls
@@ -749,12 +734,7 @@ async fn async_main(
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     // Load project context
-    let agent_content = load_project_context(&cwd);
-    let context_lines: Vec<String> = if agent_content.is_empty() {
-        vec![]
-    } else {
-        vec![agent_content.clone()]
-    };
+    let agent_content = crate::prompt::load_project_context(&cwd, true).content;
 
     // Build system prompt
     let today = Local::now().format("%Y-%m-%d").to_string();
@@ -810,7 +790,6 @@ async fn async_main(
         welcome_version: crate::utils::VERSION.to_string(),
         welcome_cwd: cwd.clone(),
         welcome_skills: Arc::new(parking_lot::RwLock::new(skill_names.clone())),
-        welcome_context: Arc::new(parking_lot::RwLock::new(context_lines)),
         welcome_exts: vec![],
         explicit_session: false,
         approval_gate,
@@ -900,19 +879,22 @@ mod tests {
 
     #[test]
     fn load_project_context_skips_unreadable_candidates() {
-        // CLAUDE.md exists but is a DIRECTORY (read fails) → the scan falls
-        // through to AGENTS.md.
+        // AGENTS.md exists but is a DIRECTORY (read fails) → CLAUDE.md.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("CLAUDE.md")).unwrap();
-        std::fs::write(dir.path().join("AGENTS.md"), "agent notes").unwrap();
-        let content = load_project_context(&dir.path().to_string_lossy());
-        assert_eq!(content, "agent notes");
+        std::fs::create_dir(dir.path().join("AGENTS.md")).unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "agent notes").unwrap();
+        let context = crate::prompt::load_project_context(&dir.path().to_string_lossy(), true);
+        assert_eq!(context.content, "agent notes");
     }
 
     #[test]
     fn load_project_context_empty_when_nothing_readable() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_project_context(&dir.path().to_string_lossy()).is_empty());
+        assert!(
+            crate::prompt::load_project_context(&dir.path().to_string_lossy(), true)
+                .content
+                .is_empty()
+        );
     }
 
     #[test]
