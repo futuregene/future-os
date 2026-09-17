@@ -581,6 +581,9 @@ independently and keep their own subtree. Missing, archived, or deleted parents
 do not hide surviving children; deeper historical levels are flattened into the
 third level, with no Agent relations deleted or rewritten. Batch select-all
 includes collapsed children in the current group; delete does not auto-cascade.
+A pinned conversation belongs to the pinned section rather than to any group,
+so it is never part of a batch: it carries no checkbox and select-all (in a
+workspace group or in Chat) skips it on both desktop and mobile.
 
 A child conversation's expand toggle must be a **+ / − tree-node toggle**
 (collapsed `+`, expanded `−`), which is a different icon from the workspace /

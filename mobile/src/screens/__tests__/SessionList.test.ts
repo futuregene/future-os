@@ -351,6 +351,20 @@ test("batch deletion confirms exact visible selection, preserves hidden children
   expect(dialogText()).toEqual(expect.arrayContaining(["common.error", "sessions.deletePartialFailure:1"]));
 });
 
+test("select visible skips pinned chats, which carry no checkbox", () => {
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "s2" }));
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  // Only the unpinned chat joined the batch; the pinned shortcut above it did not.
+  expect(button("First").props.accessibilityState.checked).toBe(true);
+  expect(button("Second")).toBeUndefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  // Pressing the pinned shortcut's row cannot put it in the batch either.
+  act(() => sessionBody("Second").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+});
+
 // ── workspace rows ──────────────────────────────────────────────────────────
 
 /** Re-render the list on the workspace tab with two workspace sessions and one
@@ -633,7 +647,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
   }
 });
 
-test("promoted workspace pins remain visible, openable and included in workspace selection", () => {
+test("promoted workspace pins stay visible and openable but are left out of workspace selection", () => {
   renderWorkspaceTab();
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "w1b" }));
   act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
@@ -645,8 +659,15 @@ test("promoted workspace pins remain visible, openable and included in workspace
   act(() => sessionBody("Follow-up").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
   pressWorkspaceMenu("sessions.selectWorkspaceSessions");
-  expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
-  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
+  // The shortcut row above the group is skipped; only the group's own session
+  // joins the batch, even though the workspace header still counts the pin.
+  expect(button("Follow-up")).toBeUndefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  act(() => button("Project").props.onPress());
+  expect(button("Plan").props.accessibilityState.checked).toBe(true);
+  // Pressing the pinned shortcut's row cannot put it in the batch either.
+  act(() => sessionBody("Follow-up").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
 });
 
 test("a failed workspace delete surfaces the workspace error instead of the generic one", async () => {

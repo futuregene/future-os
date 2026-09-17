@@ -16,8 +16,14 @@ export function useRailSelection({
   const [selectionScope, setSelectionScope] = useState("chat");
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
 
+  // Pinned conversations are hoisted into their own global section, outside
+  // every group, so they are never part of a batch: select-all in a group must
+  // not sweep up the conversations the user pinned on purpose, and the pinned
+  // rows carry no checkbox while selection mode is open.
   const scopedThreads = useMemo(
-    () => visibleThreads.filter(thread => threadScopes.get(thread.id) === selectionScope),
+    () => visibleThreads.filter(
+      thread => !thread.pinned && threadScopes.get(thread.id) === selectionScope,
+    ),
     [selectionScope, threadScopes, visibleThreads],
   );
 
@@ -57,7 +63,7 @@ export function useRailSelection({
   }, []);
 
   const isThreadInScope = useCallback(
-    (thread: StoredThread) => threadScopes.get(thread.id) === selectionScope,
+    (thread: StoredThread) => !thread.pinned && threadScopes.get(thread.id) === selectionScope,
     [selectionScope, threadScopes],
   );
 
