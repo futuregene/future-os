@@ -16,6 +16,9 @@ futureos 与 future 必须同目录。没有可连接的兼容 Agent 时，应�
 本地源码构建使用所选 host target，不一定静态链接。
 无桌面主机可下载对应架构的官方 CLI-only 包，运行 ./future config 和 ./future tui，
 或运行 ./future agent 供其他 CLI 客户端使用。
+服务器需要手机远程配对时，请从源码执行 make build-desktop-headless，
+并运行 ./futureos-headless；现有发布包尚不包含这个独立无头入口。
+futureos 只启动 GUI，原 --headless 选项已移除。
 
 【可选沙箱】
 桌面默认不受限，请在设置中按需选择手动或沙箱模式。
