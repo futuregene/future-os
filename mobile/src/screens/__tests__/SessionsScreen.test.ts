@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
+import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
