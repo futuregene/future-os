@@ -21,6 +21,8 @@ export interface StoredWorkspace {
   kind: "user" | "temporary";
   path: string;
   description?: string | null;
+  /** Pinned above the unpinned workspace groups (Rail orders by this flag). */
+  pinned?: boolean;
   cleanupStatus: "active" | "pending_cleanup" | "cleaned";
   cleanupRequestedAt?: number | null;
   cleanedAt?: number | null;

@@ -565,7 +565,11 @@ The left navigation supports:
 
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
-unpinning returns it to its own group.
+unpinning returns it to its own group. Workspace **groups** can be pinned too
+(from the group menu): pinned groups lead the workspace list, unpinned ones
+keep the store's recency order below them, and the header shows a pin marker.
+The flag is stored on the workspace (`workspaces.pinned`), so the phone's
+workspace tab and the desktop rail order the same groups the same way.
 
 Conversations display as a tree of at most three levels following the Agent's
 parent-child session relations (excluding the Workspace title level), collapsed
@@ -607,7 +611,8 @@ never change unrelated top-level rows' title origins.
 A conversation row's **whole row is clickable** to enter it; the row-end
 operation menu (rename / pin / delete) does not accidentally enter. The
 workspace group header offers an "Open workspace" entry beside it plus a group
-menu (rename / delete workspace); no "new workspace" entry is offered.
+menu (rename / pin / open folder / select chats / delete workspace); no "new
+workspace" entry is offered.
 
 **Unread indicator** right of conversations: after a background run ends, an
 unread dot appears (green for normal completion, red for failure); while
