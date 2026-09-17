@@ -32,8 +32,11 @@ excessive notes fail explicitly rather than being silently truncated.
 
 The economic trigger is `floor(W * 0.8)` — 80% of the declared window, with no absolute
 cap. (An earlier cap of 256 000 tokens only made large windows compact early: on a
-1M-token model it fired with three quarters of the window unused. `effective_trigger`
-clamps to `W - O - margin` regardless, so the model's own limits still bound it.) Before
+1M-token model it fired with three quarters of the window unused.) `effective_trigger`
+still clamps to `W - O - margin`, so a model with a large output reservation is bounded by
+its own limits rather than by a fixed number: a 1M-token window declaring a 384 000-token
+output ceiling triggers at **613 952** (`1 000 000 - 384 000 - 2 048`), up from 256 000;
+the same window declaring a 16 384-token ceiling triggers at 800 000. Before
 every actual model step, including after tools and a model downshift, also reserve the
 ordinary maximum output O and `min(2048, W/16)` margin. Input must fit `W - O - margin`.
 
