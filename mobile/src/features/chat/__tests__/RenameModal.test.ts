@@ -1,4 +1,5 @@
 import { createElement } from "react";
+import { TextInput } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
@@ -22,6 +23,10 @@ beforeEach(() => {
   act(() => { tree = create(createElement(RenameModal, props)); });
 });
 afterEach(() => act(() => tree.unmount()));
+
+test("hides the native Android underline inside the rounded input border", () => {
+  expect(tree.root.findByType(TextInput).props.underlineColorAndroid).toBe("transparent");
+});
 
 test("opening does not generate; click fills the draft without saving", async () => {
   expect(onGenerate).not.toHaveBeenCalled();

@@ -95,6 +95,7 @@ export function RenameModal({
             placeholderTextColor={colors.inkMuted}
             returnKeyType="done"
             style={styles.nameInput}
+            underlineColorAndroid="transparent"
             value={renameValue}
           />
           {onGenerate ? (
