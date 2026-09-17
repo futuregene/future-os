@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "FutureOS desktop agent workspace"
 authors = ["FutureOS"]
 edition = "2021"
+default-run = "futureos"
 
 # Keep this crate out of the workspace so make targets that cd in
 # (check-desktop / build-desktop) work without workspace.members trickery.
@@ -13,8 +14,16 @@ edition = "2021"
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "futureos-headless"
+path = "src/bin/futureos-headless.rs"
+required-features = ["headless"]
+
 [features]
 default = ["gui"]
+# Opt-in binary, built with --no-default-features so GUI libraries cannot leak
+# into the server distribution. It reuses the same Desktop backend.
+headless = []
 gui = [
     "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell",
     "dep:tauri-plugin-updater", "dep:tauri-plugin-dialog",

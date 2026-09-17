@@ -4,7 +4,18 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn desktop(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_futureos"));
+    isolated_command(env!("CARGO_BIN_EXE_futureos"), home)
+}
+
+// Run the standalone lifecycle checks with --no-default-features --features headless.
+// No runtime flag is supplied: this binary must always start without a GUI.
+#[cfg(feature = "headless")]
+fn headless(home: &Path) -> Command {
+    isolated_command(env!("CARGO_BIN_EXE_futureos-headless"), home)
+}
+
+fn isolated_command(binary: &str, home: &Path) -> Command {
+    let mut command = Command::new(binary);
     command
         .env("HOME", home)
         .env("USERPROFILE", home)
@@ -20,17 +31,67 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
     let home = tempfile::tempdir().unwrap();
     let help = desktop(home.path()).arg("--help").output().unwrap();
     assert!(help.status.success());
-    assert!(String::from_utf8_lossy(&help.stdout).contains("--headless"));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos [--help]"));
     assert!(!home.path().join(".future").exists());
-    let invalid = desktop(home.path()).arg("--re-pair").output().unwrap();
-    assert!(!invalid.status.success());
-    assert!(!home.path().join(".future").exists());
+    for args in [
+        vec!["--headless"],
+        vec!["--headless", "--no-qr"],
+        vec!["--re-pair"],
+        vec!["--no-qr"],
+        vec!["--help", "--headless"],
+    ] {
+        let invalid = desktop(home.path()).args(args).output().unwrap();
+        assert_eq!(invalid.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("futureos-headless"));
+        assert!(invalid.stdout.is_empty());
+        assert!(!home.path().join(".future").exists());
+    }
 }
 
+#[cfg(feature = "headless")]
+#[test]
+fn standalone_help_and_invalid_arguments_have_no_startup_side_effects() {
+    for args in [vec!["--help"], vec!["-h"], vec!["--no-qr", "--help"]] {
+        let home = tempfile::tempdir().unwrap();
+        let help = headless(home.path()).args(args).output().unwrap();
+        assert!(help.status.success());
+        assert!(String::from_utf8_lossy(&help.stdout)
+            .contains("Usage: futureos-headless [--no-qr] [--re-pair]"));
+        assert!(!home.path().join(".future").exists());
+    }
+    for arg in ["--headless", "--gui", "--unknown", "-psn_123"] {
+        let home = tempfile::tempdir().unwrap();
+        let invalid = headless(home.path()).arg(arg).output().unwrap();
+        assert_eq!(invalid.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("Unknown option"));
+        assert!(!home.path().join(".future").exists());
+    }
+}
+
+#[cfg(feature = "headless")]
+#[test]
+fn standalone_options_do_not_require_headless_flag() {
+    for args in [
+        vec!["--no-qr"],
+        vec!["--re-pair", "--no-qr"],
+        vec!["--re-pair"],
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let result = headless(home.path()).args(args).output().unwrap();
+        assert_eq!(result.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&result.stderr);
+        assert!(error.contains("interactive terminal"), "{error}");
+        assert!(result.stdout.is_empty());
+        assert!(!home.path().join(".future/remote_pairing.json").exists());
+        assert!(!home.path().join(".future/app/app.db").exists());
+    }
+}
+
+#[cfg(feature = "headless")]
 #[test]
 fn first_setup_refuses_redirected_logs_without_printing_authorization_material() {
     let home = tempfile::tempdir().unwrap();
-    let result = desktop(home.path()).arg("--headless").output().unwrap();
+    let result = headless(home.path()).output().unwrap();
     assert!(!result.status.success());
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("interactive terminal"), "{error}");
@@ -39,6 +100,7 @@ fn first_setup_refuses_redirected_logs_without_printing_authorization_material()
     assert!(!error.contains("Started the bundled Agent"));
 }
 
+#[cfg(feature = "headless")]
 #[test]
 fn occupied_data_directory_exits_cleanly_without_startup_side_effects() {
     let home = tempfile::tempdir().unwrap();
@@ -48,7 +110,7 @@ fn occupied_data_directory_exits_cleanly_without_startup_side_effects() {
     let lock = std::fs::File::create(&lock_path).unwrap();
     fs2::FileExt::lock_exclusive(&lock).unwrap();
 
-    let result = desktop(home.path()).arg("--headless").output().unwrap();
+    let result = headless(home.path()).output().unwrap();
     assert_eq!(result.status.code(), Some(1));
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("Desktop is already running"), "{error}");
@@ -70,6 +132,7 @@ fn occupied_data_directory_exits_cleanly_without_startup_side_effects() {
     fs2::FileExt::try_lock_exclusive(&second).unwrap();
 }
 
+#[cfg(feature = "headless")]
 #[test]
 fn corrupt_credentials_are_not_overwritten_or_treated_as_signed_out() {
     let home = tempfile::tempdir().unwrap();
@@ -78,7 +141,7 @@ fn corrupt_credentials_are_not_overwritten_or_treated_as_signed_out() {
     let path = directory.join("auth.json");
     let original = "this is deliberately not JSON";
     std::fs::write(&path, original).unwrap();
-    let result = desktop(home.path()).arg("--headless").output().unwrap();
+    let result = headless(home.path()).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     assert!(result.stdout.is_empty());
@@ -86,15 +149,15 @@ fn corrupt_credentials_are_not_overwritten_or_treated_as_signed_out() {
 
 #[cfg(not(feature = "gui"))]
 #[test]
-fn server_build_requires_explicit_headless_opt_in() {
+fn gui_free_build_points_to_standalone_entrypoint() {
     let home = tempfile::tempdir().unwrap();
     let result = desktop(home.path()).output().unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("--headless"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("futureos-headless"));
     assert!(!home.path().join(".future").exists());
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "headless"))]
 #[test]
 fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
     use std::io::{BufRead, BufReader};
@@ -128,8 +191,7 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
         // This fresh socket deliberately never answers HTTP/2. It cannot be a
         // real Agent, and startup never reaches an external platform request.
         let mut guard = ChildGuard(
-            desktop(home.path())
-                .arg("--headless")
+            headless(home.path())
                 .env("FUTURE_AGENT_GRPC_ADDR", format!("http://{address}"))
                 .spawn()
                 .unwrap(),
