@@ -12,6 +12,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { codePreviewRows } from "./codePreviewRows";
+import { markdownTableWidths } from "./markdownTableWidths";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { AppAlert as Alert } from "./appAlerts";
@@ -289,22 +290,23 @@ function renderBlocks(
 function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
   const [width, setWidth] = useState(0);
   const { fontScale } = useWindowDimensions();
-  const cellWidth = Math.max(144 * fontScale, (width - 2) / Math.max(1, node.headers.length));
+  const cellWidths = useMemo(() => markdownTableWidths(node, width, fontScale), [node, width, fontScale]);
+  const tableWidth = cellWidths.reduce((sum, cellWidth) => sum + cellWidth, 0);
   const renderRow = useCallback(({ item, index }: { item: InlineNode[][]; index: number }) => (
-    <MarkdownTableRow cells={item} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} striped={index % 2 === 1} />
-  ), [cellWidth, node.alignments, openTarget]);
+    <MarkdownTableRow cells={item} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={index % 2 === 1} />
+  ), [cellWidths, node.alignments, openTarget]);
   return (
     <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
       <ScrollView horizontal nestedScrollEnabled>
         <View style={styles.table}>
-          <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} header />
+          <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} header />
           {node.rows.length > 8 ? (
             <FlatList data={node.rows} renderItem={renderRow} nestedScrollEnabled
               initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
-              style={{ height: 360, width: cellWidth * node.headers.length }}
+              style={{ height: 360, width: tableWidth }}
               keyExtractor={(_row, index) => String(index)} />
           ) : node.rows.map((row, rowIndex) => (
-            <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidth={cellWidth} openTarget={openTarget} striped={rowIndex % 2 === 1} />
+            <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={rowIndex % 2 === 1} />
           ))}
         </View>
       </ScrollView>
@@ -312,10 +314,10 @@ function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: Open
   );
 }
 
-const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cellWidth, openTarget, header = false, striped = false }: {
+const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cellWidths, openTarget, header = false, striped = false }: {
   cells: InlineNode[][];
   alignments: TableNode["alignments"];
-  cellWidth: number;
+  cellWidths: number[];
   openTarget: OpenTarget;
   header?: boolean;
   striped?: boolean;
@@ -326,7 +328,7 @@ const MarkdownTableRow = memo(function MarkdownTableRow({ cells, alignments, cel
         <View key={index} style={[
           styles.tableCell,
           index > 0 ? styles.cellBorderLeft : null,
-          { width: cellWidth },
+          { width: cellWidths[index] },
         ]}>
           <InlineContent nodes={cell} openTarget={openTarget} textStyle={[
             header ? styles.th : styles.td,
@@ -516,7 +518,7 @@ const styles = StyleSheet.create({
   tableHead: { backgroundColor: colors.surfaceSubtle },
   tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   tableRowZebra: { backgroundColor: colors.surfaceSubtle },
-  tableCell: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
     color: colors.inkStrong,
     fontWeight: "700",
