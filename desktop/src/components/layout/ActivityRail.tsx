@@ -11,6 +11,7 @@ import {
   Folder,
   MessageSquare,
   PanelLeft,
+  Pin,
   Plus,
   Smartphone,
   Sparkles,
@@ -58,6 +59,7 @@ interface ActivityRailProps {
   onNewWorkspace: () => void;
   onRenameThread: (thread: StoredThread) => void;
   onRenameWorkspace: (workspace: StoredWorkspace) => void;
+  onTogglePinWorkspace: (workspace: StoredWorkspace) => void;
   onDeleteWorkspace: (workspace: StoredWorkspace) => void;
   onRestoreThread: (thread: StoredThread) => void;
   onSelectWorkspace: (workspace: StoredWorkspace, threads: StoredThread[]) => void;
@@ -108,6 +110,7 @@ export function ActivityRail({
   onNewWorkspace,
   onRenameThread,
   onRenameWorkspace,
+  onTogglePinWorkspace,
   onDeleteWorkspace,
   onRestoreThread,
   onSelectWorkspace,
@@ -259,16 +262,23 @@ export function ActivityRail({
   const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
   const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.mode === "chat" && !node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
   const workspaceRoots = useMemo(() => threadTree.filter(node => node.thread.mode === "workspace" && !node.thread.pinned), [threadTree]);
-  const workspaceGroups = useMemo(() => workspaces
-    .filter(workspace => workspace.kind === "user" || workspaceRoots.some(node => node.thread.workspaceId === workspace.id))
-    .map((workspace) => {
-      const roots = workspaceRoots.filter(node => node.thread.workspaceId === workspace.id);
-      return {
-        workspace,
-        rows: visibleThreadRows(roots, expandedThreads),
-        threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
-      };
-    }), [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
+  // The store keeps its recency order (the new-conversation picker reads
+  // `workspaces[0]` as "most recent"); pinning is this list's own rule, so the
+  // groups are ordered here. Within each half the store's order is kept.
+  const workspaceGroups = useMemo(() => {
+    const groups = workspaces.filter(
+      workspace => workspace.kind === "user" || workspaceRoots.some(node => node.thread.workspaceId === workspace.id),
+    );
+    return [...groups.filter(workspace => workspace.pinned), ...groups.filter(workspace => !workspace.pinned)]
+      .map((workspace) => {
+        const roots = workspaceRoots.filter(node => node.thread.workspaceId === workspace.id);
+        return {
+          workspace,
+          rows: visibleThreadRows(roots, expandedThreads),
+          threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
+        };
+      });
+  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
   const toggleLabel = floating
@@ -468,6 +478,12 @@ export function ActivityRail({
                                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
                                       {workspace.name}
                                     </span>
+                                    {/* A pinned group leads the list; the marker
+                                        stays visible on hover like the row's own
+                                        pin state, without a second control. */}
+                                    {workspace.pinned
+                                      ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" />
+                                      : null}
                                   </button>
                                   <WorkspaceHeaderMenu
                                     open={openWorkspaceMenuId === workspace.id}
@@ -475,6 +491,7 @@ export function ActivityRail({
                                     onDelete={onDeleteWorkspace}
                                     onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
                                     onRename={onRenameWorkspace}
+                                    onTogglePin={onTogglePinWorkspace}
                                     onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
                                   />
                                   <button

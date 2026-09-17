@@ -1,43 +1,52 @@
-import { memo } from "react";
+import { Brain, ChevronDown, ChevronUp } from "lucide-react";
+import { memo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 
-/**
- * Dimmed, always-expanded display of the model's reasoning for one point in the
- * assistant reply's timeline. Rendered inline (in chronological order with text
- * and tool activity) and only when the "show thinking" setting is on.
- *
- * Memoized: a streaming reply re-renders on every push, but every reasoning
- * block except the growing tail has identical `text`/`live` props, so without
- * the memo each push rebuilt their whole element subtree. A long reasoning
- * reply is a hundred-odd blocks, so that walk is pure per-push waste.
- */
+/** Reasoning starts collapsed like mobile and can always be expanded in place. */
 export const ThinkingBlock = memo(({
   text,
   workspaceId,
   live,
+  inSteps = false,
 }: {
   text: string;
   workspaceId?: string | null;
-  /** True while this reasoning block is the growing tail of a streaming reply. */
   live?: boolean;
+  /** Revealed summary children belong to the left-aligned reading column. */
+  inSteps?: boolean;
 }) => {
+  const { t } = useTranslation("agent");
+  const [expanded, setExpanded] = useState(false);
+  const label = t(live ? "activity.thinking" : "activity.thoughtCompleted");
+  const Chevron = expanded ? ChevronUp : ChevronDown;
+
   return (
-    <div
-      className={cn(
-        // A dimmed, borderless aside with a left rail — reads as reasoning, not
-        // a filled content box (which is now reserved for code blocks).
-        "border-l-2 border-line-soft pl-3 text-ink-muted",
-        "**:text-ink-muted",
-        // Same containment as the streamed text block (see LiveMarkdownContext):
-        // a reasoning block is a tall column of text, and while it is the
-        // growing tail its per-delta relayout would otherwise walk the whole
-        // message's layout.
-        live ? STREAMED_BLOCK_CONTAINMENT : "",
-      )}
-    >
-      <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />
+    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+      <button
+        aria-expanded={expanded}
+        className={cn("flex max-w-full cursor-pointer items-center gap-2 text-left hover:text-ink", !inSteps && !expanded ? "self-end" : "self-start")}
+        onClick={() => setExpanded(value => !value)}
+        type="button"
+      >
+        <Brain className={cn("size-3.5 shrink-0", live && "animate-pulse")} />
+        <span>{label}</span>
+        <Chevron className="size-3 shrink-0" />
+      </button>
+      {expanded
+        ? (
+            <div
+              className={cn(
+                "border-l-2 border-line-soft pl-3 text-ink-muted **:text-ink-muted",
+                live ? STREAMED_BLOCK_CONTAINMENT : "",
+              )}
+            >
+              <StreamingMarkdownContent content={text} workspaceId={workspaceId} live={live} />
+            </div>
+          )
+        : null}
     </div>
   );
 });

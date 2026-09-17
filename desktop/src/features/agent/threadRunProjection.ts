@@ -487,7 +487,9 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // this fallback.
   const turnIndices = patched
     .map((message, index) => (
-      message.role === "assistant" && !message.runId && !isCompactionDivider(message)
+      // Stripping an active run's stamp above does not make its known owner
+      // legacy data. Never lend that reply to an unrelated failed run.
+      message.role === "assistant" && !messages[index]!.runId && !isCompactionDivider(message)
         ? index
         : -1
     ))
@@ -521,7 +523,8 @@ export function applyRunMetadata(messages: AgentMessage[], runs: StoredRun[]): A
   // and — worse — defeats streamingBubbleBase's duplicate detection, so the
   // frozen partial renders next to the growing live bubble (the "ABC, ABC →
   // ABC, ABCDE" duplicate).
-  const inFlight = runs.filter(run => !matchesSettledRun(run.status)).length;
+  const canonicalRunIds = new Set(messages.filter(message => message.role === "assistant").map(message => message.runId));
+  const inFlight = runs.filter(run => !matchesSettledRun(run.status) && !canonicalRunIds.has(run.id)).length;
   const skipNewest = Math.min(Math.max(turnIndices.length - settled.length, 0), inFlight);
   const assignable = turnIndices.slice(skipNewest);
 

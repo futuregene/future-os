@@ -1,5 +1,8 @@
 //! Prompt building — 1:1 compatible with internal/prompt/
 
+mod project_context;
+pub(crate) use project_context::load_project_context;
+
 use crate::skills::Skill;
 use crate::types::AgentTool;
 

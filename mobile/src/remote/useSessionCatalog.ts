@@ -50,7 +50,7 @@ export function useSessionCatalog(
   );
   const [sessions, setSessions] = useState<RemoteSession[]>([]);
   const [unreadSessions, setUnreadSessions] = useState<Set<string>>(() => new Set());
-  const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([]);
+  const [workspaces, setWorkspacesLocal] = useState<RemoteWorkspace[]>([]);
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [approvalTier, setApprovalTier] = useState("off");
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
@@ -346,7 +346,7 @@ export function useSessionCatalog(
       )
         return;
       if (versionGate.current.accept("workspaces", response.data.version))
-        setWorkspaces(response.data.workspaces ?? []);
+        setWorkspacesLocal(response.data.workspaces ?? []);
       markSync("workspaces", "ready");
     } catch {
       if (
@@ -366,7 +366,7 @@ export function useSessionCatalog(
       if (!versionGate.current.accept("workspaces", version)) return;
       markSync("workspaces", "ready");
       revisions.current.workspaces += 1;
-      setWorkspaces(list);
+      setWorkspacesLocal(list);
     },
     [markSync],
   );
@@ -384,7 +384,7 @@ export function useSessionCatalog(
     modelRecoveryRef.current.timer = null;
     setSessions([]);
     sessionsRef.current = [];
-    setWorkspaces([]);
+    setWorkspacesLocal([]);
     setModels([]);
     setTitleOverrides({});
     titleOverridesRef.current = {};
@@ -467,7 +467,7 @@ export function useSessionCatalog(
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       revisions.current.sessions += 1;
       revisions.current.workspaces += 1;
-      setWorkspaces((current) => current.filter((workspace) => workspace.id !== workspaceId));
+      setWorkspacesLocal((current) => current.filter((workspace) => workspace.id !== workspaceId));
       setSessions((current) =>
         current.filter((session) => (session.workspaceId ?? "") !== workspaceId),
       );
@@ -490,7 +490,7 @@ export function useSessionCatalog(
       }
       return removed.some((session) => session.sessionId === selectedRef.current);
     },
-    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions, setWorkspaces],
+    [clientRef, selectedRef, setSessions, setTitleOverrides, setUnreadSessions],
   );
 
   const setSessionPinned = useCallback(
@@ -513,6 +513,24 @@ export function useSessionCatalog(
       );
     },
     [clientRef, setSessions],
+  );
+
+  const setWorkspacePinned = useCallback(
+    async (workspaceId: string, pinned: boolean) => {
+      const client = clientRef.current;
+      if (!client || !workspaceId) throw new Error("Workspace unavailable");
+      const epoch = catalogEpoch.current;
+      const response = await client.request<WorkspacesData>(
+        { type: "set_workspace_pinned", workspaceId, pinned }, "list",
+      );
+      if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
+      if (!response.data?.version || !Array.isArray(response.data.workspaces))
+        throw new Error("Invalid workspace snapshot");
+      // Acknowledgements, pulls and pushes share one version gate. Never apply
+      // the requested flag over a snapshot that may already reflect a later write.
+      applyWorkspaces(response.data.workspaces, response.data.version);
+    },
+    [applyWorkspaces, clientRef],
   );
 
   return {
@@ -540,6 +558,7 @@ export function useSessionCatalog(
     deleteSession,
     deleteWorkspace,
     setSessionPinned,
+    setWorkspacePinned,
     reset,
   };
 }

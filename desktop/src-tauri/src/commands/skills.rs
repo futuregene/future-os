@@ -36,20 +36,12 @@ pub async fn get_skill_guide() -> Result<skills::SkillGuide, crate::AppError> {
 
 #[tauri::command]
 pub async fn install_skill(id: String, version: String) -> Result<(), crate::AppError> {
-    skills::install_skill(id, version).await?;
-    // Notify the agent so the next prompt sees the new skill immediately.
-    // Awaited (never fails) so the refresh is in flight before we return.
-    agent_bridge::refresh_skills().await;
-    Ok(())
+    skills::install_and_refresh(id, version).await
 }
 
 #[tauri::command]
 pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
-    let removed = skills::uninstall_skill(&id)?;
-    if removed {
-        agent_bridge::refresh_skills().await;
-    }
-    Ok(removed)
+    skills::uninstall_and_refresh(id).await
 }
 
 /// Force-run the built-in skill bootstrap (installs platform built-in skills

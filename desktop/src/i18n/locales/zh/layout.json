@@ -64,7 +64,7 @@
   "appShellDialogs": {
     "generateTitle": "自动生成",
     "generatingTitle": "生成中…",
-    "generateTitleHint": "使用本会话模型和最多前三组问答生成，确认后再保存。",
+    "generateTitleHint": "使用本会话模型和最多前三组问答生成；暂无完整答复时使用用户消息。确认后再保存。",
     "renameTitle": "重命名对话",
     "renameDescription": "为这个对话取一个简短、便于在侧边栏查找的名称。",
     "nameLabel": "名称",

@@ -77,6 +77,7 @@ Workspace 表示一个项目或工作上下文。
 | `kind` | `user` 或 `temporary` |
 | `path` | 本地目录路径 |
 | `description` | 可选描述 |
+| `pinned` | 是否置顶（置顶分组排在列表最前；分组菜单切换） |
 | `cleanup_status` | `active`、`pending_cleanup`、`cleaned` |
 | `cleanup_requested_at` | 请求清理时间 |
 | `cleaned_at` | 实际清理完成时间 |
@@ -98,6 +99,7 @@ Workspace 表示一个项目或工作上下文。
 - 删除 Workspace 对话不删除 Workspace 目录。
 - 清理普通 Chat 时，可以把对应临时 Workspace 标记为 `pending_cleanup`，清理完成后标记为 `cleaned`。
 - 支持重命名（改 `name`）与删除 Workspace。删除是**软删除**：在一个事务里给 Workspace 置 `deleted_at`，并把其名下未删除的 Thread 级联软删除（`status = 'deleted'` + `deleted_at`）；磁盘目录与文件不动。若被删的是 `temporary` Workspace，额外标记 `cleanup_status = 'pending_cleanup'`。对应后端 `store::workspaces::{rename_workspace, delete_workspace}`。
+- 支持置顶（改 `pinned`）：这是排序标记而非活动，`last_opened_at` / `updated_at` 不变，因此取消置顶会回到原本的最近位置。`list_workspaces` 仍按最近打开时间返回（新对话选择器把首项当作「最近使用的工作区」，移动端工作区标签页与桌面侧栏各自按该标记排序分组）。对应后端 `store::workspaces::pin_workspace`。
 
 ### 4.2 Thread
 
@@ -597,7 +599,7 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`，见 `store/app_settings.rs`；已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
@@ -690,7 +692,7 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 
 - **配置写入所有权**：Provider/API Key 的生产写路径由 Desktop 通过 Agent RPC 提交，Agent 负责持久化并刷新运行时配置；Agent 不可达时明确失败，不由 GUI 写出第二份配置。Desktop 的 `config_io` 仍负责 Desktop 自有配置、审批规则、Remote 凭证，以及少量平台环境设置；`agent_providers/write.rs` 中直接写 `models.json` / `auth.json` 的 helper 仅用于隔离存储测试。所有本地 JSON 写入继续遵循严格解析（坏 JSON / 非对象 → **报错**）、原子替换和按路径串行锁，敏感文件使用 owner-only 权限。
 - **FutureGene 登录在 Tauri 后端独立实现**（`future_login.rs` + `commands/login.rs`）：设备码 OAuth 走**平台根**（`POST {platform}/client/v1/oauth/device/code` → 轮询 `/client/v1/oauth/device/token`），协议复刻 CLI 但不调用 CLI；前端 `FutureLoginDialog` 用 `usePolling` 驱动轮询（起始 2s、`slow_down` 退避、`attemptId` 守卫），授权成功后才写 `auth.json.future` 的 `key` 与 `base_url`（`= {platform}/api`，与 CLI `saveAuth` 一致，使 GUI / CLI 登录落地的 `auth.json` 完全相同）。平台 URL 由 `future_platform::resolve_future_platform_url` 解析（`future.platform_base_url` ?? `future.base_url` 去掉尾部 `/api` ?? 默认 `https://future-os.cn`），与 CLI `getPlatformUrl()` 对齐；模型 API base 则为 `{platform}/api/v1`（`resolve_future_base_url`，Providers 页展示）。该解析器已从 `agent_providers` 抽到独立的 `future_platform.rs`（login/skills/debug 共用，不再让这些模块依赖 Providers 页）。打开授权页前只校验 scheme（http/https），不绑定 host（授权页在不同域）。
-- **无头登录**：`--headless` 复用 `future_login` 设备授权协议，但不打开浏览器；终端展示授权网址、用户码和二维码，授权轮询由 Rust 驱动，处理过期、拒绝、`slow_down` 和 Ctrl+C 取消。Agent 必须先可达，成功凭证仍经 Agent RPC 提交，不增加第二份账号存储或直接写入回退。平台登录二维码与随后在 App 中扫描的手机配对二维码是两个阶段。
+- **无头登录**：`futureos-headless` 复用 `future_login` 设备授权协议，但不打开浏览器；终端展示授权网址、用户码和二维码，授权轮询由 Rust 驱动，处理过期、拒绝、`slow_down` 和 Ctrl+C 取消。Agent 必须先可达，成功凭证仍经 Agent RPC 提交，不增加第二份账号存储或直接写入回退。平台登录二维码与随后在 App 中扫描的手机配对二维码是两个阶段。
 - **生效时机**：agent 按会话 / 命令重载 auth（`AuthStore::load()`），登录后新开一轮会话即生效，通常无需重启 agent。
 - **兼容凭证优先级**：Agent 先读取 `~/.future/agent/auth.json`；只有该文件不存在、不可读或无法解析时，才尝试旧的 `~/.future/agent-app/auth.json`。两者不合并。生产写路径写入前者，因此旧文件不会覆盖当前配置。
 - **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。

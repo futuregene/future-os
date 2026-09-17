@@ -725,12 +725,13 @@ mod tests {
         crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
             approval_tier: Some("sandbox".to_string()),
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("update settings");

@@ -6,8 +6,6 @@ export type ApprovalTier = "off" | "manual" | "sandbox";
 export interface AppSettings {
   approvalTier: ApprovalTier;
   hiddenModels: string[];
-  /** Show the model's thinking/reasoning content in the chat. Off by default. */
-  showThinking: boolean;
   /**
    * Silently upgrade installed skills to their latest version on app open (and
    * immediately when toggled on). Off by default.
@@ -35,6 +33,10 @@ export interface AppSettings {
    * finishes. On by default.
    */
   bellOnComplete: boolean;
+  /** Generate and save a title after the first answer, without compacting context. On by default. */
+  autoTitleFirstTurn: boolean;
+  /** UI language mirrored for backend title generation while the webview is suspended. */
+  titleLanguage: "en" | "zh";
   /** Community-edition UI hides billing surfaces and treats Future like a normal builtin provider. */
   communityEdition: boolean;
 }
@@ -43,12 +45,13 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   approvalTier: "off",
   hiddenModels: [],
-  showThinking: false,
   autoUpgradeSkills: false,
   autoConnectRemote: false,
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,
+  autoTitleFirstTurn: true,
+  titleLanguage: "en",
   communityEdition: false,
 };
 
@@ -59,12 +62,13 @@ export async function getAppSettings() {
 export async function updateAppSettings(input: {
   approvalTier?: ApprovalTier;
   hiddenModels?: string[];
-  showThinking?: boolean;
   autoUpgradeSkills?: boolean;
   autoConnectRemote?: boolean;
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
   bellOnComplete?: boolean;
+  autoTitleFirstTurn?: boolean;
+  titleLanguage?: "en" | "zh";
   communityEdition?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });

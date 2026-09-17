@@ -138,6 +138,26 @@ replays). A detached viewer never grows memory without bound.
   (`nihao`) — verified to be the input method's own choice, since a plain
   `<input>` behaves the same.
 
+### macOS WebKit overlapping input
+
+With an IME input source, macOS WebKit can deliver committed `beforeinput` /
+`input` **before** the character's `keydown`. When the previous key (or Shift /
+Caps Lock) is still held, xterm 6.0's `_keyDownSeen` flag incorrectly rejects the
+text as a duplicate. The later IME-managed keydown does not recover it, so fast
+input such as `htop` can become `htp` (upstream
+[xterm.js#5374](https://github.com/xtermjs/xterm.js/issues/5374)).
+
+`features/terminal/macInput.ts` installs a macOS-WebKit-only `beforeinput`
+workaround after `terminal.open()`, resetting that private guard for composed
+`insertText` outside IME composition and screen-reader mode. xterm still sends
+the text via its usual `onData` path; keypress deduplication, composition, and
+other platforms are unchanged. The listener is removed when the view unmounts.
+This isolated private-API workaround is tied to the pinned xterm version;
+recheck it on upgrades. `macInput.test.ts` replays the upstream event ordering
+through **real xterm in jsdom**, including an unpatched reproduction, overlapping
+keys, Shift/Caps Lock, conventional input, Chinese composition and teardown.
+This is event-sequence regression coverage, not native macOS IME verification.
+
 ## Working directory
 
 Resolved server-side from the conversation; the client never sends a path.
@@ -150,6 +170,26 @@ Resolved server-side from the conversation; the client never sends a path.
 A configured but missing/not-a-directory path fails loudly with `CWD_INVALID`.
 This matters because `portable-pty` silently substitutes `$HOME` for a bad cwd
 (verified in the earlier spike); the backend validates before spawning.
+
+## Shell resolution
+
+`resolve_shell()` prefers the user's real shell and never substitutes one
+silently: the account login shell (or `$SHELL`) first, then the well-known
+fallbacks. On Windows every candidate is resolved to an **absolute path that
+exists** before it is offered — `PATH` in the OS's own order, then the
+well-known install locations (`%ProgramFiles%\PowerShell\7\pwsh.exe`,
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`,
+`%SystemRoot%\System32\cmd.exe`).
+
+That resolution is load-bearing, not cosmetic. `portable-pty` hands the program
+to `CreateProcessW` as `lpApplicationName`, and Win32 does **not** search `PATH`
+for that parameter: a bare `pwsh.exe` fails with `os error 2` ("The system
+cannot find the file specified") even when PowerShell is installed. Machines
+whose PowerShell 7 lives off `PATH` therefore failed every terminal tab with
+`terminal.json`'s `createFailed` ("无法启动终端"). A shell that cannot be
+located now falls through to the next candidate instead of being spawned.
+`terminal::shell::windows_tests` pins the rules (`PATH` order, extension
+appending, quoted `PATH` entries, well-known locations as last resort).
 
 ## Process teardown
 
@@ -198,6 +238,11 @@ policy relies only on `KeyboardEvent.isComposing`, which every engine sets.
    the characters must appear **once**, and deleting them must leave a clean
    line (no leftover copy, no stray backspace). The preedit must render in the
    terminal's own colours, not in a black box.
+9. On macOS with a Chinese/Japanese input source in ASCII mode, type `htop`
+   quickly with overlapping key presses (press the next key before releasing
+   the previous one). Every character must arrive once. Also try the first
+   Shift+3 character and a Caps Lock letter, then switch back to Chinese
+   composition and repeat step 8.
 
 ## Differences from opencode
 

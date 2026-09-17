@@ -48,7 +48,7 @@ interface AgentPromptResponse {
 }
 
 export const defaultAgentModelId = "";
-export const defaultThinkingLevel: ThinkingLevel = "off";
+export const defaultThinkingLevel: ThinkingLevel = "medium";
 
 export interface AgentPromptInput {
   message: string;
@@ -249,7 +249,7 @@ export function readLastUsedThinkingLevel(): string | null {
 
 /**
  * Pick the thinking level for a fresh draft. Priority: the last user-picked
- * level (if still a valid level) → the model's own default thinking level.
+ * level (if still a valid level) → the desktop default thinking level.
  */
 export function resolveInitialThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
   if (!modelSupportsThinking(modelId, models))
@@ -276,11 +276,9 @@ export function modelSupportsThinking(modelId: string, models: AgentModelOption[
 export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
   if (!modelSupportsThinking(modelId, models))
     return "off";
-  // Well-known models get their preferred default, overriding whatever
-  // the agent's list_models returns (which currently hardcodes "high").
-  if (modelId === "deepseek-v4-pro" || modelId.endsWith("/deepseek-v4-pro"))
-    return "high";
-  return modelOption(modelId, models)?.thinkingLevel ?? undefined;
+  // Desktop defaults to medium rather than inheriting the agent catalog's
+  // high default. Saved user choices and existing session levels win elsewhere.
+  return defaultThinkingLevel;
 }
 
 export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {

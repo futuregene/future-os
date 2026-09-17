@@ -185,10 +185,10 @@ export function SettingsDialog({
                   <GeneralPage
                     approvalTier={appSettings.approvalTier}
                     onChangeApprovalTier={value => onChangeSettings({ approvalTier: value })}
-                    showThinking={appSettings.showThinking}
-                    onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                     autoUpgradeSkills={appSettings.autoUpgradeSkills}
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
+                    autoTitleFirstTurn={appSettings.autoTitleFirstTurn}
+                    onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}
                     onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
                   />

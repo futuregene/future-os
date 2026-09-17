@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-mobile-android build-mobile-ios desktop-sidecars \
+	build build-cli build-desktop build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
@@ -174,6 +174,15 @@ endif
 build-desktop: desktop-sidecars
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npx tauri build --no-bundle
+
+# GUI-free server binary plus the matching Agent/CLI, with no npm/Tauri build.
+build-desktop-headless: build-cli
+	$(CARGO_PINNED) build --release --no-default-features --features headless --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+ifeq ($(OS),windows)
+	$(COPY_CMD) target\release\future.exe desktop\src-tauri\target\release\future.exe
+else
+	cp target/release/future desktop/src-tauri/target/release/future
+endif
 
 # Mobile native projects are generated locally by Expo (gitignored).
 build-mobile-android:
@@ -395,6 +404,7 @@ package-desktop: install-desktop
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
+	@echo "  build-desktop-headless             Build GUI-free server + matching CLI"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"
 	@echo "  test-<crate>                        test-agent / -channels / -cli / -tui / -desktop(-rust) / -mobile"

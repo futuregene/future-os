@@ -5,8 +5,8 @@
 # so this script has none of the macOS signing/notarization machinery.
 #
 # Produces:
-#   FutureOS_<bundle-version>_<arch>.deb  (Tauri .deb: desktop app + CLI sidecar)
-#   FutureOS-portable-linux.tar.gz        (portable: futureos + future + Readme.txt)
+#   FutureOS_<bundle-version>_<arch>.deb  (futureos + futureos-headless + future)
+#   FutureOS-portable-linux.tar.gz        (same executables + Readme.txt)
 
 set -euo pipefail
 
@@ -20,8 +20,8 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-desktop-linux.sh [options]
 
-Build the unified `future` CLI and Tauri desktop app, then produce the Linux
-distribution packages (.deb + portable tarball).
+Build the unified `future` CLI, graphical Desktop, and standalone headless
+Desktop, then produce the Linux distribution packages (.deb + portable tarball).
 
 Options:
   --skip-deps              Skip npm ci in desktop/.
@@ -71,6 +71,7 @@ require_tool node "Install Node.js 24+ (https://nodejs.org)."
 require_tool npm "npm is included with Node.js."
 require_tool cargo "Install Rust (https://rustup.rs)."
 require_tool rustc "Install Rust (https://rustup.rs)."
+require_tool dpkg-deb "Install the Debian package tools."
 
 TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 [[ -n "$TRIPLE" ]] || fail "could not read the host triple from rustc -Vv"
@@ -101,6 +102,10 @@ node scripts/version.mjs --set-bundle
 BUNDLE_VERSION="$(node -e \
   "process.stdout.write(require('./desktop/src-tauri/tauri.conf.json').version)")"
 
+echo "==> Building standalone headless desktop (release, no GUI features)"
+cargo build --release --no-default-features --features headless \
+  --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+
 echo "==> Building desktop app and .deb (Tauri)"
 (cd desktop && npm run tauri:build)
 
@@ -119,10 +124,17 @@ echo "==> Assembling portable tarball"
 dir="futureos-portable-linux"
 mkdir -p "$dir"
 cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
+cp "desktop/src-tauri/target/release/futureos-headless" "$dir/futureos-headless"
 cp "target/release/future" "$dir/future"
 chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
 tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
+
+deb_contents="$(dpkg-deb --contents "$DEB")"
+grep -Eq '^-rwx[^ ]* .* \./usr/bin/futureos-headless$' <<< "$deb_contents" \
+  || fail "the .deb does not contain executable /usr/bin/futureos-headless"
+tar -tzf FutureOS-portable-linux.tar.gz ./futureos-headless >/dev/null \
+  || fail "the portable archive does not contain ./futureos-headless"
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"

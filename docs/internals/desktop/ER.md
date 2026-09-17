@@ -102,6 +102,7 @@ Field draft:
 | `kind` | `user` or `temporary` |
 | `path` | local directory path |
 | `description` | optional description |
+| `pinned` | pinned or not (leads the workspace list; toggled from the group menu) |
 | `cleanup_status` | `active`, `pending_cleanup`, `cleaned` |
 | `cleanup_requested_at` | when cleanup was requested |
 | `cleaned_at` | when cleanup actually completed |
@@ -134,6 +135,13 @@ Notes:
   one is a `temporary` Workspace, additionally mark
   `cleanup_status = 'pending_cleanup'`. Backend:
   `store::workspaces::{rename_workspace, delete_workspace}`.
+- Pinning (change `pinned`) is supported. It is an ordering flag, not activity:
+  `last_opened_at` / `updated_at` stay put, so unpinning returns the group to
+  its recency position. `list_workspaces` still returns recency order (the new
+  conversation picker reads its first entry as the most recently used
+  workspace); the workspace list surfaces — the desktop rail and the phone's
+  workspace tab — order their groups by the flag themselves. Backend:
+  `store::workspaces::pin_workspace`.
 
 ### 4.2 Thread
 
@@ -839,8 +847,15 @@ First-version priority:
 - `object_references`
 - `app_settings` (app-level settings key-value table: `approval_tier`
   (`manual`/`sandbox`/`off`), `hidden_models`, `remote_pair_id`,
-  `show_thinking` — see `store/app_settings.rs`; the old `remote_enabled` /
-  `remote_nats_url` keys are no longer read, runtime state lives in memory and
+  `auto_compact_first_turn` (legacy stored key retained for
+  `autoTitleFirstTurn`: boolean, absent means true; explicitly saved false stays
+  disabled. Generates and saves a title after the first answer only, never compacts context), `title_language`
+  (`en`/`zh`, default `en`, mirrored from the Desktop UI for background title
+  generation). Both use the existing key-value table with absent-key defaults;
+  no structural migration is needed — see `store/app_settings.rs`;
+  the retired `show_thinking` key may remain in existing databases but is no
+  longer read, written, or exposed by the settings API (no destructive migration).
+  The old `remote_enabled` / `remote_nats_url` keys are no longer read, runtime state lives in memory and
   addresses are derived from the platform environment)
 - `agent_delete_outbox` (the Agent session deletion delivery queue registered
   when deleting a Thread, retried in the background until the Agent confirms —
@@ -1040,7 +1055,7 @@ Key trade-offs:
   modules no longer depend on the Providers page). Before opening the
   authorization page only the scheme (http/https) is validated — no host
   binding (the authorization page is on a different domain).
-- **Headless login**: `--headless` reuses the `future_login` device
+- **Headless login**: `futureos-headless` reuses the `future_login` device
   authorization protocol but opens no browser; the terminal shows the
   authorization URL, user code, and QR code, and the authorization poll is
   Rust-driven, handling expiry, rejection, `slow_down`, and Ctrl+C

@@ -57,6 +57,8 @@ pub struct ServerSession {
     pub auto_compaction: bool,
     /// Whether automatic retry on transient LLM errors is enabled.
     pub auto_retry: bool,
+    /// Session-local opt-out of project instruction discovery (not workspace memory).
+    pub no_context_files: bool,
     /// Serializes explicit manual compaction requests. The RPC acknowledgement
     /// is asynchronous, so the session itself must reject duplicate requests
     /// until the accepted operation reaches a terminal lifecycle event.
@@ -227,6 +229,7 @@ impl ServerSession {
             thinking_level: "xhigh".to_string(), // Match default
             auto_compaction: true,               // Match default
             auto_retry: true,
+            no_context_files: false,
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_request: Arc::new(parking_lot::Mutex::new(None)),
             session_manager: manager,
@@ -642,11 +645,12 @@ impl ServerSession {
                 loop_.provider.clone(),
             )
         };
-        let budget_system = self.build_system_prompt(
+        let (budget_system, _) = self.build_system_prompt(
             &self.cwd,
             request_tools.clone(),
             &self.model,
             &self.thinking_level,
+            self.no_context_files,
         );
         let tool_defs = request_tools
             .iter()

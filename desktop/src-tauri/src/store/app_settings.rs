@@ -14,8 +14,6 @@ pub struct AppSettings {
     pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
-    /// Show the model's thinking/reasoning content in the chat. On by default.
-    pub show_thinking: bool,
     /// Silently upgrade installed skills to their latest catalogue version on
     /// app open (and immediately when toggled on). On by default.
     pub auto_upgrade_skills: bool,
@@ -33,6 +31,11 @@ pub struct AppSettings {
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
+    /// Generate and save a title after the first successful answer, without compaction.
+    /// On by default; later turns never trigger this preference.
+    pub auto_title_first_turn: bool,
+    /// UI language mirrored for title generation when the webview is suspended.
+    pub title_language: String,
     /// Use the community-edition UI: Future is configured like another
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
@@ -43,23 +46,28 @@ pub struct AppSettings {
 pub struct UpdateAppSettingsInput {
     pub approval_tier: Option<String>,
     pub hidden_models: Option<Vec<String>>,
-    pub show_thinking: Option<bool>,
     pub auto_upgrade_skills: Option<bool>,
     pub auto_connect_remote: Option<bool>,
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
     pub bell_on_complete: Option<bool>,
+    #[serde(alias = "autoCompactFirstTurn")]
+    pub auto_title_first_turn: Option<bool>,
+    pub title_language: Option<String>,
     pub community_edition: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
-const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
+// Retain the original stored key so existing opt-ins survive the behavior fix.
+// This preference now generates titles only; it never requests compaction.
+const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
+const KEY_TITLE_LANGUAGE: &str = "title_language";
 const KEY_COMMUNITY_EDITION: &str = "community_edition";
 const KEY_DEVICE_ID: &str = "device_id";
 
@@ -128,10 +136,6 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let json = serde_json::to_string(&hidden_models)?;
         write_value(&tx, KEY_HIDDEN_MODELS, &json, now)?;
     }
-    if let Some(show_thinking) = input.show_thinking {
-        let value = if show_thinking { "true" } else { "false" };
-        write_value(&tx, KEY_SHOW_THINKING, value, now)?;
-    }
     if let Some(auto_upgrade_skills) = input.auto_upgrade_skills {
         let value = if auto_upgrade_skills { "true" } else { "false" };
         write_value(&tx, KEY_AUTO_UPGRADE_SKILLS, value, now)?;
@@ -160,6 +164,20 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let value = if bell_on_complete { "true" } else { "false" };
         write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
     }
+    if let Some(enabled) = input.auto_title_first_turn {
+        write_value(
+            &tx,
+            KEY_AUTO_TITLE_FIRST_TURN,
+            if enabled { "true" } else { "false" },
+            now,
+        )?;
+    }
+    if let Some(language) = input.title_language {
+        if !matches!(language.as_str(), "en" | "zh") {
+            return Err("Unsupported title language".into());
+        }
+        write_value(&tx, KEY_TITLE_LANGUAGE, &language, now)?;
+    }
     if let Some(community_edition) = input.community_edition {
         let value = if community_edition { "true" } else { "false" };
         write_value(&tx, KEY_COMMUNITY_EDITION, value, now)?;
@@ -167,6 +185,7 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
+    crate::agent_events::publish_invalidation("app_settings_changed");
     // Notify paired clients only after commit: their next model read must see
     // the new visibility. Reconnect also rereads the catalogue if this is lost.
     if model_visibility_changed {
@@ -193,9 +212,6 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
-    let show_thinking = read_value(conn, KEY_SHOW_THINKING)?
-        .map(|value| value == "true")
-        .unwrap_or(true);
     let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — keeps skills current without manual intervention.
@@ -211,18 +227,25 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
+    let auto_title_first_turn = read_value(conn, KEY_AUTO_TITLE_FIRST_TURN)?
+        .map(|value| value == "true")
+        .unwrap_or(true);
+    let title_language = read_value(conn, KEY_TITLE_LANGUAGE)?
+        .filter(|value| matches!(value.as_str(), "en" | "zh"))
+        .unwrap_or_else(|| "en".to_string());
     let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
         .map(|value| value == "true")
         .unwrap_or(false);
     Ok(AppSettings {
         approval_tier,
         hidden_models,
-        show_thinking,
         auto_upgrade_skills,
         auto_connect_remote,
         skill_guide_dismissed,
         skill_intro_dismissed,
         bell_on_complete,
+        auto_title_first_turn,
+        title_language,
         community_edition,
     })
 }
@@ -266,12 +289,13 @@ mod tests {
         UpdateAppSettingsInput {
             approval_tier: Some("sandbox".to_string()),
             hidden_models: Some(vec!["openai/gpt-x".to_string()]),
-            show_thinking: Some(false),
             auto_upgrade_skills: Some(false),
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
             bell_on_complete: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: Some(true),
         }
     }
@@ -283,12 +307,41 @@ mod tests {
         let settings = get_app_settings().expect("get settings");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
-        assert!(settings.show_thinking);
         assert!(settings.auto_upgrade_skills);
         assert!(!settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
         assert!(!settings.community_edition);
+    }
+
+    #[test]
+    fn retired_thinking_preference_is_ignored_and_not_returned() {
+        let (_home, conn) = guarded_conn("settings_retired_thinking");
+        for value in ["false", "true", "invalid"] {
+            // Existing installations can retain this unused key; removing a
+            // preference does not require a destructive database migration.
+            write_value(&conn, "show_thinking", value, 1).expect("legacy preference");
+            let settings = serde_json::to_value(get_app_settings().expect("read settings"))
+                .expect("serialize settings");
+            assert!(settings.get("showThinking").is_none());
+
+            let input = serde_json::from_value(serde_json::json!({
+                "showThinking": false,
+                "bellOnComplete": false
+            }))
+            .expect("legacy input remains readable");
+            let updated = update_app_settings(input).expect("update settings");
+            assert!(!updated.bell_on_complete);
+            assert_eq!(
+                read_value(&conn, "show_thinking").expect("legacy key"),
+                Some(value.to_string()),
+                "the retired key must not be written"
+            );
+            assert!(serde_json::to_value(updated)
+                .expect("serialize update")
+                .get("showThinking")
+                .is_none());
+        }
     }
 
     #[test]
@@ -314,7 +367,6 @@ mod tests {
         let updated = update_app_settings(full_input()).expect("update");
         assert_eq!(updated.approval_tier, "sandbox");
         assert_eq!(updated.hidden_models, vec!["openai/gpt-x".to_string()]);
-        assert!(!updated.show_thinking);
         assert!(!updated.auto_upgrade_skills);
         assert!(updated.auto_connect_remote);
         assert!(updated.skill_guide_dismissed);
@@ -332,12 +384,13 @@ mod tests {
         let updated = update_app_settings(UpdateAppSettingsInput {
             approval_tier: Some("permissive".to_string()),
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("update");
@@ -362,6 +415,57 @@ mod tests {
     }
 
     #[test]
+    fn first_turn_title_defaults_on_and_persists_updates() {
+        let (_home, conn) = guarded_conn("settings_first_turn_title");
+        assert!(get_app_settings().expect("defaults").auto_title_first_turn);
+        assert_eq!(get_app_settings().expect("defaults").title_language, "en");
+        for enabled in [false, true] {
+            write_value(
+                &conn,
+                "auto_compact_first_turn",
+                if enabled { "true" } else { "false" },
+                1,
+            )
+            .expect("legacy preference");
+            assert_eq!(
+                get_app_settings()
+                    .expect("legacy preference")
+                    .auto_title_first_turn,
+                enabled
+            );
+            // Updating an unrelated setting must not overwrite a saved choice.
+            assert_eq!(
+                update_app_settings(UpdateAppSettingsInput {
+                    title_language: Some("zh".into()),
+                    ..Default::default()
+                })
+                .expect("unrelated update")
+                .auto_title_first_turn,
+                enabled
+            );
+        }
+        drop(conn);
+        for enabled in [true, false] {
+            let updated = update_app_settings(UpdateAppSettingsInput {
+                auto_title_first_turn: Some(enabled),
+                title_language: Some("zh".into()),
+                ..Default::default()
+            })
+            .expect("update");
+            assert_eq!(updated.auto_title_first_turn, enabled);
+            assert_eq!(get_app_settings().expect("reload").title_language, "zh");
+            assert_eq!(
+                get_app_settings().expect("reload").auto_title_first_turn,
+                enabled
+            );
+            assert_eq!(
+                serde_json::to_value(updated).expect("serialize")["autoTitleFirstTurn"],
+                enabled
+            );
+        }
+    }
+
+    #[test]
     fn read_repairs_corrupt_stored_values() {
         let conn = memory_conn();
         // An unknown tier string normalizes to the default…
@@ -369,7 +473,6 @@ mod tests {
         // …corrupt JSON decodes to the empty list…
         write_value(&conn, KEY_HIDDEN_MODELS, "{not json", 1).expect("write models");
         // …and non-"true" booleans read as false.
-        write_value(&conn, KEY_SHOW_THINKING, "yes", 1).expect("write thinking");
         write_value(&conn, KEY_AUTO_UPGRADE_SKILLS, "0", 1).expect("write upgrade");
         write_value(&conn, KEY_AUTO_CONNECT_REMOTE, "true", 1).expect("write remote");
         write_value(&conn, KEY_BELL_ON_COMPLETE, "yes", 1).expect("write bell");
@@ -378,7 +481,6 @@ mod tests {
         let settings = read_app_settings(&conn).expect("read");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
-        assert!(!settings.show_thinking);
         assert!(!settings.auto_upgrade_skills);
         assert!(settings.auto_connect_remote);
         assert!(!settings.bell_on_complete);
@@ -392,12 +494,13 @@ mod tests {
         let settings = update_app_settings(UpdateAppSettingsInput {
             approval_tier: None,
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("noop update");
@@ -411,12 +514,13 @@ mod tests {
         let updated = update_app_settings(UpdateAppSettingsInput {
             approval_tier: None,
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
             bell_on_complete: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("update");

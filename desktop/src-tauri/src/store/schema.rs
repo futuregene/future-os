@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     kind TEXT NOT NULL CHECK (kind IN ('user', 'temporary')),
     path TEXT NOT NULL,
     description TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
     cleanup_status TEXT NOT NULL DEFAULT 'active',
     cleanup_requested_at INTEGER,
     cleaned_at INTEGER,
@@ -313,8 +314,9 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("approval_requests", "save_suggestion TEXT"),
 ];
 
-/// Database migrations introduced after the v1.1.2 release. Existing entries
-/// are immutable once released; add a new entry for each future release.
+/// Optional run-archive migrations, whose failures do not block startup.
+/// Required migrations belong in `db::apply_schema` with error propagation.
+/// Existing entries are immutable once released.
 pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
     "v1.1.3-runs-archived-at",
     "runs",

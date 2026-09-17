@@ -1,6 +1,6 @@
 import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { createHighlighter } from "shiki";
+import { bundledLanguagesInfo, createHighlighter } from "shiki";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
 
@@ -102,60 +102,24 @@ function ensureLanguageLoaded(highlighter: CodeHighlighter, lang: BundledLanguag
     });
 }
 
+// Use Shiki's registry rather than a partial whitelist: e.g. PowerShell,
+// Dockerfile and Vue should highlight too. Aliases share one grammar/cache key.
+const languageNames = new Map<string, BundledLanguage>();
+for (const language of bundledLanguagesInfo) {
+  const id = language.id as BundledLanguage;
+  languageNames.set(id, id);
+  for (const alias of language.aliases ?? []) languageNames.set(alias, id);
+}
+for (const [alias, language] of Object.entries({
+  "c++": "cpp",
+  "c#": "csharp",
+  "golang": "go",
+  "shell": "shellscript",
+  "zsh": "shellscript",
+} satisfies Record<string, BundledLanguage>)) languageNames.set(alias, language);
+
 function normalizeLanguage(language: string | undefined): BundledLanguage | null {
-  if (!language) {
-    return null;
-  }
-
-  const normalized = language.toLowerCase().trim();
-
-  const languageMap: Record<string, BundledLanguage> = {
-    "ts": "typescript",
-    "tsx": "tsx",
-    "js": "javascript",
-    "jsx": "jsx",
-    "javascript": "javascript",
-    "typescript": "typescript",
-    "json": "json",
-    "html": "html",
-    "css": "css",
-    "md": "markdown",
-    "markdown": "markdown",
-    "yml": "yaml",
-    "yaml": "yaml",
-    "toml": "toml",
-    "rs": "rust",
-    "rust": "rust",
-    "py": "python",
-    "python": "python",
-    "go": "go",
-    "golang": "go",
-    "java": "java",
-    "c": "c",
-    "cpp": "cpp",
-    "c++": "cpp",
-    "cs": "csharp",
-    "csharp": "csharp",
-    "c#": "csharp",
-    "rb": "ruby",
-    "ruby": "ruby",
-    "php": "php",
-    "swift": "swift",
-    "kt": "kotlin",
-    "kotlin": "kotlin",
-    "scala": "scala",
-    "sh": "shellscript",
-    "bash": "bash",
-    "shell": "shellscript",
-    "zsh": "shellscript",
-    "fish": "shellscript",
-    "sql": "sql",
-    "graphql": "graphql",
-    "xml": "xml",
-    "diff": "diff",
-  };
-
-  return languageMap[normalized] ?? null;
+  return languageNames.get(language?.toLowerCase().trim() ?? "") ?? null;
 }
 
 // Cross-instance highlight cache: `CodeBlock` memoizes its own tokenization,

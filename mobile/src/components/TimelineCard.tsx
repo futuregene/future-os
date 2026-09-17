@@ -436,11 +436,26 @@ function StatusDivider({ label, failed = false }: { label: string; failed?: bool
  * burst carries its child calls on `tool.children` and its count — the row
  * reads "Ran N commands", and tapping it reveals the individual targets.
  *
- * Collapsed and expanded activity stays in the same left-aligned reading column.
+ * The row is a badge on the right rail only while nothing of it is revealed.
+ * Once it — or the run around it — is open, it is content being read, and
+ * content sits in the reading column with the rest of the reply: right-aligned
+ * prose and right-aligned commands are hard to read. `opened` is required so a
+ * call site cannot silently pick the wrong rail, which is how the unfolded rows
+ * ended up on the left while folded ones sat on the right.
+ *
+ * The target — a file name or a shell command — always renders on its own line
+ * below the header, and the header is a wrapping-free one-liner because of it.
+ * Inline was the alternative, and it cannot work: a target beside the label
+ * claims the row's leftover width with `flex: 1`, which resolves to zero in the
+ * shrink-wrapped rail badge and hid the file name entirely; and a name long
+ * enough to need the room would push the label and its chevron off the line.
+ * Below, the target gets the full width, wraps instead of being clipped, and
+ * carries the header's own indent so it reads as that row's detail.
  */
-function ToolRow({ tool }: { tool: TimelineToolRow }) {
+function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const open = opened || expanded;
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
   const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
@@ -455,13 +470,13 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
         })
       : toolLabel(t, kind, tool.complete);
   return (
-    <View style={styles.inlineTool}>
+    <View style={[styles.inlineTool, !open && styles.railBlock]}>
       <Pressable
         accessibilityRole="button"
         disabled={!expandable}
         hitSlop={expandable ? ROW_HIT_SLOP : undefined}
         onPress={() => setExpanded(value => !value)}
-        style={styles.toolHeader}
+        style={[styles.toolHeader, !open && styles.railRow]}
       >
         <ToolGlyph failed={failed} kind={kind} />
         <Text style={styles.toolText}>{label}</Text>
@@ -472,18 +487,11 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
             <ChevronDown color={colors.inkMuted} size={14} />
           )
         ) : null}
-        {/* File names wrap beside the label, including their extension.
-            Shell commands use the full-width line below. */}
-        {expanded && detail && !children && kind !== "shell" ? (
-          <Text
-            selectable
-            style={styles.inlineToolTarget}
-          >
-            {detail}
-          </Text>
-        ) : null}
       </Pressable>
-      {expanded && detail && !children && kind === "shell" ? (
+      {/* Every revealed target — file name or shell command — takes the line
+          below the header, so it wraps at full width instead of being clipped
+          into the label's line. */}
+      {expanded && detail && !children ? (
         <Text selectable style={styles.toolDetailText}>
           {detail}
         </Text>
@@ -520,21 +528,24 @@ function ToolRow({ tool }: { tool: TimelineToolRow }) {
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
- * Its header shares the tool rows' left edge; only the revealed text is indented.
+ * Like a tool row it is a badge on the right rail while collapsed and falls
+ * back into the reading column once opened — see ToolRow.
  */
-function ThinkingRow({ text, streaming }: {
+function ThinkingRow({ text, streaming, opened }: {
   text: string;
   streaming?: boolean;
+  opened: boolean;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const open = opened || expanded;
   return (
-    <View style={styles.inlineThinking}>
+    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
       <Pressable
         accessibilityRole="button"
         hitSlop={ROW_HIT_SLOP}
         onPress={() => setExpanded(value => !value)}
-        style={styles.inlineThinkingHeader}
+        style={[styles.inlineThinkingHeader, !open && styles.railRow]}
       >
         <Brain color={colors.inkMuted} size={14} />
         <Text style={styles.inlineThinkingLabel}>
@@ -681,7 +692,9 @@ function stepRunSummary(
  * The tool glyph is a wrench, not the terminal it replaced: the count covers
  * every tool kind, and a shell prompt claimed it was all commands.
  *
- * The summary shares the left edge of its thinking and tool rows.
+ * The summary is the run's collapsed badge, so it stays on the right rail even
+ * once the run is open: the line the user just tapped does not move, and the
+ * rows it revealed appear below it in the reading column.
  * A failure is marked the same way — the alert glyph, in
  * the same muted ink as the rest of the line, told apart by its shape and named
  * in the accessibility label rather than shouted in colour.
@@ -738,9 +751,9 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
             segment.kind === "thinking" ? (
               // Every folded reasoning slice has already been closed by the
               // slice after it, so none of them is still streaming.
-              <ThinkingRow key={segment.id} text={segment.text} />
+              <ThinkingRow key={segment.id} opened text={segment.text} />
             ) : (
-              <ToolRow key={segment.id} tool={segment.tool} />
+              <ToolRow key={segment.id} opened tool={segment.tool} />
             ),
           )}
         </View>
@@ -763,10 +776,10 @@ function SegmentBlock({
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
   }
   if (segment.kind === "thinking") {
-    return <ThinkingRow streaming={streaming} text={segment.text} />;
+    return <ThinkingRow opened={false} streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    return <ToolRow tool={segment.tool} />;
+    return <ToolRow opened={false} tool={segment.tool} />;
   }
   // compaction
   return (
@@ -1063,6 +1076,14 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 2,
   },
+  // Collapsed reasoning is a badge on the right rail: the rail follows it there,
+  // and the rule moves to its right side so it still leads the text it marks.
+  railThinking: {
+    alignSelf: "flex-end",
+    borderRightWidth: 2,
+    borderRightColor: colors.line,
+    paddingRight: spacing.md,
+  },
   inlineThinkingHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -1082,15 +1103,12 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     gap: 2,
   },
-  inlineToolTarget: {
-    flex: 1,
-    marginLeft: spacing.sm,
-    minWidth: 0,
-    color: colors.inkSoft,
-    fontFamily: "monospace",
-    fontSize: 12,
-    lineHeight: 18,
-  },
+  // ── The right rail, for collapsed badges only ───────────────────────────
+  // A step row draws as a badge out of the prose's eye line while it is closed;
+  // `railBlock` is what shrink-wraps it and parks it on the right, and `railRow`
+  // keeps the tap target clipped to the badge instead of spanning the bubble.
+  railBlock: { alignSelf: "flex-end" },
+  railRow: { justifyContent: "flex-end" },
   // Opened rows are reading content: left-aligned, and indented like the tool
   // burst children they belong to.
   inlineToolChildren: {
@@ -1098,10 +1116,13 @@ const styles = StyleSheet.create({
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
   },
-  // Summary and individual activity headers share the left edge.
+  // The collapsed summary hugs the right edge, out of the prose's eye line. Its
+  // gap is tighter than a tool row's: the counts are one cluster, and 8px on each
+  // side of the `·` (16px between kinds) read as holes once the glyphs had been
+  // pulled flush against their counts.
   stepSummaryRow: {
-    alignSelf: "flex-start",
-    justifyContent: "flex-start",
+    alignSelf: "flex-end",
+    justifyContent: "flex-end",
     gap: spacing.xs,
   },
   // The icon and its count are one token: no gap between them, so the wrench and
@@ -1111,9 +1132,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 0,
   },
+  // The expanded rows fall back into the reading column, indented one step so
+  // they read as belonging to the summary line above them.
   stepChildren: {
     gap: spacing.xs,
     marginTop: 2,
+    paddingLeft: spacing.md + spacing.sm,
   },
   inlineToolChild: {
     flexShrink: 1,
@@ -1161,9 +1185,14 @@ const styles = StyleSheet.create({
   cardLabel: { color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
   secondaryText: { color: colors.inkSoft, fontSize: 13, lineHeight: 19, marginTop: spacing.sm },
   tool: { paddingHorizontal: spacing.xs, paddingVertical: spacing.xs },
-  toolHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  // The header is one line again now that the target dropped below it, so its
+  // glyph, label and chevron centre against each other instead of top-aligning.
+  toolHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   toolText: { color: colors.inkMuted, fontSize: 13, lineHeight: 20 },
-  // The shell command under a tool row: left-aligned with the row it belongs to.
+  // The target under a tool row — a file name or a shell command — indents to
+  // the label it belongs to and wraps at full width: a phone cannot truncate a
+  // name into uselessness, and the row is no longer shrink-wrapped so there is
+  // width for a second line.
   toolDetailText: {
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,

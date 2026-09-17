@@ -1,7 +1,6 @@
 import {
   ChevronDown,
   Folder,
-  LogOut,
   MessageCircle,
   Monitor,
   Plus,
@@ -18,7 +17,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -38,8 +36,7 @@ import { DisconnectedScreen } from "./DisconnectedScreen";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
-import { VERSION } from "../version.generated";
-import { LanguageSettings } from "../i18n/LanguageSettings";
+import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 
 type Tab = "workspace" | "chat";
 
@@ -77,7 +74,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [approvalSaving, setApprovalSaving] = useState(false);
+  const settingsRef = useRef<SettingsScreenHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
   const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
@@ -101,7 +98,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     if (Platform.OS !== "ios") deferPresentation(action);
   };
 
-  const flushPendingManageDesktops = () => {
+  const flushPendingSettingsAction = () => {
     const action = pendingSettingsActionRef.current;
     pendingSettingsActionRef.current = null;
     action?.();
@@ -143,24 +140,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       Alert.alert(t("update.checkFailed"));
     } finally {
       setCheckingUpdate(false);
-    }
-  };
-
-  const approvalTiers = (["manual", "sandbox", "off"] as const).filter(
-    (tier) => tier !== "sandbox" || remote.sandboxAvailable,
-  );
-  const approvalDisabled = !remote.desktopOnline || approvalSaving;
-
-  const selectApprovalTier = async (tier: (typeof approvalTiers)[number]) => {
-    if (approvalDisabled) return;
-    if (tier === remote.approvalTier) return;
-    setApprovalSaving(true);
-    try {
-      await remote.setApprovalTier(tier);
-    } catch {
-      afterSettings(() => Alert.alert(t("common.error")));
-    } finally {
-      setApprovalSaving(false);
     }
   };
 
@@ -413,7 +392,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           transparent
           visible={newOpen}
         >
-          <DialogSurface>
+          <DialogSurface footer={
+            <Button
+              disabled={newMode === "workspace" && !workspaceId}
+              label={t("sessions.new")}
+              onPress={startConversation}
+            />
+          }>
               <View style={styles.dialogHeader}>
                 <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
                 <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
@@ -445,11 +430,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                 ))}
               </View>
               {newMode === "workspace" && (
-                <ScrollView
-                  bounces={false}
-                  contentContainerStyle={styles.workspaceOptionsContent}
-                  style={styles.workspaceOptions}
-                >
+                <View style={styles.workspaceOptionsContent}>
                   {remote.workspaces.map((workspace) => (
                     <Pressable
                       key={workspace.id}
@@ -470,75 +451,25 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                   {remote.workspaces.length === 0 && (
                     <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
                   )}
-                </ScrollView>
+                </View>
               )}
-              <Button
-                disabled={newMode === "workspace" && !workspaceId}
-                label={t("sessions.new")}
-                onPress={startConversation}
-              />
           </DialogSurface>
         </Modal>
 
         <Modal
-          animationType="fade"
-          onRequestClose={() => setSettingsOpen(false)}
-          onDismiss={flushPendingManageDesktops}
-          transparent
+          animationType="slide"
+          presentationStyle="fullScreen"
+          onRequestClose={() => settingsRef.current?.goBack()}
+          onDismiss={flushPendingSettingsAction}
           visible={settingsOpen}
         >
-          <DialogSurface>
-              <View style={styles.dialogHeader}>
-                <Text style={styles.dialogTitle}>{t("sessions.settings")}</Text>
-                <Pressable
-                  accessibilityLabel={t("common.close")}
-                  accessibilityRole="button"
-                  style={styles.settingsButton}
-                  onPress={() => setSettingsOpen(false)}
-                >
-                  <X color={colors.inkMuted} size={20} />
-                </Pressable>
-              </View>
-              <Button
-                label={t("desktops.title")}
-                onPress={() => afterSettings(onManageDesktops)}
-                variant="secondary"
-              />
-              <Text style={styles.settingsLabel}>{t("approvalTier.title")}</Text>
-              <View style={styles.approvalOptions}>
-                {approvalTiers.map(tier => (
-                  <Pressable
-                    key={tier}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: remote.approvalTier === tier, disabled: approvalDisabled }}
-                    disabled={approvalDisabled}
-                    onPress={() => void selectApprovalTier(tier)}
-                    style={[styles.modeOption, remote.approvalTier === tier && styles.modeOptionActive, approvalDisabled && styles.tierTriggerDisabled]}
-                  >
-                    <Text style={styles.modeOptionText}>{t(`approvalTier.${tier}`)}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <LanguageSettings />
-              <View style={styles.updateRow}>
-                <Text style={styles.updateVersion}>
-                  {t("common.version", { version: VERSION })}
-                </Text>
-                <Button
-                  compact
-                  label={t("update.check")}
-                  loading={checkingUpdate}
-                  onPress={() => afterSettings(() => void checkUpdate())}
-                  variant="secondary"
-                />
-              </View>
-              <Button
-                icon={<LogOut color={colors.danger} size={16} />}
-                label={t("sessions.unpair")}
-                onPress={() => afterSettings(confirmUnpair)}
-                variant="danger"
-              />
-          </DialogSurface>
+          {settingsOpen ? <SettingsScreen
+            ref={settingsRef}
+            key={`${remote.credentials?.pairId}:${remote.desktopOnline}`}
+            onClose={() => setSettingsOpen(false)}
+            onCheckUpdate={() => afterSettings(() => void checkUpdate())}
+            checkingUpdate={checkingUpdate}
+          /> : null}
         </Modal>
 
         <RenameModal
@@ -666,7 +597,6 @@ const styles = StyleSheet.create({
   },
   modeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   modeOptionText: { flexShrink: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
-  workspaceOptions: { maxHeight: 180 },
   workspaceOptionsContent: { gap: spacing.xs },
   workspaceOption: {
     minHeight: layout.touchTarget,

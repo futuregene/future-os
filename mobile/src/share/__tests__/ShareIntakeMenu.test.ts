@@ -100,6 +100,19 @@ test("back changes mode without losing the pending content", () => {
   expect(mockIntake.chooseDestination).not.toHaveBeenCalled();
 });
 
+test.each(["new", "existing"])("system back from %s preserves the share until back at the root", step => {
+  mockRemote.sessions = [{ sessionId: "chat", threadId: "t", title: "Chat", streaming: false }];
+  update();
+  press(step === "new" ? "share.newConversation" : "share.existingConversation");
+  act(() => tree.root.findByType(Modal).props.onRequestClose());
+  expect(labels()).toEqual(["share.newConversation", "share.existingConversation"]);
+  expect(mockIntake.dismiss).not.toHaveBeenCalled();
+  expect(mockIntake.chooseDestination).not.toHaveBeenCalled();
+  expect(menu().props.visible).toBe(true);
+  act(() => tree.root.findByType(Modal).props.onRequestClose());
+  expect(mockIntake.dismiss).toHaveBeenCalledTimes(1);
+});
+
 test.each(["kind", "new", "existing"])("cannot import into a different desktop at the %s step", step => {
   mockRemote.sessions = [{ sessionId: "chat", threadId: "t1", title: "Chat", streaming: false }];
   update();

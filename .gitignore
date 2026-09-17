@@ -79,6 +79,12 @@ mobile/coverage/
 # src-tauri llvm-cov artifacts (manual --html/--lcov runs)
 coverage-tauri/
 
+# Screenshot harness output (make screenshots-capture-*)
+/.screenshots/
+# Demo figures the screenshot harness serves into conversations — generated
+# (scripts/screenshots/gen-demo-assets.py), never committed.
+/desktop/shot/assets/
+
 # loop control plane runtime state (never commit)
 .codex/
 .future/loop/
@@ -86,3 +92,6 @@ desktop/node_modules
 FUTURE.md
 coverage-agent-lcov.info
 *.profraw
+
+# Python bytecode (scripts)
+__pycache__/

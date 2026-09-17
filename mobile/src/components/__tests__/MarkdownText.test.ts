@@ -1,6 +1,8 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { codeColors } from "../../theme/tokens";
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
@@ -35,8 +37,14 @@ describe("MarkdownText layout and fidelity", () => {
   test("a 5000-row table mounts a bounded internal viewport", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    expect(root.findByType(FlatList).props.data).toHaveLength(5000);
+    const list = root.findByType(FlatList);
+    expect(list.props.data).toHaveLength(5000);
     expect(root.findAllByType(Text).length).toBeLessThan(100);
+    const headerCells = root.findByType(ScrollView).findAllByType(View)
+      .filter(node => StyleSheet.flatten(node.props.style)?.paddingHorizontal === 8).slice(0, 2);
+    expect(headerCells).toHaveLength(2);
+    expect(StyleSheet.flatten(list.props.style).width).toBe(headerCells.reduce((sum, cell) =>
+      sum + StyleSheet.flatten(cell.props.style).width, 0));
   });
 
   test("large code has a bounded viewport while its data preserves the full source", () => {
@@ -46,6 +54,14 @@ describe("MarkdownText layout and fidelity", () => {
     expect(list.props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
     expect(list.props.data.every((row: { text: string }) => row.text.length <= 2049)).toBe(true);
     expect(root.findAllByType(Text).length).toBeLessThan(50);
+  });
+
+  test("CJK list labels ending in punctuation render as bold native Text", () => {
+    const labels = ["迁移失败处理不合适：", "新旧端兼容未完善：", "失效工作区校验不足："];
+    const root = render(labels.map(label => `- **${label}**正文继续。`).join("\n"));
+    const bold = root.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontWeight === "700");
+    expect(bold.map(node => node.props.children.join(""))).toEqual(labels);
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
   });
 
   test("headings have distinct scales and accessible heading roles", () => {
@@ -70,7 +86,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("wide tables scroll as a unit with aligned columns, including missing cells", () => {
-    const root = render("| A | B | C | D |\n|:---|:---:|---:|---|\n| one<br>two | **bold** | 3 | 4 |\n| missing |");
+    const root = render("| A long heading | B long heading | C long heading | D |\n|:---|:---:|---:|---|\n| one<br>two | **bold** | 3 | 4 |\n| missing |");
     const scroll = root.findByType(ScrollView);
     expect(scroll.props).toMatchObject({ horizontal: true, nestedScrollEnabled: true });
     const container = root.findAllByType(View).find(node => node.props.onLayout)!;
@@ -78,23 +94,54 @@ describe("MarkdownText layout and fidelity", () => {
     const cells = scroll.findAllByType(View).filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number");
     expect(cells).toHaveLength(12);
     const widths = cells.map(node => StyleSheet.flatten(node.props.style).width);
-    expect(new Set(widths).size).toBe(1);
-    expect(widths[0]).toBeGreaterThanOrEqual(144);
+    expect(widths.slice(4, 8)).toEqual(widths.slice(0, 4));
+    expect(widths.slice(8, 12)).toEqual(widths.slice(0, 4));
+    expect(widths[3]).toBeLessThan(widths[0]);
+    expect(widths.slice(0, 4).reduce((sum, width) => sum + width, 0)).toBeGreaterThan(320);
     expect(scroll.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.textAlign === "right")).toHaveLength(2); // The padded empty cell needs no Text.
     expect(JSON.stringify(renderer.toJSON())).not.toContain("<br>");
     // A wider orientation updates all rows together.
     act(() => container.props.onLayout({ nativeEvent: { layout: { width: 1602 } } }));
-    expect(scroll.findAllByType(View).filter(node => StyleSheet.flatten(node.props.style)?.width === 400)).toHaveLength(12);
+    const wider = scroll.findAllByType(View).filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number")
+      .map(node => StyleSheet.flatten(node.props.style).width);
+    expect(wider.slice(4, 8)).toEqual(wider.slice(0, 4));
+    expect(wider.slice(8, 12)).toEqual(wider.slice(0, 4));
+    expect(wider[0]).toBeGreaterThan(widths[0]);
+    expect(wider[3]).toBe(widths[3]);
   });
 
   test("code is selectable, horizontally scrollable and uses an iOS-safe monospace font", () => {
     const code = `const veryLongLine = '${"x".repeat(200)}';\n  indented();`;
     const root = render(`\`\`\`typescript\n${code}\n\`\`\``);
     expect(root.findByType(ScrollView).props.horizontal).toBe(true);
-    const text = root.findAllByType(Text).find(node => node.props.children === code)!;
+    const text = root.findByType(ScrollView).findAllByType(Text).find(node => node.props.selectable)!;
+    const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
+      .map(node => node.props.children).join("");
+    expect(source).toContain("const");
+    expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
     expect(StyleSheet.flatten(text.props.style).fontFamily).toBe(Platform.OS === "ios" ? "Menlo" : "monospace");
     expect(root.findAllByType(Text).some(node => node.props.children === "typescript")).toBe(true);
+  });
+
+  test("TSX fragments highlight strings and update correctly as a code block grows", () => {
+    const root = render('```tsx\nunderlineColorAndroid="trans');
+    act(() => renderer.update(createElement(MarkdownText, { text: '```tsx\nunderlineColorAndroid="transparent"\n```' })));
+    expect(root.findAllByType(Text).some(node => node.props.children === '"transparent"'
+      && StyleSheet.flatten(node.props.style)?.color === codeColors.string)).toBe(true);
+  });
+
+  test("virtualized highlighted code copies the unmodified source", async () => {
+    const code = '// first\n' + 'const value = "text";\n'.repeat(40);
+    const copy = jest.spyOn(Clipboard, "setStringAsync").mockResolvedValue(true);
+    try {
+      const root = render(`\`\`\`ts\n${code}\n\`\`\``);
+      expect(root.findByType(FlatList).props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
+      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
+      const button = root.findAll(node => node.props.accessibilityLabel === "chat.copy" && typeof node.props.onPress === "function")[0]!;
+      await act(async () => { button.props.onPress(); });
+      expect(copy).toHaveBeenCalledWith(code);
+    } finally { copy.mockRestore(); }
   });
 
   test("remote images are outside selectable Text and retain natural aspect ratio", () => {

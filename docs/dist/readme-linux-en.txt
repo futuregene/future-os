@@ -6,8 +6,8 @@ Extract the downloaded archive to any directory, then run ./futureos.
 Use its actual filename: official releases use
 FutureOS_<version>_linux_<arch>-portable.tar.gz (x86_64 or aarch64);
 local developer builds may use FutureOS-portable-linux.tar.gz.
-Keep futureos and future in the same folder. The app starts its agent via
-future agent when no compatible agent is already reachable.
+Keep futureos, futureos-headless, and future in the same folder. The graphical
+or headless entrypoint starts its agent via future agent when needed.
 
 [Runtime]
 Published GUI packages require glibc >= 2.39 (roughly Ubuntu 24.04+) and WebKitGTK:
@@ -17,6 +17,9 @@ Official Linux CI builds future as a static musl CLI, usable without GUI librari
 Local source builds use their selected host target and are not necessarily static.
 On a headless host, download the matching official CLI-only tarball and use
 ./future config and ./future tui, or ./future agent for other CLI clients.
+For server phone access, run ./futureos-headless. It is an independent foreground
+program with no graphical UI; Ctrl+C closes it. It is not a futureos sidecar.
+futureos starts only the GUI; its former --headless option has been removed.
 
 [Optional Sandbox]
 The desktop defaults to Unrestricted. Select Manual or Sandboxed in Settings.
@@ -34,7 +37,7 @@ limits. See the repository wiki Sandbox guide for full boundaries.
 · Personal data is stored in ~/.future. Online model/tools and Remote send requests
   to their services; local-first does not mean no data leaves the machine.
 · The app stops only the agent it started; an externally managed agent stays running.
-· The unified future CLI is included in the same directory.
+· The standalone futureos-headless entrypoint and unified future CLI are included.
 
 [License]
 FutureOS is distributed under the MIT License; the bundled future loop

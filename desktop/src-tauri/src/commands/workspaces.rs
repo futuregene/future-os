@@ -45,6 +45,15 @@ pub fn rename_workspace(
     store::rename_workspace(input)
 }
 
+/// Pin a Workspace group above the unpinned ones (same ordering flag, and the
+/// same rule, as pinning a conversation).
+#[cfg_attr(feature = "gui", tauri::command)]
+pub fn pin_workspace(
+    input: store::PinWorkspaceInput,
+) -> Result<store::WorkspaceRecord, crate::AppError> {
+    store::pin_workspace(input)
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_workspace(
     workspace_id: String,
@@ -123,6 +132,14 @@ mod tests {
         })
         .expect("rename");
         assert_eq!(renamed.name, "Renamed");
+
+        let pinned = pin_workspace(store::PinWorkspaceInput {
+            workspace_id: created.id.clone(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned);
+        assert!(list_workspaces().expect("list")[0].pinned);
 
         let deleted = delete_workspace(created.id.clone()).await.expect("delete");
         assert_eq!(deleted.id, created.id);

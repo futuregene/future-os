@@ -29,6 +29,20 @@ options (print mode, `--list-models`, `--session`, ...).
   enable a desktop sandbox policy. The CLI's `future run --permission none` disables all tool calls,
   not just writes. See the [sandbox guide](../wiki/en/Sandbox.md) for the distinction.
 
+## Project instructions
+
+At each run, the agent reads the first readable file in the session's working
+directory: `AGENTS.md` → `CLAUDE.md` → `GEMINI.md`. It does not merge files or
+search parent directories; an empty readable file also stops the search.
+`/reload` uses the same order, and context-file status lists file names, not contents.
+
+Use `future tui --no-context-files` (short form `-nc`, also supported with `-p`)
+to disable these project instructions. The opt-out is session-local, applies to
+subsequent requests, and is reapplied when this TUI switches or creates sessions.
+It does not erase earlier conversation content or disable the separate
+`FUTURE.md` workspace memory layer. An agent that cannot apply the opt-out causes
+the request to fail rather than silently ignoring the flag.
+
 ## Slash commands
 
 All commands below are handled locally by the TUI (they are not sent to the

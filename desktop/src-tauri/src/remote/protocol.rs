@@ -29,6 +29,10 @@ pub(crate) struct IncomingCmd {
     pub(crate) model_id: String,
     pub(crate) provider_id: String,
     pub(crate) level: String,
+    // Desktop-owned settings and skill management (never mobile persistence).
+    pub(crate) settings: serde_json::Value,
+    pub(crate) skill_id: String,
+    pub(crate) version: String,
     // set_approval_tier
     pub(crate) tier: String,
     // set_session_name
@@ -83,6 +87,9 @@ impl Default for IncomingCmd {
             provider_id: String::new(),
             level: String::new(),
             tier: String::new(),
+            settings: serde_json::Value::Null,
+            skill_id: String::new(),
+            version: String::new(),
             name: String::new(),
             transfer_name: String::new(),
             thread_id: String::new(),

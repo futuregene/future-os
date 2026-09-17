@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1184,6 +1184,83 @@ mod tests {
     }
 
     #[test]
+    fn paginate_events_keeps_oversized_tool_outcomes_matchable() {
+        // Regression: a ~503 KB test result was replaced by an anonymous marker,
+        // leaving a running row between two groups of already-completed work.
+        for event_type in ["tool_end", "tool_result"] {
+            for exit_code in [0, 1] {
+                let output = format!("{}\n[exit: {exit_code}]", "测试输出\n".repeat(50_000));
+                let payload = json!({
+                    "type": event_type, "tool_id": "large-test", "tool_name": "shell",
+                    "exit_code": exit_code, "text": output,
+                })
+                .to_string();
+                let page = paginate_events(
+                    json!({
+                        "runId": "run-1",
+                        "events": [{"type": event_type, "runId": "run-1", "idx": 1938, "data": payload}],
+                    }),
+                    0,
+                    100,
+                );
+                let event = &page["events"][0];
+                let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+                assert_eq!(event["idx"], 1938);
+                assert_eq!(event["type"], event_type);
+                assert_eq!(data["_truncated"], true);
+                assert_eq!(data["tool_id"], "large-test");
+                assert_eq!(data["tool_name"], "shell");
+                assert_eq!(data["exit_code"], exit_code);
+                assert!(data["text"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("[exit: {exit_code}]")));
+                assert!(serde_json::to_vec(&page).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_tool_data_preserves_errors_and_large_input_targets() {
+        let payload = json!({
+            "tool_call_id": "write-1", "toolName": "write", "phase": "execution",
+            "tool_args": json!({"path": "目录/文件.txt", "content": "x".repeat(300_000)}).to_string(),
+            "error": format!("permission denied{}", " ".repeat(300_000)),
+            "is_error": true,
+        }).to_string();
+        let mut event = json!({"type": "tool_end", "data": payload});
+        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
+        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["tool_call_id"], "write-1");
+        assert_eq!(data["toolName"], "write");
+        assert_eq!(data["phase"], "execution");
+        assert_eq!(data["error"], "permission denied");
+        assert_eq!(data["is_error"], true);
+        assert_eq!(data["tool_args"], json!({"path": "目录/文件.txt"}));
+        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+    }
+
+    #[test]
+    fn truncated_tool_data_bounds_json_escaping_and_error_aliases() {
+        let payload = json!({
+            "toolID": "tool-1", "name": "shell", "exitCode": 2,
+            "result": format!("{}\n[exit: 2]", "\u{0001}".repeat(300_000)),
+            "errorText": "错误".repeat(150_000),
+            "unknown": "x".repeat(300_000),
+        })
+        .to_string();
+        let mut event = json!({"type": "tool_result", "data": payload});
+        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
+        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["toolID"], "tool-1");
+        assert_eq!(data["exitCode"], 2);
+        assert!(data["result"].as_str().unwrap().ends_with("[exit: 2]"));
+        assert!(!data["errorText"].as_str().unwrap().trim().is_empty());
+        assert!(data.get("unknown").is_none());
+        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+    }
+
+    #[test]
     fn truncate_swaps_oversized_event_data_but_keeps_small() {
         let mut big = json!({ "type": "tool_result", "run_id": "r", "idx": 0, "data": "x".repeat(MESSAGE_CONTENT_CAP_BYTES + 10) });
         truncate_message_content(&mut big, MESSAGE_CONTENT_CAP_BYTES);
@@ -1523,7 +1600,10 @@ mod bridge_tests {
                 "prompt_receipt_v1",
                 "session_files_v1",
                 "skills_v1",
-                "selective_events_v1"
+                "selective_events_v1",
+                "workspace_pinning_v1",
+                "desktop_settings_v1",
+                "skill_management_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2505,6 +2585,99 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn desktop_settings_management_is_shared_and_allowlisted() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-desktop-settings").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let defaults = bridge.call(json!({ "type": "get_desktop_settings" })).await;
+        assert_eq!(defaults["success"], true);
+        assert_eq!(defaults["data"]["autoTitleFirstTurn"], true);
+        assert!(defaults["data"].get("communityEdition").is_none());
+
+        let patch = json!({ "autoTitleFirstTurn": false, "autoUpgradeSkills": false,
+            "autoConnectRemote": true, "hiddenModels": ["p1/shared"] });
+        let updated = bridge
+            .call(json!({ "type": "update_desktop_settings", "settings": patch }))
+            .await;
+        assert_eq!(updated["success"], true, "{updated}");
+        assert_eq!(updated["data"], patch);
+        let stored = crate::store::get_app_settings().unwrap();
+        assert!(!stored.auto_title_first_turn);
+        assert!(!stored.auto_upgrade_skills);
+        assert!(stored.auto_connect_remote);
+        assert_eq!(stored.hidden_models, ["p1/shared"]);
+
+        for invalid in [
+            json!({"communityEdition": true}),
+            json!({"autoTitleFirstTurn": "true"}),
+            json!({"approvalTier": "off"}),
+            json!({"hiddenModels": [""]}),
+            Value::Null,
+        ] {
+            let reply = bridge
+                .call(json!({ "type": "update_desktop_settings", "settings": invalid }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+            assert!(
+                !crate::store::get_app_settings()
+                    .unwrap()
+                    .auto_title_first_turn
+            );
+        }
+        // Desktop-originated changes are read directly, with no mobile copy.
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        let reply = bridge.call(json!({ "type": "get_desktop_settings" })).await;
+        assert_eq!(reply["data"]["autoTitleFirstTurn"], true);
+        assert_eq!(reply["data"]["hiddenModels"], json!(["p1/shared"]));
+
+        // Management must include hidden entries, otherwise hiding all models
+        // would leave the phone unable to enable them again.
+        let models =
+            json!([{ "id": "shared", "provider": "p1" }, { "id": "shared", "provider": "p2" }]);
+        agent.script("list_models", true, json!({ "models": models }), "");
+        let reply = bridge.call(json!({ "type": "list_settings_models" })).await;
+        assert_eq!(reply["data"]["models"], models);
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn skill_management_validates_ids_and_mutates_desktop_files() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-skill-management").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        for kind in ["install_skill", "uninstall_skill"] {
+            let reply = bridge
+                .call(json!({ "type": kind, "skillId": "../escape", "version": "1.0" }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+        }
+        let reply = bridge
+            .call(json!({ "type": "install_skill", "skillId": "acme", "version": "../escape" }))
+            .await;
+        assert_eq!(reply["success"], false);
+        let path = crate::auth_store::agent_dir().unwrap().join("skills/acme");
+        std::fs::create_dir_all(&path).unwrap();
+        let reply = bridge
+            .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert_eq!(reply["data"]["removed"], true);
+        assert!(!path.exists());
+        assert!(agent.served("refresh_skills", ""));
+        let reply = bridge
+            .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
+            .await;
+        assert_eq!(reply["data"]["removed"], false);
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
     async fn model_catalog_respects_desktop_visibility() {
         let _agent_lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-model-visibility").await;
@@ -2714,6 +2887,30 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
+        // set_workspace_pinned: missing id, success, and unknown-workspace failure.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing workspace_id"));
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "workspaceId": thread.workspace_id, "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(
+            crate::store::get_workspace(&thread.workspace_id)
+                .unwrap()
+                .unwrap()
+                .pinned
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned", "workspaceId": "missing-workspace", "pinned": true }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
         // delete_session: missing id, success, and unknown-thread failure.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session" }))
@@ -2782,6 +2979,29 @@ mod bridge_tests {
         .unwrap();
         assert_eq!(crate::store::list_workspaces().unwrap().len(), 1);
         assert_eq!(crate::store::list_threads().unwrap().len(), 1);
+
+        let pinned = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned",
+            "workspaceId": workspace.id, "pinned": true }))
+            .await;
+        assert_eq!(pinned["success"], true);
+        assert_eq!(pinned["data"]["workspaces"][0]["pinned"], true);
+        let pulled = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_workspaces" }))
+            .await;
+        assert_eq!(
+            pinned["data"], pulled["data"],
+            "ack and pull share the versioned source"
+        );
+        let unpinned = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned",
+            "workspaceId": workspace.id, "pinned": false }))
+            .await;
+        assert_eq!(unpinned["data"]["workspaces"][0]["pinned"], false);
+        assert!(
+            unpinned["data"]["version"]["revision"].as_u64().unwrap()
+                > pinned["data"]["version"]["revision"].as_u64().unwrap()
+        );
 
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_workspace", "workspaceId": workspace.id.clone() }))

@@ -565,7 +565,11 @@ The left navigation supports:
 
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
-unpinning returns it to its own group.
+unpinning returns it to its own group. Workspace **groups** can be pinned too
+(from the group menu): pinned groups lead the workspace list, unpinned ones
+keep the store's recency order below them, and the header shows a pin marker.
+The flag is stored on the workspace (`workspaces.pinned`), so the phone's
+workspace tab and the desktop rail order the same groups the same way.
 
 Conversations display as a tree of at most three levels following the Agent's
 parent-child session relations (excluding the Workspace title level), collapsed
@@ -577,6 +581,9 @@ independently and keep their own subtree. Missing, archived, or deleted parents
 do not hide surviving children; deeper historical levels are flattened into the
 third level, with no Agent relations deleted or rewritten. Batch select-all
 includes collapsed children in the current group; delete does not auto-cascade.
+A pinned conversation belongs to the pinned section rather than to any group,
+so it is never part of a batch: it carries no checkbox and select-all (in a
+workspace group or in Chat) skips it on both desktop and mobile.
 
 A child conversation's expand toggle must be a **+ / − tree-node toggle**
 (collapsed `+`, expanded `−`), which is a different icon from the workspace /
@@ -607,7 +614,8 @@ never change unrelated top-level rows' title origins.
 A conversation row's **whole row is clickable** to enter it; the row-end
 operation menu (rename / pin / delete) does not accidentally enter. The
 workspace group header offers an "Open workspace" entry beside it plus a group
-menu (rename / delete workspace); no "new workspace" entry is offered.
+menu (rename / pin / open folder / select chats / delete workspace); no "new
+workspace" entry is offered.
 
 **Unread indicator** right of conversations: after a background run ends, an
 unread dot appears (green for normal completion, red for failure); while
@@ -619,7 +627,7 @@ session (sessionStorage) and clears on app restart.
 
 The phone is the Desktop's remote view and control surface; tools execute on
 the computer locally. Remote capability must be visible and controllable:
-closing the Desktop in GUI mode disconnects Remote; explicit `--headless` mode
+closing the Desktop in GUI mode disconnects Remote; standalone `futureos-headless`
 creates no window, runs in the terminal foreground, shows the platform login
 and phone-pairing QR code and link on demand, and Ctrl+C closes the entry.
 Headless mode is not silently hiding a window or auto-background keeping alive.
@@ -641,22 +649,37 @@ Message bodies render as Markdown: beyond ordinary rich text, inline and block
 LaTeX math (KaTeX) are supported; links are filtered through a protocol
 whitelist (non-http(s) protocols degrade to plain text), external links open in
 the system default browser, and `[text](http…)` links in user messages are
-clickable too.
+clickable too. Markdown images load inline automatically, including resolved
+local paths outside the workspace; local images still pass backend path and
+size validation before an asset URL is exposed. Clicking an unlinked image opens
+a viewport-sized preview, dismissed with Escape, the close button, or the
+backdrop. Images wrapped in links retain their link action. Inline images stay
+height-limited without separate expand/collapse links; click-to-preview is the
+single enlargement action.
 
 Failed / ended assistant messages offer recovery actions below: retry /
 continue (latest-round failure only) and fork (any ended message) — semantics
 in 4.4.
 
-The assistant's **thinking process** (model reasoning) is displayed **inline**
-in occurrence order between text and tool calls (on the same timeline as tool
-calls, not gathered at the message top), in a dimmed dark style. Whether it
-shows is controlled by the "Show thinking process" toggle on the settings
-"General" page, currently **on by default** (`store/app_settings.rs`). With the
-toggle **off**, reasoning content is not shown, but while the model is thinking
-with no body output yet, the message's **bottom info bar** shows a "Thinking…"
-text hint so users know the run is not stuck; with the toggle **on**, reasoning
-is already inline and the hint is not repeated. The hint appears only during
-streaming and disappears on stop or completion.
+The assistant's **thinking process** and tool activity stay **inline** in
+occurrence order, never gathered at the message top. Matching mobile, two or
+more consecutive settled steps collapse into a muted, right-aligned summary
+(tool glyph ×N · brain glyph ×N). Counts refer to projected step rows; an
+already grouped same-kind tool burst retains its own nested count. Failed
+steps may fold, but the summary keeps an alert glyph and an accessible failure
+count. Prose, compaction markers, running tools, and the last segment of a
+streaming reply interrupt aggregation.
+
+Opening the summary keeps its header on the right and reveals individual steps
+in the left-aligned reading column. Each step independently expands its full
+reasoning or wrapping command/path details. Standalone steps also start
+collapsed on the right. Reasoning can always be expanded in place; there is
+no separate setting that hides or gates its content. A "Thinking…" footer hint
+remains available when thinking has not yet produced an inline reasoning segment.
+
+The copy control, elapsed duration and output-token footer stay visible on the
+same right rail after completion. During streaming, the amber generating dot
+and live timer occupy that rail instead of the copy control.
 
 The input box stays floating at the bottom, with the model selector in the
 input area. On send, the GUI creates a Run record and hands the prompt to the
@@ -714,15 +737,12 @@ protection / Fully open"; Windows shows "Manual approval / Write protection /
 Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
 protection / Fully open" after the Bubblewrap host probe passes.
 
-Each message has a **copy button** below it (user and assistant messages both)
-that copies the message's plain-text content; the copy button is hidden by
-default and appears on hovering the message row. Exception during assistant
-**streaming**: the bottom info bar stays visible with elements in order — the
-copy-button position becomes an always-visible **generating indicator** (an
-animated dot, present through the whole stream, meaning the conversation has
-not ended), **duration·output tokens**, and the **"Thinking…"** hint that
-appears only when "Show thinking process" is off and the model is thinking;
-the copy button and its hover show/hide logic return after generation ends.
+Each message has a **copy button** below it that copies its plain-text content.
+The user-message copy button appears on hover; the assistant's copy button and
+**duration·output tokens** stay visible on the right after completion. During
+assistant **streaming**, an amber **generating indicator** replaces the copy
+button alongside the live duration. A **"Thinking…"** hint appears while the
+model is thinking but has not yet produced an inline reasoning segment.
 
 The input box supports local file attachments via three methods: attachment
 button, copy-paste, and drag-drop; at most 4 images per message, non-images
@@ -794,19 +814,31 @@ below New Chat jumps straight to the models page) has three pages:
   Manual approval / Sandbox protection / Fully open — on failure show the
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
-  is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`).
+  is clearly unavailable); **Generate a title after the first answer**
+  (on by default; an explicitly saved off choice is preserved). This generates and saves a title in the background using the
+  same title-suggestion API as the rename dialog, once after a new conversation's
+  first successful run. It never compacts or changes conversation context. Later
+  turns, failed/cancelled first runs, and replayed completion events do not trigger
+  it. Enabling it does not backfill conversations whose first answer already ended.
+  Generation failure leaves the title and successful answer unchanged. A title
+  edited while generation is in flight is not overwritten.
 
-**Session title suggestions** are exclusively user-triggered from the rename
-window in Desktop and mobile. “Auto-generate” calls the conversation's selected
-model with at most its first three completed question–answer pairs, excluding
-tools, reasoning and later exchanges. Each side is capped at 2000 characters.
-The independent, tool-free request uses the current client's UI language and
-returns a suggestion of at most 32 display columns. It fills the editable input;
-only Save changes the stored title. Generation errors leave the existing input
-unchanged, and late results cannot overwrite a closed/reopened dialog. There is
-no automatic setting, conversation-prompt instruction or title-generation CLI
-command. Generating a suggestion never appends a message or starts a chat run.
+**Session title suggestions** can be requested from the rename window in Desktop
+and mobile, or by Desktop's first-answer title generation. The generator
+calls the conversation's selected model with at most its first three completed
+question–answer pairs, excluding tools, reasoning and later exchanges. If none
+of the first three user turns has a final answer (for example, a running or
+cancelled conversation), it falls back to those turns' visible user text only;
+tool commentary is not treated as a final answer. Each side is capped at 2000
+characters. The independent, tool-free request uses the current
+client's UI language and returns a suggestion of at most 32 display columns.
+In the rename dialog it fills the editable input; only Save changes the stored
+title. Generation errors leave the existing input unchanged, and late results
+cannot overwrite a closed/reopened dialog. The automatic setting uses the same
+generator and mirrored Desktop UI language, then saves the title to the Agent
+and Desktop store without waiting for manual confirmation. There is no
+conversation-prompt instruction or title-generation CLI command. Generating a
+suggestion never appends a message or starts a chat run.
 - **Providers**:
   - **Built-in FutureGene** (read-only): clicking "Connect" runs the GUI's
     built-in device-code OAuth login — authorization completes in the system
@@ -825,7 +857,8 @@ command. Generating a suggestion never appends a message or starts a chat run.
   per-model visibility toggles and search.
 
 A custom model's "thinking support" is a two-state capability toggle,
-independent of the session's thinking intensity and "Show thinking process".
+independent of the session's thinking intensity and the reasoning blocks' local
+expand/collapse state.
 Off disables the session thinking-intensity picker with an explanation; on
 re-enables it. Custom models without `reasoning` filled in default to on;
 explicit off is not overwritten by the built-in catalog; built-in and platform

@@ -332,6 +332,15 @@ pub(crate) fn handle_set_auto_retry(
     RpcResponse::ok(id, "set_auto_retry", serde_json::json!({}))
 }
 
+pub(crate) fn handle_set_context_files(
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    session.write().no_context_files = !cmd.enabled;
+    RpcResponse::ok(id, "set_context_files", serde_json::json!({}))
+}
+
 pub(crate) fn handle_set_system_prompt(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     cmd: &RpcCommand,
@@ -589,80 +598,40 @@ pub(crate) fn cmd_reload_config(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
-    // Re-discover skills and re-read context files, then rebuild system prompt.
-    let (cwd, tools, session_id) = {
-        let sess = session.read();
-        let loop_ = match sess.agent_loop.try_read() {
-            Ok(l) => l,
-            Err(_) => {
-                return RpcResponse::build_fail(
-                    id,
-                    "reload_config",
-                    "agent is busy, retry in a moment",
-                );
-            }
-        };
-        (
-            sess.cwd.clone(),
-            loop_.tools.clone(),
-            sess.session_id.clone(),
-        )
+    let sess = session.read();
+    let mut r#loop = match sess.agent_loop.try_write() {
+        Ok(loop_) => loop_,
+        Err(_) => {
+            return RpcResponse::build_fail(
+                id,
+                "reload_config",
+                "agent is busy, retry in a moment",
+            );
+        }
     };
-
-    // Re-discover skills (blocking I/O, no locks held).  Invalidate the
-    // 60s cache first — an explicit reload must see on-disk changes now.
+    // An explicit reload bypasses the skills cache and uses the same prompt
+    // builder as a run, preserving memory, model and environment guidelines.
     crate::skills::invalidate_skills_cache();
     let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
     let skill_names: Vec<String> = skills.iter().map(|s| s.name.clone()).collect();
-
-    // Re-read context files
-    let mut agent_content = String::new();
-    for fname in &["CLAUDE.md", "AGENTS.md", "GEMINI.md"] {
-        let p = std::path::Path::new(&cwd).join(fname);
-        if p.exists() {
-            if let Ok(content) = std::fs::read_to_string(&p) {
-                agent_content = content;
-                break;
-            }
-        }
-    }
-    let context_lines: Vec<String> = if agent_content.is_empty() {
-        vec![]
-    } else {
-        vec![agent_content.clone()]
-    };
-
-    // Rebuild system prompt
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let new_prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
-        working_directory: cwd.clone(),
-        date: today,
-        tools: tools.clone(),
-        skills: skills.clone(),
-        agent_content: agent_content.clone(),
-        session_id: session_id.clone(),
-        ..Default::default()
-    });
-
-    // Update welcome_* state for get_state
+    let (new_prompt, context_files) = sess.build_system_prompt(
+        &sess.cwd,
+        r#loop.tools.clone(),
+        &sess.model,
+        &sess.thinking_level,
+        sess.no_context_files,
+    );
     *state.welcome_skills.write() = skill_names.clone();
-    *state.welcome_context.write() = context_lines;
+    r#loop.system_prompt = new_prompt.clone();
+    r#loop.config.system_prompt = new_prompt;
+    drop(r#loop);
 
-    // Update running session's system prompt
-    let sess = session.read();
-    if let Ok(mut r#loop) = sess.agent_loop.try_write() {
-        r#loop.system_prompt = new_prompt.clone();
-        r#loop.config.system_prompt = new_prompt;
-    }
-
-    // Broadcast to all subscribers so other clients (TUI/GUI) update their
-    // skill lists and context-file displays in near real-time.
-    let sess = session.read();
+    // Broadcast the actual selected names, never the file contents.
     sess.broadcaster.broadcast(SseEvent::new(
         "config_reloaded",
         serde_json::json!({
             "skills": skill_names,
-            "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
+            "contextFiles": context_files,
         }),
     ));
 
@@ -671,7 +640,7 @@ pub(crate) fn cmd_reload_config(
         "reload_config",
         serde_json::json!({
             "skills": skill_names,
-            "contextFiles": if agent_content.is_empty() { vec![] } else { vec!["CLAUDE.md".to_string()] },
+            "contextFiles": context_files,
         }),
     )
 }

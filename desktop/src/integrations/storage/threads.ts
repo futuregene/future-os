@@ -35,6 +35,13 @@ export async function deleteWorkspace(workspaceId: string) {
   return invokeCommand<StoredWorkspace>("delete_workspace", { workspaceId });
 }
 
+export async function pinWorkspace(input: {
+  workspaceId: string;
+  pinned: boolean;
+}) {
+  return invokeCommand<StoredWorkspace>("pin_workspace", { input });
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────
 
 export async function getRecentThread() {

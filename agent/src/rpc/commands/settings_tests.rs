@@ -348,22 +348,21 @@ fn shell_echo() {
 }
 
 #[test]
-fn reload_config_reports_busy_loop_and_skips_locked_update() {
+fn reload_config_rejects_busy_loop() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();
     let agent_loop = session.read().agent_loop.clone();
     {
-        // A held WRITE guard makes the first try_read fail.
+        // Reload must acquire the loop before reporting success.
         let _write_guard = agent_loop.try_write().unwrap();
         let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
         assert_eq!(resp["success"], false);
         assert!(resp["error"].as_str().unwrap().contains("agent is busy"));
     }
-    // A held READ guard passes the try_read but blocks the final try_write
-    // — the command still succeeds, just without updating the prompt.
     let _read_guard = agent_loop.try_read().unwrap();
     let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
-    assert_eq!(resp["success"], true);
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("agent is busy"));
 }
 
 #[test]
@@ -586,23 +585,87 @@ fn reload_config_without_context_file_returns_empty_list() {
 }
 
 #[test]
-fn reload_config_picks_up_context_file() {
+fn reload_and_get_state_report_session_context_names_not_contents() {
     let state = make_app_state();
-    let cwd = state.welcome_cwd.clone();
-    std::fs::create_dir_all(&cwd).unwrap();
-    std::fs::write(std::path::Path::new(&cwd).join("CLAUDE.md"), "# context").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let session = state.get_session("default").unwrap();
+    session.write().cwd = dir.path().to_str().unwrap().to_string();
+    let mut events = session.read().broadcaster.subscribe();
+    std::fs::write(dir.path().join("FUTURE.md"), "# retained-memory").unwrap();
 
+    // Add higher-priority files one at a time; initialize/reload/run all use
+    // the same selector. The session cwd intentionally differs from startup.
+    for name in ["GEMINI.md", "CLAUDE.md", "AGENTS.md"] {
+        std::fs::write(dir.path().join(name), format!("private-content-{name}")).unwrap();
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["contextFiles"], serde_json::json!([name]));
+        let event = events.try_recv().unwrap();
+        assert_eq!(event.event_type, "config_reloaded");
+        let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+        assert_eq!(data["contextFiles"], serde_json::json!([name]));
+        let resp = parse_response(&handle_command_internal(&state, make_cmd("get_state")));
+        assert_eq!(resp["data"]["contextFiles"], serde_json::json!([name]));
+        let agent_loop = session.read().agent_loop.clone();
+        let prompt = agent_loop.try_read().unwrap().system_prompt.clone();
+        assert!(prompt.contains(&format!("private-content-{name}")));
+        assert!(prompt.contains("# retained-memory"));
+    }
+    // An empty but readable file still wins and must be named accurately.
+    std::fs::write(dir.path().join("AGENTS.md"), "").unwrap();
     let resp = parse_response(&handle_command_internal(&state, make_cmd("reload_config")));
-    assert_eq!(resp["success"], true);
     assert_eq!(
         resp["data"]["contextFiles"],
-        serde_json::json!(["CLAUDE.md"])
+        serde_json::json!(["AGENTS.md"])
     );
-    assert_eq!(
-        state.welcome_context.read().as_slice(),
-        &["# context".to_string()]
-    );
-    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn context_files_opt_out_survives_reload_and_does_not_disable_memory() {
+    let state = make_app_state();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "unique-project-rule").unwrap();
+    std::fs::write(dir.path().join("FUTURE.md"), "# independent-memory").unwrap();
+    let peer_dir = tempfile::tempdir().unwrap();
+    std::fs::write(peer_dir.path().join("GEMINI.md"), "peer-rules").unwrap();
+    state.create_session(crate::rpc::ServerSession::new(
+        "peer".to_string(),
+        Arc::new(tokio::sync::RwLock::new(
+            state.loop_template.independent_copy(),
+        )),
+        state.session_manager.clone(),
+        peer_dir.path().to_str().unwrap(),
+        Arc::new(crate::rpc::SseBroadcaster::new()),
+        state.approval_gate.clone(),
+        state.model_registry.clone(),
+    ));
+    let session = state.get_session("default").unwrap();
+    session.write().cwd = dir.path().to_str().unwrap().to_string();
+    for enabled in [false, true] {
+        let mut cmd = make_cmd("set_context_files");
+        cmd.enabled = enabled;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true);
+        assert_eq!(session.read().no_context_files, !enabled);
+        for command in ["reload_config", "get_state"] {
+            let resp = parse_response(&handle_command_internal(&state, make_cmd(command)));
+            let expected = if enabled { vec!["AGENTS.md"] } else { vec![] };
+            assert_eq!(resp["data"]["contextFiles"], serde_json::json!(expected));
+        }
+        let agent_loop = session.read().agent_loop.clone();
+        let prompt = agent_loop.try_read().unwrap().system_prompt.clone();
+        assert_eq!(prompt.contains("unique-project-rule"), enabled);
+        assert!(prompt.contains("# independent-memory"));
+        let peer = parse_response(&handle_command_internal(
+            &state,
+            make_cmd_for("get_state", "peer"),
+        ));
+        assert_eq!(
+            peer["data"]["contextFiles"],
+            serde_json::json!(["GEMINI.md"])
+        );
+        assert!(!state.get_session("peer").unwrap().read().no_context_files);
+    }
 }
 
 // ── coverage batch 2: error-path arms ───────────────────────────────────

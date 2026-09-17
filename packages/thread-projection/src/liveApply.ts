@@ -22,14 +22,14 @@ export interface AssistantRunProjection {
   outputTokens: number;
   /**
    * The model's reasoning/thinking text for this exchange (empty when none). Blocks
-   * separated by blank lines; rendered only when the "show thinking" setting is
-   * on. Extracted from `thinking_delta` events — always captured, gated at render.
+   * separated by blank lines. Extracted from `thinking_delta` events — always
+   * captured; clients control expansion locally without a global content gate.
    */
   thinking: string;
   /**
    * The model is mid-reasoning with nothing else to show yet (no answer text, no
-   * tool work). Drives the footer "thinking…" hint while the show-thinking
-   * setting is off; not rendered as a top-of-message line.
+   * tool work). Drives the footer "thinking…" hint before inline reasoning
+   * arrives; not rendered as a top-of-message line.
    */
   thinkingActive: boolean;
   reconnecting?: StreamRetryState;

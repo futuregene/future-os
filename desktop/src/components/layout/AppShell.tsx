@@ -24,6 +24,7 @@ import {
   createWorkspace,
   markThreadOpened,
   pinThread,
+  pinWorkspace,
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
@@ -394,6 +395,10 @@ export function AppShell() {
   // Sessions created outside the GUI (TUI/CLI/channels) were imported into the
   // store by the backend — refresh the thread list so they appear in the
   // sidebar without a user action.
+  useTauriEvent("skills_changed", () => {
+    emitFutureEvent("skills-changed", undefined);
+  });
+
   useTauriEvent("threads-updated", () => {
     void refreshStore();
   });
@@ -496,6 +501,13 @@ export function AppShell() {
     await refreshStore(thread.id);
   }
 
+  // Workspace pinning is the same ordering flag as a conversation's: the
+  // group menu toggles it and the rail re-sorts on the refreshed store.
+  async function handleTogglePinWorkspace(workspace: StoredWorkspace) {
+    await pinWorkspace({ workspaceId: workspace.id, pinned: !workspace.pinned });
+    await refreshStore(activeThread?.id ?? undefined);
+  }
+
   async function handleApprovalDecision(
     approval: StoredApprovalRequest,
     status: "approved" | "rejected",
@@ -545,6 +557,7 @@ export function AppShell() {
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,
     onRenameWorkspace: openWorkspaceRename,
+    onTogglePinWorkspace: handleTogglePinWorkspace,
     onRestoreThread: handleRestoreThread,
     onSelectWorkspace: handleSelectWorkspace,
     onSelectThread: handleSelectThread,
@@ -672,7 +685,6 @@ export function AppShell() {
                           activeApproval={activeApproval}
                           agentConnection={agentConnection}
                           approvalTier={appSettings.approvalTier}
-                          showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
                           modelId={activeThreadModelId}
                           modelOptions={visibleModelOptions}

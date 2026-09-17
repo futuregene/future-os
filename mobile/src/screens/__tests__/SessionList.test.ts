@@ -1,6 +1,17 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, BackHandler, FlatList, StyleSheet, Text, TextInput } from "react-native";
+import {
+  Animated,
+  BackHandler,
+  FlatList,
+  Modal,
+  PanResponder,
+  StyleSheet,
+  Text,
+  TextInput,
+  type GestureResponderEvent,
+  type PanResponderGestureState,
+} from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
@@ -13,8 +24,10 @@ const mockRemote: {
   workspaces: RemoteWorkspace[];
   unreadSessions: Set<string>;
   desktopOnline: boolean;
+  capabilities: Set<string>;
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
+  setWorkspacePinned: jest.Mock;
   selectSession: jest.Mock;
   newConversation: jest.Mock;
 } = {
@@ -26,8 +39,10 @@ const mockRemote: {
   workspaces: [],
   unreadSessions: new Set<string>(),
   desktopOnline: true,
+  capabilities: new Set(["workspace_pinning_v1"]),
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
+  setWorkspacePinned: jest.fn(),
   selectSession: jest.fn(),
   newConversation: jest.fn(),
 };
@@ -79,6 +94,61 @@ jest.mock("react-i18next", () => ({
 let tree: ReactTestRenderer;
 const onMenu = jest.fn();
 const onTabChange = jest.fn();
+// Slide-out/settle animations resolve immediately here; the tab actually
+// changing is what these tests are about.
+const finishedAnimation = {
+  start: (callback?: (result: { finished: boolean }) => void) => callback?.({ finished: true }),
+  stop: () => {},
+  reset: () => {},
+} as Animated.CompositeAnimation;
+
+/**
+ * Render one page of the list and drive its swipe the way its controller
+ * receives it. The view's responder props hide the gesture state (PanResponder
+ * derives it from touch history), so the pan config is captured from
+ * PanResponder.create — exactly how the zoom controller's test drives its pinch.
+ */
+function swipeHarness(tab: "workspace" | "chat") {
+  const pan = jest.spyOn(PanResponder, "create");
+  jest.spyOn(Animated, "timing").mockImplementation(() => finishedAnimation);
+  const tabChange = jest.fn();
+  let rendered!: ReactTestRenderer;
+  act(() => {
+    rendered = create(
+      createElement(SessionList, { tab, empty: null, onMenu, onTabChange: tabChange }),
+    );
+  });
+  const handlers = pan.mock.calls.at(-1)![0];
+  rendered.root
+    .findAll(node => node.props.testID === "session-list-page")[0]!
+    .props.onLayout({ nativeEvent: { layout: { width: 320, height: 600, x: 0, y: 0 } } });
+  const gesture = (dx: number, dy: number) => ({ dx, dy, vx: 0, vy: 0 }) as PanResponderGestureState;
+  return {
+    rendered,
+    tabChange,
+    press: (label: string) => {
+      act(() =>
+        rendered.root
+          .findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!
+          .props.onPress(),
+      );
+    },
+    /** Returns whether the page claimed the drag, as the list would. */
+    drag: (dx: number, dy = 0) => {
+      const event = {} as GestureResponderEvent;
+      const state = gesture(dx, dy);
+      let claimed = false;
+      act(() => {
+        claimed = handlers.onMoveShouldSetPanResponder!(event, state);
+        if (!claimed) return;
+        handlers.onPanResponderGrant!(event, state);
+        handlers.onPanResponderMove!(event, state);
+        handlers.onPanResponderRelease!(event, state);
+      });
+      return claimed;
+    },
+  };
+}
 const button = (label: string) =>
   tree.root.findAll(
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
@@ -100,7 +170,9 @@ const rowInset = (title: string) =>
 beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
+  mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.deleteSession.mockResolvedValue(undefined);
+  mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
   await act(async () => {
     tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
@@ -163,6 +235,38 @@ test("tabs, search and selection share one toolbar with full touch targets", () 
   expect(onTabChange).toHaveBeenCalledWith("workspace");
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search").length).toBeGreaterThan(0);
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select").length).toBeGreaterThan(0);
+});
+
+test("a horizontal swipe pages the list between workspaces and conversations", () => {
+  const fromConversations = swipeHarness("chat");
+  // Conversations is the right-hand page: dragging right leaves it ...
+  expect(fromConversations.drag(120, 4)).toBe(true);
+  expect(fromConversations.tabChange).toHaveBeenCalledWith("workspace");
+  act(() => fromConversations.rendered.unmount());
+
+  const fromWorkspaces = swipeHarness("workspace");
+  // ... dragging left opens it from the workspaces page ...
+  expect(fromWorkspaces.drag(-120, 4)).toBe(true);
+  expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("chat");
+  fromWorkspaces.tabChange.mockClear();
+  // ... and dragging right has no page behind the workspaces page.
+  expect(fromWorkspaces.drag(120, 4)).toBe(true);
+  expect(fromWorkspaces.tabChange).not.toHaveBeenCalled();
+  act(() => fromWorkspaces.rendered.unmount());
+});
+
+test("a vertical drag stays with the list, and search/selection keep the tabs put", () => {
+  const harness = swipeHarness("workspace");
+  expect(harness.drag(-120, 60)).toBe(false);
+  // The tab bar is hidden while searching or selecting, so a swipe there would
+  // change mode unseen rather than move between two visible pages.
+  harness.press("sessions.search");
+  expect(harness.drag(-120, 4)).toBe(false);
+  harness.press("chat.cancel");
+  harness.press("sessions.select");
+  expect(harness.drag(-120, 4)).toBe(false);
+  expect(harness.tabChange).not.toHaveBeenCalled();
+  act(() => harness.rendered.unmount());
 });
 
 test("search replaces tabs in place and cancel clears the filter", () => {
@@ -247,6 +351,20 @@ test("batch deletion confirms exact visible selection, preserves hidden children
   expect(dialogText()).toEqual(expect.arrayContaining(["common.error", "sessions.deletePartialFailure:1"]));
 });
 
+test("select visible skips pinned chats, which carry no checkbox", () => {
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "s2" }));
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  // Only the unpinned chat joined the batch; the pinned shortcut above it did not.
+  expect(button("First").props.accessibilityState.checked).toBe(true);
+  expect(button("Second")).toBeUndefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  // Pressing the pinned shortcut's row cannot put it in the batch either.
+  act(() => sessionBody("Second").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+});
+
 // ── workspace rows ──────────────────────────────────────────────────────────
 
 /** Re-render the list on the workspace tab with two workspace sessions and one
@@ -272,12 +390,12 @@ function renderWorkspaceTab(): void {
 }
 
 /** Select a real app sheet row and finish its iOS dismissal before navigation. */
-function pressWorkspaceMenu(index: number): void {
+function pressWorkspaceMenu(action: string): void {
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   const menu = tree.root.findByType(ActionMenu);
-  const label = menu.props.actions[index].label;
+  expect(menu.props.actions.map((item: { label: string }) => item.label)).toContain(action);
   const modal = menu.findByType(Modal);
-  act(() => button(label).props.onPress());
+  act(() => button(action).props.onPress());
   act(() => modal.props.onDismiss());
 }
 
@@ -446,6 +564,7 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   expect(tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label)).toEqual([
     "sessions.new",
+    "sessions.pin",
     "sessions.selectWorkspaceSessions",
     "sessions.deleteWorkspace",
   ]);
@@ -453,6 +572,34 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   mockRemote.desktopOnline = false;
   renderWorkspaceTab();
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
+});
+
+test("old desktops do not offer unsupported workspace pin commands", () => {
+  mockRemote.capabilities.clear();
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const actions = tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label);
+  expect(actions).not.toContain("sessions.pin");
+  expect(actions).not.toContain("sessions.unpin");
+  expect(actions).toContain("sessions.new");
+  expect(mockRemote.setWorkspacePinned).not.toHaveBeenCalled();
+});
+
+test("the workspace menu pins a group and offers unpin once it is pinned", async () => {
+  renderWorkspaceTab();
+  pressWorkspaceMenu("sessions.pin");
+  expect(mockRemote.setWorkspacePinned).toHaveBeenCalledWith("w1", true);
+
+  mockRemote.workspaces = [{ ...mockRemote.workspaces[0]!, pinned: true }];
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  pressWorkspaceMenu("sessions.unpin");
+  expect(mockRemote.setWorkspacePinned).toHaveBeenLastCalledWith("w1", false);
+
+  // A refused pin reports the failure instead of leaving the row moved.
+  mockRemote.setWorkspacePinned.mockRejectedValueOnce(new Error("offline"));
+  pressWorkspaceMenu("sessions.unpin");
+  await act(async () => {});
+  expect(dialogText()).toEqual(expect.arrayContaining(["common.error"]));
 });
 
 test("new conversation uses the selected workspace and waits for sheet dismissal", async () => {
@@ -469,7 +616,7 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
 
 test("select all in a workspace selects nested sessions but not other chats", () => {
   renderWorkspaceTab();
-  pressWorkspaceMenu(1);
+  pressWorkspaceMenu("sessions.selectWorkspaceSessions");
   // Only the workspace's two sessions, nested one included — the count text
   // proves nothing else (e.g. the plain chat) was pulled in.
   expect(
@@ -487,7 +634,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockResolvedValue(undefined);
-    pressWorkspaceMenu(2);
+    pressWorkspaceMenu("sessions.deleteWorkspace");
     expect(dialogText()).toEqual(expect.arrayContaining(["sessions.deleteWorkspace", "sessions.deleteWorkspaceConfirm:Project"]));
     await act(async () => {
       confirmAlert();
@@ -500,7 +647,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
   }
 });
 
-test("promoted workspace pins remain visible, openable and included in workspace selection", () => {
+test("promoted workspace pins stay visible and openable but are left out of workspace selection", () => {
   renderWorkspaceTab();
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: session.sessionId === "w1b" }));
   act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
@@ -511,9 +658,16 @@ test("promoted workspace pins remain visible, openable and included in workspace
   expect(tree.root.findByType(FlatList).props.data.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1"]);
   act(() => sessionBody("Follow-up").props.onPress());
   expect(mockRemote.selectSession).toHaveBeenCalledWith("w1b");
-  pressWorkspaceMenu(1);
-  expect(button("Follow-up").props.accessibilityState.checked).toBe(true);
-  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
+  pressWorkspaceMenu("sessions.selectWorkspaceSessions");
+  // The shortcut row above the group is skipped; only the group's own session
+  // joins the batch, even though the workspace header still counts the pin.
+  expect(button("Follow-up")).toBeUndefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  act(() => button("Project").props.onPress());
+  expect(button("Plan").props.accessibilityState.checked).toBe(true);
+  // Pressing the pinned shortcut's row cannot put it in the batch either.
+  act(() => sessionBody("Follow-up").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
 });
 
 test("a failed workspace delete surfaces the workspace error instead of the generic one", async () => {
@@ -521,7 +675,7 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
   try {
     renderWorkspaceTab();
     mockRemote.deleteWorkspace.mockRejectedValue(new Error("offline"));
-    pressWorkspaceMenu(2);
+    pressWorkspaceMenu("sessions.deleteWorkspace");
     await act(async () => {
       confirmAlert();
     });

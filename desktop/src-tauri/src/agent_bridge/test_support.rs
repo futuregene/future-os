@@ -36,6 +36,11 @@ pub(crate) enum Reply {
     Reject(String),
     /// Transport-level failure (tonic status).
     Status(tonic::Code, &'static str),
+    /// Signal request arrival, then wait for a test-controlled JSON response.
+    Deferred {
+        entered: tokio::sync::oneshot::Sender<()>,
+        data: tokio::sync::oneshot::Receiver<serde_json::Value>,
+    },
 }
 
 /// Production-shaped JSON source for a typed-only `get_state` response.
@@ -181,6 +186,18 @@ impl FutureAgent for MockAgent {
                 error,
             ))),
             Reply::Status(code, message) => Err(tonic::Status::new(code, message)),
+            Reply::Deferred { entered, data } => {
+                let _ = entered.send(());
+                let data = data
+                    .await
+                    .map_err(|_| tonic::Status::cancelled("test reply dropped"))?;
+                Ok(tonic::Response::new(rpc_response(
+                    &cmd,
+                    true,
+                    data.to_string(),
+                    String::new(),
+                )))
+            }
         }
     }
 

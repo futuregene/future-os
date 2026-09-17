@@ -27,6 +27,14 @@ development and distribution maintenance.
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
   collapse state survives restarts.
+- Workspaces can be pinned too (the group menu in the workspace tab). A pinned
+  group sits below the pinned conversations and above every unpinned group; the
+  flag lives in the desktop store, so it survives a re-pair and the desktop rail
+  orders its groups by it as well (the same rule, from the same column). The
+  menu requires the desktop's
+  `workspace_pinning_v1` capability; older desktops do not expose the action.
+  Pin acknowledgements carry the same versioned workspace snapshot as pushes
+  and reads, so late replies cannot undo a newer pin state.
 - Paginated history loading, deduplication by `(runId, idx)`, and real-time
   event backfill via `get_events_since` after reconnection.
 - Pick images from the system photo library or shoot with the system camera;
@@ -159,6 +167,12 @@ offline push.
   title column without covering the title).
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
+  The workspace and conversation lists are the two pages of one horizontal
+  swipe: left from workspaces into conversations, right back into workspaces.
+  A drag that is not clearly horizontal stays a list scroll, and the swipe is
+  off while the toolbar is searching or selecting (the tab bar is hidden then,
+  so the swipe would change mode unseen); the tabs themselves still switch on
+  tap.
 - The input area stays two rows (text + toolbar); narrow screens merge model
   settings without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body

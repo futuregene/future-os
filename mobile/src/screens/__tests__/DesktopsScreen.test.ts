@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Alert, Modal, Text, TextInput } from "react-native";
+import { Alert, BackHandler, Modal, Text, TextInput } from "react-native";
 import { Button } from "../../components/Button";
 import type { PairedDesktop } from "../../remote/types";
 import { DesktopsScreen } from "../DesktopsScreen";
@@ -88,6 +88,22 @@ test("selects a saved desktop without scanning again", async () => {
   await act(async () => selectors()[1]!.props.onPress());
   expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
   expect(onBack).toHaveBeenCalled();
+});
+
+test("system back closes rename first, then returns from device management", async () => {
+  act(() => tree.unmount());
+  const subscribe = jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: jest.fn() });
+  try {
+    await render();
+    act(() => pressables("desktops.rename")[0]!.props.onPress());
+    const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+    act(() => modal.props.onRequestClose());
+    expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+    expect(onBack).not.toHaveBeenCalled();
+    const handler = subscribe.mock.calls.at(-1)![1];
+    act(() => { expect(handler({ type: "hardwareBackPress", timeStamp: 1 })).toBe(true); });
+    expect(onBack).toHaveBeenCalledTimes(1);
+  } finally { subscribe.mockRestore(); }
 });
 
 test("supports a startup picker without a back action", async () => {

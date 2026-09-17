@@ -28,6 +28,8 @@ struct ScheduledSettingsSnapshot {
     cwd: String,
     auto_compaction: bool,
     auto_retry: bool,
+    #[serde(default)]
+    no_context_files: bool,
     permission_level: String,
     sandbox_tier: Option<String>,
 }
@@ -207,6 +209,7 @@ impl ServerSession {
             cwd: self.cwd.clone(),
             auto_compaction: self.auto_compaction,
             auto_retry: self.auto_retry,
+            no_context_files: self.no_context_files,
             permission_level: self.permission_level.clone(),
             sandbox_tier: self
                 .sandbox_policy
@@ -410,6 +413,9 @@ impl ServerSession {
         let run_auto_compaction = accepted_settings
             .map(|settings| settings.auto_compaction)
             .unwrap_or(self.auto_compaction);
+        let run_no_context_files = accepted_settings
+            .map(|settings| settings.no_context_files)
+            .unwrap_or(self.no_context_files);
         let run_permission_level = accepted_settings
             .map(|settings| settings.permission_level.clone())
             .unwrap_or_else(|| self.permission_level.clone());
@@ -433,11 +439,12 @@ impl ServerSession {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
             self.wire_auto_compaction(&mut run_loop, run_auto_compaction, &run_model);
-            let system_prompt = self.build_system_prompt(
+            let (system_prompt, _) = self.build_system_prompt(
                 &run_cwd,
                 run_loop.tools.clone(),
                 &run_model,
                 &run_thinking_level,
+                run_no_context_files,
             );
             run_loop.system_prompt = system_prompt.clone();
             run_loop.config.system_prompt = system_prompt.clone();
@@ -464,11 +471,12 @@ impl ServerSession {
                 .update_thinking(&self.thinking_level, thinking_budget);
             self.swap_token_counters_into_loop(&mut shared);
             self.wire_auto_compaction(&mut shared, run_auto_compaction, &run_model);
-            let system_prompt = self.build_system_prompt(
+            let (system_prompt, _) = self.build_system_prompt(
                 &run_cwd,
                 shared.tools.clone(),
                 &run_model,
                 &run_thinking_level,
+                run_no_context_files,
             );
             shared.system_prompt = system_prompt.clone();
             shared.config.system_prompt = system_prompt.clone();
@@ -1200,9 +1208,6 @@ impl ServerSession {
 
         Ok(run_lease)
     }
-    /// Build this run's system prompt: project context (CLAUDE.md/AGENTS.md/
-    /// GEMINI.md), workspace memory (FUTURE.md), discovered skills, and the
-    /// write/memory guidelines. Read fresh each run (cwd-scoped).
     /// Point the agent loop's cumulative token/cost counters at this session's
     /// shared atomics so streaming updates are tracked per-session.
     pub(super) fn swap_token_counters_into_loop(&self, r#loop: &mut crate::agent::Loop) {
@@ -1249,13 +1254,16 @@ impl ServerSession {
         *r#loop.active_checkpoint.lock() = checkpoint;
     }
 
+    /// Read cwd-scoped context fresh for a run or explicit config reload.
+    /// Return the actual selected file names alongside the assembled prompt.
     pub(super) fn build_system_prompt(
         &self,
         cwd: &str,
         tools: Vec<crate::types::AgentTool>,
         model: &str,
         thinking_level: &str,
-    ) -> String {
+        no_context_files: bool,
+    ) -> (String, Vec<String>) {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         // Discover skills so they appear in the system prompt's <available_skills> block.
@@ -1263,17 +1271,8 @@ impl ServerSession {
         // keeps the skills cache correct regardless of which session refreshes it.
         let skills = crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs());
 
-        // Load project context (AGENTS.md / CLAUDE.md / GEMINI.md)
-        let mut agent_content = String::new();
-        for fname in &["AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
-            let p = std::path::Path::new(cwd).join(fname);
-            if p.exists() {
-                if let Ok(content) = std::fs::read_to_string(&p) {
-                    agent_content = content;
-                    break;
-                }
-            }
-        }
+        let context = crate::prompt::load_project_context(cwd, !no_context_files);
+        let context_files = context.file_names();
 
         // Load workspace memory (FUTURE.md) — a separate layer from project
         // context, read fresh each run (cwd only; workspace-scoped). The index
@@ -1285,12 +1284,12 @@ impl ServerSession {
             std::path::Path::new(cwd),
         );
 
-        crate::prompt::build_prompt(&crate::prompt::PromptOptions {
+        let prompt = crate::prompt::build_prompt(&crate::prompt::PromptOptions {
             working_directory: cwd.replace('\\', "/"),
             date: today,
             tools,
             skills,
-            agent_content,
+            agent_content: context.content,
             memory_content,
             session_id: self.session_id.clone(),
             model: model.to_owned(),
@@ -1309,7 +1308,8 @@ impl ServerSession {
                 },
             ],
             ..Default::default()
-        })
+        });
+        (prompt, context_files)
     }
 
     /// Persist the just-pushed user message so the GUI sees it mid-stream.

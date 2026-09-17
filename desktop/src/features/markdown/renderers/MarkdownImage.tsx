@@ -1,6 +1,5 @@
 import type { StoredFile } from "../../../integrations/storage/types";
 import { localFilePath } from "@future-os/markdown";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { prepareImagePreviewUrl } from "../../../integrations/storage/files";
 import { isStoredFile } from "../../../integrations/storage/typeGuards";
@@ -47,16 +46,15 @@ function WorkspaceLocalImage({
   workspaceId?: string | null;
 }) {
   const resolved = useFutureReference(workspaceId, { targetId: target, targetType: "file" });
-  // Only workspace-contained images auto-load. Reading any other model-authored
-  // path requires a deliberate click; the backend still canonicalizes/checks it.
-  const [requestedPath, setRequestedPath] = useState<string | null>(null);
+  // The backend still canonicalizes and validates each image before exposing
+  // its asset URL, including resolved paths outside the workspace.
   const file = resolved?.status === "resolved" && resolved.targetType === "file"
     && isStoredFile(resolved.data)
     ? resolved.data
     : null;
-  return file && (file.insideWorkspace || requestedPath === file.path)
+  return file
     ? <ResolvedLocalImage alt={alt} file={file} key={file.path} linked={linked} title={title} />
-    : <LocalImageFallback alt={alt} onLoad={file && !linked ? () => setRequestedPath(file.path) : undefined} path={target} />;
+    : <LocalImageFallback alt={alt} path={target} />;
 }
 
 function PreviewLocalImage({
@@ -105,7 +103,7 @@ function ResolvedLocalImage({ alt, file, title, linked }: { alt: string; file: S
   );
 }
 
-function LocalImageFallback({ alt, path, onLoad }: { alt: string; path: string; onLoad?: () => void }) {
+function LocalImageFallback({ alt, path }: { alt: string; path: string }) {
   const { t } = useTranslation("markdown");
   return (
     <span
@@ -113,7 +111,6 @@ function LocalImageFallback({ alt, path, onLoad }: { alt: string; path: string; 
       title={path}
     >
       <span className="break-all">{alt || t("image.unavailable")}</span>
-      {onLoad && <button className="text-accent hover:underline" onClick={onLoad} type="button">{t("image.load")}</button>}
     </span>
   );
 }

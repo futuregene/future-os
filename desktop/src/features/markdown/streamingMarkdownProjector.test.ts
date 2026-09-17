@@ -11,7 +11,21 @@ function assertEquivalent(project: ReturnType<typeof createStreamingMarkdownProj
 }
 
 describe("incremental single-table projection", () => {
+  it("renders CJK punctuation-ending labels in worker-produced ASTs", () => {
+    const project = createStreamingMarkdownProjector();
+    const blocks = project("- **迁移失败处理不合适：**新工作区", true);
+    expect(blocks[0]?.document?.nodes[0]).toMatchObject({
+      type: "list",
+      items: [{ children: [
+        { type: "strong", children: [{ type: "text", text: "迁移失败处理不合适：" }] },
+        { type: "text", text: "新工作区" },
+      ] }],
+    });
+  });
+
   it.each([
+    "- **新旧端兼容未完善：**新手机端。\n\n> 前**“重点”**后",
+    "| 项目 | 说明 |\n|---|---|\n| **注意：**正文 | 前**「重要」**です |\n| **结论：**完成 | 后续 |",
     "| A | B |\n| --- | :---: |\n| first | second |\n| **next** | `a\\|b` |\n| end | done |",
     "A | B\n--- | ---\none | two\nthree | four\n",
     " | A | B |\n | --- | --- |\n | one | two |\n   | three | four |\n | five | six |",

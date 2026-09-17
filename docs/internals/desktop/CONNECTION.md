@@ -54,7 +54,7 @@ controllable.** Phone remote AI can indirectly trigger local file access, tool
 calls, and command execution; users need a remote entry they can see directly
 and actively close. The Desktop is that entry: in GUI mode, when the user
 closes the Desktop they should be able to confirm the machine no longer accepts
-new remote operations through the phone; explicit `--headless` mode uses the
+new remote operations through the phone; the standalone `futureos-headless` entrypoint uses the
 occupied terminal and Ctrl+C as the visible, controllable run boundary. A
 background Agent staying alive must not implicitly enable or maintain remote
 capability. This is a product trust boundary, not an implementation detail that
@@ -73,7 +73,7 @@ may be relaxed for connection stability.
   closes the entry. Minimizing or switching to another app is not closing.
   Remote on, connecting, and disconnected must have clear states in the
   corresponding UI or terminal. Ordinary GUI open is not authorization to
-  enable remote; explicit `--headless` means starting the phone remote entry.
+  enable remote; running `futureos-headless` means starting the phone remote entry.
 - **Automatic recovery obeys user intent.** Network, credential, and sync
   recovery only happen while the Desktop is still running and remote access is
   still allowed. After an active disconnect, old requests, retry timers, and
@@ -159,7 +159,7 @@ Phone-side (Android / iOS) post-pairing experience:
 
 ### 1.1 Headless Desktop
 
-`futureos --headless` reuses the same Rust backend, occupying the terminal in
+`futureos-headless` reuses the same Rust backend, occupying the terminal in
 the foreground, and does not start the Tauri Builder, window, WebView, or GUI
 plugins. When not signed in, the device authorization flow prints the browser
 login QR code, URL, and user code; no browser is opened on the server. The
@@ -167,7 +167,8 @@ authorization result is saved by the Agent through the original config-write
 path. Phone pairing is the second phase: after the entry and the Agent are
 ready, it prints the terminal QR code generated from the same invitation and
 the full `futureos://remote/pair` link for the app to scan or paste — not a
-short numeric code.
+short numeric code. The graphical `futureos` entrypoint no longer accepts
+`--headless`; the standalone binary is built without GUI dependencies.
 
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. `--no-qr` keeps only the text link, with automatic fallback on
@@ -481,6 +482,15 @@ inside the Tauri crate; this round adds no standalone crate, and there is no
 promise that copying one directory alone compiles independently. Being
 extractable does not mean being allowed to run outside the Desktop lifecycle.
 
+The source layout follows those boundaries: `remote/mod.rs` is only the public
+facade; diagnostics, health, presence, publishing, transport, the test web
+server, and supervisor state/start/shutdown/status live in dedicated modules.
+`remote_host/business/` separates catalog, history, prompt execution, settings,
+transfers, and wire limits. `agent_bridge/mod.rs` is likewise a facade over
+queries, prompting, reconciliation, and delete-outbox handling. The large
+regression suites are kept in each subsystem's `tests.rs` instead of being
+interleaved with production routing.
+
 | Component | Sole responsibility | Must not carry |
 | --- | --- | --- |
 | Desktop integration layer | create/destroy Remote instances, exit and power-event adaptation, bind user intent, render state | its own connection retries, duplicating protocol state machines |
@@ -632,6 +642,35 @@ across an active disconnect. Accepted operations can query the original result,
 but a Desktop/Agent restart does not auto-re-execute interrupted conversations.
 Read-only requests can retry; there is no need to add persistent operation
 records to every interface for abstraction's sake.
+
+**Mobile settings manage the selected Desktop, not a second preference store.**
+The phone uses a full-screen, scrollable Settings page with separate Model
+visibility and Skill management subpages. The Current desktop section exposes
+`autoUpgradeSkills`, `autoTitleFirstTurn`, and `autoConnectRemote` (explicitly
+labelled **Connect to phone when desktop starts**). Model visibility edits the
+same Desktop `hiddenModels` list, using provider-qualified identifiers; the
+management catalogue includes hidden entries so they can be enabled again.
+The phone's language, update check and pairing management remain in a separate
+This phone section.
+
+- Handshakes advertise `desktop_settings_v1` and `skill_management_v1`. Older
+  hosts leave these controls disabled with an upgrade hint; existing approval
+  mode controls keep their original protocol.
+- `get_desktop_settings` / `update_desktop_settings` expose only the four fields
+  above. Writes are partial, allowlisted, and committed by the existing Desktop
+  settings store, never persisted or queued on the phone. `list_settings_models`
+  reads the unfiltered Agent catalogue.
+- `list_skills`, `list_available_skills`, `install_skill`, and `uninstall_skill`
+  operate on Desktop/Agent skills. Desktop and phone install/remove calls share
+  a serialized management path and refresh Agent discovery before completion.
+  All-upgrade runs sequentially, stops on error or leaving the page, and reports
+  that earlier items may already have completed. Removal requires confirmation.
+- Post-commit `app_settings_changed` and post-refresh `skills_changed`
+  invalidations reach the Desktop webview and the remote low-rate catalogue
+  event lane. Both views reread authoritative data; the phone also reloads on
+  opening/foreground/reconnect. Closed pages discard their temporary view state,
+  and connection identity fencing prevents late responses crossing desktops.
+  No offline writes or automatic mutation retries are introduced.
 
 **Connection state and sync state are separate.** Internally at least
 distinguish pairing validity, relay reachability, peer authentication/liveness,

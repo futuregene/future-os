@@ -1,9 +1,9 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { ScrollView, Text } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SkillPicker } from "../components/SkillPicker";
 
-jest.mock("lucide-react-native", () => ({ X: () => null }));
+jest.mock("lucide-react-native", () => ({ Info: () => null, X: () => null }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh" } }) }));
 
 const skills = [{ name: "future-web", description: "Search pages", nameZh: "网页搜索", descriptionZh: "读取网页" }];
@@ -31,6 +31,29 @@ test("loads once per opening, searches locally and selects without dismissing ke
   expect(onClose).toHaveBeenCalledTimes(1);
   await act(async () => { tree.update(createElement(SkillPicker, { ...props, query: "不存在" })); });
   expect(texts()).toContain("skills.noResults");
+});
+
+test("skill choices keep name and description on one row, with full details only on demand", async () => {
+  await act(async () => { tree = create(createElement(SkillPicker, props)); });
+  const option = tree.root.findAll(node => node.props.accessibilityLabel === "/future-web · 网页搜索" && node.props.onPress)[0]!;
+  expect(StyleSheet.flatten(option.props.style({ pressed: false }))).toMatchObject({ flexDirection: "row", minHeight: 44, minWidth: 0 });
+  expect(option.findAllByType(Text)).toHaveLength(2);
+  expect(option.findAllByType(Text).every(node => node.props.numberOfLines === 1)).toBe(true);
+  expect(texts()).not.toContain("/future-web");
+  const details = () => tree.root.findAll(node => node.props.accessibilityLabel === "skills.details" && node.props.onPress)[0]!;
+  act(() => details().props.onPress());
+  expect(details().props.accessibilityState.expanded).toBe(true);
+  expect(texts()).toContain("/future-web");
+  const expanded = tree.root.findAllByType(View).find(node => node.findAllByType(Text).some(text => text.props.children === "/future-web") && StyleSheet.flatten(node.props.style)?.gap === 4)!;
+  expect(expanded.findAllByType(Text).every(node => node.props.numberOfLines === undefined)).toBe(true);
+  expect(onSelect).not.toHaveBeenCalled();
+  act(() => details().props.onPress());
+  expect(texts()).not.toContain("/future-web");
+  act(() => details().props.onPress());
+  await act(async () => tree.update(createElement(SkillPicker, { ...props, query: "missing" })));
+  await act(async () => tree.update(createElement(SkillPicker, props)));
+  expect(texts()).not.toContain("/future-web");
+  expect(load).toHaveBeenCalledTimes(1);
 });
 
 test("distinguishes loading, failure with retry, and an empty installed catalogue", async () => {

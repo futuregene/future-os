@@ -71,6 +71,11 @@ export function SessionFilesPanel({
     () => (listing?.entries ?? []).filter(entry => showHidden || !entry.name.startsWith(".")),
     [listing, showHidden],
   );
+  // The toggle only earns its place when this directory actually has dot
+  // entries, so an empty or fully visible directory keeps just the refresh
+  // button. Read the unfiltered listing: `entries` already drops hidden names
+  // while the toggle is off.
+  const hasHidden = (listing?.entries ?? []).some(entry => entry.name.startsWith("."));
   const refresh = () => setRevision(value => value + 1);
   const status = !online ? t("files.offline") : !supported ? t("files.updateDesktop")
     : failed ? t("files.loadFailed") : t("files.empty");
@@ -79,14 +84,16 @@ export function SessionFilesPanel({
     <View style={styles.panel}>
       <View style={styles.toolbar}>
         <Text style={styles.heading}>{t("files.title")}</Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={showHidden ? t("files.hideHidden") : t("files.showHidden")}
-          onPress={() => setShowHidden(value => !value)}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-        >
-          {showHidden ? <EyeOff size={20} color={colors.inkMuted} /> : <Eye size={20} color={colors.inkMuted} />}
-        </Pressable>
+        {hasHidden && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={showHidden ? t("files.hideHidden") : t("files.showHidden")}
+            onPress={() => setShowHidden(value => !value)}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+          >
+            {showHidden ? <EyeOff size={20} color={colors.inkMuted} /> : <Eye size={20} color={colors.inkMuted} />}
+          </Pressable>
+        )}
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("files.refresh")}

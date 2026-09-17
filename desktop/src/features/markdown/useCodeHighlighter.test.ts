@@ -22,7 +22,8 @@ const fakeHighlighter = {
   getTheme: () => ({ bg: 0, fg: null }),
 };
 
-vi.mock("shiki", () => ({
+vi.mock("shiki", async importOriginal => ({
+  ...await importOriginal<typeof import("shiki")>(),
   createHighlighter: () => Promise.resolve(fakeHighlighter),
 }));
 
@@ -63,6 +64,26 @@ describe("useCodeHighlighter", () => {
     expect(result!.lines[0]!.tokens[1]).toEqual({ content: "!", color: "#000000", fontStyle: undefined });
     // Non-string theme foregrounds fall back to the default.
     expect(result!.fgColor).toBe("#000000");
+    h.unmount();
+  });
+
+  it.each([
+    [" TSX ", "tsx"],
+    ["ps1", "powershell"],
+    ["dockerfile", "docker"],
+    ["vue", "vue"],
+    ["c++", "cpp"],
+    ["shell", "shellscript"],
+  ])("loads the registered grammar for %s", async (alias, canonical) => {
+    const h = renderHook(() => useCodeHighlighter());
+    await flushAsync();
+    expect(h.current.highlight("registry test", alias)).toBeNull();
+    expect(fakeHighlighter.loadLanguage).toHaveBeenCalledWith(canonical);
+    await flushAsync();
+    expect(h.current.highlight("registry test", alias)).not.toBeNull();
+    const calls = fakeHighlighter.codeToTokens.mock.calls.length;
+    expect(h.current.highlight("registry test", canonical)).not.toBeNull();
+    expect(fakeHighlighter.codeToTokens.mock.calls.length).toBe(calls);
     h.unmount();
   });
 

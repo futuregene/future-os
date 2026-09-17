@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
-import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
@@ -29,6 +29,23 @@ function workspaceThread(id: string, workspaceId: string): StoredThread {
   return { ...thread(id), mode: "workspace", workspaceId };
 }
 
+function storedWorkspace(
+  id: string,
+  name: string,
+  extra: Partial<StoredWorkspace> = {},
+): StoredWorkspace {
+  return {
+    id,
+    name,
+    kind: "user",
+    path: `/tmp/${id}`,
+    cleanupStatus: "active",
+    createdAt: 0,
+    updatedAt: 0,
+    ...extra,
+  };
+}
+
 function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
   return {
     active: "chat",
@@ -54,6 +71,7 @@ function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
     onSelectWorkspace: vi.fn(),
     onSelectThread: vi.fn(),
     onTogglePinThread: vi.fn(),
+    onTogglePinWorkspace: vi.fn(),
     onToggleExpanded: vi.fn(),
   };
 }
@@ -240,6 +258,73 @@ describe("activity rail conversation hierarchy", () => {
       expect(toolbar.querySelectorAll(".activity-rail-selection-action-label")).toHaveLength(2);
       expect(toolbar.querySelector<HTMLButtonElement>("button[aria-label=\"Delete\"]")?.title).toBe("Delete");
       expect(toolbar.querySelector<HTMLButtonElement>("button[aria-label=\"Cancel\"]")?.title).toBe("Cancel");
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});
+
+describe("activity rail workspace pinning", () => {
+  /** Workspace groups in DOM order — the rail's own pinned-first rule. */
+  const groupOrder = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button[aria-label^=\"Workspace actions for \"]")]
+      .map(button => button.getAttribute("aria-label")!.replace("Workspace actions for ", ""));
+
+  it("leads with pinned groups and keeps recency inside each half", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    // The store hands the rail its recency order (alpha, beta, gamma).
+    const alpha = storedWorkspace("ws-a", "Alpha");
+    const beta = storedWorkspace("ws-b", "Beta", { pinned: true });
+    const gamma = storedWorkspace("ws-c", "Gamma");
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([workspaceThread("t-a", "ws-a"), workspaceThread("t-b", "ws-b"), workspaceThread("t-c", "ws-c")]),
+      workspaces: [alpha, beta, gamma],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    try {
+      expect(groupOrder(container)).toEqual(["Beta", "Alpha", "Gamma"]);
+      // The pinned header carries the marker; the unpinned ones do not.
+      expect(container.querySelectorAll("svg.lucide-pin")).toHaveLength(1);
+      // Unpinning drops the group back to its recency position.
+      act(() => root.render(<ActivityRail {...p} workspaces={[alpha, { ...beta, pinned: false }, gamma]} />));
+      expect(groupOrder(container)).toEqual(["Alpha", "Beta", "Gamma"]);
+      expect(container.querySelectorAll("svg.lucide-pin")).toHaveLength(0);
+    }
+    finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("toggles the flag from the group menu, offering unpin once it is set", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const alpha = storedWorkspace("ws-a", "Alpha");
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([workspaceThread("t-a", "ws-a")]),
+      workspaces: [alpha],
+    };
+    act(() => root.render(<ActivityRail {...p} />));
+    await flushAsync();
+    const menuItem = (label: string) =>
+      [...container.querySelectorAll<HTMLButtonElement>("[role=\"menuitem\"]")]
+        .find(item => item.textContent === label);
+    try {
+      act(() => container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace actions for Alpha\"]")!.click());
+      act(() => menuItem("Pin")!.click());
+      expect(p.onTogglePinWorkspace).toHaveBeenCalledWith(alpha);
+
+      act(() => root.render(<ActivityRail {...p} workspaces={[{ ...alpha, pinned: true }]} />));
+      act(() => container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace actions for Alpha\"]")!.click());
+      expect(menuItem("Pin")).toBeUndefined();
+      act(() => menuItem("Unpin")!.click());
+      expect(p.onTogglePinWorkspace).toHaveBeenLastCalledWith({ ...alpha, pinned: true });
     }
     finally {
       act(() => root.unmount());

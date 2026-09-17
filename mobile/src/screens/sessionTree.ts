@@ -103,9 +103,15 @@ export function catalogRows(
     const workspace = groups.find(group => group.id === (node.session.workspaceId ?? ""))!;
     append([node], 0, matchesWorkspace(workspace));
   }
+  // Pinned workspaces follow those pinned conversations and lead the rest of
+  // the groups; within each half the desktop's recency order is kept.
+  const orderedGroups = [
+    ...groups.filter(workspace => workspace.pinned),
+    ...groups.filter(workspace => !workspace.pinned),
+  ];
   const countNodes = (nodes: SessionNode[]): number =>
     nodes.reduce((total, node) => total + 1 + countNodes(node.children), 0);
-  for (const workspace of groups) {
+  for (const workspace of orderedGroups) {
     const children = workspaceRoots.filter(
       node => (node.session.workspaceId ?? "") === workspace.id,
     );

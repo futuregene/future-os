@@ -76,7 +76,7 @@ about ¥0.003.
 **Zero false positives for every strategy on every chain.** The differences are recall,
 never invention.
 
-| Strategy | median projection | 
+| Strategy | median projection |
 |---|---:|
 | C3 | 8 495 tokens |
 | Codex | 1 223 tokens |

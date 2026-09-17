@@ -11,21 +11,21 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPr
 export function GeneralPage({
   approvalTier,
   onChangeApprovalTier,
-  showThinking,
-  onToggleShowThinking,
   autoUpgradeSkills,
   onToggleAutoUpgradeSkills,
   bellOnComplete,
   onToggleBellOnComplete,
+  autoTitleFirstTurn,
+  onToggleAutoTitleFirstTurn,
 }: {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
-  showThinking: boolean;
-  onToggleShowThinking: (value: boolean) => void;
   autoUpgradeSkills: boolean;
   onToggleAutoUpgradeSkills: (value: boolean) => void;
   bellOnComplete: boolean;
   onToggleBellOnComplete: (value: boolean) => void;
+  autoTitleFirstTurn: boolean;
+  onToggleAutoTitleFirstTurn: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
   const sandboxAvailability = useSandboxAvailability();
@@ -88,16 +88,16 @@ export function GeneralPage({
             )
           : null}
         <SettingsRow
-          title={t("showThinking.title")}
-          description={t("showThinking.description")}
-        >
-          <Switch checked={showThinking} label={t("showThinking.title")} onChange={onToggleShowThinking} />
-        </SettingsRow>
-        <SettingsRow
           title={t("autoUpgradeSkills.title")}
           description={t("autoUpgradeSkills.description")}
         >
           <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
+        </SettingsRow>
+        <SettingsRow
+          title={t("autoTitleFirstTurn.title")}
+          description={t("autoTitleFirstTurn.description")}
+        >
+          <Switch checked={autoTitleFirstTurn} label={t("autoTitleFirstTurn.title")} onChange={onToggleAutoTitleFirstTurn} />
         </SettingsRow>
         <SettingsRow
           title={t("bellOnComplete.title")}

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
+  Animated,
   BackHandler,
   FlatList,
   Pressable,
@@ -36,10 +37,23 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
 import { catalogRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
+import { useTabSwipe, type PageDirection } from "./useTabSwipe";
 
 // Keep navigation state when the screen unmounts to open a conversation.
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
+
+// The list's two pages, in the order the toolbar's tab control shows them and
+// the horizontal swipe reads them: workspaces are the left page, conversations
+// the right one.
+const TABS = ["workspace", "chat"] as const;
+type Tab = (typeof TABS)[number];
+
+/** The page beside `tab` in a swipe direction, or null at either end of the row. */
+function adjacentTab(tab: Tab, direction: PageDirection): Tab | null {
+  const index = TABS.indexOf(tab) + (direction === "next" ? 1 : -1);
+  return TABS[index] ?? null;
+}
 
 // Column geometry, mirroring the desktop rail (see docs/internals/desktop/PRODUCT.md §5.2):
 // every row is [toggle column 16][gap 4][title], and a child row's start is its
@@ -66,9 +80,9 @@ export function SessionList({
   empty,
   onMenu,
 }: {
-  tab: "chat" | "workspace";
+  tab: Tab;
   active?: boolean;
-  onTabChange: (tab: "chat" | "workspace") => void;
+  onTabChange: (tab: Tab) => void;
   empty: ReactNode;
   onMenu: (session: RemoteSession) => void;
 }) {
@@ -101,9 +115,14 @@ export function SessionList({
     [remote.sessions, remote.workspaces, tab, collapsed, expanded, query],
   );
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
+  // Pinned sessions are shortcuts promoted above the groups (and, on the
+  // workspace tab, out of their own workspace), so batch selection skips them:
+  // they carry no checkbox while selecting and select-all never sweeps them up.
+  const selectableSessions = visibleSessions.filter(session => !session.pinned);
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
-    visibleSessions.length > 0 && visibleSessions.every(session => selected.has(session.sessionId));
+    selectableSessions.length > 0
+    && selectableSessions.every(session => selected.has(session.sessionId));
 
   useEffect(() => {
     if (!active || (!selecting && !searching)) return;
@@ -121,6 +140,18 @@ export function SessionList({
     });
     return () => subscription.remove();
   }, [active, selecting, searching]);
+
+  // Swiping the list pages it: left from workspaces into conversations, right
+  // back out of them. Ignored while the toolbar is searching or selecting — the
+  // tab bar is hidden then, so the swipe would change mode unseen.
+  const swipe = useTabSwipe({
+    enabled: !searching && !selecting,
+    hasPage: direction => adjacentTab(tab, direction) !== null,
+    onSwitch: direction => {
+      const next = adjacentTab(tab, direction);
+      if (next) onTabChange(next);
+    },
+  });
 
   const toggleSelection = (id: string) =>
     setSelected(current => {
@@ -180,10 +211,14 @@ export function SessionList({
   };
 
   /** Every session in a workspace, flattened — folds must not hide rows from a
-   * "select all in this workspace", which is the point of the action. */
+   * "select all in this workspace", which is the point of the action. Pinned
+   * sessions are promoted out of the workspace into the shortcut rows above the
+   * groups, so they are left out of the batch. */
   const sessionsInWorkspace = (workspaceId: string): RemoteSession[] =>
     remote.sessions.filter(
-      session => session.mode === "workspace" && (session.workspaceId ?? "") === workspaceId,
+      session => session.mode === "workspace"
+        && !session.pinned
+        && (session.workspaceId ?? "") === workspaceId,
     );
 
   const selectWorkspaceSessions = (workspaceId: string) => {
@@ -258,6 +293,7 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
+            {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
           <Pressable
@@ -275,25 +311,34 @@ export function SessionList({
     }
     const session = item.session;
     const checked = selected.has(session.sessionId);
+    // A pinned session is a shortcut outside the tab's own groups: it keeps no
+    // checkbox and cannot join the batch, so select-all never includes it.
+    const selectable = !session.pinned;
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
     return (
       <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
-        {selecting ? (
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityLabel={session.title || t("sessions.unnamed")}
-            accessibilityState={{ checked, disabled: deleting || !remote.desktopOnline }}
-            disabled={deleting || !remote.desktopOnline}
-            onPress={() => toggleSelection(session.sessionId)}
-            style={styles.iconButton}
-          >
-            <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-              {checked && <Check size={13} color={colors.surface} />}
-            </View>
-          </Pressable>
-        ) : null}
+        {selecting
+          ? selectable
+            ? (
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={session.title || t("sessions.unnamed")}
+                  accessibilityState={{ checked, disabled: deleting || !remote.desktopOnline }}
+                  disabled={deleting || !remote.desktopOnline}
+                  onPress={() => toggleSelection(session.sessionId)}
+                  style={styles.iconButton}
+                >
+                  <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
+                    {checked && <Check size={13} color={colors.surface} />}
+                  </View>
+                </Pressable>
+              )
+            // A pinned shortcut keeps the checkbox column's width (no box) so
+            // its title stays on the column the group rows beside it use.
+            : <View style={styles.iconButton} />
+          : null}
         {item.hasChildren ? (
           <Pressable
             accessibilityRole="button"
@@ -325,11 +370,13 @@ export function SessionList({
         <Pressable
           accessibilityRole="button"
           disabled={!remote.desktopOnline || deleting}
-          onPress={() =>
-            selecting
-              ? toggleSelection(session.sessionId)
-              : void remote.selectSession(session.sessionId)
-          }
+          onPress={() => {
+            if (!selecting) {
+              void remote.selectSession(session.sessionId);
+              return;
+            }
+            if (selectable) toggleSelection(session.sessionId);
+          }}
           onLongPress={() => {
             if (!selecting) onMenu(session);
           }}
@@ -390,6 +437,22 @@ export function SessionList({
                 .catch(() => Alert.alert(t("common.error")));
             },
           },
+          ...(remote.capabilities.has("workspace_pinning_v1") ? [{
+            // A workspace group is an ordering shortcut like a pinned
+            // conversation: pinned groups sit under the pinned conversations
+            // and above the unpinned groups (see catalogRows).
+            label: t(menuWorkspace.workspace.pinned ? "sessions.unpin" : "sessions.pin"),
+            icon: <Pin size={18} color={colors.inkSoft} />,
+            disabled: !remote.desktopOnline || deleting,
+            onPress: () => {
+              void remote
+                .setWorkspacePinned(
+                  menuWorkspace.workspace.id,
+                  !menuWorkspace.workspace.pinned,
+                )
+                .catch(() => Alert.alert(t("common.error")));
+            },
+          }] : []),
           {
             label: t("sessions.selectWorkspaceSessions"),
             icon: <ListChecks size={18} color={colors.inkSoft} />,
@@ -415,7 +478,7 @@ export function SessionList({
               onPress={() =>
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const session of visibleSessions) {
+                  for (const session of selectableSessions) {
                     if (allSelected) next.delete(session.sessionId);
                     else next.add(session.sessionId);
                   }
@@ -500,7 +563,7 @@ export function SessionList({
         ) : (
           <>
             <View style={styles.tabs}>
-              {(["workspace", "chat"] as const).map(value => (
+              {TABS.map(value => (
                 <Pressable
                   key={value}
                   accessibilityRole="tab"
@@ -546,35 +609,45 @@ export function SessionList({
           </>
         )}
       </View>
-      <FlatList
-        key={query.trim() ? `${listKey}:search` : listKey}
-        data={rows}
-        renderItem={renderRow}
-        keyExtractor={row => row.key}
-        ref={listRef}
-        contentOffset={initialOffset}
-        onLayout={onLayout}
-        onContentSizeChange={onContentSizeChange}
-        onScrollBeginDrag={onScrollBeginDrag}
-        onScroll={onScroll}
-        scrollEventThrottle={16}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentContainerStyle={rows.length ? styles.list : styles.empty}
-        ListEmptyComponent={
-          query.trim() ? (
-            <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
-          ) : (
-            <>{empty}</>
-          )
-        }
-      />
+      <Animated.View
+        testID="session-list-page"
+        onLayout={event => swipe.measure(event.nativeEvent.layout.width)}
+        style={[styles.page, { transform: [{ translateX: swipe.translateX }] }]}
+        {...swipe.panHandlers}
+      >
+        <FlatList
+          key={query.trim() ? `${listKey}:search` : listKey}
+          data={rows}
+          renderItem={renderRow}
+          keyExtractor={row => row.key}
+          ref={listRef}
+          contentOffset={initialOffset}
+          onLayout={onLayout}
+          onContentSizeChange={onContentSizeChange}
+          onScrollBeginDrag={onScrollBeginDrag}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentContainerStyle={rows.length ? styles.list : styles.empty}
+          ListEmptyComponent={
+            query.trim() ? (
+              <Text style={styles.noResults}>{t("sessions.noResults")}</Text>
+            ) : (
+              <>{empty}</>
+            )
+          }
+        />
+      </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // The swipeable page: the list keeps its own layout inside it, and the
+  // transform that slides it is the only thing this view adds.
+  page: { flex: 1 },
   tools: {
     minHeight: layout.touchTarget + spacing.xs * 2 + spacing.md,
     flexDirection: "row",

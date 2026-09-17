@@ -37,13 +37,13 @@
       }
     }
   },
-  "showThinking": {
-    "title": "Show thinking process",
-    "description": "Display the model's reasoning in the conversation"
-  },
   "autoUpgradeSkills": {
     "title": "Auto-upgrade skills",
     "description": "Silently upgrade installed skills to their latest version each time the app opens"
+  },
+  "autoTitleFirstTurn": {
+    "title": "Generate a title after the first answer",
+    "description": "Generate and save a title after a new conversation’s first successful answer, using the same generator as the rename dialog. Later answers do not trigger it. Conversation context is not compacted. On by default."
   },
   "bellOnComplete": {
     "title": "Completion bell",

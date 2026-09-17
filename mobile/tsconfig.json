@@ -6,5 +6,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["jest", "node", "react", "react-native"]
   },
-  "include": ["App.tsx", "index.ts", "src/**/*.ts", "src/**/*.tsx", "app.config.ts"]
+  "include": ["App.tsx", "index.ts", "src/**/*.ts", "src/**/*.tsx", "shot/**/*.ts", "shot/**/*.tsx", "app.config.ts"]
 }

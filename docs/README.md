@@ -13,24 +13,15 @@
 
 | Doc | What it covers |
 |---|---|
-<<<<<<< HEAD
-| [Build & Install](build-and-install.md) ([中文](build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
-| [Loop Control Plane](loop-control-plane.md) ([中文](loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
-| [Long-Run Evidence Ledger](long-run-evidence-ledger.md) ([中文](long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
-| [Headless Desktop](desktop-headless.md) ([中文](desktop-headless.zh-CN.md)) | Foreground `--headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
-| [TUI](tui.md) ([中文](tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
-| [Directory layout](directory-layout.md) ([中文](directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
-| [Session history recall](session-history.md) ([中文](session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
-| [C compaction](compaction.md) ([中文](compaction.zh-CN.md)) | 80%/256K trigger, S2 original protection, fixed-budget deterministic evidence, zero summary calls and schema-3 restore |
-| [Channels configuration](channels-config.md) ([中文](channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
-=======
 | [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
 | [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
-| [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `--headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
+| [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
-| [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) | Mobile end-to-end latency measurement and diagnosis |
->>>>>>> origin/main
+| [Session history recall](session-history.md) ([中文](session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
+| [Compaction](compaction.md) ([中文](compaction.zh-CN.md)) | Context compaction, protected originals, evidence indexing, and checkpoint restore |
+| [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
+| [Screenshot harness](guide/screenshots.md) ([中文](guide/screenshots.zh-CN.md)) | Rendering the real desktop/mobile UI against demo data to produce screenshots, feature diagrams and illustrated documents without a display |
 
 The repo-root [README](../README.md) ([中文](../README.zh-CN.md)) is the
 entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
@@ -88,16 +79,10 @@ reference this exact path, so the directory cannot be renamed without updating
 
 ## Archives (`archives/`)
 
-<<<<<<< HEAD
 - [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
 - [Compaction strategy comparison](compaction-abc-experiment.md) ([中文](compaction-abc-experiment.zh-CN.md)) — six strategies on identical fixtures (ours A/B/C, `origin/main`, Codex, OpenCode): accuracy, cost and limits.
 - [Summary prompts and legacy semantic APIs](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — the prompt construction C3 shares with the legacy A path, and the APIs that path alone retains.
-- [wiki-prompt.md](wiki-prompt.md) ([en](wiki-prompt-en.md)) — generation prompt
-  for (re)creating the wiki pages; defines scope, style and page inventory.
-- [verification/](verification/errors-outdated-missing.md) — doc↔source
-  historical verification snapshots (fact inventory, error/outdated/missing list).
-  Their conclusions apply only to the recorded dates/commits, not current source.
-=======
+
 Historical audit snapshots; their conclusions apply only to the recorded
 dates/commits, not current source. Kept for provenance — do not rewrite them
 to match today's code.
@@ -117,7 +102,6 @@ to match today's code.
 ## Audits (`audits/`)
 
 Reserved for future doc↔code audit reports.
->>>>>>> origin/main
 
 ## How the docs stay correct
 

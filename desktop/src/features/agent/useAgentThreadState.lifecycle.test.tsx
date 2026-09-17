@@ -101,7 +101,7 @@ async function begin(view: NonNullable<typeof hook>) {
 }
 
 describe("local send lifecycle", () => {
-  it("consumes a new conversation prompt only after its send settles", async () => {
+  it("consumes a new conversation prompt at acceptance, before its reply settles", async () => {
     const onPromptConsumed = vi.fn();
     const view = await mount({
       pendingPrompt: {
@@ -114,14 +114,57 @@ describe("local send lifecycle", () => {
     expect(agent.send).toHaveBeenCalledTimes(1);
     expect(onPromptConsumed).not.toHaveBeenCalled();
 
+    await act(async () => agent.send.mock.calls[0]![0].onAccepted());
+    expect(onPromptConsumed).toHaveBeenCalledExactlyOnceWith("first-prompt");
+    expect(view.current.recentRun?.status).toBe("running");
+
     latest = { ...running, status: "completed", endedAt: time + 1000 };
     await act(async () => {
       reply.resolve(success);
       await reply.promise;
       await Promise.resolve();
     });
-    expect(onPromptConsumed).toHaveBeenCalledWith("first-prompt");
+    expect(onPromptConsumed).toHaveBeenCalledTimes(1);
     view.unmount();
+  });
+
+  it("does not submit a staged prompt again when remounted before acceptance", async () => {
+    const preparation = deferred<{ attachments: []; temporarySources: [] }>();
+    agent.prepare.mockReturnValue(preparation.promise);
+    const options = {
+      pendingPrompt: { id: "remount-prompt", content: "question", targetThreadId: "lifecycle-thread" },
+      onPromptConsumed: vi.fn(),
+    };
+    const first = await mount(options);
+    first.unmount();
+    await mount(options);
+    expect(agent.prepare).toHaveBeenCalledTimes(1);
+    expect(storage.createRun).not.toHaveBeenCalled();
+    await act(async () => preparation.resolve({ attachments: [], temporarySources: [] }));
+    expect(storage.createRun).toHaveBeenCalledTimes(1);
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    await act(async () => agent.send.mock.calls[0]![0].onAccepted());
+    expect(options.onPromptConsumed).toHaveBeenCalledExactlyOnceWith("remount-prompt");
+    latest = { ...running, status: "completed" };
+    await act(async () => reply.resolve(success));
+  });
+
+  it("keeps a rejected first prompt available for retry on a later visit", async () => {
+    agent.prepare.mockRejectedValueOnce(new Error("unreadable attachment"));
+    const options = {
+      pendingPrompt: { id: "rejected-prompt", content: "question", targetThreadId: "lifecycle-thread" },
+      onPromptConsumed: vi.fn(),
+    };
+    const first = await mount(options);
+    expect(options.onPromptConsumed).not.toHaveBeenCalled();
+    expect(storage.createRun).not.toHaveBeenCalled();
+    first.unmount();
+    await mount(options);
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    await act(async () => agent.send.mock.calls[0]![0].onAccepted());
+    expect(options.onPromptConsumed).toHaveBeenCalledExactlyOnceWith("rejected-prompt");
+    latest = { ...running, status: "completed" };
+    await act(async () => reply.resolve(success));
   });
 
   it("does not release a preparing send using the previous run's terminal status", async () => {

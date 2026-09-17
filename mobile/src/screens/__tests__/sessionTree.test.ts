@@ -130,6 +130,48 @@ test("orphaned workspace pins remain at the page top and chat pins stay on the c
   expect(keys(catalogRows(sessions, [], "chat", new Set(), new Set(), ""))).toEqual(["chat-pin"]);
 });
 
+test("pinned workspaces follow the pinned conversations and lead the other groups", () => {
+  const sessions = [
+    session("pin-session", undefined, { mode: "workspace", workspaceId: "w", pinned: true }),
+    session("ordinary", undefined, { mode: "workspace", workspaceId: "w" }),
+    session("second", undefined, { mode: "workspace", workspaceId: "w2" }),
+  ];
+  const rows = catalogRows(
+    sessions,
+    [workspace, { ...secondWorkspace, pinned: true }],
+    "workspace",
+    new Set(),
+    new Set(),
+    "",
+  );
+  expect(keys(rows)).toEqual([
+    "pin-session",
+    "workspace:w2",
+    "second",
+    "workspace:w",
+    "ordinary",
+  ]);
+});
+
+test("among pinned workspaces the desktop's recency order is kept", () => {
+  const sessions = [
+    session("a", undefined, { mode: "workspace", workspaceId: "w" }),
+    session("b", undefined, { mode: "workspace", workspaceId: "w2" }),
+  ];
+  expect(
+    keys(
+      catalogRows(
+        sessions,
+        [{ ...workspace, pinned: true }, { ...secondWorkspace, pinned: true }],
+        "workspace",
+        new Set(),
+        new Set(),
+        "",
+      ),
+    ),
+  ).toEqual(["workspace:w", "a", "workspace:w2", "b"]);
+});
+
 test("workspace sessions remain accessible if their workspace is absent", () => {
   expect(
     keys(

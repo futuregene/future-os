@@ -15,6 +15,7 @@ pub struct WorkspaceRecord {
     pub kind: String,
     pub path: String,
     pub description: Option<String>,
+    pub pinned: bool,
     pub cleanup_status: String,
     pub cleanup_requested_at: Option<i64>,
     pub cleaned_at: Option<i64>,
@@ -25,7 +26,7 @@ pub struct WorkspaceRecord {
 }
 
 sql_record!(pub(super) WORKSPACE_COLUMNS, workspace_from_row -> WorkspaceRecord {
-    id, name, kind, path, description, cleanup_status, cleanup_requested_at,
+    id, name, kind, path, description, pinned, cleanup_status, cleanup_requested_at,
     cleaned_at, last_opened_at, created_at, updated_at, deleted_at,
 });
 
@@ -224,6 +225,29 @@ pub(super) fn get_or_create_chat_workspace_in(
     conn.execute(INSERT_SQL, args)?;
 
     loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
+}
+
+/// Pin a workspace above the unpinned groups (the phone's workspace tab reads
+/// the flag from the pushed snapshot; the desktop rail keeps its recency order
+/// for now). Like [`super::pin_thread`], this is an ordering flag and not
+/// activity: `updated_at`/`last_opened_at` are left alone, so unpinning returns
+/// the group to its recency position instead of jumping it to the front.
+pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
+    let pinned = if input.pinned { 1 } else { 0 };
+    let conn = connect()?;
+    let updated = conn.execute(
+        "UPDATE workspaces SET pinned = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+        params![pinned, input.workspace_id],
+    )?;
+    if updated == 0 {
+        return Err("Workspace unavailable".into());
+    }
+
+    let workspace = loaded(get_workspace_in(&conn, &input.workspace_id)?, "Workspace")?;
+    // The phone's workspace snapshot carries the flag, so the next heartbeat
+    // tick republishes it. Dirty-marked like every other workspace mutation.
+    mark_catalog_dirty();
+    Ok(workspace)
 }
 
 pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
@@ -518,6 +542,96 @@ mod tests {
         let one = get_workspace("ws_old").expect("get").expect("some");
         assert_eq!(one.name, "Old");
         assert!(get_workspace("ws_ghost").expect("get").is_none());
+    }
+
+    /// A pin persists as an ordering flag without becoming activity:
+    /// `last_opened_at`/`updated_at` stay put, so unpinning drops the group back
+    /// to its recency position instead of jumping it to the front of the list.
+    #[test]
+    fn pin_workspace_persists_without_touching_recency() {
+        let (_home, conn) = guarded_conn("ws_pin");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, last_opened_at,
+                 created_at, updated_at)
+                 VALUES ('ws_new', 'New', 'user', '/tmp/new', 200, 1, 1),
+                        ('ws_old', 'Old', 'user', '/tmp/old', 100, 5, 5);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let ids = || {
+            list_workspaces()
+                .expect("list")
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), vec!["ws_new", "ws_old"], "recency order");
+
+        let pinned = pin_workspace(PinWorkspaceInput {
+            workspace_id: "ws_old".to_string(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned);
+        assert_eq!(
+            ids(),
+            vec!["ws_new", "ws_old"],
+            "recency order is untouched"
+        );
+
+        let conn = connect().expect("reconnect");
+        let stamps: (Option<i64>, i64, i64) = conn
+            .query_row(
+                "SELECT last_opened_at, updated_at, pinned FROM workspaces WHERE id = 'ws_old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read stamps");
+        assert_eq!(stamps, (Some(100), 5, 1), "pin is not activity");
+        assert!(
+            get_workspace("ws_old").expect("get").expect("some").pinned,
+            "the flag survives a re-read"
+        );
+
+        let unpinned = pin_workspace(PinWorkspaceInput {
+            workspace_id: "ws_old".to_string(),
+            pinned: false,
+        })
+        .expect("unpin");
+        assert!(!unpinned.pinned);
+        assert_eq!(ids(), vec!["ws_new", "ws_old"], "recency order intact");
+
+        let missing = pin_workspace(PinWorkspaceInput {
+            workspace_id: "ws_ghost".to_string(),
+            pinned: true,
+        });
+        assert!(missing.is_err(), "unknown workspace errors");
+        conn.execute(
+            "UPDATE workspaces SET deleted_at = 1 WHERE id = 'ws_old'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            pin_workspace(PinWorkspaceInput {
+                workspace_id: "ws_old".into(),
+                pinned: true,
+            })
+            .is_err(),
+            "a soft-deleted workspace must not report success"
+        );
+        assert!(!get_workspace("ws_old").unwrap().unwrap().pinned);
+        // Setting the same value on an active row is still a successful idempotent write.
+        for _ in 0..2 {
+            assert!(
+                pin_workspace(PinWorkspaceInput {
+                    workspace_id: "ws_new".into(),
+                    pinned: true,
+                })
+                .unwrap()
+                .pinned
+            );
+        }
     }
 
     #[test]

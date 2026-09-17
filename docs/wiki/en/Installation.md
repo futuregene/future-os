@@ -71,9 +71,11 @@ redownload before overriding security controls.
 ### Linux
 
 - **Debian/Ubuntu:** install the downloaded package with
-  `sudo apt install ./<downloaded-file>.deb`, then launch FutureOS from the app menu.
-- **Portable desktop:** extract the downloaded tarball, keep `futureos` and
-  `future` together, and run `./futureos`.
+  `sudo apt install ./<downloaded-file>.deb`, then launch FutureOS from the app menu
+  or run `futureos-headless` for foreground phone access without a graphical UI.
+- **Portable desktop:** extract the downloaded tarball, keep `futureos`,
+  `futureos-headless`, and `future` together, and run `./futureos` or
+  `./futureos-headless`.
 - **Headless CLI:** extract the CLI-only tarball and run `./future config`, then
   `./future tui` (starts its agent when needed), or start `./future agent` for CLI
   commands that require an agent. Add the executable directory to PATH as needed.

@@ -65,6 +65,7 @@ export function ShareIntakeMenu() {
   return <ActionMenu
     title={t(step === "kind" ? "share.chooseDestination" : step === "new" ? "share.newConversation" : "share.existingConversation")}
     visible={pending !== null}
+    onBack={step === "kind" ? undefined : () => setStep("kind")}
     onClose={() => {
       setStep("kind");
       dismiss();
