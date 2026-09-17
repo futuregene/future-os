@@ -150,9 +150,16 @@ cache whenever a checkpoint already existed.
 The reserved summary budget is at most a third of what the evidence budget can
 spare, so a tight budget yields no summary rather than an unusable evidence index.
 
-Old A checkpoints remain readable. At the next needed compaction C reconstructs
-evidence from intact original tool records rather than recursively carrying A's
-summary. Data physically discarded by old versions cannot be recovered.
+Old A checkpoints remain readable, and are **not skipped**. `project_prompt_context`
+re-projects every user/assistant original in the covered range from the intact journal —
+clearing the protected marker so the new algorithm may re-select them — and `plan` then
+refuses to move coverage behind the checkpoint already in the projection. The old summary
+is replaced rather than carried: the range is re-summarised once (one extra summary call
+for that session, not per turn), and `protected_entry_ids` is re-derived over the whole
+range instead of inherited, so retention usually improves. Data physically discarded by
+old versions (`legacy_without_cutoff`, the released string protocol) has nothing to
+recover; there the old summary is carried into the new one, and text no longer present in
+the journal cannot come back.
 
 `compaction_operations` keys original user/system/assistant/tool identity and
 contents, relevant configuration, budgets, mode/phase, note and C policy version.

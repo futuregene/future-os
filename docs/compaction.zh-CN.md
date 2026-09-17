@@ -71,7 +71,7 @@ future session compact --help
 
 C3 为摘要正文增加独立预算 `min(W/16, 4096)` estimated tokens，并增加 512 tokens 的槽位余量，而不是从 2K 证据槽中拿三分之一。该预算仍受总容量约束，也可能减少可保留的 assistant 原文。摘要输出上限是正文预算的两倍，以容纳推理开销；空摘要、超长摘要或请求失败会回退确定性证据。
 
-旧 A checkpoint 继续可读。需要新的整理时，C 从仍在库中的原始工具记录重建证据，不再递归使用 A 的摘要文本。已被旧版本实际删除的历史无法恢复。
+旧 A checkpoint 继续可读，且**不会被跳过**。`project_prompt_context` 会从仍在库中的 journal 重新投影覆盖范围内的每一段 user／assistant 原文——并清掉保护标记，让新算法可以重新挑选它们；随后 `plan` 拒绝把覆盖范围退回到投影中已有的 checkpoint 之前。旧摘要是被**替换**而不是被继承：该范围会重新摘要一次（该会话多一次摘要调用，不是每回合一次），`protected_entry_ids` 也是在整个范围上重新推导而非沿用，因此保留率通常反而更好。被旧版本从物理上删除的历史（`legacy_without_cutoff`，即已发布的字符串协议）无可恢复：那种情况下旧摘要被串进新摘要，已经不在 journal 里的文本无法找回。
 
 `compaction_operations` 保存内容寻址收据。键包含原始 user/system/assistant/tool 条目的身份／内容、相关配置、预算、模式／阶段、备注和 C 策略版本。checkpoint、用量和 session-info 更新不算原始历史变化；C 使用新版本键，不复用旧 A 的结果。
 
