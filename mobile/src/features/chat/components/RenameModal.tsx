@@ -99,19 +99,23 @@ export function RenameModal({
             )}
           </View>
           <View style={styles.inputRow}>
-            <TextInput
-              autoFocus
-              editable={!generating}
-              accessibilityLabel={t("chat.renameTitle")}
-              onChangeText={setRenameValue}
-              onSubmitEditing={save}
-              placeholder={t("sessions.unnamed")}
-              placeholderTextColor={colors.inkMuted}
-              returnKeyType="done"
-              style={styles.nameInput}
-              underlineColorAndroid="transparent"
-              value={renameValue}
-            />
+            {/* Keep borders off the native EditText so Android's underline tint
+                applies to its original background, not a layered RN border. */}
+            <View style={styles.inputBorder}>
+              <TextInput
+                autoFocus
+                editable={!generating}
+                accessibilityLabel={t("chat.renameTitle")}
+                onChangeText={setRenameValue}
+                onSubmitEditing={save}
+                placeholder={t("sessions.unnamed")}
+                placeholderTextColor={colors.inkMuted}
+                returnKeyType="done"
+                style={styles.nameInput}
+                underlineColorAndroid="transparent"
+                value={renameValue}
+              />
+            </View>
             {onGenerate && (
               <Pressable accessibilityRole="button"
                 accessibilityLabel={t(generating ? "chat.generatingTitle" : "chat.generateTitle")}
@@ -151,17 +155,20 @@ const styles = StyleSheet.create({
   hint: { color: colors.inkMuted, fontSize: 12, lineHeight: 18 },
   error: { color: colors.danger, fontSize: 12 },
   dialogTitle: { flex: 1, color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
-  nameInput: {
+  inputBorder: {
     flex: 1,
     minWidth: 0,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    overflow: "hidden",
+  },
+  nameInput: {
     minHeight: 48,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     fontSize: 15,
     color: colors.ink,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
   },
   dialogActions: { flexDirection: "row", gap: spacing.md },
   dialogAction: { flex: 1 },

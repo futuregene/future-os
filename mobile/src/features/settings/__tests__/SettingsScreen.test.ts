@@ -37,6 +37,7 @@ const props = { onClose: jest.fn(), onManageDesktops: jest.fn(), onCheckUpdate: 
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const toggle = (label: string) => tree.root.findAllByType(SettingsSwitch).find(node => node.props.label === label)!;
+async function openPreferences() { await act(async () => link("desktopSettings.preferences").props.onPress()); }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
 beforeEach(async () => {
@@ -55,6 +56,9 @@ afterEach(() => act(() => tree.unmount()));
 test("groups scrollable desktop settings separately from phone preferences and saves to desktop", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.currentDesktop");
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(0);
+  expect(tree.root.findAllByType(Button)).toHaveLength(0);
+  await openPreferences();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.value).toBe(true);
   await act(async () => toggle("desktopSettings.autoTitleFirstTurn").props.onChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ autoTitleFirstTurn: false });
@@ -63,6 +67,7 @@ test("groups scrollable desktop settings separately from phone preferences and s
 });
 
 test("reloads a desktop-originated change", async () => {
+  await openPreferences();
   stored.autoConnectRemote = true;
   mockRemote.desktopSettingsRevision++;
   await act(async () => tree.update(createElement(SettingsScreen, props)));
@@ -72,12 +77,14 @@ test("reloads a desktop-originated change", async () => {
 test("offline and old desktops cannot write new preferences", async () => {
   mockRemote.desktopOnline = false;
   await act(async () => tree.update(createElement(SettingsScreen, props)));
-  expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   expect(link("desktopSettings.models").props.disabled).toBe(true);
+  await openPreferences();
+  expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   mockRemote.desktopOnline = true;
   mockRemote.capabilities.clear();
   await act(async () => tree.update(createElement(SettingsScreen, props)));
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
+  act(() => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!.props.onPress());
   expect(link("desktopSettings.skills").props.disabled).toBe(true);
   expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
 });
@@ -107,10 +114,36 @@ test("skill operations target desktop and removal needs confirmation", async () 
 });
 
 test("failed reads leave mutations disabled instead of inventing mobile defaults", async () => {
+  await openPreferences();
   mockRemote.getDesktopSettings.mockRejectedValueOnce(new Error("offline"));
   mockRemote.desktopSettingsRevision++;
   await act(async () => tree.update(createElement(SettingsScreen, props)));
   await flush();
   expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(true);
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.loadFailed");
+  await act(async () => button("common.retry").props.onPress());
+  expect(toggle("desktopSettings.autoTitleFirstTurn").props.disabled).toBe(false);
+  expect(tree.root.findAllByType(Button)).toHaveLength(0);
+});
+
+test("phone and desktop actions remain accessible as compact rows", async () => {
+  act(() => link("desktops.title").props.onPress());
+  act(() => link("sessions.unpair").props.onPress());
+  act(() => link("update.check").props.onPress());
+  expect(props.onManageDesktops).toHaveBeenCalledTimes(1);
+  expect(props.onUnpair).toHaveBeenCalledTimes(1);
+  expect(props.onCheckUpdate).toHaveBeenCalledTimes(1);
+  expect(link("sessions.unpair").props.destructive).toBe(true);
+  await act(async () => tree.update(createElement(SettingsScreen, { ...props, checkingUpdate: true })));
+  expect(link("update.check").props.disabled).toBe(true);
+  expect(link("update.check").props.loading).toBe(true);
+  act(() => link("language.title").props.onPress());
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.language");
+});
+
+test("preferences auto-load without a persistent refresh button", async () => {
+  await openPreferences();
+  expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
+  expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
