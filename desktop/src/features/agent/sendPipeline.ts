@@ -93,8 +93,8 @@ export async function runSendPipeline(
     content: "",
     status: "streaming",
     createdAt: new Date(runStartAnchorMs).toISOString(),
-    // Mid-reasoning from the outset; the footer shows a "thinking…" hint (when
-    // show-thinking is off) instead of a top-of-message activity line.
+    // Mid-reasoning from the outset; the footer shows a "thinking…" hint until
+    // an inline reasoning segment arrives, instead of a top-of-message line.
     thinkingActive: true,
     modelId,
     runStartedAt: runStartAnchorMs,

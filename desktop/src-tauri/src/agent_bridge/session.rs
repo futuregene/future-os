@@ -725,7 +725,6 @@ mod tests {
         crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
             approval_tier: Some("sandbox".to_string()),
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,

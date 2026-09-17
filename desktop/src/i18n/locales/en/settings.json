@@ -37,10 +37,6 @@
       }
     }
   },
-  "showThinking": {
-    "title": "Show thinking process",
-    "description": "Display the model's reasoning in the conversation"
-  },
   "autoUpgradeSkills": {
     "title": "Auto-upgrade skills",
     "description": "Silently upgrade installed skills to their latest version each time the app opens"

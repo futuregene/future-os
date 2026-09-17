@@ -599,7 +599,7 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`、`show_thinking`，见 `store/app_settings.rs`；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`，见 `store/app_settings.rs`；已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。

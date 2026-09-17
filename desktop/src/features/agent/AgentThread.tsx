@@ -55,7 +55,6 @@ interface AgentThreadProps {
   onThinkingLevelChange: (thinkingLevel: string) => void;
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
-  showThinking: boolean;
   pendingPrompt: {
     attachments?: MessageAttachment[];
     id: string;
@@ -95,7 +94,6 @@ export function AgentThread({
   onThinkingLevelChange,
   approvalTier,
   onChangeApprovalTier,
-  showThinking,
   pendingPrompt,
   activeApproval,
   onApprovalDecision,
@@ -524,7 +522,6 @@ export function AgentThread({
                   : (
                       <MessageList
                         messages={visibleMessages}
-                        showThinking={showThinking}
                         workspaceId={renderWorkspace.workspaceId}
                         workspacePath={renderWorkspace.workspacePath}
                         onContinue={handleContinueMessage}
