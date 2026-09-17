@@ -452,6 +452,24 @@ async fn apply_cli_options(addr: &str, session_id: &str, args: &CliArgs) -> Resu
             }
         }
     }
+    if args.no_context_files {
+        let cmd = cfg(
+            "cfg9",
+            "set_context_files",
+            RpcCommand {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let resp = execute_unary(addr, cmd, GRPC_DEADLINE_SEC).await?;
+        if !resp.success {
+            return Err(if resp.error.is_empty() {
+                "unknown error".to_string()
+            } else {
+                resp.error.clone()
+            });
+        }
+    }
     Ok(())
 }
 
@@ -911,7 +929,7 @@ async fn run_interactive(args: &CliArgs) -> u8 {
     })));
 
     let (client, mut event_rx, mut conn_rx) = GrpcClient::new(&args.grpc_addr);
-    let client = Arc::new(client);
+    let client = Arc::new(client.with_no_context_files(args.no_context_files));
 
     let cli_options = CliOptions {
         session: args.session.clone(),
@@ -1600,6 +1618,7 @@ mod tests {
             "--no-builtin-tools",
             "--append-system-prompt",
             "extra",
+            "--no-context-files",
         ]);
         apply_cli_options(&addr, "s1", &a).await.unwrap();
         // Every block must name its command: an unnamed one reaches the Agent
@@ -1615,6 +1634,7 @@ mod tests {
                 "set_ephemeral",
                 "disable_builtin_tools",
                 "append_system_prompt",
+                "set_context_files",
             ]
         );
     }
@@ -1642,6 +1662,8 @@ mod tests {
             &["--no-session"],
             &["--no-builtin-tools"],
             &["--append-system-prompt", "x"],
+            &["--no-context-files"],
+            &["-nc"],
         ];
         for arg_set in arg_sets {
             let a = args(arg_set);
@@ -1660,7 +1682,7 @@ mod tests {
         apply_cli_options(&loud, "s1", &a).await.unwrap();
     }
 
-    /// The eight commands `apply_cli_options` can send.
+    /// The commands `apply_cli_options` can send.
     fn option_command_types() -> HashSet<String> {
         [
             "set_model",
@@ -1671,10 +1693,28 @@ mod tests {
             "set_ephemeral",
             "disable_builtin_tools",
             "append_system_prompt",
+            "set_context_files",
         ]
         .iter()
         .map(|name| name.to_string())
         .collect()
+    }
+
+    #[tokio::test]
+    async fn print_no_context_files_rejection_prevents_prompt() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let addr = spawn_mock(MockAgent {
+            command_data: new_session_data(),
+            seen_commands: seen.clone(),
+            fail_types: HashSet::from(["set_context_files".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(
+            run_print_mode(&addr, &args(&["-p", "hello", "-nc"])).await,
+            Err("boom".into())
+        );
+        assert_eq!(*seen.lock().unwrap(), ["new_session", "set_context_files"]);
     }
 
     #[tokio::test]

@@ -122,6 +122,7 @@ struct Inner {
 /// `new()` (a single-consumer receiver cannot live behind a shared `Arc`).
 pub struct GrpcClient {
     inner: Arc<Inner>,
+    no_context_files: bool,
 }
 
 impl GrpcClient {
@@ -164,7 +165,20 @@ impl GrpcClient {
         // Heartbeat: detects silent disconnections (agent SIGKILL'd).
         spawn_heartbeat(inner.clone());
 
-        (GrpcClient { inner }, events, connection_changes)
+        (
+            GrpcClient {
+                inner,
+                no_context_files: false,
+            },
+            events,
+            connection_changes,
+        )
+    }
+
+    /// Keep the CLI opt-out across /new, switch, fork and agent reconnects.
+    pub fn with_no_context_files(mut self, disabled: bool) -> Self {
+        self.no_context_files = disabled;
+        self
     }
 
     // ─── Connection state ──────────────────────────────────────────────
@@ -275,6 +289,26 @@ impl GrpcClient {
             }
         }
 
+        // Apply the opt-out to the exact session this request addresses, even
+        // after /new or reconnect. Fail closed: an older/unavailable agent must
+        // not receive a prompt with project instructions unexpectedly enabled.
+        if self.no_context_files
+            && !cmd.session_id.is_empty()
+            && matches!(r#type, "prompt" | "get_state" | "reload_config")
+        {
+            execute_unary(
+                &self.inner.addr,
+                RpcCommand {
+                    id: now_id(),
+                    r#type: "set_context_files".to_string(),
+                    session_id: cmd.session_id.clone(),
+                    enabled: false,
+                    ..Default::default()
+                },
+                GRPC_DEADLINE_SEC,
+            )
+            .await?;
+        }
         let result = execute_unary(&self.inner.addr, cmd, GRPC_DEADLINE_SEC).await;
         if let Err(ref err) = result {
             // On transport error, trigger reconnect so the stream comes back.
@@ -1277,6 +1311,7 @@ mod tests {
         seen: Arc<std::sync::Mutex<Vec<String>>>,
         /// (type, session_id) of every command, for routing assertions.
         seen_sessions: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        requests: Arc<std::sync::Mutex<Vec<RpcCommand>>>,
         /// Answer success=false with this error string for these types.
         fail_with: StdHashMap<String, String>,
         /// stream_events returns a tonic error immediately.
@@ -1296,6 +1331,7 @@ mod tests {
             request: tonic::Request<RpcCommand>,
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
+            self.requests.lock().unwrap().push(cmd.clone());
             self.seen.lock().unwrap().push(cmd.r#type.clone());
             self.seen_sessions
                 .lock()
@@ -1369,6 +1405,62 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
+    }
+
+    #[tokio::test]
+    async fn no_context_files_follows_session_changes_and_precedes_requests() {
+        let mock = ApiMock::default();
+        let requests = mock.requests.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        let client = client.with_no_context_files(true);
+        for session_id in ["first-session", "new-session"] {
+            client.set_current_session_id(session_id);
+            wait_connected(&mut conn).await;
+            for command in ["get_state", "reload_config", "prompt"] {
+                client.call(command, RpcCommand::default()).await.unwrap();
+            }
+        }
+        let requests = requests.lock().unwrap();
+        let relevant: Vec<_> = requests
+            .iter()
+            .filter(|cmd| cmd.r#type != "list_models")
+            .collect();
+        assert_eq!(relevant.len(), 12);
+        for (pair, session_id) in relevant.chunks_exact(2).zip([
+            "first-session",
+            "first-session",
+            "first-session",
+            "new-session",
+            "new-session",
+            "new-session",
+        ]) {
+            assert_eq!(pair[0].r#type, "set_context_files");
+            assert!(!pair[0].enabled);
+            assert_eq!(pair[0].session_id, session_id);
+            assert_eq!(pair[1].session_id, session_id);
+        }
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn no_context_files_rejection_prevents_prompt() {
+        let mock = ApiMock {
+            fail_with: StdHashMap::from([("set_context_files".into(), "unsupported".into())]),
+            ..Default::default()
+        };
+        let seen = mock.seen.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
+        let client = client.with_no_context_files(true);
+        client.set_current_session_id("s1");
+        wait_connected(&mut conn).await;
+        assert_eq!(
+            client.prompt("hi", "enqueue_if_busy").await.unwrap_err(),
+            "unsupported"
+        );
+        assert!(!seen.lock().unwrap().iter().any(|cmd| cmd == "prompt"));
+        client.disconnect();
     }
 
     #[test]
