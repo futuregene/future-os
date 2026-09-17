@@ -15,8 +15,9 @@
   - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
   - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。
   - **Unrestricted(不受限，默认)** —— 不询问、不沙箱，一切照跑。
-- **Show thinking process(显示思考过程)** —— 在对话里显示或隐藏模型的推理过程。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
+
+思考过程在对话中默认折叠，始终可以点击展开，无需先到设置中开启。
 
 默认值、Linux 安装、诊断与限制见 [[审批与沙箱|Sandbox]]；批准卡片用法见 [[使用 FutureOS|Using-FutureOS]]。
 

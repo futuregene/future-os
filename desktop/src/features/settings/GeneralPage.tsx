@@ -11,8 +11,6 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPr
 export function GeneralPage({
   approvalTier,
   onChangeApprovalTier,
-  showThinking,
-  onToggleShowThinking,
   autoUpgradeSkills,
   onToggleAutoUpgradeSkills,
   bellOnComplete,
@@ -22,8 +20,6 @@ export function GeneralPage({
 }: {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
-  showThinking: boolean;
-  onToggleShowThinking: (value: boolean) => void;
   autoUpgradeSkills: boolean;
   onToggleAutoUpgradeSkills: (value: boolean) => void;
   bellOnComplete: boolean;
@@ -91,12 +87,6 @@ export function GeneralPage({
               />
             )
           : null}
-        <SettingsRow
-          title={t("showThinking.title")}
-          description={t("showThinking.description")}
-        >
-          <Switch checked={showThinking} label={t("showThinking.title")} onChange={onToggleShowThinking} />
-        </SettingsRow>
         <SettingsRow
           title={t("autoUpgradeSkills.title")}
           description={t("autoUpgradeSkills.description")}

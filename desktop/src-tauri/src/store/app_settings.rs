@@ -14,8 +14,6 @@ pub struct AppSettings {
     pub approval_tier: String,
     /// Model identifiers (`provider/id`) hidden from the model picker.
     pub hidden_models: Vec<String>,
-    /// Show the model's thinking/reasoning content in the chat. On by default.
-    pub show_thinking: bool,
     /// Silently upgrade installed skills to their latest catalogue version on
     /// app open (and immediately when toggled on). On by default.
     pub auto_upgrade_skills: bool,
@@ -48,7 +46,6 @@ pub struct AppSettings {
 pub struct UpdateAppSettingsInput {
     pub approval_tier: Option<String>,
     pub hidden_models: Option<Vec<String>>,
-    pub show_thinking: Option<bool>,
     pub auto_upgrade_skills: Option<bool>,
     pub auto_connect_remote: Option<bool>,
     pub skill_guide_dismissed: Option<bool>,
@@ -62,7 +59,6 @@ pub struct UpdateAppSettingsInput {
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
 const KEY_HIDDEN_MODELS: &str = "hidden_models";
-const KEY_SHOW_THINKING: &str = "show_thinking";
 const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
 const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
@@ -140,10 +136,6 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let json = serde_json::to_string(&hidden_models)?;
         write_value(&tx, KEY_HIDDEN_MODELS, &json, now)?;
     }
-    if let Some(show_thinking) = input.show_thinking {
-        let value = if show_thinking { "true" } else { "false" };
-        write_value(&tx, KEY_SHOW_THINKING, value, now)?;
-    }
     if let Some(auto_upgrade_skills) = input.auto_upgrade_skills {
         let value = if auto_upgrade_skills { "true" } else { "false" };
         write_value(&tx, KEY_AUTO_UPGRADE_SKILLS, value, now)?;
@@ -219,9 +211,6 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
         .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
         .unwrap_or_default();
-    let show_thinking = read_value(conn, KEY_SHOW_THINKING)?
-        .map(|value| value == "true")
-        .unwrap_or(true);
     let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — keeps skills current without manual intervention.
@@ -249,7 +238,6 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     Ok(AppSettings {
         approval_tier,
         hidden_models,
-        show_thinking,
         auto_upgrade_skills,
         auto_connect_remote,
         skill_guide_dismissed,
@@ -300,7 +288,6 @@ mod tests {
         UpdateAppSettingsInput {
             approval_tier: Some("sandbox".to_string()),
             hidden_models: Some(vec!["openai/gpt-x".to_string()]),
-            show_thinking: Some(false),
             auto_upgrade_skills: Some(false),
             auto_connect_remote: Some(true),
             skill_guide_dismissed: Some(true),
@@ -319,12 +306,41 @@ mod tests {
         let settings = get_app_settings().expect("get settings");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
-        assert!(settings.show_thinking);
         assert!(settings.auto_upgrade_skills);
         assert!(!settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
         assert!(!settings.community_edition);
+    }
+
+    #[test]
+    fn retired_thinking_preference_is_ignored_and_not_returned() {
+        let (_home, conn) = guarded_conn("settings_retired_thinking");
+        for value in ["false", "true", "invalid"] {
+            // Existing installations can retain this unused key; removing a
+            // preference does not require a destructive database migration.
+            write_value(&conn, "show_thinking", value, 1).expect("legacy preference");
+            let settings = serde_json::to_value(get_app_settings().expect("read settings"))
+                .expect("serialize settings");
+            assert!(settings.get("showThinking").is_none());
+
+            let input = serde_json::from_value(serde_json::json!({
+                "showThinking": false,
+                "bellOnComplete": false
+            }))
+            .expect("legacy input remains readable");
+            let updated = update_app_settings(input).expect("update settings");
+            assert!(!updated.bell_on_complete);
+            assert_eq!(
+                read_value(&conn, "show_thinking").expect("legacy key"),
+                Some(value.to_string()),
+                "the retired key must not be written"
+            );
+            assert!(serde_json::to_value(updated)
+                .expect("serialize update")
+                .get("showThinking")
+                .is_none());
+        }
     }
 
     #[test]
@@ -350,7 +366,6 @@ mod tests {
         let updated = update_app_settings(full_input()).expect("update");
         assert_eq!(updated.approval_tier, "sandbox");
         assert_eq!(updated.hidden_models, vec!["openai/gpt-x".to_string()]);
-        assert!(!updated.show_thinking);
         assert!(!updated.auto_upgrade_skills);
         assert!(updated.auto_connect_remote);
         assert!(updated.skill_guide_dismissed);
@@ -368,7 +383,6 @@ mod tests {
         let updated = update_app_settings(UpdateAppSettingsInput {
             approval_tier: Some("permissive".to_string()),
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
@@ -439,7 +453,6 @@ mod tests {
         // …corrupt JSON decodes to the empty list…
         write_value(&conn, KEY_HIDDEN_MODELS, "{not json", 1).expect("write models");
         // …and non-"true" booleans read as false.
-        write_value(&conn, KEY_SHOW_THINKING, "yes", 1).expect("write thinking");
         write_value(&conn, KEY_AUTO_UPGRADE_SKILLS, "0", 1).expect("write upgrade");
         write_value(&conn, KEY_AUTO_CONNECT_REMOTE, "true", 1).expect("write remote");
         write_value(&conn, KEY_BELL_ON_COMPLETE, "yes", 1).expect("write bell");
@@ -448,7 +461,6 @@ mod tests {
         let settings = read_app_settings(&conn).expect("read");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
-        assert!(!settings.show_thinking);
         assert!(!settings.auto_upgrade_skills);
         assert!(settings.auto_connect_remote);
         assert!(!settings.bell_on_complete);
@@ -462,7 +474,6 @@ mod tests {
         let settings = update_app_settings(UpdateAppSettingsInput {
             approval_tier: None,
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: None,
@@ -483,7 +494,6 @@ mod tests {
         let updated = update_app_settings(UpdateAppSettingsInput {
             approval_tier: None,
             hidden_models: None,
-            show_thinking: None,
             auto_upgrade_skills: None,
             auto_connect_remote: None,
             skill_guide_dismissed: Some(false),

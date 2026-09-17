@@ -6,9 +6,8 @@ import { AgentActivityLine } from "./AgentActivityList";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 /** A single quiet summary on the right; revealed steps return to the reading column. */
-export function ReplySteps({ segments, showThinking, workspaceId, workspacePath, runId }: {
+export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
   segments: StepSegment[];
-  showThinking?: boolean;
   workspaceId?: string | null;
   workspacePath?: string | null;
   runId?: string | null;
@@ -60,7 +59,7 @@ export function ReplySteps({ segments, showThinking, workspaceId, workspacePath,
         ? (
             <div className="min-w-0 space-y-1 pl-6">
               {segments.map(segment => segment.kind === "thinking"
-                ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} showContent={showThinking} inSteps />
+                ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} inSteps />
                 : <AgentActivityLine key={segment.id} item={segment.item} workspacePath={workspacePath} runId={runId} inSteps />)}
             </div>
           )
