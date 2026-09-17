@@ -848,8 +848,8 @@ First-version priority:
 - `app_settings` (app-level settings key-value table: `approval_tier`
   (`manual`/`sandbox`/`off`), `hidden_models`, `remote_pair_id`,
   `auto_compact_first_turn` (legacy stored key retained for
-  `autoTitleFirstTurn`: boolean, absent means false; now generates and saves a
-  title after the first answer only, never compacts context), `title_language`
+  `autoTitleFirstTurn`: boolean, absent means true; explicitly saved false stays
+  disabled. Generates and saves a title after the first answer only, never compacts context), `title_language`
   (`en`/`zh`, default `en`, mirrored from the Desktop UI for background title
   generation). Both use the existing key-value table with absent-key defaults;
   no structural migration is needed — see `store/app_settings.rs`;

@@ -6,6 +6,34 @@ use super::{missing_session, qualified_model_id, reply, reply_unit};
 
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
+        "get_desktop_settings" => {
+            reply_settings(sink, crate::store::get_app_settings()).await;
+        }
+        "update_desktop_settings" => {
+            let result = parse_settings_patch(cmd.settings.clone())
+                .and_then(crate::store::update_app_settings);
+            reply_settings(sink, result).await;
+        }
+        "list_settings_models" => match crate::agent_bridge::get_available_models().await {
+            Ok(data) => reply(sink, true, data, None).await,
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "list_available_skills" => match crate::skills::list_available_skills().await {
+            Ok(skills) => reply(sink, true, json!({ "skills": skills }), None).await,
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "install_skill" => {
+            reply_unit(
+                sink,
+                crate::skills::install_and_refresh(cmd.skill_id.clone(), cmd.version.clone()).await,
+            )
+            .await;
+        }
+        "uninstall_skill" => match crate::skills::uninstall_and_refresh(cmd.skill_id.clone()).await
+        {
+            Ok(removed) => reply(sink, true, json!({ "removed": removed }), None).await,
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
         "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
             Ok(data) => reply(sink, true, data, None).await,
             Err(error) if missing_session(&error) => reply(sink, true, json!({}), None).await,
@@ -114,6 +142,58 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
         }
         _ => unreachable!("settings handler received {}", cmd.cmd_type),
+    }
+}
+
+/// A deliberately narrow write surface. A paired phone cannot change debug
+/// environment, billing, language, credentials, or arbitrary stored keys here.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SettingsPatch {
+    auto_upgrade_skills: Option<bool>,
+    auto_title_first_turn: Option<bool>,
+    auto_connect_remote: Option<bool>,
+    hidden_models: Option<Vec<String>>,
+}
+
+fn parse_settings_patch(
+    value: Value,
+) -> Result<crate::store::UpdateAppSettingsInput, crate::AppError> {
+    let patch: SettingsPatch = serde_json::from_value(value)?;
+    if patch.hidden_models.as_ref().is_some_and(|models| {
+        models.len() > 10_000 || models.iter().any(|id| id.is_empty() || id.len() > 1024)
+    }) {
+        return Err("Invalid model visibility list".into());
+    }
+    Ok(crate::store::UpdateAppSettingsInput {
+        auto_upgrade_skills: patch.auto_upgrade_skills,
+        auto_title_first_turn: patch.auto_title_first_turn,
+        auto_connect_remote: patch.auto_connect_remote,
+        hidden_models: patch.hidden_models,
+        ..Default::default()
+    })
+}
+
+async fn reply_settings(
+    sink: &dyn ReplySink,
+    result: Result<crate::store::AppSettings, crate::AppError>,
+) {
+    match result {
+        Ok(settings) => {
+            reply(
+                sink,
+                true,
+                json!({
+                    "autoUpgradeSkills": settings.auto_upgrade_skills,
+                    "autoTitleFirstTurn": settings.auto_title_first_turn,
+                    "autoConnectRemote": settings.auto_connect_remote,
+                    "hiddenModels": settings.hidden_models,
+                }),
+                None,
+            )
+            .await
+        }
+        Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
     }
 }
 

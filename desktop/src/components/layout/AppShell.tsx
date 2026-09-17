@@ -395,6 +395,10 @@ export function AppShell() {
   // Sessions created outside the GUI (TUI/CLI/channels) were imported into the
   // store by the backend — refresh the thread list so they appear in the
   // sidebar without a user action.
+  useTauriEvent("skills_changed", () => {
+    emitFutureEvent("skills-changed", undefined);
+  });
+
   useTauriEvent("threads-updated", () => {
     void refreshStore();
   });

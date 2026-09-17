@@ -15,6 +15,7 @@ import { RemoteClient } from "./client";
 import { connectionPresentation as buildConnectionPresentation } from "./connectionPresentation";
 import type { ConnectionPresentation } from "./connectionPresentation";
 import { useConversationController } from "./useConversationController";
+import { useDesktopManagement } from "./useDesktopManagement";
 import { useSessionCatalog } from "./useSessionCatalog";
 import { usePromptOutbox } from "./usePromptOutbox";
 import { useRemoteConnection } from "./useRemoteConnection";
@@ -37,7 +38,9 @@ import type {
   ThinkingLevel,
 } from "./types";
 
-interface RemoteContextValue {
+interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
+  desktopSettingsRevision: number;
+  skillsRevision: number;
   phase: ConnectionPhase;
   error: string | null;
   credentials: RemoteCredentials | null;
@@ -136,6 +139,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const clientRef = useRef<RemoteClient | null>(null);
   const credentialsRef = useRef<RemoteCredentials | null>(null);
+  const desktopManagement = useDesktopManagement(clientRef);
+  const [desktopSettingsRevision, setDesktopSettingsRevision] = useState(0);
+  const [skillsRevision, setSkillsRevision] = useState(0);
   const selectedRef = useRef("");
   const onTaskFinished = useCallback((session: RemoteSession) => {
     const pairId = credentialsRef.current?.pairId;
@@ -219,10 +225,21 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   });
 
   const handleLiveEvent = useCallback((event: Parameters<typeof handleEvent>[0], sessionId: string) => {
+    if (event.type === "app_settings_changed") {
+      setDesktopSettingsRevision(revision => revision + 1);
+      void refreshSettings();
+      return;
+    }
+    if (event.type === "skills_changed") {
+      setSkillsRevision(revision => revision + 1);
+      return;
+    }
+    if (event.type === "provider_config_changed" || event.type === "model_visibility_changed")
+      setDesktopSettingsRevision(revision => revision + 1);
     settingsSink.current?.handleSessionSettingsEvent(event, sessionId);
     observeRunEvent(event, sessionId);
     handleEvent(event, sessionId);
-  }, [handleEvent, observeRunEvent]);
+  }, [handleEvent, observeRunEvent, refreshSettings]);
 
   const closeConversation = useCallback(() => {
     conversationEpochRef.current += 1;
@@ -378,6 +395,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }), [timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
   const value = useMemo<RemoteControls>(
     () => ({
+      ...desktopManagement,
+      desktopSettingsRevision,
+      skillsRevision,
       phase,
       error,
       credentials,
@@ -439,6 +459,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       continueRun,
     }),
     [
+      desktopManagement,
+      desktopSettingsRevision,
+      skillsRevision,
       abort,
       openingSession,
       sending,

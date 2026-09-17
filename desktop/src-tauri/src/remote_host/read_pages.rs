@@ -132,6 +132,9 @@ impl<'a> PagedReply<'a> {
                         | "get_events_since"
                         | "get_messages"
                         | "list_session_files"
+                        | "list_settings_models"
+                        | "list_available_skills"
+                        | "list_skills"
                 ),
         }
     }

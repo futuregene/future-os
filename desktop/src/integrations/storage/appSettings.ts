@@ -33,7 +33,7 @@ export interface AppSettings {
    * finishes. On by default.
    */
   bellOnComplete: boolean;
-  /** Generate and save a title after the first answer, without compacting context. Off by default. */
+  /** Generate and save a title after the first answer, without compacting context. On by default. */
   autoTitleFirstTurn: boolean;
   /** UI language mirrored for backend title generation while the webview is suspended. */
   titleLanguage: "en" | "zh";
@@ -50,7 +50,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,
-  autoTitleFirstTurn: false,
+  autoTitleFirstTurn: true,
   titleLanguage: "en",
   communityEdition: false,
 };

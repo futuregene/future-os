@@ -43,7 +43,7 @@
   },
   "autoTitleFirstTurn": {
     "title": "Generate a title after the first answer",
-    "description": "Generate and save a title after a new conversation’s first successful answer, using the same generator as the rename dialog. Later answers do not trigger it. Conversation context is not compacted. Off by default."
+    "description": "Generate and save a title after a new conversation’s first successful answer, using the same generator as the rename dialog. Later answers do not trigger it. Conversation context is not compacted. On by default."
   },
   "bellOnComplete": {
     "title": "Completion bell",

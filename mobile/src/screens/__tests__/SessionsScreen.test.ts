@@ -1,9 +1,8 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, StyleSheet, Text, View } from "react-native";
+import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
-import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -33,7 +32,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ChevronLeft", "ChevronRight", "ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -88,10 +87,11 @@ test("tablet and large-text layouts keep the status dot-only", () => {
   expect(tree.root.findByType(ConnectionBadge).findAllByType(Text)).toHaveLength(0);
 });
 
-test("settings uses the keyboard-safe scrollable dialog and can be dismissed", () => {
+test("settings uses a full-screen scrollable page and can be dismissed", () => {
   act(() => button("sessions.settings").props.onPress());
   const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
-  expect(modal.findAllByType(DialogSurface)).toHaveLength(1);
+  expect(modal.props.presentationStyle).toBe("fullScreen");
+  expect(modal.findAllByType(ScrollView).length).toBeGreaterThan(0);
   act(() => modal.props.onRequestClose());
   expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
 });
