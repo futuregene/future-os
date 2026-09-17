@@ -15,7 +15,7 @@ const failed: MessageSegment = { id: "failed", kind: "activity", item: { id: "fa
 const running: MessageSegment = { id: "running", kind: "activity", item: { id: "running", kind: "shell", status: "running", target: "npm run typecheck" } };
 const prose: MessageSegment = { id: "prose", kind: "text", text: "Visible response" };
 
-async function render(segments: MessageSegment[], { streaming = false, showThinking = true } = {}) {
+async function render(segments: MessageSegment[], { streaming = false, thinkingActive = false } = {}) {
   if (!root) {
     document.body.append(container);
     root = createRoot(container);
@@ -29,8 +29,9 @@ async function render(segments: MessageSegment[], { streaming = false, showThink
     createdAt: "2026-09-17T00:00:00Z",
     status: streaming ? "streaming" : "complete",
     segments,
+    thinkingActive,
   };
-  await act(async () => root!.render(<MessageBlock message={message} showThinking={showThinking} hovered={false} onHover={vi.fn()} onLeave={vi.fn()} workspacePath="/workspace" />));
+  await act(async () => root!.render(<MessageBlock message={message} hovered={false} onHover={vi.fn()} onLeave={vi.fn()} workspacePath="/workspace" />));
 }
 
 function summary() {
@@ -91,19 +92,26 @@ it("expands steps in timeline order on the left and keeps each detail independen
   expect(container.textContent).not.toContain("file.ts");
 });
 
-it("preserves the show-thinking setting as a gate on content without losing the summary count", async () => {
-  await render([thought, tool], { showThinking: false });
-  expect(summary().textContent).toBe("×1·×1");
-  await click(summary());
-  expect(container.textContent).toContain(i18n.t("agent:activity.thoughtCompleted"));
+it("always lets users expand and collapse standalone reasoning without a setting", async () => {
+  await render([thought]);
+  const thoughtButton = container.querySelector("button[aria-expanded]")!;
+  expect(thoughtButton.getAttribute("aria-expanded")).toBe("false");
   expect(container.textContent).not.toContain("Full reasoning content");
-  expect(summary().nextElementSibling!.querySelectorAll("button")).toHaveLength(1);
-  await render([thought, tool], { showThinking: true });
-  const thoughtButton = summary().nextElementSibling!.querySelector("button")!;
   await click(thoughtButton);
+  expect(thoughtButton.getAttribute("aria-expanded")).toBe("true");
   expect(container.textContent).toContain("Full reasoning content");
-  await render([thought, tool], { showThinking: false });
+  await click(thoughtButton);
   expect(container.textContent).not.toContain("Full reasoning content");
+});
+
+it("keeps the initial thinking hint until an inline reasoning row arrives", async () => {
+  await render([], { streaming: true, thinkingActive: true });
+  expect(container.textContent).toContain(i18n.t("agent:message.thinking"));
+  await render([thought], { streaming: true, thinkingActive: true });
+  expect(container.textContent).not.toContain(i18n.t("agent:message.thinking"));
+  expect(container.textContent).toContain(i18n.t("agent:activity.thinking"));
+  await render([]);
+  expect(container.textContent).not.toContain(i18n.t("agent:message.thinking"));
 });
 
 it("keeps live reasoning outside the group, collapsed but expandable", async () => {

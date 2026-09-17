@@ -20,8 +20,6 @@ it("offers opt-in title generation without context compaction", async () => {
       <GeneralPage
         approvalTier="off"
         onChangeApprovalTier={() => {}}
-        showThinking={false}
-        onToggleShowThinking={() => {}}
         autoUpgradeSkills={false}
         onToggleAutoUpgradeSkills={() => {}}
         bellOnComplete
@@ -30,6 +28,9 @@ it("offers opt-in title generation without context compaction", async () => {
         onToggleAutoTitleFirstTurn={onToggle}
       />,
     ));
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(3);
+    expect(container.textContent).not.toContain("Show thinking process");
+    expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");
     expect(toggle).not.toBeNull();
     expect(toggle!.getAttribute("aria-checked")).toBe("false");

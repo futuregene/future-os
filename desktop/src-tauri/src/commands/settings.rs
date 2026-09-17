@@ -30,12 +30,10 @@ mod tests {
         let _home = init("cmd_settings");
         let defaults = get_app_settings().expect("get defaults");
         assert_eq!(defaults.approval_tier, "off");
-        assert!(defaults.show_thinking);
 
         let updated = update_app_settings(store::UpdateAppSettingsInput {
             approval_tier: Some("manual".into()),
             hidden_models: Some(vec!["openai/gpt-x".into()]),
-            show_thinking: Some(false),
             auto_upgrade_skills: Some(false),
             auto_connect_remote: Some(true),
             skill_guide_dismissed: None,
@@ -47,7 +45,6 @@ mod tests {
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");
-        assert!(!updated.show_thinking);
         assert!(updated.community_edition);
         assert_eq!(
             get_app_settings().expect("get after update").hidden_models,
