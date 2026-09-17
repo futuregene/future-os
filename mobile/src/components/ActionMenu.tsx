@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -23,8 +23,12 @@ export function ActionMenu({ title, visible, actions, onClose }: {
   onClose(): void;
 }) {
   const { t } = useTranslation();
+  const [expandedTitle, setExpandedTitle] = useState<string | null>(null);
+  if (expandedTitle !== null && (!visible || expandedTitle !== title)) setExpandedTitle(null);
+  const titleExpanded = expandedTitle !== null && expandedTitle === title;
   const pending = useRef<(() => void) | null>(null);
   const dismiss = () => {
+    setExpandedTitle(null);
     pending.current = null;
     onClose();
   };
@@ -39,12 +43,22 @@ export function ActionMenu({ title, visible, actions, onClose }: {
         <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={dismiss} />
         <View accessibilityViewIsModal style={styles.menu}>
           <View style={styles.header}>
-            <Text accessibilityRole="header" style={styles.title}>{title}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={title}
+              accessibilityHint={t(titleExpanded ? "common.hideFullTitle" : "common.showFullTitle")}
+              accessibilityState={{ expanded: titleExpanded }}
+              onPress={() => setExpandedTitle(titleExpanded ? null : title)}
+              style={styles.titleButton}
+            >
+              <Text accessibilityRole="header" numberOfLines={1} ellipsizeMode="middle" style={styles.title}>{title}</Text>
+            </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={dismiss} style={styles.close}>
               <X color={colors.inkSoft} size={20} />
             </Pressable>
           </View>
           <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.options}>
+            {titleExpanded && <Text selectable={Platform.OS === "ios"} style={styles.fullTitle}>{title}</Text>}
             {actions.map((action, index) => (
               <Pressable
                 key={`${index}:${action.label}`}
@@ -82,7 +96,9 @@ const styles = StyleSheet.create({
   overlay: { flex: 1, justifyContent: "flex-end", padding: layout.gutter, backgroundColor: colors.overlay },
   menu: { width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", maxHeight: "85%", overflow: "hidden", padding: spacing.sm, borderRadius: radius.xl, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, marginBottom: spacing.sm },
-  title: { flex: 1, paddingVertical: spacing.sm, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  titleButton: { flex: 1, minWidth: 0, minHeight: layout.touchTarget, justifyContent: "center", paddingVertical: spacing.sm },
+  title: { color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  fullTitle: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, color: colors.inkSoft, fontSize: 14, lineHeight: 21 },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   options: { gap: spacing.xs, paddingBottom: spacing.sm },
   option: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md },
