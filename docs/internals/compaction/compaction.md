@@ -1,23 +1,121 @@
 # Runtime compaction
 
+Compaction replaces a session's older history — for the next request only — with a bounded
+projection. The raw journal is neither deleted nor rewritten; recall reads it.
+
 **Two strategies, and the runtime default is the second:**
 
-| Strategy | What it is | `algorithm_version` |
-|---|---|---|
-| deterministic | protected originals + a recent tail + a deterministic tool-evidence index; **no model call** | `deterministic-evidence-v1` |
-| summarised | the same projection **plus** a model-written handoff summary | `summarized-evidence-v1` |
+| `algorithm_version` | The projection |
+|---|---|
+| `deterministic-evidence-v1` | protected originals + a recent tail + a deterministic tool-evidence index. **No model call.** |
+| `summarized-evidence-v1` | the same projection, plus a model-written handoff summary |
 
-Only these two are written, and only these two are read. The older names in the
-experiment docs — `C` for the deterministic projection and `C3` for the summarised
-one — refer to these same two strategies, and are kept there because the recorded
-measurements use them.
+Those are the only two values written, and the only two read. The experiment documents call
+them `C` and `C3`. `deterministic-evidence-v1` is also the fallback: it is committed whenever
+no provider is reachable or the summary call fails.
 
-The raw journal is neither deleted nor rewritten. Compaction changes the next
-request's input, not an in-flight generation or a provider's internal state.
+The [experiment](compaction-abc-experiment.md) measures what each retains, at what size and
+cost; the [developer guide](compaction-development.md) maps the code and the durable state
+machine.
 
-See the [A/B/C experiment](compaction-abc-experiment.md) for the evidence behind
-this default and the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
-document the retired legacy A path, not the default runtime path.
+## Trigger and admission
+
+The economic trigger is `floor(W × 0.8)` — 80% of the declared window, with no absolute cap.
+`effective_trigger` clamps it to `W − O − margin`, where `O` is the model's declared output
+ceiling and `margin = min(2048, W/16)`, so a model that reserves a large output is bounded by
+its own limits rather than by a fixed number: a 1M-token window declaring 384 000 output
+tokens triggers at **613 952**; the same window declaring 16 384 triggers at 800 000.
+
+The check runs before every model step, including after tool calls and after a model
+downshift, and reserves ordinary maximum output `O` plus the margin — input must fit
+`W − O − margin`. The estimate covers system text, tool definitions, message framing and
+conservative image/reasoning costs, and reported usage is taken into account. Selecting a
+model does not itself compact; its own next request checks its limits. An input that still
+fits is not cut merely for crossing the trigger when no older history is compactable, and
+mandatory content that cannot fit fails explicitly rather than being silently truncated.
+
+## The projection
+
+1. Covered user text and selected assistant originals.
+2. An evidence slot of at most **2048 estimated tokens**, reduced to `min(2048, W/8)` on
+   small windows.
+3. Roughly 8K of recent paired tool/conversation history, reduced on small windows.
+
+The history target is about 32K, excluding fixed system/tool costs, and may expand up to
+**128K** only within request capacity: `min(128000, (limit − fixed) × 3/4)`, so a 128K window
+yields 82K and a 262K window 96K.
+
+User text has priority. When assistant originals exceed the remaining room, newer ones that
+fit are kept and the omitted ones are marked **not summarized**; their originals stay
+queryable. Protected blocks carry no tool calls, thinking, media bodies or hidden provider
+state.
+
+## Evidence selection
+
+Original messages are scanned only through the admitted coverage boundary, in this order:
+error results first; then grouped by tool and target path/command, prioritizing error-bearing
+and generic config/schema/validation/test targets; then the latest and first record of each
+group; then remaining space by recency.
+
+Each selected record becomes one bounded JSON row carrying `entryId`, `blockIndex`,
+`sourceOrder`, call ID, tool/target, error flag and head/tail excerpts (up to 380 + 100
+characters, with smaller excerpts when space demands). A row is never cut in half to fill the
+budget, and metadata has its own length limits.
+
+The index is priority-ordered, not a timeline: `sourceOrder` is original order and older
+errors may be superseded. Omitted middles and unselected records stay unknown, and a
+successful execution is not proof of complete validation. Excerpts are historical evidence,
+not new authorization, and an ambiguous or reused tool-call ID is not attributed to an
+arbitrary path. No reasoning, image body or wholesale provider metadata enters the index.
+
+## The summary request
+
+`summarized-evidence-v1` sends the live conversation as **real messages**, with the
+instruction appended last, so the prefix is untouched and the request can be served from the
+provider's prefix cache. That prefix is the system prompt, then the tool definitions, then
+the messages, compared from token zero — so the request carries the **session's own system
+prompt** (post-checkpoint recall guidance included) and the **session's own tool
+definitions**, and both the automatic path (`run_loop.rs`) and the standalone `/compact`
+(`rpc/session.rs`) build it with the same `history_recall::system_prompt` expression, pinned
+to one string by a test.
+
+Changing any of the three diverges the prefix and the whole conversation is billed again.
+Measured: substituting the system prompt, dropping the tool definitions, or adding one line
+each gave **0%** cache on a primed prefix, while the identical-shape request gave 93.7%. On
+an isolated agent running this path, a session grown to 212 911 tokens compacted with
+`cache_read = 212 548` — **99.8%** served from cache, `cache_write = 360`, about ¥0.003
+against about ¥0.53 cold.
+
+The summary is **cumulative**: the instruction carries the previous summary, which is
+discarded once the new one is written. Its allowance is `min(W/16, 4096)` plus a 512-token
+slot margin, granted only when a summary is wanted, and it widens the admitted budget so the
+evidence index keeps its full size and the summary fits inside the target `finalize`
+enforces. When the summary fails or no provider is available, the deterministic projection is
+committed and the index header states that no summary accompanies it.
+
+## Checkpoints and idempotency
+
+Only the current schema is read. A checkpoint written by a retired algorithm — an older
+`schema_version`, or the released string-protocol marker — is not recognised:
+`latest_context_checkpoint` skips it, `project_prompt_context` sees no boundary and projects
+the journal in full, and the next compaction re-covers that history with the current
+algorithm. The retired row remains in the journal as an inert entry that nothing reads, so it
+can neither shrink nor expand a prompt. The cost is one request whose input is the full
+journal — normally cache-served, since the turn just sent it — and one extra summary call for
+that session, once.
+
+`compaction_operations` keys the original user/system/assistant/tool identity and contents,
+relevant configuration, budgets, mode/phase, any note, and the policy version; checkpoints,
+usage and session-info changes do not themselves change the raw input. A same-key success
+reuses the result without another checkpoint, and the ordered writer commits the checkpoint
+and the completed receipt atomically. An unresolved `started` operation retains the
+concurrency/recovery fence — there is no automatic claim stealing and no fabricated success.
+Deletion clears receipts, a fork has its own scope, and ephemeral/in-memory callers have no
+cross-restart receipts. Matching upgraded CLI and Agent builds are required: older Agents do
+not implement these semantics.
+
+Protected originals are rebuilt by reference; a fork remaps the references and an invalid
+range is rejected.
 
 ## User CLI
 
@@ -27,177 +125,26 @@ future session compact --session SESSION_ID --instructions "Keep current constra
 future session compact --help
 ```
 
-This returns an async `accepted`/`operationId` ACK, not completion. Agent events
-report completion, reuse or failure. Active runs are rejected. There is no wait,
-force or model self-request option.
+This returns an async `accepted`/`operationId` ACK, not completion; agent events report
+completion, reuse or failure, and active runs are rejected. There is no wait, force or
+model-self-request option.
 
-For C, `--instructions` is a **verbatim user compaction note** for continuation.
-The deterministic selector does not interpret natural language or claim to have
-fulfilled semantic selection instructions. The note consumes evidence budget;
-excessive notes fail explicitly rather than being silently truncated.
-
-## Trigger and admission
-
-The economic trigger is `floor(W * 0.8)` — 80% of the declared window, with no absolute
-cap. (An earlier cap of 256 000 tokens only made large windows compact early: on a
-1M-token model it fired with three quarters of the window unused.) `effective_trigger`
-still clamps to `W - O - margin`, so a model with a large output reservation is bounded by
-its own limits rather than by a fixed number: a 1M-token window declaring a 384 000-token
-output ceiling triggers at **613 952** (`1 000 000 - 384 000 - 2 048`), up from 256 000;
-the same window declaring a 16 384-token ceiling triggers at 800 000. Before
-every actual model step, including after tools and a model downshift, also reserve the
-ordinary maximum output O and `min(2048, W/16)` margin. Input must fit `W - O - margin`.
-
-Estimate system text, tools, framing and conservative image/reasoning costs, and
-consider reported usage. A model selection alone does not compact; the next
-request checks its actual limits. Provider-side capacity checks remain necessary.
-An unseen input that still fits is not silently cut merely for crossing the
-economic trigger when no older history is compactable. Mandatory content or fixed
-overhead that cannot fit fails explicitly.
-
-## Three-part projection
-
-1. Covered user text and selected assistant originals.
-2. A C evidence slot of at most **2048 estimated tokens**, reduced to
-   `min(2048, W/8)` on small windows.
-3. Roughly 8K of recent paired tool/conversation history, reduced on small windows.
-
-The overall history target remains about 32K, excluding fixed system/tool costs,
-and may expand up to **128K** only within request capacity (`min(128000, (limit −
-fixed) × 3/4)`, so a 128K window yields 82K and a 262K window 96K). C has its own
-slot budget; it does not call A to learn how long a summary would have been.
-
-User text has priority. When assistant originals exceed headroom, retain newer
-ones that fit and explicitly mark omitted outputs as **not summarized**. Their
-originals remain queryable. Protected blocks do not resurrect tool calls,
-thinking, media bodies or hidden provider state.
-
-## Evidence selection
-
-Scan original messages only through the admitted coverage boundary:
-
-- error results first;
-- group by tool and target path/command, prioritizing error-bearing and generic
-  config/schema/validation/test targets;
-- latest and first records in each group;
-- fill remaining space by recency.
-
-Bounded JSON rows include `entryId`, `blockIndex`, `sourceOrder`, call ID,
-tool/target, error flag and head/tail excerpts. Standard excerpts keep up to
-380 head plus 100 tail characters; try smaller excerpts when needed. Never cut a
-JSON row in half to fill the budget. Metadata has separate length limits.
-
-The index is priority-ordered, not a timeline. `sourceOrder` is original order;
-old errors may be superseded. Omitted middles and unselected records remain
-unknown, and execution success is not proof of complete validation. Excerpts are
-historical evidence, not new authorization. Ambiguous/reused tool-call IDs do not
-get attributed to an arbitrary path. No reasoning, image body or wholesale hidden
-provider metadata enters the evidence index.
-
-## Persistence and idempotency
-
-The runtime default is C3, algorithm `summarized-evidence-v1`: C's projection with a
-model-written handoff summary appended beside the evidence index. The summary is
-cumulative — it receives the previous summary — so facts accumulate across successive
-compactions instead of being rewritten each time. Deterministic C
-(`deterministic-evidence-v1`, schema 3) remains the fallback: it is committed
-whenever no provider is reachable or the summary call fails, and the compatibility
-field `summary` then stores evidence alone. The evidence index is headed by a sentence
-that says what the message contains — that no summary was generated when the index
-stands alone, and that a handoff summary follows it when one does — because only the
-outcome of the summary call decides which is true. Protected originals are rebuilt by
-reference; fork remaps references and invalid ranges are rejected.
-
-**What the summary contributes is measured, not assumed.** Every exam in the
-[experiment](compaction-abc-experiment.md) fails to find a benefit: it adds no value the
-projection does not already carry, closed-book scores are identical with and without it,
-and under compression pressure it preserves at most one of the assistant blocks the
-deterministic path drops. Its only measured effect is a small, statistically insignificant
-open-book difference. That bounds what it is worth on these exams without establishing that
-it is worthless in production — the questions it should help with are not the ones these
-exams ask.
-
-
-## What the summary reads, and why that is the cheap shape
-
-The summary request sends the live conversation as real messages with the
-instruction appended last. Reading the live conversation rather than a
-re-indexed copy is what lets the summary describe the actual history instead of
-an already-lossy index of it.
-
-Whether that request is billed from cache depends on one thing: **its prefix must
-be byte-identical to a request the provider has already seen from this session.**
-Providers cache on the request prefix, which is the system prompt, then the tool
-definitions, then the messages, compared from token zero. So the shape is chosen
-to reuse what the session just sent, not because a flattened or re-framed request
-is inherently uncacheable:
-
-* the conversation is sent as real messages, in the shape the turn sent them;
-* the instruction is appended last, leaving the prefix untouched;
-* the request carries the **session's own system prompt** — including the
-  post-checkpoint recall guidance — and the **session's own tool definitions**,
-  both of which sit inside the prefix.
-
-Changing any one of those diverges the prefix at that point and the whole
-conversation is billed again. That is not theoretical: dropping the tool
-definitions, substituting a summary-specific system prompt, or adding a single
-line to the system prompt each measured **0 %** cache on a primed prefix, while
-the identical-shape request measured 93.7 %. On an isolated agent running this
-code path, a session grown to **212 911 tokens** compacted with
-`cache_read = 212 548` — **99.8 %** served from cache, `cache_write = 360` (only
-the appended instruction), about ¥0.003 against about ¥0.53 cold. A flattened
-request that has itself been primed does hit, which is why the property to test
-is "same prefix as the session's turns", not "message array versus string".
-
-Both the automatic path (`run_loop.rs`) and the standalone `/compact`
-(`rpc/session.rs`) build that prompt with the same
-`history_recall::system_prompt` expression, and a test pins them to one string;
-the manual path previously sent the bare base prompt, so its summary missed the
-cache whenever a checkpoint already existed.
-
-The reserved summary budget is at most a third of what the evidence budget can
-spare, so a tight budget yields no summary rather than an unusable evidence index.
-
-Only the current checkpoint schema is read. A checkpoint written by a retired algorithm — an
-older `schema_version`, or the released string-protocol marker — is not recognised:
-`latest_context_checkpoint` skips it, `project_prompt_context` sees no boundary and projects
-the session's own journal in full, and the next compaction re-covers that history with the
-current algorithm. The retired row stays in the journal as an inert entry that nothing
-reads, so it can neither shrink nor expand a prompt.
-
-That is a deliberate trade. Carrying an old checkpoint forward would mean inheriting its
-lossy summary and its author's idea of what to protect, which is what the current
-algorithms exist to redo; recovering the covered originals to re-summarise them (what this
-build used to do) kept the prompt small but also kept the retired summary in the loop. The
-cost is one request whose input is the full journal — normally served from the prefix cache
-because the turn just sent it — and one extra summary call for that session, once.
-`MAX_EXPANDED_HISTORY` still bounds the result, so a session whose never-dropped text does
-not fit fails explicitly instead of being silently truncated.
-
-`compaction_operations` keys original user/system/assistant/tool identity and
-contents, relevant configuration, budgets, mode/phase, note and C policy version.
-Checkpoint, usage and session-info changes do not themselves change raw input.
-The new C key does not reuse A receipts. Same-key success reuses the result without
-another checkpoint. The ordered writer commits checkpoint and completed receipt
-atomically. Even without model billing, unresolved started operations retain the
-concurrency/recovery fence; no automatic claim stealing or fabricated success.
-
-Deletion clears receipts; fork has a new scope; ephemeral/in-memory callers have
-no cross-restart receipts. Use matching upgraded CLI/Agent builds: older Agents
-do not implement these semantics.
+`--instructions` is a **verbatim user note** for continuation. The deterministic selector
+does not interpret natural language or claim to have fulfilled semantic selection
+instructions; the note consumes evidence budget, and an excessive note fails explicitly
+rather than being silently truncated.
 
 ## Cost and recall
 
-Manual, automatic and provider-limit recovery all use C. Deterministic C makes
-**zero summary-model calls**; the C3 default adds one summary request per
-compaction, charged like any other request. Existing ordinary usage/cost counters
-are preserved. Ordinary requests still pay for evidence and retrieved text in
-their input; local scans also cost time and memory.
+Deterministic compaction makes **zero summary-model calls**; the default adds one summary
+request per compaction, charged like any other request. Ordinary usage and cost counters are
+preserved, and ordinary requests still pay for evidence and retrieved text in their input.
+Local scans also cost time and memory.
 
-One [history recall guide](../../guide/session-history.md) is added only with a valid checkpoint
-in a persisted session where shell is enabled/permitted. It is not accumulated as
-chat history. Missing exact facts are recovered through existing history search/get,
-never by replaying old tool side effects.
+A [history recall guide](../../guide/session-history.md) is added once a valid checkpoint
+exists in a persisted session where shell is enabled and permitted. It is request-only —
+never accumulated as chat history. Missing exact facts are recovered through existing
+history search/get, never by replaying old tool side effects.
 
 ## Validation
 
@@ -207,12 +154,10 @@ cargo build -p future-cli --bin future
 python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
-Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke
-uses its own HOME, fresh port and local model stub to verify 80%-of-window triggering,
-C identity, originals, zero summary requests, ordinary usage, byte paging and
-restart. Never stop the user's running Agent.
+Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke uses its own
+HOME, fresh port and local model stub to verify 80%-of-window triggering, identity,
+originals, ordinary usage, byte paging and restart, and that a rejected summary falls back
+without a second billed call. Never stop the user's running Agent.
 
-Rule-based evidence is lossy, especially for complex unstructured material;
-original-history recall remains essential. The legacy semantic entry points are
-gone from `ContextManager`; the retired A implementation is kept only for its
-tests (`#[cfg(test)]`), not as an automatic fallback or a user CLI A switch.
+Rule-based evidence is lossy, especially for complex unstructured material; original-history
+recall remains essential.

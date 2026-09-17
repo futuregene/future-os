@@ -1,47 +1,42 @@
 # Compaction experiment harness
 
-## Current run: production call shape, closed book (v4)
+## Current run: production call shape, closed book
 
 Use [PRODUCTION_SHAPE_PROTOCOL.md](PRODUCTION_SHAPE_PROTOCOL.md) and
-`production_shape_rerun.py`. V4 drives the two current strategies through
+`production_shape_rerun.py`. It drives the two current strategies through
 `agent/examples/abc_strategy_probe.rs` and the **released algorithm** through
-`abc_main_probe.rs`, at the call shape the runtime uses: the registry's window, the
-model's output reservation, `set_request_budget` with a captured session prompt and the
-real tool definitions, and the production trigger and phase. It reports recall,
-projection size, compression ratio and compaction cost separately, and compares
-post-compaction against post-compaction by forcing every arm to compact at every boundary.
-Closed book only; open-book remains subject to explicit user approval.
-
-## Historical runs
-
-[FIDELITY_PROTOCOL.md](FIDELITY_PROTOCOL.md) / `fidelity_rerun.py` (v3) and
-[FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md) / `four_arm_rerun.py` (v2) are retained as the
-historical record. They ran the Rust arms with a **simulated 128K window, no output
-reservation and no request budget** — a matched-size retention comparison, not the numbers
-production computes. `four_arm_rerun.py` is still imported by the v4 harness for its
-fixtures, questionnaire and scoring. Do not mix scores across versions.
-
-**None of the runs measures the cache.** They all put several arms in one block, so each
-primes the prefix the next reuses; in v2/v3 the C3 arm also sent a system prompt and tool
-list that no session sends. The production measurement is in
-[docs/internals/compaction/compaction-abc-experiment.md](../../docs/internals/compaction/compaction-abc-experiment.md).
-
-Downstream scripts that still drive `abc_c_probe.rs` / `abc_c3_probe.rs` (the `c_*`,
-`c3_*`, continuation and interface experiments) keep working, but they inherit the
-simulated shape those drivers default to. Private artifacts and upstream fixtures belong
-outside this repository.
-
-
-Drives six compaction strategies over identical frozen inputs and scores the same
-questionnaire against each one. Every model call is reserved in a ledger before it is sent
-and settled to the provider's reported usage afterwards.
-
-## Inputs and where they live
+`abc_main_probe.rs`, at the call shape the runtime uses: the registry's window, the model's
+output reservation, `set_request_budget` with a captured session prompt and the real tool
+definitions, and the production trigger and phase. It reports recall, projection size,
+compression ratio and both costs separately, and compares post-compaction against
+post-compaction by forcing every arm to compact at every boundary. Closed book only;
+open-book needs explicit user approval.
 
 The experiment root defaults to **`~/compact-exp`**; `ABC_ROOT` overrides it. It is
 deliberately outside any repository, because parts of it are real session data and large
 ledgers that must never be committed. Scripts **stop with an error** when an input they need
 is absent — they do not skip it, because a partial run otherwise looks like a complete one.
+
+## Earlier runs
+
+[FIDELITY_PROTOCOL.md](FIDELITY_PROTOCOL.md) / `fidelity_rerun.py` and
+[FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md) / `four_arm_rerun.py` are the historical record.
+They ran the Rust arms with a **simulated 128K window, no output reservation and no request
+budget** — a matched-size retention comparison, not the numbers production computes.
+`four_arm_rerun.py` is still imported by the current harness for its fixtures, questionnaire
+and scoring. Do not mix scores across runs.
+
+**None of the runs measures the cache.** They all put several arms in one block, so each
+primes the prefix the next reuses, and in the earlier runs the summary arm also sent a system
+prompt and tool list that no session sends. The production measurement is in
+[docs/internals/compaction/compaction-abc-experiment.md](../../docs/internals/compaction/compaction-abc-experiment.md).
+
+Downstream scripts that still drive `abc_c_probe.rs` / `abc_c3_probe.rs` (the `c_*`, `c3_*`,
+continuation and interface experiments) keep working, but they inherit the simulated shape
+those drivers default to. Private artifacts and upstream fixtures belong outside this
+repository.
+
+## Inputs and where they live
 
 | Input | Reproducible from the repo? | How to supply it |
 |---|---|---|
@@ -75,18 +70,17 @@ Chain names are free-form, but a few scripts default to `real-yt`, `real-visual`
 
 | Arm | Strategy |
 |---|---|
-| `A` | protected user/assistant originals + recursive model summary + recent tail (earlier default) |
-| `B` | same originals and tail, summary removed and not replaced |
-| `C` | same originals and tail, summary slot replaced by deterministic tool evidence (**current default**) |
-| `M` | whatever the checked-out branch implements, run through its own code |
-| `codex` | `openai/codex` local inline compaction: all user messages (≤20 000 tokens) + summary |
+| `deterministic` | protected originals + recent tail + deterministic tool evidence, no model call |
+| `summarized` | the same projection plus a model-written handoff summary (**runtime default**) |
+| `main` | whatever the released checkout deploys, run through its own code |
+| `codex` | `openai/codex` local inline compaction: all user messages (<=20 000 tokens) + summary |
 | `opencode` | `anomalyco/opencode`: summary + retained tail (`min(15 000, max(2 000, usable/4))`) |
 
 Results and limits: [docs/internals/compaction/compaction-abc-experiment.md](../../docs/internals/compaction/compaction-abc-experiment.md).
 
-The harness runs two kinds of probe over each arm's projection: **closed-book**,
-and **search-enabled** with the identical archive CLI, so the search engine can be
-held constant while the projection varies.
+The harness runs two kinds of probe over each arm's projection: **closed-book**, and
+**search-enabled** with the identical archive CLI, so the search engine is held constant
+while the projection varies.
 
 ## Files
 
@@ -115,7 +109,7 @@ cargo build -p future-agent --example abc_probe_bridge
 # 3. the deployed-arm driver: build it inside the branch you want to measure
 cp scripts/abc_experiment/abc_main_probe.rs <that-checkout>/agent/examples/
 (cd <that-checkout> && CARGO_TARGET_DIR=... cargo build -p future-agent --example abc_main_probe)
-#    (this is the v4 run's `--main-driver`; the current strategies are driven by
+#    (the current run's `--main-driver`; the current strategies are driven by
 #     agent/examples/abc_strategy_probe.rs)
 
 # 4. external arms (Codex, OpenCode); --stages lists the probe stages to record

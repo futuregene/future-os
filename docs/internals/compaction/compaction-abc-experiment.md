@@ -1,22 +1,32 @@
-# Compaction strategy comparison: C3, Codex, OpenCode
+# Compaction strategy comparison
 
-Three retention strategies, measured on six chains, closed book and open book.
+Five retention strategies on six frozen chains, closed book. Four are measured at the
+production call shape; the tables further down are an older matched-size run.
 
-**Naming.** **C3** is the runtime default: strategy **C** — protected user and assistant
-originals, a deterministic tool-evidence index and a recent tail — **plus** a model-written
-handoff summary. When a comparison needs the two separated, C3 is the default and
-plain **C** is the same projection with no summary model called. The algorithm identifiers
-are `summarized-evidence-v1` and `deterministic-evidence-v1`, matching the code.
+**Naming.** The arms are named after the code: `summarized` is the runtime default
+(`summarized-evidence-v1`) and `deterministic` is the same projection with no summary model
+called (`deterministic-evidence-v1`). The older sections of this document label them **C3**
+and **C**; they are the same two strategies.
 
 | Strategy | What survives compaction | Source |
 |---|---|---|
-| **C3** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly handoff summary** written by the session model | this repo (runtime default) |
+| **`summarized`** | every protected user **and assistant** original + a 2 K deterministic tool-evidence index + recent tail + a **cache-friendly handoff summary** written by the session model | this repo (runtime default) |
+| **`deterministic`** | the same projection, no summary model called | this repo |
+| **`main`** | the algorithm `origin/main` deploys: a recursive model summary, protected originals, a recent tail | this repo, released branch |
 | **Codex** | all user messages (≤20 000 tokens) + a whole-history summary; no assistant text, no tool output | `openai/codex` @ `b13164d8`, `compact.rs::build_compacted_history` + `templates/compact/prompt.md` |
 | **OpenCode** | a summary + a retained tail (`min(15 000, max(2 000, usable/4))`) | `anomalyco/opencode` @ `e03db9bc`, `session/compaction.ts` |
 
-Codex and OpenCode are reimplementations of the selection rules read from those
-commits, not forks. Their prompts were transcribed verbatim and each source file's git
-blob SHA is recorded in [abc_external_provenance.json](../../../scripts/abc_external_provenance.json).
+Codex and OpenCode are reimplementations of the selection rules read from those commits,
+not forks. Their prompts were transcribed verbatim and each source file's git blob SHA is
+recorded in [abc_external_provenance.json](../../../scripts/abc_external_provenance.json).
+
+**Two shapes are reported, and they answer different questions.** The production-shaped run
+below drives every Rust arm through the call shape the runtime uses — registry window, the
+model's output reservation, a real request budget, the production trigger and phase — so its
+numbers are the ones production computes. The later tables were measured with a **simulated
+128K window and no budget**, a matched-size comparison of retention rules. What each shape
+can say about the cache, the deployable strategy and the summary's value differs, and every
+section below states which shape it used.
 
 ## The production-shaped run, and the deployed strategy
 
@@ -172,65 +182,49 @@ These are modelled figures for the cache, not measurements of it: the runs' own 
 counters are contaminated by arm and run ordering (see PRODUCTION_SHAPE_PROTOCOL.md), and
 the 98 % is anchored to the one production measurement rather than to this harness.
 
-## How C3's summary is generated, and why the request shape matters
+## How the summary is generated
 
-C3's projection is produced by the production Rust path
-(`agent/examples/abc_c3_probe.rs` → `prepare_evidence_with_summary`), so the *selection*
-it runs is the runtime's own. The projection content is that function's output on the
-frozen records; it is not byte-identical to a production checkpoint, because the driver
-rebuilds messages from a reduced export and the model summary appended to it is written
-under the experiment's request shape, not the session's (see below). Read the mechanism
-in [C compaction](compaction.md). The summary is **cumulative** — each one receives the
-previous one — so facts accumulate across successive compactions instead of being
-rewritten from scratch.
+`summarized`'s projection comes from the production Rust path, so the *selection* it runs is
+the runtime's own. The projection content is that function's output on the frozen records;
+it is not byte-identical to a production checkpoint, because the driver rebuilds messages
+from a reduced export. The mechanism is in [policy](compaction.md).
 
-The production request is shaped to be **served from the provider's prefix cache**: the
-live conversation is sent as **real messages**, the instruction is **appended last**, and
-the session's own **system prompt and tool definitions** are reused. A prefix is compared
-from token zero, so all three have to match a request the session already sent.
+**The 128K tables below do not reproduce the production prefix.** They pass Codex's base
+instructions through `--system-prompt-file` and an empty tool list, so the `summarized` and
+Codex arms send the same prefix and differ only in what they retain. Two consequences follow,
+neither of which may be read as a property of the production path:
 
-**The 128K-window tables further down do not reproduce that prefix.** They supply Codex's
-base instructions through `--system-prompt-file` and an empty tool list, so the C3 and
-Codex arms send the same prefix and differ only in what they retain. Two consequences
-follow, and neither may be read as a property of the production path:
+* the high stage-0 hit rate those runs record (99 %+) is the **Codex arm priming the prefix
+  that `summarized` then reuses**, not `summarized` earning it — the arms run in the same
+  block; later stages show the ordinary ~10 % that consecutive compactions earn by sharing a
+  head;
+* substituting a prompt, dropping the tool definitions, or adding one line each measured
+  **0 %** on a primed prefix, so those runs cannot bound the production cost either way.
 
-* the high stage-0 hit rate those runs record (99 %+) is the **Codex arm priming the
-  prefix that C3's request then reuses**, not C3 earning it — the arms run in the same
-  block, so this is an ordering artifact; later stages show the ordinary ~10 % that comes
-  from consecutive compactions sharing a head;
-* substituting a prompt, dropping the tool definitions, or adding one line to the system
-  prompt each measured **0 %** on a primed prefix, so those runs cannot bound the
-  production cost either way.
+The production-shaped run at the top of this document does pass the session's prompt and tool
+definitions, so its summary requests have the production prefix — but a frozen session's own
+prompt is rebuilt per turn from its working directory and is not in the journal, so it is a
+real captured production prompt standing in for one, not the original. Its cache counters are
+likewise not comparable, because the arms run in one block and prime each other. That is why
+the cost table above is **modelled** rather than measured.
 
-A flattened request that has itself been primed does hit the cache, so the property to
-test is "same prefix as the session's turns", not "message array versus string". Measured
-on an isolated agent running the production path, a session grown to **212 911 tokens**
-compacted with `cache_read = 212 548` — **99.8 %** of the request served from cache,
-`cache_write = 360` (only the newly appended instruction). Cold, that request costs about
-¥0.53; cached, about ¥0.003.
-
-The production-shaped run at the top of this document **does** pass the session's prompt
-and tool definitions, so its summary requests have the production prefix — but a frozen
-session's own prompt is rebuilt per turn from its working directory and is not in the
-journal, so it is a real captured production prompt standing in for one, not the original.
-Its cache counters are likewise not comparable: the arms run in one block and prime each
-other.
-
-## Method
+## Method (the 128K sections below)
 
 * **Chains** — three synthetic (export, analysis, pipeline) and three real sessions,
   **frozen** to immutable JSON before measurement (`real-yt` 756, `real-visual` 685,
   `real-stream` 1582 records). Freezing matters: the real sessions are read live from the
-  Agent database, and one of them was still being written to during earlier runs, so its
-  record count grew under measurement. No session identifier appears in the repository;
-  the frozen copies live in the git-ignored research directory.
+  Agent database, and one was still being written to during earlier runs, so its record
+  count grew under measurement. No session identifier appears in the repository; the frozen
+  copies live in the git-ignored research directory.
 * **Boundaries** — three per chain (≈40 %, 70 %, 100 % of the history) = **18 probes**.
 * **Exam** — a value-retention probe: values drawn from assistant prose, user turns and
-  tool results, plus 8 plausible decoys that appear nowhere. The model marks which
-  appeared; a projection that dropped a value cannot distinguish it from a decoy. This is
-  recognition, not free recall.
-* **Window** — 128 K, the saturation point for C3 (see limits).
-* **Costs** — the provider's own reported `credit_cost`, billed per call.
+  tool results, plus 8 plausible decoys that appear nowhere. The model marks which appeared;
+  a projection that dropped a value cannot distinguish it from a decoy. This is recognition,
+  not free recall.
+* **Window** — 128 K, the saturation point for `summarized` (see limits). The
+  production-shaped run uses the model registry's 1 000 000 instead.
+* **Costs** — the provider's own reported `credit_cost`, billed per call. These are cold
+  figures; the production-shaped run prices the cache explicitly.
 
 ## Closed book: what each strategy keeps
 
@@ -396,10 +390,10 @@ saving is 5.6 %.** The projection's division of labour is already nearly right �
 carried verbatim, tool evidence is indexed, and search is the fallback for what neither
 covered.
 
-## Cost per compaction
+## Cost per compaction at 128K
 
-Measured on the driver, which issues requests **cold** (it does not first send the
-conversation as ordinary turns, so nothing is warm):
+The driver issues requests **cold** (it does not first send the conversation as ordinary
+turns, so nothing is warm):
 
 | Strategy | Summaries | Mean cost | Mean input tokens |
 |---|---:|---:|---:|
@@ -407,19 +401,12 @@ conversation as ordinary turns, so nothing is warm):
 | Codex | 18 | ¥0.0286 | 7 079 |
 | OpenCode | 19 | ¥0.0256 | 7 352 |
 
-The cold figures understate C3 and overstate nothing: C3 reads the **whole live
-conversation** (67 K tokens on average, up to 128 K) while Codex and OpenCode summarise a
-bounded slice (≈7 K). Cold, reading the whole conversation is expensive; **warm, it is
-the cheapest of the three**, because the prefix was already paid for by the turns that
-produced it — the 99.8 % cache hit above turns a 212 911-token read into ¥0.003, against
-¥0.0286 for a 7 K-token *cold* summary.
-
-A real session's summary is issued after the turn whose prefix it reuses has just been
-sent, so its cost is the cached figure rather than the ¥0.1173 above, which is a driver
-artefact. That is a statement about the shape being **intended** to be warm, not a
-guarantee: the hit requires the request's system prompt and tool definitions to match the
-turn's exactly, and the isolated-agent measurement above is what it costs when they do.
-The experiment's own arms do not test that case (see "How C3's summary is generated").
+These cold figures are a driver artefact, not what a session pays. C3 reads the **whole live
+conversation** (67 K tokens on average, up to 128 K) while the others summarise a bounded
+slice (≈7 K), so cold it is the most expensive of the three — and warm it is the cheapest,
+because the prefix was already paid for by the turns that produced it. The production-shaped
+run above prices that properly, and the isolated-agent measurement turns a 212 911-token read
+into ¥0.003 against ¥0.0286 for a 7 K-token cold summary.
 
 ## What is inside a C3 projection
 
@@ -447,12 +434,12 @@ real sessions carry a much larger recent tail, because their records are finer-g
 1582 records for one session means proportionally more of it falls inside the retained
 window.
 
-## Ablation: C3 with the model summary removed
+## Ablation at 128K: the summary when the projection keeps nearly everything
 
-C3's projection is four parts, and the summary is the only one that costs a model call.
-Removing it (deterministic evidence index only, no provider involved) isolates what it is
-worth. Both arms use the identical production code path; the ablation simply passes no
-provider.
+This ablation removed the model summary (deterministic projection only, no provider) at the
+same 128K shape as the tables around it. **Its result is a property of that shape, not of the
+strategy**, and the production-shaped run disagrees with it — deliberately worth reading
+together (see [below](#what-the-ablation-establishes)).
 
 | Arm | Closed | Open | Mean lookups (open) | Summary cost |
 |---|---:|---:|---:|---:|
@@ -462,11 +449,11 @@ provider.
 **Closed book the two are identical — every one of the 18 probes scores the same.** Open
 book the summary is worth **+6**.
 
-### Why the summary adds nothing closed-book
+### Why the summary adds nothing at 128K
 
-The exam asks about exact values, and the summary is a lossy paraphrase of material that
-is already retained verbatim. Measuring containment across all 18 projections (no model
-calls):
+The exam asks about exact values, and at this window the deterministic projection already
+keeps almost all of them, so there is nothing left for a lossy copy to add. Measuring
+containment across all 18 projections (no model calls):
 
 | | Values present |
 |---|---:|
@@ -564,20 +551,26 @@ precise generation.**
 
 ### What the ablation establishes
 
-Three independent measurements agree:
+The three measurements above agree **at this window**: value recall adds 0, compression
+pressure preserves 1 of 93–154 dropped blocks, and generation of dropped values recovers
+0.4 %, identical with and without the summary.
 
-| Measurement | Result |
-|---|---|
-| Value recall, closed book | summary adds **0** values; arms score identically |
-| Compression pressure (32 K–4 K) | summary preserves **1** of 93–154 dropped blocks |
-| Generation of dropped values | **0.4 %** recovered, identical with and without the summary |
+**The production-shaped run contradicts the first of those.** There, `deterministic`'s
+projection contained 130 of 178 examined values and scored 127, while `summarized`'s
+contained **151** and scored 147. The handoff summary text alone carried about 47 % of the
+examined values, against 41.6 % here — but here every one of them was already in the
+deterministic projection, and there they are not.
 
-**C3's model summary does not contribute content on any measurement available here.** It
-retains nothing the projection lacks, and it does not preserve what the projection drops
-when compression pressure forces material out. Its one measured effect is behavioural: in
-the open-book condition it induces the model to search, worth +6.
+So the honest statement is conditional rather than absolute: **how much the handoff summary
+adds depends on how much of the examined material the projection already retains.** At 128K
+the deterministic projection alone carried 130/178 (73 %) and the summary was a subset of it,
+so it added nothing; at the production shape the same 130 were carried and the summary added
+values on top. The two measurements are endpoints of one variable, not a contradiction, and
+neither run varies that variable deliberately — which is the experiment this document still
+lacks.
 
-What this does **not** establish is that the summary is worthless in production. Every exam
+What none of this establishes is that the summary is worthless — or essential — in
+production at large. Every exam
 used here asks for exact values, which is precisely what a summary is worst at and what
 verbatim retention is best at. A summary should help with questions this exam never asks —
 what the objective was, why a decision was made, what remains unresolved — and those are

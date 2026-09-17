@@ -1,13 +1,14 @@
-# Historical retrieval: C/C3, Codex and OpenCode
+# History retrieval: ours, Codex and OpenCode
 
 Chinese detailed guide: [compaction-retrieval-mechanisms.zh-CN.md](compaction-retrieval-mechanisms.zh-CN.md).
 
 ## Scope and versions
 
-C and C3 use the **same native historical-retrieval backend**. They differ in
-whether the compacted projection includes a model handoff summary, not in which
-journal they can search. Compaction changes the model's projection; it does not
-remove the original journal. Previously deleted data cannot be recovered.
+`deterministic` and `summarized` use the **same native retrieval backend**: they differ in
+whether the compacted projection includes a model handoff summary, not in which journal they
+can search. (Earlier sections call them `C` and `C3`.) Compaction changes the model's
+projection; it does not remove the original journal, and data a retired version already
+deleted cannot be recovered.
 
 External versions are pinned to Codex `b13164d86f9a70adc48d22f4a5a07ed0c001a1d0`
 and OpenCode `e03db9bc6908f75c9334d8aa997deeaac81c0298` (source package 1.18.31).
@@ -16,7 +17,7 @@ hosted history/notes service. The experiment replays reduced frozen text/tool
 records; it does not restore original production workspaces, media, permissions
 or every cache.
 
-## C and C3: the complete native path
+## The complete native path
 
 ```text
 Missing earlier fact
@@ -182,34 +183,25 @@ Pinned source:
 - [Read](https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/read.ts), [grep](https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/grep.ts), [glob](https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/glob.ts)
 - [Shell](https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/shell.ts), [truncation/cache](https://github.com/anomalyco/opencode/blob/e03db9bc6908f75c9334d8aa997deeaac81c0298/packages/opencode/src/tool/truncate.ts)
 
-## C/C3 adapter correction and remaining limits
+## Adapter limits, and what must not be overstated
 
-The old experiment misleadingly named an executor shell while doing
-`shlex.split(command)` followed by exactly one future process. It interpreted
-`--json;` or `--limit 5;` as arguments. All 13 nonzero C3 CLI exits in the audited
-run were compound commands. Codex was allowed real shell composition.
+Sharing one retrieval backend is not the same as comparing two products fairly. The
+experiment replays reduced frozen records, so it cannot restore original production
+workspaces, media, permissions or provider caches; native Future networking is not disabled
+by default; and the adapter preserves native path rules and adds explicit denials rather than
+being a global read allowlist. Full-shell data isolation and comparative permissions still
+need review before any new paid run, and the entrypoint requires an explicit operator
+acknowledgement.
 
-The new path is `native_open_exam.py -> NativeFutureShell.execute_shell ->
-abc_future_shell_probe -> production shell_tool().handler -> native scope and
-shell_invocation -> full shell command -> native CLI/RPC/journal`.
-It also exports the original Rust tool definition. A per-session launcher checks
-the already-parsed argv of each CLI invocation and forwards it; it does not
-parse shell syntax or implement history search.
-
-Local tests verify semicolon batching, jq pipes, loops, search/get byte offsets,
-nonzero statuses, another-session refusal, explicitly denied sibling reads and
-workspace write denial. No paid model exam was run for this correction.
-
-**Do not overstate safety:** the adapter preserves native Future path rules and
-adds explicit denials, not a global read allowlist. Native Future networking is
-not disabled by default. Full-shell data isolation and comparison permissions
-still need review before a new paid run; the entrypoint requires an additional
-operator acknowledgment. Restoring native execution is not a claim that every
-fairness requirement has been met.
+One earlier run did overstate this: it named an executor "shell" while running
+`shlex.split(command)` followed by a single `future` process, so compound commands never
+composed. Every nonzero exit it recorded was such a compound command. The corrected path is
+`native_open_exam.py -> NativeFutureShell.execute_shell -> abc_future_shell_probe ->
+shell_tool().handler -> shell_invocation -> the full shell command -> native CLI/RPC/journal`,
+and it exports the original Rust tool definition instead of a hand-written substitute. Glue
+may isolate, convert inputs, invoke and record; it must never silently remove or invent a
+capability, and the algorithms and tool execution stay the products' own code.
 
 Experiment glue lives in `agent/examples/abc_future_shell_probe.rs` and
-`scripts/abc_experiment/native_future_shell.py`, `native_codex.py`,
-`native_opencode.py`, and `native_stores.py`. The latter's old argv-only executor
-is retained solely for historical replay. Algorithms and actual tool execution
-must remain the products' own code; glue may isolate, convert inputs, invoke
-and record, not silently remove or invent capabilities.
+`scripts/abc_experiment/native_future_shell.py`, `native_codex.py`, `native_opencode.py` and
+`native_stores.py`.

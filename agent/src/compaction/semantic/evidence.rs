@@ -278,9 +278,9 @@ enum Staged {
 
 /// Plan the compaction and build the deterministic evidence index.
 ///
-/// `wants_summary` asks for budget to be withheld for a model summary. The
-/// reservation is at most a third of what the evidence budget can spare, so a
-/// tight budget yields no summary rather than an unusable evidence index.
+/// `wants_summary` asks for the summary allowance to be added *beside* the evidence budget
+/// rather than carved out of it, so a summary never shrinks the evidence index. The
+/// allowance is `min(window/16, HANDOFF_SUMMARY_TOKENS)` plus `SUMMARY_SLOT_MARGIN`.
 #[allow(clippy::too_many_arguments)]
 fn stage(
     manager: &ContextManager,
