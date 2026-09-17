@@ -15,8 +15,6 @@ export function MarkdownImageView(props: { alt: string; src: string; title?: str
 function ImageView({ alt, src, title, linked = false }: { alt: string; src: string; title?: string; linked?: boolean }) {
   const { t } = useTranslation("markdown");
   const [failed, setFailed] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  const [large, setLarge] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   if (failed) {
     return (
@@ -29,11 +27,10 @@ function ImageView({ alt, src, title, linked = false }: { alt: string; src: stri
   const image = (
     <img
       alt={alt}
-      className={`h-auto w-auto max-w-full rounded-md border border-line-soft object-contain ${expanded ? "max-h-none" : "max-h-80"}`}
+      className="h-auto w-auto max-h-80 max-w-full rounded-md border border-line-soft object-contain"
       decoding="async"
       loading="lazy"
       onError={() => setFailed(true)}
-      onLoad={event => setLarge(event.currentTarget.naturalHeight > 320)}
       src={src}
       title={title}
     />
@@ -53,16 +50,6 @@ function ImageView({ alt, src, title, linked = false }: { alt: string; src: stri
               {image}
             </button>
           )}
-      {!linked && large && (
-        <button
-          aria-expanded={expanded}
-          className="mt-1 block text-xs text-accent hover:underline"
-          onClick={() => setExpanded(value => !value)}
-          type="button"
-        >
-          {t(expanded ? "image.collapse" : "image.expand")}
-        </button>
-      )}
       {!linked && previewOpen && createPortal(
         <ImageLightbox alt={alt} onClose={() => setPreviewOpen(false)} src={src} />,
         document.body,

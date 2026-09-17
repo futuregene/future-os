@@ -6,9 +6,7 @@
     "unavailable": "Image unavailable",
     "retry": "Retry image",
     "preview": "Enlarge {{name}}",
-    "defaultName": "image",
-    "expand": "Expand image",
-    "collapse": "Collapse image"
+    "defaultName": "image"
   },
   "embed": {
     "artifactPayloadInvalid": "artifact payload is invalid",
