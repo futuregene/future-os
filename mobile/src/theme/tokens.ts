@@ -29,6 +29,17 @@ export const colors = {
   overlay: "rgba(0, 0, 0, 0.6)",
 } as const;
 
+// Syntax categories on the app's light code surface (not status colors).
+export const codeColors = {
+  comment: "#596579",
+  keyword: "#a62646",
+  literal: "#075eab",
+  string: "#17633c",
+  function: "#6f42a6",
+  property: "#805000",
+  operator: "#4c566a",
+} as const;
+
 // A shared body scale keeps rendered messages and the composer in sync.
 export const chatTypography = { fontSize: 15, lineHeight: 22 } as const;
 
