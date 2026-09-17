@@ -530,6 +530,8 @@ export const resources = {
         back: "Back",
         close: "Close",
         more: "More actions",
+        showFullTitle: "Show full title",
+        hideFullTitle: "Hide full title",
         version: "Version {{version}}",
       },
       thinking: {
@@ -1023,6 +1025,8 @@ export const resources = {
         back: "返回",
         close: "关闭",
         more: "更多操作",
+        showFullTitle: "查看完整标题",
+        hideFullTitle: "收起完整标题",
         version: "版本 {{version}}",
       },
       thinking: {

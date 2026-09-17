@@ -1,6 +1,6 @@
 import { createElement, useEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform, Text } from "react-native";
+import { Modal, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useAppDialog } from "../useAppDialog";
 import { DialogSurface } from "../DialogSurface";
 import { Button } from "../Button";
@@ -36,6 +36,26 @@ test.each(["ios", "android"] as const)("%s uses platform-safe selection without 
   expect(message).toBeDefined();
   expect(message.props.selectable).toBe(os === "ios");
   expect(message.props.numberOfLines).toBeUndefined();
+});
+
+test("long notice text scrolls without moving its single-row action footer", () => {
+  const message = "A detailed error message\n".repeat(100);
+  act(() => api.alert("Error", message, [{ text: "Cancel", style: "cancel" }, { text: "Retry" }]));
+  const scroll = tree.root.findByType(ScrollView);
+  expect(scroll.findAllByType(Text).some(node => node.props.children === message)).toBe(true);
+  expect(scroll.findAllByType(Button)).toHaveLength(0);
+  const buttons = tree.root.findAllByType(Button);
+  expect(buttons.map(node => node.props.label)).toEqual(["Cancel", "Retry"]);
+  const actions = tree.root.findAllByType(View).find(node => StyleSheet.flatten(node.props.style)?.flexDirection === "row" && node.findAllByType(Button).length === 2)!;
+  expect(StyleSheet.flatten(actions.props.style).flexWrap).toBeUndefined();
+  const dialog = tree.root.findByType(DialogSurface);
+  expect(dialog.props.footer).toBeDefined();
+});
+
+test("title-only notices still have a pinned close action", () => {
+  act(() => api.alert("Up to date"));
+  expect(tree.root.findByType(ScrollView).findAllByType(Text).map(node => node.props.children)).toEqual(["Up to date"]);
+  expect(tree.root.findByType(Button).props.label).toBe("common.close");
 });
 
 test("system back cancels without invoking the destructive action", () => {

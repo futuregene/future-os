@@ -29,7 +29,7 @@ test("dialog scrolls within safe-area gutters and keeps actions tappable with th
   expect(StyleSheet.flatten(viewport.props.style)).toMatchObject({ paddingTop: 24, paddingBottom: 34, paddingRight: 10 });
 });
 
-test("Android edge-to-edge dialog follows the IME and releases keyboard listeners", () => {
+test.each([false, true])("Android edge-to-edge dialog follows the IME and releases keyboard listeners (footer: %s)", withFooter => {
   Platform.OS = "android";
   const listeners = new Map<string, Parameters<typeof Keyboard.addListener>[1]>();
   const event = (height: number) => ({
@@ -42,7 +42,7 @@ test("Android edge-to-edge dialog follows the IME and releases keyboard listener
     listeners.set(name, callback);
     return { remove } as unknown as ReturnType<typeof Keyboard.addListener>;
   });
-  act(() => { tree = create(createElement(DialogSurface)); });
+  act(() => { tree = create(createElement(DialogSurface, withFooter ? { footer: createElement(Text, null, "Close") } : null)); });
   const viewportStyle = () => StyleSheet.flatten(tree.root.findAllByType(View).find(node =>
     StyleSheet.flatten(node.props.style)?.paddingLeft === 20,
   )!.props.style);
@@ -53,6 +53,23 @@ test("Android edge-to-edge dialog follows the IME and releases keyboard listener
   expect(viewportStyle().paddingBottom).toBe(34);
   act(() => tree.unmount());
   expect(remove).toHaveBeenCalledTimes(jest.mocked(Keyboard.addListener).mock.calls.length);
+});
+
+test("pinned footer stays outside the bounded, shrinking body scroll view", () => {
+  Platform.OS = "ios";
+  const footer = createElement(Button, { label: "Close", compact: true, onPress: jest.fn() });
+  const message = "Long message\n".repeat(100);
+  act(() => { tree = create(createElement(DialogSurface, { footer }, createElement(Text, null, message))); });
+  expect(tree.root.findByType(KeyboardAvoidingView).props.behavior).toBe("padding");
+  const scroll = tree.root.findByType(ScrollView);
+  expect(scroll.props.keyboardShouldPersistTaps).toBe("handled");
+  expect(StyleSheet.flatten(scroll.props.style)).toMatchObject({ flexGrow: 0, flexShrink: 1 });
+  expect(scroll.findByType(Text).props.children).toBe(message);
+  expect(scroll.findAllByType(Button)).toHaveLength(0);
+  const dialog = tree.root.findAllByType(View).find(node => node.props.accessibilityViewIsModal)!;
+  expect(StyleSheet.flatten(dialog.props.style)).toMatchObject({ maxHeight: "100%", maxWidth: 420, flexShrink: 1 });
+  const pinned = tree.root.findAllByType(View).find(node => StyleSheet.flatten(node.props.style)?.flexShrink === 0)!;
+  expect(pinned.findByType(Button).props.label).toBe("Close");
 });
 
 test("compact buttons retain a 44-point hit target and wrap long labels", () => {
