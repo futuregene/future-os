@@ -104,6 +104,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "set_auth",
     "set_auto_compaction",
     "set_auto_retry",
+    "set_context_files",
     "set_cwd",
     "set_default_model",
     "set_enabled_models",
@@ -202,6 +203,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "set_auth"
         | "set_auto_compaction"
         | "set_auto_retry"
+        | "set_context_files"
         | "set_cwd"
         | "set_default_model"
         | "set_enabled_models"

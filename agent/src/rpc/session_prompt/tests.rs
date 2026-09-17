@@ -1417,13 +1417,38 @@ async fn prompt_with_explicit_name_and_provenance_persists_info() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_with_project_context_file() {
-    let provider = ScriptedProvider::new(vec![text_turn("ok")]);
-    let fixture = run_fixture(provider, "context");
-    std::fs::write(fixture.workspace().join("CLAUDE.md"), "# ctx").unwrap();
+    let provider = ScriptedProvider::new(vec![
+        text_turn("ok"),
+        text_turn("updated"),
+        text_turn("disabled"),
+    ]);
+    let fixture = run_fixture(provider.clone(), "context");
+    let workspace = fixture.workspace().clone();
+    std::fs::write(workspace.join("AGENTS.md"), "first-project-rule").unwrap();
+    std::fs::write(workspace.join("CLAUDE.md"), "lower-priority-rule").unwrap();
+    std::fs::write(workspace.join("FUTURE.md"), "# independent-memory").unwrap();
     let mut session = fixture.session;
     session.prompt("hi", &[], &[], None, None).unwrap();
     wait_for_run_end(&session).await;
-    assert_eq!(session.messages.read().last().unwrap().text(), "ok");
+    std::fs::write(workspace.join("AGENTS.md"), "updated-project-rule").unwrap();
+    session.prompt("again", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    session.no_context_files = true;
+    session
+        .prompt("without project rules", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].system_prompt.contains("first-project-rule"));
+    assert!(requests[1].system_prompt.contains("updated-project-rule"));
+    assert!(!requests[1].system_prompt.contains("first-project-rule"));
+    assert!(!requests[2].system_prompt.contains("updated-project-rule"));
+    assert!(!requests[2].system_prompt.contains("# Project Context"));
+    for request in requests.iter() {
+        assert!(!request.system_prompt.contains("lower-priority-rule"));
+        assert!(request.system_prompt.contains("# independent-memory"));
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1663,6 +1688,39 @@ async fn queued_run_prompt_uses_accepted_model_and_thinking() {
     assert!(requests[0].system_prompt.contains("provider/frozen-model"));
     assert!(requests[0].system_prompt.contains("Thinking level: medium"));
     assert!(!requests[0].system_prompt.contains("provider/new-model"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn queued_run_freezes_context_files_opt_out() {
+    for disabled_at_admission in [true, false] {
+        let provider = ScriptedProvider::new(vec![text_turn("done")]);
+        let fixture = run_fixture(provider.clone(), "frozen-context-files");
+        std::fs::write(fixture.workspace().join("AGENTS.md"), "queued-project-rule").unwrap();
+        let mut session = fixture.session;
+        session.no_context_files = disabled_at_admission;
+        let held = session.runtime.begin(Some("held"), None).unwrap();
+        session
+            .enqueue_prompt(
+                "queued",
+                &[],
+                &[],
+                None,
+                "queued-request",
+                crate::runtime::BusyPolicy::EnqueueIfBusy,
+            )
+            .unwrap();
+        session.no_context_files = !disabled_at_admission;
+        session.runtime.begin_finalizing(&held);
+        session.runtime.finish(&held);
+        session.start_next_scheduled().unwrap();
+        wait_for_run_end(&session).await;
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].system_prompt.contains("queued-project-rule"),
+            !disabled_at_admission
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -31,7 +31,7 @@ Options:
   --mode <mode>        Output mode: text, json (default: text)
   --prompt-template <path> Load a prompt template file
   --no-prompt-templates, -np Disable prompt templates
-  --no-context-files, -nc  Disable AGENTS.md and CLAUDE.md discovery
+  --no-context-files, -nc  Disable AGENTS.md / CLAUDE.md / GEMINI.md discovery
   --offline             Disable startup network operations
   --verbose             Show detailed startup information
   --skill <path>        Load a skill file or directory

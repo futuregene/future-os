@@ -737,7 +737,6 @@ mod tests {
             welcome_version: "0.0.0".to_string(),
             welcome_cwd: cwd,
             welcome_skills: Arc::new(parking_lot::RwLock::new(vec![])),
-            welcome_context: Arc::new(parking_lot::RwLock::new(vec![])),
             welcome_exts: vec![],
             explicit_session: false,
             approval_gate,
