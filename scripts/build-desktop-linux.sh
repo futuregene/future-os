@@ -130,9 +130,13 @@ chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
 tar -czf FutureOS-portable-linux.tar.gz -C "$dir" .
 
-deb_contents="$(dpkg-deb --contents "$DEB")"
-grep -Eq '^-rwx[^ ]* .* \./usr/bin/futureos-headless$' <<< "$deb_contents" \
-  || fail "the .deb does not contain executable /usr/bin/futureos-headless"
+deb_extract_dir="$(mktemp -d)"
+dpkg-deb --extract "$DEB" "$deb_extract_dir"
+if [[ ! -x "$deb_extract_dir/usr/bin/futureos-headless" ]]; then
+  dpkg-deb --contents "$DEB" >&2
+  fail "the .deb does not contain executable /usr/bin/futureos-headless"
+fi
+rm -rf -- "$deb_extract_dir"
 tar -tzf FutureOS-portable-linux.tar.gz ./futureos-headless >/dev/null \
   || fail "the portable archive does not contain ./futureos-headless"
 
