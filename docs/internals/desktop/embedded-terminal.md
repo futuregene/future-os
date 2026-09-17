@@ -151,6 +151,26 @@ A configured but missing/not-a-directory path fails loudly with `CWD_INVALID`.
 This matters because `portable-pty` silently substitutes `$HOME` for a bad cwd
 (verified in the earlier spike); the backend validates before spawning.
 
+## Shell resolution
+
+`resolve_shell()` prefers the user's real shell and never substitutes one
+silently: the account login shell (or `$SHELL`) first, then the well-known
+fallbacks. On Windows every candidate is resolved to an **absolute path that
+exists** before it is offered — `PATH` in the OS's own order, then the
+well-known install locations (`%ProgramFiles%\PowerShell\7\pwsh.exe`,
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`,
+`%SystemRoot%\System32\cmd.exe`).
+
+That resolution is load-bearing, not cosmetic. `portable-pty` hands the program
+to `CreateProcessW` as `lpApplicationName`, and Win32 does **not** search `PATH`
+for that parameter: a bare `pwsh.exe` fails with `os error 2` ("The system
+cannot find the file specified") even when PowerShell is installed. Machines
+whose PowerShell 7 lives off `PATH` therefore failed every terminal tab with
+`terminal.json`'s `createFailed` ("无法启动终端"). A shell that cannot be
+located now falls through to the next candidate instead of being spawned.
+`terminal::shell::windows_tests` pins the rules (`PATH` order, extension
+appending, quoted `PATH` entries, well-known locations as last resort).
+
 ## Process teardown
 
 A shell with job control puts background jobs in their **own** process groups,
