@@ -20,15 +20,92 @@ then assemble them (see *Building a document*):
 
 - "Release notes for the changes between version X and Y" — capture the affected
   screens, then a PDF whose items pair prose with one or two screenshots.
+- "A test checklist for the changes between X and Y" — actually walk each change
+  in the harness, then write test points that other people can replay (see
+  *Recipes* 2).
 - "A diagram of the desktop `<feature>`" — one scenario, one PNG.
 - "A walkthrough of the mobile `<feature>` flow" — a scenario per step (list →
   dialog → result), assembled into a document.
+- "Record a demo video" — `video-desktop` / `video-mobile` record scenarios to
+  mp4, on both platforms.
 - "Show the CLI output for `<command>`" — the `terminal` subcommand renders a
   command's real stdout in a terminal frame.
 
 Scope follows what the app can actually show: if a feature has no screen (a wire
 protocol change, a TUI-only notice), there is nothing to capture, and saying so
 is better than illustrating it with a stand-in.
+
+## Recipes
+
+These four cover most requests. In every case, start the relevant server first.
+
+### 1. Two versions → release-notes PDF
+
+```bash
+git log --oneline vX..vY                       # what changed
+git log --oneline vX..vY --format="%h|%s" | grep -E "feat|refactor"   # features only
+```
+
+For each commit, decide which screen it touches, find or add a scenario, and
+capture it. Skip performance work and bug fixes. Then write a content file
+following `scripts/screenshots/examples/release-notes-1.1.8.json` and run the
+`pdf` subcommand. Captions should say what to look at, not restate the prose.
+
+### 2. Two versions → test checklist
+
+Same change list, but the output is a checklist rather than a document:
+
+1. For each feature change, **actually walk it** in the harness — find the
+   scenario (add one if it does not exist) and capture it.
+2. Write each test point as precondition → action → expected result, with the
+   expected result phrased as something visible in the UI.
+3. Attach the screenshot for that step as the evidence for the expectation, and
+   name its path under the test point.
+4. Changes that cannot be verified through the UI (protocol, internal refactor)
+   go in a separate "needs interface/log verification" section — do not invent UI
+   steps for them.
+
+This is where the harness earns its keep: the test points are derived from
+clicking through the real UI rather than reading the diff, so a reviewer can
+replay them from the screenshots.
+
+### 3. One feature → one diagram (desktop or mobile)
+
+Add a scenario to `scenarios.json` that does only what is needed to open the
+feature, ending in one `shot`. Then
+`capture-desktop <scenario>` or `capture-mobile <scenario>`. If the feature is
+behind a menu, add a `tap`; for a control revealed on hover, `hover` its container
+first.
+
+### 4. A flow walkthrough → document (mostly mobile)
+
+Split the flow into steps and make **one scenario per step** (not one long one),
+so each step can be re-shot and cited on its own; then assemble with `pdf`. A
+mobile flow might be: open the list → open a conversation → type `/` and pick a
+skill → read the result. For video, use `video-mobile <scenario>` — one scenario
+is one continuous piece of footage.
+
+## Recording video
+
+```bash
+# terminals 1 and 2: start the servers (as above)
+python3 scripts/screenshots/capture.py video-desktop              # every scenario
+python3 scripts/screenshots/capture.py video-desktop chat rename  # or just some
+python3 scripts/screenshots/capture.py video-mobile chat
+```
+
+Output is `<platform>-<scenario>.mp4` in `--out` (default `.screenshots/`), on
+both platforms. Worth knowing:
+
+- **ffmpeg is required** (`brew install ffmpeg`).
+- **Pacing is real.** Chrome only emits a frame when the page changes, so the
+  video is encoded with each frame's actual delay: pauses stay pauses instead of
+  being flattened to a fixed frame rate.
+- **What you record is the scenario's steps**, so make the `wait` values long
+  enough to read (e.g. pause 1.5s after opening a menu) when the footage matters.
+- **The pointer indicator is drawn in**, which is what makes mobile footage
+  followable; see *Pointer indicator and callouts*.
+- Video and screenshots share one scenario table: nothing to maintain twice.
 
 ## What it is, and what it is not
 
@@ -57,6 +134,9 @@ Consequences worth knowing before trusting a screenshot:
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
   and `react-dom`; `capture.py serve-mobile` installs them into the mobile
   workspace on demand and leaves the manifests alone (see *Nothing is committed*).
+- **Video** additionally needs ffmpeg (`brew install ffmpeg` on macOS, the distro
+  package elsewhere). It is checked before recording starts, so a missing ffmpeg
+  fails immediately rather than after a long capture.
 
 ## Desktop
 
@@ -104,8 +184,8 @@ short list of steps that a person could replay by hand.
 ```
 
 Step kinds: `eval`, `wait`, `shot`, `tap` (by accessible name), `tapText` (by
-visible text), `hover`, `type`, `key`, `scroll`. Three platform-level knobs are
-worth knowing:
+visible text), `hover`, `type`, `key`, `scroll`, plus the annotation steps below.
+Three platform-level knobs are worth knowing:
 
 - **`ready`** is a JavaScript expression the driver polls until it is true, and it
   is what keeps captures fast: a warm bundle is ready in about a second, a cold
@@ -125,6 +205,30 @@ worth knowing:
 `desktop/shot/main.tsx` accepts `?lang=en` and `?settings=key:value,...` to pin
 the UI language and seed app settings before boot; `mobile/shot/mock/shareIntent.ts`
 reads `?share=1` so the share-intake sheet appears only in the share scenarios.
+
+### Pointer indicator and callouts
+
+Two annotations are drawn by the driver, inside the page, so they appear in both
+stills and video. Both are on by default; `--annotate false` turns them off.
+
+- **The pointer indicator** follows every `tap`/`hover`: a blue dot, plus an
+  expanding ring at the moment of a tap. It matters most for mobile footage,
+  where nothing else shows where the finger landed. It is also what a still of a
+  multi-step flow needs to read as "and then tap here".
+- **Callouts** come from a `marks` step: a numbered badge on the point plus a
+  label beside it. They are what turn a screenshot into an explanation.
+
+```json
+{ "marks": [{ "at": "工作区", "label": "① 工作区列表", "dy": -34 },
+            { "at": "对话",   "label": "② 对话列表，可左右滑动切换", "dy": -34 }] }
+```
+
+Each mark takes either `at` (an accessible name, same matching as `tap`) or raw
+`x`/`y`. `dx`/`dy` shift the badge and `side` (`"left"`/`"right"`) puts the label
+on the other side; adjacent targets usually need one of these, otherwise two
+labels land on top of each other. Numbers count up across the scenario; use
+`{"marksClear": true}` to start a fresh set, and `{"pointerHide": true}` to get
+the dot out of a clean product shot.
 
 ## Nothing is committed
 
@@ -187,7 +291,7 @@ than silent:
 | Path | Role |
 |---|---|
 | `scripts/screenshots/capture.py` | Entry point: serve, capture, terminal frames, PDF assembly |
-| `scripts/screenshots/cdp.mjs` | Chrome DevTools Protocol driver (viewport, input, screenshots) |
+| `scripts/screenshots/cdp.mjs` | Chrome DevTools Protocol driver (viewport, input, screenshots, screencast frames) |
 | `scripts/screenshots/scenarios.json` | The scenario table for both platforms |
 | `scripts/screenshots/document.css` | Print stylesheet for generated documents |
 | `scripts/screenshots/terminal.html` | Terminal-styled frame for CLI output |
