@@ -30,6 +30,29 @@ describe("mention editor", () => {
     container.remove();
   });
 
+  it("overrides inherited text shaping only inside the editor to keep the WebKit caret aligned", () => {
+    // jsdom cannot measure glyphs. Guard the scoped override here; verify the
+    // native geometry by typing mixed CJK/Latin text after Shift+Enter in WKWebView.
+    const container = document.createElement("div");
+    container.style.textRendering = "optimizeLegibility";
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => {
+      root.render(createElement(MentionEditor, {
+        onSubmit: () => {},
+        placeholder: "Message",
+      }));
+    });
+
+    const editor = container.querySelector<HTMLElement>("[role=\"textbox\"]")!;
+    expect(editor.style.textRendering.toLowerCase()).toBe("optimizespeed");
+    expect(container.style.textRendering.toLowerCase()).toBe("optimizelegibility");
+    expect(editor.parentElement?.style.textRendering).toBe("");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("prefers plain text when the clipboard also contains an image", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
