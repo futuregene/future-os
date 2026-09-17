@@ -646,7 +646,12 @@ Message bodies render as Markdown: beyond ordinary rich text, inline and block
 LaTeX math (KaTeX) are supported; links are filtered through a protocol
 whitelist (non-http(s) protocols degrade to plain text), external links open in
 the system default browser, and `[text](http…)` links in user messages are
-clickable too.
+clickable too. Markdown images load inline automatically, including resolved
+local paths outside the workspace; local images still pass backend path and
+size validation before an asset URL is exposed. Clicking an unlinked image opens
+a viewport-sized preview, dismissed with Escape, the close button, or the
+backdrop. Images wrapped in links retain their link action. Long images also
+keep the inline expand/collapse control.
 
 Failed / ended assistant messages offer recovery actions below: retry /
 continue (latest-round failure only) and fork (any ended message) — semantics

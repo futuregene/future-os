@@ -146,7 +146,7 @@ describe("markdownContent reference resolution", () => {
     cleanup();
   });
 
-  it("still refuses to auto-read workspace-external images", async () => {
+  it("automatically loads resolved workspace-external images", async () => {
     prepareImagePreviewUrlMock.mockClear();
     resolveReferencesMock.mockResolvedValue([{
       targetType: "file",
@@ -156,10 +156,6 @@ describe("markdownContent reference resolution", () => {
     }]);
     const { container, cleanup } = mount(<MarkdownContent content="![outside](/outside/a.png)" workspaceId="outside-image" />);
     await flushStore();
-    await flushAsync();
-    expect(container.querySelector("img")).toBeNull();
-    expect(prepareImagePreviewUrlMock).not.toHaveBeenCalled();
-    act(() => container.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flushAsync();
     expect(prepareImagePreviewUrlMock).toHaveBeenCalledWith("/outside/a.png");
     expect(container.querySelector("img")).not.toBeNull();

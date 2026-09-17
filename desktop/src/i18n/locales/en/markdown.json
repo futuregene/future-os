@@ -5,7 +5,8 @@
   "image": {
     "unavailable": "Image unavailable",
     "retry": "Retry image",
-    "load": "Load image here",
+    "preview": "Enlarge {{name}}",
+    "defaultName": "image",
     "expand": "Expand image",
     "collapse": "Collapse image"
   },
