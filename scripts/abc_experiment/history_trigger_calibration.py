@@ -13,6 +13,7 @@ from pathlib import Path
 import random
 import re
 import subprocess
+import sys
 
 import autonomous_open_exam as a
 import interface_open_exam as e

@@ -30,7 +30,9 @@ Use future/deepseek-flash, thinking off, 8192 output cap and tool_choice=auto.
 At most eight tool requests per cell. The control with no tools gets no tool
 schemas. One draw per predeclared cell; no outcome-conditioned repetitions.
 
-New root: ~/compact-exp/history-trigger-calibration-v1. Additional spend cap
+The v1 root is preparation-only: a missing sys import stopped the detached
+launcher before a child or model request existed (zero charge). The corrected
+executed root is ~/compact-exp/history-trigger-calibration-v2. Additional spend cap
 CNY2 within the total CNY300, opening cumulative spend CNY48.19025064. Reserve
 before requests; STOP prevents starting another request. Retain failures/fees.
 No full 72-case rerun and no model change without a separate decision.
