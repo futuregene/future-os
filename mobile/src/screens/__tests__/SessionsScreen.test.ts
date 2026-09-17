@@ -7,6 +7,7 @@ import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
+import { SettingsLink } from "../../features/settings/SettingsPrimitives";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 const mockRemote = {
@@ -101,7 +102,7 @@ test("settings uses a full-screen scrollable page and can be dismissed", () => {
 test("iOS device navigation waits until the settings modal has dismissed", () => {
   act(() => button("sessions.settings").props.onPress());
   const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
-  const manage = modal.findAllByType(Button).find(node => node.props.label === "desktops.title")!;
+  const manage = modal.findAllByType(SettingsLink).find(node => node.props.label === "desktops.title")!;
   act(() => manage.props.onPress());
   expect(onManageDesktops).not.toHaveBeenCalled();
   act(() => modal.props.onDismiss());

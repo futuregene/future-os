@@ -3,7 +3,6 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ChevronLeft, X } from "lucide-react-native";
-import { Button } from "../../components/Button";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings } from "../../remote/types";
@@ -19,7 +18,7 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  const [page, setPage] = useState<"home" | "models" | "skills">("home");
+  const [page, setPage] = useState<"home" | "preferences" | "models" | "skills" | "language">("home");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
@@ -81,8 +80,9 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
     {!remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
     {page === "models" && enabled ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
       : page === "skills" && remote.desktopOnline && skillsSupported ? <SkillsSettingsPage />
-      : <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-        <SettingsSection title={t("desktopSettings.currentDesktop")}>
+      : page === "language" ? <ScrollView contentContainerStyle={settingsStyles.content}><LanguageSettings /></ScrollView>
+      : page === "preferences" ? <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+        <SettingsSection title={t("desktopSettings.automation")}>
           <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
           {remote.desktopOnline && !supported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
           <SettingsSwitch label={t("desktopSettings.autoUpgradeSkills")} description={t("desktopSettings.autoUpgradeSkillsHint")}
@@ -92,8 +92,9 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
           <SettingsSwitch label={t("desktopSettings.autoConnectRemote")} description={t("desktopSettings.autoConnectRemoteHint")}
             value={resource.data?.autoConnectRemote ?? false} disabled={disabled} onChange={autoConnectRemote => void changeSettings({ autoConnectRemote })} />
           {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
-          <Text style={settingsStyles.label}>{t("approvalTier.title")}</Text>
-          <View style={settingsStyles.actions}>
+        </SettingsSection>
+        <SettingsSection title={t("approvalTier.title")}>
+          <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
             {(["manual", "sandbox", "off"] as const).filter(tier => tier !== "sandbox" || remote.sandboxAvailable).map(tier =>
               <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
                 accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
@@ -103,18 +104,22 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
               </Pressable>)}
           </View>
         </SettingsSection>
-        <SettingsSection title={t("desktopSettings.modelsAndSkills")}>
+      </ScrollView>
+      : <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+        <SettingsSection title={t("desktopSettings.currentDesktop")}>
+          <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
+          <SettingsLink label={t("desktopSettings.preferences")} onPress={() => setPage("preferences")} />
           <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => setPage("models")} />
           <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => setPage("skills")} />
-          {remote.desktopOnline && !skillsSupported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+          {remote.desktopOnline && (!supported || !skillsSupported) ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+          <SettingsLink label={t("desktops.title")} onPress={onManageDesktops} />
+          <SettingsLink label={t("sessions.unpair")} onPress={onUnpair} destructive />
         </SettingsSection>
         <SettingsSection title={t("desktopSettings.thisPhone")}>
-          <LanguageSettings />
-          <Text style={settingsStyles.description}>{t("common.version", { version: VERSION })}</Text>
-          <Button label={t("update.check")} loading={checkingUpdate} onPress={onCheckUpdate} variant="secondary" />
-          <Button label={t("desktops.title")} onPress={onManageDesktops} variant="secondary" />
-          <Button label={t("sessions.unpair")} onPress={onUnpair} variant="danger" />
+          <SettingsLink label={t("language.title")} onPress={() => setPage("language")} />
+          <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
         </SettingsSection>
+        <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
       </ScrollView>}
   </SafeAreaView>;
 }
@@ -124,6 +129,7 @@ const styles = StyleSheet.create({
   heading: { flex: 1, minWidth: 0 },
   title: { color: colors.ink, fontSize: 20, fontWeight: "600" },
   headerButton: { minWidth: layout.touchTarget, minHeight: layout.touchTarget, alignItems: "center", justifyContent: "center" },
+  version: { ...settingsStyles.description, textAlign: "center" },
   notice: { color: colors.inkMuted, padding: layout.gutter, fontSize: 13 },
   approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: 8 },
   approvalSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },

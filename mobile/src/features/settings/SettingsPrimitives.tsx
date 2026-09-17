@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react-native";
-import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
@@ -25,19 +25,25 @@ export function SettingsSwitch({ label, description, value, disabled, onChange }
   </View>;
 }
 
-export function SettingsLink({ label, disabled = false, onPress }: { label: string; disabled?: boolean; onPress(): void }) {
-  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }}
-    disabled={disabled} onPress={onPress} style={[settingsStyles.row, disabled && { opacity: 0.5 }]}>
-    <Text style={settingsStyles.label}>{label}</Text>
-    <ChevronRight size={18} color={colors.inkMuted} />
+export function SettingsLink({ label, disabled = false, loading = false, destructive = false, onPress }: {
+  label: string; disabled?: boolean; loading?: boolean; destructive?: boolean; onPress(): void;
+}) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: disabled || loading, busy: loading }}
+    disabled={disabled || loading} onPress={onPress} style={[settingsStyles.row, disabled && { opacity: 0.5 }]}>
+    <Text style={[settingsStyles.label, destructive && { color: colors.danger }]}>{label}</Text>
+    {loading ? <ActivityIndicator size="small" color={colors.accent} /> : <ChevronRight size={18} color={colors.inkMuted} />}
   </Pressable>;
 }
 
 export function ResourceStatus({ loading, failed, onReload }: { loading: boolean; failed: boolean; onReload(): void }) {
   const { t } = useTranslation();
+  if (!loading && !failed) return null;
   return <View style={settingsStyles.status}>
-    {failed ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("desktopSettings.loadFailed")}</Text> : null}
-    <Button compact label={t("desktopSettings.refresh")} loading={loading} onPress={onReload} variant="secondary" />
+    {loading ? <ActivityIndicator size="small" color={colors.accent} /> : null}
+    {failed ? <>
+      <Text accessibilityRole="alert" style={settingsStyles.error}>{t("desktopSettings.loadFailed")}</Text>
+      <Button compact label={t("common.retry")} loading={loading} onPress={onReload} variant="secondary" />
+    </> : null}
   </View>;
 }
 
