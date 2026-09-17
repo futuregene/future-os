@@ -222,6 +222,10 @@ test("composer grows with measured text, scrolls at its cap and shrinks when cle
     const measure = () => tree!.root.findAllByType(Text).find(node => node.props.onLayout)!;
     const layoutText = (height: number) => act(() => measure().props.onLayout({ nativeEvent: { layout: { height } } }));
     expect(height()).toBe(46);
+    // Extra top clearance must also be included in multiline measurement.
+    const textInsets = { paddingTop: 12, paddingBottom: 8, paddingHorizontal: 16 };
+    expect(StyleSheet.flatten(input().props.style)).toMatchObject(textInsets);
+    expect(StyleSheet.flatten(measure().props.style)).toMatchObject(textInsets);
     // A sentinel makes the trailing empty line measurable; it never enters the input value.
     expect(measure().props.children).toBe(`${props.message}\u200b`);
     expect(input().props.value).toBe(props.message);
