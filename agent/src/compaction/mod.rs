@@ -1353,8 +1353,8 @@ mod tests {
             "tokens_before":100,"tokens_after":10,"trigger":"manual","algorithm_version":"semantic-v1",
             "model":"m","context_window":1000,"created_at":"2026-09-14T00:00:00Z"
         })).unwrap();
-        let projection =
-            project_prompt_context(&[user, answer, recent], Some(&checkpoint), None, 1000);
+        let raw = vec![user.clone(), answer.clone(), recent.clone()];
+        let projection = project_prompt_context(&raw, Some(&checkpoint), None, 1000);
         assert_eq!(projection.messages.len(), 4);
         assert_eq!(
             projection.messages[0].message.text(),
@@ -1374,13 +1374,17 @@ mod tests {
         };
         let ContextPreparation::Compacted {
             checkpoint: next, ..
-        } = super::semantic::prepare_deterministic(
-            &manager,
-            projection,
-            CompactionTrigger::Manual,
-            None,
-        )
-        .unwrap()
+        } = manager
+            .prepare_evidence(
+                projection,
+                &raw,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+                None,
+            )
+            .unwrap()
         else {
             panic!("expected upgrade checkpoint")
         };

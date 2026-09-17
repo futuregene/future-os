@@ -9,10 +9,13 @@ kept under `#[cfg(test)]` for the tests that characterise it, so no library call
 reach it. See [C compaction](compaction.md) and the
 [measurement of what the summary contributes](compaction-abc-experiment.md).
 
-`summary_prompt` and `call_summary_model_with_messages` are **shared with the C3
-default path**; `summarize_fold` and `call_summary_model_bounded` belong to the
-retired legacy A path alone, and `serialize_message` to both. The
-authoritative implementations are
+Of the functions described here, `summary_prompt` and
+`call_summary_model_with_messages` are **shared with the C3 default path**, and
+`serialize_message` with the shared planner. Everything else on this page —
+the fold, the chunking, the emergency summary — **no longer exists**; the
+retired A code was deleted once nothing could reach it. The page is kept as a
+record of the prompts and of the shape A used, not as a description of any
+callable API. The authoritative implementations are
 [semantic.rs](../agent/src/compaction/semantic.rs) and
 [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs). The [Chinese companion](compaction-prompts.zh-CN.md)
 also reproduces the complete output-template constant verbatim.
@@ -42,7 +45,7 @@ settings are not changed.
 ## Exact system prompt
 
 This constant is the whole system prompt of the **legacy A** call
-(`call_summary_model_bounded`), and it is the **fallback** the C3 path uses when its caller
+(`call_summary_model_with_messages` sends it), and it is the **fallback** the C3 path uses when its caller
 supplies none. Production always supplies one: the C3 request carries the session's own
 system prompt (post-checkpoint recall guidance included) and the session's own tool
 definitions, and the text below appears only under it, as the appended instruction.

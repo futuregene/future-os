@@ -2,7 +2,7 @@
 
 **策略 C 不需要摘要模型，确定性 C 路径不发起任何摘要调用；但运行时默认为 C3（C 加一份模型撰写的交接摘要），因此默认路径每次压缩会发起一次摘要请求。** 本页记录该共享的提示词构造，以及 legacy A 路径——它**已从运行时退役**：入口已从 `ContextManager` 移除，实现以 `#[cfg(test)]` 保留给刻画它的测试，库调用方无法再触达。不代表默认路径实际发送的内容。 当前机制见 [C 压缩](compaction.zh-CN.md)。
 
-本页说明实际的摘要调用，不把普通回答／历史查询后的答题调用算作压缩调用。其中 `summary_prompt` 与 `call_summary_model_with_messages` **与 C3 默认路径共用**；`summarize_fold` 与 `call_summary_model_bounded` 仅属于已退役的 legacy A 路径，`serialize_message` 两者共用。权威实现为 [semantic.rs](../agent/src/compaction/semantic.rs) 与 [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs)。
+本页说明实际的摘要调用，不把普通回答／历史查询后的答题调用算作压缩调用。其中 `summary_prompt` 与 `call_summary_model_with_messages` **与 C3 默认路径共用**，`serialize_message` 与共享的 planner 共用。本页其余内容（fold、分块、紧急摘要）**已不存在**——退役的 A 代码在无人可达后已删除；本页保留作为提示词与 A 形状的记录，不再描述任何可调用的 API。权威实现为 [semantic.rs](../agent/src/compaction/semantic.rs) 与 [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs)。
 
 ## 调用几次？
 
@@ -20,7 +20,7 @@
 
 ## 1. System prompt 原文
 
-该常量是**旧 A 路径**（`call_summary_model_bounded`）的完整 system prompt，也是 C3 路径在调用方未传 prompt 时的**兜底**。生产始终会传：C3 请求携带会话自己的 system prompt（已有 checkpoint 时含历史召回指引）与会话自己的工具定义，下面这段文字只作为**追加在最后的指令**出现在其下。
+该常量是**旧 A 路径**的完整 system prompt（当时由 `call_summary_model_bounded` 发送），也是 C3 路径在调用方未传 prompt 时的**兜底**。生产始终会传：C3 请求携带会话自己的 system prompt（已有 checkpoint 时含历史召回指引）与会话自己的工具定义，下面这段文字只作为**追加在最后的指令**出现在其下。
 
 以下是源码 `SUMMARY_SYSTEM_PROMPT` 的内容：
 

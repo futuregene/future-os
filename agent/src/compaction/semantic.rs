@@ -7,28 +7,21 @@ use super::{
 };
 use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
 use crate::types::LLMProvider;
-// Only the legacy-A fold (and its tests) builds a queue; production does not.
-#[cfg(test)]
-use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+// Only the tests queue scripts (the legacy fold, which also used this, is gone).
+#[cfg(test)]
+use std::collections::VecDeque;
 use tokio_stream::StreamExt;
 
 const TOOL_OUTPUT_LIMIT: usize = 2_000;
 const REASONING_LIMIT: usize = 2_000;
-// The strict limits and the summary-fold reserves belong to the retired legacy-A path
-// below; only its tests still use them.
+// Strict truncation belonged to the legacy-A fold; one test still exercises the limits.
 #[cfg(test)]
 const STRICT_TOOL_OUTPUT_LIMIT: usize = 512;
 #[cfg(test)]
 const STRICT_REASONING_LIMIT: usize = 512;
-#[cfg(test)]
-const SUMMARY_OUTPUT_RESERVE: u64 = 8_192;
-#[cfg(test)]
-const SUMMARY_SAFETY_MARGIN: u64 = 2_048;
-#[cfg(test)]
-const MIN_SUMMARY_CHUNK_TOKENS: u64 = 128;
 const SUMMARY_EVENT_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_millis(100)
 } else {
@@ -77,7 +70,8 @@ Rules:
 #[derive(Clone, Copy)]
 enum SerializationMode {
     Normal,
-    /// Only the legacy-A fold requests strict serialization; see the constants above.
+    /// Only the legacy-A fold asked for strict serialization; one test still checks the
+    /// truncation limits it selected.
     #[cfg(test)]
     Strict,
 }
@@ -119,110 +113,6 @@ impl std::fmt::Display for SummaryCallError {
             }
             Self::Cancelled => write!(f, "summary request cancelled"),
             Self::Other(reason) => write!(f, "{reason}"),
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Legacy A orchestration. Retired from the runtime (`6a83a34a`): nothing outside the
-/// tests below calls it. `#[cfg(test)]` keeps it out of every production build while the
-/// tests that characterise legacy A keep running; delete the group when those tests go.
-#[cfg(test)]
-pub(super) async fn prepare(
-    manager: &ContextManager,
-    prompt: PromptContext,
-    trigger: CompactionTrigger,
-    phase: CompactionPhase,
-    custom_instructions: Option<&str>,
-    provider: &dyn LLMProvider,
-    interrupted: &AtomicBool,
-    fallback: Option<(&dyn LLMProvider, &str)>,
-    on_started: Option<&(dyn Fn() + Sync)>,
-    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
-) -> Result<ContextPreparation, ContextError> {
-    let plan = match plan(
-        manager,
-        prompt,
-        trigger,
-        phase,
-        custom_instructions,
-        on_started,
-        4096,
-    )? {
-        PlannedPreparation::Unchanged(prompt) => {
-            return Ok(ContextPreparation::Unchanged { prompt });
-        }
-        PlannedPreparation::Compact(plan) => plan,
-    };
-
-    let mut semantic = summarize_with_replan(manager, &plan, provider, interrupted, on_usage).await;
-    let mut summary_model = manager.model.as_str();
-    if !matches!(semantic, Ok(ref summary) if valid_summary(summary))
-        && !matches!(semantic, Err(SummaryCallError::Cancelled))
-    {
-        if let Some((fallback_provider, fallback_model)) = fallback {
-            tracing::warn!(
-                fallback_model,
-                "retrying context compaction with selected new model"
-            );
-            semantic =
-                summarize_with_replan(manager, &plan, fallback_provider, interrupted, on_usage)
-                    .await;
-            summary_model = fallback_model;
-        }
-    }
-    let (summary, algorithm_version) = match semantic {
-        Ok(summary) if valid_summary(&summary) => (summary, "semantic-s2-v1"),
-        Err(SummaryCallError::Cancelled) => return Err(ContextError::Cancelled),
-        Ok(_) => {
-            if plan.trigger != CompactionTrigger::ProviderContextLimit {
-                return Err(ContextError::InvalidSummary);
-            }
-            tracing::warn!("provider context-limit recovery received an invalid semantic summary; using emergency summary");
-            (emergency_summary(&plan), "deterministic-emergency-s2-v1")
-        }
-        Err(SummaryCallError::ContextLimit(error)) | Err(SummaryCallError::Other(error)) => {
-            if plan.trigger != CompactionTrigger::ProviderContextLimit {
-                return Err(ContextError::SummaryFailed(error));
-            }
-            tracing::warn!(
-                error,
-                "provider context-limit recovery compaction failed; using emergency summary"
-            );
-            (emergency_summary(&plan), "deterministic-emergency-s2-v1")
-        }
-    };
-    finalize(manager, plan, summary, algorithm_version, summary_model)
-}
-
-/// Legacy A deterministic path (see `prepare` above).
-#[cfg(test)]
-pub(super) fn prepare_deterministic(
-    manager: &ContextManager,
-    prompt: PromptContext,
-    trigger: CompactionTrigger,
-    custom_instructions: Option<&str>,
-) -> Result<ContextPreparation, ContextError> {
-    match plan(
-        manager,
-        prompt,
-        trigger,
-        super::default_phase(trigger),
-        custom_instructions,
-        None,
-        4096,
-    )? {
-        PlannedPreparation::Unchanged(prompt) => Ok(ContextPreparation::Unchanged { prompt }),
-        PlannedPreparation::Compact(plan) => {
-            let summary = emergency_summary(&plan);
-            let model = manager.model.as_str();
-            finalize(
-                manager,
-                plan,
-                summary,
-                "deterministic-emergency-s2-v1",
-                model,
-            )
         }
     }
 }
@@ -589,206 +479,6 @@ fn fallback_cut(
     (cut > 0 && cut < messages.len()).then_some(cut)
 }
 
-#[cfg(test)]
-async fn summarize_with_replan(
-    manager: &ContextManager,
-    plan: &CompactionPlan,
-    provider: &dyn LLMProvider,
-    interrupted: &AtomicBool,
-    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
-) -> Result<String, SummaryCallError> {
-    match summarize_fold(
-        manager,
-        plan,
-        provider,
-        interrupted,
-        SerializationMode::Normal,
-        on_usage,
-    )
-    .await
-    {
-        Err(SummaryCallError::ContextLimit(_)) => {
-            summarize_fold(
-                manager,
-                plan,
-                provider,
-                interrupted,
-                SerializationMode::Strict,
-                on_usage,
-            )
-            .await
-        }
-        result => result,
-    }
-}
-
-#[cfg(test)]
-async fn summarize_fold(
-    manager: &ContextManager,
-    plan: &CompactionPlan,
-    provider: &dyn LLMProvider,
-    interrupted: &AtomicBool,
-    mode: SerializationMode,
-    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
-) -> Result<String, SummaryCallError> {
-    let serialized = plan
-        .removed
-        .iter()
-        .filter(|item| internal_summary(&item.message).is_none())
-        .map(|item| serialize_message(&item.message, mode))
-        .filter(|value| !value.trim().is_empty())
-        .collect::<Vec<_>>();
-    let mut remaining = serialized.into_iter().collect::<VecDeque<_>>();
-    if remaining.is_empty() {
-        return Err(SummaryCallError::Other(
-            "no conversation content remained after serialization".to_string(),
-        ));
-    }
-
-    let mut accumulator = plan.previous_summary.clone();
-    let mut fold_step = 0_usize;
-    let suffix = format!("\n\nS2 retention: original user directives and selected assistant text are preserved separately. Older assistant outputs may be summarized to fit; carry forward their important facts. Prioritize tool evidence, exact symbols/values, corrections and verification boundaries. Keep canonical headings exactly as shown; write the body in the conversation language. Keep the summary within {} estimated tokens.", plan.summary_budget);
-    while !remaining.is_empty() {
-        if interrupted.load(Ordering::Relaxed) {
-            return Err(SummaryCallError::Cancelled);
-        }
-        let budget =
-            summary_chunk_budget(manager, accumulator.as_deref(), mode).ok_or_else(|| {
-                SummaryCallError::Other(
-                    "context compaction accumulator left no safe room for another summary chunk"
-                        .to_string(),
-                )
-            })?;
-        let framing = summary_prompt(accumulator.as_deref(), "", plan.instructions.as_deref());
-        let window = manager.context_window.max(1) as u64;
-        let fixed = estimate_text_tokens(SUMMARY_SYSTEM_PROMPT)
-            + estimate_text_tokens(&framing)
-            + estimate_text_tokens(&suffix)
-            + plan.summary_budget * 2
-            + SUMMARY_SAFETY_MARGIN.min(window / 8)
-            + 16;
-        let budget = budget.min(window.saturating_sub(fixed));
-        if budget < MIN_SUMMARY_CHUNK_TOKENS {
-            return Err(SummaryCallError::Other(
-                "summary instructions/accumulator leave no safe input room".into(),
-            ));
-        }
-        let chunk = take_next_chunk(&mut remaining, budget).ok_or_else(|| {
-            SummaryCallError::Other("failed to build context compaction chunk".to_string())
-        })?;
-        fold_step += 1;
-        let remaining_parts = remaining.len();
-        let strict = matches!(mode, SerializationMode::Strict);
-        tracing::debug!(
-            fold_step,
-            budget,
-            remaining_parts,
-            strict,
-            "planned context compaction summary fold step"
-        );
-        let prompt = format!(
-            "{}{suffix}",
-            summary_prompt(accumulator.as_deref(), &chunk, plan.instructions.as_deref())
-        );
-        let summary = call_summary_model_bounded(
-            provider,
-            &manager.model,
-            prompt,
-            interrupted,
-            (plan.summary_budget * 2) as i32,
-            on_usage,
-        )
-        .await?;
-        if estimate_text_tokens(&summary) > plan.summary_budget {
-            return Err(SummaryCallError::Other(
-                "summary exceeds its reserved text budget".into(),
-            ));
-        }
-        if !valid_summary(&summary) {
-            return Err(SummaryCallError::Other(
-                "model returned a summary without the required structure".to_string(),
-            ));
-        }
-        accumulator = Some(summary);
-    }
-    accumulator.ok_or_else(|| SummaryCallError::Other("empty summary fold".to_string()))
-}
-
-#[cfg(test)]
-fn summary_chunk_budget(
-    manager: &ContextManager,
-    accumulator: Option<&str>,
-    mode: SerializationMode,
-) -> Option<u64> {
-    let window = manager.context_window.max(1) as u64;
-    // Fixed 4K/2K reserves are appropriate for large coding models but leave
-    // no input room on supported 4K/8K models. Scale them down while retaining
-    // the original caps for larger windows.
-    let output_reserve = SUMMARY_OUTPUT_RESERVE.min((window / 4).max(1));
-    let safety_margin = SUMMARY_SAFETY_MARGIN.min((window / 8).max(1));
-    let fixed = estimate_text_tokens(SUMMARY_SYSTEM_PROMPT)
-        + estimate_text_tokens(SUMMARY_TEMPLATE)
-        + accumulator.map(estimate_text_tokens).unwrap_or(0)
-        + output_reserve
-        + safety_margin;
-    let available = window.saturating_sub(fixed);
-    let ratio_cap = match mode {
-        SerializationMode::Normal => window.saturating_mul(60) / 100,
-        SerializationMode::Strict => window.saturating_mul(35) / 100,
-    };
-    let budget = available.min(ratio_cap);
-    (budget >= MIN_SUMMARY_CHUNK_TOKENS).then_some(budget)
-}
-
-#[cfg(test)]
-fn take_next_chunk(remaining: &mut VecDeque<String>, budget: u64) -> Option<String> {
-    let mut current = Vec::new();
-    let mut current_tokens = 0_u64;
-    while let Some(value) = remaining.pop_front() {
-        if estimate_text_tokens(&value) > budget {
-            for part in split_to_token_budget(&value, budget).into_iter().rev() {
-                remaining.push_front(part);
-            }
-            continue;
-        }
-        let tokens = estimate_text_tokens(&value);
-        if !current.is_empty() && current_tokens.saturating_add(tokens) > budget {
-            remaining.push_front(value);
-            break;
-        }
-        current.push(value);
-        current_tokens = current_tokens.saturating_add(tokens);
-    }
-    (!current.is_empty()).then(|| current.join("\n\n"))
-}
-
-/// A single huge message/tool result must not bypass the summary budget. This
-/// is an internal summary-input boundary only; it never changes the retained
-/// tail or the immutable journal entry.
-#[cfg(test)]
-fn split_to_token_budget(value: &str, budget: u64) -> Vec<String> {
-    if estimate_text_tokens(value) <= budget {
-        return vec![value.to_string()];
-    }
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    let mut quarters = 0_u64;
-    let quarter_budget = budget.saturating_mul(4).max(4);
-    for ch in value.chars() {
-        let cost = super::char_token_quarters(ch);
-        if !current.is_empty() && quarters.saturating_add(cost) > quarter_budget {
-            parts.push(std::mem::take(&mut current));
-            quarters = 0;
-        }
-        current.push(ch);
-        quarters = quarters.saturating_add(cost);
-    }
-    if !current.is_empty() {
-        parts.push(current);
-    }
-    parts
-}
-
 fn summary_prompt(
     previous_summary: Option<&str>,
     conversation: &str,
@@ -805,17 +495,6 @@ fn summary_prompt(
     format!(
         "{prior}<conversation>\n{conversation}\n</conversation>\n\n{instructions}{SUMMARY_TEMPLATE}"
     )
-}
-
-#[cfg(test)]
-#[cfg(test)]
-async fn call_summary_model(
-    provider: &dyn LLMProvider,
-    model: &str,
-    prompt: String,
-    interrupted: &AtomicBool,
-) -> Result<String, SummaryCallError> {
-    call_summary_model_bounded(provider, model, prompt, interrupted, 8192, None).await
 }
 
 struct AttemptUsage<'a> {
@@ -845,33 +524,6 @@ async fn summary_interruptible<T>(
         }
     };
     tokio::select! { result = future => Ok(result), _ = cancelled => Err(SummaryCallError::Cancelled) }
-}
-
-#[cfg(test)]
-async fn call_summary_model_bounded(
-    provider: &dyn LLMProvider,
-    model: &str,
-    prompt: String,
-    interrupted: &AtomicBool,
-    max_output_tokens: i32,
-    on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
-) -> Result<String, SummaryCallError> {
-    call_summary_request(
-        provider,
-        move || ModelRequest {
-            model: model.to_string(),
-            system_prompt: SUMMARY_SYSTEM_PROMPT.to_string(),
-            messages: vec![AgentMessage::new_user(
-                "user",
-                serde_json::json!([{ "type": "text", "text": prompt }]),
-            )],
-            tools: Vec::new(),
-        },
-        interrupted,
-        max_output_tokens,
-        on_usage,
-    )
-    .await
 }
 
 /// Send a summary request built from the live conversation as real messages, with
@@ -1231,126 +883,15 @@ fn estimate_text_tokens(value: &str) -> u64 {
 
 #[cfg(test)]
 #[test]
-fn summary_chunks_and_context_estimates_share_unicode_costs() {
+fn text_estimators_agree_on_unicode_costs() {
+    // The legacy fold used `estimate_text_tokens`; the planner and the evidence builder use
+    // the shared `mod::estimate_text_tokens`. Both must classify the same characters the
+    // same way, or a budget would mean two different things in one projection.
     for text in ["ПриветПривет", "🙂🙂🙂🙂", "漢字漢字", "hello世界"] {
         assert_eq!(
             estimate_text_tokens(text),
             super::estimate_text_tokens(text) as u64
         );
-        let parts = split_to_token_budget(text, 3);
-        assert_eq!(parts.concat(), text);
-        assert!(parts.iter().all(|part| estimate_text_tokens(part) <= 3));
-    }
-}
-
-#[cfg(test)]
-fn valid_summary(summary: &str) -> bool {
-    [
-        "## Objective",
-        "## Important Details",
-        "## Work State",
-        "### Completed",
-        "### Active",
-        "### Blocked",
-        "## Next Move",
-        "## Relevant Files",
-    ]
-    .iter()
-    .all(|heading| summary.contains(heading))
-}
-
-#[cfg(test)]
-fn emergency_summary(plan: &CompactionPlan) -> String {
-    let mut user_texts = Vec::new();
-    let mut assistant_texts = Vec::new();
-    let mut tool_state = Vec::new();
-    let mut read_files = Vec::new();
-    let mut modified_files = Vec::new();
-    for item in &plan.removed {
-        if internal_summary(&item.message).is_some() {
-            continue;
-        }
-        for block in &item.message.content {
-            match block {
-                ContentBlock::Text { text } if item.message.role == "user" => {
-                    user_texts.push(truncate(text, 1_000));
-                }
-                ContentBlock::Text { text } if item.message.role == "assistant" => {
-                    assistant_texts.push(truncate(text, 1_000));
-                }
-                ContentBlock::ToolCall { name, args, .. } => {
-                    tool_state.push(format!("{name}({args})"));
-                    collect_file_operation(name, args, &mut read_files, &mut modified_files);
-                }
-                ContentBlock::ToolResult {
-                    tool_call_id,
-                    content,
-                    is_error,
-                } => tool_state.push(format!(
-                    "{tool_call_id}: {}: {}",
-                    if *is_error { "error" } else { "success" },
-                    truncate(content, 512)
-                )),
-                _ => {}
-            }
-        }
-    }
-    user_texts = user_texts.into_iter().rev().take(3).collect();
-    user_texts.reverse();
-    assistant_texts = assistant_texts.into_iter().rev().take(3).collect();
-    assistant_texts.reverse();
-    tool_state = tool_state.into_iter().rev().take(8).collect();
-    tool_state.reverse();
-    read_files.sort();
-    read_files.dedup();
-    modified_files.sort();
-    modified_files.dedup();
-
-    format!(
-        "## Objective\n- {}\n\n## Important Details\n- Previous summary: {}\n- Compaction instructions: {}\n\n## Work State\n### Completed\n- Recent assistant results: {}\n- Modified files: {}\n\n### Active\n- Recent user directives: {}\n- Recent tool activity: {}\n\n### Blocked\n- Tool errors are preserved above when present; otherwise (none).\n\n## Next Move\n1. Continue from the retained recent conversation and verify unresolved user directives.\n\n## Relevant Files\n- Read: {}\n- Modified: {}",
-        user_texts.last().cloned().unwrap_or_else(|| "Continue the active user task.".to_string()),
-        plan.previous_summary.as_deref().unwrap_or("(none)"),
-        plan.instructions.as_deref().unwrap_or("(none)"),
-        join_or_none(&assistant_texts),
-        join_or_none(&modified_files),
-        join_or_none(&user_texts),
-        join_or_none(&tool_state),
-        join_or_none(&read_files),
-        join_or_none(&modified_files),
-    )
-}
-
-#[cfg(test)]
-fn collect_file_operation(
-    tool: &str,
-    args: &serde_json::Value,
-    read_files: &mut Vec<String>,
-    modified_files: &mut Vec<String>,
-) {
-    let path = args
-        .get("path")
-        .or_else(|| args.get("file_path"))
-        .and_then(serde_json::Value::as_str);
-    let Some(path) = path else { return };
-    let lower = tool.to_ascii_lowercase();
-    if lower.contains("read") || lower.contains("view") || lower.contains("open") {
-        read_files.push(path.to_string());
-    }
-    if lower.contains("write")
-        || lower.contains("edit")
-        || lower.contains("patch")
-        || lower.contains("create")
-    {
-        modified_files.push(path.to_string());
-    }
-}
-
-#[cfg(test)]
-fn join_or_none(values: &[String]) -> String {
-    if values.is_empty() {
-        "(none)".to_string()
-    } else {
-        values.join(" | ")
     }
 }
 
@@ -1457,149 +998,23 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
-    /// The retired public `prepare_semantic*` wrappers, kept here for the tests below.
-    /// They add nothing but argument defaults (`default_phase`, and `None` for the
-    /// fallback / lifecycle observers), so the tests keep exercising the same plans and
-    /// requests they did while these were part of the API. Production has no such entry
-    /// point: `ContextManager` exposes only `prepare_evidence` and
-    /// `prepare_evidence_with_summary`.
-    impl ContextManager {
-        async fn prepare_semantic(
-            &self,
-            prompt: PromptContext,
-            trigger: CompactionTrigger,
-            custom_instructions: Option<&str>,
-            provider: &dyn crate::types::LLMProvider,
-            interrupted: &AtomicBool,
-        ) -> Result<ContextPreparation, ContextError> {
-            self.prepare_semantic_with_phase(
-                prompt,
-                trigger,
-                super::super::default_phase(trigger),
-                custom_instructions,
-                provider,
-                interrupted,
-            )
-            .await
-        }
-
-        async fn prepare_semantic_with_phase(
-            &self,
-            prompt: PromptContext,
-            trigger: CompactionTrigger,
-            phase: CompactionPhase,
-            custom_instructions: Option<&str>,
-            provider: &dyn crate::types::LLMProvider,
-            interrupted: &AtomicBool,
-        ) -> Result<ContextPreparation, ContextError> {
-            self.prepare_semantic_with_phase_and_fallback(
-                prompt,
-                trigger,
-                phase,
-                custom_instructions,
-                provider,
-                interrupted,
-                None,
-            )
-            .await
-        }
-
-        #[allow(clippy::too_many_arguments)]
-        async fn prepare_semantic_with_phase_and_fallback(
-            &self,
-            prompt: PromptContext,
-            trigger: CompactionTrigger,
-            phase: CompactionPhase,
-            custom_instructions: Option<&str>,
-            provider: &dyn crate::types::LLMProvider,
-            interrupted: &AtomicBool,
-            fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
-        ) -> Result<ContextPreparation, ContextError> {
-            prepare(
-                self,
-                prompt,
-                trigger,
-                phase,
-                custom_instructions,
-                provider,
-                interrupted,
-                fallback,
-                None,
-                None,
-            )
-            .await
-        }
-    }
-
     const VALID_SUMMARY: &str = "## Objective\n- ship it\n\n## Important Details\n- preserve data\n\n## Work State\n### Completed\n- audit\n\n### Active\n- implementation\n\n### Blocked\n- (none)\n\n## Next Move\n1. test\n\n## Relevant Files\n- agent/src/compaction/semantic.rs";
 
-    enum ScriptedReply {
-        Error(&'static str),
-        StreamError(&'static str),
-        Summary(&'static str),
+    /// The raw journal a projection was built from. These tests used to reach the legacy
+    /// semantic entry points, which took only the projection; `prepare_evidence` takes the
+    /// raw messages as well, and for a projection with no checkpoint that is exactly the
+    /// projection's own messages.
+    fn raw_of(prompt: &PromptContext) -> Vec<AgentMessage> {
+        prompt
+            .messages
+            .iter()
+            .map(|item| item.message.clone())
+            .collect()
     }
 
-    struct ScriptedProvider {
-        replies: Mutex<VecDeque<ScriptedReply>>,
-        requests: Mutex<Vec<ModelRequest>>,
-        output_limits: Mutex<Vec<i32>>,
-    }
-
-    impl ScriptedProvider {
-        fn new(replies: impl IntoIterator<Item = ScriptedReply>) -> Self {
-            Self {
-                replies: Mutex::new(replies.into_iter().collect()),
-                requests: Mutex::new(Vec::new()),
-                output_limits: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl LLMProvider for ScriptedProvider {
-        async fn stream_model_with_output_limit(
-            &self,
-            request: ModelRequest,
-            limit: i32,
-        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
-            self.output_limits.lock().push(limit);
-            self.stream_model(request).await
-        }
-        async fn stream_model(
-            &self,
-            request: ModelRequest,
-        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
-            self.requests.lock().push(request);
-            let reply = self.replies.lock().pop_front().expect("scripted reply");
-            match reply {
-                ScriptedReply::Error(message) => anyhow::bail!(message),
-                ScriptedReply::StreamError(message) => {
-                    let (tx, rx) = mpsc::channel(1);
-                    tx.send(ModelStreamEvent::Error {
-                        message: message.to_string(),
-                    })
-                    .await
-                    .unwrap();
-                    Ok(ReceiverStream::new(rx))
-                }
-                ScriptedReply::Summary(summary) => {
-                    let (tx, rx) = mpsc::channel(2);
-                    tx.send(ModelStreamEvent::TextDelta {
-                        id: "summary".to_string(),
-                        text: summary.to_string(),
-                    })
-                    .await
-                    .unwrap();
-                    tx.send(ModelStreamEvent::Finish {
-                        reason: FinishReason::Stop,
-                        usage: None,
-                    })
-                    .await
-                    .unwrap();
-                    Ok(ReceiverStream::new(rx))
-                }
-            }
-        }
+    /// The phase `prepare_semantic` used to derive from the trigger.
+    fn phase_of(trigger: CompactionTrigger) -> CompactionPhase {
+        super::super::default_phase(trigger)
     }
 
     fn projected_message(mut message: AgentMessage, id: &str) -> ProjectedMessage {
@@ -1651,10 +1066,6 @@ mod tests {
 
     #[tokio::test]
     async fn s2_counts_request_overhead_and_preserves_originals_across_checkpoints() {
-        let provider = ScriptedProvider::new([
-            ScriptedReply::Summary(VALID_SUMMARY),
-            ScriptedReply::Summary(VALID_SUMMARY),
-        ]);
         let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
         let manager = ContextManager {
             enabled: true,
@@ -1680,14 +1091,15 @@ mod tests {
         let before = super::super::project_prompt_context(&original, None, None, 1_000_000);
         assert!(matches!(
             manager
-                .prepare_semantic(
-                    before,
+                .prepare_evidence(
+                    before.clone(),
+                    &raw_of(&before),
                     CompactionTrigger::Automatic,
+                    phase_of(CompactionTrigger::Automatic),
                     None,
-                    &provider,
-                    &AtomicBool::new(false)
+                    &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap(),
             ContextPreparation::Unchanged { .. }
         ));
@@ -1695,14 +1107,15 @@ mod tests {
         super::super::set_request_budget(&mut prompt, &"s".repeat(40_000), &[], 16_000);
         let (first, checkpoint) = into_compacted(
             manager
-                .prepare_semantic(
-                    prompt,
+                .prepare_evidence(
+                    prompt.clone(),
+                    &raw_of(&prompt),
                     CompactionTrigger::Automatic,
+                    phase_of(CompactionTrigger::Automatic),
                     None,
-                    &provider,
                     &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap(),
         )
         .unwrap();
@@ -1710,7 +1123,7 @@ mod tests {
         assert_eq!(checkpoint.protected_entry_ids, vec!["u1", "a1"]);
         assert_eq!(first.messages[0].message.text(), "first exact requirement");
         assert_eq!(first.messages[1].message.text(), "first exact answer");
-        assert_eq!(*provider.output_limits.lock(), vec![8192]);
+        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
         let replay =
             super::super::project_prompt_context(&original, Some(&checkpoint), None, 1_000_000);
         assert_eq!(
@@ -1745,14 +1158,15 @@ mod tests {
             super::super::project_prompt_context(&original, Some(&checkpoint), None, 1_000_000);
         let (second, cp2) = into_compacted(
             manager
-                .prepare_semantic(
-                    second,
+                .prepare_evidence(
+                    second.clone(),
+                    &raw_of(&second),
                     CompactionTrigger::Manual,
+                    phase_of(CompactionTrigger::Manual),
                     None,
-                    &provider,
                     &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap(),
         )
         .unwrap();
@@ -1772,7 +1186,6 @@ mod tests {
 
     #[tokio::test]
     async fn s2_rejects_oversized_protected_text_before_calling_model() {
-        let provider = ScriptedProvider::new([]);
         let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
         let manager = ContextManager {
             enabled: true,
@@ -1788,22 +1201,20 @@ mod tests {
             ],
             usage: ContextUsage::default(),
         };
-        let result = manager
-            .prepare_semantic(
-                prompt,
-                CompactionTrigger::Manual,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await;
+        let result = manager.prepare_evidence(
+            prompt.clone(),
+            &raw_of(&prompt),
+            CompactionTrigger::Manual,
+            phase_of(CompactionTrigger::Manual),
+            None,
+            &AtomicBool::new(false),
+            None,
+        );
         assert!(matches!(result, Err(ContextError::BudgetExceeded(_))));
-        assert!(provider.requests.lock().is_empty());
     }
 
     #[tokio::test]
     async fn s2_summarizes_oversized_assistant_output_with_an_explicit_notice() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
         let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
         let manager = ContextManager {
             enabled: true,
@@ -1822,14 +1233,15 @@ mod tests {
         };
         let (prompt, checkpoint) = into_compacted(
             manager
-                .prepare_semantic(
-                    prompt,
+                .prepare_evidence(
+                    prompt.clone(),
+                    &raw_of(&prompt),
                     CompactionTrigger::Manual,
+                    phase_of(CompactionTrigger::Manual),
                     None,
-                    &provider,
                     &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap(),
         )
         .unwrap();
@@ -1843,22 +1255,6 @@ mod tests {
             .summary
             .iter()
             .any(|b| matches!(b,ContentBlock::Text{text} if text.contains("Retention note: 1"))));
-    }
-
-    #[tokio::test]
-    async fn summary_custom_instructions_are_in_the_request_budget() {
-        let provider = ScriptedProvider::new([]);
-        let result = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Manual,
-                Some(&"x".repeat(100_000)),
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await;
-        assert!(matches!(result, Err(ContextError::SummaryFailed(_))));
-        assert!(provider.requests.lock().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -1879,10 +1275,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
             flag.store(true, Ordering::Relaxed);
         });
-        let result = call_summary_model_bounded(
+        let result = call_summary_model_with_messages(
             &HangingProvider,
             "m",
+            "",
+            Vec::new(),
             "prompt".into(),
+            Vec::new(),
             &interrupted,
             8192,
             None,
@@ -1920,10 +1319,13 @@ mod tests {
             ]),
         ]);
         let observed = Mutex::new(Vec::new());
-        let summary = call_summary_model_bounded(
+        let summary = call_summary_model_with_messages(
             &provider,
             "m",
+            "",
+            Vec::new(),
             "prompt".into(),
+            Vec::new(),
             &AtomicBool::new(false),
             8192,
             Some(&|u| observed.lock().push(u.clone())),
@@ -1958,14 +1360,6 @@ mod tests {
     }
 
     #[test]
-    fn required_summary_structure_is_validated() {
-        assert!(valid_summary(
-            "## Objective\n## Important Details\n## Work State\n### Completed\n### Active\n### Blocked\n## Next Move\n## Relevant Files"
-        ));
-        assert!(!valid_summary("short summary"));
-    }
-
-    #[test]
     fn summary_prompt_distinguishes_completed_requests_from_active_objectives() {
         let prompt = summary_prompt(
             None,
@@ -1993,31 +1387,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn semantic_summary_uses_current_model_without_tools() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
-        let prepared = test_manager()
-            .prepare_semantic_with_phase(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                CompactionPhase::PreTurn,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
-        assert_eq!(checkpoint.phase, Some(CompactionPhase::PreTurn));
-        let requests = provider.requests.lock();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].model, "old-model");
-        assert!(requests[0].tools.is_empty());
-    }
-
-    #[tokio::test]
     async fn mid_turn_compaction_summarizes_an_oversized_active_tool_tail() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
         let prompt = PromptContext {
             messages: vec![
                 projected("user", "audit the repository", "e1"),
@@ -2057,15 +1427,15 @@ mod tests {
 
         let (prompt, checkpoint) = into_compacted(
             test_manager()
-                .prepare_semantic_with_phase(
-                    prompt,
+                .prepare_evidence(
+                    prompt.clone(),
+                    &raw_of(&prompt),
                     CompactionTrigger::Automatic,
                     CompactionPhase::MidTurn,
                     None,
-                    &provider,
                     &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap(),
         )
         .expect("expected full active-turn compaction");
@@ -2083,7 +1453,6 @@ mod tests {
 
     #[tokio::test]
     async fn pre_turn_compaction_does_not_replace_an_unseen_user_prompt() {
-        let provider = ScriptedProvider::new([]);
         let prompt = PromptContext {
             messages: vec![projected("user", &"x".repeat(40_000), "e1")],
             usage: ContextUsage {
@@ -2094,276 +1463,63 @@ mod tests {
             },
         };
 
-        let result = test_manager()
-            .prepare_semantic_with_phase(
-                prompt,
-                CompactionTrigger::Automatic,
-                CompactionPhase::PreTurn,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await;
+        let result = test_manager().prepare_evidence(
+            prompt.clone(),
+            &raw_of(&prompt),
+            CompactionTrigger::Automatic,
+            CompactionPhase::PreTurn,
+            None,
+            &AtomicBool::new(false),
+            None,
+        );
 
         assert_eq!(result.unwrap_err(), ContextError::NoValidBoundary);
-        assert!(provider.requests.lock().is_empty());
-    }
-
-    #[tokio::test]
-    async fn context_limit_replans_once_in_strict_mode() {
-        let provider = ScriptedProvider::new([
-            ScriptedReply::Error("maximum context length exceeded"),
-            ScriptedReply::Summary(VALID_SUMMARY),
-        ]);
-        let prepared = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
-        assert_eq!(provider.requests.lock().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn retryable_error_is_bounded_and_recovers() {
-        let provider = ScriptedProvider::new([
-            ScriptedReply::Error("status 503 overload"),
-            ScriptedReply::Summary(VALID_SUMMARY),
-        ]);
-        let prepared = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
-        assert_eq!(provider.requests.lock().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn retryable_stream_error_is_bounded_and_recovers() {
-        let provider = ScriptedProvider::new([
-            ScriptedReply::StreamError("status 503 overload"),
-            ScriptedReply::Summary(VALID_SUMMARY),
-        ]);
-        let prepared = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.algorithm_version, "semantic-s2-v1");
-        assert_eq!(provider.requests.lock().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn oversized_head_is_folded_and_each_step_receives_the_accumulator() {
-        let provider = ScriptedProvider::new([
-            ScriptedReply::Summary(VALID_SUMMARY),
-            ScriptedReply::Summary(VALID_SUMMARY),
-        ]);
-        let mut prompt = test_prompt();
-        prompt.messages[0] = projected_message(
-            AgentMessage {
-                role: "assistant".into(),
-                content: vec![ContentBlock::tool_call(
-                    "large",
-                    "write",
-                    serde_json::json!({"path":"large.rs", "content":"x".repeat(30_000)}),
-                    Default::default(),
-                )],
-                ..Default::default()
-            },
-            "e1",
-        );
-        test_manager()
-            .prepare_semantic(
-                prompt,
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let requests = provider.requests.lock();
-        assert_eq!(requests.len(), 2);
-        let second_prompt = requests[1].messages[0].text();
-        assert!(second_prompt.contains("<prior-summary>"));
-        assert!(second_prompt.contains("## Objective"));
-    }
-
-    #[test]
-    fn fold_budget_shrinks_as_the_accumulator_grows() {
-        let manager = test_manager();
-        let initial = summary_chunk_budget(&manager, None, SerializationMode::Normal).unwrap();
-        let accumulated = format!("{VALID_SUMMARY}\n{}", "detail ".repeat(1_000));
-        let next =
-            summary_chunk_budget(&manager, Some(&accumulated), SerializationMode::Normal).unwrap();
-
-        assert!(next < initial);
-        assert!(next > 0);
-    }
-
-    #[test]
-    fn fold_budget_stops_when_the_accumulator_fills_the_window() {
-        let manager = test_manager();
-        let oversized = "x".repeat((manager.context_window as usize) * 4);
-
-        assert_eq!(
-            summary_chunk_budget(&manager, Some(&oversized), SerializationMode::Normal),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn non_retryable_failure_does_not_commit_automatic_checkpoint() {
-        let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
-        let error = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                Some("preserve the exact user constraints"),
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error,
-            ContextError::SummaryFailed("authentication failed".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn provider_context_limit_failure_uses_deterministic_emergency_summary() {
-        let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
-        let prepared = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::ProviderContextLimit,
-                Some("preserve the exact user constraints"),
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) =
-            into_compacted(prepared).expect("expected emergency provider-limit compaction");
-        assert_eq!(
-            checkpoint.algorithm_version,
-            "deterministic-emergency-s2-v1"
-        );
-        assert!(serde_json::to_string(&checkpoint.summary)
-            .unwrap()
-            .contains("preserve the exact user constraints"));
-    }
-
-    #[tokio::test]
-    async fn manual_failure_does_not_replace_the_full_history() {
-        let provider = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
-        let error = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Manual,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error,
-            ContextError::SummaryFailed("authentication failed".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn downshift_can_retry_only_the_selected_new_model() {
-        let old = ScriptedProvider::new([ScriptedReply::Error("authentication failed")]);
-        let new = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
-        let prepared = test_manager()
-            .prepare_semantic_with_phase_and_fallback(
-                test_prompt(),
-                CompactionTrigger::ModelContextDownshift,
-                CompactionPhase::PreTurn,
-                None,
-                &old,
-                &AtomicBool::new(false),
-                Some((&new, "new-model")),
-            )
-            .await
-            .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
-        assert_eq!(checkpoint.model, "new-model");
-        assert_eq!(old.requests.lock().len(), 1);
-        assert_eq!(new.requests.lock().len(), 1);
     }
 
     #[tokio::test]
     async fn downshift_does_not_create_checkpoint_when_new_window_fits() {
-        let provider = ScriptedProvider::new([]);
         let mut prompt = test_prompt();
         prompt.usage.input_tokens = Some(100);
         prompt.usage.estimated_input_tokens = 100;
         let prepared = test_manager()
-            .prepare_semantic_with_phase(
-                prompt,
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
                 CompactionTrigger::ModelContextDownshift,
                 CompactionPhase::PreTurn,
                 None,
-                &provider,
                 &AtomicBool::new(false),
+                None,
             )
-            .await
             .unwrap();
         assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
-        assert!(provider.requests.lock().is_empty());
     }
 
     #[tokio::test]
     async fn manual_compaction_bypasses_the_automatic_threshold() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
         let mut prompt = test_prompt();
         prompt.usage.input_tokens = Some(100);
         prompt.usage.estimated_input_tokens = 100;
         let prepared = test_manager()
-            .prepare_semantic_with_phase(
-                prompt,
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
                 CompactionTrigger::Manual,
                 CompactionPhase::Standalone,
                 None,
-                &provider,
                 &AtomicBool::new(false),
+                None,
             )
-            .await
             .unwrap();
         let (_, checkpoint) =
             into_compacted(prepared).expect("manual compaction must not be threshold-gated");
         assert_eq!(checkpoint.trigger, CompactionTrigger::Manual);
         assert_eq!(checkpoint.phase, Some(CompactionPhase::Standalone));
-        assert_eq!(provider.requests.lock().len(), 1);
+        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
     }
 
     #[tokio::test]
     async fn repeated_manual_compaction_without_new_content_is_unchanged() {
-        let provider = ScriptedProvider::new([]);
         let mut checkpoint = projected(
             "user",
             "[Context compaction: existing summary]",
@@ -2377,19 +1533,18 @@ mod tests {
         prompt.messages = vec![checkpoint];
 
         let prepared = test_manager()
-            .prepare_semantic_with_phase(
-                prompt,
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
                 CompactionTrigger::Manual,
                 CompactionPhase::Standalone,
                 None,
-                &provider,
                 &AtomicBool::new(false),
+                None,
             )
-            .await
             .unwrap();
 
         assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
-        assert!(provider.requests.lock().is_empty());
     }
 
     #[test]
@@ -2421,7 +1576,6 @@ mod tests {
 
     #[tokio::test]
     async fn manual_compaction_of_short_history_replaces_every_turn_with_summary() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
         let mut manager = test_manager();
         manager.keep_recent_tokens = 200_000;
         manager.context_window = 1_000_000;
@@ -2443,15 +1597,15 @@ mod tests {
         };
 
         let prepared = manager
-            .prepare_semantic_with_phase(
-                prompt,
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
                 CompactionTrigger::Manual,
                 CompactionPhase::Standalone,
                 None,
-                &provider,
                 &AtomicBool::new(false),
+                None,
             )
-            .await
             .unwrap();
         let (prompt, checkpoint) =
             into_compacted(prepared).expect("expected full manual compaction");
@@ -2469,16 +1623,15 @@ mod tests {
         );
         assert_eq!(prompt.messages[0].message.text(), "你好");
         assert_eq!(prompt.messages[5].message.text(), "这是完整长诗");
-        let requests = provider.requests.lock();
-        let summary_input = requests[0].messages[0].text();
-        assert!(summary_input.contains("你好，有什么可以帮你？"));
-        assert!(summary_input.contains("工具调用正常"));
-        assert!(summary_input.contains("这是完整长诗"));
+        // Under C there is no summary request to inspect: every original is protected
+        // verbatim (asserted above), and the index carries the tool evidence the model no
+        // longer has to be told about. The legacy assertion that the *request input* held
+        // the conversation is therefore replaced by the projection's own contents.
+        assert_eq!(checkpoint.algorithm_version, evidence::ALGORITHM);
     }
 
     #[tokio::test]
     async fn user_text_that_looks_like_a_checkpoint_is_not_filtered() {
-        let provider = ScriptedProvider::new([ScriptedReply::Summary(VALID_SUMMARY)]);
         let mut manager = test_manager();
         manager.keep_recent_tokens = 200_000;
         manager.context_window = 1_000_000;
@@ -2496,21 +1649,22 @@ mod tests {
             },
         };
 
-        manager
-            .prepare_semantic_with_phase(
-                prompt,
+        let prepared = manager
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
                 CompactionTrigger::Manual,
                 CompactionPhase::Standalone,
                 None,
-                &provider,
                 &AtomicBool::new(false),
+                None,
             )
-            .await
             .unwrap();
 
-        let requests = provider.requests.lock();
-        let summary_input = requests[0].messages[0].text();
-        assert!(summary_input.contains(marker_like_text));
+        let (_, checkpoint) = into_compacted(prepared).expect("expected compaction");
+        // The marker-looking user text must be treated as an ordinary user original: it is
+        // protected verbatim (the legacy string protocol would have swallowed it).
+        assert!(checkpoint.protected_entry_ids.contains(&"e1".to_string()));
     }
 
     #[tokio::test]
@@ -2534,39 +1688,20 @@ mod tests {
                     ..Default::default()
                 },
             };
-            let provider = ScriptedProvider::new([]);
-
             let prepared = manager
-                .prepare_semantic(
-                    prompt,
+                .prepare_evidence(
+                    prompt.clone(),
+                    &raw_of(&prompt),
                     CompactionTrigger::Automatic,
+                    phase_of(CompactionTrigger::Automatic),
                     None,
-                    &provider,
                     &AtomicBool::new(false),
+                    None,
                 )
-                .await
                 .unwrap();
 
             assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
-            assert!(provider.requests.lock().is_empty());
         }
-    }
-
-    #[tokio::test]
-    async fn cancellation_never_writes_an_emergency_checkpoint() {
-        let provider = ScriptedProvider::new([]);
-        let interrupted = AtomicBool::new(true);
-        let result = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &interrupted,
-            )
-            .await;
-        assert_eq!(result.unwrap_err(), ContextError::Cancelled);
-        assert!(provider.requests.lock().is_empty());
     }
 
     // ─── stream/event scripting for call_summary_model arms ────────────────
@@ -2687,35 +1822,6 @@ mod tests {
             ContextPreparation::Compacted { prompt, checkpoint } => Some((prompt, checkpoint)),
             ContextPreparation::Unchanged { .. } => None,
         }
-    }
-
-    // ─── prepare_deterministic (legacy-A sync path) ───────────────────────
-
-    #[test]
-    fn deterministic_prepare_compacts_via_emergency_summary() {
-        let manager = test_manager();
-        let prepared =
-            prepare_deterministic(&manager, test_prompt(), CompactionTrigger::Automatic, None)
-                .unwrap();
-        let (_, checkpoint) = into_compacted(prepared).expect("expected deterministic compaction");
-        assert_eq!(
-            checkpoint.algorithm_version,
-            "deterministic-emergency-s2-v1"
-        );
-        assert!(serde_json::to_string(&checkpoint.summary)
-            .unwrap()
-            .contains("## Objective"));
-    }
-
-    #[test]
-    fn deterministic_prepare_returns_unchanged_below_threshold() {
-        let manager = test_manager();
-        let mut prompt = test_prompt();
-        prompt.usage.input_tokens = Some(100);
-        prompt.usage.estimated_input_tokens = 100;
-        let prepared =
-            prepare_deterministic(&manager, prompt, CompactionTrigger::Automatic, None).unwrap();
-        assert!(into_compacted(prepared).is_none());
     }
 
     // ─── plan / turn_aware_cut / fallback_cut edge cases ──────────────────
@@ -2870,164 +1976,6 @@ mod tests {
         assert_eq!(internal_summary(&plain), None);
     }
 
-    // ─── collect_file_operation ───────────────────────────────────────────
-
-    #[test]
-    fn collect_file_operation_classifies_read_and_write_tools() {
-        let mut reads = Vec::new();
-        let mut writes = Vec::new();
-        collect_file_operation(
-            "read",
-            &serde_json::json!({"path": "a.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "view",
-            &serde_json::json!({"file_path": "b.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "open",
-            &serde_json::json!({"path": "c.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "write",
-            &serde_json::json!({"path": "d.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "edit",
-            &serde_json::json!({"path": "e.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "patch",
-            &serde_json::json!({"path": "f.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        collect_file_operation(
-            "create",
-            &serde_json::json!({"path": "g.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-        // No path key → early return.
-        collect_file_operation(
-            "read",
-            &serde_json::json!({"cmd": "ls"}),
-            &mut reads,
-            &mut writes,
-        );
-        // Unknown tool → neither list.
-        collect_file_operation(
-            "shell",
-            &serde_json::json!({"path": "h.rs"}),
-            &mut reads,
-            &mut writes,
-        );
-
-        assert_eq!(reads, vec!["a.rs", "b.rs", "c.rs"]);
-        assert_eq!(writes, vec!["d.rs", "e.rs", "f.rs", "g.rs"]);
-    }
-
-    // ─── emergency_summary block coverage ─────────────────────────────────
-
-    #[test]
-    fn emergency_summary_collects_tool_state_and_skips_internal_checkpoints() {
-        let removed = vec![
-            internal_checkpoint("old summary", "e0"),
-            projected("user", "user directive", "e1"),
-            projected_message(
-                AgentMessage {
-                    role: "assistant".to_string(),
-                    content: vec![
-                        ContentBlock::reasoning("internal reasoning", Default::default()),
-                        ContentBlock::tool_call(
-                            "c1",
-                            "read",
-                            serde_json::json!({"path": "a.rs"}),
-                            Default::default(),
-                        ),
-                        ContentBlock::tool_call(
-                            "c2",
-                            "edit",
-                            serde_json::json!({"file_path": "b.rs"}),
-                            Default::default(),
-                        ),
-                    ],
-                    ..Default::default()
-                },
-                "e2",
-            ),
-            projected_message(
-                AgentMessage {
-                    role: "tool".to_string(),
-                    content: vec![
-                        ContentBlock::tool_result("c1", "boom".to_string(), true),
-                        ContentBlock::tool_result("c2", "ok".to_string(), false),
-                    ],
-                    ..Default::default()
-                },
-                "e3",
-            ),
-        ];
-        let summary = emergency_summary(&test_plan(removed));
-        assert!(summary.contains("## Objective"));
-        assert!(summary.contains("Read: a.rs"));
-        assert!(summary.contains("Modified: b.rs"));
-        assert!(summary.contains("c1: error"));
-        assert!(summary.contains("c2: success"));
-        assert!(!summary.contains("old summary"));
-        assert!(summary.contains("prior summary"));
-        assert!(summary.contains("keep the exact constraints"));
-    }
-
-    // ─── split_to_token_budget ────────────────────────────────────────────
-
-    #[test]
-    fn split_to_token_budget_returns_input_unchanged_when_it_fits() {
-        assert_eq!(
-            split_to_token_budget("short", 1_000),
-            vec!["short".to_string()]
-        );
-    }
-
-    #[test]
-    fn split_to_token_budget_splits_oversized_values_losslessly() {
-        let value = "x".repeat(200);
-        let parts = split_to_token_budget(&value, 5);
-        assert!(parts.len() > 1);
-        assert_eq!(parts.concat(), value);
-    }
-
-    // ─── summarize_fold error arms ────────────────────────────────────────
-
-    #[tokio::test]
-    async fn summarize_fold_errors_when_all_content_is_internal() {
-        let manager = test_manager();
-        let provider = ScriptedProvider::new([]);
-        let plan = test_plan(vec![internal_checkpoint("old", "e0")]);
-        let result = summarize_fold(
-            &manager,
-            &plan,
-            &provider,
-            &AtomicBool::new(false),
-            SerializationMode::Normal,
-            None,
-        )
-        .await;
-        assert!(
-            matches!(&result, Err(SummaryCallError::Other(msg)) if msg.contains("no conversation content"))
-        );
-    }
-
     // ─── finalize empty-summary guard ─────────────────────────────────────
 
     #[test]
@@ -3047,7 +1995,18 @@ mod tests {
                 reason: FinishReason::Length,
                 usage: None,
             }])]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(SummaryCallError::ContextLimit(_))));
     }
 
@@ -3058,7 +2017,18 @@ mod tests {
                 reason: FinishReason::Cancelled,
                 usage: None,
             }])]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
     }
 
@@ -3069,7 +2039,18 @@ mod tests {
                 reason: FinishReason::ToolCalls,
                 usage: None,
             }])]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(
             matches!(&result, Err(SummaryCallError::Other(msg)) if msg.contains("finished with tool_calls"))
         );
@@ -3082,7 +2063,18 @@ mod tests {
                 message: "maximum context length exceeded".to_string(),
             }])]);
         assert!(matches!(
-            call_summary_model(&context_limit, "m", "p".into(), &AtomicBool::new(false)).await,
+            call_summary_model_with_messages(
+                &context_limit,
+                "m",
+                "",
+                Vec::new(),
+                "p".into(),
+                Vec::new(),
+                &AtomicBool::new(false),
+                8192,
+                None,
+            )
+            .await,
             Err(SummaryCallError::ContextLimit(_))
         ));
 
@@ -3091,7 +2083,17 @@ mod tests {
                 message: "authentication failed".to_string(),
             }])]);
         assert!(matches!(
-            call_summary_model(&fatal, "m", "p".into(), &AtomicBool::new(false)).await,
+            call_summary_model_with_messages(
+            &fatal,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        ).await,
             Err(SummaryCallError::Other(msg)) if msg == "authentication failed"
         ));
     }
@@ -3106,7 +2108,18 @@ mod tests {
                 snapshot: false,
             },
         ])]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(&result, Err(SummaryCallError::Other(msg)) if msg.contains("tool call")));
     }
 
@@ -3123,7 +2136,18 @@ mod tests {
                 usage: None,
             },
         ])]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert_eq!(result.unwrap(), VALID_SUMMARY);
     }
 
@@ -3136,7 +2160,18 @@ mod tests {
             }])
         };
         let provider = ScriptStreamProvider::new([partial(), partial(), partial()]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(
             matches!(&result, Err(SummaryCallError::Other(msg)) if msg.contains("ended before a complete response"))
         );
@@ -3146,14 +2181,36 @@ mod tests {
     async fn summary_model_timeout_retries_then_gives_up() {
         let provider =
             ScriptStreamProvider::new([StreamScript::Hang, StreamScript::Hang, StreamScript::Hang]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(false)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(&result, Err(SummaryCallError::Other(msg)) if msg.contains("timed out")));
     }
 
     #[tokio::test]
     async fn summary_model_respects_interrupt_before_request() {
         let provider = ScriptStreamProvider::new([]);
-        let result = call_summary_model(&provider, "m", "p".into(), &AtomicBool::new(true)).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(true),
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
     }
 
@@ -3167,7 +2224,17 @@ mod tests {
         });
         let result = tokio::time::timeout(
             Duration::from_secs(1),
-            call_summary_model(&PendingRequestProvider, "m", "p".into(), &interrupted),
+            call_summary_model_with_messages(
+                &PendingRequestProvider,
+                "m",
+                "",
+                Vec::new(),
+                "p".into(),
+                Vec::new(),
+                &interrupted,
+                8192,
+                None,
+            ),
         )
         .await
         .expect("interrupt must beat the cancellation watchdog");
@@ -3180,34 +2247,18 @@ mod tests {
         let provider = InterruptOnStreamProvider {
             interrupted: interrupted.clone(),
         };
-        let result = call_summary_model(&provider, "m", "p".into(), &interrupted).await;
+        let result = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &interrupted,
+            8192,
+            None,
+        )
+        .await;
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
-    }
-
-    #[tokio::test]
-    async fn invalid_model_summary_is_rejected() {
-        let provider = ScriptStreamProvider::new([StreamScript::Events(vec![
-            ModelStreamEvent::TextDelta {
-                id: "s".to_string(),
-                text: "not a structured summary".to_string(),
-            },
-            ModelStreamEvent::Finish {
-                reason: FinishReason::Stop,
-                usage: None,
-            },
-        ])]);
-        let error = test_manager()
-            .prepare_semantic(
-                test_prompt(),
-                CompactionTrigger::Automatic,
-                None,
-                &provider,
-                &AtomicBool::new(false),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, ContextError::SummaryFailed(msg) if msg.contains("required structure"))
-        );
     }
 }
