@@ -664,10 +664,9 @@ streaming reply interrupt aggregation.
 Opening the summary keeps its header on the right and reveals individual steps
 in the left-aligned reading column. Each step independently expands its full
 reasoning or wrapping command/path details. Standalone steps also start
-collapsed on the right. The "Show thinking process" setting gates access to
-full reasoning content; turning it off retains the compact activity labels and
-counts, not the reasoning text. A "Thinking…" footer hint remains available
-when thinking has not yet produced an inline reasoning segment.
+collapsed on the right. Reasoning can always be expanded in place; there is
+no separate setting that hides or gates its content. A "Thinking…" footer hint
+remains available when thinking has not yet produced an inline reasoning segment.
 
 The copy control, elapsed duration and output-token footer stay visible on the
 same right rail after completion. During streaming, the amber generating dot
@@ -729,15 +728,12 @@ protection / Fully open"; Windows shows "Manual approval / Write protection /
 Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
 protection / Fully open" after the Bubblewrap host probe passes.
 
-Each message has a **copy button** below it (user and assistant messages both)
-that copies the message's plain-text content; the copy button is hidden by
-default and appears on hovering the message row. Exception during assistant
-**streaming**: the bottom info bar stays visible with elements in order — the
-copy-button position becomes an always-visible **generating indicator** (an
-animated dot, present through the whole stream, meaning the conversation has
-not ended), **duration·output tokens**, and the **"Thinking…"** hint that
-appears only when "Show thinking process" is off and the model is thinking;
-the copy button and its hover show/hide logic return after generation ends.
+Each message has a **copy button** below it that copies its plain-text content.
+The user-message copy button appears on hover; the assistant's copy button and
+**duration·output tokens** stay visible on the right after completion. During
+assistant **streaming**, an amber **generating indicator** replaces the copy
+button alongside the live duration. A **"Thinking…"** hint appears while the
+model is thinking but has not yet produced an inline reasoning segment.
 
 The input box supports local file attachments via three methods: attachment
 button, copy-paste, and drag-drop; at most 4 images per message, non-images
@@ -809,8 +805,7 @@ below New Chat jumps straight to the models page) has three pages:
   Manual approval / Sandbox protection / Fully open — on failure show the
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
-  is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`); **Generate a title after the first answer**
+  is clearly unavailable); **Generate a title after the first answer**
   (off by default). This generates and saves a title in the background using the
   same title-suggestion API as the rename dialog, once after a new conversation's
   first successful run. It never compacts or changes conversation context. Later
@@ -850,7 +845,8 @@ suggestion never appends a message or starts a chat run.
   per-model visibility toggles and search.
 
 A custom model's "thinking support" is a two-state capability toggle,
-independent of the session's thinking intensity and "Show thinking process".
+independent of the session's thinking intensity and the reasoning blocks' local
+expand/collapse state.
 Off disables the session thinking-intensity picker with an explanation; on
 re-enables it. Custom models without `reasoning` filled in default to on;
 explicit off is not overwritten by the built-in catalog; built-in and platform

@@ -34,8 +34,6 @@ interface MessageBlockProps {
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
-  /** Allow opening full reasoning content (driven by the "show thinking" setting). */
-  showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
   onFork?: (message: AgentMessage) => void;
   onHover: (id: string) => void;
@@ -58,7 +56,6 @@ function MessageBlockImpl({
   dataMessageId,
   isLast,
   recoverySource,
-  showThinking,
   onContinue,
   onFork,
   onHover,
@@ -174,7 +171,6 @@ function MessageBlockImpl({
                         <ReplySteps
                           key={block.segments[0]!.id}
                           segments={block.segments}
-                          showThinking={showThinking}
                           workspaceId={workspaceId}
                           workspacePath={workspacePath}
                           runId={message.runId}
@@ -199,7 +195,6 @@ function MessageBlockImpl({
                           live={streaming && segment === segments[segments.length - 1]}
                           text={segment.text}
                           workspaceId={workspaceId}
-                          showContent={showThinking}
                         />
                       );
                     }
@@ -335,7 +330,7 @@ function MessageBlockImpl({
               )
             : null}
           {!isUser ? <MessageMeta message={message} /> : null}
-          {streaming && !isUser && !showThinking && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
+          {streaming && !isUser && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
         </div>

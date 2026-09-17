@@ -124,7 +124,7 @@ export interface AgentMessage {
   truncated?: boolean;
   /**
    * The model is mid-reasoning with nothing visible yet. Drives the footer
-   * "thinking…" hint (only while streaming and the show-thinking setting is off).
+   * "thinking…" hint while streaming, until inline reasoning is available.
    */
   thinkingActive?: boolean;
   /** Transient upstream reconnect state, never assistant content. */

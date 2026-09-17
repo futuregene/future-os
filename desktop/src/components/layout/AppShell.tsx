@@ -681,7 +681,6 @@ export function AppShell() {
                           activeApproval={activeApproval}
                           agentConnection={agentConnection}
                           approvalTier={appSettings.approvalTier}
-                          showThinking={appSettings.showThinking}
                           loadingStore={loadingStore}
                           modelId={activeThreadModelId}
                           modelOptions={visibleModelOptions}

@@ -6,8 +6,6 @@ export type ApprovalTier = "off" | "manual" | "sandbox";
 export interface AppSettings {
   approvalTier: ApprovalTier;
   hiddenModels: string[];
-  /** Show the model's thinking/reasoning content in the chat. Off by default. */
-  showThinking: boolean;
   /**
    * Silently upgrade installed skills to their latest version on app open (and
    * immediately when toggled on). Off by default.
@@ -47,7 +45,6 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   approvalTier: "off",
   hiddenModels: [],
-  showThinking: false,
   autoUpgradeSkills: false,
   autoConnectRemote: false,
   skillGuideDismissed: false,
@@ -65,7 +62,6 @@ export async function getAppSettings() {
 export async function updateAppSettings(input: {
   approvalTier?: ApprovalTier;
   hiddenModels?: string[];
-  showThinking?: boolean;
   autoUpgradeSkills?: boolean;
   autoConnectRemote?: boolean;
   skillGuideDismissed?: boolean;

@@ -15,8 +15,9 @@ Desktop-level options for the app:
   - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
   - **Unrestricted** (default) — no prompts and no sandbox; everything runs.
-- **Show thinking process** — show or hide the model's reasoning in the conversation.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
+
+Reasoning starts collapsed in the conversation and can always be expanded by clicking its row. There is no separate setting to enable access.
 
 See [[Approvals and sandboxing|Sandbox]] for defaults, Linux setup, diagnostics and limitations, and [[Using FutureOS|Using-FutureOS]] for approval cards.
 

@@ -847,14 +847,15 @@ First-version priority:
 - `object_references`
 - `app_settings` (app-level settings key-value table: `approval_tier`
   (`manual`/`sandbox`/`off`), `hidden_models`, `remote_pair_id`,
-  `show_thinking`, `auto_compact_first_turn` (legacy stored key retained for
+  `auto_compact_first_turn` (legacy stored key retained for
   `autoTitleFirstTurn`: boolean, absent means false; now generates and saves a
   title after the first answer only, never compacts context), `title_language`
   (`en`/`zh`, default `en`, mirrored from the Desktop UI for background title
   generation). Both use the existing key-value table with absent-key defaults;
   no structural migration is needed — see `store/app_settings.rs`;
-  the old `remote_enabled` /
-  `remote_nats_url` keys are no longer read, runtime state lives in memory and
+  the retired `show_thinking` key may remain in existing databases but is no
+  longer read, written, or exposed by the settings API (no destructive migration).
+  The old `remote_enabled` / `remote_nats_url` keys are no longer read, runtime state lives in memory and
   addresses are derived from the platform environment)
 - `agent_delete_outbox` (the Agent session deletion delivery queue registered
   when deleting a Thread, retried in the background until the Agent confirms —
