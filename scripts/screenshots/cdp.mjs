@@ -28,6 +28,14 @@
  *                   timing.json (frame timestamps, for pacing on encode).
  *                   capture.py turns that into an mp4; see docs.
  *   --fps N         screencast frame-rate ceiling (default 12)
+ *   --inject FILE   run this JS file once the app is ready, before the steps
+ *                   (variant styling: the same screen with a different icon or
+ *                   colour choice)
+ *   --measure FILE  write the geometry collected by `offsets` steps
+ *   --baseline FILE compare against an earlier `--measure` run (shows movement)
+ *   --pointer BOOL  draw the pointer indicator on taps/hovers
+ *                   (default: on while recording, off for stills)
+ *   --annotate BOOL remove every overlay when false (default true)
  *
  * Steps:
  *   {"eval": js}                 evaluate in the page (result printed)
@@ -39,10 +47,19 @@
  *   {"type": "text"}             insert text into the focused element
  *   {"key": "Escape"}            press one key
  *   {"scroll": [dx, dy]}         wheel scroll
+ *   {"pointer": [x, y]}          show the pointer indicator at that point
+ *   {"pointerHide": true}        hide the pointer indicator
+ *   {"marks": [{at|selector|x,y,label,dx,dy,side}]}  numbered callouts
+ *   {"marksClear": true}         clear the callouts
+ *   {"offsets": {targets,axis,mode}}  box + pixel-offset diagram (see docs)
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+
+/** scripts/screenshots/ — relative `inject` paths resolve against it. */
+const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -64,8 +81,26 @@ const READY = opt("ready", "");
 const READY_TIMEOUT = Number(opt("ready-timeout", "30000"));
 const FRAMES_DIR = opt("frames", "");
 const FPS = Number(opt("fps", "12"));
-/** `--annotate false` disables the pointer indicator and mark callouts. */
+/** `--annotate false` removes every overlay (pointer, callouts, diagrams). */
 const ANNOTATE = opt("annotate", "true") !== "false";
+/** `--measure FILE` writes the geometry collected by `offsets` steps. */
+const MEASURE_FILE = opt("measure", "");
+/** `--baseline FILE` compares against an earlier `--measure` run. */
+const BASELINE_FILE = opt("baseline", "");
+/** `--inject FILE` runs a JS file after the app is ready (variant styling). */
+const INJECT_FILE = opt("inject", "");
+/**
+ * `--pointer BOOL` draws the pointer indicator that follows taps/hovers.
+ *
+ * Default: on while recording a screencast (footage of a phone is unfollowable
+ * without it), off for stills — a product shot should not gain a stray dot just
+ * because the scenario had to tap something. A `{"pointer": …}` step or
+ * `--pointer true` turns it on explicitly for a still.
+ */
+const SHOW_POINTER = ANNOTATE && opt("pointer", FRAMES_DIR ? "true" : "false") !== "false";
+const baseline = BASELINE_FILE
+  ? JSON.parse(readFileSync(BASELINE_FILE, "utf8")).elements ?? []
+  : null;
 
 const steps = STEPS_FILE ? JSON.parse(readFileSync(STEPS_FILE, "utf8")) : [];
 
@@ -97,6 +132,11 @@ function send(method, params = {}) {
   socket.send(JSON.stringify({ id, method, params }));
   return new Promise(resolve => pending.set(id, resolve));
 }
+
+/** Steps that could not find their target: the scenario did not do what it says. */
+let failures = 0;
+/** Marks are numbered across the whole scenario. */
+let markCounter = 0;
 
 /**
  * On-screen pointer / touch indicator and annotations.
@@ -132,7 +172,7 @@ async function ensureOverlay() {
 
 /** Show the pointer, optionally with a tap ring that fades. */
 async function showPointer(x, y, tapped) {
-  if (!ANNOTATE)
+  if (!SHOW_POINTER)
     return false;
   await evaluate(`
 (() => {
@@ -227,6 +267,206 @@ async function hidePointer() {
 }
 
 /**
+ * Layout geometry measurement and offset diagrams.
+ *
+ * `offsets` measures the elements it is given and draws their boxes plus the
+ * pixel offset between them (or from the viewport edge) as a dimension line with
+ * the number on it. With `--baseline` (a JSON written by an earlier run with
+ * `--measure`) the same diagram shows *displacement*: how far each element moved
+ * versus that baseline, which is how you compare two builds or two versions.
+ *
+ * Measurements are in CSS pixels at the emulated viewport size — the numbers in
+ * the diagram are the layout's own units, not device pixels, so they match what
+ * a designer quotes.
+ */
+const measurements = [];
+
+/** Geometry of one target, in viewport CSS pixels. */
+const MEASURE_JS = (target) => `
+(() => {
+  ${MATCH_FN}
+  const spec = ${JSON.stringify(target)};
+  let element = null;
+  if (spec.selector) {
+    element = document.querySelector(spec.selector);
+  } else {
+    element = __shotMatch(spec.at);
+  }
+  if (!element) return null;
+  const r = element.getBoundingClientRect();
+  return {
+    name: spec.name || spec.at || spec.selector,
+    matched: element.getAttribute('aria-label') || (element.innerText || '').trim().split('\\n')[0],
+    x: r.left, y: r.top, width: r.width, height: r.height,
+    right: r.right, bottom: r.bottom,
+  };
+})()`;
+
+async function measureTargets(targets) {
+  const results = [];
+  for (const target of targets) {
+    const geometry = await evaluate(MEASURE_JS(target));
+    if (!geometry) {
+      console.error(`cdp: measure target not found: ${target.at ?? target.selector}`);
+      failures += 1;
+      continue;
+    }
+    const name = target.name ?? geometry.name;
+    // Log the match: a name that resolved to the wrong element is otherwise
+    // invisible until someone reads the diagram.
+    console.log(`cdp: measured ${name} -> "${geometry.matched}" at ${Math.round(geometry.x)},${Math.round(geometry.y)} ${Math.round(geometry.width)}×${Math.round(geometry.height)}`);
+    results.push({ ...geometry, name });
+  }
+  return results;
+}
+
+/** Draw one element's box, with its name and size. */
+async function drawBox(box, tone) {
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  if (!layer) return false;
+  const marks = layer.querySelector('[data-role=marks]');
+  const el = document.createElement('div');
+  el.style.cssText = 'position:absolute;left:${box.x}px;top:${box.y}px;'
+    + 'width:${box.width}px;height:${box.height}px;'
+    + 'outline:1px solid ${tone};outline-offset:-1px;background:${tone}11';
+  const label = document.createElement('span');
+  label.style.cssText = 'position:absolute;left:0;top:-18px;padding:1px 5px;border-radius:4px;'
+    + 'background:${tone};color:#fff;font-size:11px;font-weight:600;white-space:nowrap';
+  label.textContent = ${JSON.stringify(box.name)} + ' ' + Math.round(${box.width}) + '×' + Math.round(${box.height});
+  el.appendChild(label);
+  marks.appendChild(el);
+  return true;
+})()`);
+}
+
+/**
+ * Draw a dimension line between two points with the distance on it.
+ * `axis` is "y" (vertical distance) or "x" (horizontal distance).
+ */
+async function drawDimension(axis, from, to, text, tone) {
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  if (!layer) return false;
+  const marks = layer.querySelector('[data-role=marks]');
+  const el = document.createElement('div');
+  if (${JSON.stringify(axis)} === 'y') {
+    el.style.cssText = 'position:absolute;left:${from.x}px;top:${Math.min(from.y, to.y)}px;'
+      + 'width:0;height:${Math.abs(to.y - from.y)}px;border-left:1px dashed ${tone}';
+  } else {
+    el.style.cssText = 'position:absolute;left:${Math.min(from.x, to.x)}px;top:${from.y}px;'
+      + 'width:${Math.abs(to.x - from.x)}px;height:0;border-top:1px dashed ${tone}';
+  }
+  const cap = document.createElement('span');
+  cap.style.cssText = 'position:absolute;white-space:nowrap;padding:1px 5px;border-radius:4px;'
+    + 'background:rgba(16,20,24,.9);color:#fff;font-size:12px;font-weight:600;'
+    + (${JSON.stringify(axis)} === 'y'
+      ? 'left:6px;top:50%;transform:translateY(-50%)'
+      : 'left:50%;top:-9px;transform:translateX(-50%)');
+  cap.textContent = ${JSON.stringify(text)};
+  el.appendChild(cap);
+  marks.appendChild(el);
+  return true;
+})()`);
+}
+
+const round = value => Math.round(value * 10) / 10;
+
+/**
+ * Draw the offset diagram for a group of elements.
+ *
+ * mode "gap"  — consecutive gaps along `axis`, in the order given (top→bottom or
+ *               left→right); this is the spacing question ("how far is this row
+ *               from that one").
+ * mode "edge" — each element's distance from the viewport edge on `axis`
+ *               (left/top), plus its size; this is the alignment question.
+ *
+ * With `baseline` (same scenario captured earlier through `--measure`), each
+ * element's movement since then is drawn instead: the offset *change*, in px.
+ */
+async function drawOffsets(spec, baseline) {
+  if (!ANNOTATE)
+    return [];
+  const axis = spec.axis === "x" ? "x" : "y";
+  const mode = spec.mode === "edge" ? "edge" : "gap";
+  const tone = spec.color ?? "#e2685f";
+
+  const boxes = await measureTargets(spec.targets ?? []);
+  for (const box of boxes) {
+    measurements.push({
+      name: box.name, x: round(box.x), y: round(box.y),
+      width: round(box.width), height: round(box.height),
+    });
+    await drawBox(box, tone);
+  }
+
+  if (mode === "edge") {
+    const edge = axis === "y" ? 0 : 0;
+    for (const box of boxes) {
+      const at = axis === "y" ? box.y : box.x;
+      const across = axis === "y" ? box.x + 8 : box.y;
+      await drawDimension(axis === "y" ? "y" : "x",
+        axis === "y" ? { x: across, y: edge } : { x: edge, y: across },
+        axis === "y" ? { x: across, y: at } : { x: at, y: across },
+        `${axis === "y" ? "top" : "left"} ${round(at)}px`, tone);
+    }
+    return boxes;
+  }
+
+  // Gaps run between consecutive elements, ordered along the axis so the labels
+  // read in the same direction as the layout.
+  const ordered = [...boxes].sort((a, b) => (axis === "y" ? a.y - b.y : a.x - b.x));
+  for (let index = 0; index + 1 < ordered.length; index += 1) {
+    const current = ordered[index];
+    const next = ordered[index + 1];
+    const gap = axis === "y"
+      ? next.y - current.bottom
+      : next.x - current.right;
+    const from = axis === "y"
+      ? { x: current.x + 6, y: current.bottom }
+      : { x: current.right, y: current.y + 6 };
+    const to = axis === "y"
+      ? { x: current.x + 6, y: next.y }
+      : { x: next.x, y: current.y + 6 };
+    await drawDimension(axis, from, to, `${round(gap)}px`, tone);
+  }
+
+  if (baseline) {
+    for (const box of boxes) {
+      const before = baseline.find(entry => entry.name === box.name);
+      if (!before)
+        continue;
+      const movedX = round(box.x - before.x);
+      const movedY = round(box.y - before.y);
+      const widthChange = round(box.width - before.width);
+      const parts = [];
+      if (movedX !== 0 || movedY !== 0)
+        parts.push(`位移 ${movedX >= 0 ? "+" : ""}${movedX}, ${movedY >= 0 ? "+" : ""}${movedY}px`);
+      if (widthChange !== 0)
+        parts.push(`宽 ${widthChange >= 0 ? "+" : ""}${widthChange}px`);
+      if (parts.length === 0)
+        parts.push("无位移");
+      await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  const marks = layer && layer.querySelector('[data-role=marks]');
+  if (!marks) return false;
+  const el = document.createElement('span');
+  el.style.cssText = 'position:absolute;left:${box.x + box.width + 6}px;top:${box.y}px;'
+    + 'padding:2px 6px;border-radius:4px;background:#1f6f3f;color:#fff;font-size:11px;'
+    + 'font-weight:600;white-space:nowrap';
+  el.textContent = ${JSON.stringify(parts.join(" · "))};
+  marks.appendChild(el);
+  return true;
+})()`);
+    }
+  }
+  return boxes;
+}
+
+/**
  * Screencast recording.
  *
  * Chrome streams JPEG frames and waits for an ack per frame, so the ack is what
@@ -251,11 +491,14 @@ let screencastStart = 0;
 async function startScreencast() {
   mkdirSync(FRAMES_DIR, { recursive: true });
   screencastStart = Date.now();
+  // Match the still captures' resolution: frames come out at the viewport size
+  // unless the cap is given in device pixels, and a 1× video next to 2× stills
+  // looks visibly soft (text especially).
   await send("Page.startScreencast", {
     format: "jpeg",
-    quality: 80,
-    maxWidth: WIDTH,
-    maxHeight: HEIGHT,
+    quality: 92,
+    maxWidth: WIDTH * SCALE,
+    maxHeight: HEIGHT * SCALE,
     everyNthFrame: Math.max(1, Math.round(30 / FPS)),
   });
 }
@@ -266,6 +509,8 @@ async function stopScreencast() {
     fps: FPS,
     width: WIDTH,
     height: HEIGHT,
+    // Frames arrive at CSS size; the encoder upscales by this factor so the mp4
+    // matches the still captures' pixel dimensions.
     scale: SCALE,
     durationMs: Date.now() - screencastStart,
     frames,
@@ -275,10 +520,32 @@ async function stopScreencast() {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** Steps that could not find their target: the scenario did not do what it says. */
-let failures = 0;
-/** Marks are numbered across the whole scenario. */
-let markCounter = 0;
+/** Apply a variant-styling JS file to the page. */
+async function applyInjection(file) {
+  const source = readFileSync(file, "utf8");
+  const ok = await evaluate(`(() => { ${source}\n return true; })()`);
+  console.log(`cdp: injected ${file}${ok === true ? "" : " (no return value)"}`);
+  return ok === true;
+}
+
+/** Resolve an inject path: absolute, or relative to scripts/screenshots/. */
+function resolveInject(value) {
+  if (value.startsWith("/") || value.includes(":")) {
+    if (!existsSync(value)) {
+      console.error(`cdp: inject file not found: ${value}`);
+      failures += 1;
+      return null;
+    }
+    return value;
+  }
+  const candidate = join(SCRIPTS_DIR, value);
+  if (!existsSync(candidate)) {
+    console.error(`cdp: inject file not found: ${candidate}`);
+    failures += 1;
+    return null;
+  }
+  return candidate;
+}
 
 async function evaluate(expression) {
   const response = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
@@ -293,23 +560,53 @@ async function evaluate(expression) {
  * a screen reader and the browser's own tooling see) keeps the scenarios honest
  * about what a user can actually reach.
  */
+/**
+ * Element matching, shared by every step that names a target (tap, marks,
+ * offsets).
+ *
+ * Ranked rather than first-hit: an element whose *own text* is exactly the
+ * wanted string beats one whose aria-label merely contains it. Without the
+ * ranking, `技能` matched the composer's `选择技能` button instead of the rail row
+ * — a silent wrong measurement in an offset diagram, and a click on the wrong
+ * control elsewhere. Lower score wins; ties keep DOM order.
+ *
+ *   0  aria-label is exactly the wanted name
+ *   1  an interactive element's own text is exactly the wanted name
+ *   2  an interactive element's own text starts with the wanted name
+ *   3  aria-label contains the wanted name
+ */
+const MATCH_FN = `
+function __shotMatch(wanted, root) {
+  const INTERACTIVE = 'button,[role=button],[role=menuitem],[role=tab],[role=switch],[role=checkbox],a[href],input,textarea';
+  const firstLine = el => ((el.innerText || '').trim().split('\\n')[0] || '');
+  const candidates = [];
+  for (const el of (root || document).querySelectorAll('[aria-label]')) {
+    const label = el.getAttribute('aria-label') || '';
+    if (label === wanted) candidates.push({ el, score: 0 });
+    else if (label.includes(wanted)) candidates.push({ el, score: 3 });
+  }
+  for (const el of (root || document).querySelectorAll(INTERACTIVE)) {
+    const text = firstLine(el);
+    if (text === wanted) candidates.push({ el, score: 1 });
+    else if (text.startsWith(wanted)) candidates.push({ el, score: 2 });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => a.score - b.score);
+  return candidates[0].el;
+}
+`;
+
 const locate = (query, byText) => `
 (() => {
+  ${MATCH_FN}
   const wanted = ${JSON.stringify(query)};
-  const INTERACTIVE = 'button,[role=button],[role=menuitem],[role=tab],[role=switch],[role=checkbox],a[href],input,textarea';
   let target = null;
   if (${byText}) {
     const matches = [...document.querySelectorAll('div,span,button,p,a')]
       .filter(el => ((el.innerText || '').trim().split('\\n')[0] || '').startsWith(wanted));
     target = matches[matches.length - 1] || null;
   } else {
-    const labelled = [...document.querySelectorAll('[aria-label]')];
-    const interactive = [...document.querySelectorAll(INTERACTIVE)];
-    target = labelled.find(el => el.getAttribute('aria-label') === wanted)
-      || labelled.find(el => (el.getAttribute('aria-label') || '').includes(wanted))
-      || interactive.find(el => (el.innerText || '').trim().split('\\n')[0] === wanted)
-      || interactive.find(el => ((el.innerText || '').trim().split('\\n')[0] || '').startsWith(wanted))
-      || null;
+    target = __shotMatch(wanted);
   }
   if (!target) return null;
   target.scrollIntoView({ block: 'center' });
@@ -409,6 +706,14 @@ if (URL_ARG) {
 if (ANNOTATE)
   await ensureOverlay();
 
+// Variant styling: a JS file applied once the app is up, before the steps run.
+// Used to render the same screen with different icon/color choices side by side
+// (see `variants` in scripts/screenshots/scenarios.json). A scenario can also
+// inject mid-run with an `inject` step, which is what to use when the app
+// re-renders the element afterwards (React restores its own DOM).
+if (INJECT_FILE)
+  await applyInjection(INJECT_FILE);
+
 for (const step of steps) {
   if (step.eval !== undefined) {
     const value = await evaluate(step.eval);
@@ -430,8 +735,24 @@ for (const step of steps) {
   }
   if (step.pointerHide === true)
     await hidePointer();
+  if (step.inject !== undefined) {
+    // {"inject": "injects/foo.js"} — apply variant styling at this point. Use a
+    // step rather than --inject when the app re-renders the element later
+    // (React restores its own DOM, dropping an earlier mutation).
+    const file = resolveInject(step.inject);
+    if (file)
+      await applyInjection(file);
+  }
   if (step.marksClear === true)
     await clearMarks();
+  if (step.offsets !== undefined) {
+    // "offsets": { "targets": [{ "at" | "selector", "name" }], "axis", "mode" }
+    // — measure the elements and draw their boxes plus the pixel offset between
+    // them. With --baseline, the same boxes also show how far each moved.
+    if (step.offsetsClear === true)
+      await clearMarks();
+    await drawOffsets(step.offsets, baseline);
+  }
   if (step.marks !== undefined) {
     // "marks": [{ "at": "aria-label" | [x, y], "label": "…" }, …] — numbered
     // callouts, numbered in the order given (continuing an existing set).
@@ -485,6 +806,13 @@ for (const step of steps) {
 
 if (FRAMES_DIR)
   await stopScreencast();
+if (MEASURE_FILE) {
+  writeFileSync(MEASURE_FILE, JSON.stringify({
+    viewport: { width: WIDTH, height: HEIGHT, scale: SCALE },
+    elements: measurements,
+  }, null, 2));
+  console.log(`cdp: measured ${measurements.length} element(s) into ${MEASURE_FILE}`);
+}
 socket.close();
 if (failures > 0) {
   console.error(`cdp: ${failures} step(s) could not reach their target`);

@@ -9,7 +9,11 @@ docs/guide/screenshots.md).
 Commands
   serve-desktop / serve-mobile     start the harness dev server (foreground)
   capture-desktop / capture-mobile run scenarios, write PNGs to --out
+                                   (--baseline FILE annotates movement vs a measure run)
   video-desktop / video-mobile     record scenarios as mp4 (needs ffmpeg)
+  variants-desktop / variants-mobile  render one scenario with each variant styling
+  measure-desktop / measure-mobile record element geometry (offset diagrams)
+  compare-desktop / compare-mobile compare two captures, highlighting differences
   terminal OUT.png -- CMD          render a command's real output as a terminal image
   pdf CONTENT.json OUT.pdf         assemble a document from captured PNGs and captions
 
@@ -365,10 +369,19 @@ def serve_assets(port: int):
 def encode_video(frames_dir: Path, output: Path, max_fps: float = 30.0) -> int:
     """Encode recorded screencast frames into an mp4 with real pacing.
 
-    Chrome emits a frame only when the page changes, so a fixed `-framerate`
-    would compress idle stretches and make the video feel sped up. Each frame is
-    written into a concat list with the delay that actually elapsed before it,
-    which keeps the scenario's pace.
+    Two things make the result sharper than a naive encode:
+
+    * Chrome's screencast emits frames at the **CSS viewport size**, ignoring the
+      emulated device scale factor (still captures do honour it, so they come out
+      at 2x). The frames are therefore upscaled here with Lanczos so the mp4 has
+      the same pixel dimensions as the stills and stays smooth on a HiDPI display
+      — interpolated, not extra optical detail.
+    * A fixed `-crf` below the x264 default keeps the JPEG-sourced detail instead
+      of quantising it away a second time.
+
+    The concat list carries each frame's real delay: Chrome only emits a frame
+    when the page changes, so a fixed `-framerate` would compress idle stretches
+    and make the video feel sped up.
     """
     timing_file = frames_dir / "timing.json"
     if not timing_file.exists():
@@ -393,15 +406,22 @@ def encode_video(frames_dir: Path, output: Path, max_fps: float = 30.0) -> int:
     lines.append(f"file {shlex.quote(str(frames[-1]['file']))}")
     (frames_dir / "frames.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    # Match the stills' pixel dimensions: the frames arrive at CSS size, the
+    # stills at CSS x device-scale-factor.
+    scale = max(1, int(round(timing.get("scale", 1))))
+    filters = [f"scale=iw*{scale}:ih*{scale}:flags=lanczos",
+               # Even dimensions are required by yuv420p.
+               "scale=trunc(iw/2)*2:trunc(ih/2)*2"]
+
     output.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([
         # -nostdin matters: without it ffmpeg blocks reading standard input when
         # it is not a terminal, and the encode never finishes.
         ffmpeg_path(), "-nostdin", "-y", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", str(frames_dir / "frames.txt"),
-        # Even dimensions are required by yuv420p.
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-vf", ",".join(filters),
         "-fps_mode", "vfr", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-movflags", "+faststart",
         str(output),
     ], capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -448,14 +468,16 @@ def ffmpeg_path() -> str | None:
 
 
 def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoint: str,
-                 record: bool = False) -> int:
+                 record: bool = False, inject: Path | None = None,
+                 measure: Path | None = None, baseline: Path | None = None,
+                 shot_suffix: str = "") -> int:
     config = SCENARIOS[platform]
     viewport = config["viewport"]
     steps = []
     for step in spec["steps"]:
         step = dict(step)
         if "shot" in step:
-            target = out_dir / step["shot"]
+            target = out_dir / f"{Path(step['shot']).stem}{shot_suffix}{Path(step['shot']).suffix}"
             target.parent.mkdir(parents=True, exist_ok=True)
             step["shot"] = str(target)
         steps.append(step)
@@ -483,9 +505,15 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
     ]
     if frames_dir is not None:
         command += ["--frames", str(frames_dir)]
+    if inject is not None:
+        command += ["--inject", str(inject)]
+    if measure is not None:
+        command += ["--measure", str(measure)]
+    if baseline is not None:
+        command += ["--baseline", str(baseline)]
     if not config.get("touch", True):
         command += ["--touch", "false"]
-    print(f"── {platform}/{name}")
+    print(f"── {platform}/{name}{shot_suffix}")
     result = subprocess.run(command, capture_output=True, text=True)
     for line in result.stdout.splitlines():
         print("   " + line.replace("cdp: ", ""))
@@ -522,12 +550,336 @@ def capture(args: argparse.Namespace) -> int:
                 print(f"error: unknown scenario {name!r} for {args.platform}", file=sys.stderr)
                 print(f"  available: {', '.join(config['scenarios'])}", file=sys.stderr)
                 return 2
-            if run_scenario(args.platform, name, spec, out_dir, browser.port) != 0:
+            baseline = Path(args.baseline).expanduser() if args.baseline else None
+            if run_scenario(args.platform, name, spec, out_dir, browser.port,
+                            baseline=baseline) != 0:
                 failed.append(name)
     if assets:
         assets.shutdown()
     print(f"\n{len(names) - len(failed)}/{len(names)} captured into {out_dir}")
     return 1 if failed else 0
+
+
+# ─── Variants, measurement and comparison ───────────────────────────────────
+
+
+# Fonts for composed sheets. Pillow's built-in bitmap font is ~11px and
+# unreadable next to a 1200px panel, and captions are usually Chinese, so CJK
+# faces come first: a Latin-only face silently renders every CJK glyph as a tofu
+# box. (index selects a face inside a .ttc collection.)
+FONT_CANDIDATES = (
+    ("/System/Library/Fonts/PingFang.ttc", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("/Library/Fonts/Arial Unicode.ttf", 0),
+    ("/System/Library/Fonts/STHeiti Light.ttc", 1),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("C:/Windows/Fonts/msyh.ttc", 0),
+    ("C:/Windows/Fonts/simhei.ttf", 0),
+    ("C:/Windows/Fonts/arial.ttf", 0),
+    ("/System/Library/Fonts/Helvetica.ttc", 0),
+)
+
+
+def load_font(size: int):
+    """A readable font at `size`, or Pillow's default when none is installed."""
+    from PIL import ImageFont
+
+    for candidate, index in FONT_CANDIDATES:
+        if not Path(candidate).exists():
+            continue
+        try:
+            return ImageFont.truetype(candidate, size, index=index)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def compose_sheet(panels: list, output: Path, columns: int = 0, title: str = "",
+                  panel_width: int = 1280) -> int:
+    """Lay images out in a labelled grid.
+
+    Panels are downscaled to `panel_width` so a multi-panel sheet stays a
+    viewable size and the labels stay legible next to them. Used by `variants`
+    and `compare`, and useful on its own for putting a set of captures into one
+    image. Requires Pillow.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("error: composing a sheet needs Pillow (pip install pillow)", file=sys.stderr)
+        return 1
+
+    columns = columns or len(panels) or 1
+    columns = max(1, min(columns, len(panels) or 1))
+    rows = (len(panels) + columns - 1) // columns
+
+    loaded = []
+    for panel in panels:
+        image_path = Path(panel["image"])
+        if not image_path.exists():
+            print(f"error: missing panel image {image_path}", file=sys.stderr)
+            return 1
+        image = Image.open(image_path).convert("RGB")
+        if image.width > panel_width:
+            image = image.resize(
+                (panel_width, round(image.height * panel_width / image.width)), Image.LANCZOS)
+        loaded.append((image, panel.get("label", "")))
+
+    cell_w = max(image.width for image, _ in loaded)
+    cell_h = max(image.height for image, _ in loaded)
+    pad = 20
+    label_size = max(16, cell_w // 60)
+    font = load_font(label_size)
+    title_font = load_font(int(label_size * 1.5))
+    label_h = label_size + 18
+    title_h = int(label_size * 2.2) if title else 0
+    width = pad + columns * (cell_w + pad)
+    height = pad + title_h + rows * (cell_h + label_h + pad)
+    sheet = Image.new("RGB", (width, height), (246, 248, 251))
+    draw = ImageDraw.Draw(sheet)
+
+    if title:
+        draw.text((pad, pad + 6), title, fill=(28, 31, 36), font=title_font)
+
+    for index, (image, label) in enumerate(loaded):
+        column = index % columns
+        row = index // columns
+        x = pad + column * (cell_w + pad) + (cell_w - image.width) // 2
+        y = pad + title_h + row * (cell_h + label_h + pad)
+        sheet.paste(image, (x, y))
+        draw.rectangle([x, y, x + image.width, y + image.height], outline=(210, 216, 226))
+        if label:
+            draw.text((pad + column * (cell_w + pad), y + image.height + 8),
+                      label, fill=(28, 31, 36), font=font)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(output)
+    return 0
+
+
+def _variant_shots(spec: dict, out_dir: Path, index: int) -> list:
+    suffix = f"-v{index + 1}"
+    return [
+        out_dir / f"{Path(step['shot']).stem}{suffix}{Path(step['shot']).suffix}"
+        for step in spec["steps"] if "shot" in step
+    ]
+
+
+def _substitute_variant(spec: dict, inject: str) -> dict:
+    """Copy the scenario with `{variantInject}` replaced by this variant's file.
+
+    Lets one scenario serve every variant: the inject lands at the right step
+    (after any interaction that re-renders the target) instead of at boot.
+    """
+    resolved = json.loads(json.dumps(spec))
+    for step in resolved.get("steps", []):
+        if step.get("inject") == "{variantInject}":
+            step["inject"] = inject
+    return resolved
+
+
+def variants(args: argparse.Namespace) -> int:
+    """Render one scenario several times with different injected styling.
+
+    For "show me a few icon/colour options so I can pick": each variant is the
+    same screen with one `variants[].inject` JS file applied, and the results are
+    composed into a single labelled sheet.
+
+    Purely visual — this renders options *over* the real UI, it does not change
+    the product. Whatever is chosen still has to be implemented in the app.
+    """
+    config = SCENARIOS[args.platform]
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if port_free(config["port"]):
+        print(f"error: nothing is listening on port {config['port']}.", file=sys.stderr)
+        print(f"  start it first:  python3 scripts/screenshots/capture.py serve-{args.platform}", file=sys.stderr)
+        return 1
+
+    spec = config["scenarios"].get(args.scenario)
+    if spec is None:
+        print(f"error: unknown scenario {args.scenario!r} for {args.platform}", file=sys.stderr)
+        print(f"  available: {', '.join(config['scenarios'])}", file=sys.stderr)
+        return 2
+    variants_spec = spec.get("variants")
+    if not variants_spec:
+        print(f'error: scenario {args.scenario!r} declares no "variants"', file=sys.stderr)
+        return 2
+
+    ensure_demo_assets()
+    assets = serve_assets(config["assetsPort"]) if config.get("assetsPort") else None
+    panels = []
+    with Browser(int(args.cdp_port)) as browser:
+        for index, variant in enumerate(variants_spec):
+            inject = variant.get("inject", "")
+            if inject:
+                inject_path = (SCRIPTS / inject).resolve()
+                if not inject_path.exists():
+                    print(f"error: variant inject file not found: {inject_path}", file=sys.stderr)
+                    return 2
+            else:
+                inject_path = None
+            # The scenario carries an `{variantInject}` placeholder so each
+            # variant can inject its own styling at the right point in the steps.
+            resolved = _substitute_variant(spec, inject)
+            if run_scenario(args.platform, args.scenario, resolved, out_dir, browser.port,
+                            inject=inject_path, shot_suffix=f"-v{index + 1}") != 0:
+                return 1
+            shots = _variant_shots(resolved, out_dir, index)
+            if not shots:
+                print(f"error: scenario {args.scenario!r} captures no shot", file=sys.stderr)
+                return 2
+            panels.append({"image": shots[-1], "label": variant.get("label", f"variant {index + 1}")})
+    if assets:
+        assets.shutdown()
+
+    output = out_dir / (args.output or f"{args.platform}-{args.scenario}-variants.png")
+    if compose_sheet(panels, output, columns=args.columns,
+                     title=spec.get("variantsTitle", "")) != 0:
+        return 1
+    print(f"\nwrote {output} ({len(panels)} variants)")
+    return 0
+
+
+def measure(args: argparse.Namespace) -> int:
+    """Record element geometry for an offset diagram.
+
+    Writes the measurement JSON that a scenario's `offsets` step draws, and that
+    `--baseline` compares a later capture against (see the offset section of the
+    guide). Run it once per version to get a comparison baseline.
+    """
+    config = SCENARIOS[args.platform]
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if port_free(config["port"]):
+        print(f"error: nothing is listening on port {config['port']}.", file=sys.stderr)
+        print(f"  start it first:  python3 scripts/screenshots/capture.py serve-{args.platform}", file=sys.stderr)
+        return 1
+    spec = config["scenarios"].get(args.scenario)
+    if spec is None:
+        print(f"error: unknown scenario {args.scenario!r} for {args.platform}", file=sys.stderr)
+        print(f"  available: {', '.join(config['scenarios'])}", file=sys.stderr)
+        return 2
+    ensure_demo_assets()
+    assets = serve_assets(config["assetsPort"]) if config.get("assetsPort") else None
+    measure_path = Path(args.measure).expanduser() if args.measure \
+        else out_dir / f"{args.platform}-{args.scenario}-measure.json"
+    with Browser(int(args.cdp_port)) as browser:
+        code = run_scenario(args.platform, args.scenario, spec, out_dir, browser.port,
+                            measure=measure_path)
+    if assets:
+        assets.shutdown()
+    if code == 0:
+        print(f"\nmeasurements: {measure_path}")
+    return code
+
+
+def compare(args: argparse.Namespace) -> int:
+    """Compare two captures of the same screen and highlight what differs.
+
+    Two uses: one screen rendered with two style options, or the same screen from
+    two versions (capture each revision separately — see the guide). Outputs a
+    side-by-side image with the changed regions boxed on both sides, plus a
+    difference panel showing where they diverge.
+    """
+    try:
+        from PIL import Image, ImageChops, ImageDraw
+    except ImportError:
+        print("error: comparing images needs Pillow (pip install pillow)", file=sys.stderr)
+        return 1
+
+    left_path = Path(args.left)
+    right_path = Path(args.right)
+    for image_path in (left_path, right_path):
+        if not image_path.exists():
+            print(f"error: no such image {image_path}", file=sys.stderr)
+            return 1
+
+    left = Image.open(left_path).convert("RGB")
+    right = Image.open(right_path).convert("RGB")
+    if left.size != right.size:
+        # Align a same-content pair captured at different device scales.
+        right = right.resize(left.size, Image.LANCZOS)
+
+    diff = ImageChops.difference(left, right).convert("L")
+    # A threshold keeps anti-aliasing noise from boxing the entire screen.
+    mask = diff.point(lambda value: 255 if value >= args.threshold else 0)
+    regions = changed_regions(mask, min_area=args.min_area)
+    print(f"   {len(regions)} changed region(s) above threshold {args.threshold}")
+
+    left_boxes = left.copy()
+    left_draw = ImageDraw.Draw(left_boxes)
+    right_boxes = right.copy()
+    right_draw = ImageDraw.Draw(right_boxes)
+    for index, (x, y, box_w, box_h) in enumerate(regions, start=1):
+        for canvas, pen in ((left_draw, (226, 104, 95)), (right_draw, (43, 108, 255))):
+            canvas.rectangle([x - 2, y - 2, x + box_w + 2, y + box_h + 2], outline=pen, width=3)
+        right_draw.text((x, max(0, y - 14)), str(index), fill=(43, 108, 255))
+
+    # Unchanged content faded, changes in red: a glance shows where they diverge.
+    heat = Image.new("RGB", left.size, (246, 248, 251))
+    heat.paste(left.point(lambda value: 255 - (255 - value) // 4), (0, 0))
+    heat.paste(Image.new("RGB", left.size, (226, 60, 50)), (0, 0), mask)
+
+    panels = [
+        {"image": _save_sidecar(left_boxes, left_path, "left-boxes"), "label": args.label_left},
+        {"image": _save_sidecar(right_boxes, right_path, "right-boxes"), "label": args.label_right},
+        {"image": _save_sidecar(heat, right_path, "diff"), "label": f"差异区域（{len(regions)} 处）"},
+    ]
+    output = Path(args.output).expanduser()
+    if compose_sheet(panels, output, columns=args.columns) != 0:
+        return 1
+    print(f"wrote {output}")
+    return 0
+
+
+def _save_sidecar(image, source: Path, suffix: str) -> Path:
+    target = source.with_name(f".compare-{suffix}{source.suffix}")
+    image.save(target)
+    return target
+
+
+def changed_regions(mask, min_area: int = 24, pad: int = 4) -> list:
+    """Group a difference mask into bounding boxes of changed content.
+
+    A coarse row/column projection rather than full connected-component
+    labelling: screens change in rectangular bands (a moved row, a resized
+    button), and this keeps the dependency list to Pillow.
+    """
+    width, height = mask.size
+    pixels = mask.load()
+
+    bands = []
+    for y in range(height):
+        if any(pixels[x, y] for x in range(0, width, 2)):
+            if bands and bands[-1][1] == y - 1:
+                bands[-1][1] = y
+            else:
+                bands.append([y, y])
+
+    regions = []
+    for top, bottom in bands:
+        runs = []
+        for x in range(width):
+            if any(pixels[x, y] for y in range(top, bottom + 1, 2)):
+                if runs and runs[-1][1] == x - 1:
+                    runs[-1][1] = x
+                else:
+                    runs.append([x, x])
+        for left, right in runs:
+            box_w = right - left + 1
+            box_h = bottom - top + 1
+            if box_w * box_h < min_area:
+                continue
+            regions.append((
+                max(0, left - pad),
+                max(0, top - pad),
+                min(width - left, box_w + pad * 2),
+                min(height - top, box_h + pad * 2),
+            ))
+    return regions
 
 
 # ─── Terminal captures ──────────────────────────────────────────────────────
@@ -680,11 +1032,43 @@ def main() -> int:
 
         capture_parser = sub.add_parser(f"capture-{platform}", help=f"capture {platform} screenshots")
         capture_parser.add_argument("scenario", nargs="*", help="scenario name(s); default all")
+        capture_parser.add_argument("--baseline", default=None,
+                                    help="a measure-*.json to annotate movement since then")
         capture_parser.set_defaults(func=capture, platform=platform)
 
         video_parser = sub.add_parser(f"video-{platform}", help=f"record {platform} scenarios as mp4")
         video_parser.add_argument("scenario", nargs="*", help="scenario name(s); default all")
         video_parser.set_defaults(func=video, platform=platform)
+
+        variants_parser = sub.add_parser(
+            f"variants-{platform}",
+            help=f"render one {platform} scenario with each declared variant styling")
+        variants_parser.add_argument("scenario")
+        variants_parser.add_argument("--output", default=None, help="sheet filename (inside --out)")
+        variants_parser.add_argument("--columns", type=int, default=0, help="sheet columns")
+        variants_parser.set_defaults(func=variants, platform=platform)
+
+        measure_parser = sub.add_parser(
+            f"measure-{platform}",
+            help=f"record {platform} element geometry for an offset diagram")
+        measure_parser.add_argument("scenario")
+        measure_parser.add_argument("--measure", default=None, help="where to write the JSON")
+        measure_parser.set_defaults(func=measure, platform=platform)
+
+        compare_parser = sub.add_parser(
+            f"compare-{platform}",
+            help=f"compare two {platform} captures and highlight what differs")
+        compare_parser.add_argument("left")
+        compare_parser.add_argument("right")
+        compare_parser.add_argument("--output", required=True)
+        compare_parser.add_argument("--label-left", default="A")
+        compare_parser.add_argument("--label-right", default="B")
+        compare_parser.add_argument("--threshold", type=int, default=24,
+                                    help="per-pixel difference that counts as a change (0-255)")
+        compare_parser.add_argument("--min-area", type=int, default=24,
+                                    help="ignore changed regions smaller than this")
+        compare_parser.add_argument("--columns", type=int, default=3)
+        compare_parser.set_defaults(func=compare, platform=platform)
 
     terminal_parser = sub.add_parser("terminal", help="render a command's output as a terminal image", add_help=False)
     terminal_parser.add_argument("output")

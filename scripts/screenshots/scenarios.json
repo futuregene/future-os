@@ -356,6 +356,105 @@
             "shot": "d-remote.png"
           }
         ]
+      },
+      "rail-offsets": {
+        "note": "Offset diagram: measures the left rail's rows and labels their pixel gaps.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "offsets": {
+              "axis": "y",
+              "mode": "gap",
+              "targets": [
+                {
+                  "at": "新对话",
+                  "name": "新对话"
+                },
+                {
+                  "at": "模型",
+                  "name": "模型"
+                },
+                {
+                  "at": "技能",
+                  "name": "技能"
+                },
+                {
+                  "at": "手机遥控",
+                  "name": "手机遥控"
+                }
+              ]
+            }
+          },
+          {
+            "wait": 400
+          },
+          {
+            "shot": "d-rail-offsets.png"
+          }
+        ]
+      },
+      "running-icon-variants": {
+        "note": "Variant sheet: one screen rendered with three icon options, for picking. The inject happens as the last step because scrolling re-renders the chip and would undo an earlier mutation.",
+        "variantsTitle": "运行指示图标 · 三个备选样式",
+        "variants": [
+          {
+            "label": "A · 实心圆点",
+            "inject": "injects/running-dot.js"
+          },
+          {
+            "label": "B · 同心圆环",
+            "inject": "injects/running-ring.js"
+          },
+          {
+            "label": "C · 环形缺口",
+            "inject": "injects/running-spinner.js"
+          }
+        ],
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -1400
+            ]
+          },
+          {
+            "wait": 700
+          },
+          {
+            "inject": "{variantInject}"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "shot": "d-running-icon.png"
+          }
+        ]
+      },
+      "compare-baseline": {
+        "note": "Left/right pair for `compare-desktop`; the variants sheet is the other side.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "scroll": [
+              0,
+              -1400
+            ]
+          },
+          {
+            "wait": 700
+          },
+          {
+            "shot": "d-compare-baseline.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -860,9 +959,6 @@
           },
           {
             "wait": 1500
-          },
-          {
-            "pointerHide": true
           },
           {
             "marks": [
