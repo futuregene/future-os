@@ -21,8 +21,9 @@ code or endpoint.
 
 ## Headless Desktop over SSH
 
-Build and run `futureos-headless` to open phone remote access in the foreground
-without GUI libraries or a desktop UI. `futureos` is GUI-only; its former
+Install the Linux `.deb` or portable package, or build from source, then run
+`futureos-headless` to open phone remote access in the foreground without GUI
+libraries or a desktop UI. `futureos` is GUI-only; its former
 `--headless` option has been removed. When needed, it prints a browser login QR followed by a
 pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
 are reused. Ctrl+C closes the entry and exits; the process does not daemonize.

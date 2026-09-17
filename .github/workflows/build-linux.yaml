@@ -123,6 +123,18 @@ jobs:
       - name: Set Tauri bundle version
         run: node scripts/version.mjs --set-bundle
 
+      # This is a standalone user-facing entrypoint, not a Tauri sidecar. Build
+      # it without the GUI feature so the server binary cannot acquire
+      # GTK/WebKit dependencies. tauri.linux.conf.json adds it to the .deb as
+      # /usr/bin/futureos-headless; the portable bundle is assembled below.
+      - name: Build and verify headless desktop
+        run: |
+          set -euo pipefail
+          cargo build --release --no-default-features --features headless \
+            --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+          bash scripts/ci/check-headless-linux.sh \
+            desktop/src-tauri/target/release/futureos-headless
+
       - name: Build desktop bundle (.deb)
         if: inputs.release != true
         working-directory: desktop
@@ -161,6 +173,7 @@ jobs:
           dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "desktop/src-tauri/target/release/futureos" "$dir/futureos"
+          cp "desktop/src-tauri/target/release/futureos-headless" "$dir/futureos-headless"
           cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
@@ -181,8 +194,19 @@ jobs:
           }
           release_deb="release-assets/FutureOS_${FUTURE_ARTIFACT_VERSION}_${{ matrix.deb_arch }}.deb"
           mv "${debs[0]}" "$release_deb"
-          mv "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz" "release-assets/"
+          portable="release-assets/FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz"
+          mv "FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-portable.tar.gz" "$portable"
           mv "cli/FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" "release-assets/"
+
+          # The signed updater artifact is this exact .deb, so verify its
+          # payload before signing. Also guard the separately published
+          # portable archive against silently dropping the standalone entry.
+          deb_contents="$(dpkg-deb --contents "$release_deb")"
+          grep -Eq '^-rwx[^ ]* .* \./usr/bin/futureos-headless$' <<< "$deb_contents" || {
+            echo "The .deb does not contain executable /usr/bin/futureos-headless." >&2
+            exit 1
+          }
+          tar -tzf "$portable" ./futureos-headless >/dev/null
 
       - name: Sign updater artifact
         if: inputs.release == true
