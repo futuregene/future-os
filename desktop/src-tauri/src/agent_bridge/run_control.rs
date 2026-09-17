@@ -3,7 +3,8 @@
 //! and the parent module's prompt finalization.
 
 use super::client::{
-    connect_agent, get_state_command, map_rpc_error, run_control_command, RpcResponseExt,
+    compact_command, connect_agent, get_state_command, map_rpc_error, run_control_command,
+    RpcResponseExt,
 };
 use super::replica::AGENT_REPLICAS;
 use crate::store;
@@ -196,9 +197,42 @@ async fn compact_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppErr
     if store::list_runs(&run.thread_id)?.len() == 1
         && store::get_app_settings()?.auto_compact_first_turn
     {
-        crate::commands::compact_thread_context(run.thread_id).await?;
+        compact_thread_context(run.thread_id).await?;
     }
     Ok(())
+}
+
+/// Compact a thread's Agent context without a user message. Shared by manual
+/// GUI requests and first-turn completion, including non-GUI server builds.
+pub async fn compact_thread_context(
+    thread_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
+    let session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "This conversation has no context to compact.".to_string())?;
+    let mut client = connect_agent()
+        .await
+        .map_err(|error| format!("Future Agent unreachable: {error}"))?;
+    let response = client
+        .execute_command(compact_command(session_id.to_string(), String::new()))
+        .await
+        .map_err(|error| format!("compact RPC failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("compact returned an error")?;
+    let value = future_rpc::decode::response_data(&response);
+    let valid_ack = value.get("accepted").and_then(serde_json::Value::as_bool) == Some(true)
+        && value
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|operation_id| !operation_id.is_empty());
+    if !valid_ack {
+        return Err("compact returned an invalid acknowledgement".into());
+    }
+    Ok(value)
 }
 
 /// Poll the Agent's `get_state.isStreaming` until it explicitly reports idle.

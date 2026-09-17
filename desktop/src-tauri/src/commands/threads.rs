@@ -1,6 +1,5 @@
 //! Thread lifecycle Tauri commands plus thread-scoped cleanup queries.
 
-use crate::agent_bridge::RpcResponseExt;
 use crate::{agent_bridge, store};
 
 #[tauri::command]
@@ -397,35 +396,7 @@ pub async fn get_thread_agent_state(
 pub async fn compact_thread_context(
     thread_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
-    let session_id = thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| "This conversation has no context to compact.".to_string())?;
-    let mut client = agent_bridge::connect_agent()
-        .await
-        .map_err(|error| format!("Future Agent unreachable: {error}"))?;
-    let response = client
-        .execute_command(agent_bridge::compact_command(
-            session_id.to_string(),
-            String::new(),
-        ))
-        .await
-        .map_err(|error| format!("compact RPC failed: {error}"))?
-        .into_inner()
-        .ok_or_rpc_error("compact returned an error")?;
-    let value = future_rpc::decode::response_data(&response);
-    let valid_ack = value.get("accepted").and_then(serde_json::Value::as_bool) == Some(true)
-        && value
-            .get("operationId")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|operation_id| !operation_id.is_empty());
-    if !valid_ack {
-        return Err("compact returned an invalid acknowledgement".into());
-    }
-    Ok(value)
+    agent_bridge::compact_thread_context(thread_id).await
 }
 
 /// Fetch session entries from the agent (user, assistant, tool messages).
