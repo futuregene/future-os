@@ -30,9 +30,12 @@ excessive notes fail explicitly rather than being silently truncated.
 
 ## Trigger and admission
 
-The economic trigger remains `min(floor(W * 0.8), 256000)`. Before every actual
-model step, including after tools and a model downshift, also reserve the ordinary
-maximum output O and `min(2048, W/16)` margin. Input must fit `W - O - margin`.
+The economic trigger is `floor(W * 0.8)` — 80% of the declared window, with no absolute
+cap. (An earlier cap of 256 000 tokens only made large windows compact early: on a
+1M-token model it fired with three quarters of the window unused. `effective_trigger`
+clamps to `W - O - margin` regardless, so the model's own limits still bound it.) Before
+every actual model step, including after tools and a model downshift, also reserve the
+ordinary maximum output O and `min(2048, W/16)` margin. Input must fit `W - O - margin`.
 
 Estimate system text, tools, framing and conservative image/reasoning costs, and
 consider reported usage. A model selection alone does not compact; the next
@@ -181,7 +184,7 @@ python3 scripts/test_s2_compaction.py --binary target/debug/future --report targ
 ```
 
 Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke
-uses its own HOME, fresh port and local model stub to verify 256K triggering,
+uses its own HOME, fresh port and local model stub to verify 80%-of-window triggering,
 C identity, originals, zero summary requests, ordinary usage, byte paging and
 restart. Never stop the user's running Agent.
 

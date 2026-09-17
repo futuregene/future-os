@@ -2,14 +2,22 @@
 use super::{estimate_text_tokens, ContextManager, PromptContext};
 use crate::types::ToolDef;
 
-pub const TRIGGER_CAP: u64 = 256_000;
 pub const TARGET_HISTORY: u64 = 32_000;
 pub const MAX_EXPANDED_HISTORY: u64 = 64_000;
 pub const RECENT_HISTORY: u64 = 8_000;
 
-/// 80% of the declared window or 256K, whichever is reached first.
+/// The economic trigger: 80% of the declared window, with no absolute cap.
+///
+/// A cap above this point only made large windows compact early. On a 1M-token model it
+/// held the trigger at 256K, so the session compacted with three quarters of its window
+/// unused; the admission check below is what actually bounds a request, and it clamps the
+/// effective trigger to `window - output reserve - margin` anyway.
+///
+/// Consequence worth knowing: the compaction that fires at this point summarises a much
+/// larger live conversation. That request reuses the turn's prefix (so it is normally
+/// cache-served), but a cold cache means paying for the whole prefix at once.
 pub fn trigger_tokens(window: u64) -> u64 {
-    (window.saturating_mul(4) / 5).min(TRIGGER_CAP)
+    window.saturating_mul(4) / 5
 }
 
 /// Includes system/tools, conservative message framing and image allowance.
@@ -56,8 +64,10 @@ impl ContextManager {
 mod tests {
     use super::*;
     #[test]
-    fn window_percentage_and_absolute_cap_are_independent_of_target() {
-        assert_eq!(trigger_tokens(1_000_000), 256_000);
+    fn trigger_follows_the_window_without_an_absolute_cap() {
+        assert_eq!(trigger_tokens(1_000_000), 800_000);
+        assert_eq!(trigger_tokens(640_000), 512_000);
+        assert_eq!(trigger_tokens(320_000), 256_000);
         assert_eq!(trigger_tokens(200_000), 160_000);
         assert_eq!(trigger_tokens(128_000), 102_400);
         assert_eq!(trigger_tokens(32_000), 25_600);

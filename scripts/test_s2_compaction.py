@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local integration smoke: >256K synthetic history -> S2 -> CLI recall -> restart.
+"""Local integration smoke: >80% of the declared window -> S2 -> CLI recall -> restart.
 Requires a built future binary. No external model, credentials or user DB access.
 """
 import argparse
@@ -77,7 +77,10 @@ def main():
                    entry("u1", "user", originals[0]), entry("a1", "assistant", originals[1])]
         records[0]["role"] = "system"
         expected_outputs = {}
-        for index in range(11):
+        # The history has to cross the economic trigger, which is 80% of the window declared
+        # for the fixture model below — 800 000 estimated tokens for a 1M-token window. Each
+        # result is ~24 000 tokens, so 36 of them clear it while still fitting the model.
+        for index in range(36):
             call_id = f"read-{index}"
             records.append(entry(f"call-{index}", "assistant", [{"type": "tool_call", "id": call_id,
                            "name": "read", "args": {"path": "fixture.txt", "offset": index}}]))
@@ -105,10 +108,38 @@ def main():
                     body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     model_requests.append(body)
                     system = "\n".join(text_of(m) for m in body["messages"] if m["role"] == "system")
-                    is_summary = "context summarization agent" in system
+                    last_user = next((text_of(m) for m in reversed(body["messages"])
+                                      if m["role"] == "user"), "")
+                    # C3's summary request appends its instruction last and carries the
+                    # session's own system prompt, so the legacy A marker ("context
+                    # summarization agent") is never present. Classify by the instruction.
+                    is_summary = "Summarize the conversation above into a handoff summary" in last_user
                     if is_summary:
                         state["summary"] += 1
-                        raise AssertionError("default C must not call a summary model")
+                        # The summary request must reuse the session's own prompt, not the
+                        # built-in summariser constant: providers cache on the request prefix,
+                        # so a substituted prompt shares nothing with the turn that already
+                        # paid for those tokens. (On a first compaction there is no checkpoint
+                        # yet, so the recall guidance is correctly absent; it is added from
+                        # the NEXT turn, which is why the run loop reserves it in admission.)
+                        step = state["summary"]
+                        check(f"summary reuses the session prompt {step}",
+                              sid in system and "context summarization agent" not in system)
+                        check(f"summary reuses the session tools {step}", bool(body.get("tools")))
+                        # Reject the summary request in a way the agent does not retry
+                        # (a retryable status would be attempted MAX_TRANSIENT_RETRIES more
+                        # times and make the call count below an implementation detail). C3
+                        # must then commit the deterministic evidence instead, which is what
+                        # the checkpoint assertions below check, and no summary usage is
+                        # billed — so this fixture's usage arithmetic stays about ordinary
+                        # requests.
+                        self.send_response(401)
+                        self.send_header("Content-Type", "application/json")
+                        payload = json.dumps({"error": {"message": "authentication failed"}}).encode()
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        return
                     else:
                         state["normal"] += 1
                         step = state["normal"]
@@ -132,7 +163,10 @@ def main():
                             check("get stayed bounded", sum(len(c["text"].encode()) for c in reply["chunks"]) <= 256)
                             command = None
                         elif step == 4:
-                            check("no summary model after restart", state["summary"] == 0)
+                            # Exactly one summary attempt: the first turn compacted once and
+                            # the restart had nothing to compact. A retryable rejection would
+                            # inflate this, hence the 401 above.
+                            check("summary model ran exactly once", state["summary"] == 1)
                             command = None
                         else:
                             raise AssertionError("unexpected extra model request")
@@ -146,13 +180,12 @@ def main():
                     chunks = [{"choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
                               {"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]}]
                     # Usage deliberately follows finish: auxiliary accounting must drain it.
-                    if is_summary:
-                        chunks.append({"choices": [], "usage": {"prompt_tokens": 900, "completion_tokens": 40,
-                                                               "total_tokens": 940, "credit_cost": 0.005}})
-                    chunks.append({"choices": [], "usage": {"prompt_tokens": 1000 if is_summary else 100,
-                                                              "completion_tokens": 50 if is_summary else 10,
-                                                              "total_tokens": 1050 if is_summary else 110,
-                                                              "credit_cost": cost}})
+                    # A summary request reports none, so it contributes no billed usage.
+                    if not is_summary:
+                        chunks.append({"choices": [], "usage": {"prompt_tokens": 100,
+                                                                  "completion_tokens": 10,
+                                                                  "total_tokens": 110,
+                                                                  "credit_cost": cost}})
                     payload = ("".join("data: " + json.dumps(c) + "\n\n" for c in chunks) + "data: [DONE]\n\n").encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -223,7 +256,9 @@ def main():
             process = start_agent()
             run("Find MAGIC_HISTORY_TOKEN in the old tool results using history recall.")
             checkpoint, info = read_state()
-            check("actual 256K trigger crossed", checkpoint["tokens_before"] >= 256_000)
+            # Keep this in step with the fixture model's declared window: the trigger is 80%
+            # of it, with no absolute cap.
+            check("crossed the 80% trigger", checkpoint["tokens_before"] >= 800_000)
             check("compacted input below 32K on fixture", checkpoint["tokens_after"] < 32_000)
             check("S2 schema persisted", checkpoint["schema_version"] == 3)
             check("protected references persisted", {"u1", "a1"}.issubset(checkpoint["protected_entry_ids"]))
@@ -236,7 +271,7 @@ def main():
             _, restored_info = read_state()
             check("usage survives restart", restored_info["tokens_in"] == 400 and restored_info["tokens_out"] == 40)
             check("cost survives restart", abs(restored_info["total_cost"] - 0.008) < 1e-9)
-            check("exact model-call count", state == {"normal": 4, "summary": 0} and not errors)
+            check("exact model-call count", state == {"normal": 4, "summary": 1} and not errors)
             report = {"ok": True, "checks": checks, "model_calls": state, "external_model_calls": 0,
                       "tokens_before": checkpoint["tokens_before"], "tokens_after": checkpoint["tokens_after"],
                       "schema_version": checkpoint["schema_version"], "protected_entry_ids": checkpoint["protected_entry_ids"],

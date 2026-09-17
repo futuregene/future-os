@@ -1066,12 +1066,18 @@ mod tests {
 
     #[tokio::test]
     async fn s2_counts_request_overhead_and_preserves_originals_across_checkpoints() {
-        let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(1_000_000);
+        // The window is chosen so its 80% trigger (256 000) sits just above the history
+        // alone (~247 K): what pushes this compaction over the line is the counted
+        // request overhead, which is exactly what the test is about. The history is not
+        // scaled up instead, because a 1M-token window would need ~3 MB of filler to
+        // cross its trigger and this test does not measure anything size-dependent.
+        let window = 320_000;
+        let (reserve_tokens, keep_recent_tokens) = super::super::context_token_budgets(window);
         let manager = ContextManager {
             enabled: true,
             reserve_tokens,
             keep_recent_tokens,
-            context_window: 1_000_000,
+            context_window: window,
             model: "m".into(),
         };
         let mut original = vec![

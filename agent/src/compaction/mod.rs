@@ -16,9 +16,10 @@ pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 pub(super) const INTERNAL_CHECKPOINT_METADATA_KEY: &str = "internal_context_checkpoint";
 
 /// Preserve the legacy (reserve, recent) interface while deriving the trigger
-/// from min(80% of the model window, 256K). `reserve` is threshold headroom,
-/// not the model's output cap. Recent history is bounded independently at 8K.
-/// Degenerate windows do not invent capacity.
+/// from 80% of the model window (`budget::trigger_tokens`, which has no absolute
+/// cap). `reserve` is threshold headroom, not the model's output cap. Recent
+/// history is bounded independently at 8K. Degenerate windows do not invent
+/// capacity.
 pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
     let window = context_window.max(1);
     if window <= 1 {
