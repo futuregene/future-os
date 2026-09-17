@@ -166,6 +166,88 @@ pub(crate) fn paginate_events(mut data: Value, offset: usize, limit: usize) -> V
     page
 }
 
+/// Shrink an oversized event without losing the identity/status needed to close
+/// a tool row. Live publishing and replay must use the same representation: a
+/// bare truncation marker consumes the event cursor but leaves the tool running.
+pub(crate) fn truncated_event_data(data: &str) -> String {
+    let mut truncated = json!({
+        "_truncated": true,
+        "bytes": data.len(),
+        "note": "event exceeded the relay payload limit and was truncated; full content is available via get_messages",
+    });
+    if let Ok(Value::Object(payload)) = serde_json::from_str::<Value>(data) {
+        // Keep only bounded protocol metadata, never arbitrary large objects.
+        for key in [
+            "type",
+            "phase",
+            "tool_id",
+            "toolID",
+            "tool_call_id",
+            "tool_name",
+            "toolName",
+            "name",
+            "exit_code",
+            "exitCode",
+            "is_error",
+            "isError",
+            "status",
+            "tc_index",
+        ] {
+            if let Some(value) = payload.get(key) {
+                if (value.is_string() || value.is_number() || value.is_boolean())
+                    && serialized_len(value) <= 1024
+                {
+                    truncated[key] = value.clone();
+                }
+            }
+        }
+        // Preserve output tails, including the [exit: N] footer read by released
+        // mobile clients. Error text must remain nonempty even if it ends in a
+        // large amount of whitespace. Bound UTF-8 before JSON serialization.
+        for key in ["text", "result", "error", "errorText"] {
+            if let Some(text) = payload.get(key).and_then(Value::as_str) {
+                let text = if matches!(key, "error" | "errorText") {
+                    text.trim()
+                } else {
+                    text.trim_end()
+                };
+                let mut start = text.len().saturating_sub(4096);
+                while !text.is_char_boundary(start) {
+                    start += 1;
+                }
+                truncated[key] = json!(if start > 0 {
+                    format!("…{}", &text[start..])
+                } else {
+                    text.to_owned()
+                });
+            }
+        }
+        // Large write inputs still need their file target; don't forward the
+        // content again. Accept both object and JSON-string argument formats.
+        for key in ["tool_args", "toolArgs", "arguments"] {
+            if let Some(args) = payload.get(key) {
+                let parsed;
+                let args = if let Some(text) = args.as_str() {
+                    parsed = serde_json::from_str::<Value>(text).unwrap_or(Value::Null);
+                    &parsed
+                } else {
+                    args
+                };
+                let mut targets = serde_json::Map::new();
+                for target in ["command", "path", "file_path", "filePath"] {
+                    if let Some(value) = args.get(target).filter(|v| v.is_string()) {
+                        if serialized_len(value) <= 4096 {
+                            targets.insert(target.into(), value.clone());
+                        }
+                    }
+                }
+                truncated[key] = Value::Object(targets);
+            }
+        }
+    }
+    truncated.to_string()
+}
+
 /// Bound presentation payloads without changing the stored record.
 pub(crate) fn truncate_message_content(message: &mut Value, cap: usize) {
     if serialized_len(message) <= cap {
@@ -189,7 +271,7 @@ pub(crate) fn truncate_message_content(message: &mut Value, cap: usize) {
         }
     } else if let Some(Value::String(data)) = message.get_mut("data") {
         if data.len() > cap {
-            *data = json!({"_truncated":true,"bytes":data.len()}).to_string();
+            *data = truncated_event_data(data);
             content_truncated = true;
         }
     }
@@ -251,10 +333,12 @@ pub(crate) fn cap_remote_item(item: &mut Value, cap: usize) {
         );
         *item = Value::Object(replacement);
     } else if let Some(object) = item.as_object_mut() {
-        object.insert(
-            "data".into(),
-            Value::String(json!({"_truncated":true,"bytes":original_bytes}).to_string()),
-        );
+        let data = object
+            .get("data")
+            .and_then(Value::as_str)
+            .map(truncated_event_data)
+            .unwrap_or_else(|| json!({"_truncated":true,"bytes":original_bytes}).to_string());
+        object.insert("data".into(), Value::String(data));
     }
 }
 

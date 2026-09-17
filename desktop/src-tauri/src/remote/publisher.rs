@@ -199,16 +199,13 @@ pub fn publish_snapshot(
 /// Return `data` unchanged when it fits the payload budget, else a well-formed
 /// JSON placeholder that keeps the event renderable and tells the client where
 /// the full content lives (the persisted run history via `get_messages`). The
-/// placeholder has no `type`-specific fields, so it's a harmless no-op in the
-/// client's renderer while still advancing the (runId,idx) dedup cursor.
+/// placeholder retains tool identity, outcome and a bounded output tail so a
+/// completed call cannot get stuck running when its result exceeds the cap.
 pub(super) fn cap_event_data(data: &str) -> std::borrow::Cow<'_, str> {
     if data.len() <= MAX_EVENT_BYTES {
         return std::borrow::Cow::Borrowed(data);
     }
-    std::borrow::Cow::Owned(format!(
-        r#"{{"_truncated":true,"bytes":{},"note":"event exceeded the relay payload limit and was truncated; full content is available via get_messages"}}"#,
-        data.len()
-    ))
+    std::borrow::Cow::Owned(crate::remote_host::business::truncated_event_data(data))
 }
 
 /// Serially publishes queued events on one connection, preserving agent

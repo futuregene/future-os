@@ -1184,6 +1184,83 @@ mod tests {
     }
 
     #[test]
+    fn paginate_events_keeps_oversized_tool_outcomes_matchable() {
+        // Regression: a ~503 KB test result was replaced by an anonymous marker,
+        // leaving a running row between two groups of already-completed work.
+        for event_type in ["tool_end", "tool_result"] {
+            for exit_code in [0, 1] {
+                let output = format!("{}\n[exit: {exit_code}]", "测试输出\n".repeat(50_000));
+                let payload = json!({
+                    "type": event_type, "tool_id": "large-test", "tool_name": "shell",
+                    "exit_code": exit_code, "text": output,
+                })
+                .to_string();
+                let page = paginate_events(
+                    json!({
+                        "runId": "run-1",
+                        "events": [{"type": event_type, "runId": "run-1", "idx": 1938, "data": payload}],
+                    }),
+                    0,
+                    100,
+                );
+                let event = &page["events"][0];
+                let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+                assert_eq!(event["idx"], 1938);
+                assert_eq!(event["type"], event_type);
+                assert_eq!(data["_truncated"], true);
+                assert_eq!(data["tool_id"], "large-test");
+                assert_eq!(data["tool_name"], "shell");
+                assert_eq!(data["exit_code"], exit_code);
+                assert!(data["text"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(&format!("[exit: {exit_code}]")));
+                assert!(serde_json::to_vec(&page).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_tool_data_preserves_errors_and_large_input_targets() {
+        let payload = json!({
+            "tool_call_id": "write-1", "toolName": "write", "phase": "execution",
+            "tool_args": json!({"path": "目录/文件.txt", "content": "x".repeat(300_000)}).to_string(),
+            "error": format!("permission denied{}", " ".repeat(300_000)),
+            "is_error": true,
+        }).to_string();
+        let mut event = json!({"type": "tool_end", "data": payload});
+        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
+        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["tool_call_id"], "write-1");
+        assert_eq!(data["toolName"], "write");
+        assert_eq!(data["phase"], "execution");
+        assert_eq!(data["error"], "permission denied");
+        assert_eq!(data["is_error"], true);
+        assert_eq!(data["tool_args"], json!({"path": "目录/文件.txt"}));
+        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+    }
+
+    #[test]
+    fn truncated_tool_data_bounds_json_escaping_and_error_aliases() {
+        let payload = json!({
+            "toolID": "tool-1", "name": "shell", "exitCode": 2,
+            "result": format!("{}\n[exit: 2]", "\u{0001}".repeat(300_000)),
+            "errorText": "错误".repeat(150_000),
+            "unknown": "x".repeat(300_000),
+        })
+        .to_string();
+        let mut event = json!({"type": "tool_result", "data": payload});
+        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
+        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["toolID"], "tool-1");
+        assert_eq!(data["exitCode"], 2);
+        assert!(data["result"].as_str().unwrap().ends_with("[exit: 2]"));
+        assert!(!data["errorText"].as_str().unwrap().trim().is_empty());
+        assert!(data.get("unknown").is_none());
+        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
+    }
+
+    #[test]
     fn truncate_swaps_oversized_event_data_but_keeps_small() {
         let mut big = json!({ "type": "tool_result", "run_id": "r", "idx": 0, "data": "x".repeat(MESSAGE_CONTENT_CAP_BYTES + 10) });
         truncate_message_content(&mut big, MESSAGE_CONTENT_CAP_BYTES);
