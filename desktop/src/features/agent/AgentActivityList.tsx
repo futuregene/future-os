@@ -1,5 +1,5 @@
 import type { AgentActivityItem, AgentActivityKind } from "@future-os/thread-projection";
-import { Brain, ChevronLeft, ChevronRight, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
+import { Brain, ChevronDown, ChevronUp, FileText, Pencil, TerminalSquare, TriangleAlert } from "lucide-react";
 import { useCallback, useState } from "react";
 import i18n from "../../i18n";
 import { cn } from "../../lib/cn";
@@ -28,22 +28,29 @@ export function AgentActivityList({ items, workspacePath, runId }: AgentActivity
 
 // Pure dispatcher (no hooks) so the leaf and group branches can each own their
 // expand state without breaking the rules-of-hooks.
-export function AgentActivityLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
-  if ((item.children?.length ?? 0) > 0)
-    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} />;
-  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} />;
+interface AgentActivityLineProps {
+  item: AgentActivityItem;
+  workspacePath?: string | null;
+  runId?: string | null;
+  /** An expanded mixed-step summary places its child headers in the reading column. */
+  inSteps?: boolean;
 }
 
-function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
+export function AgentActivityLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
+  if ((item.children?.length ?? 0) > 0)
+    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} inSteps={inSteps} />;
+  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} inSteps={inSteps} />;
+}
+
+function AgentActivitySingleLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
   const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
-  // The path is hidden by default to keep the transcript quiet; clicking the
-  // icon+label toggles it. Chevron points right (expand) when collapsed, left
-  // (collapse) when open.
+  // Only collapsed standalone steps use the right rail. Revealed rows return
+  // to the reading column; long commands and paths get their own wrapping line.
   const [open, setOpen] = useState(false);
-  const Chevron = open ? ChevronLeft : ChevronRight;
+  const Chevron = open ? ChevronUp : ChevronDown;
 
   const handleInspect = useCallback(() => {
     if (runId)
@@ -56,40 +63,45 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
   };
 
   return (
-    <div
-      className="flex min-w-0 items-center gap-2 text-[13px] leading-6 text-ink-muted"
-    >
-      {renderActivityIcon(item.kind, running, failed)}
-      {runId
-        ? (
-            <button
-              type="button"
-              className="flex shrink-0 cursor-pointer items-center gap-2 hover:text-ink"
-              aria-expanded={open}
-              title={i18n.t("agent:activity.inspectRun")}
-              onClick={handleToggle}
-            >
-              <span>{label}</span>
-              <Chevron className="-ml-2 size-3 shrink-0" />
-            </button>
-          )
-        : <span className="shrink-0">{label}</span>}
+    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+      <div className={cn("flex max-w-full items-center gap-2", !inSteps && !open ? "self-end" : "self-start")}>
+        {runId || displayTarget
+          ? (
+              <button
+                type="button"
+                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:text-ink"
+                aria-expanded={open}
+                title={runId ? i18n.t("agent:activity.inspectRun") : undefined}
+                onClick={handleToggle}
+              >
+                {renderActivityIcon(item.kind, running, failed)}
+                <span>{label}</span>
+                <Chevron className="size-3 shrink-0" />
+              </button>
+            )
+          : (
+              <>
+                {renderActivityIcon(item.kind, running, failed)}
+                <span>{label}</span>
+              </>
+            )}
+        {typeof item.additions === "number" || typeof item.deletions === "number"
+          ? (
+              <span className="shrink-0 font-mono text-xs">
+                {typeof item.additions === "number" ? `+${item.additions}` : ""}
+                {typeof item.deletions === "number" ? ` -${item.deletions}` : ""}
+              </span>
+            )
+          : null}
+      </div>
       {displayTarget && open
         ? (
-            <span
-              className="min-w-0 truncate font-mono"
+            <div
+              className="min-w-0 whitespace-pre-wrap wrap-anywhere pl-6 text-left font-mono text-ink-soft"
               title={item.detail ?? item.target}
             >
               {displayTarget}
-            </span>
-          )
-        : null}
-      {typeof item.additions === "number" || typeof item.deletions === "number"
-        ? (
-            <span className="shrink-0 font-mono text-xs">
-              {typeof item.additions === "number" ? `+${item.additions}` : ""}
-              {typeof item.deletions === "number" ? ` -${item.deletions}` : ""}
-            </span>
+            </div>
           )
         : null}
     </div>
@@ -100,39 +112,32 @@ function AgentActivitySingleLine({ item, workspacePath, runId }: { item: AgentAc
 // no inline preview, since a truncated command reads as noise. Clicking expands
 // it into every child call as an indented, selectable sub-line. Grouping only
 // happens for completed bursts, so a group is never running or failed.
-function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentActivityItem; workspacePath?: string | null; runId?: string | null }) {
+function AgentActivityGroupLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const children = item.children ?? [];
   const [open, setOpen] = useState(false);
-  const Chevron = open ? ChevronLeft : ChevronRight;
+  const Chevron = open ? ChevronUp : ChevronDown;
 
   return (
     <div
       className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <button
+        type="button"
+        className={cn("flex max-w-full cursor-pointer items-center gap-2 text-left hover:text-ink", !inSteps && !open ? "self-end" : "self-start")}
+        aria-expanded={open}
+        onClick={() => setOpen(v => !v)}
+      >
         {renderActivityIcon(item.kind, false)}
-        {runId
-          ? (
-              <button
-                type="button"
-                className="flex min-w-0 cursor-pointer items-center gap-2 text-left hover:text-ink"
-                aria-expanded={open}
-                title={i18n.t("agent:activity.inspectRun")}
-                onClick={() => setOpen(v => !v)}
-              >
-                <span className="shrink-0">{label}</span>
-                <Chevron className="-ml-1 size-3 shrink-0" />
-              </button>
-            )
-          : <span className="shrink-0">{label}</span>}
-      </div>
+        <span>{label}</span>
+        <Chevron className="size-3 shrink-0" />
+      </button>
       {open
         ? (
             <div className="flex flex-col gap-1 pl-6">
               {children.map(child => (
                 <div
-                  className="flex min-w-0 items-center gap-2"
+                  className="flex min-w-0 items-baseline gap-2 text-ink-soft"
                   key={child.id}
                 >
                   {renderActivityIcon(child.kind, false)}
@@ -140,7 +145,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
                     ? (
                         <button
                           type="button"
-                          className="min-w-0 cursor-pointer truncate text-left font-mono hover:text-ink"
+                          className="min-w-0 cursor-pointer whitespace-pre-wrap wrap-anywhere text-left font-mono hover:text-ink"
                           title={i18n.t("agent:activity.inspectRun")}
                           onClick={() => emitFutureEvent("inspect-tool", { runId, toolId: child.id })}
                         >
@@ -149,7 +154,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId }: { item: AgentAct
                       )
                     : (
                         <span
-                          className="min-w-0 select-text truncate font-mono"
+                          className="min-w-0 select-text whitespace-pre-wrap wrap-anywhere text-left font-mono"
                           title={child.detail ?? child.target}
                         >
                           {child.target ? relativizeTarget(child.kind, child.target, workspacePath) : ""}
