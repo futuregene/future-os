@@ -656,6 +656,30 @@ impl ServerSession {
             .iter()
             .map(|tool| tool.def.clone())
             .collect::<Vec<_>>();
+        // The summary request must carry the system prompt this session's turns send,
+        // including the post-checkpoint recall guidance. Providers cache on the request
+        // prefix, so a summary that omits it shares no prefix with the turn that already
+        // paid for those tokens and the whole conversation is billed again. The automatic
+        // path does the same thing with the same expression (`run_loop.rs`); keeping them
+        // identical is the point.
+        let recall_allowed = !self.ephemeral
+            && self.permission_level != "none"
+            && tool_defs.iter().any(|tool| tool.function.name == "shell");
+        let summary_system_prompt = crate::agent::history_recall::system_prompt(
+            &budget_system,
+            &self.session_id,
+            recall_allowed && active_checkpoint.is_some(),
+        )
+        .into_owned();
+        // Admission, unlike the request itself, is computed for the widest prompt a turn
+        // can send: the recall guidance is reserved before the checkpoint exists, so
+        // committing the first one cannot push the next request past what was admitted.
+        let budget_system = crate::agent::history_recall::system_prompt(
+            &budget_system,
+            &self.session_id,
+            recall_allowed,
+        )
+        .into_owned();
         let max_output = self
             .model_registry
             .read()
@@ -702,7 +726,9 @@ impl ServerSession {
         // Summarised compaction: C's projection plus a sticky handoff summary, so a
         // user-initiated compaction gets the same retention as an automatic one. The
         // system prompt is passed through so the summary request reuses the prefix the
-        // session already sent and can be served from the provider cache.
+        // session already sent and can be served from the provider cache. The prompt
+        // passed here is the session's own (recall guidance included when a checkpoint
+        // exists), not the base prompt, for exactly that reason.
         let prepared = crate::compaction::prepare_with_journal_summarized(
             &manager,
             prompt,
@@ -725,7 +751,7 @@ impl ServerSession {
             journal.as_ref(),
             &operation_id,
             Some(provider.as_ref()),
-            Some(budget_system.as_str()),
+            Some(summary_system_prompt.as_str()),
             &tool_defs,
             Some(&record_summary_usage),
             None,
@@ -1337,6 +1363,21 @@ mod tests {
                     .await;
             });
             Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    /// Records every summary request's system prompt, so a test can compare the
+    /// request against the prompt a real turn sends.
+    struct PromptCapturingSummaryProvider(Arc<parking_lot::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl LLMProvider for PromptCapturingSummaryProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            self.0.lock().push(request.system_prompt.clone());
+            SummaryProvider.stream_model(request).await
         }
     }
 
@@ -3192,6 +3233,144 @@ mod tests {
             .and_then(|e| e.content.clone())
             .unwrap();
         assert_eq!(info["thinking_level"], "high");
+    }
+
+    /// Persist a session's in-memory transcript, so `compact` (which rehydrates from the
+    /// journal) sees exactly the messages the test put there.
+    fn persist_transcript(session: &ServerSession) {
+        let messages = session.messages.read().clone();
+        let mut entries = vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": session.cwd, "model": session.model}),
+            session.model.clone(),
+            session.thinking_level.clone(),
+        )];
+        entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn manual_compaction_sends_the_prompt_a_session_turn_sends() {
+        // Providers cache on the request prefix, so `/compact`'s summary request has to
+        // carry the same system prompt the session's turns send — including the
+        // post-checkpoint recall guidance. Passing the bare base prompt (which is what
+        // this path used to do) shares no prefix with the turn that already paid for
+        // those tokens, and the whole conversation is billed again.
+        let mut session = make_test_session("compact-cache-prefix");
+        let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        {
+            let mut loop_ = session.agent_loop.try_write().unwrap();
+            loop_.provider = Arc::new(PromptCapturingSummaryProvider(captured.clone()));
+            loop_.tools = vec![crate::tools::shell_tool()];
+        }
+        session.model = "glm-4.5v".to_string();
+        let base = |session: &ServerSession| {
+            session
+                .build_system_prompt(
+                    &session.cwd,
+                    session.agent_loop.try_read().unwrap().tools.clone(),
+                    &session.model,
+                    &session.thinking_level,
+                    session.no_context_files,
+                )
+                .0
+        };
+        {
+            let mut messages = session.messages.write();
+            for (role, text) in [
+                ("user", "investigate the retry helper"),
+                (
+                    "assistant",
+                    "read src/retry.rs; the counter is retry_budget_remaining",
+                ),
+            ] {
+                messages.push(crate::types::AgentMessage {
+                    role: role.to_string(),
+                    content: vec![crate::types::ContentBlock::text(text)],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+
+        // No checkpoint yet: the summary request equals the bare base prompt, exactly as
+        // a first turn's request does. Recall guidance is not sent before there is
+        // anything to recall past, and sending it here would break the prefix instead.
+        session.compact("").unwrap();
+        let first = captured.lock().clone();
+        assert_eq!(first.len(), 1, "the first compaction must call the model");
+        assert_eq!(first[0], base(&session));
+        assert!(!first[0].contains("## Archived conversation recall"));
+
+        // With a committed checkpoint the turn sends the recall guidance, so the next
+        // summary request must send it too. `history_recall::system_prompt` is the same
+        // function `run_loop.rs` uses for its own turn and for its summary request, so
+        // this assertion pins the two call sites to one prompt.
+        let expected =
+            crate::agent::history_recall::system_prompt(&base(&session), &session.session_id, true)
+                .into_owned();
+        assert!(expected.contains("## Archived conversation recall"));
+        assert_eq!(
+            expected.matches("## Archived conversation recall").count(),
+            1
+        );
+        let persisted = session.session_manager.load(&session.session_id).unwrap();
+        assert!(
+            crate::session::latest_context_checkpoint(&persisted.entries).is_some(),
+            "the first compaction must persist a checkpoint"
+        );
+        let mut next = crate::types::AgentMessage::new_user(
+            "user",
+            serde_json::json!("now report the exact counter name"),
+        );
+        next.ensure_journal_entry_id();
+        session
+            .session_manager
+            .append_entries(
+                &session.session_id,
+                &[crate::session::agent_message_to_entry(&next)],
+            )
+            .unwrap();
+        session.compact("").unwrap();
+        let prompts = captured.lock().clone();
+        assert_eq!(
+            prompts.len(),
+            2,
+            "the second compaction must call the model"
+        );
+        assert_eq!(prompts[1], expected);
+
+        // A session that may not run the shell must not be told to recall through it:
+        // the guidance is a capability description, not decoration.
+        session.set_permission_level("none");
+        let recall_allowed = !session.ephemeral
+            && session.permission_level != "none"
+            && session
+                .agent_loop
+                .try_read()
+                .unwrap()
+                .tools
+                .iter()
+                .any(|tool| tool.def.function.name == "shell");
+        assert!(!recall_allowed);
+        assert!(!crate::agent::history_recall::system_prompt(
+            &base(&session),
+            &session.session_id,
+            recall_allowed
+        )
+        .contains("## Archived conversation recall"));
     }
 
     #[test]

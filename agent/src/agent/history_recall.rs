@@ -1,7 +1,11 @@
 //! Request-only recall guidance: never a durable user message or a new model tool.
 use std::borrow::Cow;
 
-pub(super) fn system_prompt<'a>(base: &'a str, session: &str, enabled: bool) -> Cow<'a, str> {
+/// The system prompt a request actually sends: the base prompt, plus the recall guidance
+/// once a checkpoint exists. Shared by the run loop's own turn, its summary request and
+/// the standalone manual compaction, because a request that differs from the turn the
+/// session already sent shares no cache prefix (see the call sites).
+pub(crate) fn system_prompt<'a>(base: &'a str, session: &str, enabled: bool) -> Cow<'a, str> {
     if !enabled || session.is_empty() {
         return Cow::Borrowed(base);
     }

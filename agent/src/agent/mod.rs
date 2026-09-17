@@ -1,7 +1,7 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
 mod events;
-mod history_recall;
+pub(crate) mod history_recall;
 mod run_loop;
 
 use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
