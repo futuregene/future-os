@@ -1,6 +1,8 @@
 import type { ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Clipboard from "expo-clipboard";
+import { codeColors } from "../../theme/tokens";
 import { AppAlert as Alert } from "../appAlerts";
 import { act, create } from "react-test-renderer";
 import { MarkdownText } from "../MarkdownText";
@@ -112,10 +114,34 @@ describe("MarkdownText layout and fidelity", () => {
     const code = `const veryLongLine = '${"x".repeat(200)}';\n  indented();`;
     const root = render(`\`\`\`typescript\n${code}\n\`\`\``);
     expect(root.findByType(ScrollView).props.horizontal).toBe(true);
-    const text = root.findAllByType(Text).find(node => node.props.children === code)!;
+    const text = root.findByType(ScrollView).findAllByType(Text).find(node => node.props.selectable)!;
+    const source = text.findAllByType(Text).filter(node => typeof node.props.children === "string")
+      .map(node => node.props.children).join("");
+    expect(source).toContain("const");
+    expect(text.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
     expect(text.props.selectable).toBe(true);
     expect(StyleSheet.flatten(text.props.style).fontFamily).toBe(Platform.OS === "ios" ? "Menlo" : "monospace");
     expect(root.findAllByType(Text).some(node => node.props.children === "typescript")).toBe(true);
+  });
+
+  test("TSX fragments highlight strings and update correctly as a code block grows", () => {
+    const root = render('```tsx\nunderlineColorAndroid="trans');
+    act(() => renderer.update(createElement(MarkdownText, { text: '```tsx\nunderlineColorAndroid="transparent"\n```' })));
+    expect(root.findAllByType(Text).some(node => node.props.children === '"transparent"'
+      && StyleSheet.flatten(node.props.style)?.color === codeColors.string)).toBe(true);
+  });
+
+  test("virtualized highlighted code copies the unmodified source", async () => {
+    const code = '// first\n' + 'const value = "text";\n'.repeat(40);
+    const copy = jest.spyOn(Clipboard, "setStringAsync").mockResolvedValue(true);
+    try {
+      const root = render(`\`\`\`ts\n${code}\n\`\`\``);
+      expect(root.findByType(FlatList).props.data.map((row: { text: string }) => row.text).join("")).toBe(code);
+      expect(root.findAllByType(Text).some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.keyword)).toBe(true);
+      const button = root.findAll(node => node.props.accessibilityLabel === "chat.copy" && typeof node.props.onPress === "function")[0]!;
+      await act(async () => { button.props.onPress(); });
+      expect(copy).toHaveBeenCalledWith(code);
+    } finally { copy.mockRestore(); }
   });
 
   test("remote images are outside selectable Text and retain natural aspect ratio", () => {
