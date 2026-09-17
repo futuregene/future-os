@@ -9,6 +9,7 @@ docs/guide/screenshots.md).
 Commands
   serve-desktop / serve-mobile     start the harness dev server (foreground)
   capture-desktop / capture-mobile run scenarios, write PNGs to --out
+  video-desktop / video-mobile     record scenarios as mp4 (needs ffmpeg)
   terminal OUT.png -- CMD          render a command's real output as a terminal image
   pdf CONTENT.json OUT.pdf         assemble a document from captured PNGs and captions
 
@@ -27,6 +28,7 @@ import base64
 import http.server
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -360,7 +362,93 @@ def serve_assets(port: int):
 # ─── Capture ────────────────────────────────────────────────────────────────
 
 
-def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoint: str) -> int:
+def encode_video(frames_dir: Path, output: Path, max_fps: float = 30.0) -> int:
+    """Encode recorded screencast frames into an mp4 with real pacing.
+
+    Chrome emits a frame only when the page changes, so a fixed `-framerate`
+    would compress idle stretches and make the video feel sped up. Each frame is
+    written into a concat list with the delay that actually elapsed before it,
+    which keeps the scenario's pace.
+    """
+    timing_file = frames_dir / "timing.json"
+    if not timing_file.exists():
+        print("error: no frames were recorded", file=sys.stderr)
+        return 1
+    timing = json.loads(timing_file.read_text(encoding="utf-8"))
+    frames = timing.get("frames", [])
+    if not frames:
+        print("error: no frames were recorded", file=sys.stderr)
+        return 1
+
+    # A short minimum duration keeps each frame visible (a 1-frame-per-ms burst
+    # would otherwise flash by); the cap stops one long pause becoming a still.
+    minimum = 1.0 / max_fps
+    lines = ["ffconcat version 1.0"]
+    for index, frame in enumerate(frames):
+        following = frames[index + 1]["at"] if index + 1 < len(frames) else timing["durationMs"]
+        duration = max(minimum, (following - frame["at"]) / 1000.0)
+        lines.append(f"file {shlex.quote(str(frame['file']))}")
+        lines.append(f"duration {duration:.3f}")
+    # The concat demuxer ignores the last duration unless its file repeats.
+    lines.append(f"file {shlex.quote(str(frames[-1]['file']))}")
+    (frames_dir / "frames.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([
+        # -nostdin matters: without it ffmpeg blocks reading standard input when
+        # it is not a terminal, and the encode never finishes.
+        ffmpeg_path(), "-nostdin", "-y", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", str(frames_dir / "frames.txt"),
+        # Even dimensions are required by yuv420p.
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-fps_mode", "vfr", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output),
+    ], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if result.returncode != 0:
+        print(result.stderr[-800:], file=sys.stderr)
+        return 1
+    print(f"   video {output}  ({len(frames)} frames, {timing['durationMs'] / 1000:.1f}s)")
+    return 0
+
+
+def video(args: argparse.Namespace) -> int:
+    """Record scenarios as mp4 videos (see docs/guide/screenshots.md)."""
+    config = SCENARIOS[args.platform]
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if port_free(config["port"]):
+        print(f"error: nothing is listening on port {config['port']}.", file=sys.stderr)
+        print(f"  start it first:  python3 scripts/screenshots/capture.py serve-{args.platform}", file=sys.stderr)
+        return 1
+    if not ffmpeg_path():
+        print("error: ffmpeg is required to record video; install it first", file=sys.stderr)
+        return 1
+    ensure_demo_assets()
+    assets = serve_assets(config["assetsPort"]) if config.get("assetsPort") else None
+    names = args.scenario or list(config["scenarios"])
+    failed = []
+    with Browser(int(args.cdp_port)) as browser:
+        for name in names:
+            spec = config["scenarios"].get(name)
+            if spec is None:
+                print(f"error: unknown scenario {name!r} for {args.platform}", file=sys.stderr)
+                print(f"  available: {', '.join(config['scenarios'])}", file=sys.stderr)
+                return 2
+            if run_scenario(args.platform, name, spec, out_dir, browser.port, record=True) != 0:
+                failed.append(name)
+    if assets:
+        assets.shutdown()
+    print(f"\n{len(names) - len(failed)}/{len(names)} recorded into {out_dir}")
+    return 1 if failed else 0
+
+
+def ffmpeg_path() -> str | None:
+    return shutil.which("ffmpeg")
+
+
+def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoint: str,
+                 record: bool = False) -> int:
     config = SCENARIOS[platform]
     viewport = config["viewport"]
     steps = []
@@ -373,6 +461,12 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         steps.append(step)
     steps_path = out_dir / f".steps-{platform}-{name}.json"
     steps_path.write_text(json.dumps(steps, ensure_ascii=False), encoding="utf-8")
+
+    frames_dir = None
+    if record:
+        frames_dir = out_dir / f".frames-{platform}-{name}"
+        shutil.rmtree(frames_dir, ignore_errors=True)
+        frames_dir.mkdir(parents=True, exist_ok=True)
 
     url = spec.get("url", config["url"])
     command = [
@@ -387,6 +481,8 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
         "--ready-timeout", str(config.get("readyTimeout", 30000)),
         "--steps", str(steps_path),
     ]
+    if frames_dir is not None:
+        command += ["--frames", str(frames_dir)]
     if not config.get("touch", True):
         command += ["--touch", "false"]
     print(f"── {platform}/{name}")
@@ -396,6 +492,12 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
     if result.returncode != 0:
         print(result.stderr[-600:], file=sys.stderr)
     steps_path.unlink(missing_ok=True)
+
+    if frames_dir is not None:
+        video = out_dir / f"{spec.get('video', f'{platform}-{name}.mp4')}"
+        if encode_video(frames_dir, video) != 0:
+            return 1
+        shutil.rmtree(frames_dir, ignore_errors=True)
     return result.returncode
 
 
@@ -579,6 +681,10 @@ def main() -> int:
         capture_parser = sub.add_parser(f"capture-{platform}", help=f"capture {platform} screenshots")
         capture_parser.add_argument("scenario", nargs="*", help="scenario name(s); default all")
         capture_parser.set_defaults(func=capture, platform=platform)
+
+        video_parser = sub.add_parser(f"video-{platform}", help=f"record {platform} scenarios as mp4")
+        video_parser.add_argument("scenario", nargs="*", help="scenario name(s); default all")
+        video_parser.set_defaults(func=video, platform=platform)
 
     terminal_parser = sub.add_parser("terminal", help="render a command's output as a terminal image", add_help=False)
     terminal_parser.add_argument("output")

@@ -24,6 +24,10 @@
  *                   polled every 150ms (much faster than a fixed settle)
  *   --ready-timeout MS  give up waiting for --ready (default 30000)
  *   --steps FILE    JSON array of steps (see below)
+ *   --frames DIR    record a screencast into DIR as frame-NNNNN.jpg plus
+ *                   timing.json (frame timestamps, for pacing on encode).
+ *                   capture.py turns that into an mp4; see docs.
+ *   --fps N         screencast frame-rate ceiling (default 12)
  *
  * Steps:
  *   {"eval": js}                 evaluate in the page (result printed)
@@ -36,7 +40,8 @@
  *   {"key": "Escape"}            press one key
  *   {"scroll": [dx, dy]}         wheel scroll
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import WebSocket from "ws";
 
 const args = process.argv.slice(2);
@@ -57,6 +62,10 @@ const STEPS_FILE = opt("steps", "");
 const SETTLE = Number(opt("settle", "500"));
 const READY = opt("ready", "");
 const READY_TIMEOUT = Number(opt("ready-timeout", "30000"));
+const FRAMES_DIR = opt("frames", "");
+const FPS = Number(opt("fps", "12"));
+/** `--annotate false` disables the pointer indicator and mark callouts. */
+const ANNOTATE = opt("annotate", "true") !== "false";
 
 const steps = STEPS_FILE ? JSON.parse(readFileSync(STEPS_FILE, "utf8")) : [];
 
@@ -79,6 +88,8 @@ socket.on("message", (raw) => {
     pending.get(message.id)(message);
     pending.delete(message.id);
   }
+  if (message.method === "Page.screencastFrame")
+    onScreencastFrame(message.params);
 });
 
 function send(method, params = {}) {
@@ -87,10 +98,187 @@ function send(method, params = {}) {
   return new Promise(resolve => pending.set(id, resolve));
 }
 
+/**
+ * On-screen pointer / touch indicator and annotations.
+ *
+ * Injected into the page so they appear in both screenshots and video. A video
+ * of a phone UI is hard to follow without one: nothing shows where the finger
+ * landed. The overlay is a fixed, pointer-events-none div, so it never
+ * interferes with what the app does.
+ *
+ * `mark` steps add persistent callouts (a numbered badge plus a label) which are
+ * what make a still screenshot self-explanatory.
+ */
+const OVERLAY_ID = "__shot_overlay";
+
+async function ensureOverlay() {
+  if (!ANNOTATE)
+    return false;
+  await evaluate(`
+(() => {
+  if (document.getElementById(${JSON.stringify(OVERLAY_ID)})) return true;
+  const layer = document.createElement('div');
+  layer.id = ${JSON.stringify(OVERLAY_ID)};
+  layer.style.cssText = [
+    'position:fixed', 'inset:0', 'z-index:2147483647',
+    'pointer-events:none', 'font-family:-apple-system,system-ui,sans-serif',
+  ].join(';');
+  layer.innerHTML = '<div data-role="pointer" style="position:absolute;opacity:0"></div>'
+    + '<div data-role="marks" style="position:absolute;inset:0"></div>';
+  document.body.appendChild(layer);
+  return true;
+})()`);
+}
+
+/** Show the pointer, optionally with a tap ring that fades. */
+async function showPointer(x, y, tapped) {
+  if (!ANNOTATE)
+    return false;
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  if (!layer) return false;
+  const dot = layer.querySelector('[data-role=pointer]');
+  dot.style.cssText = [
+    'position:absolute', 'left:${x}px', 'top:${y}px', 'width:14px', 'height:14px',
+    'margin:-7px 0 0 -7px', 'border-radius:9999px', 'opacity:1',
+    'background:rgba(43,108,255,.85)', 'border:2px solid #fff',
+    'box-shadow:0 1px 6px rgba(16,20,24,.45)', 'transition:opacity .15s ease',
+  ].join(';');
+  if (${tapped ? "true" : "false"}) {
+    // A short-lived ring is what reads as "a tap happened here".
+    const ring = document.createElement('div');
+    ring.style.cssText = [
+      'position:absolute', 'left:${x}px', 'top:${y}px', 'width:14px', 'height:14px',
+      'margin:-7px 0 0 -7px', 'border-radius:9999px',
+      'border:3px solid rgba(43,108,255,.9)',
+      'animation:__shot_ring .5s ease-out forwards',
+    ].join(';');
+    if (!document.getElementById('__shot_ring_style')) {
+      const style = document.createElement('style');
+      style.id = '__shot_ring_style';
+      style.textContent = '@keyframes __shot_ring{from{transform:scale(1);opacity:.9}to{transform:scale(3.2);opacity:0}}';
+      document.head.appendChild(style);
+    }
+    layer.appendChild(ring);
+    setTimeout(() => ring.remove(), 600);
+  }
+  return true;
+})()`);
+}
+
+/** Add a numbered callout near (x, y), with an optional label.
+ *
+ * The badge sits exactly on the point (that is its meaning); the label is
+ * offset to the side so it never covers what it is pointing at. `dx`/`dy` and
+ * `side` let a scenario move a callout when two targets are close together.
+ */
+async function addMark(x, y, label, index, options = {}) {
+  if (!ANNOTATE)
+    return false;
+  const dx = options.dx ?? 0;
+  const dy = options.dy ?? 0;
+  // The anchor is zero-sized, so placing the label to the *right* means pinning
+  // its left edge (`left:30px`); pinning `right:30px` would push it off the
+  // opposite side of the anchor.
+  const placement = options.side === "left" ? "right:30px" : "left:30px";
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  if (!layer) return false;
+  const marks = layer.querySelector('[data-role=marks]');
+  const mark = document.createElement('div');
+  mark.style.cssText = 'position:absolute;left:${x + dx}px;top:${y + dy}px';
+  const badge = '<span style="position:absolute;left:-11px;top:-11px;display:flex;align-items:center;'
+    + 'justify-content:center;min-width:22px;height:22px;padding:0 5px;border-radius:9999px;'
+    + 'background:#2b6cff;color:#fff;font-size:13px;font-weight:600;white-space:nowrap;'
+    + 'box-shadow:0 1px 6px rgba(16,20,24,.4)">' + ${JSON.stringify(String(index))} + '</span>';
+  const labelText = ${JSON.stringify(label)};
+  const label = labelText
+    ? '<span style="position:absolute;top:-11px;${placement};max-width:280px;padding:3px 8px;'
+      + 'border-radius:6px;background:rgba(16,20,24,.88);color:#fff;font-size:13px;line-height:1.45;'
+      + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+      + 'box-shadow:0 1px 6px rgba(16,20,24,.3)">' + labelText + '</span>'
+    : '';
+  mark.innerHTML = badge + label;
+  marks.appendChild(mark);
+  return true;
+})()`);
+}
+
+async function clearMarks() {
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  const marks = layer && layer.querySelector('[data-role=marks]');
+  if (marks) marks.innerHTML = '';
+  return true;
+})()`);
+}
+
+async function hidePointer() {
+  await evaluate(`
+(() => {
+  const layer = document.getElementById(${JSON.stringify(OVERLAY_ID)});
+  const dot = layer && layer.querySelector('[data-role=pointer]');
+  if (dot) dot.style.opacity = '0';
+  return true;
+})()`);
+}
+
+/**
+ * Screencast recording.
+ *
+ * Chrome streams JPEG frames and waits for an ack per frame, so the ack is what
+ * paces capture: while a step (`wait`) is in progress, one frame is written and
+ * acked. Frames land in `--frames DIR` together with `timing.json`, and
+ * `capture.py` encodes them with the real inter-frame delays so the video keeps
+ * the scenario's pace instead of a fixed frame rate.
+ */
+const frames = [];
+let frameIndex = 0;
+let screencastDone = Promise.resolve();
+
+function onScreencastFrame(params) {
+  const file = join(FRAMES_DIR, `frame-${String(frameIndex++).padStart(5, "0")}.jpg`);
+  writeFileSync(file, Buffer.from(params.data, "base64"));
+  frames.push({ file, at: Date.now() - screencastStart });
+  void send("Page.screencastFrameAck", { sessionId: params.sessionId });
+}
+
+let screencastStart = 0;
+
+async function startScreencast() {
+  mkdirSync(FRAMES_DIR, { recursive: true });
+  screencastStart = Date.now();
+  await send("Page.startScreencast", {
+    format: "jpeg",
+    quality: 80,
+    maxWidth: WIDTH,
+    maxHeight: HEIGHT,
+    everyNthFrame: Math.max(1, Math.round(30 / FPS)),
+  });
+}
+
+async function stopScreencast() {
+  await send("Page.stopScreencast");
+  writeFileSync(join(FRAMES_DIR, "timing.json"), JSON.stringify({
+    fps: FPS,
+    width: WIDTH,
+    height: HEIGHT,
+    scale: SCALE,
+    durationMs: Date.now() - screencastStart,
+    frames,
+  }, null, 2));
+  console.log(`cdp: recorded ${frames.length} frames into ${FRAMES_DIR}`);
+}
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Steps that could not find their target: the scenario did not do what it says. */
 let failures = 0;
+/** Marks are numbered across the whole scenario. */
+let markCounter = 0;
 
 async function evaluate(expression) {
   const response = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
@@ -159,6 +347,8 @@ async function interact(query, byText, action) {
     return null;
   }
   await mouse("mouseMoved", spot.x, spot.y);
+  // Keep the overlay under the pointer for screenshots and video.
+  await showPointer(spot.x, spot.y, action === "tap");
   if (action === "tap") {
     await sleep(80);
     if (TOUCH) {
@@ -192,6 +382,10 @@ await send("Emulation.setDeviceMetricsOverride", {
 if (TOUCH)
   await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
 
+// Start recording before navigating so the video includes the first paint.
+if (FRAMES_DIR)
+  await startScreencast();
+
 if (URL_ARG) {
   await send("Page.navigate", { url: URL_ARG });
   if (READY) {
@@ -212,6 +406,8 @@ if (URL_ARG) {
   }
   await sleep(SETTLE);
 }
+if (ANNOTATE)
+  await ensureOverlay();
 
 for (const step of steps) {
   if (step.eval !== undefined) {
@@ -227,6 +423,41 @@ for (const step of steps) {
     await interact(step.tap, false, "tap");
   if (step.tapText !== undefined)
     await interact(step.tapText, true, "tap");
+  if (step.pointer !== undefined) {
+    // "pointer": [x, y] — show the indicator at a raw position (e.g. to point at
+    // something that is not an interactive element).
+    await showPointer(step.pointer[0], step.pointer[1], step.pointerTap === true);
+  }
+  if (step.pointerHide === true)
+    await hidePointer();
+  if (step.marksClear === true)
+    await clearMarks();
+  if (step.marks !== undefined) {
+    // "marks": [{ "at": "aria-label" | [x, y], "label": "…" }, …] — numbered
+    // callouts, numbered in the order given (continuing an existing set).
+    for (const mark of step.marks) {
+      let x = mark.x;
+      let y = mark.y;
+      if (mark.at !== undefined) {
+        const spot = await evaluate(locate(mark.at, false));
+        if (!spot) {
+          console.error(`cdp: mark target not found: ${mark.at}`);
+          failures += 1;
+          continue;
+        }
+        x = spot.x;
+        y = spot.y;
+      }
+      if (x === undefined || y === undefined) {
+        console.error("cdp: mark needs either \"at\" or \"x\"/\"y\"");
+        failures += 1;
+        continue;
+      }
+      markCounter += 1;
+      await addMark(x, y, mark.label ?? "", markCounter, { dx: mark.dx, dy: mark.dy, side: mark.side });
+      console.log(`cdp: mark ${markCounter} ${mark.label ?? ""}`.trim());
+    }
+  }
   if (step.type !== undefined)
     await send("Input.insertText", { text: step.type });
   if (step.key !== undefined) {
@@ -252,6 +483,8 @@ for (const step of steps) {
   }
 }
 
+if (FRAMES_DIR)
+  await stopScreencast();
 socket.close();
 if (failures > 0) {
   console.error(`cdp: ${failures} step(s) could not reach their target`);

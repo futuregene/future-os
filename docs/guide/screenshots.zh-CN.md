@@ -8,14 +8,67 @@
 
 ## 它用来做什么
 
-典型需求（三种都是：先用真实界面产出图，再组装成文档，见「生成文档」）：
+典型需求（都是：先用真实界面产出图，再组装成文档，见「生成文档」）：
 
 - 「给 X 到 Y 版本之间的功能增减做一份 PDF」——截取受影响的界面，再生成「文字配一到两张图」的文档。
+- 「给 X 到 Y 版本的变更做一份测试点清单」——用截图把每个变更点**实际执行一遍**，据此写出可复现的测试点（见「常见请求怎么做」第 2 条）。
 - 「给桌面端某个功能出一张图」——一个场景，一张 PNG。
 - 「写一份手机端某个功能的使用流程说明」——每个步骤一个场景（列表 → 对话框 → 结果），组装成文档。
+- 「录一段演示视频」——`video-desktop` / `video-mobile` 把场景录成 mp4，桌面端和手机端都支持。
 - 「展示某条命令的终端输出」——用 `terminal` 子命令把命令的真实 stdout 渲染进终端外框。
 
 范围以「界面能不能表现出来」为准：如果某个改动没有界面（协议变更、只存在于 TUI 的提示），那就没有可截的东西——直接说明，比拿别的画面凑数更合适。
+
+## 常见请求怎么做
+
+下面四条覆盖了绝大多数请求。共同前提：先按「桌面端 / 手机端」把对应服务跑起来。
+
+### 1. 两个版本之间的功能增减 → PDF
+
+```bash
+git log --oneline vX..vY                       # 先看有哪些变更
+git log --oneline vX..vY --format="%h|%s" | grep -E "feat|refactor"   # 只挑功能增减
+```
+
+按提交逐个判断「这个变更对应哪个界面」，为它加/找一个场景并截图；性能优化、缺陷修复不收录。然后照 `scripts/screenshots/examples/release-notes-1.1.8.json` 写内容文件，用 `pdf` 子命令生成。截图里的文案要点出「该看哪里」，不要复述正文。
+
+### 2. 两个版本之间的变更 → 测试点清单
+
+和上一条同样的取变更方式，但产出是清单而不是文档。做法：
+
+1. 对每个功能变更，在 harness 里**真的走一遍**：找到对应场景（没有就新加一个并截图）。
+2. 每个测试点写成「前置条件 → 操作 → 期望结果」，期望结果以界面上看得见的东西为准。
+3. 每个测试点配一张该步骤的截图，作为期望结果的依据；截图路径写在测试点下面。
+4. 无法用界面验证的变更（协议、内部重构）单独列一节「需要接口/日志验证」，不要硬编 UI 步骤。
+
+harness 的价值在这里：测点不是照着代码猜的，而是照着真实界面点出来、截下来的，别人拿着截图就能复现。
+
+### 3. 单个功能 → 一张图（桌面端 / 手机端）
+
+在 `scenarios.json` 里加一个场景，只做「打开这个功能」所需的操作，最后一张 `shot`。`capture-desktop <场景名>` 或 `capture-mobile <场景名>` 即可。功能藏在菜单里就补一个 `tap`；需要悬停才出现的按钮，先 `hover` 它的容器。
+
+### 4. 使用流程说明 → 文档（手机端尤其常用）
+
+把流程拆成步骤，**每步一个场景**（不要一个长场景），这样每一步都能单独重拍、单独引用；再用 `pdf` 组装成文档。手机端步骤示例：打开列表 → 打开某个会话 → 输入 `/` 选技能 → 结果。视频则用 `video-mobile <场景名>`，一个场景就是一段连贯的操作。
+
+## 录制视频
+
+```bash
+# 终端 1、2：先起服务（同上）
+python3 scripts/screenshots/capture.py video-desktop            # 全部场景
+python3 scripts/screenshots/capture.py video-desktop chat rename  # 或指定几个
+python3 scripts/screenshots/capture.py video-mobile chat
+```
+
+输出 `<平台>-<场景名>.mp4` 到 `--out`（默认 `.screenshots/`），桌面端和手机端都支持。
+
+几个要点：
+
+- **需要 ffmpeg**（`brew install ffmpeg`）。
+- **节奏是真实的。** Chrome 只在画面变化时给帧，所以视频按每帧实际间隔编码：停顿处会真的停顿，而不是被压成定帧率。编码时会跳过画面完全没变的片段。
+- **想录什么就写进步骤里。** 视频录的就是场景的步骤，所以为了视频好看，把 `wait` 调到人能看清的长度（比如点开菜单后停 1.5 秒）。
+- **指针指示会录进去**，这也是手机端录像看得懂的关键；见「指针指示与标注」。
+- 视频和截图共用场景表；同一个场景既能截图也能录像，不需要维护两份。
 
 ## 它是什么，不是什么
 
@@ -37,6 +90,7 @@
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
 - `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。
 - 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
+- **录视频**另外需要 ffmpeg：macOS 用 `brew install ffmpeg`，Linux 用发行版包管理器。缺了会在开始录像前直接报错，不会录到一半失败。
 
 ## 桌面端
 
@@ -74,13 +128,27 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 }
 ```
 
-步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`。三个平台级细节值得先知道：
+步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`，以及下面的标注类步骤。三个平台级细节值得先知道：
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 
 `desktop/shot/main.tsx` 还接受 `?lang=en` 和 `?settings=key:value,...`，用来固定界面语言、在启动前预置应用设置；`mobile/shot/mock/shareIntent.ts` 读 `?share=1`，好让分享面板只出现在分享相关场景里。
+
+### 指针指示与标注
+
+驱动会在页面里画两种标注，截图和视频里都会带上。默认都开；`--annotate false` 可关掉。
+
+- **指针指示**跟着每个 `tap` / `hover` 走：一个蓝色圆点，点击瞬间还有一圈扩散的环。手机端录像尤其需要它——否则画面里看不出手指点在哪里；多步流程的单张截图也靠它表达「然后点这里」。
+- **标注**来自 `marks` 步骤：目标点上一个编号徽标，旁边跟一句文字。截图能当说明用，靠的就是它。
+
+```json
+{ "marks": [{ "at": "工作区", "label": "① 工作区列表", "dy": -34 },
+            { "at": "对话",   "label": "② 对话列表，可左右滑动切换", "dy": -34 }] }
+```
+
+每条标注用 `at`（可访问名称，匹配规则同 `tap`）或直接给 `x`/`y`。`dx`/`dy` 平移徽标，`side`（`"left"`/`"right"`）把文字放到另一侧；两个目标挨得近时必须用其中之一，否则两条标注会叠在一起。编号在场景内累加，需要重新从 1 开始就加 `{"marksClear": true}`；想要干净的产品图就加 `{"pointerHide": true}` 把圆点藏掉。
 
 ## 不入库的约定
 
@@ -122,8 +190,8 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 
 | 路径 | 作用 |
 |---|---|
-| `scripts/screenshots/capture.py` | 入口：起服务、截图、终端外框、PDF 组装 |
-| `scripts/screenshots/cdp.mjs` | Chrome DevTools Protocol 驱动（视口、输入、截图） |
+| `scripts/screenshots/capture.py` | 入口：起服务、截图、录视频、终端外框、PDF 组装 |
+| `scripts/screenshots/cdp.mjs` | Chrome DevTools Protocol 驱动（视口、输入、截图、录屏取帧） |
 | `scripts/screenshots/scenarios.json` | 两个平台的场景表 |
 | `scripts/screenshots/document.css` | 生成文档用的打印样式 |
 | `scripts/screenshots/terminal.html` | 命令行输出的终端外框 |

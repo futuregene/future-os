@@ -842,6 +842,46 @@
             "shot": "m-share-existing.png"
           }
         ]
+      },
+      "tabs-annotated": {
+        "note": "Worked example of the mark callouts; see docs/guide/screenshots.md.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "pointerHide": true
+          },
+          {
+            "marks": [
+              {
+                "at": "工作区",
+                "label": "① 工作区列表：点开才看到里面的对话",
+                "dy": -34
+              },
+              {
+                "at": "对话",
+                "label": "② 对话列表：可直接打开",
+                "dy": 34
+              }
+            ]
+          },
+          {
+            "shot": "m-tabs-annotated.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",
