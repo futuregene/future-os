@@ -413,6 +413,18 @@ def report(root, chains):
                                  {"input": 1.0, "output": 4.0,
                                   "cache_read": 0.02, "cache_write": 0.0})
     cache = cache_cost(root, rates)
+    # The baseline the per-turn column is read against: sending no projection at all, i.e.
+    # the raw history. Without it the recurring figure has nothing to compare to.
+    raw_sizes = sorted(b["raw_tokens"] for b in per_boundary if b.get("raw_tokens"))
+    if raw_sizes:
+        raw_median = raw_sizes[len(raw_sizes) // 2]
+        cache["no_compaction_baseline"] = {
+            "median_raw_tokens": raw_median,
+            "per_turn_cny": round(
+                bill(rates, raw_median, 0, int(raw_median * MODELLED_CACHE_HIT)), 6),
+            "per_hundred_turns_cny": round(
+                bill(rates, raw_median, 0, int(raw_median * MODELLED_CACHE_HIT)) * 100, 4),
+        }
     for arm, entry in cache["arms"].items():
         toks = sorted(p["projection_tokens"] for p in projections
                       if p["arm"] == arm and p.get("projection_tokens"))
@@ -422,6 +434,9 @@ def report(root, chains):
             entry["per_turn_cny"] = round(
                 bill(rates, median, 0, int(median * MODELLED_CACHE_HIT)), 6)
             entry["per_hundred_turns_cny"] = round(entry["per_turn_cny"] * 100, 4)
+            baseline = cache.get("no_compaction_baseline", {}).get("per_turn_cny")
+            if baseline and entry["per_turn_cny"]:
+                entry["per_turn_vs_no_compaction"] = round(baseline / entry["per_turn_cny"], 1)
     cache["rates_per_million"] = rates
 
     # The headline comparison the question asks for: post-compaction against

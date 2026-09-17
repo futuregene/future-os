@@ -16,8 +16,8 @@ the fold, the chunking, the emergency summary — **no longer exists**; the
 retired A code was deleted once nothing could reach it. The page is kept as a
 record of the prompts and of the shape A used, not as a description of any
 callable API. The authoritative implementations are
-[semantic.rs](../agent/src/compaction/semantic.rs) and
-[semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs). The [Chinese companion](compaction-prompts.zh-CN.md)
+[semantic.rs](../../../agent/src/compaction/semantic.rs) and
+[semantic/evidence.rs](../../../agent/src/compaction/semantic/evidence.rs). The [Chinese companion](compaction-prompts.zh-CN.md)
 also reproduces the complete output-template constant verbatim.
 
 ## How many calls?

@@ -8,8 +8,8 @@ semicolon batches, pipes and loops reach the host shell unchanged. Numeric
 exit codes and native soft-failure semantics are preserved in traces. The old
 single-argv implementation is no longer the C/C3 executor.
 
-Read [the mechanism guide](../../docs/compaction-retrieval-mechanisms.md) or
-[中文说明](../../docs/compaction-retrieval-mechanisms.zh-CN.md). Native Future
+Read [the mechanism guide](../../docs/internals/compaction/compaction-retrieval-mechanisms.md) or
+[中文说明](../../docs/internals/compaction/compaction-retrieval-mechanisms.zh-CN.md). Native Future
 path rules plus explicit deny paths are not a global study-data read allowlist;
 network is also not disabled by that native policy. A new paid run is gated on
 explicit operator data-isolation review (`--approve-native-future-scope`). No

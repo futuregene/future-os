@@ -16,7 +16,7 @@ are `summarized-evidence-v1` and `deterministic-evidence-v1`, matching the code.
 
 Codex and OpenCode are reimplementations of the selection rules read from those
 commits, not forks. Their prompts were transcribed verbatim and each source file's git
-blob SHA is recorded in [abc_external_provenance.json](../scripts/abc_external_provenance.json).
+blob SHA is recorded in [abc_external_provenance.json](../../../scripts/abc_external_provenance.json).
 
 ## The production-shaped run, and the deployed strategy
 
@@ -26,7 +26,7 @@ production computes. A later run drives the same strategies at the call shape th
 uses (registry window, `effective_max_tokens`, `set_request_budget` with a captured
 session prompt and the real tool definitions, production trigger and phase), and adds the
 **deployed algorithm** as a fifth arm. Its protocol is
-[PRODUCTION_SHAPE_PROTOCOL.md](../scripts/abc_experiment/PRODUCTION_SHAPE_PROTOCOL.md);
+[PRODUCTION_SHAPE_PROTOCOL.md](../../../scripts/abc_experiment/PRODUCTION_SHAPE_PROTOCOL.md);
 these are its results.
 
 On this model (declared window 1 000 000, output reservation 384 000) the economic trigger
@@ -114,13 +114,27 @@ The table below prices every arm's recorded calls at the registry's rates with a
 is the projection re-sent on every later turn, likewise cache-served, and is what a smaller
 projection actually buys down.
 
-| Strategy | Recall | Projection | Compaction (cold) | Shares prefix | Compaction (cached) | Per turn | 1 compaction + 100 turns |
-|---|---:|---:|---:|:--:|---:|---:|---:|
-| `summarized` | **83 %** | 12 503 tok | 7.98 | yes | **0.53** | 0.000496 | 0.58 |
-| `deterministic` | 71 % | 10 233 tok | 0 | — | 0 | 0.000406 | **0.04** |
-| Codex | 38 % | 1 821 tok | 7.64 | yes | 0.42 | 0.000073 | 0.43 |
-| OpenCode | 47 % | 5 372 tok | 0.99 | no | 0.99 | 0.000213 | 1.01 |
-| **deployed (`main`)** | 38 % | 4 027 tok | 0.83 | no | 0.83 | 0.000160 | 0.84 |
+Two different costs are in play and mixing them is the easiest mistake to make. **Compaction
+cost** is what producing the projection costs, once. **Per-turn cost** is what re-sending
+that projection costs on every later turn. A model-free strategy has the first at exactly
+zero and still the second above zero — its projection is smaller than the raw history, not
+absent:
+
+* the median history at these boundaries is **249 142 tokens**, which costs 0.009866 CNY per
+turn cache-served. Every arm's per-turn figure is against that baseline, and that difference
+is the ongoing value of compacting at all.
+* `deterministic` compacts with **no model call**, so its compaction cost is **0** — not
+"small", not "not measured". Its 0.04 CNY is entirely 100 turns × the 0.000406 CNY it costs
+to re-send its 10 233-token projection.
+
+| Strategy | Recall | Projection | Compaction (cold) | Shares prefix | Compaction (cached) | Per turn | 100 turns | Breaks even after |
+|---|---:|---:|---:|:--:|---:|---:|---:|---:|
+| `summarized` | **83 %** | 12 503 tok | 7.98 | yes | **0.53** | 0.000496 | 0.0496 | 56 turns |
+| `deterministic` | 71 % | 10 233 tok | **0** | — | **0** | 0.000406 | 0.0406 | immediately |
+| Codex | 38 % | 1 821 tok | 7.64 | yes | 0.42 | 0.000073 | 0.0073 | 43 turns |
+| OpenCode | 47 % | 5 372 tok | 0.99 | no | 0.99 | 0.000213 | 0.0213 | 103 turns |
+| **deployed (`main`)** | 38 % | 4 027 tok | 0.83 | no | 0.83 | 0.000160 | 0.0160 | 85 turns |
+| *(no compaction)* | — | 249 142 tok | — | — | — | 0.009866 | 0.9866 | — |
 
 Readings:
 
@@ -128,6 +142,12 @@ Readings:
 the set (7.98 CNY). Cache-served, it is cheaper than the deployed algorithm (0.53 against
 0.83) — while answering 45 points more. That is not a coincidence of this fixture: it is
 what a 50× price difference on 98 % of the input does.
+* **Compacting pays for itself, but only over a session of tens of turns.** Each arm's
+per-turn figure is 20–135× below the no-compaction baseline, yet the one-off compaction is
+large enough that the saving needs **43–103 turns** to repay it (56 for `summarized`, 85 for
+the deployment, 43 for Codex). For a short session, compacting is a net *cost* — the value
+being bought is recall, and the size of the context, not money. Do not read the per-turn
+column as "cheaper from turn two".
 * **Cost per point of recall**, over one compaction plus 100 turns, is 0.0070 CNY for
 `summarized`, 0.0112 for Codex and 0.0221 for the deployed algorithm — the deployment is
 **3× worse per unit of recall**, the opposite of what its cold-number advantage suggests.
@@ -145,8 +165,8 @@ that its first token does not match anything the session sent. Choosing a bespok
 prompt is what forfeits the cache, not the amount of text sent.
 * **`deterministic` is the cheapest per point by an order of magnitude** (0.0006 against
 0.0070) because it spends nothing at all, and it still reaches 71 %. The handoff summary
-costs ~14× more per point of recall than not summarising — it is a quality purchase, not an
-efficiency one.
+costs ~12× more per point of recall than not summarising (0.0070 against 0.00057) — it is a
+quality purchase, not an efficiency one.
 
 These are modelled figures for the cache, not measurements of it: the runs' own cache
 counters are contaminated by arm and run ordering (see PRODUCTION_SHAPE_PROTOCOL.md), and
@@ -759,7 +779,7 @@ real workloads measured, not a universal one.
 ## Reproducing
 
 The harness and its instructions are in
-[scripts/abc_experiment/README.md](../scripts/abc_experiment/README.md). Inputs, ledgers and
+[scripts/abc_experiment/README.md](../../../scripts/abc_experiment/README.md). Inputs, ledgers and
 results live in `~/compact-exp` (override with `ABC_ROOT`), outside any repository because
 they include real session data.
 

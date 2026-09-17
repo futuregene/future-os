@@ -34,7 +34,7 @@ at **0 %** on a primed prefix.
 Do not quote any cache counter from this ledger as a property of the C3
 strategy. The production measurement (99.8 % on a 212 911-token prefix, on an
 isolated agent running the production path) is in
-[the comparison report](../../docs/compaction-abc-experiment.md).
+[the comparison report](../../docs/internals/compaction/compaction-abc-experiment.md).
 
 ## Frozen primary phase
 

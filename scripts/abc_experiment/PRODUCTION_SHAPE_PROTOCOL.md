@@ -69,9 +69,16 @@ Every arm is reported on the same axes, because none of them alone is the answer
 * **compaction cost** — CNY spent by the compaction calls only, kept separate from scoring.
   A strategy that calls a model to summarise and one that does not cannot be compared on a
   single blended number;
-* **per-turn cost** — the same projection re-sent on every later turn, cache-served. This is
-  the recurring cost, and it is what a smaller projection buys down; reporting only the
-  one-off compaction cost would invert the comparison.
+* **per-turn cost** — the same projection re-sent on every later turn, cache-served, plus the
+  no-compaction baseline (the raw history) it is read against, and the number of turns it
+takes for the one-off compaction to be repaid. Reporting only the one-off compaction cost
+would invert the comparison; reporting only per-turn cost would hide that compacting needs
+tens of turns to pay for itself.
+
+Everything the report contains must stay distinguishable: **compaction cost** (once, to build
+the projection) and **per-turn cost** (recurring, to carry it) are different quantities, and a
+model-free strategy has the first at exactly 0 while the second stays above 0, because its
+projection is smaller than the raw history rather than absent.
 
 ### Cache-aware cost
 

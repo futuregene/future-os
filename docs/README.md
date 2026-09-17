@@ -18,8 +18,7 @@
 | [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
 | [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
-| [Session history recall](session-history.md) ([中文](session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
-| [Compaction](compaction.md) ([中文](compaction.zh-CN.md)) | Context compaction, protected originals, evidence indexing, and checkpoint restore |
+| [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
 | [Screenshot harness](guide/screenshots.md) ([中文](guide/screenshots.zh-CN.md)) | Rendering the real desktop/mobile UI against demo data to produce screenshots, feature diagrams and illustrated documents without a display |
 
@@ -44,6 +43,7 @@ Per-module working docs, previously scattered under `desktop/DEV_MD/`,
 `mobile/docs/`, `tui/`, `packages/`, `orchestration/loop/` and `tests/`.
 
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
+- [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), summary prompts, retrieval interfaces, and the closed-book strategy comparison (`compaction-abc-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync performance/audits, harmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`)
 - [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
 - [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)
@@ -78,10 +78,6 @@ reference this exact path, so the directory cannot be renamed without updating
 - [readme-linux.txt](dist/readme-linux.txt) / [en](dist/readme-linux-en.txt)
 
 ## Archives (`archives/`)
-
-- [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
-- [Compaction strategy comparison](compaction-abc-experiment.md) ([中文](compaction-abc-experiment.zh-CN.md)) — six strategies on identical fixtures (ours A/B/C, `origin/main`, Codex, OpenCode): accuracy, cost and limits.
-- [Summary prompts and the retired legacy A path](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — the prompt construction C3 shares with the retired legacy A path, which now lives behind `#[cfg(test)]`.
 
 Historical audit snapshots; their conclusions apply only to the recorded
 dates/commits, not current source. Kept for provenance — do not rewrite them

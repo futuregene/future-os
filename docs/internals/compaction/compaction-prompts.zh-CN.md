@@ -2,7 +2,7 @@
 
 **策略 C 不需要摘要模型，确定性 C 路径不发起任何摘要调用；但运行时默认为 C3（C 加一份模型撰写的交接摘要），因此默认路径每次压缩会发起一次摘要请求。** 本页记录该共享的提示词构造，以及 legacy A 路径——它**已从运行时退役**：入口已从 `ContextManager` 移除，实现以 `#[cfg(test)]` 保留给刻画它的测试，库调用方无法再触达。不代表默认路径实际发送的内容。 当前机制见 [C 压缩](compaction.zh-CN.md)。
 
-本页说明实际的摘要调用，不把普通回答／历史查询后的答题调用算作压缩调用。其中 `summary_prompt` 与 `call_summary_model_with_messages` **与 C3 默认路径共用**，`serialize_message` 与共享的 planner 共用。本页其余内容（fold、分块、紧急摘要）**已不存在**——退役的 A 代码在无人可达后已删除；本页保留作为提示词与 A 形状的记录，不再描述任何可调用的 API。权威实现为 [semantic.rs](../agent/src/compaction/semantic.rs) 与 [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs)。
+本页说明实际的摘要调用，不把普通回答／历史查询后的答题调用算作压缩调用。其中 `summary_prompt` 与 `call_summary_model_with_messages` **与 C3 默认路径共用**，`serialize_message` 与共享的 planner 共用。本页其余内容（fold、分块、紧急摘要）**已不存在**——退役的 A 代码在无人可达后已删除；本页保留作为提示词与 A 形状的记录，不再描述任何可调用的 API。权威实现为 [semantic.rs](../../../agent/src/compaction/semantic.rs) 与 [semantic/evidence.rs](../../../agent/src/compaction/semantic/evidence.rs)。
 
 ## 调用几次？
 

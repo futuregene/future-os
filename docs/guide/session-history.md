@@ -91,7 +91,7 @@ ACL**. A trusted CLI user can explicitly browse another session they can access;
 the model's instruction to stay in its current session is not a sandbox or an
 authorization mechanism. No arbitrary SQL endpoint or database path is exposed.
 
-The [S2 compaction policy](compaction.md) defines trigger and retention budgets;
+The [S2 compaction policy](../internals/compaction/compaction.md) defines trigger and retention budgets;
 the authoritative database history remains intact. Retrieval and conditional
 usage guidance do not guarantee that every model will choose to retrieve
 rather than guess. Search excludes hidden reasoning and is deliberately bounded.

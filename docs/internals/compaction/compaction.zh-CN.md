@@ -62,7 +62,7 @@ future session compact --help
 
 运行时默认是 C3，算法标识 `summarized-evidence-v1`：C 的投影，外加一份写在证据索引之后、由模型生成的交接摘要。摘要是“粘性”的——它会收到上一轮摘要——并尝试保留仍相关的事实。每轮仍会重新生成摘要，不保证事实单调累积，也不能排除遗忘或错误传播。确定性 C（`deterministic-evidence-v1`，schema 3）仍作为兜底：无 provider 可用或摘要调用失败时提交它，此时 `summary` 字段只存放证据索引。证据索引的开头会声明这条消息里到底有什么——只有索引时说“未生成摘要”，后面跟着摘要时说“其后是交接摘要”——因为只有摘要调用的结果能决定哪一句是真的。保护原文按 `protected_entry_ids` 从 journal 恢复；fork 重映射引用，非法范围／引用会被拒绝。
 
-**摘要价值仍需验证。** [旧实验](compaction-abc-experiment.zh-CN.md)中，178 个被测精确值没有出现摘要独有的值，保存的闭卷结果中 C3 与 C 得分相同。但旧对照实现、结果版本追踪和压力评分存在方法问题，不能推出“摘要没有内容贡献”或真实产品间的优劣。修正版四臂实验采用[冻结协议](../scripts/abc_experiment/FOUR_ARM_PROTOCOL.md)，结果须区分精确值保留、检索和任务续做。
+**摘要价值仍需验证。** [旧实验](compaction-abc-experiment.zh-CN.md)中，178 个被测精确值没有出现摘要独有的值，保存的闭卷结果中 C3 与 C 得分相同。但旧对照实现、结果版本追踪和压力评分存在方法问题，不能推出“摘要没有内容贡献”或真实产品间的优劣。修正版四臂实验采用[冻结协议](../../../scripts/abc_experiment/FOUR_ARM_PROTOCOL.md)，结果须区分精确值保留、检索和任务续做。
 
 ## 摘要读取什么，以及为什么这是便宜的形状
 
@@ -94,7 +94,7 @@ C3 为摘要正文增加独立预算 `min(W/16, 4096)` estimated tokens，并增
 
 默认手动、自动和 provider 超限恢复均尝试 C3。确定性 C 路径**摘要模型调用数为零**；C3 在需要新压缩且有预算时尝试摘要请求，按普通请求计费。无需压缩或幂等复用时不请求，瞬时失败重试可能产生多次请求。缓存命中可降低输入成本，但特定 provider 的实测缓存价不是生产成本保证。使用 C 不重置已累计的正常调用费用。后续正常模型请求仍需支付包含证据索引和查询结果的输入／输出费用；本地扫描也不是零成本。
 
-仅在有效 checkpoint、持久化且 shell 可用／允许时附加一份[历史召回说明](session-history.zh-CN.md)，不累积为聊天消息。缺少精确旧事实时可通过已有 history search/get 查询原文，不重执行历史工具。
+仅在有效 checkpoint、持久化且 shell 可用／允许时附加一份[历史召回说明](../../guide/session-history.zh-CN.md)，不累积为聊天消息。缺少精确旧事实时可通过已有 history search/get 查询原文，不重执行历史工具。
 
 ## 验证
 
@@ -104,6 +104,6 @@ cargo build -p future-cli --bin future
 python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
-Windows 使用 `future.exe`；设置了 `CARGO_TARGET_DIR` 时调整路径。旧合成 smoke 使用隔离 HOME／新端口和本地模型桩，断言 C 标识及零摘要请求；这些断言针对旧确定性默认，不能作为当前 C3 摘要请求的验收。四臂实验驱动的离线回归与复现命令见[冻结协议](../scripts/abc_experiment/FOUR_ARM_PROTOCOL.md)。不要停止用户现有 Agent。
+Windows 使用 `future.exe`；设置了 `CARGO_TARGET_DIR` 时调整路径。旧合成 smoke 使用隔离 HOME／新端口和本地模型桩，断言 C 标识及零摘要请求；这些断言针对旧确定性默认，不能作为当前 C3 摘要请求的验收。四臂实验驱动的离线回归与复现命令见[冻结协议](../../../scripts/abc_experiment/FOUR_ARM_PROTOCOL.md)。不要停止用户现有 Agent。
 
 规则 C 不保证保留所有语义，特别是复杂非结构化记录；原文检索仍是必要补充。旧 semantic API 保留用于明确的库级调用和回归测试，不是默认 fallback，也没有用户 CLI 开关切回 A。

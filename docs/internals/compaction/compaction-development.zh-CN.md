@@ -15,19 +15,19 @@
 
 | 职责 | 入口 |
 |---|---|
-| 请求前／工具回合后／provider 超限恢复 | [agent/run_loop.rs](../agent/src/agent/run_loop.rs) |
-| run 配置与持久化注入 | [rpc/session_prompt.rs](../agent/src/rpc/session_prompt.rs) |
-| 手动执行、结果与终态 | [rpc/session.rs](../agent/src/rpc/session.rs) |
-| compact RPC 异步 ACK／忙状态 | [rpc/commands/settings.rs](../agent/src/rpc/commands/settings.rs) |
-| 用户 CLI | [session_compact.rs](../cli/src/commands/session_compact.rs) |
-| C 入口、证据分组／排序／渲染 | [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs) |
-| 共用规划／保护与 finalize；旧显式 A API | [semantic.rs](../agent/src/compaction/semantic.rs) |
-| 完整请求预算 | [budget.rs](../agent/src/compaction/budget.rs) |
-| 默认 `prepare_with_journal` | [durable.rs](../agent/src/compaction/durable.rs) |
-| 内容指纹、claim、原子完成 | [compaction_ops.rs](../agent/src/session/compaction_ops.rs) |
-| 有序 writer／barrier | [persistence.rs](../agent/src/session/persistence.rs) |
-| checkpoint／fork 引用 | [checkpoint.rs](../agent/src/session/checkpoint.rs)、[fork.rs](../agent/src/session/fork.rs) |
-| 原始历史读取与模型指导 | [history_query.rs](../agent/src/session/history_query.rs)、[history_recall.rs](../agent/src/agent/history_recall.rs) |
+| 请求前／工具回合后／provider 超限恢复 | [agent/run_loop.rs](../../../agent/src/agent/run_loop.rs) |
+| run 配置与持久化注入 | [rpc/session_prompt.rs](../../../agent/src/rpc/session_prompt.rs) |
+| 手动执行、结果与终态 | [rpc/session.rs](../../../agent/src/rpc/session.rs) |
+| compact RPC 异步 ACK／忙状态 | [rpc/commands/settings.rs](../../../agent/src/rpc/commands/settings.rs) |
+| 用户 CLI | [session_compact.rs](../../../cli/src/commands/session_compact.rs) |
+| C 入口、证据分组／排序／渲染 | [semantic/evidence.rs](../../../agent/src/compaction/semantic/evidence.rs) |
+| 共用规划／保护与 finalize；旧显式 A API | [semantic.rs](../../../agent/src/compaction/semantic.rs) |
+| 完整请求预算 | [budget.rs](../../../agent/src/compaction/budget.rs) |
+| 默认 `prepare_with_journal` | [durable.rs](../../../agent/src/compaction/durable.rs) |
+| 内容指纹、claim、原子完成 | [compaction_ops.rs](../../../agent/src/session/compaction_ops.rs) |
+| 有序 writer／barrier | [persistence.rs](../../../agent/src/session/persistence.rs) |
+| checkpoint／fork 引用 | [checkpoint.rs](../../../agent/src/session/checkpoint.rs)、[fork.rs](../../../agent/src/session/fork.rs) |
+| 原始历史读取与模型指导 | [history_query.rs](../../../agent/src/session/history_query.rs)、[history_recall.rs](../../../agent/src/agent/history_recall.rs) |
 
 ## 3. 默认执行链
 

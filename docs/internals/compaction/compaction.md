@@ -194,7 +194,7 @@ compaction, charged like any other request. Existing ordinary usage/cost counter
 are preserved. Ordinary requests still pay for evidence and retrieved text in
 their input; local scans also cost time and memory.
 
-One [history recall guide](session-history.md) is added only with a valid checkpoint
+One [history recall guide](../../guide/session-history.md) is added only with a valid checkpoint
 in a persisted session where shell is enabled/permitted. It is not accumulated as
 chat history. Missing exact facts are recovered through existing history search/get,
 never by replaying old tool side effects.

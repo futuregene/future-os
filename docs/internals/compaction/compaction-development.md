@@ -23,19 +23,19 @@ path, not the default path.
 
 | Responsibility | Source |
 |---|---|
-| Pre-request, mid-turn and provider-limit execution | [run_loop.rs](../agent/src/agent/run_loop.rs) |
-| Run configuration/persistence | [session_prompt.rs](../agent/src/rpc/session_prompt.rs) |
-| Manual execution and terminal results | [session.rs](../agent/src/rpc/session.rs) |
-| Async compact ACK and busy checks | [settings.rs](../agent/src/rpc/commands/settings.rs) |
-| User CLI | [session_compact.rs](../cli/src/commands/session_compact.rs) |
-| C grouping, priority and rendering | [evidence.rs](../agent/src/compaction/semantic/evidence.rs) |
-| Shared S2 planning/finalize; retired legacy A (test-only) | [semantic.rs](../agent/src/compaction/semantic.rs) |
-| Request budget | [budget.rs](../agent/src/compaction/budget.rs) |
-| Default durable entry point | [durable.rs](../agent/src/compaction/durable.rs) |
-| Fingerprint, claim and atomic completion | [compaction_ops.rs](../agent/src/session/compaction_ops.rs) |
-| Ordered writer/barrier | [persistence.rs](../agent/src/session/persistence.rs) |
-| Checkpoint/fork references | [checkpoint.rs](../agent/src/session/checkpoint.rs), [fork.rs](../agent/src/session/fork.rs) |
-| Original evidence and recall guidance | [history_query.rs](../agent/src/session/history_query.rs), [history_recall.rs](../agent/src/agent/history_recall.rs) |
+| Pre-request, mid-turn and provider-limit execution | [run_loop.rs](../../../agent/src/agent/run_loop.rs) |
+| Run configuration/persistence | [session_prompt.rs](../../../agent/src/rpc/session_prompt.rs) |
+| Manual execution and terminal results | [session.rs](../../../agent/src/rpc/session.rs) |
+| Async compact ACK and busy checks | [settings.rs](../../../agent/src/rpc/commands/settings.rs) |
+| User CLI | [session_compact.rs](../../../cli/src/commands/session_compact.rs) |
+| C grouping, priority and rendering | [evidence.rs](../../../agent/src/compaction/semantic/evidence.rs) |
+| Shared S2 planning/finalize; retired legacy A (test-only) | [semantic.rs](../../../agent/src/compaction/semantic.rs) |
+| Request budget | [budget.rs](../../../agent/src/compaction/budget.rs) |
+| Default durable entry point | [durable.rs](../../../agent/src/compaction/durable.rs) |
+| Fingerprint, claim and atomic completion | [compaction_ops.rs](../../../agent/src/session/compaction_ops.rs) |
+| Ordered writer/barrier | [persistence.rs](../../../agent/src/session/persistence.rs) |
+| Checkpoint/fork references | [checkpoint.rs](../../../agent/src/session/checkpoint.rs), [fork.rs](../../../agent/src/session/fork.rs) |
+| Original evidence and recall guidance | [history_query.rs](../../../agent/src/session/history_query.rs), [history_recall.rs](../../../agent/src/agent/history_recall.rs) |
 
 ## 3. Runtime pipeline
 

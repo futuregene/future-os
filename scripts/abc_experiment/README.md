@@ -24,7 +24,7 @@ fixtures, questionnaire and scoring. Do not mix scores across versions.
 **None of the runs measures the cache.** They all put several arms in one block, so each
 primes the prefix the next reuses; in v2/v3 the C3 arm also sent a system prompt and tool
 list that no session sends. The production measurement is in
-[docs/compaction-abc-experiment.md](../../docs/compaction-abc-experiment.md).
+[docs/internals/compaction/compaction-abc-experiment.md](../../docs/internals/compaction/compaction-abc-experiment.md).
 
 Downstream scripts that still drive `abc_c_probe.rs` / `abc_c3_probe.rs` (the `c_*`,
 `c3_*`, continuation and interface experiments) keep working, but they inherit the
@@ -82,7 +82,7 @@ Chain names are free-form, but a few scripts default to `real-yt`, `real-visual`
 | `codex` | `openai/codex` local inline compaction: all user messages (≤20 000 tokens) + summary |
 | `opencode` | `anomalyco/opencode`: summary + retained tail (`min(15 000, max(2 000, usable/4))`) |
 
-Results and limits: [docs/compaction-abc-experiment.md](../../docs/compaction-abc-experiment.md).
+Results and limits: [docs/internals/compaction/compaction-abc-experiment.md](../../docs/internals/compaction/compaction-abc-experiment.md).
 
 The harness runs two kinds of probe over each arm's projection: **closed-book**,
 and **search-enabled** with the identical archive CLI, so the search engine can be
