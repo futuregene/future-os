@@ -64,7 +64,7 @@
   "appShellDialogs": {
     "generateTitle": "Auto-generate",
     "generatingTitle": "Generating…",
-    "generateTitleHint": "Use this conversation’s model and up to its first three question–answer pairs. Review the suggestion, then save.",
+    "generateTitleHint": "Use this conversation’s model and up to its first three question–answer pairs, or user messages if no final answer is available. Review, then save.",
     "renameTitle": "Rename Chat",
     "renameDescription": "Give this conversation a short name that will be easy to find in the sidebar.",
     "nameLabel": "Name",
