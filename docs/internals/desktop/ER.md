@@ -1054,7 +1054,7 @@ Key trade-offs:
   modules no longer depend on the Providers page). Before opening the
   authorization page only the scheme (http/https) is validated — no host
   binding (the authorization page is on a different domain).
-- **Headless login**: `--headless` reuses the `future_login` device
+- **Headless login**: `futureos-headless` reuses the `future_login` device
   authorization protocol but opens no browser; the terminal shows the
   authorization URL, user code, and QR code, and the authorization poll is
   Rust-driven, handling expiry, rejection, `slow_down`, and Ctrl+C

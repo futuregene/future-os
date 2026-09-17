@@ -12,10 +12,13 @@ It does not daemonize or install a system service.
 
 ## 1. Before you start
 
-- Install or build a Desktop version supporting `--headless` and a matching
-  `future` CLI. Put the CLI beside the Desktop executable or on PATH so Desktop
-  can start the local Agent when needed. Alternatively, run `future agent`
-  independently first; Desktop connects without starting a duplicate.
+- Build `futureos-headless` and a matching `future` CLI (section 5). The standalone
+  entrypoint needs no GTK/WebKit and starts headless by default. Current release
+  workflows do not produce this binary or a separate headless archive; the GUI
+  portable and CLI-only packages do not provide this standalone entrypoint.
+- Put the CLI beside `futureos-headless` or on PATH so it can start the local Agent
+  when needed. You can also run `future agent` independently first; the headless
+  backend connects without starting a duplicate.
 - Install a FutureOS mobile app matching the host's production/test environment.
 - Allow the host to reach the Future OS platform and configured NATS relay. The
   phone also needs network access.
@@ -30,19 +33,25 @@ do not redirect the output to a file.
 
 ## 2. Start in the foreground
 
-Change to the directory containing the Desktop executable.
+Change to the directory containing the built `futureos-headless` executable.
 
 Linux / macOS:
 
 ```bash
-./futureos --headless
+./futureos-headless
 ```
 
 Windows PowerShell:
 
 ```powershell
-.\futureos.exe --headless
+.\futureos-headless.exe
 ```
+
+No `--headless` flag is needed or accepted. `futureos` starts only the graphical
+Desktop; its former `--headless` option has been removed. Replace old commands
+such as `futureos --headless --no-qr` with `futureos-headless --no-qr`.
+Both executables share the backend, data and phone protocol; this is not a second
+implementation.
 
 No additional `--pair --qr` options are needed. Desktop guides you according to the
 saved login and pairing state. Pairing does not end the command or return a shell
@@ -90,16 +99,15 @@ Remote connection logic handles recovery.
 
 | Option | Behavior |
 |---|---|
-| `--headless` | Explicitly open phone remote access without a UI, in the foreground |
-| `--no-qr` | With `--headless`, print authorization/pairing links without drawing QR codes |
-| `--re-pair` | With `--headless`, explicitly revoke the saved phone pairing and create a new invitation |
+| `--no-qr` | Print authorization/pairing links without drawing QR codes |
+| `--re-pair` | Explicitly revoke the saved phone pairing and create a new invitation |
 | `--help` | Show help without starting Desktop or Agent |
 
 For example:
 
 ```bash
-./futureos --headless --no-qr
-./futureos --headless --re-pair
+./futureos-headless --no-qr
+./futureos-headless --re-pair
 ```
 
 `--re-pair` affects the previous phone binding. Use it to change phones or
@@ -117,7 +125,7 @@ performs bounded resource cleanup.
   Agent. In-progress tasks are interrupted.
 - **Independently running Agent:** leave it running. This Desktop's remote entry
   still closes.
-- **Saved login and completed pairing:** retain them for the next `--headless`
+- **Saved login and completed pairing:** retain them for the next `futureos-headless`
   launch. Exiting is not unpairing.
 
 Unix also handles SIGTERM and SIGHUP. Continuity after SSH disconnect is not
@@ -126,27 +134,55 @@ the default behavior of headless mode.
 
 ## 5. Server build without graphical dependencies
 
-The default Desktop build supports `--headless` without creating a UI at runtime,
-but its executable still links GUI system libraries. For a Linux server without
-GTK/WebKit, build the same backend without GUI support from the repository root:
+The graphical `futureos` binary links GUI libraries, which the Linux loader needs
+**before** parsing arguments. The standalone `futureos-headless` build excludes
+Tauri/GTK/WebKit and needs no X11/Wayland session. Its other runtime requirements
+(such as glibc) depend on the build target and environment; source builds are not
+necessarily fully static. No release workflow changes are required for this
+source-build path.
+
+To build both binaries from the repository root without npm/Tauri packaging:
 
 ```bash
-cargo build --release --no-default-features --manifest-path desktop/src-tauri/Cargo.toml
+make build-desktop-headless
 ```
 
-The default output is `desktop/src-tauri/target/release/futureos`, with `.exe` on
-Windows. If `CARGO_TARGET_DIR` is set, use that output directory instead. This build
-needs no Tauri, GTK, WebKit or X11/Wayland session. It contains no GUI and requires
-explicit headless startup.
+Or build explicitly:
 
-A matching `future` CLI is still required to provide the Agent. Build it from the
-repository root with `cargo build --release -p future-cli`, then put the CLI output
-beside Desktop or on PATH. See [Build & Install](build-and-install.md) for general
-build requirements.
+```bash
+cargo build --release --no-default-features --features headless \
+  --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+cargo build --release -p future-cli
+```
+
+The default output is `desktop/src-tauri/target/release/futureos-headless`, with
+`.exe` on Windows. Put `target/release/future` (Windows: `future.exe`) beside it or
+on PATH; the Make target copies it beside the server automatically. If using
+custom Cargo output directories, build and copy the outputs explicitly.
+The `headless` feature selects the standalone entrypoint; combining it with the
+`gui` feature is rejected rather than producing a misleading GUI-linked server.
+See [Build & Install](build-and-install.md) for general build requirements.
 
 `--release` selects compiler optimization, not the production/test platform
 channel. The existing project version and environment policy still applies. Do
 not edit pairing links to bypass the mobile app's environment checks.
+
+For local validation, run the standalone CLI/lifecycle tests with:
+
+```bash
+cargo test --no-default-features --features headless \
+  --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli
+```
+
+On native Linux with Docker running, you can also manually check the ELF
+libraries and startup in a clean Ubuntu 24.04 container (no GUI stack):
+
+```bash
+bash scripts/ci/check-headless-linux.sh desktop/src-tauri/target/release/futureos-headless
+```
+
+Use a build compatible with Ubuntu 24.04 for this check. It is a manual verifier,
+not a step in the current CI or release workflows.
 
 ## 6. Data, permissions and troubleshooting
 
@@ -158,6 +194,8 @@ hosting, use the same user and directories as the initial interactive setup.
 
 | Symptom | Action |
 |---|---|
+| `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
+| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--no-qr` and `--re-pair` belong to the standalone entrypoint |
 | Agent not found | Place a matching `future` CLI or start the Agent independently; an unreachable explicitly configured Agent endpoint is not automatically taken over |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |

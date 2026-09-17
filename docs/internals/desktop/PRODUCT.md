@@ -624,7 +624,7 @@ session (sessionStorage) and clears on app restart.
 
 The phone is the Desktop's remote view and control surface; tools execute on
 the computer locally. Remote capability must be visible and controllable:
-closing the Desktop in GUI mode disconnects Remote; explicit `--headless` mode
+closing the Desktop in GUI mode disconnects Remote; standalone `futureos-headless`
 creates no window, runs in the terminal foreground, shows the platform login
 and phone-pairing QR code and link on demand, and Ctrl+C closes the entry.
 Headless mode is not silently hiding a window or auto-background keeping alive.

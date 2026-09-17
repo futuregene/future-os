@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use crate::{future_login, remote, AppError};
 
-pub const HELP: &str = "Usage: futureos [--headless [--no-qr] [--re-pair]]
+pub const HELP: &str = "Usage: futureos-headless [--no-qr] [--re-pair]
 
-  --headless  Run Desktop's mobile remote entry in this terminal; Ctrl+C stops it.
-              Guide platform login and phone pairing when needed; reuse an existing pairing.
+Run Desktop's mobile remote entry in this terminal; Ctrl+C stops it.
+Guide platform login and phone pairing when needed; reuse an existing pairing.
+
   --no-qr     Print authorization/pairing links instead of terminal QR codes.
   --re-pair   Explicitly revoke the saved phone pairing and create a new invitation.
   --help      Show this help without starting Desktop or Agent.
@@ -20,7 +21,6 @@ First-time setup requires an interactive terminal. No background service is inst
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Launch {
-    Gui,
     Headless(Options),
     Help,
 }
@@ -33,28 +33,21 @@ pub struct Options {
 
 impl Options {
     pub fn parse(args: &[String]) -> Result<Launch, String> {
-        if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-            return Ok(Launch::Help);
-        }
-        if args.is_empty() {
-            return Ok(Launch::Gui);
-        }
-        let mut headless = false;
+        let mut help = false;
         let mut options = Self::default();
         for arg in args {
             match arg.as_str() {
-                "--headless" => headless = true,
+                "--help" | "-h" => help = true,
                 "--no-qr" => options.no_qr = true,
                 "--re-pair" => options.re_pair = true,
-                // macOS Finder can pass its process serial number at launch.
-                value if value.starts_with("-psn_") && args.len() == 1 => return Ok(Launch::Gui),
                 _ => return Err(format!("Unknown option: {arg}")),
             }
         }
-        if !headless {
-            return Err("--no-qr and --re-pair require --headless.".into());
+        if help {
+            Ok(Launch::Help)
+        } else {
+            Ok(Launch::Headless(options))
         }
-        Ok(Launch::Headless(options))
     }
 }
 
@@ -203,7 +196,7 @@ fn require_terminal() -> Result<(), AppError> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         Ok(())
     } else {
-        Err("Login/pairing requires an interactive terminal. Run `futureos --headless` as the same user first; authorization links are not written to redirected logs.".into())
+        Err("Login/pairing requires an interactive terminal. Run `futureos-headless` as the same user first; authorization links are not written to redirected logs.".into())
     }
 }
 
@@ -457,22 +450,28 @@ mod tests {
     }
 
     #[test]
-    fn launch_is_opt_in_and_qr_is_default() {
-        assert_eq!(parse(&[]).unwrap(), Launch::Gui);
+    fn standalone_launch_and_qr_are_default() {
+        assert_eq!(parse(&[]).unwrap(), Launch::Headless(Options::default()));
         assert_eq!(
-            parse(&["--headless"]).unwrap(),
-            Launch::Headless(Options::default())
-        );
-        assert_eq!(
-            parse(&["--headless", "--re-pair", "--no-qr"]).unwrap(),
+            parse(&["--re-pair", "--no-qr"]).unwrap(),
             Launch::Headless(Options {
                 no_qr: true,
                 re_pair: true
             })
         );
-        assert!(parse(&["--re-pair"]).is_err());
-        assert!(parse(&["--headles"]).is_err());
+        assert_eq!(
+            parse(&["--re-pair"]).unwrap(),
+            Launch::Headless(Options {
+                no_qr: false,
+                re_pair: true
+            })
+        );
+        for flag in ["--headless", "--headles", "--gui", "-psn_123"] {
+            assert!(parse(&[flag]).is_err());
+            assert!(parse(&["--help", flag]).is_err());
+        }
         assert_eq!(parse(&["--help"]).unwrap(), Launch::Help);
+        assert_eq!(parse(&["-h"]).unwrap(), Launch::Help);
     }
 
     #[tokio::test]

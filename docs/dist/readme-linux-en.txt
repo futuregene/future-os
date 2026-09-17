@@ -17,6 +17,9 @@ Official Linux CI builds future as a static musl CLI, usable without GUI librari
 Local source builds use their selected host target and are not necessarily static.
 On a headless host, download the matching official CLI-only tarball and use
 ./future config and ./future tui, or ./future agent for other CLI clients.
+For server phone pairing, build from source with make build-desktop-headless
+and run ./futureos-headless; current release packages do not include that entrypoint.
+futureos starts only the GUI; its former --headless option has been removed.
 
 [Optional Sandbox]
 The desktop defaults to Unrestricted. Select Manual or Sandboxed in Settings.

@@ -54,7 +54,7 @@ controllable.** Phone remote AI can indirectly trigger local file access, tool
 calls, and command execution; users need a remote entry they can see directly
 and actively close. The Desktop is that entry: in GUI mode, when the user
 closes the Desktop they should be able to confirm the machine no longer accepts
-new remote operations through the phone; explicit `--headless` mode uses the
+new remote operations through the phone; the standalone `futureos-headless` entrypoint uses the
 occupied terminal and Ctrl+C as the visible, controllable run boundary. A
 background Agent staying alive must not implicitly enable or maintain remote
 capability. This is a product trust boundary, not an implementation detail that
@@ -73,7 +73,7 @@ may be relaxed for connection stability.
   closes the entry. Minimizing or switching to another app is not closing.
   Remote on, connecting, and disconnected must have clear states in the
   corresponding UI or terminal. Ordinary GUI open is not authorization to
-  enable remote; explicit `--headless` means starting the phone remote entry.
+  enable remote; running `futureos-headless` means starting the phone remote entry.
 - **Automatic recovery obeys user intent.** Network, credential, and sync
   recovery only happen while the Desktop is still running and remote access is
   still allowed. After an active disconnect, old requests, retry timers, and
@@ -159,7 +159,7 @@ Phone-side (Android / iOS) post-pairing experience:
 
 ### 1.1 Headless Desktop
 
-`futureos --headless` reuses the same Rust backend, occupying the terminal in
+`futureos-headless` reuses the same Rust backend, occupying the terminal in
 the foreground, and does not start the Tauri Builder, window, WebView, or GUI
 plugins. When not signed in, the device authorization flow prints the browser
 login QR code, URL, and user code; no browser is opened on the server. The
@@ -167,7 +167,8 @@ authorization result is saved by the Agent through the original config-write
 path. Phone pairing is the second phase: after the entry and the Agent are
 ready, it prints the terminal QR code generated from the same invitation and
 the full `futureos://remote/pair` link for the app to scan or paste — not a
-short numeric code.
+short numeric code. The graphical `futureos` entrypoint no longer accepts
+`--headless`; the standalone binary is built without GUI dependencies.
 
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. `--no-qr` keeps only the text link, with automatic fallback on
