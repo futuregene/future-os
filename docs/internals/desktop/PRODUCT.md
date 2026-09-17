@@ -812,8 +812,11 @@ below New Chat jumps straight to the models page) has three pages:
 **Session title suggestions** can be requested from the rename window in Desktop
 and mobile, or by Desktop's opt-in first-answer title generation. The generator
 calls the conversation's selected model with at most its first three completed
-question–answer pairs, excluding tools, reasoning and later exchanges. Each side
-is capped at 2000 characters. The independent, tool-free request uses the current
+question–answer pairs, excluding tools, reasoning and later exchanges. If none
+of the first three user turns has a final answer (for example, a running or
+cancelled conversation), it falls back to those turns' visible user text only;
+tool commentary is not treated as a final answer. Each side is capped at 2000
+characters. The independent, tool-free request uses the current
 client's UI language and returns a suggestion of at most 32 display columns.
 In the rename dialog it fills the editable input; only Save changes the stored
 title. Generation errors leave the existing input unchanged, and late results
