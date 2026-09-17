@@ -2005,10 +2005,17 @@ fn wire_auto_compaction_reports_no_valid_boundary() {
     );
     let mut message = crate::types::AgentMessage::new_user("user", serde_json::json!("hi"));
     message.ensure_journal_entry_id();
-    let prompt = crate::compaction::project_prompt_context(&[message], None, Some(70_000), 64_000);
-    let result = loop_.context_manager.as_ref().unwrap().prepare(
+    let raw = [message];
+    let prompt = crate::compaction::project_prompt_context(&raw, None, Some(70_000), 64_000);
+    // The runtime path, not the retired legacy one: a lone user message has no valid
+    // cut point in either, and this is the call a real turn makes.
+    let result = loop_.context_manager.as_ref().unwrap().prepare_evidence(
         prompt,
+        &raw,
         crate::compaction::CompactionTrigger::Automatic,
+        crate::compaction::CompactionPhase::PreTurn,
+        None,
+        &std::sync::atomic::AtomicBool::new(false),
         None,
     );
     assert!(matches!(

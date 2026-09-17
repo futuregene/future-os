@@ -4,6 +4,13 @@
 //! Build it in the worktree whose strategy you want to measure; the file itself
 //! is strategy-agnostic. It performs real model calls for summary generation
 //! using the local Agent registry (no credentials are printed or copied).
+//!
+//! The call below uses the legacy `prepare_semantic` entry point, so this driver only
+//! builds against a checkout that still exposes it — that is, one from before the commit
+//! that retired the legacy entry points (see `docs/compaction-prompts.md`). Measuring a
+//! checkout whose default is C or C3 with `abc_c_probe` / `abc_c3_probe` is preferable:
+//! they exercise the production entry points, and their recorded `driver_sha256` stays
+//! meaningful.
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;

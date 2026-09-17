@@ -309,143 +309,18 @@ impl ContextManager {
         .await
     }
 
-    /// Explicit legacy semantic API; the runtime defaults to prepare_evidence.
-    /// Prepare context with a model-generated semantic summary. The selected
-    /// session model/provider is reused with tools disabled; no hidden
-    /// compaction model is involved. Provider failures remain observable so
-    /// callers do not commit a lossy checkpoint. Only the provider-context-
-    /// limit recovery path may use the deterministic emergency summary.
-    pub async fn prepare_semantic(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_phase(
-            prompt,
-            trigger,
-            default_phase(trigger),
-            custom_instructions,
-            provider,
-            interrupted,
-        )
-        .await
-    }
-
-    pub async fn prepare_semantic_with_phase(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_phase_and_fallback(
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_semantic_with_phase_and_fallback(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_lifecycle(
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            fallback,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_semantic_with_lifecycle(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
-        on_started: Option<&(dyn Fn() + Sync)>,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_observed(
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            fallback,
-            on_started,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_semantic_observed(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
-        on_started: Option<&(dyn Fn() + Sync)>,
-        on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
-    ) -> Result<ContextPreparation, ContextError> {
-        semantic::prepare(
-            self,
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            fallback,
-            on_started,
-            on_usage,
-        )
-        .await
-    }
-
-    /// Synchronous compatibility path used by legacy callers and unit tests.
-    /// Legacy projection-only utility. Runtime compaction uses `prepare_evidence`
-    /// through the durable wrapper, with access to the full raw journal.
-    pub fn prepare(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        custom_instructions: Option<&str>,
-    ) -> Result<ContextPreparation, ContextError> {
-        semantic::prepare_deterministic(self, prompt, trigger, custom_instructions)
-    }
+    // The legacy semantic entry points (`prepare_semantic`, its `_with_phase`,
+    // `_with_phase_and_fallback`, `_with_lifecycle` and `_observed` wrappers, and the
+    // synchronous `prepare`) were removed: the runtime has used `prepare_evidence` /
+    // `prepare_evidence_with_summary` since `6a83a34a`, and nothing in the workspace
+    // called them. The implementation they reached is retained under `#[cfg(test)]` in
+    // `semantic.rs` so the tests that characterise legacy A still run; it is not part of
+    // a production build.
 }
 
+/// The phase a trigger implies. Only the legacy-A tests need this now: the runtime
+/// passes the phase explicitly at each call site.
+#[cfg(test)]
 fn default_phase(trigger: CompactionTrigger) -> CompactionPhase {
     match trigger {
         CompactionTrigger::Manual => CompactionPhase::Standalone,
@@ -1499,9 +1374,13 @@ mod tests {
         };
         let ContextPreparation::Compacted {
             checkpoint: next, ..
-        } = manager
-            .prepare(projection, CompactionTrigger::Manual, None)
-            .unwrap()
+        } = super::semantic::prepare_deterministic(
+            &manager,
+            projection,
+            CompactionTrigger::Manual,
+            None,
+        )
+        .unwrap()
         else {
             panic!("expected upgrade checkpoint")
         };

@@ -9,7 +9,7 @@ request's input, not an in-flight generation or a provider's internal state.
 
 See the [A/B/C experiment](compaction-abc-experiment.md) for the evidence behind
 this default and the [developer guide](compaction-development.md). The [semantic prompts](compaction-prompts.md)
-document retained explicit legacy APIs, not the default runtime path.
+document the retired legacy A path, not the default runtime path.
 
 ## User CLI
 
@@ -186,5 +186,6 @@ C identity, originals, zero summary requests, ordinary usage, byte paging and
 restart. Never stop the user's running Agent.
 
 Rule-based evidence is lossy, especially for complex unstructured material;
-original-history recall remains essential. Explicit legacy semantic APIs remain
-for library callers/tests, not as an automatic fallback or a user CLI A switch.
+original-history recall remains essential. The legacy semantic entry points are
+gone from `ContextManager`; the retired A implementation is kept only for its
+tests (`#[cfg(test)]`), not as an automatic fallback or a user CLI A switch.

@@ -7,6 +7,8 @@ use super::{
 };
 use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
 use crate::types::LLMProvider;
+// Only the legacy-A fold (and its tests) builds a queue; production does not.
+#[cfg(test)]
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,11 +16,18 @@ use std::time::Duration;
 use tokio_stream::StreamExt;
 
 const TOOL_OUTPUT_LIMIT: usize = 2_000;
-const STRICT_TOOL_OUTPUT_LIMIT: usize = 512;
 const REASONING_LIMIT: usize = 2_000;
+// The strict limits and the summary-fold reserves belong to the retired legacy-A path
+// below; only its tests still use them.
+#[cfg(test)]
+const STRICT_TOOL_OUTPUT_LIMIT: usize = 512;
+#[cfg(test)]
 const STRICT_REASONING_LIMIT: usize = 512;
+#[cfg(test)]
 const SUMMARY_OUTPUT_RESERVE: u64 = 8_192;
+#[cfg(test)]
 const SUMMARY_SAFETY_MARGIN: u64 = 2_048;
+#[cfg(test)]
 const MIN_SUMMARY_CHUNK_TOKENS: u64 = 128;
 const SUMMARY_EVENT_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_millis(100)
@@ -68,6 +77,8 @@ Rules:
 #[derive(Clone, Copy)]
 enum SerializationMode {
     Normal,
+    /// Only the legacy-A fold requests strict serialization; see the constants above.
+    #[cfg(test)]
     Strict,
 }
 
@@ -113,6 +124,10 @@ impl std::fmt::Display for SummaryCallError {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Legacy A orchestration. Retired from the runtime (`6a83a34a`): nothing outside the
+/// tests below calls it. `#[cfg(test)]` keeps it out of every production build while the
+/// tests that characterise legacy A keep running; delete the group when those tests go.
+#[cfg(test)]
 pub(super) async fn prepare(
     manager: &ContextManager,
     prompt: PromptContext,
@@ -180,6 +195,8 @@ pub(super) async fn prepare(
     finalize(manager, plan, summary, algorithm_version, summary_model)
 }
 
+/// Legacy A deterministic path (see `prepare` above).
+#[cfg(test)]
 pub(super) fn prepare_deterministic(
     manager: &ContextManager,
     prompt: PromptContext,
@@ -572,6 +589,7 @@ fn fallback_cut(
     (cut > 0 && cut < messages.len()).then_some(cut)
 }
 
+#[cfg(test)]
 async fn summarize_with_replan(
     manager: &ContextManager,
     plan: &CompactionPlan,
@@ -604,6 +622,7 @@ async fn summarize_with_replan(
     }
 }
 
+#[cfg(test)]
 async fn summarize_fold(
     manager: &ContextManager,
     plan: &CompactionPlan,
@@ -695,6 +714,7 @@ async fn summarize_fold(
     accumulator.ok_or_else(|| SummaryCallError::Other("empty summary fold".to_string()))
 }
 
+#[cfg(test)]
 fn summary_chunk_budget(
     manager: &ContextManager,
     accumulator: Option<&str>,
@@ -720,6 +740,7 @@ fn summary_chunk_budget(
     (budget >= MIN_SUMMARY_CHUNK_TOKENS).then_some(budget)
 }
 
+#[cfg(test)]
 fn take_next_chunk(remaining: &mut VecDeque<String>, budget: u64) -> Option<String> {
     let mut current = Vec::new();
     let mut current_tokens = 0_u64;
@@ -744,6 +765,7 @@ fn take_next_chunk(remaining: &mut VecDeque<String>, budget: u64) -> Option<Stri
 /// A single huge message/tool result must not bypass the summary budget. This
 /// is an internal summary-input boundary only; it never changes the retained
 /// tail or the immutable journal entry.
+#[cfg(test)]
 fn split_to_token_budget(value: &str, budget: u64) -> Vec<String> {
     if estimate_text_tokens(value) <= budget {
         return vec![value.to_string()];
@@ -786,6 +808,7 @@ fn summary_prompt(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 async fn call_summary_model(
     provider: &dyn LLMProvider,
     model: &str,
@@ -824,6 +847,7 @@ async fn summary_interruptible<T>(
     tokio::select! { result = future => Ok(result), _ = cancelled => Err(SummaryCallError::Cancelled) }
 }
 
+#[cfg(test)]
 async fn call_summary_model_bounded(
     provider: &dyn LLMProvider,
     model: &str,
@@ -1111,6 +1135,7 @@ fn serialize_message(message: &AgentMessage, mode: SerializationMode) -> String 
             ContentBlock::Reasoning { text, .. } if !text.trim().is_empty() => {
                 let limit = match mode {
                     SerializationMode::Normal => REASONING_LIMIT,
+                    #[cfg(test)]
                     SerializationMode::Strict => STRICT_REASONING_LIMIT,
                 };
                 lines.push(format!("[Assistant reasoning]: {}", truncate(text, limit)));
@@ -1133,6 +1158,7 @@ fn serialize_message(message: &AgentMessage, mode: SerializationMode) -> String 
             } => {
                 let limit = match mode {
                     SerializationMode::Normal => TOOL_OUTPUT_LIMIT,
+                    #[cfg(test)]
                     SerializationMode::Strict => STRICT_TOOL_OUTPUT_LIMIT,
                 };
                 let kind = if *is_error { "error" } else { "result" };
@@ -1217,6 +1243,7 @@ fn summary_chunks_and_context_estimates_share_unicode_costs() {
     }
 }
 
+#[cfg(test)]
 fn valid_summary(summary: &str) -> bool {
     [
         "## Objective",
@@ -1232,6 +1259,7 @@ fn valid_summary(summary: &str) -> bool {
     .all(|heading| summary.contains(heading))
 }
 
+#[cfg(test)]
 fn emergency_summary(plan: &CompactionPlan) -> String {
     let mut user_texts = Vec::new();
     let mut assistant_texts = Vec::new();
@@ -1292,6 +1320,7 @@ fn emergency_summary(plan: &CompactionPlan) -> String {
     )
 }
 
+#[cfg(test)]
 fn collect_file_operation(
     tool: &str,
     args: &serde_json::Value,
@@ -1316,6 +1345,7 @@ fn collect_file_operation(
     }
 }
 
+#[cfg(test)]
 fn join_or_none(values: &[String]) -> String {
     if values.is_empty() {
         "(none)".to_string()
@@ -1426,6 +1456,80 @@ mod tests {
     use parking_lot::Mutex;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
+
+    /// The retired public `prepare_semantic*` wrappers, kept here for the tests below.
+    /// They add nothing but argument defaults (`default_phase`, and `None` for the
+    /// fallback / lifecycle observers), so the tests keep exercising the same plans and
+    /// requests they did while these were part of the API. Production has no such entry
+    /// point: `ContextManager` exposes only `prepare_evidence` and
+    /// `prepare_evidence_with_summary`.
+    impl ContextManager {
+        async fn prepare_semantic(
+            &self,
+            prompt: PromptContext,
+            trigger: CompactionTrigger,
+            custom_instructions: Option<&str>,
+            provider: &dyn crate::types::LLMProvider,
+            interrupted: &AtomicBool,
+        ) -> Result<ContextPreparation, ContextError> {
+            self.prepare_semantic_with_phase(
+                prompt,
+                trigger,
+                super::super::default_phase(trigger),
+                custom_instructions,
+                provider,
+                interrupted,
+            )
+            .await
+        }
+
+        async fn prepare_semantic_with_phase(
+            &self,
+            prompt: PromptContext,
+            trigger: CompactionTrigger,
+            phase: CompactionPhase,
+            custom_instructions: Option<&str>,
+            provider: &dyn crate::types::LLMProvider,
+            interrupted: &AtomicBool,
+        ) -> Result<ContextPreparation, ContextError> {
+            self.prepare_semantic_with_phase_and_fallback(
+                prompt,
+                trigger,
+                phase,
+                custom_instructions,
+                provider,
+                interrupted,
+                None,
+            )
+            .await
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        async fn prepare_semantic_with_phase_and_fallback(
+            &self,
+            prompt: PromptContext,
+            trigger: CompactionTrigger,
+            phase: CompactionPhase,
+            custom_instructions: Option<&str>,
+            provider: &dyn crate::types::LLMProvider,
+            interrupted: &AtomicBool,
+            fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
+        ) -> Result<ContextPreparation, ContextError> {
+            prepare(
+                self,
+                prompt,
+                trigger,
+                phase,
+                custom_instructions,
+                provider,
+                interrupted,
+                fallback,
+                None,
+                None,
+            )
+            .await
+        }
+    }
 
     const VALID_SUMMARY: &str = "## Objective\n- ship it\n\n## Important Details\n- preserve data\n\n## Work State\n### Completed\n- audit\n\n### Active\n- implementation\n\n### Blocked\n- (none)\n\n## Next Move\n1. test\n\n## Relevant Files\n- agent/src/compaction/semantic.rs";
 
@@ -2585,14 +2689,14 @@ mod tests {
         }
     }
 
-    // ─── prepare_deterministic (sync path) ────────────────────────────────
+    // ─── prepare_deterministic (legacy-A sync path) ───────────────────────
 
     #[test]
     fn deterministic_prepare_compacts_via_emergency_summary() {
         let manager = test_manager();
-        let prepared = manager
-            .prepare(test_prompt(), CompactionTrigger::Automatic, None)
-            .unwrap();
+        let prepared =
+            prepare_deterministic(&manager, test_prompt(), CompactionTrigger::Automatic, None)
+                .unwrap();
         let (_, checkpoint) = into_compacted(prepared).expect("expected deterministic compaction");
         assert_eq!(
             checkpoint.algorithm_version,
@@ -2609,9 +2713,8 @@ mod tests {
         let mut prompt = test_prompt();
         prompt.usage.input_tokens = Some(100);
         prompt.usage.estimated_input_tokens = 100;
-        let prepared = manager
-            .prepare(prompt, CompactionTrigger::Automatic, None)
-            .unwrap();
+        let prepared =
+            prepare_deterministic(&manager, prompt, CompactionTrigger::Automatic, None).unwrap();
         assert!(into_compacted(prepared).is_none());
     }
 

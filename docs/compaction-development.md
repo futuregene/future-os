@@ -5,8 +5,8 @@ recent tail**, which needs no summary-model call. The runtime default adds a
 model-written handoff summary on top (C3); the
 [experiment](compaction-abc-experiment.md) measures what it contributes. See
 [policy](compaction.md). The
-[semantic prompt reference](compaction-prompts.md) describes explicit legacy APIs,
-not the default path.
+[semantic prompt reference](compaction-prompts.md) describes the retired legacy A
+path, not the default path.
 
 ## 1. Invariants
 
@@ -29,7 +29,7 @@ not the default path.
 | Async compact ACK and busy checks | [settings.rs](../agent/src/rpc/commands/settings.rs) |
 | User CLI | [session_compact.rs](../cli/src/commands/session_compact.rs) |
 | C grouping, priority and rendering | [evidence.rs](../agent/src/compaction/semantic/evidence.rs) |
-| Shared S2 planning/finalize; explicit legacy A APIs | [semantic.rs](../agent/src/compaction/semantic.rs) |
+| Shared S2 planning/finalize; retired legacy A (test-only) | [semantic.rs](../agent/src/compaction/semantic.rs) |
 | Request budget | [budget.rs](../agent/src/compaction/budget.rs) |
 | Default durable entry point | [durable.rs](../agent/src/compaction/durable.rs) |
 | Fingerprint, claim and atomic completion | [compaction_ops.rs](../agent/src/session/compaction_ops.rs) |

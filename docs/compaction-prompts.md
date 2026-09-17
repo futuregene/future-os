@@ -3,13 +3,15 @@
 **Strategy C needs no summary model, and deterministic C makes no summary calls.
 The runtime default is C3 — C plus a model-written handoff summary — so the default
 path does issue one summary request per compaction.** This reference covers that
-shared prompt construction plus the retained explicit legacy A APIs, and is not a
-description of what the default sends. See [C compaction](compaction.md) and the
+shared prompt construction plus the legacy A path, which is **retired from the
+runtime**: its entry points are gone from `ContextManager` and its implementation is
+kept under `#[cfg(test)]` for the tests that characterise it, so no library caller can
+reach it. See [C compaction](compaction.md) and the
 [measurement of what the summary contributes](compaction-abc-experiment.md).
 
 `summary_prompt` and `call_summary_model_with_messages` are **shared with the C3
-default path**; `summarize_fold`, `serialize_message` and
-`call_summary_model_bounded` belong to the retained legacy A path alone. The
+default path**; `summarize_fold` and `call_summary_model_bounded` belong to the
+retired legacy A path alone, and `serialize_message` to both. The
 authoritative implementations are
 [semantic.rs](../agent/src/compaction/semantic.rs) and
 [semantic/evidence.rs](../agent/src/compaction/semantic/evidence.rs). The [Chinese companion](compaction-prompts.zh-CN.md)
@@ -29,7 +31,7 @@ SSE chunks are stream fragments, not distinct model calls. The user CLI returns
 an ACK, not a final call count. Ordinary answering and history-QA requests must
 not be counted as summary requests.
 
-Explicit legacy semantic calls use the supplied provider/model with tools disabled.
+Legacy semantic calls use the supplied provider/model with tools disabled.
 The C3 default instead sends the live conversation as real messages with the agent's own
 system prompt and tool definitions, which is what makes its request servable from the
 provider's prefix cache — see [C compaction](compaction.md). Summary text is limited

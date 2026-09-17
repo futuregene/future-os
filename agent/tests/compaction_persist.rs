@@ -1,6 +1,6 @@
 use future_agent::compaction::{
-    context_token_budgets, project_prompt_context, CompactionTrigger, ContextManager,
-    ContextPreparation,
+    context_token_budgets, project_prompt_context, CompactionPhase, CompactionTrigger,
+    ContextManager, ContextPreparation,
 };
 use future_agent::session::{
     agent_message_to_entry, checkpoint_to_entry, latest_context_checkpoint, Manager, Session,
@@ -68,15 +68,27 @@ fn compaction_appends_checkpoint_without_discarding_jsonl_history() {
 
     let prompt = project_prompt_context(&messages, None, Some(300_000), 50_000);
     let (reserve_tokens, keep_recent_tokens) = context_token_budgets(50_000);
-    let checkpoint = match (ContextManager {
+    // The runtime path: this test is about the durable checkpoint round-trip, and
+    // `prepare_evidence` is what a real turn commits (the legacy semantic entry points
+    // were retired with `6a83a34a`).
+    let context_manager = ContextManager {
         enabled: true,
         reserve_tokens,
         keep_recent_tokens,
         context_window: 50_000,
         model: "test-model".into(),
-    })
-    .prepare(prompt, CompactionTrigger::Automatic, None)
-    .unwrap()
+    };
+    let checkpoint = match context_manager
+        .prepare_evidence(
+            prompt,
+            &messages,
+            CompactionTrigger::Automatic,
+            CompactionPhase::PreTurn,
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+            None,
+        )
+        .unwrap()
     {
         ContextPreparation::Compacted { checkpoint, .. } => checkpoint,
         ContextPreparation::Unchanged { .. } => panic!("long context should compact"),

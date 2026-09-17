@@ -81,7 +81,7 @@ reference this exact path, so the directory cannot be renamed without updating
 
 - [Compaction developer guide](compaction-development.md) ([中文](compaction-development.zh-CN.md)) — implementation map, durable state machine, user CLI and proposed safe model-requested entry point.
 - [Compaction strategy comparison](compaction-abc-experiment.md) ([中文](compaction-abc-experiment.zh-CN.md)) — six strategies on identical fixtures (ours A/B/C, `origin/main`, Codex, OpenCode): accuracy, cost and limits.
-- [Summary prompts and legacy semantic APIs](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — the prompt construction C3 shares with the legacy A path, and the APIs that path alone retains.
+- [Summary prompts and the retired legacy A path](compaction-prompts.md) ([中文](compaction-prompts.zh-CN.md)) — the prompt construction C3 shares with the retired legacy A path, which now lives behind `#[cfg(test)]`.
 
 Historical audit snapshots; their conclusions apply only to the recorded
 dates/commits, not current source. Kept for provenance — do not rewrite them
