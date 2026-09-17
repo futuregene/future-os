@@ -25,12 +25,12 @@ export function SettingsSwitch({ label, description, value, disabled, onChange }
   </View>;
 }
 
-export function SettingsLink({ label, disabled = false, loading = false, destructive = false, onPress }: {
-  label: string; disabled?: boolean; loading?: boolean; destructive?: boolean; onPress(): void;
+export function SettingsLink({ label, disabled = false, loading = false, onPress }: {
+  label: string; disabled?: boolean; loading?: boolean; onPress(): void;
 }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: disabled || loading, busy: loading }}
-    disabled={disabled || loading} onPress={onPress} style={[settingsStyles.row, disabled && { opacity: 0.5 }]}>
-    <Text style={[settingsStyles.label, destructive && { color: colors.danger }]}>{label}</Text>
+    disabled={disabled || loading} onPress={onPress} style={({ pressed }) => [settingsStyles.row, pressed && settingsStyles.pressed, disabled && { opacity: 0.5 }]}>
+    <Text style={settingsStyles.label}>{label}</Text>
     {loading ? <ActivityIndicator size="small" color={colors.accent} /> : <ChevronRight size={18} color={colors.inkMuted} />}
   </Pressable>;
 }
@@ -48,16 +48,18 @@ export function ResourceStatus({ loading, failed, onReload }: { loading: boolean
 }
 
 export const settingsStyles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.surface },
-  content: { padding: layout.gutter, gap: spacing.lg, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center" },
+  page: { flex: 1, backgroundColor: colors.canvas },
+  content: { padding: layout.gutter, gap: spacing.md, width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center" },
   section: { gap: spacing.sm },
   sectionTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: "600", marginTop: spacing.sm },
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, minHeight: 52, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  card: { padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: spacing.md, minHeight: 52, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  pressed: { backgroundColor: colors.surfaceSubtle },
   labelContainer: { flex: 1, minWidth: 0, gap: spacing.xs },
   label: { color: colors.ink, fontSize: 15, flexShrink: 1 },
   description: { color: colors.inkMuted, fontSize: 13, lineHeight: 19 },
   error: { color: colors.danger, fontSize: 13 },
   status: { gap: spacing.sm, alignItems: "flex-start" },
-  search: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, color: colors.ink, fontSize: 15, padding: spacing.md, minHeight: layout.touchTarget },
+  search: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface, color: colors.ink, fontSize: 15, padding: spacing.md, minHeight: layout.touchTarget },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
 });

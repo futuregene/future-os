@@ -81,7 +81,7 @@ export function SkillsSettingsPage() {
       const current = installedById.get(item.id);
       const catalog = availableById.get(item.id);
       const upgrade = isSkillUpgrade(current?.version, catalog?.latestVersion);
-      return <View style={settingsStyles.section}>
+      return <View style={[settingsStyles.section, settingsStyles.card]}>
         <Text style={settingsStyles.label}>{label(item)}</Text>
         <Text numberOfLines={3} style={settingsStyles.description}>{description(item)}</Text>
         <Text style={settingsStyles.description}>{item.id}{current ? ` · ${current.version || t("desktopSettings.unversioned")}` : ""}

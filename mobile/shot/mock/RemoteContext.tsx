@@ -162,6 +162,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "selective_events_v1",
       "session_files_v1",
       "skills_v1",
+      "desktop_settings_v1",
+      "skill_management_v1",
       "workspace_pinning_v1",
     ]),
 
