@@ -189,8 +189,8 @@ export function SettingsDialog({
                     onToggleShowThinking={value => onChangeSettings({ showThinking: value })}
                     autoUpgradeSkills={appSettings.autoUpgradeSkills}
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}
-                    autoCompactFirstTurn={appSettings.autoCompactFirstTurn}
-                    onToggleAutoCompactFirstTurn={value => onChangeSettings({ autoCompactFirstTurn: value })}
+                    autoTitleFirstTurn={appSettings.autoTitleFirstTurn}
+                    onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}
                     onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
                   />

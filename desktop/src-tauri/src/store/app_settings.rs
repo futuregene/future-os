@@ -33,9 +33,11 @@ pub struct AppSettings {
     /// Play a completion bell + request window attention when an agent run
     /// finishes. On by default.
     pub bell_on_complete: bool,
-    /// Compact once after the first successful answer of a new conversation.
+    /// Generate and save a title after the first successful answer, without compaction.
     /// Off by default; later turns never trigger this preference.
-    pub auto_compact_first_turn: bool,
+    pub auto_title_first_turn: bool,
+    /// UI language mirrored for title generation when the webview is suspended.
+    pub title_language: String,
     /// Use the community-edition UI: Future is configured like another
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
@@ -52,7 +54,9 @@ pub struct UpdateAppSettingsInput {
     pub skill_guide_dismissed: Option<bool>,
     pub skill_intro_dismissed: Option<bool>,
     pub bell_on_complete: Option<bool>,
-    pub auto_compact_first_turn: Option<bool>,
+    #[serde(alias = "autoCompactFirstTurn")]
+    pub auto_title_first_turn: Option<bool>,
+    pub title_language: Option<String>,
     pub community_edition: Option<bool>,
 }
 
@@ -64,7 +68,10 @@ const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
 const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
 const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
 const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
-const KEY_AUTO_COMPACT_FIRST_TURN: &str = "auto_compact_first_turn";
+// Retain the original stored key so existing opt-ins survive the behavior fix.
+// This preference now generates titles only; it never requests compaction.
+const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
+const KEY_TITLE_LANGUAGE: &str = "title_language";
 const KEY_COMMUNITY_EDITION: &str = "community_edition";
 const KEY_DEVICE_ID: &str = "device_id";
 
@@ -165,13 +172,19 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let value = if bell_on_complete { "true" } else { "false" };
         write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
     }
-    if let Some(auto_compact_first_turn) = input.auto_compact_first_turn {
-        let value = if auto_compact_first_turn {
-            "true"
-        } else {
-            "false"
-        };
-        write_value(&tx, KEY_AUTO_COMPACT_FIRST_TURN, value, now)?;
+    if let Some(enabled) = input.auto_title_first_turn {
+        write_value(
+            &tx,
+            KEY_AUTO_TITLE_FIRST_TURN,
+            if enabled { "true" } else { "false" },
+            now,
+        )?;
+    }
+    if let Some(language) = input.title_language {
+        if !matches!(language.as_str(), "en" | "zh") {
+            return Err("Unsupported title language".into());
+        }
+        write_value(&tx, KEY_TITLE_LANGUAGE, &language, now)?;
     }
     if let Some(community_edition) = input.community_edition {
         let value = if community_edition { "true" } else { "false" };
@@ -224,9 +237,12 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default — a finished run should get noticed.
-    let auto_compact_first_turn = read_value(conn, KEY_AUTO_COMPACT_FIRST_TURN)?
+    let auto_title_first_turn = read_value(conn, KEY_AUTO_TITLE_FIRST_TURN)?
         .map(|value| value == "true")
         .unwrap_or(false);
+    let title_language = read_value(conn, KEY_TITLE_LANGUAGE)?
+        .filter(|value| matches!(value.as_str(), "en" | "zh"))
+        .unwrap_or_else(|| "en".to_string());
     let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
         .map(|value| value == "true")
         .unwrap_or(false);
@@ -239,7 +255,8 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         skill_guide_dismissed,
         skill_intro_dismissed,
         bell_on_complete,
-        auto_compact_first_turn,
+        auto_title_first_turn,
+        title_language,
         community_edition,
     })
 }
@@ -289,7 +306,8 @@ mod tests {
             skill_guide_dismissed: Some(true),
             skill_intro_dismissed: Some(true),
             bell_on_complete: None,
-            auto_compact_first_turn: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: Some(true),
         }
     }
@@ -356,7 +374,8 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
-            auto_compact_first_turn: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("update");
@@ -381,27 +400,32 @@ mod tests {
     }
 
     #[test]
-    fn first_turn_compaction_defaults_off_and_persists_updates() {
-        let (_home, conn) = guarded_conn("settings_first_turn_compaction");
-        drop(conn);
+    fn first_turn_title_defaults_off_and_persists_updates() {
+        let (_home, conn) = guarded_conn("settings_first_turn_title");
+        assert!(!get_app_settings().expect("defaults").auto_title_first_turn);
+        assert_eq!(get_app_settings().expect("defaults").title_language, "en");
+        write_value(&conn, "auto_compact_first_turn", "true", 1).expect("legacy opt-in");
         assert!(
-            !get_app_settings()
-                .expect("defaults")
-                .auto_compact_first_turn
+            get_app_settings()
+                .expect("legacy preference")
+                .auto_title_first_turn
         );
+        drop(conn);
         for enabled in [true, false] {
             let updated = update_app_settings(UpdateAppSettingsInput {
-                auto_compact_first_turn: Some(enabled),
+                auto_title_first_turn: Some(enabled),
+                title_language: Some("zh".into()),
                 ..Default::default()
             })
             .expect("update");
-            assert_eq!(updated.auto_compact_first_turn, enabled);
+            assert_eq!(updated.auto_title_first_turn, enabled);
+            assert_eq!(get_app_settings().expect("reload").title_language, "zh");
             assert_eq!(
-                get_app_settings().expect("reload").auto_compact_first_turn,
+                get_app_settings().expect("reload").auto_title_first_turn,
                 enabled
             );
             assert_eq!(
-                serde_json::to_value(updated).expect("serialize")["autoCompactFirstTurn"],
+                serde_json::to_value(updated).expect("serialize")["autoTitleFirstTurn"],
                 enabled
             );
         }
@@ -444,7 +468,8 @@ mod tests {
             skill_guide_dismissed: None,
             skill_intro_dismissed: None,
             bell_on_complete: None,
-            auto_compact_first_turn: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("noop update");
@@ -464,7 +489,8 @@ mod tests {
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
             bell_on_complete: None,
-            auto_compact_first_turn: None,
+            auto_title_first_turn: None,
+            title_language: None,
             community_edition: None,
         })
         .expect("update");

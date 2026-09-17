@@ -800,23 +800,28 @@ below New Chat jumps straight to the models page) has three pages:
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); the Show-thinking-process toggle (currently on by
-  default, per `store/app_settings.rs`); **Summarize after the first answer**
-  (off by default). The latter invokes the existing standalone compaction API
-  once when a new conversation's first run completes successfully. Later turns,
-  failed/cancelled first runs, and replayed completion events do not trigger it.
-  Enabling it does not backfill conversations whose first answer already ended.
-  Original messages remain available; compaction failure does not fail the answer.
+  default, per `store/app_settings.rs`); **Generate a title after the first answer**
+  (off by default). This generates and saves a title in the background using the
+  same title-suggestion API as the rename dialog, once after a new conversation's
+  first successful run. It never compacts or changes conversation context. Later
+  turns, failed/cancelled first runs, and replayed completion events do not trigger
+  it. Enabling it does not backfill conversations whose first answer already ended.
+  Generation failure leaves the title and successful answer unchanged. A title
+  edited while generation is in flight is not overwritten.
 
-**Session title suggestions** are exclusively user-triggered from the rename
-window in Desktop and mobile. “Auto-generate” calls the conversation's selected
-model with at most its first three completed question–answer pairs, excluding
-tools, reasoning and later exchanges. Each side is capped at 2000 characters.
-The independent, tool-free request uses the current client's UI language and
-returns a suggestion of at most 32 display columns. It fills the editable input;
-only Save changes the stored title. Generation errors leave the existing input
-unchanged, and late results cannot overwrite a closed/reopened dialog. There is
-no automatic setting, conversation-prompt instruction or title-generation CLI
-command. Generating a suggestion never appends a message or starts a chat run.
+**Session title suggestions** can be requested from the rename window in Desktop
+and mobile, or by Desktop's opt-in first-answer title generation. The generator
+calls the conversation's selected model with at most its first three completed
+question–answer pairs, excluding tools, reasoning and later exchanges. Each side
+is capped at 2000 characters. The independent, tool-free request uses the current
+client's UI language and returns a suggestion of at most 32 display columns.
+In the rename dialog it fills the editable input; only Save changes the stored
+title. Generation errors leave the existing input unchanged, and late results
+cannot overwrite a closed/reopened dialog. The automatic setting uses the same
+generator and mirrored Desktop UI language, then saves the title to the Agent
+and Desktop store without waiting for manual confirmation. There is no
+conversation-prompt instruction or title-generation CLI command. Generating a
+suggestion never appends a message or starts a chat run.
 - **Providers**:
   - **Built-in FutureGene** (read-only): clicking "Connect" runs the GUI's
     built-in device-code OAuth login — authorization completes in the system

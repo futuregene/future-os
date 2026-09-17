@@ -10,7 +10,7 @@ vi.mock("../../integrations/agent/useSandboxAvailability", () => ({
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-it("offers an opt-in first-answer summary switch", async () => {
+it("offers opt-in title generation without context compaction", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -26,14 +26,15 @@ it("offers an opt-in first-answer summary switch", async () => {
         onToggleAutoUpgradeSkills={() => {}}
         bellOnComplete
         onToggleBellOnComplete={() => {}}
-        autoCompactFirstTurn={DEFAULT_APP_SETTINGS.autoCompactFirstTurn}
-        onToggleAutoCompactFirstTurn={onToggle}
+        autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
+        onToggleAutoTitleFirstTurn={onToggle}
       />,
     ));
-    const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Summarize after the first answer']");
+    const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");
     expect(toggle).not.toBeNull();
     expect(toggle!.getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).toContain("Later answers do not trigger it");
+    expect(container.textContent).toContain("Conversation context is not compacted");
     await act(async () => toggle!.click());
     expect(onToggle).toHaveBeenCalledExactlyOnceWith(true);
   }
