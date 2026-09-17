@@ -431,3 +431,157 @@ fn fit_messages_keeps_the_newest_history_when_it_must_drop() {
         "the kept set must fit the window: {kept_tokens}"
     );
 }
+
+/// Returns whatever text it was constructed with, as one streamed delta.
+struct ScriptedSummary(Option<&'static str>);
+
+#[async_trait::async_trait]
+impl crate::types::LLMProvider for ScriptedSummary {
+    async fn stream_model(
+        &self,
+        _request: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::{FinishReason, ModelStreamEvent};
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        if let Some(text) = self.0 {
+            let _ = tx
+                .send(ModelStreamEvent::TextDelta {
+                    id: "s".into(),
+                    text: text.into(),
+                })
+                .await;
+        }
+        let _ = tx
+            .send(ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: None,
+            })
+            .await;
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+fn summary_text(checkpoint: &crate::compaction::ContextCheckpoint) -> String {
+    checkpoint
+        .summary
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The index header claims what the message contains, so it has to follow the outcome:
+/// "no model summary was generated" is true for plain C and for a failed summary call, and
+/// false as soon as one succeeds.
+#[tokio::test]
+async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 1600,
+        keep_recent_tokens: 1000,
+        context_window: 128_000,
+        model: "m".into(),
+    };
+    let raw = vec![
+        message(
+            "u",
+            "user",
+            vec![ContentBlock::text("keep this requirement")],
+        ),
+        message("a", "assistant", vec![call("x", "config.json")]),
+        message("t", "tool", vec![result("x", "cap=128MiB", false)]),
+    ];
+
+    async fn run(
+        manager: &ContextManager,
+        raw: &[AgentMessage],
+        provider: Option<&dyn crate::types::LLMProvider>,
+    ) -> ContextPreparation {
+        let projected = crate::compaction::project_prompt_context(raw, None, None, 128_000);
+        match provider {
+            Some(provider) => manager
+                .prepare_evidence_with_summary(
+                    projected,
+                    raw,
+                    CompactionTrigger::Manual,
+                    CompactionPhase::Standalone,
+                    None,
+                    &AtomicBool::new(false),
+                    None,
+                    Some(provider),
+                    None,
+                    &[],
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            None => manager
+                .prepare_evidence(
+                    projected,
+                    raw,
+                    CompactionTrigger::Manual,
+                    CompactionPhase::Standalone,
+                    None,
+                    &AtomicBool::new(false),
+                    None,
+                )
+                .unwrap(),
+        }
+    }
+
+    // Plain C: the index stands alone and says so.
+    let ContextPreparation::Compacted { checkpoint, .. } = run(&manager, &raw, None).await else {
+        panic!("checkpoint expected")
+    };
+    let text = summary_text(&checkpoint);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM);
+    assert!(
+        text.starts_with("Deterministic C evidence index; no model summary was generated."),
+        "{text}"
+    );
+    assert!(!text.contains("followed by a model-written handoff summary"));
+
+    // A successful summary: the same index, headed by the sentence that matches it.
+    let ContextPreparation::Compacted { checkpoint, .. } = run(
+        &manager,
+        &raw,
+        Some(&ScriptedSummary(Some("## Objective\n- keep it"))),
+    )
+    .await
+    else {
+        panic!("checkpoint expected")
+    };
+    let text = summary_text(&checkpoint);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_STICKY);
+    assert!(
+        text.starts_with(
+            "Deterministic C evidence index, followed by a model-written handoff summary of \
+             the same history."
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("no model summary was generated"),
+        "the index must not deny the summary it carries: {text}"
+    );
+    assert!(text.contains(STICKY_HEADER) && text.contains("## Objective"));
+
+    // A failed summary falls back to plain C, and the header says so again.
+    let ContextPreparation::Compacted { checkpoint, .. } =
+        run(&manager, &raw, Some(&ScriptedSummary(None))).await
+    else {
+        panic!("checkpoint expected")
+    };
+    let text = summary_text(&checkpoint);
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM);
+    assert!(
+        text.starts_with("Deterministic C evidence index; no model summary was generated."),
+        "{text}"
+    );
+    assert!(!text.contains(STICKY_HEADER));
+}

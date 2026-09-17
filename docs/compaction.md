@@ -87,7 +87,10 @@ sticky — it receives the previous summary — so facts accumulate across succe
 compactions instead of being rewritten each time. Deterministic C
 (`deterministic-s2-evidence-v1`, schema 3) remains the fallback: it is committed
 whenever no provider is reachable or the summary call fails, and the compatibility
-field `summary` then stores evidence alone. Protected originals are rebuilt by
+field `summary` then stores evidence alone. The evidence index is headed by a sentence
+that says what the message contains — that no summary was generated when the index
+stands alone, and that a handoff summary follows it when one does — because only the
+outcome of the summary call decides which is true. Protected originals are rebuilt by
 reference; fork remaps references and invalid ranges are rejected.
 
 **What the summary contributes is measured, not assumed.** Every exam in the
