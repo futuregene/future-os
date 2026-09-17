@@ -66,8 +66,8 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 脚本自动识别平台并从发布清单安装匹配的包，校验 SHA-256，然后执行
 `future init`：
 
-- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖。
-- **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + 统一 `future`），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
+- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖；同时安装图形 `futureos`、独立 `futureos-headless` 和统一 `future` CLI。
+- **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + `futureos-headless` + 统一 `future`），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
 - **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config` 和 `./future tui`（或运行 `./future agent` 供 CLI 客户端连接）。官方静态 musl CLI 不需要 GUI 运行库。
 
 发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。本地开发构建使用

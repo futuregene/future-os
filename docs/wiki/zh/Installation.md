@@ -63,8 +63,10 @@ Debian/Ubuntu 使用匹配的 `.deb`；其他 Linux 使用 portable 桌面包。
 
 ### Linux
 
-- **Debian/Ubuntu：**使用 `sudo apt install ./<实际下载文件>.deb` 安装，然后从应用菜单启动。
-- **桌面便携版：**解压实际下载的 tarball，保持 `futureos` 与 `future` 同目录，运行 `./futureos`。
+- **Debian/Ubuntu：**使用 `sudo apt install ./<实际下载文件>.deb` 安装，然后从应用菜单启动；也可运行
+  `futureos-headless`，在无图形界面的终端前台提供手机远程入口。
+- **桌面便携版：**解压实际下载的 tarball，保持 `futureos`、`futureos-headless` 与 `future`
+  同目录，运行 `./futureos` 或 `./futureos-headless`。
 - **无界面 CLI：**解压 CLI-only 包，运行 `./future config`，再运行 `./future tui`（需要时自动
   启动 Agent）；也可手动运行 `./future agent` 供需要 Agent 的 CLI 命令使用。按需将目录加入 PATH。
 

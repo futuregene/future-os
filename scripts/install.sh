@@ -300,6 +300,11 @@ install_linux() {
     say "Extracting portable tarball to $prefix"
     tar -xzf "$pkg" -C "$prefix"
     chmod +x "$prefix/futureos" "$prefix/future"
+    # New portable releases include the standalone headless Desktop. Keep the
+    # installer compatible with explicitly pinned older archives that predate it.
+    if [[ -f "$prefix/futureos-headless" ]]; then
+      chmod +x "$prefix/futureos-headless"
+    fi
     run_future_setup "$prefix/future"
     if [[ ":$PATH:" != *":$prefix:"* ]]; then
       warn "Add $prefix to your PATH: export PATH=\"$prefix:\$PATH\""

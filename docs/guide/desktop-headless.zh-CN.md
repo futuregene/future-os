@@ -11,8 +11,9 @@
 
 ## 1. 启动前准备
 
-- 按第 5 节构建 `futureos-headless` 和匹配版本的 `future` CLI。独立入口不依赖 GTK/WebKit，
-  默认无头启动。现有发布工作流尚不生成该二进制或独立 headless 压缩包；GUI portable 和 CLI-only 包不提供这个独立入口。
+- Linux `.deb` 和 portable 发布包已包含 `futureos-headless` 及匹配版本的 `future` CLI；
+  也可以按第 5 节从源码构建。独立入口不依赖 GTK/WebKit，默认无头启动。
+  CLI-only 压缩包仍只提供 `future`，不提供 Desktop 后端入口。
 - 将 CLI 放在 `futureos-headless` 旁边或 PATH 中，程序会按需启动本机 Agent。
   也可以提前独立运行 `future agent`，无头后端将连接它而不重复启动。
 - 手机安装匹配生产/测试环境的 FutureOS App。编译渠道与手机环境必须一致。
@@ -25,7 +26,7 @@
 
 ## 2. 前台启动
 
-进入构建出的 `futureos-headless` 可执行程序所在目录。
+`.deb` 安装后可以直接运行 `futureos-headless`；portable 或源码构建请进入该可执行程序所在目录。
 
 Linux / macOS：
 

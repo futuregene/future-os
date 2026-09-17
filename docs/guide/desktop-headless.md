@@ -12,10 +12,10 @@ It does not daemonize or install a system service.
 
 ## 1. Before you start
 
-- Build `futureos-headless` and a matching `future` CLI (section 5). The standalone
-  entrypoint needs no GTK/WebKit and starts headless by default. Current release
-  workflows do not produce this binary or a separate headless archive; the GUI
-  portable and CLI-only packages do not provide this standalone entrypoint.
+- Linux `.deb` and portable releases include `futureos-headless` and the matching
+  `future` CLI; you can also build them from source (section 5). The standalone
+  entrypoint needs no GTK/WebKit and starts headless by default. The CLI-only
+  archive still contains only `future`, not the Desktop backend entrypoint.
 - Put the CLI beside `futureos-headless` or on PATH so it can start the local Agent
   when needed. You can also run `future agent` independently first; the headless
   backend connects without starting a duplicate.
@@ -33,7 +33,8 @@ do not redirect the output to a file.
 
 ## 2. Start in the foreground
 
-Change to the directory containing the built `futureos-headless` executable.
+After a `.deb` install, run `futureos-headless` directly. For a portable or source
+build, change to the directory containing the executable.
 
 Linux / macOS:
 

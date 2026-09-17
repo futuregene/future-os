@@ -6,7 +6,8 @@ FutureOS 免安装版使用说明（Linux）
 使用实际下载文件名：正式发布为
 FutureOS_<version>_linux_<arch>-portable.tar.gz（x86_64 或 aarch64）；
 本地开发构建可能叫 FutureOS-portable-linux.tar.gz。
-futureos 与 future 必须同目录。没有可连接的兼容 Agent 时，应用通过 future agent 启动它。
+futureos、futureos-headless 与 future 必须同目录。没有可连接的兼容 Agent 时，
+图形或无头入口会通过 future agent 启动它。
 
 【运行环境】
 发布的 GUI 包需要 glibc >= 2.39（约 Ubuntu 24.04+）与 WebKitGTK：
@@ -16,8 +17,8 @@ futureos 与 future 必须同目录。没有可连接的兼容 Agent 时，应�
 本地源码构建使用所选 host target，不一定静态链接。
 无桌面主机可下载对应架构的官方 CLI-only 包，运行 ./future config 和 ./future tui，
 或运行 ./future agent 供其他 CLI 客户端使用。
-服务器需要手机远程配对时，请从源码执行 make build-desktop-headless，
-并运行 ./futureos-headless；现有发布包尚不包含这个独立无头入口。
+服务器需要提供手机远程入口时，运行 ./futureos-headless。它是独立前台程序，
+不启动图形界面，按 Ctrl+C 关闭；不是 futureos 的 sidecar。
 futureos 只启动 GUI，原 --headless 选项已移除。
 
 【可选沙箱】
@@ -35,7 +36,7 @@ future agent --probe-sandbox 与 future doctor。主机 namespace 策略可能�
 · 个人数据保存在 ~/.future。在线模型/工具和 Remote 会向对应服务发送请求，
   本地优先不代表数据不会离开本机。
 · 应用仅关闭自己启动的 Agent；外部管理的 Agent 保持运行。
-· 同目录已附带统一 future CLI。
+· 同目录已附带独立 futureos-headless 入口和统一 future CLI。
 
 【许可】
 FutureOS 主体按 MIT 许可发布；内置的 future loop 组件派生自 LoopX，

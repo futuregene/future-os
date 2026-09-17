@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/bin/futureos-headless": "target/release/futureos-headless"
+        }
+      }
+    }
+  }
+}

@@ -16,7 +16,8 @@ FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在*
 
 ## 通过 SSH 使用无头 Desktop
 
-构建并运行 `futureos-headless` 可在终端前台开启手机远程入口，不依赖 GUI 库，也不启动桌面 UI。
+安装 Linux `.deb` 或 portable 包（也可从源码构建）后，运行 `futureos-headless` 可在终端前台
+开启手机远程入口，不依赖 GUI 库，也不启动桌面 UI。
 `futureos` 只负责 GUI，原 `--headless` 选项已移除。
 未登录时打印供浏览器扫描的登录二维码；未配对时打印供 FutureOS App 扫描或粘贴的配对邀请。
 有效登录和配对会复用，Ctrl+C 关闭入口并退出，不自动后台运行。
