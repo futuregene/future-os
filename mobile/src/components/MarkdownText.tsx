@@ -12,6 +12,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { codePreviewRows } from "./codePreviewRows";
+import { codeTokenRows, highlightCode } from "./codeHighlight";
+import type { CodeToken } from "./codeHighlight";
 import { markdownTableWidths } from "./markdownTableWidths";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -146,11 +148,19 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
   });
 }
 
+function renderCodeTokens(tokens: CodeToken[] | null, fallback: string): ReactNode {
+  return tokens ? tokens.map((token, index) => token.color
+    ? <Text key={index} style={{ color: token.color }}>{token.text}</Text>
+    : token.text) : fallback;
+}
+
 function CodeSource({ code, language }: { code: string; language?: string }) {
   const { t } = useTranslation();
   const { fontScale } = useWindowDimensions();
   const large = code.length > 10000 || code.split("\n", 18).length > 16;
   const rows = useMemo(() => large ? codePreviewRows(code) : [], [code, large]);
+  const tokens = useMemo(() => highlightCode(code, language), [code, language]);
+  const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
   const columns = useMemo(() => rows.reduce((max, row) =>
     row.text.split("\n").reduce((width, line) => Math.max(width, line.length), max), 1), [rows]);
   if (large) return <View style={styles.codeContainer}>
@@ -166,14 +176,14 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
       <FlatList data={rows} nestedScrollEnabled initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
         style={{ height: 360, width: Math.max(320, columns * 14 * fontScale + 48) }}
         keyExtractor={(_row, index) => String(index)}
-        renderItem={({ item }) => <Text selectable style={styles.code}>{item.continuation ? "↪ " : ""}{item.text.endsWith("\n") ? item.text.slice(0, -1) : item.text}</Text>} />
+        renderItem={({ item, index }) => <Text selectable style={styles.code}>{item.continuation ? "↪ " : ""}{renderCodeTokens(rowTokens[index] ?? null, item.text.endsWith("\n") ? item.text.slice(0, -1) : item.text)}</Text>} />
     </ScrollView>
   </View>;
   return (
     <View style={styles.codeContainer}>
       {language ? <Text style={styles.codeLanguage}>{language}</Text> : null}
       <ScrollView horizontal nestedScrollEnabled contentContainerStyle={styles.codeContent}>
-        <Text selectable style={styles.code}>{code}</Text>
+        <Text selectable style={styles.code}>{renderCodeTokens(tokens, code)}</Text>
       </ScrollView>
     </View>
   );

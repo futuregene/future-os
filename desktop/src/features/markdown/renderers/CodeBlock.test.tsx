@@ -88,6 +88,21 @@ describe("codeBlock", () => {
     expect(html).not.toMatch(/>1<\/span>/);
   });
 
+  it("preserves blank lines, indentation and trailing newlines after highlighting", () => {
+    const code = "const x = 1;\r\n\r\n  x++;\r\n";
+    highlighterState = {
+      isLoaded: true,
+      highlight: () => ({ fgColor: "#000", lines: code.split("\r\n").map(content => ({
+        tokens: content ? [{ content, color: "#d73a49" }] : [],
+      })) }),
+    };
+    const { container, root } = mountBlock(code, "ts");
+    expect(container.querySelector("code")!.textContent).toBe(code);
+    expect(container.querySelector("code div")).toBeNull();
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("copy button copies the code", async () => {
     const exec = vi.fn().mockReturnValue(true);
     Object.defineProperty(document, "execCommand", { value: exec, configurable: true });

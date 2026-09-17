@@ -42,6 +42,7 @@ export function CodeBlock({
     );
   }
 
+  const lineEndings = code.match(/\r\n|\r|\n/g) ?? [];
   return (
     <div className="relative">
       <CopyButton
@@ -59,7 +60,7 @@ export function CodeBlock({
         <code>
           {highlighted.lines.map((line, lineIndex) => (
             // eslint-disable-next-line react/no-array-index-key -- static positional render of highlighted code; lines never reorder
-            <div key={lineIndex}>
+            <span key={lineIndex}>
               {line.tokens.map((token, tokenIndex) => (
                 <span
                   key={tokenIndex} // eslint-disable-line react/no-array-index-key -- static positional render of highlighted tokens; index key is fine
@@ -71,7 +72,8 @@ export function CodeBlock({
                   {token.content}
                 </span>
               ))}
-            </div>
+              {lineEndings[lineIndex] ?? ""}
+            </span>
           ))}
         </code>
       </pre>
