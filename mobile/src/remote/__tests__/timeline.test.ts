@@ -11,6 +11,7 @@ import {
   timelineFromHistory,
   timelineFromProjection,
 } from "../timeline";
+import type { HistoryEntry } from "../types";
 
 describe("history reducer", () => {
   test("keeps optimistic attachment chips for an attachment-only prompt", () => {
@@ -193,6 +194,130 @@ describe("entry reducer", () => {
       ],
     });
   });
+
+  test.each([undefined, "pre_turn", "mid_turn"])(
+    "preserves a reply across an in-turn checkpoint (phase=%s)",
+    phase => {
+      const entries: HistoryEntry[] = [
+        {
+          id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r1",
+          blocks: [{ kind: "text", text: "continue" }],
+        },
+        {
+          id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r1",
+          blocks: [
+            { kind: "text", text: "before compression" },
+            { kind: "tool_call", name: "shell", toolCallId: "tool1", arguments: { command: "test" } },
+          ],
+        },
+        {
+          id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+          checkpoint: { schemaVersion: 2, checkpointId: "cp1", tokensBefore: 903_386, trigger: "automatic", phase },
+        },
+        {
+          id: "t1", kind: "tool", role: "tool", createdAtMs: 3,
+          blocks: [{ kind: "tool_result", toolCallId: "tool1", text: "failed", isError: true }],
+        },
+        {
+          id: "a2", kind: "assistant", role: "assistant", createdAtMs: 4, runId: "r1",
+          blocks: [{ kind: "text", text: "after compression" }],
+          usage: { outputTokens: 85 }, run: { status: "completed", durationMs: 14_000 },
+        },
+        {
+          id: "u2", kind: "user", role: "user", createdAtMs: 5, runId: "r2",
+          blocks: [{ kind: "text", text: "next question" }],
+        },
+      ];
+      const timeline = timelineFromEntries(entries);
+      expect(timeline.items.map(item => item.id)).toEqual(["m_u1", "m_a2", "m_u2"]);
+      expect(timeline.items[1]).toMatchObject({
+        role: "assistant", runId: "r1", text: "before compression\n\nafter compression",
+        outputTokens: 85, durationMs: 14_000,
+        segments: [
+          { kind: "text", text: "before compression" },
+          { kind: "tool", tool: { status: "failed" } },
+          { kind: "compaction", tokensBefore: 903_386 },
+          { kind: "text", text: "after compression" },
+        ],
+      });
+      expect(timelineFromEntries(entries).items).toEqual(timeline.items);
+    },
+  );
+
+  test.each([undefined, "pre_turn"])(
+    "keeps the first reply after pre-turn compression (phase=%s)",
+    phase => {
+      const entries: HistoryEntry[] = [
+        {
+          id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r1",
+          blocks: [{ kind: "text", text: "continue" }],
+        },
+        {
+          id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 1, blocks: [],
+          checkpoint: { schemaVersion: 2, checkpointId: "cp1", trigger: "automatic", phase },
+        },
+      ];
+      const pending = timelineFromEntries(entries);
+      expect(pending.items.map(item => item.id)).toEqual(["m_u1", "m_cp1"]);
+      expect(timelineFromEntries(entries).items).toEqual(pending.items);
+      const settled = timelineFromEntries([...entries, {
+        id: "a1", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r1",
+        blocks: [{ kind: "text", text: "the missing reply" }],
+        run: { status: "completed", durationMs: 100 },
+      }]);
+      expect(settled.items).toHaveLength(2);
+      expect(settled.items[1]).toMatchObject({
+        id: "m_a1", runId: "r1", text: "the missing reply",
+        segments: [{ kind: "compaction" }, { kind: "text", text: "the missing reply" }],
+      });
+    },
+  );
+
+  test("keeps repeated checkpoints, tool boundaries and the terminal failure in one turn", () => {
+    const checkpoint = (id: string): HistoryEntry => ({
+      id, kind: "compaction", role: "system", createdAtMs: 1, blocks: [],
+      checkpoint: { schemaVersion: 2, checkpointId: id, phase: "mid_turn" },
+    });
+    const tool = (id: string): HistoryEntry => ({
+      id, kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r1",
+      blocks: [{ kind: "tool_call", name: "shell", toolCallId: id, arguments: { command: "test" } }],
+    });
+    const state = timelineFromEntries([
+      {
+        id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r1",
+        blocks: [{ kind: "text", text: "continue" }],
+        run: { status: "failed", error: "interrupted", durationMs: 100 },
+      },
+      checkpoint("cp1"), tool("t1"), tool("t2"), checkpoint("cp2"), tool("t3"),
+    ]);
+    expect(state.items).toHaveLength(2);
+    expect(state.items[1]).toMatchObject({
+      runId: "r1", failed: true, error: "interrupted", durationMs: 100,
+      segments: [
+        { kind: "compaction", id: "seg_cp1_compaction" },
+        { kind: "tool", tool: { count: 2 } },
+        { kind: "compaction", id: "seg_cp2_compaction" },
+        { kind: "tool" },
+      ],
+    });
+  });
+
+  test.each([undefined, "standalone"])(
+    "keeps manual compression between turns standalone (phase=%s)",
+    phase => {
+      const state = timelineFromEntries([
+        { id: "u1", kind: "user", role: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "first" }] },
+        { id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, blocks: [{ kind: "text", text: "reply" }] },
+        {
+          id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+          checkpoint: { schemaVersion: 2, checkpointId: "cp1", trigger: "manual", phase },
+        },
+        { id: "u2", kind: "user", role: "user", createdAtMs: 3, blocks: [{ kind: "text", text: "next" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 4, blocks: [{ kind: "text", text: "next reply" }] },
+      ]);
+      expect(state.items.map(item => item.id)).toEqual(["m_u1", "m_a1", "m_cp1", "m_u2", "m_a2"]);
+    },
+  );
 
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([
