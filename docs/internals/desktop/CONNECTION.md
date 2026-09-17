@@ -482,6 +482,15 @@ inside the Tauri crate; this round adds no standalone crate, and there is no
 promise that copying one directory alone compiles independently. Being
 extractable does not mean being allowed to run outside the Desktop lifecycle.
 
+The source layout follows those boundaries: `remote/mod.rs` is only the public
+facade; diagnostics, health, presence, publishing, transport, the test web
+server, and supervisor state/start/shutdown/status live in dedicated modules.
+`remote_host/business/` separates catalog, history, prompt execution, settings,
+transfers, and wire limits. `agent_bridge/mod.rs` is likewise a facade over
+queries, prompting, reconciliation, and delete-outbox handling. The large
+regression suites are kept in each subsystem's `tests.rs` instead of being
+interleaved with production routing.
+
 | Component | Sole responsibility | Must not carry |
 | --- | --- | --- |
 | Desktop integration layer | create/destroy Remote instances, exit and power-event adaptation, bind user intent, render state | its own connection retries, duplicating protocol state machines |
