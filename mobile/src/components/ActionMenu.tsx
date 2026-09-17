@@ -16,11 +16,13 @@ export interface MenuAction {
 }
 
 /** App-styled action sheet. Release the native modal before navigation or an alert. */
-export function ActionMenu({ title, visible, actions, onClose }: {
+export function ActionMenu({ title, visible, actions, onClose, onBack }: {
   title: string;
   visible: boolean;
   actions: MenuAction[];
   onClose(): void;
+  /** Pop an inner step on system back; explicit cancel still closes the sheet. */
+  onBack?(): void;
 }) {
   const { t } = useTranslation();
   const [expandedTitle, setExpandedTitle] = useState<string | null>(null);
@@ -38,10 +40,10 @@ export function ActionMenu({ title, visible, actions, onClose }: {
     action?.();
   };
   return (
-    <Modal transparent animationType="slide" visible={visible} onRequestClose={dismiss} onDismiss={flush}>
+    <Modal transparent animationType="slide" visible={visible} onRequestClose={onBack ?? dismiss} onDismiss={flush}>
       <SafeAreaView style={styles.overlay}>
         <Pressable accessible={false} style={StyleSheet.absoluteFill} onPress={dismiss} />
-        <View accessibilityViewIsModal style={styles.menu}>
+        <View accessibilityViewIsModal onAccessibilityEscape={onBack ?? dismiss} style={styles.menu}>
           <View style={styles.header}>
             <Pressable
               accessibilityRole="button"

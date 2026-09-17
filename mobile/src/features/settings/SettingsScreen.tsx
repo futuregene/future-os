@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
@@ -13,12 +13,21 @@ import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
-export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate }: {
-  onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean;
+export type SettingsScreenHandle = { goBack(): void };
+
+export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: {
+  onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean; ref?: Ref<SettingsScreenHandle>;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const [page, setPage] = useState<"home" | "preferences" | "models" | "skills" | "language">("home");
+  const goBack = useCallback(() => {
+    if (page === "home") onClose();
+    else setPage("home");
+  }, [page, onClose]);
+  // A native Modal consumes Android's edge-back before BackHandler. Its owner
+  // delegates here so system back and the header pop the same settings level.
+  useImperativeHandle(ref, () => ({ goBack }), [goBack]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
@@ -60,11 +69,11 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate }: {
     finally { writing.current = false; if (active.current) setSaving(false); }
   };
 
-  return <SafeAreaView style={settingsStyles.page}>
+  return <SafeAreaView style={settingsStyles.page} onAccessibilityEscape={goBack}>
     <View style={styles.column}>
     <View style={styles.header}>
       <Pressable accessibilityLabel={t("common.back")} accessibilityRole="button"
-        onPress={() => page === "home" ? onClose() : setPage("home")}
+        onPress={goBack}
         style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
         <ArrowLeft size={22} color={colors.ink} />
       </Pressable>

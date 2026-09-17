@@ -17,6 +17,13 @@ const mockRemote = {
   workspaces: [] as { id: string; name: string }[],
   connectionPresentation: { level: "connected", titleKey: "connection.connected" },
   desktopOnline: true,
+  capabilities: new Set(["desktop_settings_v1", "skill_management_v1"]),
+  desktopSettingsRevision: 0,
+  skillsRevision: 0,
+  getDesktopSettings: jest.fn(async () => ({ autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [] })),
+  listSettingsModels: jest.fn(async () => []),
+  listInstalledSkills: jest.fn(async () => []),
+  listAvailableSkills: jest.fn(async () => []),
   sandboxAvailable: true,
   approvalTier: "manual",
   newConversation: jest.fn(),
@@ -41,7 +48,7 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
 }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }) }));
 
 let tree: ReactTestRenderer;
 const onManageDesktops = jest.fn();
@@ -99,6 +106,23 @@ test("settings uses a full-screen scrollable page and can be dismissed", () => {
   act(() => modal.props.onRequestClose());
   expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
 });
+
+test.each(["desktopSettings.preferences", "desktopSettings.models", "desktopSettings.skills", "language.title"])(
+  "system back from %s returns to settings before closing the modal", async label => {
+    await act(async () => button("sessions.settings").props.onPress());
+    const modal = () => tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+    const link = () => modal().findAllByType(SettingsLink).find(node => node.props.label === label);
+    await act(async () => link()!.props.onPress());
+    expect(link()).toBeUndefined();
+    await act(async () => modal().props.onRequestClose());
+    expect(link()).toBeDefined();
+    expect(onManageDesktops).not.toHaveBeenCalled();
+    act(() => modal().props.onRequestClose());
+    expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+    await act(async () => button("sessions.settings").props.onPress());
+    expect(link()).toBeDefined();
+  },
+);
 
 test("iOS update checking waits until the settings modal has dismissed", async () => {
   jest.mocked(checkForUpdate).mockRejectedValueOnce(new Error("offline"));
