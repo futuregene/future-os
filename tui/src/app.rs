@@ -4017,6 +4017,10 @@ impl<T: TerminalIo> App<T> {
         }
 
         let mut buf = SYNC_BEGIN.to_string();
+        // Layout already wraps lines. Terminal width tables (especially tmux's
+        // emoji widths) can disagree with ours: an implicit wrap would shift
+        // every subsequent row and scroll the screen on each streaming frame.
+        buf += "\x1b[?7l";
         if clear {
             buf += &delete_kitty_images(&self.previous_kitty_image_ids);
             buf += "\x1b[H\x1b[2J"; // Home, clear screen (never clear scrollback)
@@ -4027,6 +4031,7 @@ impl<T: TerminalIo> App<T> {
             }
             buf += line;
         }
+        buf += "\x1b[?7h";
         buf += SYNC_END;
         self.terminal.write(&buf);
         self.cursor_row = new_lines.len().saturating_sub(1);
@@ -4281,6 +4286,7 @@ impl<T: TerminalIo> App<T> {
             debug_assert!(self.previous_lines.len() > new_lines.len());
             {
                 let mut buf = SYNC_BEGIN.to_string();
+                buf += "\x1b[?7l";
                 buf += &self
                     .delete_changed_kitty_images(first_changed as usize, last_changed as usize);
                 let target_row = new_lines.len().saturating_sub(1);
@@ -4335,6 +4341,7 @@ impl<T: TerminalIo> App<T> {
                 if extra_lines > 0 {
                     buf += &format!("\x1b[{extra_lines}A");
                 }
+                buf += "\x1b[?7h";
                 buf += SYNC_END;
                 self.terminal.write(&buf);
                 self.cursor_row = target_row;
@@ -4366,6 +4373,8 @@ impl<T: TerminalIo> App<T> {
 
         // ── Differential render ────────────────────────────────────────
         let mut buf = SYNC_BEGIN.to_string();
+        // As in full_render, allow only our explicit CRLFs to advance rows.
+        buf += "\x1b[?7l";
         buf += &self.delete_changed_kitty_images(first_changed as usize, last_changed as usize);
         let prev_viewport_bottom = prev_viewport_top + h - 1;
         let move_target_row = if append_start {
@@ -4430,6 +4439,7 @@ impl<T: TerminalIo> App<T> {
             buf += &format!("\x1b[{extra_lines}A");
         }
 
+        buf += "\x1b[?7h";
         buf += SYNC_END;
         self.terminal.write(&buf);
 
@@ -7372,6 +7382,54 @@ mod tests {
 
     fn render_writes(app: &App<FakeTerminal>) -> String {
         terminal_writes(app)
+    }
+
+    #[tokio::test]
+    async fn render_frames_disable_implicit_wrapping() {
+        // Our grapheme table counts ⭐ as one cell; tmux counts it as two.
+        // A logically fitting line can therefore wrap unexpectedly. Every
+        // text write must happen with DECAWM off, including full redraws.
+        let (mut app, _rx) = running_app(40, 10);
+        app.chat.add_message(ChatMessage::new(
+            "a".into(),
+            ChatRole::Assistant,
+            &format!("{}{}bbbb", "a".repeat(26), "⭐".repeat(5)),
+        ));
+        for frame in 0..5 {
+            app.terminal.writes.borrow_mut().clear();
+            match frame {
+                1 => app.chat.append_to_last_message("c"),    // diff
+                2 => app.request_render(true),                // full redraw
+                3 => app.chat.clear_messages(),               // shrink
+                4 => app.previous_lines.push("stale".into()), // deleted tail only
+                _ => {}
+            }
+            app.do_render();
+            let output = render_writes(&app);
+            let mut autowrap = true;
+            let mut offset = 0;
+            while offset < output.len() {
+                if let Some(code) = crate::utils::extract_ansi_code(&output, offset) {
+                    match code.code.as_str() {
+                        "\x1b[?7l" => autowrap = false,
+                        "\x1b[?7h" => autowrap = true,
+                        _ => {}
+                    }
+                    offset += code.length;
+                } else {
+                    let ch = output[offset..].chars().next().unwrap();
+                    if !ch.is_control() {
+                        assert!(!autowrap, "frame {frame}: unguarded text at {offset}");
+                    }
+                    offset += ch.len_utf8();
+                }
+            }
+            assert!(autowrap, "frame {frame}: restore before input handling");
+            if frame == 0 || frame == 2 {
+                assert!(output.contains("\r\n"), "keep explicit line advances");
+            }
+            assert!(output.contains("\x1b[?7h\x1b[?2026l"));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
