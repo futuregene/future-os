@@ -22,6 +22,8 @@ BYTE_STOP=262144
 
 class PairedCalls(f.Calls):
     def model_call(self,identity,messages,tools=None,require_tool=False):
+        if (self.root/'STOP').exists():
+            raise RuntimeError('operator stop before starting another paid request')
         body={'model':self.model,'messages':messages,'max_tokens':8192,'stream':True,
               'stream_options':{'include_usage':True},'thinking':{'type':'disabled'}}
         if tools:
@@ -48,6 +50,41 @@ def pending_candidates(prompt,projection):
     return [value for value in public_candidates(prompt) if value not in projection]
 
 
+def literal_regex_values(pattern):
+    """Recognize equivalent literal regex spellings without accepting wildcards.
+
+    Escaped vs plain spaces, slashes and hyphens must not change whether a
+    candidate was queried. Also accept bounded literal alternatives/groups.
+    """
+    try:
+        from re import _parser as parser
+    except ImportError:  # Python <=3.10
+        import sre_parse as parser
+    def expand(tokens):
+        values={''}
+        for op,arg in tokens:
+            name=str(op)
+            if name=='LITERAL': suffixes={chr(arg)}
+            elif name=='AT':
+                if str(arg) not in ('AT_BEGINNING','AT_BEGINNING_STRING','AT_END','AT_END_STRING','AT_BOUNDARY'):
+                    return set()
+                suffixes={''}
+            elif name=='SUBPATTERN':
+                if arg[1] or arg[2]: return set()
+                suffixes=expand(arg[3])
+            elif name=='BRANCH': suffixes=set().union(*(expand(branch) for branch in arg[1]))
+            elif name=='IN' and all(str(part[0])=='LITERAL' for part in arg): suffixes={chr(part[1]) for part in arg}
+            else: return set()
+            if not suffixes or len(values)*len(suffixes)>256: return set()
+            values={prefix+suffix for prefix in values for suffix in suffixes}
+        return values
+    try:
+        parsed=parser.parse(pattern,0)
+        if parsed.state.flags & (re.IGNORECASE|re.VERBOSE|re.LOCALE): return set()
+        return expand(parsed)
+    except (re.error,ValueError,TypeError,RecursionError): return set()
+
+
 def checked_candidates(name,args,output,pending):
     """An attempt is not proof of absence. Query echo alone is never evidence."""
     checked=set(); evidence=[]
@@ -64,10 +101,9 @@ def checked_candidates(name,args,output,pending):
     elif name=='history_list_items': evidence=[x.get('truncated_content','') for x in json.loads(output).get('items',[])]
     elif name=='grep':
         if 'regex parse error' in output or output.startswith('error:'): return checked
-        for value in pending:
-            # Fixed candidate-verification idiom; no inference from arbitrary
-            # regexes or from query-string echoes in errors.
-            if args.get('pattern')==re.escape(value): checked.add(value)
+        literals=literal_regex_values(args.get('pattern',''))
+        checked.update(value for value in pending if value in literals or
+                       (value.startswith('./') and value[2:] in literals))
         if output!='No files found': evidence=[output]
     elif name in ('read','glob'):
         if not output.startswith(('File observation not available:','No files found')): evidence=[output]
@@ -178,6 +214,7 @@ def main():
     parser=argparse.ArgumentParser()
     for key in ('closed','prior','output','future','dumper','bridge'): parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
+    parser.add_argument('--superseded-attempt',type=Path)
     args=parser.parse_args()
     for key in ('closed','prior','output','future','dumper','bridge'): setattr(args,key,getattr(args,key).resolve())
     args.output.mkdir(parents=True,exist_ok=True); args.output.chmod(0o700)
@@ -193,8 +230,19 @@ def main():
         assert previous['complete'] and previous['artifact_consistent'] and all(r['state']=='finished' for r in prior_ledger.values())
         assert b.load(args.closed/'verified-report.json')['verified']
         assert b.sha(args.bridge.read_bytes())==frozen['bridge_sha256'] and b.sha(args.dumper.read_bytes())==frozen['driver_sha256']
-        config={'version':1,'design':'paired fixed closed answer -> required candidate checks -> revised answer',
-            'model':frozen['model'],'chains':frozen['chains'],'budget':300,'opening_spend':previous['total_spent_or_reserved'],
+        superseded_cost=0; superseded_hash=None
+        if args.superseded_attempt:
+            old=args.superseded_attempt.resolve()
+            if (old/'runner.lock').exists(): raise RuntimeError('superseded run is still active')
+            old_config=b.load(old/'manifest.json'); old_ledger=b.load(old/'ledger.json')
+            assert old_config['closed_manifest_sha256']==b.sha(frozen)
+            assert old_config['opening_spend']==previous['total_spent_or_reserved']
+            assert all(row['state']=='finished' for row in old_ledger.values())
+            superseded_cost=sum(row.get('charged',row['reserved']) for row in old_ledger.values())
+            superseded_hash=b.sha(old_ledger)
+        config={'version':2,'design':'paired fixed closed answer -> required candidate checks -> revised answer',
+            'model':frozen['model'],'chains':frozen['chains'],'budget':300,'opening_spend':previous['total_spent_or_reserved']+superseded_cost,
+            'superseded_attempt_ledger_sha256':superseded_hash,'superseded_attempt_cost':superseded_cost,
             'prior_ledger_sha256':b.sha(prior_ledger),'closed_manifest_sha256':b.sha(frozen),
             'code_hashes':{str(p.relative_to(b.REPO)):b.sha(p.read_bytes()) for p in (Path(__file__),Path(e.__file__),Path(t.__file__),Path(f.__file__),Path(b.__file__),b.HERE/'native_stores.py',b.HERE/'native_codex.py')},
             'binaries':{k:b.sha(getattr(args,k).read_bytes()) for k in ('future','dumper','bridge')},

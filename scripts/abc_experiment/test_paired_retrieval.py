@@ -23,6 +23,18 @@ class PairedTests(unittest.TestCase):
         result=json.dumps({'chunks':[{'text':'Missing'}]})
         self.assertEqual(p.checked_candidates('history_get',{},result,{'Missing'}),{'Missing'})
 
+    def test_literal_regex_spellings_are_equivalent(self):
+        for pattern,value in [(r'16\.5\.2-diag','16.5.2-diag'),(r'16\.5\.2\-diag','16.5.2-diag'),
+                              ('6 GB','6 GB'),(r'6\ GB','6 GB'),(r'cli\/commands','cli/commands'),
+                              (r'^lib/adapter\.rs$','lib/adapter.rs')]:
+            self.assertEqual(p.literal_regex_values(pattern),{value})
+            self.assertEqual(p.checked_candidates('grep',{'pattern':pattern},'No files found',{value}),{value})
+        self.assertEqual(p.literal_regex_values(r'(foo|bar)\.txt'),{'foo.txt','bar.txt'})
+        self.assertEqual(p.checked_candidates('grep',{'pattern':r'harness-research\.md'},'No files found',{'./harness-research.md'}),{'./harness-research.md'})
+        self.assertEqual(p.literal_regex_values('.*'),set())
+        self.assertEqual(p.literal_regex_values(r'foo.*'),set())
+        self.assertEqual(p.literal_regex_values(r'(?i)foo'),set())
+
     def test_gains_losses_and_false_positives_are_separate(self):
         result=p.paired_delta({'appeared':['a','b','d']},{'appeared':['b','c','e']},{'present':['a','b','c'],'decoys':['d','e']})
         self.assertEqual((result['gained'],result['lost'],result['net_gain']),(1,1,0))

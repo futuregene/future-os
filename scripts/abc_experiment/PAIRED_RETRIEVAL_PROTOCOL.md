@@ -54,8 +54,16 @@ Use the same 72 cases, v3 projection/question hashes, model, disabled thinking,
 chain/boundary using a frozen seed. No low-score-only reruns and no replacing
 prior results. Each C/C3 case verifies imported agent.db and expected entry count.
 
-New root: `~/compact-exp/paired-retrieval-v1`. Opening spend is ¥44.92906856,
-including every earlier run. Total authorization remains ¥300; reserve before
+The first root `~/compact-exp/paired-retrieval-v1` is retained as a superseded
+instrumentation run (104 settled requests, ¥0.52621008). Its OpenCode query
+counter required identical `re.escape` spellings and wrongly rejected equivalent
+literal regexes. Corrected v2 recognizes parsed literal alternatives/anchors,
+including plain/escaped spaces and hyphens, while rejecting wildcard-only
+patterns as a verification shortcut. Regression tests cover actual failing
+traces. No selected v1 arm scores are reused.
+
+Current root: `~/compact-exp/paired-retrieval-v2`. Opening spend is ¥45.45527864,
+including every earlier run and the entire superseded attempt. Total authorization remains ¥300; reserve before
 requests and retain failure costs. No additional models or LLM workers.
 
 Freeze source/binary hashes and baselines/pending lists before execution.
