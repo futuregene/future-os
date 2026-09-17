@@ -2,23 +2,24 @@
 """Screenshot harness for the FutureOS desktop and mobile apps.
 
 Renders the real frontends against fixed demo data, in a real browser, so
-product screenshots (release notes, PRs, docs) can be produced on a machine
-with no display. See docs/guide/screenshots.md.
+product screenshots, feature diagrams and illustrated documents can be produced
+on a machine with no display. See docs/guide/screenshots.zh-CN.md (English:
+docs/guide/screenshots.md).
 
 Commands
-  serve desktop|mobile      start the harness dev server(s) and stay in the foreground
-  capture desktop|mobile    run scenarios and write PNGs to the output directory
-  terminal OUT.png -- CMD   render a command's terminal output as an image
-  pdf CONTENT.json OUT.pdf  assemble a document from captured PNGs and captions
+  serve-desktop / serve-mobile     start the harness dev server (foreground)
+  capture-desktop / capture-mobile run scenarios, write PNGs to --out
+  terminal OUT.png -- CMD          render a command's real output as a terminal image
+  pdf CONTENT.json OUT.pdf         assemble a document from captured PNGs and captions
 
 Options
   --out DIR        output directory (default .screenshots/)
   --port N         override the harness port
-  --scenario NAME  repeatable; defaults to every scenario for the platform
+  --cdp-port N     CDP port of the browser to use or start (default 9222)
 
 Typical use
-  make screenshots-desktop            # terminal 1
-  make screenshots-capture-desktop    # terminal 2
+  python3 scripts/screenshots/capture.py serve-desktop     # terminal 1
+  python3 scripts/screenshots/capture.py capture-desktop   # terminal 2
 """
 
 import argparse
@@ -405,7 +406,7 @@ def capture(args: argparse.Namespace) -> int:
 
     if port_free(config["port"]):
         print(f"error: nothing is listening on port {config['port']}.", file=sys.stderr)
-        print(f"  start it first:  make screenshots-{args.platform}", file=sys.stderr)
+        print(f"  start it first:  python3 scripts/screenshots/capture.py serve-{args.platform}", file=sys.stderr)
         return 1
 
     ensure_demo_assets()

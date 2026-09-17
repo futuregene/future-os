@@ -6,6 +6,17 @@
 
 被替换的只有数据来源；组件、hook、store、样式和 i18n 都是线上那份代码。点击和输入都以真实输入事件派发，所以截到的就是界面真实的行为。
 
+## 它用来做什么
+
+典型需求（三种都是：先用真实界面产出图，再组装成文档，见「生成文档」）：
+
+- 「给 X 到 Y 版本之间的功能增减做一份 PDF」——截取受影响的界面，再生成「文字配一到两张图」的文档。
+- 「给桌面端某个功能出一张图」——一个场景，一张 PNG。
+- 「写一份手机端某个功能的使用流程说明」——每个步骤一个场景（列表 → 对话框 → 结果），组装成文档。
+- 「展示某条命令的终端输出」——用 `terminal` 子命令把命令的真实 stdout 渲染进终端外框。
+
+范围以「界面能不能表现出来」为准：如果某个改动没有界面（协议变更、只存在于 TUI 的提示），那就没有可截的东西——直接说明，比拿别的画面凑数更合适。
+
 ## 它是什么，不是什么
 
 | 真实 | 被替换 |
@@ -25,16 +36,16 @@
 - Node.js（驱动用到的 `ws` 已是仓库依赖）和 Python 3。
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
 - `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。
-- 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`make screenshots-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
+- 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
 
 ## 桌面端
 
 两个终端，因为 dev server 一直占着前台：
 
 ```bash
-make screenshots-desktop        # 终端 1：提供 http://localhost:5299/shot/
-make screenshots-capture-desktop   # 终端 2：跑全部场景
-make screenshots-capture-desktop -- d-rail-tree d-steps-folded   # 或只跑几个
+python3 scripts/screenshots/capture.py serve-desktop     # 终端 1：提供 http://localhost:5299/shot/
+python3 scripts/screenshots/capture.py capture-desktop       # 终端 2：跑全部场景
+python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded            # 或只跑几个
 ```
 
 截图写到 `.screenshots/`（已 gitignore）。你也可以自己打开 <http://localhost:5299/shot/> 手动探索；工具还会在 7391 端口起一个替身 PTY 服务，让内嵌终端面板有东西可显示。
@@ -42,11 +53,11 @@ make screenshots-capture-desktop -- d-rail-tree d-steps-folded   # 或只跑几�
 ## 手机端
 
 ```bash
-make screenshots-mobile         # 终端 1：Expo web，http://localhost:8099/
-make screenshots-capture-mobile    # 终端 2
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile     # 终端 1：Expo web，http://localhost:8099/
+python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 ```
 
-手机端以手机视口渲染（默认 390×844、2 倍像素密度），并通过 HTTP 提供演示图片，所以在聊天里内嵌的图片和可缩放预览都能正常显示。`make screenshots-mobile` 会导出 `SHOT_WEB=1`；这是唯一的开关——`mobile/metro.config.js` **仅在 web 平台、仅在该变量为 1 时**把 remote context 和两个原生模块指向 `mobile/shot/mock/`，因此原生构建（`make run-mobile-android`）完全不受影响。
+手机端以手机视口渲染（默认 390×844、2 倍像素密度），并通过 HTTP 提供演示图片，所以在聊天里内嵌的图片和可缩放预览都能正常显示。`serve-mobile` 会导出 `SHOT_WEB=1`；这是唯一的开关——`mobile/metro.config.js` **仅在 web 平台、仅在该变量为 1 时**把 remote context 和两个原生模块指向 `mobile/shot/mock/`，因此原生构建（`make run-mobile-android`）完全不受影响。
 
 ## 场景
 
@@ -76,7 +87,7 @@ make screenshots-capture-mobile    # 终端 2
 两条刻意的规则，让它保持是工具而不是一堆二进制文件：
 
 - **截图永不入库。** 截图落在 `.screenshots/`（已 gitignore）；`desktop/shot/assets/` 同样忽略——那里是 `gen-demo-assets.py` 为对话生成的演示图。缺少时 `capture.py` 会自动重新生成（没有 matplotlib 就告警并继续截图）。
-- **仅为工具服务的 web 依赖永不写进依赖清单。** `make screenshots-mobile` 用 `--no-save` 把 `react-native-web`、`@expo/metro-runtime` 和 `react-dom` 装进 mobile workspace，因此 `mobile/package.json` 和 `package-lock.json` 保持原样。之后跑一次 `npm install`，依赖树就回到应用自己的样子。
+- **仅为工具服务的 web 依赖永不写进依赖清单。** `serve-mobile` 用 `--no-save` 把 `react-native-web`、`@expo/metro-runtime` 和 `react-dom` 装进 mobile workspace，因此 `mobile/package.json` 和 `package-lock.json` 保持原样。之后跑一次 `npm install`，依赖树就回到应用自己的样子。
 
 `mobile/shot/assets/` 是刻意不存在的：手机端改为通过 HTTP 读取演示图（`scenarios.json` 里的 `assetsPort`），两个平台共用同一份。
 
@@ -103,7 +114,7 @@ python3 scripts/screenshots/capture.py terminal t-headless.png -- \
 
 mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出来，不会静默出错：
 
-- 桌面端 mock 对没实现的命令会在浏览器控制台打印 `[mock] UNHANDLED COMMAND <name>`。看 `make screenshots-*` 的输出或浏览器控制台，是最快知道新界面需要什么的方式。
+- 桌面端 mock 对没实现的命令会在浏览器控制台打印 `[mock] UNHANDLED COMMAND <name>`。看截图命令的输出或浏览器控制台，是最快知道新界面需要什么的方式。
 - 手机端 mock 对未知的 context 成员返回空操作并警告 `[shot] mock RemoteContext has no "<name>"`。请补上真实值，让界面渲染出有意义的内容。
 - 界面需要新的演示内容时，扩展数据模块，不要往 mock 里塞特例。
 
@@ -128,5 +139,5 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | `cdp: no page target on port …` | 上一次运行留下的浏览器占着 CDP 端口；关掉它或换 `--cdp-port`。 |
 | `target not found: …` | `aria-label` 变了，或步骤跑在界面稳定之前——把前一个 `wait` 调大。 |
 | 点击没有反应 | 在可滚动列表里，react-native-web 会优先响应滚动手势；驱动已经发送触摸序列，请确认没有关掉 `--touch`。 |
-| 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`make screenshots-mobile` 会检查并给出修复命令。 |
-| `error: nothing is listening on port …` | dev server 没起：先跑 `make screenshots-desktop|mobile`。 |
+| 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`serve-mobile` 会检查并给出修复命令。 |
+| `error: nothing is listening on port …` | dev server 没起：先跑 `capture.py serve-desktop` 或 `serve-mobile`。 |

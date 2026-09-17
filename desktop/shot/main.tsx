@@ -2,7 +2,8 @@
  * Screenshot harness entry point for the desktop app.
  *
  * Mounts the real application (`src/app/App`) with the Tauri boundary mocked.
- * Started by `make screenshots-desktop`; see `docs/guide/screenshots.md`.
+ * Started by `scripts/screenshots/capture.py serve-desktop`; see
+ * `docs/guide/screenshots.zh-CN.md` (or the .md next to it).
  *
  * URL parameters drive states a plain page load cannot reach:
  *   ?press=meta+f          dispatch this shortcut at the real window listener

@@ -13,6 +13,23 @@ Only the data source is faked; components, hooks, stores, styles and i18n are th
 shipped code. Taps and typing are dispatched as real input events, so what you
 capture is what the UI does.
 
+## What it is for
+
+Typical requests this covers — in each case, produce the images from the real UI,
+then assemble them (see *Building a document*):
+
+- "Release notes for the changes between version X and Y" — capture the affected
+  screens, then a PDF whose items pair prose with one or two screenshots.
+- "A diagram of the desktop `<feature>`" — one scenario, one PNG.
+- "A walkthrough of the mobile `<feature>` flow" — a scenario per step (list →
+  dialog → result), assembled into a document.
+- "Show the CLI output for `<command>`" — the `terminal` subcommand renders a
+  command's real stdout in a terminal frame.
+
+Scope follows what the app can actually show: if a feature has no screen (a wire
+protocol change, a TUI-only notice), there is nothing to capture, and saying so
+is better than illustrating it with a stand-in.
+
 ## What it is, and what it is not
 
 | Real | Replaced |
@@ -38,7 +55,7 @@ Consequences worth knowing before trusting a screenshot:
 - Chrome, Edge or Chromium. Safari is not supported (the driver needs CDP).
 - `pip install pillow` is optional: it only shrinks images in the generated PDF.
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
-  and `react-dom`; `make screenshots-mobile` installs them into the mobile
+  and `react-dom`; `capture.py serve-mobile` installs them into the mobile
   workspace on demand and leaves the manifests alone (see *Nothing is committed*).
 
 ## Desktop
@@ -46,9 +63,9 @@ Consequences worth knowing before trusting a screenshot:
 Two terminals, because the dev server stays in the foreground:
 
 ```bash
-make screenshots-desktop        # terminal 1: serves http://localhost:5299/shot/
-make screenshots-capture-desktop   # terminal 2: runs every scenario
-make screenshots-capture-desktop -- d-rail-tree d-steps-folded   # or pick some
+python3 scripts/screenshots/capture.py serve-desktop     # terminal 1: serves http://localhost:5299/shot/
+python3 scripts/screenshots/capture.py capture-desktop       # terminal 2: runs every scenario
+python3 scripts/screenshots/capture.py capture-desktop d-rail-tree d-steps-folded              # or just some
 ```
 
 The captured PNGs land in `.screenshots/` (gitignored). Open
@@ -59,13 +76,13 @@ to show.
 ## Mobile
 
 ```bash
-make screenshots-mobile         # terminal 1: Expo web on http://localhost:8099/
-make screenshots-capture-mobile    # terminal 2
+SHOT_WEB=1 python3 scripts/screenshots/capture.py serve-mobile     # terminal 1: Expo web on http://localhost:8099/
+python3 scripts/screenshots/capture.py capture-mobile       # terminal 2
 ```
 
 The mobile harness renders at a phone viewport (390×844 at 2× by default) and
 serves the demo figures over HTTP, so inline images and the zoomable preview
-resolve. `make screenshots-mobile` exports `SHOT_WEB=1`; that flag is the only
+resolve. `serve-mobile` sets `SHOT_WEB=1`; that flag is the only
 switch — `mobile/metro.config.js` redirects the remote context and the two native
 modules to `mobile/shot/mock/` **only** on the web platform and only when it is
 set, so native builds (`make run-mobile-android`) are unaffected.
@@ -119,7 +136,7 @@ Two deliberate rules, so this stays a tool rather than a pile of binaries:
   those figures automatically when they are missing (it warns, and captures
   anyway, if matplotlib is absent).
 - **The harness-only web dependencies are never saved to a manifest.**
-  `make screenshots-mobile` installs `react-native-web`, `@expo/metro-runtime` and
+  `serve-mobile` installs `react-native-web`, `@expo/metro-runtime` and
   `react-dom` into the mobile workspace with `--no-save`, so `mobile/package.json`
   and `package-lock.json` are untouched. Run `npm install` afterwards and the tree
   goes back to the app's own dependencies.
@@ -157,7 +174,7 @@ The mocks are the only part that tracks the product, and misses are loud rather
 than silent:
 
 - The desktop mock logs `[mock] UNHANDLED COMMAND <name>` in the browser console
-  for any command it does not answer. Both `make screenshots-*` and the browser's
+  for any command it does not answer. Both the capture output and the browser's
   console are the fastest way to see what a new screen needs.
 - The mobile mock returns a no-op for an unknown context member and warns
   `[shot] mock RemoteContext has no "<name>"`. Add a real value so the screen
@@ -186,5 +203,5 @@ than silent:
 | `cdp: no page target on port …` | A stale browser from an earlier run holds the CDP port; close it or pass `--cdp-port`. |
 | `target not found: …` | The `aria-label` changed, or the step ran before the screen settled — raise the preceding `wait`. |
 | A tap does nothing | Inside a scrollable list, react-native-web prefers the scroll responder; the driver already sends touch sequences, so check `--touch` was not disabled. |
-| Empty or partial mobile screen | Expo web is still bundling on the first request; wait for the first capture, then re-run. If the page is blank and the console reports "Incompatible React versions", the mobile workspace's react/react-dom pair drifted — `make screenshots-mobile` checks this and prints the fix. |
-| `error: nothing is listening on port …` | The dev server is not running: start `make screenshots-desktop|mobile` first. |
+| Empty or partial mobile screen | Expo web is still bundling on the first request; wait for the first capture, then re-run. If the page is blank and the console reports "Incompatible React versions", the mobile workspace's react/react-dom pair drifted — `serve-mobile` checks this and prints the fix. |
+| `error: nothing is listening on port …` | The dev server is not running: start `capture.py serve-desktop|serve-mobile` first. |

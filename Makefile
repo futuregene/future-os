@@ -5,7 +5,6 @@
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
-	screenshots-desktop screenshots-mobile screenshots-capture-desktop screenshots-capture-mobile \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
 	install install-cli install-desktop install-skills update-skills uninstall package-desktop clean setup
@@ -299,25 +298,6 @@ run-mobile-ios:
 	$(call npm-install-if-needed,mobile)
 	cd mobile && npm run ios
 
-# ─── Screenshots (docs/guide/screenshots.md) ─────────────────────────────────
-# Render the real desktop/mobile frontends against demo data in a local browser,
-# so product screenshots can be produced without a display. Two terminals:
-#   make screenshots-desktop            # then, in another shell:
-#   make screenshots-capture-desktop
-screenshots-desktop:
-	$(call npm-install-if-needed,desktop)
-	python3 scripts/screenshots/capture.py serve-desktop
-
-screenshots-mobile:
-	$(call npm-install-if-needed,mobile)
-	python3 scripts/screenshots/capture.py serve-mobile
-
-screenshots-capture-desktop:
-	python3 scripts/screenshots/capture.py capture-desktop
-
-screenshots-capture-mobile:
-	python3 scripts/screenshots/capture.py capture-mobile
-
 # ─── Profile ────────────────────────────────────────────────────────────────
 # profile-agent-build: release agent with frame pointers + line tables so
 # profilers resolve symbols (shared by profile-agent / profile-quick).
@@ -435,8 +415,6 @@ help:
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -loop   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
-	@echo "  screenshots-desktop / -mobile       Serve the screenshot harness (see docs/guide/screenshots.md)"
-	@echo "  screenshots-capture-desktop / -mobile  Capture screenshots into .screenshots/"
 	@echo "  profile-agent / profile-quick / profile-heap  CPU/heap profiling (PROFILE_SECS=30)"
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto                      Regenerate wire code (packages/rpc future.proto + channels feishu_ws)"

@@ -25,7 +25,7 @@ const resolveDefault = (context, moduleName, platform) => context.resolveRequest
 );
 
 /**
- * Screenshot harness (`make screenshots-mobile`, see docs/guide/screenshots.md).
+ * Screenshot harness (SHOT_WEB=1; see docs/guide/screenshots.zh-CN.md).
  *
  * On the web platform only, and only when SHOT_WEB=1, the NATS-backed remote
  * context and the two native modules it depends on resolve to the stand-ins
