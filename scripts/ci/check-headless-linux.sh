@@ -28,7 +28,14 @@ docker run --rm --network none \
     printf "%s\n" "$output"
     test "$status" -eq 1
     printf "%s\n" "$output" | grep -F "interactive terminal"
-    test ! -e "$HOME/.future/agent/auth.json"
+    # Dev builds persist their default test-environment base_url before the
+    # interactive-terminal gate. That configuration is expected and contains
+    # no credential; reject an actual saved API key instead of requiring the
+    # whole auth file to be absent. Release builds normally leave it absent.
+    auth="$HOME/.future/agent/auth.json"
+    if test -e "$auth"; then
+      ! grep -Eq '"key"[[:space:]]*:' "$auth"
+    fi
     test ! -e "$HOME/.future/remote_pairing.json"
     test ! -e "$HOME/.future/app/app.db"
   '
