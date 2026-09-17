@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Modal, Platform, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Info, Sparkles } from "lucide-react-native";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
 import { DialogSurface } from "../../../components/DialogSurface";
-import { colors, radius, spacing } from "../../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
 export function RenameModal({
   renameOpen,
@@ -25,6 +26,7 @@ export function RenameModal({
   t: TFunction;
 }) {
   const [generating, setGenerating] = useState(false);
+  const [hintOpen, setHintOpen] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const epoch = useRef(0);
   const busy = useRef(false);
@@ -34,6 +36,7 @@ export function RenameModal({
     setPreviousScope({ open: renameOpen, key: generationKey });
     setGenerating(false);
     setGenerationError(null);
+    setHintOpen(false);
   }
   useEffect(() => {
     scope.current = { open: renameOpen, key: generationKey };
@@ -42,6 +45,7 @@ export function RenameModal({
     return () => { epoch.current += 1; };
   }, [renameOpen, generationKey]);
   const close = () => {
+    setHintOpen(false);
     epoch.current += 1;
     busy.current = false;
     onClose();
@@ -84,26 +88,41 @@ export function RenameModal({
       visible={renameOpen}
     >
       <DialogSurface>
-          <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
-          <TextInput
-            autoFocus
-            editable={!generating}
-            accessibilityLabel={t("chat.renameTitle")}
-            onChangeText={setRenameValue}
-            onSubmitEditing={save}
-            placeholder={t("sessions.unnamed")}
-            placeholderTextColor={colors.inkMuted}
-            returnKeyType="done"
-            style={styles.nameInput}
-            underlineColorAndroid="transparent"
-            value={renameValue}
-          />
-          {onGenerate ? (
-            <View>
-              <Button compact disabled={generating} label={t(generating ? "chat.generatingTitle" : "chat.generateTitle")} onPress={() => void generate()} variant="secondary" />
-              <Text style={styles.hint}>{t("chat.generateTitleHint")}</Text>
-            </View>
-          ) : null}
+          <View style={styles.header}>
+            <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
+            {onGenerate && (
+              <Pressable accessibilityRole="button" accessibilityLabel={t("chat.generateTitleHelp")}
+                accessibilityState={{ expanded: hintOpen }} onPress={() => setHintOpen(value => !value)}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
+                <Info color={colors.inkMuted} size={18} />
+              </Pressable>
+            )}
+          </View>
+          <View style={styles.inputRow}>
+            <TextInput
+              autoFocus
+              editable={!generating}
+              accessibilityLabel={t("chat.renameTitle")}
+              onChangeText={setRenameValue}
+              onSubmitEditing={save}
+              placeholder={t("sessions.unnamed")}
+              placeholderTextColor={colors.inkMuted}
+              returnKeyType="done"
+              style={styles.nameInput}
+              underlineColorAndroid="transparent"
+              value={renameValue}
+            />
+            {onGenerate && (
+              <Pressable accessibilityRole="button"
+                accessibilityLabel={t(generating ? "chat.generatingTitle" : "chat.generateTitle")}
+                accessibilityState={{ disabled: generating, busy: generating }} disabled={generating}
+                onPress={() => void generate()}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, generating && styles.disabled]}>
+                {generating ? <ActivityIndicator color={colors.accent} size="small" /> : <Sparkles color={colors.accent} size={20} />}
+              </Pressable>
+            )}
+          </View>
+          {onGenerate && hintOpen && <Text style={styles.hint}>{t("chat.generateTitleHint")}</Text>}
           {generationError ? <Text accessibilityRole="alert" style={styles.error}>{t("chat.titleGenerationFailed", { message: generationError })}</Text> : null}
           <View style={styles.dialogActions}>
             <View style={styles.dialogAction}>
@@ -124,10 +143,17 @@ export function RenameModal({
 }
 
 const styles = StyleSheet.create({
-  hint: { color: colors.inkMuted, fontSize: 12, marginTop: spacing.sm },
+  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  inputRow: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
+  pressed: { backgroundColor: colors.surfaceSubtle },
+  disabled: { opacity: 0.5 },
+  hint: { color: colors.inkMuted, fontSize: 12, lineHeight: 18 },
   error: { color: colors.danger, fontSize: 12 },
-  dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
+  dialogTitle: { flex: 1, color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   nameInput: {
+    flex: 1,
+    minWidth: 0,
     minHeight: 48,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,

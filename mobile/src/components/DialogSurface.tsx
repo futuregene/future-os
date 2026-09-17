@@ -65,8 +65,8 @@ export function DialogSurface({ children, footer }: PropsWithChildren<{ footer?:
 const styles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: colors.overlay },
   viewport: { flex: 1 },
-  // Only notices opt into a pinned footer; forms/settings keep their existing
-  // whole-card scrolling. Flex shrink gives long text the remaining height.
+  // Callers opt into a pinned footer; other forms/settings keep their existing
+  // whole-card scrolling. Flex shrink gives the body the remaining height.
   fixedViewport: { flex: 1, justifyContent: "center", alignItems: "center", padding: layout.gutter },
   fixedDialog: { maxHeight: "100%", flexShrink: 1 },
   body: { flexGrow: 0, flexShrink: 1 },

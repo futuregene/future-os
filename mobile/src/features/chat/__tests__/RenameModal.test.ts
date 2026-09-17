@@ -1,9 +1,11 @@
 import { createElement } from "react";
-import { TextInput } from "react-native";
+import { StyleSheet, Text, TextInput } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
 import { RenameModal } from "../components/RenameModal";
+
+jest.mock("lucide-react-native", () => ({ Info: "Info", Sparkles: "Sparkles" }));
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -16,7 +18,8 @@ const submitRename = jest.fn(async () => {});
 const onClose = jest.fn();
 const onGenerate = jest.fn<Promise<string>, []>();
 const props = { renameOpen: true, renameValue: "Original", generationKey: "s1", setRenameValue, submitRename, onClose, onGenerate, t };
-const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
+const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)
+  ?? tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -26,6 +29,24 @@ afterEach(() => act(() => tree.unmount()));
 
 test("hides the native Android underline inside the rounded input border", () => {
   expect(tree.root.findByType(TextInput).props.underlineColorAndroid).toBe("transparent");
+});
+
+test("generation stays beside the input and its explanation is hidden until requested", () => {
+  const input = tree.root.findByType(TextInput);
+  expect(StyleSheet.flatten(input.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
+  const generate = button("chat.generateTitle");
+  expect(StyleSheet.flatten(generate.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
+  expect(generate.parent).toBe(input.parent);
+  const hints = () => tree.root.findAllByType(Text).filter(node => node.props.children === "chat.generateTitleHint");
+  expect(hints()).toHaveLength(0);
+  act(() => button("chat.generateTitleHelp").props.onPress());
+  expect(hints()).toHaveLength(1);
+  expect(onGenerate).not.toHaveBeenCalled();
+  act(() => tree.update(createElement(RenameModal, { ...props, generationKey: "s2" })));
+  expect(hints()).toHaveLength(0);
+  act(() => tree.update(createElement(RenameModal, { ...props, onGenerate: undefined })));
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "chat.generateTitleHelp")).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "chat.generateTitle")).toHaveLength(0);
 });
 
 test("opening does not generate; click fills the draft without saving", async () => {
