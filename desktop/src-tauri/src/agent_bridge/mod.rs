@@ -22,10 +22,10 @@ pub(crate) use self::test_support::get_state_payload;
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    compact_command, connect_agent, delete_session_command, get_available_models_command,
-    get_run_state_command, get_session_entries_before_command, get_session_entries_page_command,
-    get_state_command, list_streaming_sessions_command, map_rpc_error, set_default_model_command,
-    set_model_command, set_session_name_command, set_thinking_level_command, RpcResponseExt,
+    connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
+    get_session_entries_before_command, get_session_entries_page_command, get_state_command,
+    list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
+    set_session_name_command, set_thinking_level_command, RpcResponseExt,
 };
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::headless::{
@@ -36,7 +36,7 @@ pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOpti
 pub use self::observer::{
     drop_observer, ensure_observer_for_thread, seed_observers_from_store, spawn_session_discovery,
 };
-pub use self::run_control::abort_run;
+pub use self::run_control::{abort_run, compact_thread_context};
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
 pub use self::session_events::spawn_session_events_observer;
@@ -825,7 +825,7 @@ pub(crate) async fn agent_prompt_with_acceptance(
     // can no longer wedge the run's visible state.
     match &result {
         Ok(response) if response.complete => {
-            mark_run_completed_if_active(request.run_id.as_deref());
+            mark_run_completed_if_active(request.run_id.as_deref()).await;
         }
         Ok(response) => {
             let error = stream::termination_error(response.termination_kind.as_deref());

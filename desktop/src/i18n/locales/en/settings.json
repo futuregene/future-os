@@ -45,6 +45,10 @@
     "title": "Auto-upgrade skills",
     "description": "Silently upgrade installed skills to their latest version each time the app opens"
   },
+  "autoCompactFirstTurn": {
+    "title": "Summarize after the first answer",
+    "description": "Automatically summarize the opening context only after a new conversation’s first answer completes successfully. Later answers do not trigger it, and original messages are preserved. Off by default."
+  },
   "bellOnComplete": {
     "title": "Completion bell",
     "description": "Play a sound and attract the window's attention when an agent finishes"
