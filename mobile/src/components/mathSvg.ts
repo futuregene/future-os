@@ -1,11 +1,13 @@
 import "./mathjaxEnvironment";
-import { mathjax } from "@mathjax/src/js/mathjax.js";
-import { TeX } from "@mathjax/src/js/input/tex.js";
-import { SVG } from "@mathjax/src/js/output/svg.js";
-import { liteAdaptor } from "@mathjax/src/js/adaptors/liteAdaptor.js";
-import { RegisterHTMLHandler } from "@mathjax/src/js/handlers/html.js";
-import { MathJaxTexFont } from "@mathjax/mathjax-tex-font/js/svg.js";
-import "@mathjax/src/js/input/tex/ams/AmsConfiguration.js";
+// MathJax v4 publishes ESM under `mjs/`. Its package-export `js/` aliases are
+// understood by Node, but Metro resolves the physical path instead.
+import { mathjax } from "@mathjax/src/mjs/mathjax.js";
+import { TeX } from "@mathjax/src/mjs/input/tex.js";
+import { SVG } from "@mathjax/src/mjs/output/svg.js";
+import { liteAdaptor } from "@mathjax/src/mjs/adaptors/liteAdaptor.js";
+import { RegisterHTMLHandler } from "@mathjax/src/mjs/handlers/html.js";
+import { MathJaxTexFont } from "@mathjax/mathjax-tex-font/mjs/svg.js";
+import "@mathjax/src/mjs/input/tex/ams/AmsConfiguration.js";
 
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
