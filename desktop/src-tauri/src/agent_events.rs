@@ -44,6 +44,29 @@ pub(crate) fn publish_event(
         });
     }
 }
+/// Invalidate desktop and phone views after a committed settings/skills change.
+/// No preferences or credentials are carried by this notification: both clients
+/// reread the desktop's authoritative state, including after reconnect/resume.
+pub(crate) fn publish_invalidation(event_type: &str) {
+    #[cfg(feature = "gui")]
+    if let Some(handle) = crate::APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = handle.emit(event_type, ());
+    }
+    publish_event(
+        "_global",
+        event_type,
+        "{}",
+        "",
+        -1,
+        0,
+        &format!("{event_type}-{:016x}", rand::random::<u64>()),
+        "",
+        -1,
+        -1,
+    );
+}
+
 pub(crate) fn publish_snapshot(
     session_id: &str,
     run_id: &str,

@@ -500,6 +500,11 @@ mod tests {
     #[tokio::test]
     async fn mark_run_status_helpers_noop_on_none_and_report_store_errors() {
         let home = TestHome::new("rc-mark");
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("disable background titles for status-only test");
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let run = seed_run(&thread.id);
@@ -559,7 +564,15 @@ mod tests {
         for language in ["zh", "en"] {
             let thread = seed_thread(&workspace.id, Some(language));
             let run = seed_run(&thread.id);
-            enable_title_generation(language);
+            let settings = store::update_app_settings(store::UpdateAppSettingsInput {
+                title_language: Some(language.into()),
+                ..Default::default()
+            })
+            .expect("set title language");
+            assert!(
+                settings.auto_title_first_turn,
+                "title generation is enabled by default"
+            );
             mock.push_state_for_session(
                 language,
                 Reply::TypedData(get_state_payload(language, false)),
@@ -595,8 +608,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn first_turn_setting_is_opt_in_and_does_not_backfill_old_chats() {
-        let home = TestHome::new("rc-first-turn-default");
+    async fn first_turn_setting_respects_opt_out_and_does_not_backfill_old_chats() {
+        let home = TestHome::new("rc-first-turn-opt-out");
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("explicitly disable titles");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));

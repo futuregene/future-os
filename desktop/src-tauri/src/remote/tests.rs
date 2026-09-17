@@ -799,6 +799,9 @@ mod runtime_tests {
             "error",
             "session_name_changed",
             "provider_config_changed",
+            "model_visibility_changed",
+            "app_settings_changed",
+            "skills_changed",
             "run_snapshot",
         ] {
             assert!(is_catalog_event(event), "{event}");

@@ -815,7 +815,7 @@ below New Chat jumps straight to the models page) has three pages:
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); **Generate a title after the first answer**
-  (off by default). This generates and saves a title in the background using the
+  (on by default; an explicitly saved off choice is preserved). This generates and saves a title in the background using the
   same title-suggestion API as the rename dialog, once after a new conversation's
   first successful run. It never compacts or changes conversation context. Later
   turns, failed/cancelled first runs, and replayed completion events do not trigger
@@ -824,7 +824,7 @@ below New Chat jumps straight to the models page) has three pages:
   edited while generation is in flight is not overwritten.
 
 **Session title suggestions** can be requested from the rename window in Desktop
-and mobile, or by Desktop's opt-in first-answer title generation. The generator
+and mobile, or by Desktop's first-answer title generation. The generator
 calls the conversation's selected model with at most its first three completed
 question–answer pairs, excluding tools, reasoning and later exchanges. If none
 of the first three user turns has a final answer (for example, a running or

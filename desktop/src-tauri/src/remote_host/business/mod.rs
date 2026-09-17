@@ -26,7 +26,13 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         "prompt" | "get_prompt_receipt" | "abort" | "continue_run" | "approval_decision" => {
             prompt::execute(&cmd, sink).await;
         }
-        "get_state"
+        "get_desktop_settings"
+        | "update_desktop_settings"
+        | "list_settings_models"
+        | "list_available_skills"
+        | "install_skill"
+        | "uninstall_skill"
+        | "get_state"
         | "list_models"
         | "get_available_models"
         | "list_skills"

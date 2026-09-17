@@ -32,7 +32,7 @@ pub struct AppSettings {
     /// finishes. On by default.
     pub bell_on_complete: bool,
     /// Generate and save a title after the first successful answer, without compaction.
-    /// Off by default; later turns never trigger this preference.
+    /// On by default; later turns never trigger this preference.
     pub auto_title_first_turn: bool,
     /// UI language mirrored for title generation when the webview is suspended.
     pub title_language: String,
@@ -185,6 +185,7 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
+    crate::agent_events::publish_invalidation("app_settings_changed");
     // Notify paired clients only after commit: their next model read must see
     // the new visibility. Reconnect also rereads the catalogue if this is lost.
     if model_visibility_changed {
@@ -228,7 +229,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         .unwrap_or(true); // On by default — a finished run should get noticed.
     let auto_title_first_turn = read_value(conn, KEY_AUTO_TITLE_FIRST_TURN)?
         .map(|value| value == "true")
-        .unwrap_or(false);
+        .unwrap_or(true);
     let title_language = read_value(conn, KEY_TITLE_LANGUAGE)?
         .filter(|value| matches!(value.as_str(), "en" | "zh"))
         .unwrap_or_else(|| "en".to_string());
@@ -414,16 +415,35 @@ mod tests {
     }
 
     #[test]
-    fn first_turn_title_defaults_off_and_persists_updates() {
+    fn first_turn_title_defaults_on_and_persists_updates() {
         let (_home, conn) = guarded_conn("settings_first_turn_title");
-        assert!(!get_app_settings().expect("defaults").auto_title_first_turn);
+        assert!(get_app_settings().expect("defaults").auto_title_first_turn);
         assert_eq!(get_app_settings().expect("defaults").title_language, "en");
-        write_value(&conn, "auto_compact_first_turn", "true", 1).expect("legacy opt-in");
-        assert!(
-            get_app_settings()
-                .expect("legacy preference")
-                .auto_title_first_turn
-        );
+        for enabled in [false, true] {
+            write_value(
+                &conn,
+                "auto_compact_first_turn",
+                if enabled { "true" } else { "false" },
+                1,
+            )
+            .expect("legacy preference");
+            assert_eq!(
+                get_app_settings()
+                    .expect("legacy preference")
+                    .auto_title_first_turn,
+                enabled
+            );
+            // Updating an unrelated setting must not overwrite a saved choice.
+            assert_eq!(
+                update_app_settings(UpdateAppSettingsInput {
+                    title_language: Some("zh".into()),
+                    ..Default::default()
+                })
+                .expect("unrelated update")
+                .auto_title_first_turn,
+                enabled
+            );
+        }
         drop(conn);
         for enabled in [true, false] {
             let updated = update_app_settings(UpdateAppSettingsInput {
