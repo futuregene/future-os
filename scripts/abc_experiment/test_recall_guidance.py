@@ -25,6 +25,9 @@ class GuidanceTests(unittest.TestCase):
             self.assertEqual(future,guides.text('C','case-id'))
             self.assertIn('Earlier context was compacted',future)
             self.assertIn('Only when exact earlier',future)
+            self.assertIn('original records returned by these history commands are permitted evidence',future)
+            self.assertIn('search before concluding that the answer is unknown',future)
+            self.assertIn('do not search merely because compaction occurred',future)
             self.assertIn('history_search(query=',future)
             self.assertIn('history_get(entry_id=',future)
             self.assertNotIn('existing shell tool',future)
@@ -42,6 +45,26 @@ class GuidanceTests(unittest.TestCase):
             self.assertEqual(body['tool_choice'],'auto')
             self.assertNotIn('assistant',[message['role'] for message in body['messages']])
             self.assertEqual(g.guided_base(base,''),base)
+
+
+class LaterSpendTests(unittest.TestCase):
+    def test_intervening_ledgers_are_chained_not_dropped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            roots=[Path(directory)/name for name in ('one','two')]
+            for root,opening,cost in zip(roots,(10.0,10.2),(.2,.3)):
+                g.b.save(root/'manifest.json',{'opening_spend':opening})
+                g.b.save(root/'ledger.json',{'x':{'state':'finished','reserved':1,'charged':cost}})
+                g.b.save(root/'verified-report.json',{'complete':True,'artifact_consistent':True,'total_spend':opening+cost})
+            total,receipts=g.account_for_later_runs(10.0,roots)
+            self.assertAlmostEqual(total,10.5)
+            self.assertEqual(len(receipts),2)
+            with self.assertRaisesRegex(ValueError,'duplicate'):
+                g.account_for_later_runs(10.0,[roots[0],roots[0]])
+            with self.assertRaisesRegex(ValueError,'discontinuous'):
+                g.account_for_later_runs(10.0,list(reversed(roots)))
+            g.b.save(roots[0]/'ledger.json',{'x':{'state':'started','reserved':1}})
+            with self.assertRaisesRegex(ValueError,'unsettled'):
+                g.account_for_later_runs(10.0,roots)
 
 
 if __name__=='__main__': unittest.main()

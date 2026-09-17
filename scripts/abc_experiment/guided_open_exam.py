@@ -7,6 +7,7 @@ interface backends and the autonomous tool loop. Source adaptations are explicit
 import argparse
 import copy
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -29,6 +30,30 @@ def assert_guidance_parity(closed_body,body,tools,guidance):
     assert body['messages'][1:]==closed_body['messages'][1:]
 
 
+def account_for_later_runs(opening,paths):
+    """Chain completed ledgers without dropping costs between comparison runs."""
+    total=opening; receipts=[]; seen=set()
+    for value in paths:
+        root=Path(value).resolve()
+        if root in seen: raise ValueError('duplicate later-run ledger')
+        seen.add(root)
+        if (root/'runner.lock').exists(): raise ValueError('later run is still active')
+        manifest=b.load(root/'manifest.json'); report_=b.load(root/'verified-report.json'); ledger=b.load(root/'ledger.json')
+        if not report_.get('complete') or not report_.get('artifact_consistent'):
+            raise ValueError('later run is not verified complete')
+        if not all(row['state']=='finished' for row in ledger.values()): raise ValueError('unsettled later-run ledger')
+        if not math.isclose(manifest['opening_spend'],total,rel_tol=0,abs_tol=1e-8):
+            raise ValueError('later-run budget chain is discontinuous')
+        spend=sum(row.get('charged',row['reserved']) for row in ledger.values())
+        reported=report_.get('total_spent_or_reserved',report_.get('total_spend'))
+        if reported is None or not math.isclose(reported,total+spend,rel_tol=0,abs_tol=1e-8):
+            raise ValueError('later-run cost does not match its ledger')
+        receipts.append({'root':str(root),'opening_spend':total,'cost':spend,'ledger_sha256':b.sha(ledger),
+                         'manifest_sha256':b.sha(manifest),'verified_report_sha256':b.sha(report_)})
+        total+=spend
+    return total,receipts
+
+
 def report(root):
     result=a.report(root)
     manifest=b.load(root/'manifest.json')
@@ -45,6 +70,7 @@ def main():
     for key in ('closed','prior','output','future','dumper','bridge','codex-source','opencode-source'):
         parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--prepare-only',action='store_true'); parser.add_argument('--detach',action='store_true')
+    parser.add_argument('--spent-after',type=Path,action='append',default=[],help='verified later-run ledgers in chronological order; preserve all intervening costs')
     args=parser.parse_args()
     for key in ('closed','prior','output','future','dumper','bridge','codex_source','opencode_source'):
         setattr(args,key,getattr(args,key).resolve())
@@ -66,6 +92,7 @@ def main():
         prior_manifest=b.load(args.prior/'manifest.json'); prior_ledger=b.load(args.prior/'ledger.json')
         assert prior['complete'] and prior['artifact_consistent'] and not prior['prior_answer_injected'] and not prior['forced_tool_choice']
         assert all(row['state']=='finished' for row in prior_ledger.values())
+        opening_spend,later_spend=account_for_later_runs(prior['total_spent_or_reserved'],args.spent_after)
         assert b.sha(args.bridge.read_bytes())==frozen['bridge_sha256'] and b.sha(args.dumper.read_bytes())==frozen['driver_sha256']
         source_receipts={key:{'path':str(path),'sha256':b.sha(path.read_bytes())} for key,path in guides.paths.items()}
         for key,text in guides.source.items(): b.immutable(args.output/'source-snapshots'/f'{key}.json',{'text':text})
@@ -91,8 +118,9 @@ def main():
                 b.immutable(args.output/'initial-open-bodies'/f'{identity}.json',initial)
                 gates[identity]=has_checkpoint
                 jobs.append(dict(old,identity=identity,initial_open_body_sha256=b.sha(initial),guidance_sha256=b.sha(text),session_id=session_id))
-        config={'version':1,'design':'autonomous tools plus source-derived functional recall guidance; not supplied-answer revision',
-            'model':frozen['model'],'chains':frozen['chains'],'jobs':jobs,'budget':300,'opening_spend':prior['total_spent_or_reserved'],
+        config={'version':2,'design':'autonomous tools plus source-derived functional recall guidance; not supplied-answer revision',
+            'model':frozen['model'],'chains':frozen['chains'],'jobs':jobs,'budget':300,'opening_spend':opening_spend,
+            'later_spend_receipts':later_spend,
             'prior_root':str(args.prior),'prior_ledger_sha256':b.sha(prior_ledger),'prior_manifest_sha256':b.sha(prior_manifest),
             'closed_manifest_sha256':b.sha(frozen),'closed_ledger_sha256':b.sha(b.load(args.closed/'ledger.json')),
             'code_hashes':{str(path.relative_to(b.REPO)):b.sha(path.read_bytes()) for path in (Path(__file__),b.HERE/'recall_guidance.py',Path(a.__file__),Path(e.__file__),Path(t.__file__),Path(f.__file__),Path(b.__file__),b.HERE/'native_stores.py',b.HERE/'native_codex.py')},

@@ -15,7 +15,9 @@ def verify(root,closed,prior):
     assert b.sha(b.load(prior/'manifest.json'))==config['prior_manifest_sha256']
     assert b.sha(b.load(closed/'fidelity-manifest.json'))==config['closed_manifest_sha256']
     assert b.sha(b.load(closed/'ledger.json'))==config['closed_ledger_sha256']
-    assert b.load(prior/'verified-report.json')['total_spent_or_reserved']==config['opening_spend']
+    prior_spend=b.load(prior/'verified-report.json')['total_spent_or_reserved']
+    opening,receipts=g.account_for_later_runs(prior_spend,[item['root'] for item in config.get('later_spend_receipts',[])])
+    assert opening==config['opening_spend'] and receipts==config.get('later_spend_receipts',[])
     for name,digest in config['code_hashes'].items(): assert b.sha((b.REPO/name).read_bytes())==digest,name
     for info in config['binaries'].values(): assert b.sha(Path(info['path']).read_bytes())==info['sha256']
     for key,info in config['guidance_sources'].items():
