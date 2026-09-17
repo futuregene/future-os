@@ -126,6 +126,23 @@ socket 上：
 `portable-pty` 对坏 cwd 会静默替换成 `$HOME`（在先前的 spike 中已验证）；后端在
 spawn 之前先行校验。
 
+## Shell 解析
+
+`resolve_shell()` 优先使用用户真实的 shell，绝不静默替换：先是账户登录 shell（或
+`$SHELL`），再是已知回退项。**Windows 上每个候选都会先解析成真实存在的绝对路径**：
+按操作系统自身顺序查 `PATH`，再查已知安装位置
+（`%ProgramFiles%\PowerShell\7\pwsh.exe`、
+`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`、
+`%SystemRoot%\System32\cmd.exe`）。
+
+这一步是承重的，不是装饰。`portable-pty` 会把程序名作为 `lpApplicationName` 交给
+`CreateProcessW`，而 Win32 **不会**为该参数搜索 `PATH`，因此裸名 `pwsh.exe` 即使
+PowerShell 已安装也会以 `os error 2`（系统找不到指定的文件）失败。把 PowerShell 7
+装在 `PATH` 之外的机器上，每个终端标签都会以 `terminal.json` 的 `createFailed`
+（无法启动终端）报错。现在解析不到的 shell 会顺延到下一个候选，而不是照样 spawn。
+`terminal::shell::windows_tests` 固化了这些规则（`PATH` 顺序、补扩展名、被引号包裹的
+`PATH` 项、已知安装位置兜底）。
+
 ## 进程拆除
 
 带作业控制的 shell 会把后台作业放进**各自**的进程组，所以单靠

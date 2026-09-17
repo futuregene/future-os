@@ -2,7 +2,8 @@
 //!
 //! Resolution order (design §5.1 / opencode `Shell.preferred`):
 //!   unix    : account login shell → `$SHELL` → `/bin/bash` → `/bin/sh`
-//!   windows : `pwsh.exe` → `powershell.exe` → `cmd.exe`
+//!   windows : `pwsh.exe` → `powershell.exe` → `cmd.exe`, each resolved to an
+//!             absolute path that exists (see `resolve_windows_program`)
 //!
 //! Known POSIX shells are started as interactive login shells so the user's own
 //! profile is loaded; anything else (fish, nushell, an unknown binary) is
@@ -11,6 +12,8 @@
 //! Nothing here rewrites `.zshrc`/`.bashrc`/PowerShell profiles — the terminal
 //! runs the user's real shell with the user's real environment.
 
+#[cfg(windows)]
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Where a resolved shell came from. Reported for diagnostics only; it never
@@ -126,8 +129,148 @@ fn known_fallbacks() -> &'static [&'static str] {
 
 #[cfg(windows)]
 fn known_fallbacks() -> &'static [&'static str] {
-    // Resolved through PATH by the OS; `CommandBuilder` handles the lookup.
+    // Bare names on purpose: `resolve_shell` turns each one into an absolute
+    // path that exists before it is offered (`resolve_windows_program`), so a
+    // missing PowerShell 7 falls through to 5.1 instead of failing the spawn.
     &["pwsh.exe", "powershell.exe", "cmd.exe"]
+}
+
+/// The file names Windows considers for `name`: `pwsh` → `pwsh.exe`. A name
+/// that already carries an extension is used verbatim.
+#[cfg(windows)]
+fn windows_launch_names(name: &str) -> Vec<String> {
+    if Path::new(name).extension().is_some() {
+        return vec![name.to_string()];
+    }
+    [".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .map(|extension| format!("{name}{extension}"))
+        .collect()
+}
+
+/// Absolute locations a Windows shell may live in without being on `PATH`.
+///
+/// PowerShell 7's own installer leaves `%ProgramFiles%\PowerShell\7` off `PATH`
+/// unless the user asks for it, which is the common way `pwsh.exe` goes
+/// missing on an otherwise healthy machine. Windows PowerShell 5.1 and
+/// `cmd.exe` live in the system directory; the registry's `%COMSPEC%` is the
+/// user's authoritative `cmd.exe`.
+#[cfg(windows)]
+fn known_windows_locations(name: &str) -> Vec<PathBuf> {
+    let stem = Path::new(name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let file_name = windows_launch_names(name)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| name.to_string());
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut locations = Vec::new();
+    match stem.as_str() {
+        "pwsh" => {
+            for variable in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+                let Some(root) = std::env::var_os(variable) else {
+                    continue;
+                };
+                for version in ["7", "7-preview", "6"] {
+                    locations.push(
+                        PathBuf::from(&root)
+                            .join("PowerShell")
+                            .join(version)
+                            .join(&file_name),
+                    );
+                }
+            }
+        }
+        "powershell" => locations.push(
+            system_root
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join(&file_name),
+        ),
+        "cmd" => {
+            locations.push(system_root.join("System32").join(&file_name));
+            if let Some(comspec) = std::env::var_os("COMSPEC") {
+                locations.push(PathBuf::from(comspec));
+            }
+        }
+        _ => {}
+    }
+    locations
+}
+
+/// Candidate paths for a bare Windows program name: `PATH` entries in the
+/// OS's own order.
+#[cfg(windows)]
+fn path_candidates(name: &str, path_env: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let Some(path_env) = path_env else {
+        return candidates;
+    };
+    for directory in std::env::split_paths(path_env) {
+        // Hand-edited `PATH` entries are often quoted or padded; the OS trims
+        // the quotes, so the lookup has to as well.
+        let directory = directory.to_string_lossy();
+        let directory = directory.trim().trim_matches('"');
+        if directory.is_empty() {
+            continue;
+        }
+        for name in windows_launch_names(name) {
+            candidates.push(Path::new(directory).join(name));
+        }
+    }
+    candidates
+}
+
+/// Resolve a Windows shell candidate to an absolute path that exists.
+///
+/// This is not cosmetic. `portable-pty` passes the program to `CreateProcessW`
+/// as `lpApplicationName`, and Win32 does **not** search `PATH` for that
+/// parameter: a bare `pwsh.exe` fails with `os error 2` ("The system cannot
+/// find the file specified") even when PowerShell is installed, which the panel
+/// then reports as `terminal.json`'s `createFailed`.
+#[cfg(windows)]
+fn resolve_windows_program(name: &str) -> Option<PathBuf> {
+    let name = name.trim().trim_matches('"');
+    // The well-known locations describe the plain shell names only: a name
+    // that names a directory (`bin\pwsh.exe`) must not silently become
+    // `%ProgramFiles%\PowerShell\7\pwsh.exe`.
+    let locations = if Path::new(name).components().count() > 1 {
+        Vec::new()
+    } else {
+        known_windows_locations(name)
+    };
+    resolve_windows_program_in(name, std::env::var_os("PATH").as_deref(), &locations)
+}
+
+/// The resolution rule with the environment injected, so the Windows-only
+/// behaviour stays testable without touching the process `PATH`.
+///
+/// `path_env` is searched first (the OS's own order); `extra` holds the
+/// well-known install locations and is the last resort. An absolute `name` is
+/// never searched for: it either exists or the candidate is dropped.
+#[cfg(windows)]
+fn resolve_windows_program_in(
+    name: &str,
+    path_env: Option<&OsStr>,
+    extra: &[PathBuf],
+) -> Option<PathBuf> {
+    let name = name.trim().trim_matches('"');
+    if name.is_empty() {
+        return None;
+    }
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return is_executable_file(path).then(|| path.to_path_buf());
+    }
+    path_candidates(name, path_env)
+        .into_iter()
+        .chain(extra.iter().cloned())
+        .find(|candidate| is_executable_file(candidate))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -159,21 +302,28 @@ pub fn resolve_shell() -> Result<ShellChoice, String> {
         if path.as_os_str().is_empty() {
             continue;
         }
-        // Only absolute paths are validated eagerly; on Windows the fallbacks
-        // are bare program names resolved through PATH by the OS.
+        // Windows must hand `CreateProcessW` an absolute path that exists, so
+        // every candidate is resolved (and validated) first. On unix a bare
+        // program name is fine: `std::process` resolves it through `PATH`, and
+        // an absolute path is validated eagerly.
+        #[cfg(windows)]
+        let usable = resolve_windows_program(&path.to_string_lossy());
+        #[cfg(not(windows))]
         let usable = if path.is_absolute() {
-            is_executable_file(&path)
+            is_executable_file(&path).then(|| path.clone())
         } else {
-            true
+            Some(path.clone())
         };
-        if usable {
-            return Ok(ShellChoice {
-                login: accepts_login_flags(&path),
-                path,
-                source,
-            });
+        match usable {
+            Some(path) => {
+                return Ok(ShellChoice {
+                    login: accepts_login_flags(&path),
+                    path,
+                    source,
+                });
+            }
+            None => tried.push(path.display().to_string()),
         }
-        tried.push(path.display().to_string());
     }
 
     Err(format!(
@@ -202,7 +352,9 @@ pub fn list_shells() -> Vec<ShellItem> {
     }
     #[cfg(windows)]
     for name in ["pwsh.exe", "powershell.exe", "cmd.exe"] {
-        paths.push(PathBuf::from(name));
+        if let Some(path) = resolve_windows_program(name) {
+            paths.push(path);
+        }
     }
     #[cfg(not(any(unix, windows)))]
     for name in known_fallbacks() {
@@ -233,17 +385,16 @@ mod tests {
     fn resolves_a_real_shell_on_this_machine() {
         let choice = resolve_shell().expect("a shell must exist on a dev machine");
         assert!(
-            choice.path.is_absolute() || cfg!(windows),
-            "unix shells must resolve to an absolute path, got {:?}",
+            choice.path.is_absolute(),
+            "the resolved shell must be an absolute path — a bare program name \
+             is what `CreateProcessW` cannot launch on Windows; got {:?}",
             choice.path
         );
-        if choice.path.is_absolute() {
-            assert!(
-                is_executable_file(&choice.path),
-                "resolved shell must be executable: {:?}",
-                choice.path
-            );
-        }
+        assert!(
+            is_executable_file(&choice.path),
+            "resolved shell must be executable: {:?}",
+            choice.path
+        );
     }
 
     #[test]
@@ -298,5 +449,129 @@ mod tests {
         let before = seen.len();
         seen.dedup();
         assert_eq!(before, seen.len(), "shell list must not repeat a path");
+    }
+}
+
+/// Windows resolution rules. These carry the regression for "无法启动终端":
+/// `portable-pty` hands the program name straight to `CreateProcessW`, which
+/// never searches `PATH`, so a bare name must never survive resolution.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    /// A `PATH` value built from explicit directories, so a test never has to
+    /// mutate the process environment.
+    fn path_list(directories: &[&Path]) -> OsString {
+        std::env::join_paths(directories).expect("join PATH entries")
+    }
+
+    fn fake_shell(directory: &Path, name: &str) -> PathBuf {
+        let path = directory.join(name);
+        std::fs::write(&path, b"").expect("create fake shell");
+        path
+    }
+
+    #[test]
+    fn bare_name_resolves_through_path_with_extension_appended() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected = fake_shell(dir.path(), "pwsh.exe");
+        assert_eq!(
+            resolve_windows_program_in("pwsh.exe", Some(&path_list(&[dir.path()])), &[]),
+            Some(expected.clone())
+        );
+        // A name without an extension is what a user's `SHELL` usually holds.
+        assert_eq!(
+            resolve_windows_program_in("pwsh", Some(&path_list(&[dir.path()])), &[]),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn path_order_is_respected_and_a_missing_shell_falls_through() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let later = tempfile::tempdir().expect("tempdir");
+        let expected = fake_shell(later.path(), "powershell.exe");
+        assert_eq!(
+            resolve_windows_program_in(
+                "powershell.exe",
+                Some(&path_list(&[empty.path(), later.path()])),
+                &[]
+            ),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn a_missing_shell_never_escapes_as_a_bare_name() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resolve_windows_program_in("pwsh.exe", Some(&path_list(&[empty.path()])), &[]),
+            None,
+            "an unresolved name must not reach CreateProcessW as lpApplicationName"
+        );
+        assert_eq!(resolve_windows_program_in("pwsh.exe", None, &[]), None);
+    }
+
+    #[test]
+    fn well_known_locations_are_the_last_resort() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let installed = fake_shell(dir.path(), "pwsh.exe");
+        assert_eq!(
+            resolve_windows_program_in("pwsh.exe", None, std::slice::from_ref(&installed)),
+            Some(installed)
+        );
+    }
+
+    #[test]
+    fn quoted_and_padded_path_entries_still_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected = fake_shell(dir.path(), "cmd.exe");
+        let quoted = OsString::from(format!("\"{}\" ", dir.path().display()));
+        assert_eq!(
+            resolve_windows_program_in("cmd.exe", Some(&quoted), &[]),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn absolute_candidates_must_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = fake_shell(dir.path(), "shell.exe");
+        assert_eq!(
+            resolve_windows_program_in(&present.display().to_string(), None, &[]),
+            Some(present)
+        );
+        assert_eq!(
+            resolve_windows_program_in(
+                &dir.path().join("missing.exe").display().to_string(),
+                None,
+                &[]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_well_known_locations_name_the_installed_shells() {
+        let locations = known_windows_locations("pwsh.exe");
+        assert!(
+            locations
+                .iter()
+                .any(|path| path.ends_with(r"PowerShell\7\pwsh.exe")),
+            "PowerShell 7's default install must be offered: {locations:?}"
+        );
+        let powershell = known_windows_locations("powershell.exe");
+        assert!(
+            powershell
+                .iter()
+                .any(|path| path.ends_with(r"System32\WindowsPowerShell\v1.0\powershell.exe")),
+            "Windows PowerShell 5.1 must be offered: {powershell:?}"
+        );
+        let cmd = known_windows_locations("cmd.exe");
+        assert!(
+            cmd.iter().any(|path| path.ends_with(r"System32\cmd.exe")),
+            "cmd.exe must be offered: {cmd:?}"
+        );
     }
 }
