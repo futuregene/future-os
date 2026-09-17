@@ -1,8 +1,16 @@
-//! Compaction — 1:1 compatible with Go internal/compaction/
+//! Compaction: the bounded projection a session sends in place of its full history.
+//!
+//! Two strategies, both built from the same protected originals and deterministic
+//! tool-evidence index — see `semantic::evidence`:
+//!
+//!   * `prepare_evidence` — no model call at all;
+//!   * `prepare_evidence_with_summary` — the same projection plus a model-written
+//!     handoff summary, and the runtime default.
 
-use crate::types::{AgentMessage, ContentBlock, ConvertToLLM, Message};
+pub(super) use crate::types::ConvertToLLM;
+use crate::types::{AgentMessage, ContentBlock, Message};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 mod budget;
 mod durable;
@@ -103,32 +111,6 @@ pub struct CompactionSettings {
     pub reserve_tokens: i32,
     #[serde(rename = "keepRecentTokens")]
     pub keep_recent_tokens: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactOptions {
-    #[serde(rename = "reserveTokens")]
-    pub reserve_tokens: i32,
-    #[serde(rename = "keepRecentTokens")]
-    pub keep_recent_tokens: i32,
-    #[serde(rename = "contextWindow")]
-    pub context_window: i32,
-    /// Pre-computed context tokens (API-reported). If 0, falls back to estimate.
-    #[serde(default)]
-    pub tokens_before: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactionResult {
-    pub summary: String,
-    #[serde(rename = "firstKeptEntryID")]
-    pub first_kept_entry_id: String,
-    #[serde(rename = "tokensBefore")]
-    pub tokens_before: i32,
-    #[serde(rename = "readFiles")]
-    pub read_files: Vec<String>,
-    #[serde(rename = "modifiedFiles")]
-    pub modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -411,18 +393,6 @@ pub fn project_prompt_context(
     }
 }
 
-/// ShouldCompact returns true if compaction should be triggered.
-pub fn should_compact(
-    context_tokens: i32,
-    context_window: i32,
-    settings: &CompactionSettings,
-) -> bool {
-    if !settings.enabled {
-        return false;
-    }
-    context_tokens >= context_window - settings.reserve_tokens
-}
-
 /// EstimateTokens estimates tokens for a single message.
 ///
 /// Uses a Unicode-aware per-character heuristic rather than the previous raw
@@ -506,208 +476,6 @@ fn estimate_text_tokens(text: &str) -> i32 {
         .min(i32::MAX as u64) as i32
 }
 
-/// EstimateContextTokens estimates total tokens from messages.
-pub fn estimate_context_tokens(messages: &[Message]) -> i32 {
-    messages.iter().map(estimate_tokens).sum()
-}
-
-/// When `cut` falls on a tool message, walk backward to include the preceding
-/// assistant message that carries the tool_calls.  Without this, the LLM API
-/// rejects the request because tool results must always follow an assistant
-/// message with matching tool_calls.
-fn adjust_cut_for_tool_context(messages: &[Message], cut: usize) -> usize {
-    if cut >= messages.len() || messages[cut].role != "tool" {
-        return cut;
-    }
-    for i in (0..cut).rev() {
-        if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
-            return i;
-        }
-    }
-    cut
-}
-
-/// Find cut points where it's safe to cut (not in the middle of tool results).
-pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
-    let mut points = vec![];
-    for (i, msg) in messages.iter().enumerate() {
-        match msg.role.as_str() {
-            "user" => points.push(i),
-            "assistant" if msg.tool_calls.as_ref().is_none_or(|v| v.is_empty()) => {
-                points.push(i);
-            }
-            "tool" => points.push(i),
-            "system" => points.push(i),
-            _ => {}
-        }
-    }
-    points
-}
-
-/// FindCutPoint finds the cut point that keeps approximately keepRecentTokens.
-pub fn find_cut_point(messages: &[Message], keep_recent_tokens: i32) -> usize {
-    let cut_points = find_valid_cut_points(messages);
-    if cut_points.is_empty() {
-        // No valid cut point at all — return 0 (below caller falls back).
-        return 0;
-    }
-
-    let mut accumulated = 0;
-    for i in (0..messages.len()).rev() {
-        accumulated += estimate_tokens(&messages[i]);
-        if accumulated >= keep_recent_tokens {
-            // unwrap_or: if no cut point >= i, use the LAST valid cut point
-            // before i instead of 0, so compaction still happens.
-            return cut_points
-                .iter()
-                .find(|&&cp| cp >= i)
-                .copied()
-                .or_else(|| cut_points.iter().rev().find(|&&cp| cp < i).copied())
-                .unwrap_or(cut_points[0]);
-        }
-    }
-    cut_points[0]
-}
-
-/// ExtractFileOperations scans messages for file read/write operations from tool calls.
-pub fn extract_file_operations(messages: &[Message]) -> (Vec<String>, Vec<String>) {
-    let mut read_set = HashSet::new();
-    let mut write_set = HashSet::new();
-
-    for msg in messages {
-        if msg.role != "assistant" {
-            continue;
-        }
-        for tc in msg.tool_calls.iter().flatten() {
-            let path = if let serde_json::Value::String(ref s) = tc.function.arguments {
-                // Try to extract path/file_path from args
-                if let Ok(args) = serde_json::from_str::<HashMap<String, String>>(s) {
-                    args.get("path")
-                        .or(args.get("file_path"))
-                        .cloned()
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            if path.is_empty() {
-                continue;
-            }
-            match tc.function.name.as_str() {
-                "read" | "read_file" => {
-                    read_set.insert(path);
-                }
-                "write" | "write_file" | "edit" | "patch" => {
-                    write_set.insert(path);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut reads: Vec<_> = read_set.into_iter().collect();
-    let mut writes: Vec<_> = write_set.into_iter().collect();
-    reads.sort();
-    writes.sort();
-    (reads, writes)
-}
-
-/// Compact performs message compaction. Returns compacted messages and result.
-pub fn compact(
-    messages: Vec<Message>,
-    opts: &CompactOptions,
-) -> (Vec<Message>, Option<CompactionResult>) {
-    // Use API-reported count when available, but never let it go below the
-    // heuristic estimate. Tool results added since the last LLM call may
-    // have pushed the real context far beyond what the API last reported.
-    let estimated = estimate_context_tokens(&messages);
-    let tokens_before = if opts.tokens_before > 0 {
-        opts.tokens_before.max(estimated)
-    } else {
-        estimated
-    };
-    let context_window = if opts.context_window > 0 {
-        opts.context_window
-    } else {
-        200000
-    };
-    let settings = CompactionSettings {
-        enabled: true,
-        reserve_tokens: opts.reserve_tokens,
-        keep_recent_tokens: opts.keep_recent_tokens,
-    };
-
-    if !should_compact(tokens_before, context_window, &settings) {
-        return (messages, None);
-    }
-
-    let cut = find_cut_point(&messages, opts.keep_recent_tokens);
-    // When the cut lands on a tool message, back up to include the preceding
-    // assistant message (which carries the tool_calls the API requires).
-    let cut = adjust_cut_for_tool_context(&messages, cut);
-    if cut == 0 {
-        // find_cut_point may return 0 when its char-based estimate is much
-        // lower than the API-reported tokens (e.g. after a prior compaction
-        // produced short summary messages).  When should_compact already
-        // confirmed action is needed, fall back to the smallest non-zero
-        // valid cut point so we still trim something.
-        let valid = find_valid_cut_points(&messages);
-        if let Some(&fallback) = valid.iter().find(|&&cp| cp > 0) {
-            // find_valid_cut_points lists `tool` results too, so the fallback
-            // can land on a tool message whose preceding assistant tool_calls
-            // would be cut away — leaving the compacted conversation to open
-            // with a tool result and no matching assistant (the LLM API
-            // rejects that with HTTP 400). Re-run the same adjust step as the
-            // primary path, and only cut when it resolves to a safe non-zero
-            // point; otherwise give up rather than emit an invalid prefix.
-            let fallback = adjust_cut_for_tool_context(&messages, fallback);
-            if fallback > 0 {
-                return compact_from(messages, fallback, tokens_before);
-            }
-        }
-        return (messages, None);
-    }
-
-    compact_from(messages, cut, tokens_before)
-}
-
-fn compact_from(
-    messages: Vec<Message>,
-    cut: usize,
-    tokens_before: i32,
-) -> (Vec<Message>, Option<CompactionResult>) {
-    let (read_files, modified_files) = extract_file_operations(&messages);
-    let summary = format!(
-        "Previous conversation summarized. Files read: {}. Modified: {}.",
-        read_files.join(", "),
-        modified_files.join(", ")
-    );
-
-    let compaction_content = serde_json::json!([{
-        "type": "text",
-        "text": format!("[Context compaction: {}]", summary),
-    }]);
-
-    let mut result = vec![Message {
-        role: "user".to_string(),
-        content: Some(compaction_content),
-        ..Default::default()
-    }];
-    result.extend(messages[cut..].to_vec());
-
-    let comp_result = CompactionResult {
-        summary,
-        first_kept_entry_id: String::new(),
-        tokens_before,
-        read_files,
-        modified_files,
-    };
-
-    (result, Some(comp_result))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -748,88 +516,6 @@ mod tests {
     }
 
     #[test]
-    fn adjust_cut_returns_cut_when_no_tool_call_owner_exists() {
-        // cut points at a tool message, but no earlier assistant message
-        // carries tool_calls → return the original cut unchanged.
-        let messages = vec![
-            text_msg("user", "hi"),
-            text_msg("assistant", "thinking"),
-            text_msg("tool", "result"),
-        ];
-        assert_eq!(adjust_cut_for_tool_context(&messages, 2), 2);
-        // And the no-op arms: cut past the end / cut not on a tool message.
-        assert_eq!(adjust_cut_for_tool_context(&messages, 3), 3);
-        assert_eq!(adjust_cut_for_tool_context(&messages, 0), 0);
-    }
-
-    #[test]
-    fn extract_file_operations_skips_unusable_tool_calls() {
-        let tool_call = |name: &str, args: serde_json::Value| crate::types::ToolCall {
-            id: "c".to_string(),
-            call_type: "function".to_string(),
-            function: crate::types::ToolCallFn {
-                name: name.to_string(),
-                arguments: args,
-            },
-        };
-        let msg = |calls: Vec<crate::types::ToolCall>| Message {
-            role: "assistant".to_string(),
-            tool_calls: Some(calls),
-            ..Default::default()
-        };
-        let messages = vec![
-            // Unparseable JSON string args → no path.
-            msg(vec![tool_call(
-                "read",
-                serde_json::Value::String("not json".into()),
-            )]),
-            // Non-string args → no path.
-            msg(vec![tool_call("read", serde_json::json!({"path": "x.rs"}))]),
-            // Parseable args without a path key → skipped via continue.
-            msg(vec![tool_call(
-                "read",
-                serde_json::Value::String("{\"cmd\": \"ls\"}".into()),
-            )]),
-            // A tool that is neither a read nor a write → ignored.
-            msg(vec![tool_call(
-                "shell",
-                serde_json::Value::String("{\"path\": \"ignored.rs\"}".into()),
-            )]),
-            // One real read + one real write so the sets are non-empty.
-            msg(vec![
-                tool_call(
-                    "read",
-                    serde_json::Value::String("{\"path\": \"a.rs\"}".into()),
-                ),
-                tool_call(
-                    "edit",
-                    serde_json::Value::String("{\"file_path\": \"b.rs\"}".into()),
-                ),
-            ]),
-        ];
-        let (reads, writes) = extract_file_operations(&messages);
-        assert_eq!(reads, vec!["a.rs".to_string()]);
-        assert_eq!(writes, vec!["b.rs".to_string()]);
-    }
-
-    #[test]
-    fn compact_defaults_context_window_when_unset() {
-        // context_window = 0 → the 200k default kicks in; with these tiny
-        // numbers should_compact stays false, so this only exercises the
-        // window-defaulting arm.
-        let messages = vec![text_msg("user", "hello")];
-        let opts = CompactOptions {
-            reserve_tokens: 50,
-            keep_recent_tokens: 50,
-            context_window: 0,
-            tokens_before: 100,
-        };
-        let (out, result) = compact(messages.clone(), &opts);
-        assert!(result.is_none());
-        assert_eq!(out.len(), messages.len());
-    }
-
-    #[test]
     fn mixed_content_and_tool_args_are_classified_per_char() {
         // Content-parts array form.
         let msg = Message {
@@ -858,40 +544,6 @@ mod tests {
     // ─── should_compact ────────────────────────────────────────────────────
 
     #[test]
-    fn should_compact_disabled() {
-        let settings = CompactionSettings {
-            enabled: false,
-            reserve_tokens: 1000,
-            keep_recent_tokens: 5000,
-        };
-        assert!(!should_compact(200_000, 128_000, &settings));
-    }
-
-    #[test]
-    fn should_compact_when_exceeding_threshold() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 8000,
-            keep_recent_tokens: 5000,
-        };
-        // Reaching the threshold triggers; remaining below it does not.
-        assert!(!should_compact(119_999, 128_000, &settings));
-        assert!(should_compact(120_000, 128_000, &settings));
-        // Above the threshold also triggers.
-        assert!(should_compact(120_001, 128_000, &settings));
-    }
-
-    #[test]
-    fn should_compact_under_threshold() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 8000,
-            keep_recent_tokens: 5000,
-        };
-        assert!(!should_compact(100_000, 128_000, &settings));
-    }
-
-    #[test]
     fn context_budgets_leave_room_for_small_model_windows() {
         for window in [4_096, 8_192, 16_384, 64_000, 1_000_000] {
             let (reserve, keep_recent) = context_token_budgets(window);
@@ -909,15 +561,6 @@ mod tests {
     }
 
     // ─── estimate_context_tokens ───────────────────────────────────────────
-
-    #[test]
-    fn estimate_context_tokens_sums_messages() {
-        let msgs = vec![
-            text_msg("user", &"a".repeat(100)),     // 25 tokens
-            text_msg("assistant", &"b".repeat(40)), // 10 tokens
-        ];
-        assert_eq!(estimate_context_tokens(&msgs), 35);
-    }
 
     #[test]
     fn checkpoint_projection_preserves_recent_provider_and_tool_metadata() {
@@ -1010,254 +653,13 @@ mod tests {
 
     // ─── adjust_cut_for_tool_context ───────────────────────────────────────
 
-    #[test]
-    fn adjust_cut_after_tool_backs_up_to_assistant_with_tool_calls() {
-        let msgs = vec![
-            text_msg("user", "hello"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        // Cut on the tool msg (index 2), should back up to assistant (index 1)
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 2), 1);
-    }
-
-    #[test]
-    fn adjust_cut_on_user_unchanged() {
-        let msgs = vec![text_msg("user", "hello")];
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 0), 0);
-    }
-
-    #[test]
-    fn adjust_cut_out_of_bounds_returns_original() {
-        let msgs: Vec<Message> = vec![];
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 5), 5);
-    }
-
     // ─── find_valid_cut_points ─────────────────────────────────────────────
-
-    #[test]
-    fn find_valid_cut_points_all_types() {
-        let msgs = vec![
-            text_msg("system", "prompt"),
-            text_msg("user", "question"),
-            text_msg("assistant", "answer"),
-            text_msg("tool", "output"),
-        ];
-        let points = find_valid_cut_points(&msgs);
-        assert_eq!(points, vec![0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn find_valid_cut_points_excludes_assistant_with_tool_calls() {
-        let msgs = vec![
-            text_msg("user", "q"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let points = find_valid_cut_points(&msgs);
-        // Index 1 (assistant with tool_calls) is excluded
-        assert_eq!(points, vec![0, 2]);
-    }
 
     // ─── find_cut_point ────────────────────────────────────────────────────
 
-    #[test]
-    fn find_cut_point_empty_messages_returns_zero() {
-        let msgs: Vec<Message> = vec![];
-        assert_eq!(find_cut_point(&msgs, 5000), 0);
-    }
-
-    #[test]
-    fn find_cut_point_returns_first_useful_cut() {
-        let msgs = vec![
-            text_msg("user", &"a".repeat(400)),     // ~100 tokens
-            text_msg("assistant", &"b".repeat(40)), // ~10 tokens
-            text_msg("user", &"c".repeat(100)),     // ~25 tokens
-        ];
-        // keep_recent 20 → keep last ~20 tokens → should cut before last msg
-        let cut = find_cut_point(&msgs, 20);
-        assert_eq!(cut, 2);
-    }
-
     // ─── extract_file_operations ───────────────────────────────────────────
 
-    #[test]
-    fn extract_file_operations_finds_reads_and_writes() {
-        let msgs = vec![
-            text_msg("user", "read file"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![
-                    crate::types::ToolCall {
-                        id: "tc1".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "read".to_string(),
-                            arguments: serde_json::json!(r#"{"path":"/tmp/a.txt"}"#),
-                        },
-                    },
-                    crate::types::ToolCall {
-                        id: "tc2".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "write".to_string(),
-                            arguments: serde_json::json!(r#"{"file_path":"/tmp/b.txt"}"#),
-                        },
-                    },
-                ]),
-                ..Default::default()
-            },
-        ];
-        let (reads, writes) = extract_file_operations(&msgs);
-        assert_eq!(reads, vec!["/tmp/a.txt"]);
-        assert_eq!(writes, vec!["/tmp/b.txt"]);
-    }
-
-    #[test]
-    fn extract_file_operations_edit_and_patch_are_writes() {
-        let msgs = vec![Message {
-            role: "assistant".to_string(),
-            content: None,
-            tool_calls: Some(vec![crate::types::ToolCall {
-                id: "tc1".to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: "edit".to_string(),
-                    arguments: serde_json::json!(r#"{"path":"/tmp/edit.txt"}"#),
-                },
-            }]),
-            ..Default::default()
-        }];
-        let (reads, writes) = extract_file_operations(&msgs);
-        assert!(reads.is_empty());
-        assert_eq!(writes, vec!["/tmp/edit.txt"]);
-    }
-
     // ─── compact / compact_from ────────────────────────────────────────────
-
-    #[test]
-    fn compact_below_threshold_does_nothing() {
-        let msgs = vec![text_msg("user", "hello")];
-        let opts = CompactOptions {
-            reserve_tokens: 8000,
-            keep_recent_tokens: 4000,
-            context_window: 128_000,
-            tokens_before: 50,
-        };
-        let (result, compacted) = compact(msgs.clone(), &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), msgs.len());
-    }
-
-    #[test]
-    fn compact_fallback_never_opens_with_orphaned_tool_message() {
-        // When the primary cut point resolves to 0 (the char-based estimate
-        // is far below the API-reported tokens), the fallback branch picks
-        // the smallest non-zero valid cut point. That point can be a `tool`
-        // message (find_valid_cut_points lists tool results, but excludes the
-        // preceding assistant that owns the tool_calls). Cutting there would
-        // open the compacted conversation with a tool result and no matching
-        // assistant — which the LLM API rejects with HTTP 400. The fallback
-        // must re-run adjust_cut_for_tool_context exactly like the primary
-        // path.
-        let msgs = vec![
-            text_msg("user", "q"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1_000_000,
-            context_window: 1_000,
-            tokens_before: 100_000,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_some());
-        // [0] = compaction marker (user), [1] = assistant owning the
-        // tool_calls, [2] = tool result. Never [0]=marker, [1]=tool.
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].role, "user");
-        assert_eq!(result[1].role, "assistant");
-        assert!(result[1].tool_calls.is_some());
-        assert_eq!(result[2].role, "tool");
-    }
-
-    #[test]
-    fn compact_triggers_and_keeps_recent() {
-        // Build enough messages to trigger compaction
-        let mut msgs = vec![];
-        for i in 0..200 {
-            msgs.push(text_msg("user", &format!("message {i} ")));
-        }
-        let opts = CompactOptions {
-            reserve_tokens: 100,
-            keep_recent_tokens: 100,
-            context_window: 500,
-            tokens_before: 0,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_some());
-        // First message should be the compaction marker
-        assert_eq!(result[0].role, "user");
-        let content = result[0].content.as_ref().unwrap();
-        assert!(content.to_string().contains("compaction"));
-        // Result should be shorter than original
-        assert!(result.len() < 200);
-    }
-
-    #[test]
-    fn compact_uses_tokens_before_when_larger_than_estimate() {
-        // Need enough messages so that should_compact triggers
-        let mut msgs = vec![];
-        for i in 0..200 {
-            msgs.push(text_msg(
-                "user",
-                &format!(
-                    "message number {i} with extra text to push token count up higher and higher"
-                ),
-            ));
-        }
-        let opts = CompactOptions {
-            reserve_tokens: 50,
-            keep_recent_tokens: 50,
-            context_window: 300,
-            tokens_before: 500,
-        };
-        let (_, compact_opt) = compact(msgs, &opts);
-        assert!(compact_opt.is_some(), "should trigger compaction");
-        // tokens_before is max(opts.tokens_before, estimated), so it's at least 500
-        assert!(compact_opt.unwrap().tokens_before >= 500);
-    }
 
     #[test]
     fn checkpoint_projection_ignores_non_text_summary_blocks() {
@@ -1286,67 +688,5 @@ mod tests {
         let text = projected.messages[0].message.text();
         assert!(text.contains("visible"));
         assert!(!text.contains("hidden"));
-    }
-
-    #[test]
-    fn compact_gives_up_when_no_safe_cut_point_exists() {
-        // A single assistant message that owns tool_calls has no valid cut point
-        // (find_valid_cut_points excludes it), so the fallback branch must give
-        // up rather than emit an invalid prefix.
-        let msgs = vec![Message {
-            role: "assistant".to_string(),
-            content: None,
-            tool_calls: Some(vec![crate::types::ToolCall {
-                id: "t1".to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: "shell".to_string(),
-                    arguments: serde_json::json!("{}"),
-                },
-            }]),
-            ..Default::default()
-        }];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1,
-            context_window: 10,
-            tokens_before: 100,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn compact_gives_up_when_fallback_adjusts_to_zero() {
-        // The first valid cut point > 0 is a `tool` message whose only
-        // tool-call owner sits at index 0, so adjust_cut_for_tool_context
-        // resolves it back to 0. The fallback must then give up rather than
-        // emit an invalid prefix (the inner `if fallback > 0` false branch).
-        let msgs = vec![
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1_000_000,
-            context_window: 1_000,
-            tokens_before: 100_000,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), 2);
     }
 }
