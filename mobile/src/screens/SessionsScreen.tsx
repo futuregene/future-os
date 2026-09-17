@@ -97,7 +97,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     if (Platform.OS !== "ios") deferPresentation(action);
   };
 
-  const flushPendingManageDesktops = () => {
+  const flushPendingSettingsAction = () => {
     const action = pendingSettingsActionRef.current;
     pendingSettingsActionRef.current = null;
     action?.();
@@ -459,15 +459,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           animationType="slide"
           presentationStyle="fullScreen"
           onRequestClose={() => setSettingsOpen(false)}
-          onDismiss={flushPendingManageDesktops}
+          onDismiss={flushPendingSettingsAction}
           visible={settingsOpen}
         >
           {settingsOpen ? <SettingsScreen
             key={`${remote.credentials?.pairId}:${remote.desktopOnline}`}
             onClose={() => setSettingsOpen(false)}
-            onManageDesktops={() => afterSettings(onManageDesktops)}
             onCheckUpdate={() => afterSettings(() => void checkUpdate())}
-            onUnpair={() => afterSettings(confirmUnpair)}
             checkingUpdate={checkingUpdate}
           /> : null}
         </Modal>

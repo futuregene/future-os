@@ -19,6 +19,7 @@ import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
 import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
 import { terminalKeyPolicy } from "./keyPolicy";
+import { installMacInputWorkaround } from "./macInput";
 import { TERMINAL_THEME } from "./theme";
 import "@xterm/xterm/css/xterm.css";
 
@@ -107,6 +108,7 @@ export function TerminalView(props: TerminalViewProps) {
     const serializer = new SerializeAddon();
     terminal.loadAddon(serializer);
     terminal.open(container);
+    listeners.push(installMacInputWorkaround(terminal));
 
     // Output is queued and applied in arrival order. xterm serialises its own
     // writes, but `serialize()` reads the *applied* buffer, so persistence

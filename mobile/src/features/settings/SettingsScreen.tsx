@@ -2,24 +2,23 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { ChevronLeft, X } from "lucide-react-native";
-import { Button } from "../../components/Button";
+import { ArrowLeft, Monitor } from "lucide-react-native";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings } from "../../remote/types";
 import { VERSION } from "../../version.generated";
-import { colors, layout, spacing } from "../../theme/tokens";
+import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
-export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnpair, checkingUpdate }: {
-  onClose(): void; onManageDesktops(): void; onCheckUpdate(): void; onUnpair(): void; checkingUpdate: boolean;
+export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate }: {
+  onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  const [page, setPage] = useState<"home" | "models" | "skills">("home");
+  const [page, setPage] = useState<"home" | "preferences" | "models" | "skills" | "language">("home");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
@@ -62,18 +61,22 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
   };
 
   return <SafeAreaView style={settingsStyles.page}>
+    <View style={styles.column}>
     <View style={styles.header}>
-      {page !== "home" ? <Pressable accessibilityLabel={t("common.back")} accessibilityRole="button" onPress={() => setPage("home")} style={styles.headerButton}>
-        <ChevronLeft size={22} color={colors.ink} />
-      </Pressable> : null}
-      <View style={styles.heading}>
-        <Text accessibilityRole="header" style={styles.title}>{page === "home" ? t("sessions.settings") : t(`desktopSettings.${page}`)}</Text>
-        <Text numberOfLines={1} style={settingsStyles.description}>{desktopName}</Text>
-      </View>
-      <Pressable accessibilityLabel={t("common.close")} accessibilityRole="button" onPress={onClose} style={styles.headerButton}>
-        <X size={22} color={colors.inkMuted} />
+      <Pressable accessibilityLabel={t("common.back")} accessibilityRole="button"
+        onPress={() => page === "home" ? onClose() : setPage("home")}
+        style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}>
+        <ArrowLeft size={22} color={colors.ink} />
       </Pressable>
+      <Text accessibilityRole="header" style={styles.title}>{page === "home" ? t("sessions.settings") : t(`desktopSettings.${page}`)}</Text>
     </View>
+    {page !== "language" ? <View style={styles.deviceScope}>
+      <View style={styles.deviceIcon}><Monitor size={20} color={colors.accent} /></View>
+      <View style={styles.heading}>
+        <Text style={styles.deviceName}>{t("desktopSettings.boundDesktop", { name: desktopName })}</Text>
+        <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
+      </View>
+    </View> : null}
     {failed ? <Text accessibilityRole="alert" style={[styles.notice, settingsStyles.error]}>{t("desktopSettings.saveFailed")}</Text> : null}
     {page === "models" && enabled && (resource.failed || resource.loading) ? <View style={styles.notice}>
       <ResourceStatus loading={resource.loading} failed={resource.failed} onReload={() => void resource.reload()} />
@@ -81,9 +84,11 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
     {!remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
     {page === "models" && enabled ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
       : page === "skills" && remote.desktopOnline && skillsSupported ? <SkillsSettingsPage />
-      : <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-        <SettingsSection title={t("desktopSettings.currentDesktop")}>
-          <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
+      : page === "language" ? <ScrollView contentContainerStyle={settingsStyles.content}>
+        <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
+      </ScrollView>
+      : page === "preferences" ? <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+        <SettingsSection title={t("desktopSettings.automation")}>
           {remote.desktopOnline && !supported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
           <SettingsSwitch label={t("desktopSettings.autoUpgradeSkills")} description={t("desktopSettings.autoUpgradeSkillsHint")}
             value={resource.data?.autoUpgradeSkills ?? false} disabled={disabled} onChange={autoUpgradeSkills => void changeSettings({ autoUpgradeSkills })} />
@@ -92,8 +97,9 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
           <SettingsSwitch label={t("desktopSettings.autoConnectRemote")} description={t("desktopSettings.autoConnectRemoteHint")}
             value={resource.data?.autoConnectRemote ?? false} disabled={disabled} onChange={autoConnectRemote => void changeSettings({ autoConnectRemote })} />
           {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
-          <Text style={settingsStyles.label}>{t("approvalTier.title")}</Text>
-          <View style={settingsStyles.actions}>
+        </SettingsSection>
+        <SettingsSection title={t("approvalTier.title")}>
+          <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
             {(["manual", "sandbox", "off"] as const).filter(tier => tier !== "sandbox" || remote.sandboxAvailable).map(tier =>
               <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
                 accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
@@ -103,28 +109,36 @@ export function SettingsScreen({ onClose, onManageDesktops, onCheckUpdate, onUnp
               </Pressable>)}
           </View>
         </SettingsSection>
-        <SettingsSection title={t("desktopSettings.modelsAndSkills")}>
+      </ScrollView>
+      : <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
+        <SettingsSection title={t("desktopSettings.currentDesktop")}>
+          <SettingsLink label={t("desktopSettings.preferences")} onPress={() => setPage("preferences")} />
           <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => setPage("models")} />
           <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => setPage("skills")} />
-          {remote.desktopOnline && !skillsSupported ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+          {remote.desktopOnline && (!supported || !skillsSupported) ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
         </SettingsSection>
         <SettingsSection title={t("desktopSettings.thisPhone")}>
-          <LanguageSettings />
-          <Text style={settingsStyles.description}>{t("common.version", { version: VERSION })}</Text>
-          <Button label={t("update.check")} loading={checkingUpdate} onPress={onCheckUpdate} variant="secondary" />
-          <Button label={t("desktops.title")} onPress={onManageDesktops} variant="secondary" />
-          <Button label={t("sessions.unpair")} onPress={onUnpair} variant="danger" />
+          <SettingsLink label={t("language.title")} onPress={() => setPage("language")} />
+          <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
         </SettingsSection>
+        <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
       </ScrollView>}
+    </View>
   </SafeAreaView>;
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: layout.gutter, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  column: { flex: 1, width: "100%", maxWidth: layout.formMaxWidth, alignSelf: "center", paddingTop: spacing.sm },
+  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 56, paddingHorizontal: layout.gutter, marginBottom: spacing.md },
   heading: { flex: 1, minWidth: 0 },
-  title: { color: colors.ink, fontSize: 20, fontWeight: "600" },
-  headerButton: { minWidth: layout.touchTarget, minHeight: layout.touchTarget, alignItems: "center", justifyContent: "center" },
+  title: { flex: 1, color: colors.inkStrong, fontSize: 22, fontWeight: "700" },
+  headerButton: { width: layout.touchTarget, height: layout.touchTarget, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
+  pressed: { backgroundColor: colors.surfaceSubtle },
+  deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: colors.accentSoft },
+  deviceIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
+  deviceName: { color: colors.inkStrong, fontSize: 14, fontWeight: "600", marginBottom: spacing.xs },
+  version: { ...settingsStyles.description, textAlign: "center" },
   notice: { color: colors.inkMuted, padding: layout.gutter, fontSize: 13 },
-  approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: 8 },
+  approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   approvalSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
 });

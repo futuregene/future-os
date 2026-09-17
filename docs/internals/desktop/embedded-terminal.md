@@ -138,6 +138,26 @@ replays). A detached viewer never grows memory without bound.
   (`nihao`) — verified to be the input method's own choice, since a plain
   `<input>` behaves the same.
 
+### macOS WebKit overlapping input
+
+With an IME input source, macOS WebKit can deliver committed `beforeinput` /
+`input` **before** the character's `keydown`. When the previous key (or Shift /
+Caps Lock) is still held, xterm 6.0's `_keyDownSeen` flag incorrectly rejects the
+text as a duplicate. The later IME-managed keydown does not recover it, so fast
+input such as `htop` can become `htp` (upstream
+[xterm.js#5374](https://github.com/xtermjs/xterm.js/issues/5374)).
+
+`features/terminal/macInput.ts` installs a macOS-WebKit-only `beforeinput`
+workaround after `terminal.open()`, resetting that private guard for composed
+`insertText` outside IME composition and screen-reader mode. xterm still sends
+the text via its usual `onData` path; keypress deduplication, composition, and
+other platforms are unchanged. The listener is removed when the view unmounts.
+This isolated private-API workaround is tied to the pinned xterm version;
+recheck it on upgrades. `macInput.test.ts` replays the upstream event ordering
+through **real xterm in jsdom**, including an unpatched reproduction, overlapping
+keys, Shift/Caps Lock, conventional input, Chinese composition and teardown.
+This is event-sequence regression coverage, not native macOS IME verification.
+
 ## Working directory
 
 Resolved server-side from the conversation; the client never sends a path.
@@ -218,6 +238,11 @@ policy relies only on `KeyboardEvent.isComposing`, which every engine sets.
    the characters must appear **once**, and deleting them must leave a clean
    line (no leftover copy, no stray backspace). The preedit must render in the
    terminal's own colours, not in a black box.
+9. On macOS with a Chinese/Japanese input source in ASCII mode, type `htop`
+   quickly with overlapping key presses (press the next key before releasing
+   the previous one). Every character must arrive once. Also try the first
+   Shift+3 character and a Caps Lock letter, then switch back to Chinese
+   composition and repeat step 8.
 
 ## Differences from opencode
 

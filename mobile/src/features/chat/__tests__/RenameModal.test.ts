@@ -27,16 +27,22 @@ beforeEach(() => {
 });
 afterEach(() => act(() => tree.unmount()));
 
-test("hides the native Android underline inside the rounded input border", () => {
-  expect(tree.root.findByType(TextInput).props.underlineColorAndroid).toBe("transparent");
+test("tints the original Android input background and draws the border on a separate view", () => {
+  const input = tree.root.findByType(TextInput);
+  expect(input.props.underlineColorAndroid).toBe("transparent");
+  const style = StyleSheet.flatten(input.props.style);
+  expect(style.borderWidth).toBeUndefined();
+  expect(style.borderRadius).toBeUndefined();
+  expect(style.backgroundColor).toBeUndefined();
+  expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ borderWidth: 1, flex: 1, minWidth: 0 });
 });
 
 test("generation stays beside the input and its explanation is hidden until requested", () => {
   const input = tree.root.findByType(TextInput);
-  expect(StyleSheet.flatten(input.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
+  expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
   const generate = button("chat.generateTitle");
   expect(StyleSheet.flatten(generate.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
-  expect(generate.parent).toBe(input.parent);
+  expect(generate.parent!.findAllByType(TextInput)).toHaveLength(1);
   const hints = () => tree.root.findAllByType(Text).filter(node => node.props.children === "chat.generateTitleHint");
   expect(hints()).toHaveLength(0);
   act(() => button("chat.generateTitleHelp").props.onPress());
