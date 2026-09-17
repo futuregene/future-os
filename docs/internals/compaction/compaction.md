@@ -10,9 +10,9 @@ projection. The raw journal is neither deleted nor rewritten; recall reads it.
 | `deterministic-evidence-v1` | protected originals + a recent tail + a deterministic tool-evidence index. **No model call.** |
 | `summarized-evidence-v1` | the same projection, plus a model-written handoff summary |
 
-Those are the only two values written, and the only two read. The experiment documents call
-them `C` and `C3`. `deterministic-evidence-v1` is also the fallback: it is committed whenever
-no provider is reachable or the summary call fails.
+Those are the only two values written, and the only two read. `deterministic-evidence-v1` is
+also the fallback: it is committed whenever no provider is reachable or the summary call
+fails.
 
 The [experiment](compaction-abc-experiment.md) measures what each retains, at what size and
 cost; the [developer guide](compaction-development.md) maps the code and the durable state

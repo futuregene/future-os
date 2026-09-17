@@ -6,7 +6,7 @@ Chinese detailed guide: [compaction-retrieval-mechanisms.zh-CN.md](compaction-re
 
 `deterministic` and `summarized` use the **same native retrieval backend**: they differ in
 whether the compacted projection includes a model handoff summary, not in which journal they
-can search. (Earlier sections call them `C` and `C3`.) Compaction changes the model's
+can search. Compaction changes the model's
 projection; it does not remove the original journal, and data a retired version already
 deleted cannot be recovered.
 

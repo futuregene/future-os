@@ -9,7 +9,7 @@
 | `deterministic-evidence-v1` | 受保护原文 + 近期尾部 + 确定性工具证据索引。**不调用模型。** |
 | `summarized-evidence-v1` | 同一投影，外加一份由模型撰写的交接摘要 |
 
-只写入这两个值，也只读取这两个值。实验文档把两者称作 `C` 与 `C3`。`deterministic-evidence-v1` 同时是兜底策略：无 provider 可用或摘要调用失败时提交它。
+只写入这两个值，也只读取这两个值。`deterministic-evidence-v1` 同时是兜底策略：无 provider 可用或摘要调用失败时提交它。
 
 [对比实验](compaction-abc-experiment.zh-CN.md)测量两者各自保留了什么、以多大体积和多少成本保留；[开发文档](compaction-development.zh-CN.md)给出代码与持久化状态机的地图。
 

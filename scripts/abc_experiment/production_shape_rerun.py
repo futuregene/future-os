@@ -417,7 +417,7 @@ def report(root, chains):
     # the raw history. Without it the recurring figure has nothing to compare to.
     raw_sizes = sorted(b["raw_tokens"] for b in per_boundary if b.get("raw_tokens"))
     if raw_sizes:
-        raw_median = raw_sizes[len(raw_sizes) // 2]
+        raw_median = statistics.median(raw_sizes)
         cache["no_compaction_baseline"] = {
             "median_raw_tokens": raw_median,
             "per_turn_cny": round(
@@ -429,7 +429,7 @@ def report(root, chains):
         toks = sorted(p["projection_tokens"] for p in projections
                       if p["arm"] == arm and p.get("projection_tokens"))
         if toks:
-            median = toks[len(toks) // 2]
+            median = statistics.median(toks)
             entry["median_projection_tokens"] = median
             entry["per_turn_cny"] = round(
                 bill(rates, median, 0, int(median * MODELLED_CACHE_HIT)), 6)
@@ -472,6 +472,10 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--driver", type=Path, required=True, help="abc_strategy_probe binary")
     ap.add_argument("--main-driver", type=Path, required=True, help="abc_main_probe binary")
+    ap.add_argument("--main-commit", required=True,
+                    help="the commit the --main-driver was built from (`git log -1` in that "
+                         "checkout). The harness cannot infer it from a binary path, and without "
+                         "it the run's `main` arm is not reproducible.")
     ap.add_argument("--bridge", type=Path, required=True)
     ap.add_argument("--shape", type=Path, required=True, help="capture_shape.py output")
     ap.add_argument("--sources", type=Path, default=Path.home() / "compact-exp" / "fidelity-sources")
@@ -528,6 +532,7 @@ def main():
         "code_hashes": {str(p.relative_to(REPO)): sha(p.read_bytes()) for p in code_paths},
         "driver_sha256": sha(args.driver.read_bytes()),
         "main_driver_sha256": sha(args.main_driver.read_bytes()),
+        "main_commit": args.main_commit,
         "bridge_sha256": sha(args.bridge.read_bytes()),
         "shape": json.loads((args.shape / "shape.json").read_text()),
         "shape_sha256": sha(args.shape.joinpath("system-prompt.txt").read_bytes()),

@@ -3,8 +3,8 @@
 ## 结论与版本边界
 
 **`deterministic` 与 `summarized` 共用同一套原生历史检索机制。** 差别在压缩后的投影是否附带
-模型交接摘要，不在搜索后端——不能因为开卷分数就断言其中之一没有原生查询。（本文较早章节把两者写作
-`C` 与 `C3`。）压缩只改变模型看到的投影，不删除原始 journal；退役版本已实际删除的数据无法找回。
+模型交接摘要，不在搜索后端——不能因为检索分数就断言其中之一没有原生查询。压缩只改变模型看到的投影，
+不删除原始 journal；退役版本已实际删除的数据无法找回。
 
 本文区分三件事：产品源代码的机制、实验实际执行的代码、实验额外施加的限制。FutureOS 代码位于当前分支；外部版本固定为：
 
@@ -13,13 +13,13 @@
 
 这里的 Codex 对照是第三方 API/local-inline 模式，不是 ChatGPT 托管 history/notes 模式。实验是冻结文本/工具记录的隔离重放，不声称还原原始生产工作区、媒体、权限或全部缓存。
 
-## 一、C 和 C3：共享原始 journal 的查询链
+## 一、两个策略共享原始 journal 的查询链
 
 ### 1. 原始数据在哪里
 
 压缩改变下一次模型请求的投影，不删除或重写原始 journal。持久化数据库的 `entries`、`message_blocks` 保留原始条目和分块。历史查询使用这些表，不从 `checkpoint.summary` 或 UI 展示摘要查找。
 
-C 的模型输入主要是保护原文、工具证据、近期尾部；C3 还尝试加入模型摘要。两者都能查询同一份已持久化原始历史。旧版本真正删除过的数据不能凭检索恢复。
+`deterministic` 的模型输入主要是保护原文、工具证据、近期尾部；`summarized` 还尝试加入模型摘要。两者都能查询同一份已持久化原始历史。旧版本真正删除过的数据不能凭检索恢复。
 
 ### 2. 模型如何知道可以查
 
@@ -218,6 +218,6 @@ launcher 只检查 shell 已解析好的单次 CLI argv 再转发，不解析 sh
 - `agent/examples/abc_future_shell_probe.rs`、`scripts/abc_experiment/native_future_shell.py`：原生 Future shell 入口和 CLI 范围护栏。
 - `native_codex.py`：原版 Codex 进程/工具事件转接。
 - `native_opencode.py`：原版 OpenCode CLI、原生 schema 与 ToolRegistry 调用。
-- `native_stores.py`：冻结记录转换与原生存储准备；旧单次 argv 执行仅保留用于历史结果追溯，不再作为完整 C/C3 shell。
+- `native_stores.py`：冻结记录转换与原生存储准备；旧单次 argv 执行仅保留用于历史结果追溯，不再作为完整 shell。
 
 核心边界：**检索算法和工具执行必须来自对应产品；胶水只负责隔离、输入转换、原生调用与记录，不能偷偷削弱或补造能力。**

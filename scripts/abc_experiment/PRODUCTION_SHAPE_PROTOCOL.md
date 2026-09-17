@@ -33,9 +33,13 @@ Five. Three are this repo's (`summarized`, `deterministic`, and `main`), two are
 external policies (Codex, OpenCode).
 
 `main` is not a reimplementation: [`abc_main_probe.rs`](abc_main_probe.rs) is built inside a
-checkout of the released branch and calls that checkout's own entry point and budget rules.
-"Is the new strategy better than what is deployed" was previously unanswerable from this
-harness.
+detached worktree of `origin/main` and calls that checkout's own entry point and budget
+rules. "Is the new strategy better than what is deployed" was previously unanswerable from
+this harness.
+
+Pass `--main-commit` with that checkout's `git log -1`; the harness records it in the
+manifest, because a binary path does not identify the code it was built from and an
+unlabelled `main` column silently rots as the released branch moves.
 
 ## Fairness: compaction must be compared against compaction
 
@@ -116,14 +120,16 @@ cp scripts/abc_experiment/abc_main_probe.rs <released-checkout>/agent/examples/
 (cd <released-checkout> && cargo build -p future-agent --example abc_main_probe)
 
 # the fair run, and the as-deployed run
+MAIN=$(git -C <released-checkout> rev-parse HEAD)
 python3 scripts/abc_experiment/production_shape_rerun.py \
     --output ~/compact-exp/v4-forced --force-compaction \
     --driver target/debug/examples/abc_strategy_probe \
     --main-driver <released-checkout>/target/debug/examples/abc_main_probe \
+    --main-commit "$MAIN" \
     --bridge target/debug/examples/abc_probe_bridge --shape ~/compact-exp/shape \
     --budget 300
 python3 scripts/abc_experiment/production_shape_rerun.py --output ~/compact-exp/v4-deployed \
-    --driver ... --main-driver ... --bridge ... --shape ... --budget 300
+    --driver ... --main-driver ... --main-commit "$MAIN" --bridge ... --shape ... --budget 300
 ```
 
 Closed book only; the open-book phase needs explicit user approval, as before.
