@@ -52,7 +52,8 @@ def main():
     for needle in ("## Archived conversation recall",
                    "future session history search --session <current-session-id> --query",
                    "future session history get --session <current-session-id> --entry",
-                   "use the existing shell tool",
+                   "Use the existing shell tool to read them",
+                   "Absence from the visible context is not evidence",
                    f'"{sid}"'):
         check(f"guidance contains {needle[:48]!r}", needle in system)
     for banned in ("history_search(", "history_get(", "read-only adapters", "offset=0, limit=8192"):
