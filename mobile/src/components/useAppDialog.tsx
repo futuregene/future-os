@@ -55,11 +55,7 @@ export function useAppDialog(active = true) {
     alert,
     dialog: (
       <Modal transparent animationType="fade" visible={active && visible} onRequestClose={cancel} onDismiss={flush}>
-        <DialogSurface>
-          <Text accessibilityRole="header" style={styles.title}>{request?.title}</Text>
-          {/* Android/OEM selection can add a native EditText background.
-              Keep iOS selection, but render Android notices as plain text. */}
-          {!!request?.message && <Text selectable={Platform.OS === "ios"} style={styles.message}>{request.message}</Text>}
+        <DialogSurface footer={
           <View style={styles.actions}>
             {buttons.map((button, index) => (
               <View key={index} style={styles.action}>
@@ -72,6 +68,11 @@ export function useAppDialog(active = true) {
               </View>
             ))}
           </View>
+        }>
+          <Text accessibilityRole="header" style={styles.title}>{request?.title}</Text>
+          {/* Android/OEM selection can add a native EditText background.
+              Keep iOS selection, but render Android notices as plain text. */}
+          {!!request?.message && <Text selectable={Platform.OS === "ios"} style={styles.message}>{request.message}</Text>}
         </DialogSurface>
       </Modal>
     ),
@@ -81,6 +82,6 @@ export function useAppDialog(active = true) {
 const styles = StyleSheet.create({
   title: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
   message: { color: colors.inkSoft, fontSize: 15, lineHeight: 22 },
-  actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md },
-  action: { flexGrow: 1, flexBasis: 120 },
+  actions: { flexDirection: "row", gap: spacing.md },
+  action: { flex: 1, minWidth: 0 },
 });
