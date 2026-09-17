@@ -622,6 +622,11 @@ export function MentionEditor({
         contentEditable={!disabled}
         spellCheck={false}
         suppressContentEditableWarning
+        // WebKit mismeasures the caret for mixed CJK/Latin text before our
+        // trailing ZWSP with the app's optimizeLegibility shaping (e.g. type
+        // 在desktop after Shift+Enter). Keep editing on its caret-safe path;
+        // changing kerning/ligatures alone or using auto does not fix it.
+        style={{ textRendering: "optimizeSpeed" }}
         className={cn(
           "max-h-[40vh] min-h-14 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word px-2 py-1 text-sm leading-5 text-ink outline-none",
           className,
