@@ -37,7 +37,7 @@ is better than illustrating it with a stand-in.
 
 ## Recipes
 
-These four cover most requests. In every case, start the relevant server first.
+These seven cover most requests. In every case, start the relevant server first.
 
 ### 1. Two versions → release-notes PDF
 
@@ -50,6 +50,10 @@ For each commit, decide which screen it touches, find or add a scenario, and
 capture it. Skip performance work and bug fixes. Then write a content file
 following `scripts/screenshots/examples/release-notes-1.1.8.json` and run the
 `pdf` subcommand. Captions should say what to look at, not restate the prose.
+
+For a non-technical audience the *why* matters more than the *what*: say what
+was painful before, what it is like now, and only then where to find it. Put
+the screenshot beside the "what it is like now" part.
 
 ### 2. Two versions → test checklist
 
@@ -85,6 +89,107 @@ mobile flow might be: open the list → open a conversation → type `/` and pic
 skill → read the result. For video, use `video-mobile <scenario>` — one scenario
 is one continuous piece of footage.
 
+
+### 5. Pick one of several styles → variant sheet
+
+Declare `variants` in a scenario, one inject script per variant; the harness renders
+the same screen once per variant and composes a labelled comparison sheet:
+
+```json
+"running-icon-variants": {
+  "variantsTitle": "运行指示图标 · 三个备选样式",
+  "variants": [
+    { "label": "A · 实心圆点", "inject": "injects/running-dot.js" },
+    { "label": "B · 同心圆环", "inject": "injects/running-ring.js" }
+  ],
+  "steps": [ { "wait": 900 }, { "inject": "{variantInject}" }, { "shot": "d-icon.png" } ]
+}
+```
+
+```bash
+python3 scripts/screenshots/capture.py variants-desktop running-icon-variants
+```
+
+Worth knowing:
+
+- **The `{variantInject}` placeholder** lets one scenario serve every variant: the
+  injection happens *inside the steps*, not at boot, because React re-renders and
+  would restore what an earlier mutation changed. If the change affects layout,
+  inject after the last interaction.
+- **This is a visual proposal.** The injection edits the DOM in the browser; the
+  product is untouched. Whatever is chosen still has to be implemented.
+- Inject scripts are plain JS under `scripts/screenshots/injects/`; the committed
+  `running-*.js` files are working examples.
+
+### 6. Compare two versions' styling → highlighted differences
+
+Capture each version, then compare:
+
+```bash
+# in version Y's checkout
+python3 scripts/screenshots/capture.py capture-desktop chat
+cp .screenshots/d-chat.png /tmp/y.png
+# switch to version X (or use another worktree) and capture the same scenario
+python3 scripts/screenshots/capture.py capture-desktop chat
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+    --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
+```
+
+Output is a three-panel sheet: A (changed regions boxed in red), B (boxed in blue,
+numbered), and a difference panel (unchanged content faded, changes red).
+
+Worth knowing:
+
+- **Both captures must be the same size** — same viewport (`--w/--h`) and same
+  scenario does it; if they differ, the right one is resized to match.
+- **`--threshold`** sets what counts as a change (default 24, so anti-aliasing
+  noise stays out); **`--min-area`** drops regions too small to label.
+- **Older versions have no harness**: `scripts/screenshots/`, `desktop/shot/` and
+  `desktop/vite.shot.config.ts` only exist from #703. To capture an older
+  checkout, copy those three into it first; the old frontend then renders against
+  the current mock data, and logs `[mock] UNHANDLED COMMAND` for anything the mock
+  does not answer — add those as they appear.
+- Version diffs are noisy by nature: text rendering, timestamps and scroll
+  position all register as changes. Line the two up first — set an absolute
+  `scrollTop` with `eval` rather than a relative wheel scroll.
+
+### 7. Pixel spacing / movement between elements → offset diagram
+
+Add an `offsets` step and the harness measures each element's box (with name and
+size) and draws the pixel distance between them:
+
+```json
+{ "offsets": {
+    "axis": "y",
+    "mode": "gap",
+    "targets": [ { "at": "新对话", "name": "新对话" },
+                 { "at": "模型", "name": "模型" } ] } }
+```
+
+- **`mode: "gap"`** (default) labels the distance between consecutive elements —
+  "how far apart are these two rows". **`mode: "edge"`** labels each element's
+  distance from the viewport edge — "are these aligned".
+- **`axis`** is `"y"` (vertical) or `"x"` (horizontal).
+- **The numbers are CSS pixels** at the emulated viewport, not device pixels, so
+  they match what a design file would quote.
+- `targets` matching is **ranked** (exact `aria-label` first, then an interactive
+  element's own exact text, …) and the driver prints which element each target
+  actually hit — a wrong match is visible instead of silent (`技能` used to hit the
+  composer's `选择技能` button).
+- To show **how far each element moved since a previous version**, record a
+  baseline and compare against it:
+
+```bash
+# version X
+python3 scripts/screenshots/capture.py measure-desktop rail-offsets
+cp .screenshots/desktop-rail-offsets-measure.json /tmp/base.json
+# after switching to version Y, capture with that baseline
+python3 scripts/screenshots/capture.py capture-desktop rail-offsets --baseline /tmp/base.json
+```
+
+With a baseline each element gains a green label stating its movement and size
+change (e.g. `位移 +0, +8px · 宽 +4px`).
+
 ## Recording video
 
 ```bash
@@ -105,6 +210,10 @@ both platforms. Worth knowing:
   enough to read (e.g. pause 1.5s after opening a menu) when the footage matters.
 - **The pointer indicator is drawn in**, which is what makes mobile footage
   followable; see *Pointer indicator and callouts*.
+- **Resolution**: stills come out at 2x (a 1280x860 viewport yields a 2560x1720
+  PNG). Chrome emits screencast frames at the **CSS viewport size** — it ignores
+  the emulated device scale factor — so the encode upscales them with Lanczos to
+  the stills' pixel dimensions. That is interpolation, not extra optical detail.
 - Video and screenshots share one scenario table: nothing to maintain twice.
 
 ## What it is, and what it is not
@@ -184,7 +293,8 @@ short list of steps that a person could replay by hand.
 ```
 
 Step kinds: `eval`, `wait`, `shot`, `tap` (by accessible name), `tapText` (by
-visible text), `hover`, `type`, `key`, `scroll`, plus the annotation steps below.
+visible text), `hover`, `type`, `key`, `scroll`, `inject`, plus the annotation,
+offset and measurement steps below.
 Three platform-level knobs are worth knowing:
 
 - **`ready`** is a JavaScript expression the driver polls until it is true, and it
@@ -208,15 +318,17 @@ reads `?share=1` so the share-intake sheet appears only in the share scenarios.
 
 ### Pointer indicator and callouts
 
-Two annotations are drawn by the driver, inside the page, so they appear in both
-stills and video. Both are on by default; `--annotate false` turns them off.
+The driver draws these inside the page, so they appear in both stills and video.
 
 - **The pointer indicator** follows every `tap`/`hover`: a blue dot, plus an
-  expanding ring at the moment of a tap. It matters most for mobile footage,
-  where nothing else shows where the finger landed. It is also what a still of a
-  multi-step flow needs to read as "and then tap here".
+  expanding ring at the moment of a tap. It is **on by default while recording**
+  (mobile footage is unfollowable without it) and **off by default for stills**, so
+  a product shot does not gain a stray dot just because the scenario tapped
+  something. Ask for it in a still with `--pointer true`, or place it deliberately
+  with a `{"pointer": [x, y]}` step.
 - **Callouts** come from a `marks` step: a numbered badge on the point plus a
   label beside it. They are what turn a screenshot into an explanation.
+- **`--annotate false`** removes all of the above for a clean capture.
 
 ```json
 { "marks": [{ "at": "工作区", "label": "① 工作区列表", "dy": -34 },
@@ -295,6 +407,7 @@ than silent:
 | `scripts/screenshots/scenarios.json` | The scenario table for both platforms |
 | `scripts/screenshots/document.css` | Print stylesheet for generated documents |
 | `scripts/screenshots/terminal.html` | Terminal-styled frame for CLI output |
+| `scripts/screenshots/injects/` | Variant-styling JS (see recipe 5) |
 | `scripts/screenshots/examples/` | Worked example: the 1.1.8 release notes content |
 | `scripts/screenshots/gen-demo-assets.py` | Regenerates the demo figures (needs matplotlib) |
 | `desktop/shot/` | Desktop mocks, demo data, harness entry, stand-in PTY server |

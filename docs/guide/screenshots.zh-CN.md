@@ -21,7 +21,7 @@
 
 ## 常见请求怎么做
 
-下面四条覆盖了绝大多数请求。共同前提：先按「桌面端 / 手机端」把对应服务跑起来。
+下面七条覆盖了绝大多数请求。共同前提：先按「桌面端 / 手机端」把对应服务跑起来。
 
 ### 1. 两个版本之间的功能增减 → PDF
 
@@ -31,6 +31,8 @@ git log --oneline vX..vY --format="%h|%s" | grep -E "feat|refactor"   # 只挑�
 ```
 
 按提交逐个判断「这个变更对应哪个界面」，为它加/找一个场景并截图；性能优化、缺陷修复不收录。然后照 `scripts/screenshots/examples/release-notes-1.1.8.json` 写内容文件，用 `pdf` 子命令生成。截图里的文案要点出「该看哪里」，不要复述正文。
+
+写给非技术读者时，「前因后果」比「做了什么」更重要：先说这个改动之前用户遇到什么麻烦，再说现在是什么体验，最后才落到具体在哪操作。截图贴在「现在是什么体验」那一段旁边。
 
 ### 2. 两个版本之间的变更 → 测试点清单
 
@@ -51,6 +53,83 @@ harness 的价值在这里：测点不是照着代码猜的，而是照着真实
 
 把流程拆成步骤，**每步一个场景**（不要一个长场景），这样每一步都能单独重拍、单独引用；再用 `pdf` 组装成文档。手机端步骤示例：打开列表 → 打开某个会话 → 输入 `/` 选技能 → 结果。视频则用 `video-mobile <场景名>`，一个场景就是一段连贯的操作。
 
+
+### 5. 几个样式让我挑一个 → 变体对比图
+
+场景里声明 `variants`，每个变体给一个注入脚本，harness 会把同一个界面渲染 N 遍，拼成一张带标签的对比图：
+
+```json
+"running-icon-variants": {
+  "variantsTitle": "运行指示图标 · 三个备选样式",
+  "variants": [
+    { "label": "A · 实心圆点", "inject": "injects/running-dot.js" },
+    { "label": "B · 同心圆环", "inject": "injects/running-ring.js" }
+  ],
+  "steps": [ { "wait": 900 }, { "inject": "{variantInject}" }, { "shot": "d-icon.png" } ]
+}
+```
+
+```bash
+python3 scripts/screenshots/capture.py variants-desktop running-icon-variants
+```
+
+要点：
+
+- **`{variantInject}` 占位符**让同一个场景服务所有变体：注入发生在**步骤里**而不是启动时，因为 React 会重渲染，启动时改掉的 DOM 会被还原。如果这个改动会让布局跟着变，把注入放在最后一次交互之后。
+- **这只是视觉提案**：注入改的是浏览器里的 DOM，产品代码一行没动。选定的方案仍要在应用里实现。
+- 注入脚本就是一段 JS，放在 `scripts/screenshots/injects/`；仓库里的 `running-*.js` 是可用的例子。
+
+### 6. 两个版本的样式对比 → 高亮差异
+
+先各截一次，再对比：
+
+```bash
+# 在版本 Y 的 checkout 里
+python3 scripts/screenshots/capture.py capture-desktop chat
+cp .screenshots/d-chat.png /tmp/y.png
+# 切到版本 X（或另开一个 worktree），同样截一次
+python3 scripts/screenshots/capture.py capture-desktop chat
+python3 scripts/screenshots/capture.py compare-desktop /tmp/y.png .screenshots/d-chat.png \
+    --output /tmp/style-diff.png --label-left "1.1.8" --label-right "1.1.7"
+```
+
+产出一张三联图：左图（红框标出改动处）、右图（蓝框 + 编号）、以及一张差异面板（未变内容淡化、改动处标红）。
+
+要点：
+
+- **两次截图必须同尺寸**：同一个视口（`--w/--h`）和同一个场景即可；尺寸不同时右图会被缩放到左图大小。
+- **`--threshold`** 决定多大的像素差算「改过」（默认 24，抗锯齿噪声不会触发）；**`--min-area`** 过滤小到不值得标注的区域。
+- **老版本没有 harness**：`scripts/screenshots/`、`desktop/shot/`、`desktop/vite.shot.config.ts` 是 #703 之后才有的。要对更早的版本截图，把这三处拷进那个 checkout 再跑；老前端会用当前 mock 的数据渲染，遇到 mock 没实现的命令会在控制台打印 `[mock] UNHANDLED COMMAND`，按报错补上即可。
+- 版本对比天然带噪声：文字渲染差异、时间戳、滚动位置都可能被标成「差异」。对比前先把视图滚到同一个位置——用 `eval` 设绝对 `scrollTop`，不要用相对滚轮。
+
+### 7. 元素间的像素间距 / 位移 → 偏移图
+
+场景里加 `offsets` 步骤，harness 会量出每个元素的框（带名字和尺寸），并在它们之间画虚线标出像素距离：
+
+```json
+{ "offsets": {
+    "axis": "y",
+    "mode": "gap",
+    "targets": [ { "at": "新对话", "name": "新对话" },
+                 { "at": "模型", "name": "模型" } ] } }
+```
+
+- **`mode: "gap"`**（默认）标相邻元素之间的距离，回答「这两行差多少」；**`mode: "edge"`** 标每个元素到视口边的距离，回答「对没对齐」。
+- **`axis`** 选 `"y"`（纵向）或 `"x"`（横向）。
+- **数值是 CSS 像素**（当前模拟视口下的布局单位），和设备像素无关，和设计稿口径一致。
+- `targets` 里 `{ "at": "…" }` 的匹配是**按优先级排序**的（先精确 `aria-label`，再可交互元素自身文字精确匹配……），而且驱动会把每个目标实际命中的元素打印出来——**量错元素时一眼能看见**（例如 `技能` 曾错误命中输入框的 `选择技能` 按钮）。
+- 想知道「两个版本之间位移了多少」，先量基线再对比：
+
+```bash
+# 版本 X
+python3 scripts/screenshots/capture.py measure-desktop rail-offsets
+cp .screenshots/desktop-rail-offsets-measure.json /tmp/base.json
+# 换到版本 Y 后，带基线再截一次
+python3 scripts/screenshots/capture.py capture-desktop rail-offsets
+```
+
+带基线时，每个元素旁会多一个绿色标签，写明自基线以来的位移（如 `位移 +8, 0px`）和尺寸变化。基线通过 `--baseline` 传给驱动（`measure-*` 只负责产出这个文件）。
+
 ## 录制视频
 
 ```bash
@@ -68,6 +147,7 @@ python3 scripts/screenshots/capture.py video-mobile chat
 - **节奏是真实的。** Chrome 只在画面变化时给帧，所以视频按每帧实际间隔编码：停顿处会真的停顿，而不是被压成定帧率。编码时会跳过画面完全没变的片段。
 - **想录什么就写进步骤里。** 视频录的就是场景的步骤，所以为了视频好看，把 `wait` 调到人能看清的长度（比如点开菜单后停 1.5 秒）。
 - **指针指示会录进去**，这也是手机端录像看得懂的关键；见「指针指示与标注」。
+- **分辨率**：截图是 2 倍像素（1280×860 的视口出 2560×1720 的图）；视频帧由 Chrome 按 **CSS 视口尺寸**发出（它不接受设备像素倍率），所以编码时会用 Lanczos 放大到和截图同样的像素尺寸——是插值放大，不是额外的光学细节。
 - 视频和截图共用场景表；同一个场景既能截图也能录像，不需要维护两份。
 
 ## 它是什么，不是什么
@@ -128,7 +208,7 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 }
 ```
 
-步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`，以及下面的标注类步骤。三个平台级细节值得先知道：
+步骤类型：`eval`、`wait`、`shot`、`tap`（按可访问名称）、`tapText`（按可见文字）、`hover`、`type`、`key`、`scroll`、`inject`，以及下面的标注 / 偏移 / 测量类步骤。三个平台级细节值得先知道：
 
 - **`ready`** 是驱动会反复轮询直到为真的 JavaScript 表达式，它也是截图快的关键：热缓存下约 1 秒就绪，冷启动可能要 20 秒。`settle` 只是就绪后的一小段缓冲。如果截图抢在界面绘制之前，应该调大 `readyTimeout` 而不是 `settle`。
 - **`tap` 需要可访问名称。** 先匹配 `aria-label`，再匹配可交互元素自身的文字。两者都没有就用 `tapText`；如果你发现自己在写坐标点击，那通常说明这个控件缺标签。
@@ -138,17 +218,18 @@ python3 scripts/screenshots/capture.py capture-mobile       # 终端 2
 
 ### 指针指示与标注
 
-驱动会在页面里画两种标注，截图和视频里都会带上。默认都开；`--annotate false` 可关掉。
+驱动会在页面里画这些标注，截图和视频里都会带上。
 
-- **指针指示**跟着每个 `tap` / `hover` 走：一个蓝色圆点，点击瞬间还有一圈扩散的环。手机端录像尤其需要它——否则画面里看不出手指点在哪里；多步流程的单张截图也靠它表达「然后点这里」。
+- **指针指示**跟着每个 `tap` / `hover` 走：一个蓝色圆点，点击瞬间还有一圈扩散的环。**录像时默认开**（否则手机画面里看不出手指点在哪里），**截图时默认关**（产品图不该因为场景点了几下就多出个圆点）。截图里想要，就加 `--pointer true`，或用 `{"pointer": [x, y]}` 步骤指定位置。
 - **标注**来自 `marks` 步骤：目标点上一个编号徽标，旁边跟一句文字。截图能当说明用，靠的就是它。
+- **`--annotate false`** 把上面这些全部关掉，得到一张干净的图。
 
 ```json
 { "marks": [{ "at": "工作区", "label": "① 工作区列表", "dy": -34 },
             { "at": "对话",   "label": "② 对话列表，可左右滑动切换", "dy": -34 }] }
 ```
 
-每条标注用 `at`（可访问名称，匹配规则同 `tap`）或直接给 `x`/`y`。`dx`/`dy` 平移徽标，`side`（`"left"`/`"right"`）把文字放到另一侧；两个目标挨得近时必须用其中之一，否则两条标注会叠在一起。编号在场景内累加，需要重新从 1 开始就加 `{"marksClear": true}`；想要干净的产品图就加 `{"pointerHide": true}` 把圆点藏掉。
+每条标注用 `at`（可访问名称，匹配规则同 `tap`）或直接给 `x`/`y`。`dx`/`dy` 平移徽标，`side`（`"left"`/`"right"`）把文字放到另一侧；两个目标挨得近时必须用其中之一，否则两条标注会叠在一起。编号在场景内累加，需要重新从 1 开始就加 `{"marksClear": true}`；`{"pointerHide": true}` 用来在录像中途把圆点收掉。
 
 ## 不入库的约定
 
@@ -195,6 +276,7 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | `scripts/screenshots/scenarios.json` | 两个平台的场景表 |
 | `scripts/screenshots/document.css` | 生成文档用的打印样式 |
 | `scripts/screenshots/terminal.html` | 命令行输出的终端外框 |
+| `scripts/screenshots/injects/` | 变体样式脚本（见「常见请求怎么做」第 5 条） |
 | `scripts/screenshots/examples/` | 完整示例：1.1.8 更新说明的内容文件 |
 | `scripts/screenshots/gen-demo-assets.py` | 重新生成演示图片（需要 matplotlib） |
 | `desktop/shot/` | 桌面端 mock、演示数据、入口、替身 PTY 服务 |
