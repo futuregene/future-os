@@ -18,6 +18,78 @@ Codex and OpenCode are reimplementations of the selection rules read from those
 commits, not forks. Their prompts were transcribed verbatim and each source file's git
 blob SHA is recorded in [abc_external_provenance.json](../scripts/abc_external_provenance.json).
 
+## The production-shaped run, and the deployed strategy
+
+The tables further down were measured with a **simulated 128K window, no output
+reservation and no request budget** — a matched-size retention comparison, not the numbers
+production computes. A later run drives the same strategies at the call shape the runtime
+uses (registry window, `effective_max_tokens`, `set_request_budget` with a captured
+session prompt and the real tool definitions, production trigger and phase), and adds the
+**deployed algorithm** as a fifth arm. Its protocol is
+[PRODUCTION_SHAPE_PROTOCOL.md](../scripts/abc_experiment/PRODUCTION_SHAPE_PROTOCOL.md);
+these are its results.
+
+On this model (declared window 1 000 000, output reservation 384 000) the economic trigger
+is **613 952** tokens: 80 % of the window, clamped by `window − output reserve − margin`.
+That is above every real-session boundary in the fixture set, so with the production
+trigger the Rust strategies frequently do not compact at all. Comparing them against arms
+that compact unconditionally would measure the trigger, not the retention policy. Both
+views are therefore reported, and only the first is a like-for-like comparison.
+
+**Post-compaction against post-compaction** (every arm forced to compact at every
+boundary, 24 boundaries, 178 questions):
+
+| Strategy | Recall | Median projection | Compression | Compaction cost |
+|---|---:|---:|---:|---:|
+| `summarized` (runtime default) | **147/178 (83 %)** | 12 113 tok | 5.7 % | 7.14 CNY |
+| `deterministic` | 127/178 (71 %) | 9 945 tok | 4.7 % | **0** |
+| OpenCode | 83/178 (47 %) | 5 152 tok | 2.1 % | 0.25 CNY |
+| **deployed (`main`)** | 68/178 (38 %) | 3 418 tok | 1.3 % | 0.81 CNY |
+| Codex | 68/178 (38 %) | 1 706 tok | 0.6 % | 6.29 CNY |
+
+| Group | `summarized` | `deterministic` | deployed | Codex | OpenCode |
+|---|---:|---:|---:|---:|---:|
+| real sessions | 98/129 (76 %) | 99/129 (77 %) | 39/129 (30 %) | 40/129 (31 %) | 50/129 (39 %) |
+| synthetic chains | **49/49 (100 %)** | 28/49 (57 %) | 29/49 (59 %) | 28/49 (57 %) | 33/49 (67 %) |
+
+Readings:
+
+* **The deployed algorithm loses three quarters of the real-session answers.** 30 % on real
+  sessions, against 76–77 % for the pair that replaces it. The gap is not a matter of size:
+  Codex retains 0.6 % of the history and scores the same 38 %, while `main`'s 1.3 % buys
+  nothing measurable — both discard the assistant prose the questions actually point at.
+* **The handoff summary is worth its cost on this exam, but only there.** Its synthetic
+  total is perfect (49/49) where the model-free projection gets 57 %, while on real sessions
+  the two are level (76 % vs 77 %). The summary pays for itself through the structured
+  chains, and its 7.14 CNY is close to Codex's 6.29 CNY for a far better result; the
+  model-free strategy reaches 71 % for nothing.
+* **Compression is not the objective.** Ranking by projection size inverts the quality
+  order exactly: Codex compresses ~10× harder than `summarized` and answers ~45 points
+  worse. A ratio only helps if what remains still contains the answer.
+* **Cost tracks the size of the input, not the size of the output.** `summarized` and Codex
+  pay almost the same to compact (7.14 vs 6.29 CNY) although their projections differ ~7×,
+  because both summarise the same full history. What the smaller projection buys is the
+  *later*, per-turn cost.
+
+**As deployed** (production trigger; the Rust arms compacted 6 of 24 boundaries, Codex and
+OpenCode all 24). These quality numbers are *not* retention-policy measurements — 18 of the
+24 boundaries sent the un-compacted history — and are shown only to record deployment
+behaviour:
+
+| Strategy | Recall | Compacted | Median projection when it compacted | Compaction cost |
+|---|---:|---:|---:|---:|
+| `summarized` | 149/178 (84 %) | 6/24 | 34 498 tok | 0.13 CNY |
+| `main` | 144/178 (81 %) | 6/24 | 4 911 tok | 0.03 CNY |
+| `deterministic` | 137/178 (77 %) | 6/24 | 32 418 tok | 0 |
+| Codex | 85/178 (48 %) | 24/24 | 1 644 tok | 6.50 CNY |
+| OpenCode | 81/178 (46 %) | 24/24 | 5 360 tok | 0.44 CNY |
+
+That the deployment passes on compaction at all six real-session boundaries is the direct
+consequence of the trigger sitting at 80 % of a 1 000 000-token window. Its scoring cost is
+correspondingly higher (2.67 CNY against 0.72 CNY for the same 90 questions), because every
+probe carries the full history — the projection size above is a recurring per-turn cost, not
+a one-off.
+
 ## How C3's summary is generated, and why the request shape matters
 
 C3's projection is produced by the production Rust path
@@ -35,17 +107,17 @@ live conversation is sent as **real messages**, the instruction is **appended la
 the session's own **system prompt and tool definitions** are reused. A prefix is compared
 from token zero, so all three have to match a request the session already sent.
 
-**The experiment's C3 arm does not reproduce that prefix.** It supplies Codex's base
-instructions through `--system-prompt-file` and an empty tool list, so the C3 and Codex
-arms send the same prefix and differ only in what they retain. Two consequences follow,
-and neither may be read as a property of the production path:
+**The 128K-window tables further down do not reproduce that prefix.** They supply Codex's
+base instructions through `--system-prompt-file` and an empty tool list, so the C3 and
+Codex arms send the same prefix and differ only in what they retain. Two consequences
+follow, and neither may be read as a property of the production path:
 
 * the high stage-0 hit rate those runs record (99 %+) is the **Codex arm priming the
   prefix that C3's request then reuses**, not C3 earning it — the arms run in the same
   block, so this is an ordering artifact; later stages show the ordinary ~10 % that comes
   from consecutive compactions sharing a head;
 * substituting a prompt, dropping the tool definitions, or adding one line to the system
-  prompt each measured **0 %** on a primed prefix, so the experiment cannot bound the
+  prompt each measured **0 %** on a primed prefix, so those runs cannot bound the
   production cost either way.
 
 A flattened request that has itself been primed does hit the cache, so the property to
@@ -54,6 +126,13 @@ on an isolated agent running the production path, a session grown to **212 911 t
 compacted with `cache_read = 212 548` — **99.8 %** of the request served from cache,
 `cache_write = 360` (only the newly appended instruction). Cold, that request costs about
 ¥0.53; cached, about ¥0.003.
+
+The production-shaped run at the top of this document **does** pass the session's prompt
+and tool definitions, so its summary requests have the production prefix — but a frozen
+session's own prompt is rebuilt per turn from its working directory and is not in the
+journal, so it is a real captured production prompt standing in for one, not the original.
+Its cache counters are likewise not comparable: the arms run in one block and prime each
+other.
 
 ## Method
 

@@ -1,28 +1,35 @@
 # Compaction experiment harness
 
-## Current fidelity-corrected closed-book run (v3)
+## Current run: production call shape, closed book (v4)
 
-Use [FIDELITY_PROTOCOL.md](FIDELITY_PROTOCOL.md), `fidelity_rerun.py`, and
-`opencode_fidelity.mjs` with the isolated, locked AI SDK 6.0.168. V3 implements
-Codex real-message requests, its byte-based user budget/middle truncation, and
-OpenCode's SDK-based tail-token selection and correct output cap. All arms use
-matched generation settings and tool-pair-safe boundaries. It is closed-book
-only; open-book remains subject to explicit user approval.
+Use [PRODUCTION_SHAPE_PROTOCOL.md](PRODUCTION_SHAPE_PROTOCOL.md) and
+`production_shape_rerun.py`. V4 drives the two current strategies through
+`agent/examples/abc_strategy_probe.rs` and the **released algorithm** through
+`abc_main_probe.rs`, at the call shape the runtime uses: the registry's window, the
+model's output reservation, `set_request_budget` with a captured session prompt and the
+real tool definitions, and the production trigger and phase. It reports recall,
+projection size, compression ratio and compaction cost separately, and compares
+post-compaction against post-compaction by forcing every arm to compact at every boundary.
+Closed book only; open-book remains subject to explicit user approval.
 
-**Neither run measures the cache.** Both give the C3 arm a system prompt and tool
-list that no session sends, so its cache counters describe the arm that primed
-the prefix (Codex in v3, an earlier `C3proj` run in v2), not the strategy. The
-protocol documents say so; the production measurement is in
+## Historical runs
+
+[FIDELITY_PROTOCOL.md](FIDELITY_PROTOCOL.md) / `fidelity_rerun.py` (v3) and
+[FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md) / `four_arm_rerun.py` (v2) are retained as the
+historical record. They ran the Rust arms with a **simulated 128K window, no output
+reservation and no request budget** — a matched-size retention comparison, not the numbers
+production computes. `four_arm_rerun.py` is still imported by the v4 harness for its
+fixtures, questionnaire and scoring. Do not mix scores across versions.
+
+**None of the runs measures the cache.** They all put several arms in one block, so each
+primes the prefix the next reuses; in v2/v3 the C3 arm also sent a system prompt and tool
+list that no session sends. The production measurement is in
 [docs/compaction-abc-experiment.md](../../docs/compaction-abc-experiment.md).
 
-[FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md), `four_arm_rerun.py` and
-`four_arm_open.py` are retained as **historical v2**, not an upstream-fidelity
-reference. Likewise, the older six-chain/external score scripts below are
-historical experiments. In particular `external_score.py` used simplified
-external prompts and clipped history. `abc_external_strategies.py` retains old
-helpers for reproducing that history; v3 uses its own corrected Codex budgeting
-and actual SDK lowering instead. Do not mix scores across versions. Private
-artifacts and upstream fixtures belong outside this repository.
+Downstream scripts that still drive `abc_c_probe.rs` / `abc_c3_probe.rs` (the `c_*`,
+`c3_*`, continuation and interface experiments) keep working, but they inherit the
+simulated shape those drivers default to. Private artifacts and upstream fixtures belong
+outside this repository.
 
 
 Drives six compaction strategies over identical frozen inputs and scores the same
@@ -89,7 +96,8 @@ held constant while the projection varies.
 | `scripts/abc_external_strategies.py` | Codex/OpenCode selection rules and prompts, transcribed from upstream |
 | `scripts/abc_external_provenance.json` | upstream repo, commit and git blob SHA for every file that was read |
 | `agent/examples/abc_probe_bridge.rs` | direct model transport; reads the local Agent registry, refuses models outside the allowlist |
-| `scripts/abc_experiment/abc_compaction_arm.rs` | M-arm driver: dumps any checkout's projection. Copy it into the checkout you want to measure |
+| `agent/examples/abc_strategy_probe.rs` | driver for the two current strategies at production call shape (`--strategy deterministic\|summarized`) |
+| `scripts/abc_experiment/abc_main_probe.rs` | driver for *whatever a checkout deploys*; copy into that checkout and build there |
 | `scripts/abc_experiment/summarize.py` | prints the six-arm table and cost breakdown from a results root |
 | `scripts/abc_experiment/search_ablation.py` | prints the closed-book vs search-enabled table and delivered-only accuracy |
 | `scripts/abc_experiment/interface_ablation.py` | compares the three retrieval interfaces across every arm |
@@ -104,12 +112,11 @@ python3 scripts/abc_compaction_experiment.py prepare --root DIR
 # 2. build the transport
 cargo build -p future-agent --example abc_probe_bridge
 
-# 3. arm M: build the driver inside the branch you want to measure
-cp scripts/abc_experiment/abc_compaction_arm.rs <that-checkout>/agent/examples/
-(cd <that-checkout> && CARGO_TARGET_DIR=... cargo build -p future-agent --example abc_compaction_arm)
-python3 scripts/abc_compaction_experiment.py main --root DIR \
-    --arm-binary <that-checkout>/target/debug/examples/abc_compaction_arm \
-    --bridge target/debug/examples/abc_probe_bridge --window 32000 --budget 25
+# 3. the deployed-arm driver: build it inside the branch you want to measure
+cp scripts/abc_experiment/abc_main_probe.rs <that-checkout>/agent/examples/
+(cd <that-checkout> && CARGO_TARGET_DIR=... cargo build -p future-agent --example abc_main_probe)
+#    (this is the v4 run's `--main-driver`; the current strategies are driven by
+#     agent/examples/abc_strategy_probe.rs)
 
 # 4. external arms (Codex, OpenCode); --stages lists the probe stages to record
 python3 scripts/abc_compaction_experiment.py external --root DIR --arm codex \

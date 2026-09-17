@@ -1,7 +1,9 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
 mod events;
-pub(crate) mod history_recall;
+// Public so a measurement driver can reproduce the exact request shape a turn
+// sends; re-implementing this text elsewhere is how a replay drifts from production.
+pub mod history_recall;
 mod run_loop;
 
 use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
