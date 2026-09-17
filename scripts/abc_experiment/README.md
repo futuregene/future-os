@@ -9,6 +9,12 @@ OpenCode's SDK-based tail-token selection and correct output cap. All arms use
 matched generation settings and tool-pair-safe boundaries. It is closed-book
 only; open-book remains subject to explicit user approval.
 
+**Neither run measures the cache.** Both give the C3 arm a system prompt and tool
+list that no session sends, so its cache counters describe the arm that primed
+the prefix (Codex in v3, an earlier `C3proj` run in v2), not the strategy. The
+protocol documents say so; the production measurement is in
+[docs/compaction-abc-experiment.md](../../docs/compaction-abc-experiment.md).
+
 [FOUR_ARM_PROTOCOL.md](FOUR_ARM_PROTOCOL.md), `four_arm_rerun.py` and
 `four_arm_open.py` are retained as **historical v2**, not an upstream-fidelity
 reference. Likewise, the older six-chain/external score scripts below are

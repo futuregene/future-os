@@ -17,6 +17,28 @@ compaction at scored boundaries. Questionnaire is the same seeded exact-value
 recognition instrument (including its early-candidate bias), not task execution.
 No population significance claim; six chains, only three real conversations.
 
+### What this run cannot say about the cache
+
+The C3 arm is given Codex's base instructions (`--system-prompt-file`) and an
+empty tool list, so C3 and Codex share a prefix and differ only in what they
+retain. A provider caches on the request prefix — system prompt, then tool
+definitions, then messages, compared from token zero — so this run's C3 requests
+are **not** the shape production sends, and the two arms prime each other:
+
+* the ~99 % stage-0 hit rate in the v3 ledger is the Codex arm warming the
+  prefix C3's request then reuses (the arms run in one block, in randomized
+  order); later stages record the ordinary ~10 % that consecutive compactions
+  earn by sharing a head;
+* on a primed prefix, substituting the system prompt, dropping the tool
+  definitions, or adding a single line to the system prompt each measured
+  **0 %** in a separate check, so neither the hit rates here nor their absence
+  bound the production cost.
+
+Do not quote any cache counter from these ledgers as a property of the C3
+strategy. The production measurement (99.8 % on a 212 911-token prefix, on an
+isolated agent running the production path) is in
+[the comparison report](../../docs/compaction-abc-experiment.md).
+
 ## Corrections fixed before paid calls
 
 - Align EVERY arm's compaction and probe boundaries to complete stored messages
@@ -58,7 +80,11 @@ No population significance claim; six chains, only three real conversations.
 
 `fetch_fidelity_sources.py` downloads fixed public commit contents with git-blob
 SHA verification. Sources, SDK package-lock, model metadata, binaries and all
-relevant Python/JS code are hashed in `fidelity-manifest.json`.
+relevant Python/JS code are hashed in `fidelity-manifest.json`. **Rebuild
+`--driver`/`--bridge` from the commit recorded in `SOURCE_REVISION.json`**: the
+manifest hashes the executables, so a later build of the same source tree — after
+any change to `agent/src` or `agent/examples` — no longer matches, and the
+recorded artifacts can only be re-verified against a binary built at that commit.
 
 `test_fidelity.py` covers byte-vs-character counting, middle truncation,
 recursive user/summary roles, tool pairing, safe boundaries, cumulative budget,

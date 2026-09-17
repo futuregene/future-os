@@ -21,24 +21,39 @@ blob SHA is recorded in [abc_external_provenance.json](../scripts/abc_external_p
 ## How C3's summary is generated, and why the request shape matters
 
 C3's projection is produced by the production Rust path
-(`agent/examples/abc_c3_probe.rs` → `prepare_evidence_with_summary`), so its content is
-exactly what the runtime commits. The summary is **sticky** — each one receives the
+(`agent/examples/abc_c3_probe.rs` → `prepare_evidence_with_summary`), so the *selection*
+it runs is the runtime's own. The projection content is that function's output on the
+frozen records; it is not byte-identical to a production checkpoint, because the driver
+rebuilds messages from a reduced export and the model summary appended to it is written
+under the experiment's request shape, not the session's (see below). Read the mechanism
+in [C compaction](compaction.md). The summary is **sticky** — each one receives the
 previous one — so facts accumulate across successive compactions instead of being
 rewritten from scratch.
 
-The request is deliberately shaped to be **served from the provider's prefix cache**:
+The production request is shaped to be **served from the provider's prefix cache**: the
+live conversation is sent as **real messages**, the instruction is **appended last**, and
+the session's own **system prompt and tool definitions** are reused. A prefix is compared
+from token zero, so all three have to match a request the session already sent.
 
-* the live conversation is sent as **real messages**, not a flattened string;
-* the instruction is **appended last**;
-* the agent's own **system prompt and tool definitions** are reused.
+**The experiment's C3 arm does not reproduce that prefix.** It supplies Codex's base
+instructions through `--system-prompt-file` and an empty tool list, so the C3 and Codex
+arms send the same prefix and differ only in what they retain. Two consequences follow,
+and neither may be read as a property of the production path:
 
-Providers cache on the request prefix, so a request that reuses the turns the session
-already sent is billed almost nothing, while a request that re-flattens or re-frames the
-same content shares no prefix and is billed in full every time. Measured on an isolated
-agent running this code path, a session grown to **212 911 tokens** compacted with
-`cache_read = 212 548` — **99.8 %** of the request served from cache, `cache_write = 360`
-(only the newly appended instruction). Cold, that request costs about ¥0.53; cached,
-about ¥0.003.
+* the high stage-0 hit rate those runs record (99 %+) is the **Codex arm priming the
+  prefix that C3's request then reuses**, not C3 earning it — the arms run in the same
+  block, so this is an ordering artifact; later stages show the ordinary ~10 % that comes
+  from consecutive compactions sharing a head;
+* substituting a prompt, dropping the tool definitions, or adding one line to the system
+  prompt each measured **0 %** on a primed prefix, so the experiment cannot bound the
+  production cost either way.
+
+A flattened request that has itself been primed does hit the cache, so the property to
+test is "same prefix as the session's turns", not "message array versus string". Measured
+on an isolated agent running the production path, a session grown to **212 911 tokens**
+compacted with `cache_read = 212 548` — **99.8 %** of the request served from cache,
+`cache_write = 360` (only the newly appended instruction). Cold, that request costs about
+¥0.53; cached, about ¥0.003.
 
 ## Method
 
@@ -238,9 +253,12 @@ the cheapest of the three**, because the prefix was already paid for by the turn
 produced it — the 99.8 % cache hit above turns a 212 911-token read into ¥0.003, against
 ¥0.0286 for a 7 K-token *cold* summary.
 
-A real session's summary is always issued warm, since the conversation it summarises has
-just been sent. **The production cost of C3's compaction is therefore the cached figure,
-not the ¥0.1173 in the table above**, which is a driver artefact.
+A real session's summary is issued after the turn whose prefix it reuses has just been
+sent, so its cost is the cached figure rather than the ¥0.1173 above, which is a driver
+artefact. That is a statement about the shape being **intended** to be warm, not a
+guarantee: the hit requires the request's system prompt and tool definitions to match the
+turn's exactly, and the isolated-agent measurement above is what it costs when they do.
+The experiment's own arms do not test that case (see "How C3's summary is generated").
 
 ## What is inside a C3 projection
 

@@ -16,9 +16,11 @@
 
 因此没有固定的“每次必然一次”或“总共最多三次”。流式响应里的大量 SSE chunk 不是大量模型请求。现有命令返回 ACK，不返回最终调用计数；不能从 ACK 推断只调用一次。
 
-显式调用旧 semantic API 时使用传入的模型／provider，禁用工具；默认 C 不进入这个路径。摘要文字预算最多约 4096 estimated tokens；单次生成上限最多 8192，小窗口缩小且不超过模型上限。这不修改正常聊天的输出配置。
+显式调用旧 semantic API 时使用传入的模型／provider，禁用工具。**C3 默认路径不同：它把活动对话按原角色作为真实消息发送，并复用 agent 自己的 system prompt（已有 checkpoint 时含历史召回指引）与工具定义——这正是它命中 provider 前缀缓存的前提**，见 [C 压缩](compaction.zh-CN.md)。摘要文字预算最多约 4096 estimated tokens；单次生成上限最多 8192，小窗口缩小且不超过模型上限。这不修改正常聊天的输出配置。
 
 ## 1. System prompt 原文
+
+该常量是**旧 A 路径**（`call_summary_model_bounded`）的完整 system prompt，也是 C3 路径在调用方未传 prompt 时的**兜底**。生产始终会传：C3 请求携带会话自己的 system prompt（已有 checkpoint 时含历史召回指引）与会话自己的工具定义，下面这段文字只作为**追加在最后的指令**出现在其下。
 
 以下是源码 `SUMMARY_SYSTEM_PROMPT` 的内容：
 
@@ -27,11 +29,11 @@ You are a context summarization agent. Produce a structured handoff summary so a
 Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed.
 ```
 
-这不是正常聊天的完整 system prompt。正常聊天的项目规则、工具定义和历史召回指南不会整体复制给摘要请求；摘要使用这个专用 system prompt。
+这不是正常聊天的完整 system prompt。旧 A 请求不会拷入正常聊天的项目规则、工具定义和历史召回指南；**C3 请求则会带上它们**，因为那正是会话已缓存的前缀（见 [C 压缩](compaction.zh-CN.md)）。
 
-## 2. User message 的组装
+## 2. User message 的组装（旧 A）
 
-每次摘要请求是一个专用 `ModelRequest`：上述 system prompt、一条 user 文本消息、空 tools 列表。各 provider adapter 再映射成自己的 API 格式。
+旧 A 的每次摘要请求是一个专用 `ModelRequest`：上述 system prompt、一条 user 文本消息、空 tools 列表。各 provider adapter 再映射成自己的 API 格式。（C3 不是这样：它把活动对话按原角色作为真实消息发送、指令追加在最后，前缀才能命中缓存。）
 
 user 文本按下列顺序构造（尖括号内的示例值不是实际用户历史）：
 

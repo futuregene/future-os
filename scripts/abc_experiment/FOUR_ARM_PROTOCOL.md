@@ -16,6 +16,26 @@ Independent workload units are chains (only three real sessions), not individual
 values or repeated boundaries. Report per-chain counts and descriptive paired
 comparisons; do not claim population significance from pooled fields.
 
+### What this run cannot say about the cache
+
+A provider caches on the request prefix — system prompt, then tool definitions,
+then messages, compared from token zero. This run's C3 arm sends the built-in
+summary system prompt and an empty tools list (`--system-prompt-file` was added
+only in v3), so its request is not the shape any session sends, and its cache
+counters say nothing about the strategy. Concretely, in this ledger: the
+stage-0 hits (~51 % pooled, i.e. the real chains) trace to an earlier C3proj run
+that sent a longer array with the same prompt, since the driver's message array
+is a strict prefix of it, while the synthetic stage-0 requests, issued past that
+cache's lifetime, missed outright. Later stages record the ordinary ~5-10 % that
+consecutive compactions earn by sharing a head. Substituting a system prompt,
+dropping tool definitions, or adding one line to the system prompt was measured
+at **0 %** on a primed prefix.
+
+Do not quote any cache counter from this ledger as a property of the C3
+strategy. The production measurement (99.8 % on a 212 911-token prefix, on an
+isolated agent running the production path) is in
+[the comparison report](../../docs/compaction-abc-experiment.md).
+
 ## Frozen primary phase
 
 - Model: `future/deepseek-flash`; no model substitution.

@@ -39,19 +39,29 @@ settings are not changed.
 
 ## Exact system prompt
 
+This constant is the whole system prompt of the **legacy A** call
+(`call_summary_model_bounded`), and it is the **fallback** the C3 path uses when its caller
+supplies none. Production always supplies one: the C3 request carries the session's own
+system prompt (post-checkpoint recall guidance included) and the session's own tool
+definitions, and the text below appears only under it, as the appended instruction.
+
 ```text
 You are a context summarization agent. Produce a structured handoff summary so another coding agent can continue the work. Do not continue the conversation or answer its questions. Output only the requested structure, using the conversation's primary language.
 Evidence completeness: tool results may be partial excerpts. Describe only what the visible excerpt establishes; omitted content remains unknown. Never infer that the full result contains no relevant data, no errors, or only filler because its middle is omitted. Preserve this qualification and the history entry reference. A successful tool execution is not proof that all requested validation passed.
 ```
 
-This is not the ordinary chat system prompt. The entire project/system context,
-tool definitions and post-compaction recall guide are not copied into this request.
+This is not the ordinary chat system prompt. In a legacy A request the entire
+project/system context, tool definitions and post-compaction recall guide are not copied
+in; a C3 request, by contrast, sends them because they are the session's cached prefix —
+see [C compaction](compaction.md).
 
-## User-message assembly
+## User-message assembly (legacy A)
 
-Each summary `ModelRequest` has the dedicated system prompt, **one user text
-message**, and an empty tools list. Protocol adapters map this logical request to
-the provider's native fields. The user text contains, in order:
+Each **legacy A** summary `ModelRequest` has the dedicated system prompt above, **one user
+text message**, and an empty tools list. Protocol adapters map this logical request to
+the provider's native fields. (C3 does not do this: it sends the live conversation as
+real messages in their original roles with the instruction appended, which is what keeps
+its prefix cacheable.) The legacy user text contains, in order:
 
 1. Optional carry-forward instructions and `<prior-summary>...</prior-summary>`:
    the old checkpoint summary or the previous fold output; newer evidence wins

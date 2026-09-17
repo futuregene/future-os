@@ -4,10 +4,21 @@
 //! deterministic tool-evidence index, recent tail) **plus** a sticky model-written
 //! handoff summary. `prepare_evidence_with_summary` is the production entry point, so
 //! this driver exercises the production selection function on reduced frozen records.
-//! It is NOT a live agent and does not reproduce the original system prompt, tools,
-//! media or provider metadata. `--system-prompt-file` and `--thinking-level` make
-//! those experiment choices explicit. Logical model requests are returned for audit;
-//! no production prefix-cache guarantee is implied.
+//! It is NOT a live agent and does not reproduce the original media or provider
+//! metadata. `--system-prompt-file`, `--tools-file` and `--thinking-level` make the
+//! experiment's request shape explicit; every logical model request is returned for
+//! audit.
+//!
+//! **The call shape decides whether the summary request can hit the provider's prefix
+//! cache, and the cached prefix is `system_prompt` + `tools` + `messages` from token
+//! zero.** Production passes the session's own system prompt (recall guidance included
+//! once a checkpoint exists) and its real tool definitions, and reaches that prefix by
+//! sending the turns the session already sent. A run that omits either element, or that
+//! substitutes a different prompt (the fidelity run passes Codex's base instructions so
+//! its C3 and Codex arms share a prefix), does NOT reproduce the production prefix. A
+//! cache hit measured that way comes from whichever request primed it, not from C3's own
+//! shape. Read the recorded `system_prompt`/`tools`/`messages` before quoting any cache
+//! counter as a property of the production path.
 //!
 //! Pass `--previous CHECKPOINT_JSON` to chain compactly: the previous summary is
 //! handed to the next one. This permits recursive retention but does not guarantee
@@ -15,6 +26,7 @@
 //!
 //! Usage:
 //!   abc_c3_probe --records FILE --model MODEL --window N [--previous CHECKPOINT_JSON]
+//!                 [--system-prompt-file FILE] [--tools-file FILE] [--thinking-level off]
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -29,7 +41,7 @@ use future_agent::compaction::{
     ContextManager, ContextPreparation,
 };
 use future_agent::llm::schema::{ModelRequest, ModelStreamEvent};
-use future_agent::types::{AgentMessage, ContentBlock, LLMProvider};
+use future_agent::types::{AgentMessage, ContentBlock, LLMProvider, ToolDef};
 
 #[derive(Default)]
 struct Totals {
@@ -222,6 +234,7 @@ async fn main() -> Result<()> {
     let mut dump_messages = false;
     let mut thinking_level: Option<String> = None;
     let mut system_prompt: Option<String> = None;
+    let mut tools: Vec<ToolDef> = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--records" => records_path = args.next(),
@@ -237,6 +250,12 @@ async fn main() -> Result<()> {
                 system_prompt = Some(std::fs::read_to_string(
                     args.next().context("system prompt file")?,
                 )?);
+            }
+            "--tools-file" => {
+                tools = serde_json::from_str(&std::fs::read_to_string(
+                    args.next().context("tools file")?,
+                )?)
+                .context("tools file must be a JSON array of tool definitions")?;
             }
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -453,7 +472,7 @@ async fn main() -> Result<()> {
                 None,
                 Some(&provider),
                 system_prompt.as_deref(),
-                &[],
+                &tools,
                 None,
                 // Surface the reason a summary was discarded: without this the
                 // fallback is silent in a driver that installs no tracing subscriber.
@@ -486,6 +505,13 @@ async fn main() -> Result<()> {
             "estimated_after": after,
             "window": window,
             "model_requests": totals.calls.load(Ordering::Relaxed),
+            // The shape the summary request used. Without both of these the run cannot
+            // reproduce the production prefix (see the module docs); when the override is
+            // false the built-in handoff prompt is used, which is what production sends
+            // underneath the session's own prompt. The resolved text of every request is
+            // in `logical_requests`.
+            "system_prompt_overridden": system_prompt.is_some(),
+            "tool_count": tools.len(),
             "thinking_level": thinking_level,
             "logical_requests": *provider.requests.lock(),
             "usage": {

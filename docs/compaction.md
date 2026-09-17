@@ -103,15 +103,39 @@ exams ask.
 ## What the summary reads, and why that is the cheap shape
 
 The summary request sends the live conversation as real messages with the
-instruction appended last, and reuses the agent's own system prompt. The
-instruction is appended rather than prepended, and the material is not flattened
-into a single user message, because providers cache on the request prefix: a
-request that reuses the turns the session has already sent can be served from
-cache, while a flattened request shares no prefix and is billed in full every
-time. Measured against the provider, the message-array shape hit 99.9% of the
-cache on a 258 K-token prefix and cost about 48× less than the same input sent
-cold. Reading the live conversation also makes the summary describe the actual
-history rather than an already-lossy index of it.
+instruction appended last. Reading the live conversation rather than a
+re-indexed copy is what lets the summary describe the actual history instead of
+an already-lossy index of it.
+
+Whether that request is billed from cache depends on one thing: **its prefix must
+be byte-identical to a request the provider has already seen from this session.**
+Providers cache on the request prefix, which is the system prompt, then the tool
+definitions, then the messages, compared from token zero. So the shape is chosen
+to reuse what the session just sent, not because a flattened or re-framed request
+is inherently uncacheable:
+
+* the conversation is sent as real messages, in the shape the turn sent them;
+* the instruction is appended last, leaving the prefix untouched;
+* the request carries the **session's own system prompt** — including the
+  post-checkpoint recall guidance — and the **session's own tool definitions**,
+  both of which sit inside the prefix.
+
+Changing any one of those diverges the prefix at that point and the whole
+conversation is billed again. That is not theoretical: dropping the tool
+definitions, substituting a summary-specific system prompt, or adding a single
+line to the system prompt each measured **0 %** cache on a primed prefix, while
+the identical-shape request measured 93.7 %. On an isolated agent running this
+code path, a session grown to **212 911 tokens** compacted with
+`cache_read = 212 548` — **99.8 %** served from cache, `cache_write = 360` (only
+the appended instruction), about ¥0.003 against about ¥0.53 cold. A flattened
+request that has itself been primed does hit, which is why the property to test
+is "same prefix as the session's turns", not "message array versus string".
+
+Both the automatic path (`run_loop.rs`) and the standalone `/compact`
+(`rpc/session.rs`) build that prompt with the same
+`history_recall::system_prompt` expression, and a test pins them to one string;
+the manual path previously sent the bare base prompt, so its summary missed the
+cache whenever a checkpoint already existed.
 
 The reserved summary budget is at most a third of what the evidence budget can
 spare, so a tight budget yields no summary rather than an unusable evidence index.
