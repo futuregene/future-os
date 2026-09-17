@@ -3,7 +3,19 @@ use super::{estimate_text_tokens, ContextManager, PromptContext};
 use crate::types::ToolDef;
 
 pub const TARGET_HISTORY: u64 = 32_000;
-pub const MAX_EXPANDED_HISTORY: u64 = 64_000;
+/// Ceiling for the compacted history, before the capacity clamp
+/// (`min(this, (limit - fixed) * 3/4)`). This is the budget the protected assistant
+/// originals compete for: user originals are never dropped, so when they plus the retained
+/// tail and the evidence slot no longer fit, the plan fails outright rather than truncating
+/// them; assistant originals are demoted newest-first and counted in a retention note.
+///
+/// Measured against every session in a real Agent database (the largest had 634K tokens of
+/// history), 64 000 left that session 281 tokens of headroom: it kept every original, but
+/// any further growth would have started demoting assistant text — and the trigger change
+/// in the same series lets sessions grow past that point now. 128 000 restores a real
+/// margin, and yields to the capacity clamp on smaller windows (128K window: 82 176;
+/// 262K window: 96 768).
+pub const MAX_EXPANDED_HISTORY: u64 = 128_000;
 pub const RECENT_HISTORY: u64 = 8_000;
 
 /// The economic trigger: 80% of the declared window, with no absolute cap.

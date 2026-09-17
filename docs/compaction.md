@@ -55,8 +55,9 @@ overhead that cannot fit fails explicitly.
 3. Roughly 8K of recent paired tool/conversation history, reduced on small windows.
 
 The overall history target remains about 32K, excluding fixed system/tool costs,
-and may expand up to 64K only within request capacity. C has its own slot budget;
-it does not call A to learn how long a summary would have been.
+and may expand up to **128K** only within request capacity (`min(128000, (limit −
+fixed) × 3/4)`, so a 128K window yields 82K and a 262K window 96K). C has its own
+slot budget; it does not call A to learn how long a summary would have been.
 
 User text has priority. When assistant originals exceed headroom, retain newer
 ones that fit and explicitly mark omitted outputs as **not summarized**. Their

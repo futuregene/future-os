@@ -255,8 +255,8 @@ fn plan(
         .collect::<Vec<_>>();
     let summary_budget = (window / 8).clamp(1, summary_cap);
     let history_room = hard_limit.saturating_sub(prompt.usage.fixed_input_tokens);
-    // 32K is a soft target. Expand up to 64K for protected originals while
-    // preserving headroom; never silently truncate user/assistant text.
+    // 32K is a soft target. Expand up to MAX_EXPANDED_HISTORY for protected originals
+    // while preserving headroom; never silently truncate user/assistant text.
     let maximum_target =
         super::budget::MAX_EXPANDED_HISTORY.min(history_room.saturating_mul(3) / 4);
     let base_required = protected
@@ -1038,6 +1038,15 @@ mod tests {
         )
     }
 
+    /// A length of ASCII text that alone exceeds `MAX_EXPANDED_HISTORY` (4 chars per
+    /// estimated token). Sized from the constant so the two tests below keep testing the
+    /// mechanism — the plan refuses rather than truncating a user original; an assistant
+    /// original that does not fit is demoted and counted — instead of a ceiling value they
+    /// happen to hard-code.
+    fn oversized_original_len() -> usize {
+        (super::super::budget::MAX_EXPANDED_HISTORY as usize) * 4 + 8_192
+    }
+
     fn test_prompt() -> PromptContext {
         PromptContext {
             messages: vec![
@@ -1202,7 +1211,7 @@ mod tests {
         };
         let prompt = PromptContext {
             messages: vec![
-                projected("user", &"x".repeat(300_000), "u"),
+                projected("user", &"x".repeat(oversized_original_len()), "u"),
                 projected("assistant", "answer", "a"),
             ],
             usage: ContextUsage::default(),
@@ -1232,7 +1241,7 @@ mod tests {
         let prompt = PromptContext {
             messages: vec![
                 projected("user", "must retain this requirement", "u"),
-                projected("assistant", &"x".repeat(300_000), "a"),
+                projected("assistant", &"x".repeat(oversized_original_len()), "a"),
                 projected("user", "latest question", "new"),
             ],
             usage: ContextUsage::default(),
