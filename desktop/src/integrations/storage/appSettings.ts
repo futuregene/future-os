@@ -35,8 +35,10 @@ export interface AppSettings {
    * finishes. On by default.
    */
   bellOnComplete: boolean;
-  /** Compact the opening context once, after a new conversation's first answer. Off by default. */
-  autoCompactFirstTurn: boolean;
+  /** Generate and save a title after the first answer, without compacting context. Off by default. */
+  autoTitleFirstTurn: boolean;
+  /** UI language mirrored for backend title generation while the webview is suspended. */
+  titleLanguage: "en" | "zh";
   /** Community-edition UI hides billing surfaces and treats Future like a normal builtin provider. */
   communityEdition: boolean;
 }
@@ -51,7 +53,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,
-  autoCompactFirstTurn: false,
+  autoTitleFirstTurn: false,
+  titleLanguage: "en",
   communityEdition: false,
 };
 
@@ -68,7 +71,8 @@ export async function updateAppSettings(input: {
   skillGuideDismissed?: boolean;
   skillIntroDismissed?: boolean;
   bellOnComplete?: boolean;
-  autoCompactFirstTurn?: boolean;
+  autoTitleFirstTurn?: boolean;
+  titleLanguage?: "en" | "zh";
   communityEdition?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });

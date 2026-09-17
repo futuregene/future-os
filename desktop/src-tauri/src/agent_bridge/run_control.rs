@@ -130,34 +130,41 @@ pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
 /// settle — the row alone gates the sidebar spinner and the composer lock, so
 /// the run must not depend on a possibly-suspended frontend to reach terminal.
 /// Compare-and-set: a concurrent user abort (`cancelled`) wins and survives.
-pub(super) async fn mark_run_completed_if_active(run_id: Option<&str>) {
-    let Some(run_id) = run_id else {
-        return;
-    };
+pub(super) fn mark_run_completed_if_active(
+    run_id: Option<&str>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let run_id = run_id?;
     match store::update_run_status_if_active(store::UpdateRunStatusInput {
         run_id: run_id.to_string(),
         status: "completed".to_string(),
         error_message: None,
         error_type: None,
     }) {
-        // Only the CAS winner may request compaction. Replayed terminal events,
+        // Only the CAS winner may generate a title. Replayed terminal events,
         // reattachment and concurrent completion paths must not trigger twice.
         Ok(true) => {
-            if let Err(error) = compact_first_turn_if_enabled(run_id).await {
-                // A summary failure must never turn a successful answer into a
-                // failed run. The existing compaction lifecycle reports errors.
-                eprintln!("FutureOS first-turn compaction skipped or failed: {error}");
+            if !store::get_app_settings().is_ok_and(|settings| settings.auto_title_first_turn) {
+                return None;
             }
+            let run_id = run_id.to_string();
+            // A title request may take tens of seconds. Never hold up run
+            // finalization, the observer's event stream or the next user send.
+            Some(tokio::spawn(async move {
+                if let Err(error) = title_first_turn_if_enabled(&run_id).await {
+                    eprintln!("FutureOS first-turn title generation skipped or failed: {error}");
+                }
+            }))
         }
-        Ok(false) => {}
+        Ok(false) => None,
         Err(update_error) => {
             eprintln!("FutureOS run completion status update failed: {update_error}");
+            None
         }
     }
 }
 
-async fn compact_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppError> {
-    if !store::get_app_settings()?.auto_compact_first_turn {
+async fn title_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppError> {
+    if !store::get_app_settings()?.auto_title_first_turn {
         return Ok(());
     }
     let Some(run) = store::get_run(run_id)? else {
@@ -183,7 +190,6 @@ async fn compact_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppErr
         return Ok(());
     };
     // A locally new run can belong to an existing/imported Agent session.
-    // Check canonical history as well, rather than summarizing an old chat.
     if entries
         .iter()
         .filter(|entry| entry["role"] == "user")
@@ -192,18 +198,35 @@ async fn compact_first_turn_if_enabled(run_id: &str) -> Result<(), crate::AppErr
     {
         return Ok(());
     }
-    // A new send or a settings change may have landed during the idle/history
-    // awaits. Never defer this work into a later turn or silently retry it.
-    if store::list_runs(&run.thread_id)?.len() == 1
-        && store::get_app_settings()?.auto_compact_first_turn
-    {
-        compact_thread_context(run.thread_id).await?;
+    let settings = store::get_app_settings()?;
+    if store::list_runs(&run.thread_id)?.len() != 1 || !settings.auto_title_first_turn {
+        return Ok(());
     }
+    // Exactly the same tool-free title generator used by the rename dialog.
+    // Neither generation nor saving appends messages or compacts the context.
+    let suggestion =
+        super::generate_session_title(session_id.to_string(), settings.title_language).await?;
+    // The user may have renamed/deleted the thread, sent another turn or
+    // disabled the setting while the model was working. Never apply stale work.
+    let Some(current) = store::get_thread(&thread.id)? else {
+        return Ok(());
+    };
+    if current.title != thread.title
+        || current.agent_session_id != thread.agent_session_id
+        || store::list_runs(&thread.id)?.len() != 1
+        || !store::get_app_settings()?.auto_title_first_turn
+    {
+        return Ok(());
+    }
+    let title = suggestion["title"]
+        .as_str()
+        .ok_or("Model returned no title")?;
+    super::rename_session(session_id.to_string(), title.to_string()).await?;
+    crate::emit_threads_updated();
     Ok(())
 }
 
-/// Compact a thread's Agent context without a user message. Shared by manual
-/// GUI requests and first-turn completion, including non-GUI server builds.
+/// Compact a thread's Agent context only on an explicit manual request.
 pub async fn compact_thread_context(
     thread_id: String,
 ) -> Result<serde_json::Value, crate::AppError> {
@@ -482,7 +505,7 @@ mod tests {
         let run = seed_run(&thread.id);
 
         mark_run_failed_if_active(None, "ignored");
-        mark_run_completed_if_active(None).await;
+        assert!(mark_run_completed_if_active(None).is_none());
 
         mark_run_failed_if_active(Some(&run.id), "boom");
         let record = store::get_run(&run.id).expect("run").expect("some");
@@ -490,14 +513,14 @@ mod tests {
         assert_eq!(record.error_message.as_deref(), Some("boom"));
 
         let run2 = seed_run(&thread.id);
-        mark_run_completed_if_active(Some(&run2.id)).await;
+        assert!(mark_run_completed_if_active(Some(&run2.id)).is_none());
         let record = store::get_run(&run2.id).expect("run").expect("some");
         assert_eq!(record.status, "completed");
 
         // Store failures are logged, never propagated.
         let prev = super::super::test_support::break_home();
         mark_run_failed_if_active(Some(&run.id), "boom again");
-        mark_run_completed_if_active(Some(&run.id)).await;
+        assert!(mark_run_completed_if_active(Some(&run.id)).is_none());
         super::super::test_support::restore_home(prev);
         assert_eq!(
             store::get_run(&run.id).expect("run").expect("some").status,
@@ -506,46 +529,69 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn first_turn_compacts_once_and_never_on_later_turns() {
-        let home = TestHome::new("rc-first-turn");
-        let mock = mock_agent();
-        let workspace = seed_workspace(home.path(), "ws");
-        let thread = seed_thread(&workspace.id, Some("first-turn-session"));
-        let run = seed_run(&thread.id);
+    async fn complete_and_wait(run_id: &str) {
+        if let Some(task) = mark_run_completed_if_active(Some(run_id)) {
+            task.await.expect("title task");
+        }
+    }
+
+    fn enable_title_generation(language: &str) {
         store::update_app_settings(store::UpdateAppSettingsInput {
-            auto_compact_first_turn: Some(true),
+            auto_title_first_turn: Some(true),
+            title_language: Some(language.into()),
             ..Default::default()
         })
-        .expect("enable");
-        mock.push_state_for_session(
-            "first-turn-session",
-            Reply::TypedData(get_state_payload("first-turn-session", false)),
-        );
-        mock.push_typed_data(
-            "get_session_entries",
-            serde_json::json!({"entries": [
-                {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1000, "blocks":[]},
-                {"id":"a1", "kind":"assistant", "role":"assistant", "createdAtMs":1001, "blocks":[]}
-            ]}),
-        );
-        mock.push_data(
-            "compact",
-            serde_json::json!({"accepted":true,"operationId":"cmp-1"}),
-        );
+        .expect("enable titles");
+    }
 
-        mark_run_completed_if_active(Some(&run.id)).await;
-        assert_eq!(mock.requests_of("compact").len(), 1);
-        assert_eq!(
-            mock.requests_of("compact")[0].session_id,
-            "first-turn-session"
-        );
-        // Replayed completion/reattachment cannot request a second summary.
-        mark_run_completed_if_active(Some(&run.id)).await;
-        let second = seed_run(&thread.id);
-        mark_run_completed_if_active(Some(&second.id)).await;
-        assert_eq!(mock.requests_of("compact").len(), 1);
-        assert_eq!(mock.requests_of("get_session_entries").len(), 1);
+    fn first_pair() -> serde_json::Value {
+        serde_json::json!({"entries": [
+            {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1000, "blocks":[]},
+            {"id":"a1", "kind":"assistant", "role":"assistant", "createdAtMs":1001, "blocks":[]}
+        ]})
+    }
+
+    #[tokio::test]
+    async fn first_turn_generates_and_saves_title_once_without_compacting() {
+        let home = TestHome::new("rc-first-turn-title");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        for language in ["zh", "en"] {
+            let thread = seed_thread(&workspace.id, Some(language));
+            let run = seed_run(&thread.id);
+            enable_title_generation(language);
+            mock.push_state_for_session(
+                language,
+                Reply::TypedData(get_state_payload(language, false)),
+            );
+            mock.push_typed_data("get_session_entries", first_pair());
+            mock.push_data(
+                "generate_session_title",
+                serde_json::json!({"title":"Generated title", "model":"test"}),
+            );
+            mock.push_data("set_session_name", serde_json::json!({}));
+
+            complete_and_wait(&run.id).await;
+            let request = mock.requests_of("generate_session_title").pop().unwrap();
+            assert_eq!(request.session_id, language);
+            assert_eq!(request.mode, language);
+            let rename = mock.requests_of("set_session_name").pop().unwrap();
+            assert_eq!(rename.session_id, language);
+            assert_eq!(rename.name, "Generated title");
+            assert_eq!(
+                store::get_thread(&thread.id).unwrap().unwrap().title,
+                "Generated title"
+            );
+            // Replayed completion/reattachment and later turns cannot generate again.
+            complete_and_wait(&run.id).await;
+            let second = seed_run(&thread.id);
+            complete_and_wait(&second.id).await;
+        }
+        assert_eq!(mock.requests_of("generate_session_title").len(), 2);
+        assert_eq!(mock.requests_of("set_session_name").len(), 2);
+        assert_eq!(mock.requests_of("get_session_entries").len(), 2);
+        assert!(mock.requests_of("compact").is_empty());
+        assert!(mock.requests_of("prompt").is_empty());
     }
 
     #[tokio::test]
@@ -555,45 +601,39 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
         let first = seed_run(&thread.id);
-        mark_run_completed_if_active(Some(&first.id)).await;
+        complete_and_wait(&first.id).await;
         assert!(mock.requests_of("get_state").is_empty());
-        store::update_app_settings(store::UpdateAppSettingsInput {
-            auto_compact_first_turn: Some(true),
-            ..Default::default()
-        })
-        .expect("enable after first turn");
-        mark_run_completed_if_active(Some(&first.id)).await;
+        enable_title_generation("en");
+        complete_and_wait(&first.id).await;
         let second = seed_run(&thread.id);
-        mark_run_completed_if_active(Some(&second.id)).await;
+        complete_and_wait(&second.id).await;
+        assert!(mock.requests_of("generate_session_title").is_empty());
         assert!(mock.requests_of("compact").is_empty());
         assert!(mock.requests_of("get_state").is_empty());
     }
 
     #[tokio::test]
-    async fn unsuccessful_first_turns_do_not_compact_or_defer_to_next_success() {
+    async fn unsuccessful_first_turns_do_not_generate_or_defer_to_next_success() {
         let home = TestHome::new("rc-first-turn-unsuccessful");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
-        store::update_app_settings(store::UpdateAppSettingsInput {
-            auto_compact_first_turn: Some(true),
-            ..Default::default()
-        })
-        .expect("enable");
+        enable_title_generation("en");
         for status in ["failed", "cancelled"] {
             let thread = seed_thread(&workspace.id, Some(status));
             let first = seed_run(&thread.id);
             store::update_run_status_if_active(store::UpdateRunStatusInput {
                 run_id: first.id.clone(),
-                status: status.to_string(),
+                status: status.into(),
                 error_message: None,
                 error_type: None,
             })
             .expect("settle unsuccessfully");
-            mark_run_completed_if_active(Some(&first.id)).await;
+            complete_and_wait(&first.id).await;
             let second = seed_run(&thread.id);
-            mark_run_completed_if_active(Some(&second.id)).await;
+            complete_and_wait(&second.id).await;
             assert_eq!(store::get_run(&first.id).unwrap().unwrap().status, status);
         }
+        assert!(mock.requests_of("generate_session_title").is_empty());
         assert!(mock.requests_of("compact").is_empty());
         assert!(mock.requests_of("get_state").is_empty());
     }
@@ -605,11 +645,7 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("old-session"));
         let run = seed_run(&thread.id);
-        store::update_app_settings(store::UpdateAppSettingsInput {
-            auto_compact_first_turn: Some(true),
-            ..Default::default()
-        })
-        .expect("enable");
+        enable_title_generation("en");
         mock.push_state_for_session(
             "old-session",
             Reply::TypedData(get_state_payload("old-session", false)),
@@ -621,40 +657,120 @@ mod tests {
                 {"id":"u2", "kind":"user", "role":"user", "createdAtMs":1002, "blocks":[]}
             ]}),
         );
-        mark_run_completed_if_active(Some(&run.id)).await;
+        complete_and_wait(&run.id).await;
+        assert!(mock.requests_of("generate_session_title").is_empty());
         assert!(mock.requests_of("compact").is_empty());
     }
 
     #[tokio::test]
-    async fn summary_rejection_does_not_fail_the_answer_or_retry() {
-        let home = TestHome::new("rc-first-turn-rejected");
+    async fn title_failure_leaves_answer_and_title_unchanged_without_retry() {
+        let home = TestHome::new("rc-first-turn-title-failure");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
-        let thread = seed_thread(&workspace.id, Some("sess-1"));
-        let run = seed_run(&thread.id);
-        store::update_app_settings(store::UpdateAppSettingsInput {
-            auto_compact_first_turn: Some(true),
-            ..Default::default()
-        })
-        .expect("enable");
-        mock.push_state_for_session(
-            "sess-1",
-            Reply::TypedData(get_state_payload("sess-1", false)),
-        );
-        mock.push_typed_data(
-            "get_session_entries",
-            serde_json::json!({"entries": [
-                {"id":"u1", "kind":"user", "role":"user", "createdAtMs":1000, "blocks":[]}
-            ]}),
-        );
-        mock.push("compact", Reply::Reject("session busy".to_string()));
-        mark_run_completed_if_active(Some(&run.id)).await;
-        mark_run_completed_if_active(Some(&run.id)).await;
-        assert_eq!(
-            store::get_run(&run.id).unwrap().unwrap().status,
-            "completed"
-        );
-        assert_eq!(mock.requests_of("compact").len(), 1);
+        enable_title_generation("en");
+        for failure in ["generate", "empty", "save"] {
+            let thread = seed_thread(&workspace.id, Some(failure));
+            let run = seed_run(&thread.id);
+            mock.push_state_for_session(
+                failure,
+                Reply::TypedData(get_state_payload(failure, false)),
+            );
+            mock.push_typed_data("get_session_entries", first_pair());
+            match failure {
+                "generate" => mock.push(
+                    "generate_session_title",
+                    Reply::Reject("title failed".into()),
+                ),
+                "empty" => {
+                    mock.push_data("generate_session_title", serde_json::json!({"title":" "}))
+                }
+                _ => {
+                    mock.push_data(
+                        "generate_session_title",
+                        serde_json::json!({"title":"Suggested title"}),
+                    );
+                    mock.push("set_session_name", Reply::Reject("rename failed".into()));
+                }
+            }
+            complete_and_wait(&run.id).await;
+            complete_and_wait(&run.id).await;
+            assert_eq!(
+                store::get_run(&run.id).unwrap().unwrap().status,
+                "completed"
+            );
+            assert_eq!(
+                store::get_thread(&thread.id).unwrap().unwrap().title,
+                thread.title
+            );
+        }
+        assert_eq!(mock.requests_of("generate_session_title").len(), 3);
+        assert_eq!(mock.requests_of("set_session_name").len(), 1);
+        assert!(mock.requests_of("compact").is_empty());
+    }
+
+    #[tokio::test]
+    async fn background_title_does_not_block_completion_or_overwrite_newer_work() {
+        let home = TestHome::new("rc-first-turn-title-race");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        for change in ["rename", "disable", "next-turn"] {
+            enable_title_generation("en");
+            let thread = seed_thread(&workspace.id, Some(change));
+            let run = seed_run(&thread.id);
+            mock.push_state_for_session(change, Reply::TypedData(get_state_payload(change, false)));
+            mock.push_typed_data("get_session_entries", first_pair());
+            let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            mock.push(
+                "generate_session_title",
+                Reply::Deferred {
+                    entered: entered_tx,
+                    data: reply_rx,
+                },
+            );
+            let task = mark_run_completed_if_active(Some(&run.id)).expect("background task");
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!task.is_finished());
+            assert_eq!(
+                store::get_run(&run.id).unwrap().unwrap().status,
+                "completed"
+            );
+            let expected = match change {
+                "rename" => {
+                    store::rename_thread(store::RenameThreadInput {
+                        thread_id: thread.id.clone(),
+                        title: "User title".into(),
+                    })
+                    .unwrap();
+                    "User title".to_string()
+                }
+                "disable" => {
+                    store::update_app_settings(store::UpdateAppSettingsInput {
+                        auto_title_first_turn: Some(false),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                    thread.title.clone()
+                }
+                _ => {
+                    seed_run(&thread.id);
+                    thread.title.clone()
+                }
+            };
+            reply_tx
+                .send(serde_json::json!({"title":"Stale title"}))
+                .unwrap();
+            task.await.unwrap();
+            assert_eq!(
+                store::get_thread(&thread.id).unwrap().unwrap().title,
+                expected
+            );
+        }
+        assert!(mock.requests_of("set_session_name").is_empty());
+        assert!(mock.requests_of("compact").is_empty());
     }
 
     #[tokio::test]

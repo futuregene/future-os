@@ -17,8 +17,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills,
   bellOnComplete,
   onToggleBellOnComplete,
-  autoCompactFirstTurn,
-  onToggleAutoCompactFirstTurn,
+  autoTitleFirstTurn,
+  onToggleAutoTitleFirstTurn,
 }: {
   approvalTier: ApprovalTier;
   onChangeApprovalTier: (value: ApprovalTier) => void;
@@ -28,8 +28,8 @@ export function GeneralPage({
   onToggleAutoUpgradeSkills: (value: boolean) => void;
   bellOnComplete: boolean;
   onToggleBellOnComplete: (value: boolean) => void;
-  autoCompactFirstTurn: boolean;
-  onToggleAutoCompactFirstTurn: (value: boolean) => void;
+  autoTitleFirstTurn: boolean;
+  onToggleAutoTitleFirstTurn: (value: boolean) => void;
 }) {
   const { t } = useTranslation("settings");
   const sandboxAvailability = useSandboxAvailability();
@@ -104,10 +104,10 @@ export function GeneralPage({
           <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
         </SettingsRow>
         <SettingsRow
-          title={t("autoCompactFirstTurn.title")}
-          description={t("autoCompactFirstTurn.description")}
+          title={t("autoTitleFirstTurn.title")}
+          description={t("autoTitleFirstTurn.description")}
         >
-          <Switch checked={autoCompactFirstTurn} label={t("autoCompactFirstTurn.title")} onChange={onToggleAutoCompactFirstTurn} />
+          <Switch checked={autoTitleFirstTurn} label={t("autoTitleFirstTurn.title")} onChange={onToggleAutoTitleFirstTurn} />
         </SettingsRow>
         <SettingsRow
           title={t("bellOnComplete.title")}

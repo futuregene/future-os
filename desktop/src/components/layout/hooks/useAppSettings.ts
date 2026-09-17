@@ -1,6 +1,6 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
 import { useEffect, useRef, useState } from "react";
-import i18n from "../../../i18n";
+import i18n, { getLanguage } from "../../../i18n";
 import {
   shouldPersistSandboxFallback,
   useSandboxAvailability,
@@ -80,6 +80,19 @@ export function useAppSettings(): UseAppSettingsResult {
     writeQueueRef.current = write;
     await write;
   }
+
+  // Title generation runs in the backend, including while the webview is
+  // suspended. Mirror the same UI language used by the manual title dialog.
+  useEffect(() => {
+    const syncTitleLanguage = () => {
+      void changeSettings({ titleLanguage: getLanguage() });
+    };
+    syncTitleLanguage();
+    i18n.on("languageChanged", syncTitleLanguage);
+    return () => {
+      i18n.off("languageChanged", syncTitleLanguage);
+    };
+  }, []);
 
   const sandboxFallbackRequired = shouldPersistSandboxFallback(
     sandboxAvailability,

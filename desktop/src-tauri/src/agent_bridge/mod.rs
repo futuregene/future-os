@@ -617,7 +617,7 @@ pub async fn set_session_thinking_level(
     Ok(())
 }
 
-/// Generate a suggestion only; saving remains the user's separate rename action.
+/// Generate a suggestion only; callers decide whether and when to save it.
 pub async fn generate_session_title(
     session_id: String,
     language: String,
@@ -825,7 +825,7 @@ pub(crate) async fn agent_prompt_with_acceptance(
     // can no longer wedge the run's visible state.
     match &result {
         Ok(response) if response.complete => {
-            mark_run_completed_if_active(request.run_id.as_deref()).await;
+            mark_run_completed_if_active(request.run_id.as_deref());
         }
         Ok(response) => {
             let error = stream::termination_error(response.termination_kind.as_deref());

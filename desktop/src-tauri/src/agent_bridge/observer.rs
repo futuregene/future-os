@@ -897,7 +897,7 @@ async fn handle_event(
                         "Future Agent response ended before a clean terminal.",
                     );
                 } else {
-                    mark_run_completed_if_active(Some(&local_run_id)).await;
+                    mark_run_completed_if_active(Some(&local_run_id));
                 }
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
@@ -1002,7 +1002,7 @@ async fn handle_event(
                         "Future Agent response ended before a clean terminal.",
                     );
                 } else {
-                    mark_run_completed_if_active(Some(&local_run_id)).await;
+                    mark_run_completed_if_active(Some(&local_run_id));
                 }
                 crate::store::clear_run_event_buffer(&local_run_id);
                 note_run_settled(shared, state, run_id);
