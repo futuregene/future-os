@@ -2071,6 +2071,34 @@ mod runtime_tests {
         assert!(big.contains("full content is available via get_messages"));
     }
 
+    #[test]
+    fn oversized_live_tool_result_keeps_the_same_outcome_as_replay() {
+        let data = json!({
+            "type": "tool_end", "tool_id": "large-test", "tool_name": "shell",
+            "exit_code": 1,
+            "text": format!("{}\n[exit: 1]", "x".repeat(MAX_EVENT_BYTES + 1)),
+        })
+        .to_string();
+        let live = build_event_body("s", "tool_end", &data, "r", 42, 1, "e", "", 42, 1);
+        let live_data: serde_json::Value =
+            serde_json::from_str(live["data"].as_str().unwrap()).unwrap();
+        assert_eq!(live["idx"], 42);
+        assert_eq!(live_data["tool_id"], "large-test");
+        assert_eq!(live_data["tool_name"], "shell");
+        assert_eq!(live_data["exit_code"], 1);
+        assert!(live_data["text"].as_str().unwrap().ends_with("[exit: 1]"));
+        assert!(serde_json::to_vec(&live).unwrap().len() < MAX_EVENT_BYTES);
+
+        let replay = crate::remote_host::business::paginate_events(
+            json!({"runId": "r", "events": [{"type": "tool_end", "idx": 42, "data": data}]}),
+            0,
+            100,
+        );
+        let replay_data: serde_json::Value =
+            serde_json::from_str(replay["events"][0]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(live_data, replay_data);
+    }
+
     #[tokio::test]
     async fn start_once_returns_empty_when_not_requested() {
         let _home = HomeGuard::new("remote-start-not-requested");
