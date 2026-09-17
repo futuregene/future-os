@@ -1,4 +1,21 @@
-# Native local/API open-book replay v2 (approved after v3 closed book)
+# Native local/API open-book replay — version history
+
+## Current C/C3 execution correction (not yet a paid rerun)
+
+C/C3 now require `--future-shell` pointing to `abc_future_shell_probe`. The
+adapter exports and calls the actual Rust `shell_tool` definition/handler;
+semicolon batches, pipes and loops reach the host shell unchanged. Numeric
+exit codes and native soft-failure semantics are preserved in traces. The old
+single-argv implementation is no longer the C/C3 executor.
+
+Read [the mechanism guide](../../docs/compaction-retrieval-mechanisms.md) or
+[中文说明](../../docs/compaction-retrieval-mechanisms.zh-CN.md). Native Future
+path rules plus explicit deny paths are not a global study-data read allowlist;
+network is also not disabled by that native policy. A new paid run is gated on
+explicit operator data-isolation review (`--approve-native-future-scope`). No
+paid rerun was launched as part of the execution-chain correction.
+
+## Historical native open v2 (approved after v3 closed book)
 
 ## Amendment after the first instrumented run
 

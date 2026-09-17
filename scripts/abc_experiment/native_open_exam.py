@@ -20,7 +20,8 @@ import uuid
 import fidelity_rerun as f
 from native_codex import NativeCodex
 from native_opencode import NativeOpenCode
-from native_stores import NativeFuture,codex_rollout
+from native_stores import codex_rollout
+from native_future_shell import NativeFutureShell
 from native_scope import check_tool
 b=f.b
 TOOL_LIMIT=12
@@ -42,25 +43,24 @@ class NativeExamCalls(f.Calls):
         return self.execute(identity,request,[str(self.bridge)],reserve,parse,json.dumps(request))
 
 
-FUTURE_TOOL={'type':'function','function':{'name':'shell','description':'Run the existing future session history search/get CLI against the specified archived session. Only these read-only history commands are allowed.',
-    'parameters':{'type':'object','properties':{'command':{'type':'string'}},'required':['command']}}}
-
-
 def native_case(args,root,identity,arm,records):
     work=root/'cases'/identity/'workspace'; home=root/'cases'/identity/'home'; control=root/'control'/identity
     for p in (work,home,control): p.mkdir(parents=True,exist_ok=True)
     messages=f.normalize(root,args.dumper,args.model,records)
     if arm in ('C','C3'):
         sid='native-'+identity
-        engine=NativeFuture(args.future,work,home,control,messages,sid)
-        tools=[FUTURE_TOOL]
+        engine=NativeFutureShell(args.future,args.future_shell,work,home,control,messages,sid)
+        tools=[engine.tool]
         guide=(f'Archive session ID: {sid}. The original conversation is in the native Future session database. '
                f'Use shell only for `future session history search --session {sid} --query "literal" --limit 5 --json` '
                f'or `future session history get --session {sid} --entry ENTRY_ID --offset BYTE_OFFSET --limit 8192 --json`. '
                'Use native returned entry IDs and byte cursors. No other session is in scope.')
         def execute(name,arguments):
             if name!='shell': raise ValueError('STUDY_SCOPE_DENIED: unknown tool')
-            return engine.execute(shlex.split(arguments['command']))
+            execute.native_semantics=None
+            result=engine.execute_shell(arguments)
+            execute.native_semantics={k:result.get(k) for k in ('exit_code','is_soft_fail','terminated_by_signal')}
+            return result['output']
     elif arm=='codex':
         sid=str(uuid.uuid5(uuid.NAMESPACE_URL,'native-open/'+identity))
         archive,proof=codex_rollout(messages,sid,work,home,args.decoder)
@@ -124,7 +124,7 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
             answer=b.parse_answer(payload['text']); break
         messages.append({'role':'assistant','content':payload['text'] or None,'tool_calls':payload['calls']})
         for call in payload['calls']:
-            function=call['function']; began=time.monotonic(); status='native'
+            function=call['function']; began=time.monotonic(); status='native'; native_semantics=None
             try:
                 arguments=json.loads(function.get('arguments') or '{}')
                 if not isinstance(arguments,dict): raise ValueError('tool arguments must be an object')
@@ -132,12 +132,14 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
                     output='STUDY_BUDGET_EXHAUSTED: no further retrieval'; status='budget_denied'
                 else:
                     output=execute(function['name'],arguments)
+                    native_semantics=getattr(execute,'native_semantics',None)
             except ValueError as error:
                 output=str(error); status='scope_denied'
             except RuntimeError as error:
                 output=str(error); status='native_error'
             size=len(output.encode()); delivered+=size
             entry={'name':function['name'],'arguments':function.get('arguments'),'status':status,
+                   'native_semantics':native_semantics,
                    'output':output,'bytes':size,'seconds':time.monotonic()-began}
             trace.append(entry)
             b.save(root/'traces'/f'{identity}.json',trace)
@@ -148,6 +150,7 @@ def examine(calls,identity,projection,question,tools,guide,execute,root):
         native_invoked=any(t['status']=='native' for t in trace),
         model_turns=turns,tool_calls=len(trace),native_calls=sum(t['status'] in ('native','native_error') for t in trace),
         scope_denied=sum(t['status']=='scope_denied' for t in trace),native_errors=sum(t['status']=='native_error' for t in trace),
+        native_nonzero_exits=sum((t.get('native_semantics') or {}).get('exit_code') not in (None,0) for t in trace),
         returned_bytes=delivered)
 
 
@@ -158,7 +161,7 @@ def report(root):
     result={'complete':actual==expected,'scored':len(rows),'expected':len(expected),'arms':{},'by_chain':{}}
     for arm in b.ARMS:
         xs=[r for r in rows if r['arm']==arm]
-        result['arms'][arm]={k:sum(r[k] for r in xs) for k in ('hits','of_present','false_positives','model_turns','native_calls','scope_denied','native_errors','returned_bytes')}
+        result['arms'][arm]={k:sum(r[k] for r in xs) for k in ('hits','of_present','false_positives','model_turns','native_calls','scope_denied','native_errors','native_nonzero_exits','returned_bytes')}
         result['arms'][arm]['invalid']=sum(not r['valid_answer'] for r in xs)
         result['arms'][arm]['without_native_invocation']=sum(not r['native_invoked'] for r in xs)
         for chain in config['chains']:
@@ -173,17 +176,20 @@ def report(root):
 
 def main():
     ap=argparse.ArgumentParser()
-    for name in ('closed','output','codex','opencode','bun','future','dumper','decoder','bridge'):
+    for name in ('closed','output','codex','opencode','bun','future','future-shell','dumper','decoder','bridge'):
         ap.add_argument('--'+name,type=Path,required=True)
     ap.add_argument('--prior-native',type=Path,required=True,help='immutable first-run ledger, counted in total budget')
     ap.add_argument('--prepare-only',action='store_true')
+    ap.add_argument('--approve-native-future-scope',action='store_true',help='operator acknowledgment after reviewing full-shell data isolation; not an automatic safety guarantee')
     ap.add_argument('--detach',action='store_true')
     ap.add_argument('--report-only',action='store_true')
     args=ap.parse_args()
-    for name in ('closed','output','codex','opencode','bun','future','dumper','decoder','bridge','prior_native'): setattr(args,name,getattr(args,name).resolve())
+    for name in ('closed','output','codex','opencode','bun','future','future_shell','dumper','decoder','bridge','prior_native'): setattr(args,name,getattr(args,name).resolve())
     args.output.mkdir(parents=True,exist_ok=True)
     args.output.chmod(0o700)
     if args.report_only: report(args.output); return
+    if not args.prepare_only and not args.approve_native_future_scope:
+        raise RuntimeError('Full native Future shell is restored; review data isolation before a new paid run, then explicitly acknowledge --approve-native-future-scope')
     if args.detach:
         if (args.output/'runner.lock').exists(): raise RuntimeError('runner exists')
         with (args.output/'runner.log').open('ab') as log:
@@ -200,14 +206,15 @@ def main():
         prior_native=b.load(args.prior_native/'ledger.json')
         assert not (args.prior_native/'runner.lock').exists() and all(r['state']=='finished' for r in prior_native.values())
         opening_spend=closed_report['total_spent_or_reserved']+sum(r.get('charged',r['reserved']) for r in prior_native.values())
-        code=[Path(__file__),b.HERE/'native_codex.py',b.HERE/'native_opencode.py',b.HERE/'native_stores.py',b.HERE/'native_scope.py',Path(f.__file__),Path(b.__file__)]
-        config={'version':2,'scope':'native local/API history-recovery replay, not production filesystem restoration',
+        code=[Path(__file__),b.HERE/'native_codex.py',b.HERE/'native_opencode.py',b.HERE/'native_stores.py',b.HERE/'native_scope.py',b.HERE/'native_future_shell.py',Path(f.__file__),Path(b.__file__)]
+        config={'version':3,'scope':'native local/API history-recovery replay, not production filesystem restoration',
             'model':args.model,'chains':closed['chains'],'budget':300,'prior_spend':opening_spend,
             'prior_native_ledger_sha256':b.sha(prior_native),'required_archive_check':True,
             'first_run_assessment':'run-v1 is not qualified: guard rejected routine readers and optional retrieval was mostly unused; all charges retained',
             'closed_manifest_sha256':b.sha(closed),'closed_ledger_sha256':b.sha(b.load(args.closed/'ledger.json')),
             'code_hashes':{str(p.relative_to(b.REPO)):b.sha(p.read_bytes()) for p in code},
-            'binaries':{name:b.sha(getattr(args,name).read_bytes()) for name in ('codex','bun','future','dumper','decoder','bridge')},
+            'binaries':{name:b.sha(getattr(args,name).read_bytes()) for name in ('codex','bun','future','future_shell','dumper','decoder','bridge')},
+            'future_shell_execution':'production Rust shell_tool handler; complete command string, native schema, native exit footer; explicit path denials, not a global read allowlist',
             'decoder_source_sha256':b.sha(args.decoder.with_suffix('.rs').read_bytes()),
             'opencode_lock_sha256':b.sha((args.opencode/'bun.lock').read_bytes()),
             'authorization':'User explicitly approved native local/API history-recovery replay after mechanism preflight; total budget 300 includes all prior runs',
