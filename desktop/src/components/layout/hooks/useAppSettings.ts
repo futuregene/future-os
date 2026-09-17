@@ -1,5 +1,5 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import i18n, { getLanguage } from "../../../i18n";
 import {
   shouldPersistSandboxFallback,
@@ -9,6 +9,7 @@ import { DEFAULT_APP_SETTINGS, getAppSettings, updateAppSettings } from "../../.
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { useAsyncResource } from "../../../lib/useAsyncResource";
+import { useTauriEvent } from "../../../lib/useTauriEvent";
 
 export interface UseAppSettingsResult {
   appSettings: AppSettings;
@@ -80,6 +81,29 @@ export function useAppSettings(): UseAppSettingsResult {
     writeQueueRef.current = write;
     await write;
   }
+
+  const reloadSettings = useCallback(() => {
+    dirtyRef.current = true;
+    // Queue the read behind local writes; never replace an optimistic edit
+    // with a phone notification's older snapshot.
+    const read = writeQueueRef.current.then(async () => {
+      const generation = mutationGenerationRef.current;
+      try {
+        const next = await getAppSettings();
+        if (generation === mutationGenerationRef.current)
+          setAppSettings(next);
+      }
+      catch {
+        // Keep the current view; focus/reconnect or the next edit retries.
+      }
+    });
+    writeQueueRef.current = read;
+  }, []);
+  useTauriEvent("app_settings_changed", reloadSettings);
+  useEffect(() => {
+    window.addEventListener("focus", reloadSettings);
+    return () => window.removeEventListener("focus", reloadSettings);
+  }, [reloadSettings]);
 
   // Title generation runs in the backend, including while the webview is
   // suspended. Mirror the same UI language used by the manual title dialog.

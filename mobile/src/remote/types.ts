@@ -111,6 +111,28 @@ export interface RemoteSkill {
   descriptionZh?: string | null;
 }
 
+/** Authoritative desktop preferences. Never write these to phone storage. */
+export interface DesktopSettings {
+  autoUpgradeSkills: boolean;
+  autoTitleFirstTurn: boolean;
+  autoConnectRemote: boolean;
+  hiddenModels: string[];
+}
+
+export interface InstalledSkill extends RemoteSkill {
+  id: string;
+  version?: string | null;
+}
+
+export interface AvailableSkill {
+  id: string;
+  name: string;
+  description: string;
+  nameZh?: string;
+  descriptionZh?: string;
+  latestVersion?: string | null;
+}
+
 export interface RemoteModel {
   id: string;
   label?: string;
@@ -354,6 +376,9 @@ export interface RemoteCommand {
   providerId?: string;
   level?: string;
   tier?: string;
+  settings?: Partial<DesktopSettings>;
+  skillId?: string;
+  version?: string;
   name?: string;
   transferName?: string;
   workspaceId?: string;

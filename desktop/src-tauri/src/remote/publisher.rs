@@ -23,6 +23,9 @@ pub(super) fn is_catalog_event(event_type: &str) -> bool {
             | "approval_decision"
             | "session_name_changed"
             | "provider_config_changed"
+            | "model_visibility_changed"
+            | "app_settings_changed"
+            | "skills_changed"
             | "run_snapshot"
             | "error"
     )

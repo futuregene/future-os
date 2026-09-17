@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1601,7 +1601,9 @@ mod bridge_tests {
                 "session_files_v1",
                 "skills_v1",
                 "selective_events_v1",
-                "workspace_pinning_v1"
+                "workspace_pinning_v1",
+                "desktop_settings_v1",
+                "skill_management_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2579,6 +2581,99 @@ mod bridge_tests {
         assert!(!leaked, "claimed attachment copies must roll back");
 
         std::fs::remove_dir_all(&workspace_dir).ok();
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_management_is_shared_and_allowlisted() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-desktop-settings").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let defaults = bridge.call(json!({ "type": "get_desktop_settings" })).await;
+        assert_eq!(defaults["success"], true);
+        assert_eq!(defaults["data"]["autoTitleFirstTurn"], true);
+        assert!(defaults["data"].get("communityEdition").is_none());
+
+        let patch = json!({ "autoTitleFirstTurn": false, "autoUpgradeSkills": false,
+            "autoConnectRemote": true, "hiddenModels": ["p1/shared"] });
+        let updated = bridge
+            .call(json!({ "type": "update_desktop_settings", "settings": patch }))
+            .await;
+        assert_eq!(updated["success"], true, "{updated}");
+        assert_eq!(updated["data"], patch);
+        let stored = crate::store::get_app_settings().unwrap();
+        assert!(!stored.auto_title_first_turn);
+        assert!(!stored.auto_upgrade_skills);
+        assert!(stored.auto_connect_remote);
+        assert_eq!(stored.hidden_models, ["p1/shared"]);
+
+        for invalid in [
+            json!({"communityEdition": true}),
+            json!({"autoTitleFirstTurn": "true"}),
+            json!({"approvalTier": "off"}),
+            json!({"hiddenModels": [""]}),
+            Value::Null,
+        ] {
+            let reply = bridge
+                .call(json!({ "type": "update_desktop_settings", "settings": invalid }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+            assert!(
+                !crate::store::get_app_settings()
+                    .unwrap()
+                    .auto_title_first_turn
+            );
+        }
+        // Desktop-originated changes are read directly, with no mobile copy.
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            auto_title_first_turn: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+        let reply = bridge.call(json!({ "type": "get_desktop_settings" })).await;
+        assert_eq!(reply["data"]["autoTitleFirstTurn"], true);
+        assert_eq!(reply["data"]["hiddenModels"], json!(["p1/shared"]));
+
+        // Management must include hidden entries, otherwise hiding all models
+        // would leave the phone unable to enable them again.
+        let models =
+            json!([{ "id": "shared", "provider": "p1" }, { "id": "shared", "provider": "p2" }]);
+        agent.script("list_models", true, json!({ "models": models }), "");
+        let reply = bridge.call(json!({ "type": "list_settings_models" })).await;
+        assert_eq!(reply["data"]["models"], models);
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn skill_management_validates_ids_and_mutates_desktop_files() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-skill-management").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        for kind in ["install_skill", "uninstall_skill"] {
+            let reply = bridge
+                .call(json!({ "type": kind, "skillId": "../escape", "version": "1.0" }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+        }
+        let reply = bridge
+            .call(json!({ "type": "install_skill", "skillId": "acme", "version": "../escape" }))
+            .await;
+        assert_eq!(reply["success"], false);
+        let path = crate::auth_store::agent_dir().unwrap().join("skills/acme");
+        std::fs::create_dir_all(&path).unwrap();
+        let reply = bridge
+            .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert_eq!(reply["data"]["removed"], true);
+        assert!(!path.exists());
+        assert!(agent.served("refresh_skills", ""));
+        let reply = bridge
+            .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
+            .await;
+        assert_eq!(reply["data"]["removed"], false);
         bridge.stop().await;
     }
 

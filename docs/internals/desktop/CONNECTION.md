@@ -643,6 +643,35 @@ but a Desktop/Agent restart does not auto-re-execute interrupted conversations.
 Read-only requests can retry; there is no need to add persistent operation
 records to every interface for abstraction's sake.
 
+**Mobile settings manage the selected Desktop, not a second preference store.**
+The phone uses a full-screen, scrollable Settings page with separate Model
+visibility and Skill management subpages. The Current desktop section exposes
+`autoUpgradeSkills`, `autoTitleFirstTurn`, and `autoConnectRemote` (explicitly
+labelled **Connect to phone when desktop starts**). Model visibility edits the
+same Desktop `hiddenModels` list, using provider-qualified identifiers; the
+management catalogue includes hidden entries so they can be enabled again.
+The phone's language, update check and pairing management remain in a separate
+This phone section.
+
+- Handshakes advertise `desktop_settings_v1` and `skill_management_v1`. Older
+  hosts leave these controls disabled with an upgrade hint; existing approval
+  mode controls keep their original protocol.
+- `get_desktop_settings` / `update_desktop_settings` expose only the four fields
+  above. Writes are partial, allowlisted, and committed by the existing Desktop
+  settings store, never persisted or queued on the phone. `list_settings_models`
+  reads the unfiltered Agent catalogue.
+- `list_skills`, `list_available_skills`, `install_skill`, and `uninstall_skill`
+  operate on Desktop/Agent skills. Desktop and phone install/remove calls share
+  a serialized management path and refresh Agent discovery before completion.
+  All-upgrade runs sequentially, stops on error or leaving the page, and reports
+  that earlier items may already have completed. Removal requires confirmation.
+- Post-commit `app_settings_changed` and post-refresh `skills_changed`
+  invalidations reach the Desktop webview and the remote low-rate catalogue
+  event lane. Both views reread authoritative data; the phone also reloads on
+  opening/foreground/reconnect. Closed pages discard their temporary view state,
+  and connection identity fencing prevents late responses crossing desktops.
+  No offline writes or automatic mutation retries are introduced.
+
 **Connection state and sync state are separate.** Internally at least
 distinguish pairing validity, relay reachability, peer authentication/liveness,
 Agent availability, and current data-sync progress. The Desktop can only

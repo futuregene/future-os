@@ -236,6 +236,30 @@ pub fn installed_versions() -> BTreeMap<String, Option<String>> {
     versions
 }
 
+// Desktop and phone mutations share one queue, so installation and removal
+// cannot race over the same directory. Raw filesystem helpers remain testable.
+static MANAGEMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub async fn install_and_refresh(id: String, version: String) -> Result<(), AppError> {
+    let _guard = MANAGEMENT_LOCK.lock().await;
+    install_skill(id, version).await?;
+    crate::agent_bridge::refresh_skills().await;
+    crate::agent_events::publish_invalidation("skills_changed");
+    Ok(())
+}
+
+pub async fn uninstall_and_refresh(id: String) -> Result<bool, AppError> {
+    let _guard = MANAGEMENT_LOCK.lock().await;
+    let removed = tokio::task::spawn_blocking(move || uninstall_skill(&id))
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))??;
+    if removed {
+        crate::agent_bridge::refresh_skills().await;
+        crate::agent_events::publish_invalidation("skills_changed");
+    }
+    Ok(removed)
+}
+
 /// Download and unpack skill `id`@`version` into the app scope.
 pub async fn install_skill(id: String, version: String) -> Result<(), AppError> {
     let dest = skill_dir_in_scope(SkillScope::App, &id)?;
