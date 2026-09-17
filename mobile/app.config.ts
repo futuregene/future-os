@@ -31,6 +31,10 @@ const config: ExpoConfig = {
   userInterfaceStyle: "light",
   plugins: [
     "./plugins/withIosShareExtension",
+    // Expo CLI cannot add this automatically to a dynamic TypeScript config.
+    // With no options it retains expo-sharing's disabled share-in extensions;
+    // FutureOS's optional inbound extension remains owned by the plugin above.
+    "expo-sharing",
     [
       "expo-camera",
       {
