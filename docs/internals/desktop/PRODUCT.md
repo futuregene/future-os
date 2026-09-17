@@ -652,16 +652,26 @@ Failed / ended assistant messages offer recovery actions below: retry /
 continue (latest-round failure only) and fork (any ended message) — semantics
 in 4.4.
 
-The assistant's **thinking process** (model reasoning) is displayed **inline**
-in occurrence order between text and tool calls (on the same timeline as tool
-calls, not gathered at the message top), in a dimmed dark style. Whether it
-shows is controlled by the "Show thinking process" toggle on the settings
-"General" page, currently **on by default** (`store/app_settings.rs`). With the
-toggle **off**, reasoning content is not shown, but while the model is thinking
-with no body output yet, the message's **bottom info bar** shows a "Thinking…"
-text hint so users know the run is not stuck; with the toggle **on**, reasoning
-is already inline and the hint is not repeated. The hint appears only during
-streaming and disappears on stop or completion.
+The assistant's **thinking process** and tool activity stay **inline** in
+occurrence order, never gathered at the message top. Matching mobile, two or
+more consecutive settled steps collapse into a muted, right-aligned summary
+(tool glyph ×N · brain glyph ×N). Counts refer to projected step rows; an
+already grouped same-kind tool burst retains its own nested count. Failed
+steps may fold, but the summary keeps an alert glyph and an accessible failure
+count. Prose, compaction markers, running tools, and the last segment of a
+streaming reply interrupt aggregation.
+
+Opening the summary keeps its header on the right and reveals individual steps
+in the left-aligned reading column. Each step independently expands its full
+reasoning or wrapping command/path details. Standalone steps also start
+collapsed on the right. The "Show thinking process" setting gates access to
+full reasoning content; turning it off retains the compact activity labels and
+counts, not the reasoning text. A "Thinking…" footer hint remains available
+when thinking has not yet produced an inline reasoning segment.
+
+The copy control, elapsed duration and output-token footer stay visible on the
+same right rail after completion. During streaming, the amber generating dot
+and live timer occupy that rail instead of the copy control.
 
 The input box stays floating at the bottom, with the model selector in the
 input area. On send, the GUI creates a Run record and hands the prompt to the

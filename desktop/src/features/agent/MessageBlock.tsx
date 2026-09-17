@@ -21,6 +21,8 @@ import { canContinueResponse, isCompletedWithoutReply } from "./agentMessageForm
 import { splitExternalLinkSegments } from "./externalLinks";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
+import { buildReplyBlocks } from "./replyBlocks";
+import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
 
 interface MessageBlockProps {
@@ -32,7 +34,7 @@ interface MessageBlockProps {
   /** Whether this is the last message in the thread. */
   isLast?: boolean;
   recoverySource?: AgentMessage | null;
-  /** Show the model's reasoning block (driven by the "show thinking" setting). */
+  /** Allow opening full reasoning content (driven by the "show thinking" setting). */
   showThinking?: boolean;
   onContinue?: (message: AgentMessage) => void;
   onFork?: (message: AgentMessage) => void;
@@ -166,7 +168,20 @@ function MessageBlockImpl({
           {segments
             ? (
                 <div className="space-y-3">
-                  {segments.map((segment) => {
+                  {buildReplyBlocks(segments, streaming).map((block) => {
+                    if (block.kind === "steps") {
+                      return (
+                        <ReplySteps
+                          key={block.segments[0]!.id}
+                          segments={block.segments}
+                          showThinking={showThinking}
+                          workspaceId={workspaceId}
+                          workspacePath={workspacePath}
+                          runId={message.runId}
+                        />
+                      );
+                    }
+                    const segment = block.segment;
                     if (segment.kind === "text") {
                       return (
                         <StreamingMarkdownContent
@@ -178,18 +193,15 @@ function MessageBlockImpl({
                       );
                     }
                     if (segment.kind === "thinking") {
-                      // Reasoning stays in timeline order; hidden unless the
-                      // "show thinking" setting is on.
-                      return showThinking
-                        ? (
-                            <ThinkingBlock
-                              key={segment.id}
-                              live={segment.id === liveSegmentId}
-                              text={segment.text}
-                              workspaceId={workspaceId}
-                            />
-                          )
-                        : null;
+                      return (
+                        <ThinkingBlock
+                          key={segment.id}
+                          live={streaming && segment === segments[segments.length - 1]}
+                          text={segment.text}
+                          workspaceId={workspaceId}
+                          showContent={showThinking}
+                        />
+                      );
                     }
                     if (segment.kind === "compaction") {
                       return (
@@ -279,7 +291,7 @@ function MessageBlockImpl({
               )
             : null}
         </div>
-        <div className={cn("flex items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3")}>
+        <div className={cn("flex flex-wrap items-center justify-end gap-2", isUser ? "mt-1" : "mt-3")}>
           {streaming
             ? (
                 <StreamingIndicator
@@ -300,7 +312,7 @@ function MessageBlockImpl({
                   // remove the will-change without re-testing stale-paint ghosts.
                     className={cn(
                       "will-change-[opacity] transition-opacity duration-200",
-                      hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                      !isUser || hovered ? "opacity-100" : "pointer-events-none opacity-0",
                     )}
                     copied={copiedKey === "default"}
                     onCopy={() => void copy(copyableText)}
@@ -322,8 +334,8 @@ function MessageBlockImpl({
                 </button>
               )
             : null}
-          {!isUser ? <MessageMeta message={message} visible={hovered} /> : null}
-          {streaming && !isUser && !showThinking && message.thinkingActive
+          {!isUser ? <MessageMeta message={message} /> : null}
+          {streaming && !isUser && !showThinking && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
         </div>

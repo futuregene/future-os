@@ -6,6 +6,11 @@
   },
   "activity": {
     "thinking": "正在思考",
+    "thoughtCompleted": "已思考",
+    "stepCount": "×{{count}}",
+    "stepTools": "工具调用 {{count}} 次",
+    "stepThoughts": "思考 {{count}} 次",
+    "stepsFailed": "{{count}} 次失败",
     "runCommands": "已运行 {{count}} 条命令",
     "writeFiles": "已写入 {{count}} 个文件",
     "editFiles": "已编辑 {{count}} 个文件",

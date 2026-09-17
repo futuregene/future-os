@@ -6,6 +6,11 @@
   },
   "activity": {
     "thinking": "Thinking",
+    "thoughtCompleted": "Thought",
+    "stepCount": "×{{count}}",
+    "stepTools": "Tool calls {{count}}×",
+    "stepThoughts": "Thought {{count}}×",
+    "stepsFailed": "{{count}} failed",
     "runCommands_one": "Ran {{count}} command",
     "runCommands_other": "Ran {{count}} commands",
     "writeFiles_one": "Wrote {{count}} file",
