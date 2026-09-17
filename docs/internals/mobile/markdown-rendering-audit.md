@@ -141,8 +141,10 @@ previews:
    scrolls horizontally with consistent rows/columns, vertical message
    scrolling still works.
 2. Code blocks with 200-character long lines, blank lines, tabs, two-space
-   indentation: horizontally readable to the end, newlines and indentation
-   preserved, long-press copies.
+   indentation: long lines wrap to the phone width instead of scrolling
+   sideways, no line is clipped at the block's bottom edge, content past the
+   collapsed line limit is reachable through the expand control, newlines and
+   indentation are preserved, long-press copies.
 3. H1–H6, italic inside bold, strikethrough, inline code, escapes, hard breaks,
    nested quotes, multi-paragraph bodies/code blocks inside lists: formatting
    and order correct.
