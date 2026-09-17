@@ -78,9 +78,11 @@ against the retained raw tail; never read beyond actual covered originals.
 
 ## 4. Persistence and idempotency
 
-Schema 3 remains, with algorithm `deterministic-s2-evidence-v1`. Compatibility
-field `summary` contains evidence, not proof of an LLM call. Model identity records
-the target budget/configuration.
+Schema 3 remains, with algorithm `c3-sticky-summary-v1` when the summary call
+succeeds and `deterministic-s2-evidence-v1` when it does not (plain C, and the
+fallback after a failed call). Compatibility field `summary` contains the evidence
+index — plus the handoff summary when there is one — not proof of an LLM call.
+Model identity records the target budget/configuration.
 
 ```text
 absent -> started -> completed (checkpoint + receipt transaction)
