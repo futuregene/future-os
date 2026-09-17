@@ -68,10 +68,38 @@ Every arm is reported on the same axes, because none of them alone is the answer
   all arms at a boundary;
 * **compaction cost** — CNY spent by the compaction calls only, kept separate from scoring.
   A strategy that calls a model to summarise and one that does not cannot be compared on a
-  single blended number.
+  single blended number;
+* **per-turn cost** — the same projection re-sent on every later turn, cache-served. This is
+  the recurring cost, and it is what a smaller projection buys down; reporting only the
+  one-off compaction cost would invert the comparison.
 
-Scoring cost is also informative and is reported: it is the per-turn cost of whatever the
-arm decided to send.
+### Cache-aware cost
+
+The ledger's charge is the **cold** number: these runs do not reproduce the production
+prefix, so nothing is cache-served and the figure is an upper bound. Production serves a
+cache-friendly summary from the provider's prefix cache, where a cache read costs 0.02 CNY
+per 1M tokens against 1.0 for fresh input. `report.json` therefore also prices every arm at
+the `MODELLED_CACHE_HIT` rate (0.98), and at full price for arms that cannot share the
+prefix.
+
+Eligibility is a property of the request each strategy builds, decided at token 0:
+
+* `summarized` — **eligible**: it passes the session's own system prompt and tool
+  definitions and the live conversation as real messages. The deployed path measured 99.8 %
+  cache read in production, which is what the 0.98 stand-in is anchored to.
+* Codex — **eligible**: it reuses its base instructions and appends its instruction last.
+* `main` — **not eligible**: it substitutes its own `SUMMARY_SYSTEM_PROMPT` constant.
+* OpenCode — **not eligible**: it sends a dedicated compaction system prompt.
+
+The eligibility table lives in `CACHE_ELIGIBLE` in `production_shape_rerun.py`, with the
+reason recorded next to each entry so the claim can be checked against the code rather than
+taken on trust.
+
+**Do not read the runs' own cache counters as evidence here.** They are contaminated: the
+arms run in one block and prime each other, and a later run reuses prefixes an earlier one
+left in the provider's cache. One recorded batch showed a 100 % hit on a request whose
+prefix the previous (aborted) run had sent. The model exists precisely because the
+measurement is not available from this harness.
 
 ## Inputs
 

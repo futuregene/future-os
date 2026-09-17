@@ -225,6 +225,90 @@ def ledger_costs(root):
     return out
 
 
+# Which arm's summary request can reuse the prefix the session's last turn sent.
+#
+# A prefix is compared from token zero, so a strategy that substitutes its own summariser
+# prompt cannot share the session's prefix at all — however small its request is. That makes
+# this a structural property of the request each strategy builds, readable from the code,
+# and not something these runs can measure: the recorded cache counters are contaminated by
+# arm and run ordering (see PRODUCTION_SHAPE_PROTOCOL.md).
+CACHE_ELIGIBLE = {
+    "deterministic": (False, "no model call at all"),
+    "summarized": (True, "passes the session's own system prompt and tool definitions and the "
+                         "live conversation as real messages; the deployed path measured "
+                         "99.8 % cache read in production"),
+    "main": (False, "substitutes its own SUMMARY_SYSTEM_PROMPT constant, so token 0 differs "
+                    "from every request the session sent"),
+    "codex": (True, "reuses its base instructions and appends its instruction last; in its "
+                    "own deployment those are the session's system prompt, though this "
+                    "harness supplies a stand-in"),
+    "opencode": (False, "sends a dedicated compaction system prompt, which cannot share the "
+                        "session's prefix"),
+}
+# Modelled hit rate for an eligible request. The deployed path measured 99.8 %
+# (212 548 of 212 911 tokens) on an isolated agent; 98 % is the conservative stand-in.
+MODELLED_CACHE_HIT = 0.98
+
+
+def bill(rates, prompt, completion, cache_read):
+    """`Cost::estimate`: prompt already includes the cached subset."""
+    uncached = max(prompt - cache_read, 0)
+    return (uncached * rates["input"] + cache_read * rates["cache_read"]
+            + completion * rates["output"]) / 1e6
+
+
+def cache_cost(root, rates, hit=MODELLED_CACHE_HIT):
+    """Reprice the recorded compaction calls cold, and with a cache-served prefix.
+
+    Both views are reported. The cold figure is what the ledger actually charged and is the
+    upper bound; the modelled figure is what a request that reuses the session's prefix
+    costs, which is the number the cache-friendliness argument is about.
+    """
+    ledger = load(root / "ledger.json") if (root / "ledger.json").exists() else {}
+    # Seed every arm: a model-free strategy has no calls to price, and reporting it as
+    # absent would read as "unknown" rather than "free".
+    per_arm = {arm: {"calls": 0, "prompt": 0, "completion": 0, "cold": 0.0, "cached": 0.0}
+               for arm in ARMS}
+    for row in ledger.values():
+        identity = row.get("identity", "")
+        if not identity.endswith("-compact"):
+            continue
+        artifact = row.get("artifact")
+        if not artifact:
+            continue
+        try:
+            response = load(root / artifact)
+        except (OSError, json.JSONDecodeError):
+            continue
+        usage = response.get("usage") or {}
+        try:
+            # The external arms report provider usage; the Rust drivers report the aggregate
+            # their wrapper observed. Same quantities, different keys.
+            prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+            completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            continue
+        if prompt == 0:
+            continue
+        arm = identity.rsplit("-", 2)[-2]
+        entry = per_arm.setdefault(arm, {"calls": 0, "prompt": 0, "completion": 0,
+                                         "cold": 0.0, "cached": 0.0})
+        entry["calls"] += 1
+        entry["prompt"] += prompt
+        entry["completion"] += completion
+        entry["cold"] += bill(rates, prompt, completion, 0)
+        eligible = CACHE_ELIGIBLE.get(arm, (False, ""))[0]
+        entry["cached"] += (bill(rates, prompt, completion, int(prompt * hit))
+                            if eligible else bill(rates, prompt, completion, 0))
+    for arm, entry in per_arm.items():
+        eligible, why = CACHE_ELIGIBLE.get(arm, (False, "unknown"))
+        entry["cache_eligible"] = eligible
+        entry["reason"] = why
+        entry["cold_cny"] = round(entry.pop("cold"), 6)
+        entry["cached_cny"] = round(entry.pop("cached"), 6)
+    return {"assumed_hit": hit, "arms": per_arm}
+
+
 def compacted(arm, projection):
     """Did this arm actually replace the history with a projection?
 
@@ -321,6 +405,25 @@ def report(root, chains):
         refusal[arm] = {"scored": len(xs), "invalid": sum(not x["valid_answer"] for x in xs),
                         "refused": sum(1 for x in xs if x.get("refused"))}
 
+    # Cache-aware cost. The cold figure is what the ledger charged; the modelled one is what
+    # a request reusing the session's prefix costs. The projection itself is re-sent every
+    # later turn, so it is priced per turn as well — that recurring cost is what a smaller
+    # projection actually buys down.
+    rates = config["limits"].get("rates_per_million",
+                                 {"input": 1.0, "output": 4.0,
+                                  "cache_read": 0.02, "cache_write": 0.0})
+    cache = cache_cost(root, rates)
+    for arm, entry in cache["arms"].items():
+        toks = sorted(p["projection_tokens"] for p in projections
+                      if p["arm"] == arm and p.get("projection_tokens"))
+        if toks:
+            median = toks[len(toks) // 2]
+            entry["median_projection_tokens"] = median
+            entry["per_turn_cny"] = round(
+                bill(rates, median, 0, int(median * MODELLED_CACHE_HIT)), 6)
+            entry["per_hundred_turns_cny"] = round(entry["per_turn_cny"] * 100, 4)
+    cache["rates_per_million"] = rates
+
     # The headline comparison the question asks for: post-compaction against
     # post-compaction, so only boundaries where every arm committed a checkpoint.
     fair = [b for b in per_boundary if all(b["arms"].get(a, {}).get("compacted") for a in ARMS)]
@@ -337,6 +440,7 @@ def report(root, chains):
         "fair_boundaries": len(fair),
         "fair_arms": aggregate(fair),
         "per_boundary": per_boundary,
+        "cache_cost": cache,
         "compaction_spend_cny": round(costs["compaction_total"], 6),
         "scoring_spend_cny": round(costs["scoring_total"], 6),
         "spent_or_reserved": round(costs["compaction_total"] + costs["scoring_total"], 6),

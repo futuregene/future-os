@@ -90,6 +90,68 @@ correspondingly higher (2.67 CNY against 0.72 CNY for the same 90 questions), be
 probe carries the full history — the projection size above is a recurring per-turn cost, not
 a one-off.
 
+### Cost with the provider cache
+
+The compaction column above is the **cold** price: what the ledger charged when nothing
+shared a prefix. Production does not pay that, because a summary request that reuses the
+session's own system prompt, tool definitions and messages is served from the provider's
+prefix cache. On this model a cache read costs **0.02 CNY per 1M tokens against 1.0 for
+fresh input** — 50× cheaper — so the cache decides which strategy is affordable.
+
+Whether a strategy *can* share that prefix is a property of the request it builds, and the
+prefix is compared from token 0, so it is decided by the system prompt alone:
+
+| Strategy | Shares the session prefix? | Why |
+|---|---|---|
+| `summarized` | **yes** | sends the session's own system prompt and tool definitions, and the live conversation as real messages. The deployed path measured **99.8 %** cache read in production (212 548 of 212 911 tokens) |
+| Codex | yes | reuses its base instructions and appends its instruction last; in its own deployment those are the session's system prompt |
+| `main` | **no** | substitutes its own `SUMMARY_SYSTEM_PROMPT` constant, so token 0 differs from every request the session sent |
+| OpenCode | no | sends a dedicated compaction system prompt |
+
+The table below prices every arm's recorded calls at the registry's rates with a **modelled
+98 % hit** for the strategies that can share the prefix (the deployed measurement is
+99.8 %; 98 % is the conservative stand-in), and at full price for the others. Per-turn cost
+is the projection re-sent on every later turn, likewise cache-served, and is what a smaller
+projection actually buys down.
+
+| Strategy | Recall | Projection | Compaction (cold) | Shares prefix | Compaction (cached) | Per turn | 1 compaction + 100 turns |
+|---|---:|---:|---:|:--:|---:|---:|---:|
+| `summarized` | **83 %** | 12 503 tok | 7.98 | yes | **0.53** | 0.000496 | 0.58 |
+| `deterministic` | 71 % | 10 233 tok | 0 | — | 0 | 0.000406 | **0.04** |
+| Codex | 38 % | 1 821 tok | 7.64 | yes | 0.42 | 0.000073 | 0.43 |
+| OpenCode | 47 % | 5 372 tok | 0.99 | no | 0.99 | 0.000213 | 1.01 |
+| **deployed (`main`)** | 38 % | 4 027 tok | 0.83 | no | 0.83 | 0.000160 | 0.84 |
+
+Readings:
+
+* **The cache inverts the cost ranking.** Cold, `summarized` is the most expensive strategy in
+the set (7.98 CNY). Cache-served, it is cheaper than the deployed algorithm (0.53 against
+0.83) — while answering 45 points more. That is not a coincidence of this fixture: it is
+what a 50× price difference on 98 % of the input does.
+* **Cost per point of recall**, over one compaction plus 100 turns, is 0.0070 CNY for
+`summarized`, 0.0112 for Codex and 0.0221 for the deployed algorithm — the deployment is
+**3× worse per unit of recall**, the opposite of what its cold-number advantage suggests.
+* **The deployed algorithm's saving is real but small, and it is bought with a different
+mechanism.** Its summary requests carry 11× fewer input tokens (695 775 against 7 762 538),
+because it does not re-read the originals: after the first checkpoint its `covered_from` is
+**the previous checkpoint's entry id**, so each summary folds "previous summary + new range"
+forward. That is what keeps its requests small, and it is also why its recall is 38 % — the
+originals are never consulted again and the summary is summarised recursively.
+`summarized` re-covers the whole range from the journal every time, which is why its
+requests are large; caching is what makes that affordable.
+* **A private system prompt costs about 5× on compaction.** Priced at the same 98 % hit,
+`main`'s own requests would come to 0.16 CNY instead of 0.83 — the difference is entirely
+that its first token does not match anything the session sent. Choosing a bespoke summariser
+prompt is what forfeits the cache, not the amount of text sent.
+* **`deterministic` is the cheapest per point by an order of magnitude** (0.0006 against
+0.0070) because it spends nothing at all, and it still reaches 71 %. The handoff summary
+costs ~14× more per point of recall than not summarising — it is a quality purchase, not an
+efficiency one.
+
+These are modelled figures for the cache, not measurements of it: the runs' own cache
+counters are contaminated by arm and run ordering (see PRODUCTION_SHAPE_PROTOCOL.md), and
+the 98 % is anchored to the one production measurement rather than to this harness.
+
 ## How C3's summary is generated, and why the request shape matters
 
 C3's projection is produced by the production Rust path

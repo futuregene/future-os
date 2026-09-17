@@ -444,6 +444,14 @@ async fn main() -> Result<()> {
                     .saturating_sub(reserve_tokens.max(0) as u64)
                     .min(input_limit),
                 "input_limit": input_limit,
+                // Rates, so a cost analysis prices the run with the same numbers the
+                // runtime bills with instead of hard-coding them.
+                "rates_per_million": {
+                    "input": resolved.cost.input,
+                    "output": resolved.cost.output,
+                    "cache_read": resolved.cost.cache_read,
+                    "cache_write": resolved.cost.cache_write,
+                },
             }))?
         );
         return Ok(());

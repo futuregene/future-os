@@ -47,6 +47,9 @@ struct Observed {
 impl Observed {
     async fn observe(&self, request: ModelRequest) -> Result<ReceiverStream<ModelStreamEvent>> {
         let totals = TOTALS.get().context("totals uninitialized")?.clone();
+        // Count before sending: the deployed path may summarise in several calls per
+        // compaction, and a caller reading only `logical_requests` would miss them.
+        totals.calls.fetch_add(1, Ordering::Relaxed);
         self.requests.lock().push(json!({
             "system_prompt": request.system_prompt,
             "messages": request.messages,
