@@ -417,7 +417,7 @@ export function SessionList({
                 .catch(() => Alert.alert(t("common.error")));
             },
           },
-          {
+          ...(remote.capabilities.has("workspace_pinning_v1") ? [{
             // A workspace group is an ordering shortcut like a pinned
             // conversation: pinned groups sit under the pinned conversations
             // and above the unpinned groups (see catalogRows).
@@ -432,7 +432,7 @@ export function SessionList({
                 )
                 .catch(() => Alert.alert(t("common.error")));
             },
-          },
+          }] : []),
           {
             label: t("sessions.selectWorkspaceSessions"),
             icon: <ListChecks size={18} color={colors.inkSoft} />,

@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1523,7 +1523,8 @@ mod bridge_tests {
                 "prompt_receipt_v1",
                 "session_files_v1",
                 "skills_v1",
-                "selective_events_v1"
+                "selective_events_v1",
+                "workspace_pinning_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2806,6 +2807,29 @@ mod bridge_tests {
         .unwrap();
         assert_eq!(crate::store::list_workspaces().unwrap().len(), 1);
         assert_eq!(crate::store::list_threads().unwrap().len(), 1);
+
+        let pinned = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned",
+            "workspaceId": workspace.id, "pinned": true }))
+            .await;
+        assert_eq!(pinned["success"], true);
+        assert_eq!(pinned["data"]["workspaces"][0]["pinned"], true);
+        let pulled = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_workspaces" }))
+            .await;
+        assert_eq!(
+            pinned["data"], pulled["data"],
+            "ack and pull share the versioned source"
+        );
+        let unpinned = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_workspace_pinned",
+            "workspaceId": workspace.id, "pinned": false }))
+            .await;
+        assert_eq!(unpinned["data"]["workspaces"][0]["pinned"], false);
+        assert!(
+            unpinned["data"]["version"]["revision"].as_u64().unwrap()
+                > pinned["data"]["version"]["revision"].as_u64().unwrap()
+        );
 
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_workspace", "workspaceId": workspace.id.clone() }))

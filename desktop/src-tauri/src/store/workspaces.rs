@@ -235,10 +235,13 @@ pub(super) fn get_or_create_chat_workspace_in(
 pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
     let pinned = if input.pinned { 1 } else { 0 };
     let conn = connect()?;
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE workspaces SET pinned = ?1 WHERE id = ?2 AND deleted_at IS NULL",
         params![pinned, input.workspace_id],
     )?;
+    if updated == 0 {
+        return Err("Workspace unavailable".into());
+    }
 
     let workspace = loaded(get_workspace_in(&conn, &input.workspace_id)?, "Workspace")?;
     // The phone's workspace snapshot carries the flag, so the next heartbeat
@@ -604,6 +607,31 @@ mod tests {
             pinned: true,
         });
         assert!(missing.is_err(), "unknown workspace errors");
+        conn.execute(
+            "UPDATE workspaces SET deleted_at = 1 WHERE id = 'ws_old'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            pin_workspace(PinWorkspaceInput {
+                workspace_id: "ws_old".into(),
+                pinned: true,
+            })
+            .is_err(),
+            "a soft-deleted workspace must not report success"
+        );
+        assert!(!get_workspace("ws_old").unwrap().unwrap().pinned);
+        // Setting the same value on an active row is still a successful idempotent write.
+        for _ in 0..2 {
+            assert!(
+                pin_workspace(PinWorkspaceInput {
+                    workspace_id: "ws_new".into(),
+                    pinned: true,
+                })
+                .unwrap()
+                .pinned
+            );
+        }
     }
 
     #[test]

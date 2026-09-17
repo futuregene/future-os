@@ -24,6 +24,7 @@ const mockRemote: {
   workspaces: RemoteWorkspace[];
   unreadSessions: Set<string>;
   desktopOnline: boolean;
+  capabilities: Set<string>;
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
   setWorkspacePinned: jest.Mock;
@@ -38,6 +39,7 @@ const mockRemote: {
   workspaces: [],
   unreadSessions: new Set<string>(),
   desktopOnline: true,
+  capabilities: new Set(["workspace_pinning_v1"]),
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
   setWorkspacePinned: jest.fn(),
@@ -168,6 +170,7 @@ const rowInset = (title: string) =>
 beforeEach(async () => {
   jest.clearAllMocks();
   mockRemote.desktopOnline = true;
+  mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.deleteSession.mockResolvedValue(undefined);
   mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
@@ -555,6 +558,17 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   mockRemote.desktopOnline = false;
   renderWorkspaceTab();
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
+});
+
+test("old desktops do not offer unsupported workspace pin commands", () => {
+  mockRemote.capabilities.clear();
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const actions = tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label);
+  expect(actions).not.toContain("sessions.pin");
+  expect(actions).not.toContain("sessions.unpin");
+  expect(actions).toContain("sessions.new");
+  expect(mockRemote.setWorkspacePinned).not.toHaveBeenCalled();
 });
 
 test("the workspace menu pins a group and offers unpin once it is pinned", async () => {
