@@ -547,10 +547,17 @@ function resolveInject(value) {
   return candidate;
 }
 
-async function evaluate(expression) {
+async function evaluate(expression, { required = false } = {}) {
   const response = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-  if (response.result?.exceptionDetails)
-    console.error("cdp: eval error:", JSON.stringify(response.result.exceptionDetails).slice(0, 400));
+  const failure = response.result?.exceptionDetails;
+  if (failure) {
+    console.error("cdp: eval error:", JSON.stringify(failure).slice(0, 400));
+    // An eval inside a scenario is an assertion about what the screen shows:
+    // reporting success for it would let a broken screen be captured as if the
+    // state had been proven. Internal probes (readiness, optional reads) stay
+    // non-fatal.
+    if (required) failures += 1;
+  }
   return response.result?.result?.value;
 }
 
@@ -716,7 +723,7 @@ if (INJECT_FILE)
 
 for (const step of steps) {
   if (step.eval !== undefined) {
-    const value = await evaluate(step.eval);
+    const value = await evaluate(step.eval, { required: true });
     if (step.log !== false && value !== undefined)
       console.log("cdp: eval:", JSON.stringify(value).slice(0, 1200));
   }

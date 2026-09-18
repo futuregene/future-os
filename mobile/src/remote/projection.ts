@@ -538,6 +538,30 @@ function isRunEvent(type: string): boolean {
   );
 }
 
+/**
+ * Compaction lifecycle frames describe the *session's context*, not a model
+ * reply. The Agent stamps them with the run identity it currently holds — after
+ * a run ends that is the run that just finished (and a manual compaction has no
+ * run at all) — so treating them as run activity would re-open a settled reply
+ * and leave the composer stuck on "generating" with no `agent_end` ever coming.
+ */
+/**
+ * A standalone (manual) compaction runs outside any reply. The Agent stamps it
+ * with the run identity it currently holds — the run that just finished — so
+ * keying it by that run would re-open the finished reply and, because no
+ * `agent_end` follows, leave the composer on "generating" forever. It gets its
+ * own divider item instead.
+ *
+ * Mid-turn (automatic) compactions keep the run they belong to, so a run that
+ * dies mid-compaction still marks its marker as interrupted.
+ */
+function isStandaloneCompaction(data: Record<string, unknown>): boolean {
+  return textValue(data.phase) === "standalone";
+}
+
+/** Accumulator key for a compaction that belongs to no reply. */
+const COMPACTION_ITEM_KEY = "__compaction__";
+
 /** Fold one run event through the run's shared projector and rebuild the
  * assistant bubble from the projection snapshot. */
 function applyLiveEvent(
@@ -548,7 +572,9 @@ function applyLiveEvent(
   deferSnapshot = false,
 ): { items: TimelineItem[]; streaming: boolean; liveRuns: Map<string, LiveRunState> } {
   const liveRuns = state.liveRuns ?? new Map<string, LiveRunState>();
-  const runKey = runId ?? "__norun__";
+  const compactionEvent = event.type.startsWith("compaction_");
+  const ownDivider = compactionEvent && isStandaloneCompaction(data);
+  const runKey = ownDivider ? COMPACTION_ITEM_KEY : runId ?? "__norun__";
   let acc = liveRuns.get(runKey);
   if (!acc) {
     acc = {
@@ -565,8 +591,9 @@ function applyLiveEvent(
     if (eventStartedAt) acc.startedAt = eventStartedAt;
     else if (!acc.startedAt) acc.startedAt = Date.now();
   }
-  // Any run event other than agent_end means the run is still active.
-  if (event.type !== "agent_end") acc.streaming = true;
+  // Any run event other than agent_end means the run is still active — except a
+  // compaction frame, which says nothing about whether a reply is in flight.
+  if (event.type !== "agent_end" && !compactionEvent) acc.streaming = true;
 
   // Feed through the shared projector (agent_start is a no-op for it).
   let projection: ReturnType<RunProjector["snapshot"]> | undefined;
@@ -593,8 +620,15 @@ function applyLiveEvent(
   }
   let items = state.items;
   if (projection) {
-    const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
-    items = upsertItem(items, acc.assistantId, () => assistantItem, () => assistantItem);
+    if (ownDivider && projection.segments.length === 0) {
+      // A standalone compaction that ends without a marker (nothing to compact,
+      // or a reused result) must not leave an empty bubble behind — and must
+      // take its own running placeholder away with it.
+      items = items.filter(item => item.id !== acc!.assistantId);
+    } else {
+      const assistantItem = buildLiveAssistantItem(acc, ownDivider ? undefined : runId, projection, durationMs);
+      items = upsertItem(items, acc.assistantId, () => assistantItem, () => assistantItem);
+    }
   }
   return { items, streaming: acc.streaming, liveRuns };
 }

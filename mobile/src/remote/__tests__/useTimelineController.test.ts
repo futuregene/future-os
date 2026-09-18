@@ -1795,6 +1795,29 @@ describe("useTimelineController", () => {
       }
     });
 
+    test("ends the wait when the session stops compacting without a terminal frame", async () => {
+      // The phone can miss the terminal frame (backgrounded, dropped stream).
+      // The authoritative state ends the wait, so a lost frame cannot leave the
+      // composer refusing new requests for the whole timeout.
+      request.mockImplementation(async (command: { type: string }) => ({ data:
+        command.type === "get_state" ? { isCompacting: true } : { entries: [] },
+      }));
+      render();
+      await establish();
+      act(() => result.current.handleEvent(
+        terminal("compaction_started", { operation_id: "cmp-lost", phase: "standalone" }),
+        "s1",
+      ));
+      await flush();
+      const outcome = result.current.awaitCompactionOutcome("s1", "cmp-lost");
+      request.mockImplementation(async (command: { type: string }) => ({ data:
+        command.type === "get_state" ? { isCompacting: false } : { entries: [] },
+      }));
+      act(() => result.current.reconcileSession("s1", "reconnect"));
+      await flush();
+      await expect(outcome).resolves.toEqual({ status: "unobserved" });
+    });
+
     test("carries the unchanged/reused flags and tolerates malformed payloads", async () => {
       render();
       await establish();
