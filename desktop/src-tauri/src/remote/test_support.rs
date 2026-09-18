@@ -400,6 +400,14 @@ fn default_answer(
     state: &mut MockAgentState,
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
+        // A healthy mock Agent must satisfy the same readiness handshake as a
+        // real Agent. Login commands now require this before requesting or
+        // persisting a one-time credential.
+        "get_agent_info" => ok(json!({
+            "version": crate::build_info::VERSION,
+            "agentInstanceId": "mock-agent",
+            "skillsCount": 0,
+        })),
         "list_streaming_sessions" => ok(json!({ "sessions": [] })),
         "probe_sandbox" => ok(json!({
             "available": cfg!(target_os = "macos"),

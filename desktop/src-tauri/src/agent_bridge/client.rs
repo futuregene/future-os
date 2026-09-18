@@ -11,6 +11,12 @@ use tonic::transport::Channel;
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AgentInfo {
+    pub version: String,
+}
+
 /// Desktop client wrapper that applies the shared per-command deadline while
 /// leaving streaming RPCs on the underlying client deadline-free.
 #[derive(Clone, Debug)]
@@ -186,6 +192,20 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
             .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
             .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
     ))
+}
+
+/// Complete a real command round-trip and return the running Agent's build
+/// identity. A transport connection alone is not readiness: during startup the
+/// local endpoint may exist before the command service can answer requests.
+pub(crate) async fn get_agent_info() -> Result<AgentInfo, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(base_command("get_agent_info", String::new()))
+        .await
+        .map_err(|status| map_rpc_error("Unable to read Future Agent status", status))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent did not report its build information")?;
+    serde_json::from_value(future_rpc::decode::response_data(&response)).map_err(Into::into)
 }
 
 /// One-shot reachability check run when the shared channel is first

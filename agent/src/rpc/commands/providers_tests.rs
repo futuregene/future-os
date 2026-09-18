@@ -154,7 +154,7 @@ fn get_agent_info_returns_version() {
     let cmd = make_cmd("get_agent_info");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
-    assert!(resp["data"]["version"].is_string());
+    assert_eq!(resp["data"]["version"], crate::utils::VERSION);
     assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
 }
 

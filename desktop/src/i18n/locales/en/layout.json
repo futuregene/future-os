@@ -132,6 +132,13 @@
     "chooseModelHint": "You can switch models anytime during the conversation",
     "start": "Get started"
   },
+  "agentStatus": {
+    "wait": "Please wait a moment.",
+    "failed": "Future Agent could not start",
+    "fixFailed": "Restart FutureOS. If the issue continues, reinstall FutureOS.",
+    "incompatible": "Future Agent does not match this FutureOS version",
+    "fixIncompatible": "Restart FutureOS to finish the update. If the issue continues, reinstall FutureOS."
+  },
   "userMenu": {
     "balance": "Balance: {{credits}}",
     "recharge": "Recharge",
