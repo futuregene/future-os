@@ -3,6 +3,7 @@ import { invokeCommand } from "../tauri/invoke";
 export type AgentStatusPhase
   = | "checking"
     | "starting"
+    | "recovering"
     | "ready"
     | "spawn_failed"
     | "exited"

@@ -65,7 +65,7 @@ export function useAgentStatus(): AgentStartupStatus {
             ? current
             : next
         ));
-        const delay = next.phase === "checking" || next.phase === "starting"
+        const delay = next.phase === "checking" || next.phase === "starting" || next.phase === "recovering"
           ? 600
           : next.phase === "ready"
             ? 5000

@@ -72,4 +72,18 @@ describe("useAgentStatus", () => {
     expect(hook.current.phase).toBe("startup_timeout");
     hook.unmount();
   });
+
+  it("does not turn an active recovery back into a startup timeout", async () => {
+    vi.mocked(getAgentStatus).mockResolvedValue({
+      phase: "recovering",
+      desktopVersion: "1.1.8",
+      agentVersion: null,
+    });
+    const hook = renderHook(useAgentStatus);
+    await flushAsync();
+
+    act(() => vi.advanceTimersByTime(AGENT_STARTUP_TIMEOUT_MS));
+    expect(hook.current.phase).toBe("recovering");
+    hook.unmount();
+  });
 });
