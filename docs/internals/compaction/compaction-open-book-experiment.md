@@ -1,7 +1,8 @@
-# Open book: does retrieval help the summarised strategy?
+# Compaction strategies: open-book experiment
 
-One arm, `summarized`, against the closed-book chain set. The question: if the model can
-search the original history after compaction, does it recover what the projection dropped?
+Does retrieval help the summarised strategy? One arm, `summarized`, against the closed-book
+chain set: if the model can search the original history after compaction, does it recover what
+the projection dropped?
 
 **Answer: not on its own.** Retrieval was never attempted in any of the three prompt variants
 that left it optional, and the only configuration that produced a gain was one in which the

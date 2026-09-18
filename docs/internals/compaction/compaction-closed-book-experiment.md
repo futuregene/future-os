@@ -1,4 +1,4 @@
-# Compaction strategies: closed-book comparison
+# Compaction strategies: closed-book experiment
 
 Five retention strategies, measured on six frozen chains, closed book only.
 
