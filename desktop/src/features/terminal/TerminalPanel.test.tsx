@@ -147,25 +147,20 @@ describe("terminalPanel", () => {
     expect(calls.some(call => call.method === "POST")).toBe(true);
   });
 
-  it("offers the explicit home fallback for a bad working directory", async () => {
+  it("shows a create failure with a retry and no home-fallback shortcut", async () => {
     installFetch((call) => {
       if (call.method === "GET")
         return { status: 200, body: [] };
       return {
         status: 400,
-        body: { error: { code: "CWD_INVALID", message: "CWD_INVALID: /nope does not exist", allowsHomeFallback: true } },
+        body: { error: { code: "SPAWN_FAILED", message: "SPAWN_FAILED: nope" } },
       };
     });
     await render(controller());
-    const fallback = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("home"));
-    expect(fallback).toBeTruthy();
-    await act(async () => {
-      fallback?.click();
-    });
-    await flush();
-    const attempts = calls.filter(call => call.method === "POST");
-    expect(attempts).toHaveLength(2);
-    expect(attempts[1]?.body).toMatchObject({ cwdPolicy: "homeConfirmed" });
+    expect(container.textContent).toContain("SPAWN_FAILED");
+    const buttons = [...container.querySelectorAll("button")].map(button => button.textContent ?? "");
+    expect(buttons.some(text => text.includes("Retry"))).toBe(true);
+    expect(buttons.some(text => text.toLowerCase().includes("home"))).toBe(false);
   });
 
   it("marks a session the server forgot and offers a restart", async () => {

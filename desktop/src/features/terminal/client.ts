@@ -17,18 +17,12 @@ import { invokeCommand } from "../../integrations/tauri/invoke";
 /** A control-route failure, carrying the server's stable error code. */
 export class TerminalApiError extends Error {
   readonly code: string;
-  /**
-   * True only for `CWD_INVALID`: retrying with `cwdPolicy: "homeConfirmed"`
-   * is a decision the user has to make, not something the client may assume.
-   */
-  readonly allowsHomeFallback: boolean;
   readonly status: number;
 
-  constructor(code: string, message: string, allowsHomeFallback: boolean, status: number) {
+  constructor(code: string, message: string, status: number) {
     super(message);
     this.name = "TerminalApiError";
     this.code = code;
-    this.allowsHomeFallback = allowsHomeFallback;
     this.status = status;
   }
 }
@@ -80,11 +74,10 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    const error = (parsed as { error?: { code?: string; message?: string; allowsHomeFallback?: boolean } } | undefined)?.error;
+    const error = (parsed as { error?: { code?: string; message?: string } } | undefined)?.error;
     throw new TerminalApiError(
       error?.code ?? "REQUEST_FAILED",
       error?.message ?? `terminal request failed (${response.status})`,
-      error?.allowsHomeFallback === true,
       response.status,
     );
   }

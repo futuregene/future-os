@@ -85,7 +85,7 @@ describe("useTerminalTabs", () => {
     expect(harness.current.tabs).toHaveLength(1);
     expect(harness.current.activeId).toBe("term_1");
     const created = calls.find(call => call.method === "POST");
-    expect(created?.body).toMatchObject({ threadId: "thread-1", cwdPolicy: "thread" });
+    expect(created?.body).toMatchObject({ threadId: "thread-1" });
 
     // Persisted immediately, so a reload restores the tab.
     const stored = JSON.parse(localStorage.getItem("future.terminal.tabs.v1.thread-1") ?? "{}");
@@ -93,13 +93,13 @@ describe("useTerminalTabs", () => {
     harness.unmount();
   });
 
-  it("reports a bad working directory with the home fallback available", async () => {
+  it("reports a create failure and retries on demand", async () => {
     installFetch((call) => {
       if (call.method === "GET")
         return { status: 200, body: [] };
       return {
         status: 400,
-        body: { error: { code: "CWD_INVALID", message: "CWD_INVALID: /nope does not exist", allowsHomeFallback: true } },
+        body: { error: { code: "SPAWN_FAILED", message: "SPAWN_FAILED: nope" } },
       };
     });
     const harness = renderHook(() => useTerminalTabs("thread-1"));
@@ -107,21 +107,19 @@ describe("useTerminalTabs", () => {
     await harness.current.create();
     await flush();
 
-    expect(harness.current.createError?.code).toBe("CWD_INVALID");
-    expect(harness.current.createError?.allowsHomeFallback).toBe(true);
+    expect(harness.current.createError?.code).toBe("SPAWN_FAILED");
     expect(harness.current.tabs).toHaveLength(0);
 
-    // The confirmed fallback is the only retry that changes the policy.
-    await harness.current.retryInHome();
+    await harness.current.retry();
     await flush();
     const attempts = calls.filter(call => call.method === "POST");
     expect(attempts).toHaveLength(2);
-    expect(attempts[1]?.body).toMatchObject({ cwdPolicy: "homeConfirmed" });
+    expect(attempts[1]?.body).toMatchObject({ threadId: "thread-1" });
     harness.unmount();
   });
 
   it("does not retry a failed create on its own", async () => {
-    installFetch(() => ({ status: 500, body: { error: { code: "SPAWN_FAILED", message: "nope", allowsHomeFallback: false } } }));
+    installFetch(() => ({ status: 500, body: { error: { code: "SPAWN_FAILED", message: "nope" } } }));
     const harness = renderHook(() => useTerminalTabs("thread-1"));
     await flush();
     await harness.current.create();
@@ -141,7 +139,7 @@ describe("useTerminalTabs", () => {
       if (call.method === "GET")
         return { status: 200, body: [] };
       if (call.method === "DELETE")
-        return { status: 404, body: { error: { code: "TERMINAL_NOT_FOUND", message: "gone", allowsHomeFallback: false } } };
+        return { status: 404, body: { error: { code: "TERMINAL_NOT_FOUND", message: "gone" } } };
       return {
         status: 200,
         body: {

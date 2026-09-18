@@ -8,7 +8,7 @@ import type { TerminalTab, TerminalTabsState } from "./tabs";
  * the panel opens. It never creates a shell on its own initiative except for
  * the documented "open the panel with no tabs" case.
  */
-import type { CwdPolicy, TerminalInfo } from "./types";
+import type { TerminalInfo } from "./types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createTerminal,
@@ -43,13 +43,11 @@ export interface TerminalTabsController {
   error: string | null;
   /** A create is in flight; the UI disables the "+" button. */
   creating: boolean;
-  /** Why the last create failed, if it did: drives the fallback prompt. */
+  /** Why the last create failed, if it did. */
   createError: TerminalApiError | null;
-  create: (policy?: CwdPolicy) => Promise<void>;
-  /** Retry the last failed create with the same policy. */
+  create: () => Promise<void>;
+  /** Retry the last failed create. */
   retry: () => Promise<void>;
-  /** Confirm the explicit home fallback for the last failed create. */
-  retryInHome: () => Promise<void>;
   dismissCreateError: () => void;
   close: (id: string) => Promise<void>;
   restart: (id: string) => Promise<void>;
@@ -129,7 +127,6 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<TerminalApiError | null>(null);
   const creatingRef = useRef(false);
-  const lastPolicyRef = useRef<CwdPolicy>("thread");
   const stateRef = useRef(state);
   stateRef.current = state;
   const threadRef = useRef(threadId);
@@ -188,17 +185,16 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
       saveTabsState(currentThread, next);
   }, []);
 
-  const create = useCallback(async (policy: CwdPolicy = "thread") => {
+  const create = useCallback(async () => {
     const thread = threadRef.current;
     if (!thread || creatingRef.current)
       return;
     creatingRef.current = true;
-    lastPolicyRef.current = policy;
     setCreating(true);
     try {
       const previous = stateRef.current;
       const titleNumber = nextTitleNumber(previous.all);
-      const info = await createTerminal({ threadId: thread, title: defaultTitle(titleNumber), cwdPolicy: policy });
+      const info = await createTerminal({ threadId: thread, title: defaultTitle(titleNumber) });
       update((current) => {
         const tab: TerminalTab = { ...toTab(info, titleNumber), title: defaultTitle(titleNumber) };
         return { active: tab.id, all: [...current.all, tab] };
@@ -209,7 +205,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     catch (cause) {
       const apiError = cause instanceof TerminalApiError
         ? cause
-        : new TerminalApiError("REQUEST_FAILED", cause instanceof Error ? cause.message : String(cause), false, 0);
+        : new TerminalApiError("REQUEST_FAILED", cause instanceof Error ? cause.message : String(cause), 0);
       setCreateError(apiError);
     }
     finally {
@@ -218,8 +214,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     }
   }, [update]);
 
-  const retry = useCallback(() => create(lastPolicyRef.current), [create]);
-  const retryInHome = useCallback(() => create("homeConfirmed"), [create]);
+  const retry = useCallback(() => create(), [create]);
 
   const close = useCallback(async (id: string) => {
     update((current) => {
@@ -267,7 +262,7 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     catch (cause) {
       const apiError = cause instanceof TerminalApiError
         ? cause
-        : new TerminalApiError("REQUEST_FAILED", cause instanceof Error ? cause.message : String(cause), false, 0);
+        : new TerminalApiError("REQUEST_FAILED", cause instanceof Error ? cause.message : String(cause), 0);
       setCreateError(apiError);
     }
   }, [update]);
@@ -325,7 +320,6 @@ export function useTerminalTabs(threadId: string | null): TerminalTabsController
     createError,
     create,
     retry,
-    retryInHome,
     dismissCreateError,
     close,
     restart,

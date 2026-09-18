@@ -240,19 +240,8 @@ function ErrorBar({ tabs }: { tabs: ReturnType<typeof useTerminalTabs> }) {
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-warning-line bg-warning-soft px-3 py-1 text-xs text-warning">
       <span className="font-medium">{t("createFailed")}</span>
       <span className="min-w-0 flex-1 truncate text-ink-soft" title={error.message}>{error.message}</span>
-      {error.allowsHomeFallback
-        ? (
-            <button
-              className="rounded-md border border-warning-line bg-surface px-2 py-0.5 text-xs font-medium text-warning"
-              onClick={() => void tabs.retryInHome()}
-              type="button"
-            >
-              {t("startInHome")}
-            </button>
-          )
-        : null}
       <button
-        className="rounded-md border border-line bg-surface px-2 py-0.5 text-xs text-ink-soft hover:bg-surface-subtle"
+        className="rounded-md border border-line bg-surface px-2 py-0.5 text-xs font-medium text-ink-soft hover:bg-surface-subtle"
         onClick={() => void tabs.retry()}
         type="button"
       >

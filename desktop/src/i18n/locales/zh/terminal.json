@@ -18,7 +18,6 @@
   "retry": "重试",
   "dismiss": "忽略",
   "createFailed": "无法启动终端",
-  "startInHome": "在用户主目录启动",
   "serverUnavailable": "终端服务不可用",
   "reconnecting": "正在重连…"
 }

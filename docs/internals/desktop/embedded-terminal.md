@@ -53,7 +53,7 @@ Control routes are JSON over HTTP; output is a WebSocket.
 | --- | --- |
 | `GET /terminal/shells` | shells the client may offer |
 | `GET /terminal?threadId=` | sessions for a conversation (running + retained exits) |
-| `POST /terminal` | create `{threadId, title?, cols?, rows?, cwdPolicy?}` |
+| `POST /terminal` | create `{threadId, title?, cols?, rows?}` |
 | `GET /terminal/:id` | one session |
 | `PATCH /terminal/:id` | `{title?, cols?, rows?}` |
 | `DELETE /terminal/:id` | terminate the tree and forget the session |
@@ -163,13 +163,19 @@ This is event-sequence regression coverage, not native macOS IME verification.
 Resolved server-side from the conversation; the client never sends a path.
 
 1. the workspace strictly associated with the thread (`workspace_id`, so a
-   chat's temporary workspace and a real workspace can never be confused);
-2. the user's home directory — but **only** when nothing is configured, or after
-   the user explicitly confirms the fallback.
+   chat's temporary workspace and a real workspace can never be confused) —
+   for a standalone chat session that temporary workspace **is** the session's
+   own directory;
+2. the user's home directory, whenever the configured directory is missing or
+   otherwise unusable.
 
-A configured but missing/not-a-directory path fails loudly with `CWD_INVALID`.
-This matters because `portable-pty` silently substitutes `$HOME` for a bad cwd
-(verified in the earlier spike); the backend validates before spawning.
+The configured directory is validated before spawn and the fallback to home is
+automatic (no confirmation step): a shell must land somewhere predictable, the
+skipped path is logged, and the resolved directory travels back in the session
+info. Validation itself stays because `portable-pty` silently substitutes
+`$HOME` for a bad cwd (verified in the earlier spike) — here the choice is made
+deliberately instead. Only an unusable home directory still errors
+(`CWD_INVALID`).
 
 ## Shell resolution
 
