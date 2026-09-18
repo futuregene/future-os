@@ -155,6 +155,7 @@ export function modelProviderFromReference(modelReference: string): string | und
 }
 
 export interface RemoteSessionState {
+  isCompacting?: boolean;
   model?: string;
   thinkingLevel?: ThinkingLevel;
   /** The session's active (in-flight) run, if any — the tail of its events

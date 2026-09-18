@@ -148,6 +148,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     canLoadOlderTimeline: false,
     loadingOlderTimeline: false,
     streaming: false,
+    compacting: new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
     modelId: "future/deepseek-v4-pro",

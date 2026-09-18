@@ -124,6 +124,7 @@ describe("usePromptOutbox recovery", () => {
         credentialsRef,
         selectedRef,
         streamingRef,
+        compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
         phase: "ready",
@@ -258,6 +259,7 @@ describe("usePromptOutbox sendMessage", () => {
     const credentialsRef = { current: credentials };
     const selectedRef = { current: "session-1" };
     const streamingRef = { current: {} as Record<string, boolean> };
+    const compactingRef = { current: {} as Record<string, boolean> };
     const conversationEpochRef = { current: 1 };
     const syncEngineRef = { current: (opts.engine ?? null) as SyncEngine | null };
     const setSelectedSessionId = jest.fn();
@@ -276,6 +278,7 @@ describe("usePromptOutbox sendMessage", () => {
         credentialsRef,
         selectedRef,
         streamingRef,
+        compactingRef,
         conversationEpochRef,
         syncEngineRef,
         phase: opts.phase ?? "connecting",
@@ -311,6 +314,7 @@ describe("usePromptOutbox sendMessage", () => {
       credentialsRef,
       selectedRef,
       streamingRef,
+      compactingRef,
       conversationEpochRef,
       syncEngineRef,
       setSelectedSessionId,
@@ -416,6 +420,14 @@ describe("usePromptOutbox sendMessage", () => {
     await expect(h.result.sendMessage("x".repeat(512 * 1024 + 1))).rejects.toThrow(
       "prompt_too_large",
     );
+  });
+
+  it("rejects prompts and continuations during compaction before creating an outbox entry", async () => {
+    const h = await mountSend();
+    h.compactingRef.current["session-1"] = true;
+    await expect(h.result.sendMessage("keep this draft")).rejects.toThrow("send_compacting");
+    await expect(h.result.continueRun("session-1", "run-1")).rejects.toThrow("send_compacting");
+    expect(mockedUploadAttachments).not.toHaveBeenCalled();
   });
 
   it("rejects a send while the target session is streaming", async () => {
@@ -671,6 +683,7 @@ describe("usePromptOutbox continueRun", () => {
         credentialsRef,
         selectedRef,
         streamingRef,
+        compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
         phase: "connecting",
@@ -836,6 +849,7 @@ describe("usePromptOutbox recovery error handling", () => {
         credentialsRef,
         selectedRef,
         streamingRef,
+        compactingRef: { current: {} },
         conversationEpochRef,
         syncEngineRef,
         phase: "ready",

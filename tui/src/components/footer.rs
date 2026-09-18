@@ -15,6 +15,7 @@ pub struct FooterData {
     pub model: Option<String>,
     pub thinking: Option<String>,
     pub streaming: bool,
+    pub compacting: bool,
     pub spinner_frame: Option<usize>,
     pub pending: Option<usize>,
     pub context_tokens: Option<usize>,
@@ -94,9 +95,13 @@ impl Component for Footer {
         let mut left_parts: Vec<String> = Vec::new();
 
         // Spinner when streaming
-        if self.data.streaming {
+        if self.data.streaming || self.data.compacting {
             let frame_idx = self.data.spinner_frame.unwrap_or(0) % SPINNER_FRAMES.len();
             left_parts.push(color_fg(SPINNER_FG, SPINNER_FRAMES[frame_idx]));
+        }
+
+        if self.data.compacting {
+            left_parts.push(color_fg(SPINNER_FG, "Compacting…"));
         }
 
         // Tool elapsed time
@@ -454,6 +459,20 @@ mod tests {
         );
         let text = strip_ansi_codes(&line);
         assert!(text.contains("(auto)"));
+    }
+
+    #[test]
+    fn renders_compaction_without_a_running_turn() {
+        let line = render_footer(
+            FooterData {
+                compacting: true,
+                ..Default::default()
+            },
+            80,
+        );
+        let text = strip_ansi_codes(&line);
+        assert!(text.contains("Compacting…"));
+        assert!(text.contains("⠋"));
     }
 
     #[test]

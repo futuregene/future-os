@@ -74,6 +74,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   approvalTier: string;
   sandboxAvailable: boolean;
   busy: boolean;
+  compacting: boolean;
   fileTransferSupported: boolean;
   capabilities: Set<string>;
   pair(code: string): Promise<void>;
@@ -207,6 +208,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
+    compactingRef,
     reconcileSession,
     handleEvent,
     applySessionStreaming,
@@ -350,6 +352,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     credentialsRef,
     selectedRef,
     streamingRef,
+    compactingRef,
     conversationEpochRef,
     syncEngineRef,
     phase,
@@ -390,6 +393,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const streaming = timeline.streaming;
+  const compacting = timeline.compacting === true;
   const timelineValue = useMemo<TimelineContextValue>(() => ({
     timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
   }), [timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
@@ -421,6 +425,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       draftMode,
       draftWorkspaceId,
       streaming,
+      compacting,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -511,6 +516,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       downloadAttachment,
       sessions,
       streaming,
+      compacting,
       unreadSessions,
       workspaces,
       setModel,
