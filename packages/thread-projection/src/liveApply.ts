@@ -314,6 +314,15 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       return;
     }
 
+    if (event.eventType === "compaction_unchanged") {
+      const operationId = isRecord(payload) ? payload.operation_id : undefined;
+      const index = slots.findIndex(slot => slot.type === "compaction" && slot.id === operationId && slot.status === "running");
+      // No checkpoint was created. Do not leave a pending divider behind or
+      // present a reused result as another successful compaction.
+      if (index >= 0) slots.splice(index, 1);
+      return;
+    }
+
     if (event.eventType === "compaction_failed") {
       const operationId = isRecord(payload) && typeof payload.operation_id === "string"
         ? payload.operation_id

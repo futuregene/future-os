@@ -21,6 +21,8 @@ import {
 } from "react-native";
 import {
   memo,
+  useCallback,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -41,6 +43,7 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillPicker } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -71,6 +74,8 @@ function ComposerDockView({
   decideApproval,
   selector,
   setSelector,
+  onCompactContext,
+  compactionPending = false,
   keyboardHeight = 0,
 }: {
   message: string;
@@ -94,6 +99,9 @@ function ComposerDockView({
   ) => Promise<void>;
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
+  /** Manual context compaction, offered as a `/` action (never a toolbar button). */
+  onCompactContext?: () => void;
+  compactionPending?: boolean;
   keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
@@ -102,8 +110,27 @@ function ComposerDockView({
   // A running reply blocks sending, not drafting the next message. Keep the
   // short send/upload busy phase locked so its acknowledgement cannot clear edits.
   const editable = !remote.busy;
-  const canSend = !remote.streaming && !remote.busy && remote.desktopOnline &&
+  const compacting = compactionPending || remote.compacting;
+  const canSend = !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
+  // A run in flight rejects compaction, so the tool stays hidden rather than
+  // offering an action the Agent will refuse (desktop parity).
+  const compactionActionEnabled = !!onCompactContext
+    && (remote.capabilities?.has?.("compaction_v1") ?? false)
+    && !compacting && !remote.busy && !remote.draft && !!remote.selectedSessionId
+    && remote.desktopOnline && remote.connectionPresentation.level === "connected"
+    && !remote.streaming;
+  const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
+    ? [{
+      id: "compact",
+      label: t("chat.compactContext"),
+      description: t("chat.compactContextDescription"),
+      searchText: "compact compaction compress context 压缩 上下文",
+    }]
+    : [], [compactionActionEnabled, t]);
+  const handleSlashAction = useCallback((action: SlashAction) => {
+    if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
+  }, [compactionActionEnabled, onCompactContext]);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
@@ -115,6 +142,7 @@ function ComposerDockView({
     setMessage,
     editable && selector === null,
     inputRef,
+    handleSlashAction,
   );
   const pickerHeight = Math.max(
     100,
@@ -186,6 +214,8 @@ function ComposerDockView({
             onSelect={completion.select}
             onClose={completion.close}
             maxHeight={pickerHeight}
+            actions={slashActions}
+            onActionSelect={completion.runAction}
           />
         )}
         <View style={styles.composer}>
@@ -307,11 +337,11 @@ function ComposerDockView({
                 accessibilityState={{
                   expanded: selector === "model",
                   disabled:
-                    remote.streaming ||
+                    remote.streaming || compacting ||
                     remote.connectionPresentation.level !== "connected",
                 }}
                 disabled={
-                  remote.streaming ||
+                  remote.streaming || compacting ||
                   remote.connectionPresentation.level !== "connected"
                 }
                 onPress={() => setSelector("model")}
@@ -320,7 +350,7 @@ function ComposerDockView({
                   styles.modelTrigger,
                   compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
-                  remote.streaming && styles.controlDisabled,
+                  (remote.streaming || compacting) && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -334,11 +364,11 @@ function ComposerDockView({
                 accessibilityState={{
                   expanded: selector === "thinking",
                   disabled:
-                    remote.streaming ||
+                    remote.streaming || compacting ||
                     remote.connectionPresentation.level !== "connected",
                 }}
                 disabled={
-                  remote.streaming ||
+                  remote.streaming || compacting ||
                   remote.connectionPresentation.level !== "connected"
                 }
                 onPress={() => setSelector("thinking")}
@@ -347,7 +377,7 @@ function ComposerDockView({
                   styles.thinkingTrigger,
                   compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
-                  remote.streaming && styles.controlDisabled,
+                  (remote.streaming || compacting) && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -424,8 +454,9 @@ function ComposerDockView({
               </Pressable>
             ) : (
               <Pressable
-                accessibilityLabel={t("chat.send")}
+                accessibilityLabel={t(compacting ? "chat.compacting" : "chat.send")}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: !canSend, busy: compacting }}
                 disabled={!canSend}
                 onPress={() => { if (canSend) void send(); }}
                 style={({ pressed }) => [
@@ -434,7 +465,11 @@ function ComposerDockView({
                   pressed && styles.sendPressed,
                 ]}
               >
-                <Send color={colors.surface} size={17} />
+                {compacting ? (
+                  <ActivityIndicator color={colors.surface} size="small" />
+                ) : (
+                  <Send color={colors.surface} size={17} />
+                )}
               </Pressable>
             )}
           </View>

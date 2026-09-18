@@ -656,6 +656,12 @@ This phone section.
 - Handshakes advertise `desktop_settings_v1` and `skill_management_v1`. Older
   hosts leave these controls disabled with an upgrade hint; existing approval
   mode controls keep their original protocol.
+- Handshakes advertise `compaction_v1`, and the phone's `/` menu offers the
+  same Compact context tool as the Desktop input box. `compact_context` is a
+  session-scoped write: the host forwards the standalone `compact` RPC and
+  relays its operation id, and the phone reports the outcome only after the
+  matching terminal `compaction_*` event (a missing event is reported as a
+  missing result, never as a failure). An older host leaves the tool hidden.
 - `get_desktop_settings` / `update_desktop_settings` expose only the four fields
   above. Writes are partial, allowlisted, and committed by the existing Desktop
   settings store, never persisted or queued on the phone. `list_settings_models`

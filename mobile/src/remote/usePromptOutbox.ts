@@ -172,6 +172,7 @@ interface PromptOutboxOptions {
   credentialsRef: MutableRefObject<RemoteCredentials | null>;
   selectedRef: MutableRefObject<string>;
   streamingRef: MutableRefObject<Record<string, boolean>>;
+  compactingRef: MutableRefObject<Record<string, boolean>>;
   conversationEpochRef: MutableRefObject<number>;
   syncEngineRef: MutableRefObject<SyncEngine | null>;
   phase: ConnectionPhase;
@@ -197,6 +198,7 @@ export function usePromptOutbox({
   credentialsRef,
   selectedRef,
   streamingRef,
+  compactingRef,
   conversationEpochRef,
   syncEngineRef,
   phase,
@@ -270,6 +272,7 @@ export function usePromptOutbox({
         mode: targetDraft ? targetDraftMode : ("chat" as const),
         workspaceId: targetDraft ? targetDraftWorkspaceId : "",
       };
+      if (compactingRef.current[targetSessionId]) throw new Error("send_compacting");
       if (streamingRef.current[targetSessionId] ?? false) throw new Error("send_streaming");
 
       // Acquire the prompt lane before the first storage await. Recovery and a
@@ -382,6 +385,7 @@ export function usePromptOutbox({
       setDraftWorkspaceId,
       setSelectedSessionId,
       streamingRef,
+      compactingRef,
       syncEngineRef,
       thinkingLevel,
     ],
@@ -457,6 +461,7 @@ export function usePromptOutbox({
 
   const continueRun = useCallback(
     async (sessionId: string, runId: string) => {
+      if (compactingRef.current[sessionId]) throw new Error("send_compacting");
       const client = clientRef.current;
       const credentials = credentialsRef.current;
       if (!client || !credentials) throw new Error("not_connected");
@@ -525,7 +530,7 @@ export function usePromptOutbox({
         }
       }
     },
-    [clientRef, credentialsRef, promptReceiptSupported],
+    [clientRef, compactingRef, credentialsRef, promptReceiptSupported],
   );
 
   const recoverPendingContinuation = useCallback(async () => {

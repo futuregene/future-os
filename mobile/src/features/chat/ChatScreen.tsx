@@ -32,6 +32,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useRename } from "./useRename";
 import { useSendMessage } from "./useSendMessage";
+import { useCompactContext } from "./useCompactContext";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
@@ -165,6 +166,7 @@ export function ChatScreen() {
   const markdownImageLoader = useMarkdownImageLoader(remote, t);
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
+  const compactContext = useCompactContext(remote, t);
   const { send, retryMessage, continueMessage } = useSendMessage(
     remote,
     t,
@@ -173,6 +175,7 @@ export function ChatScreen() {
     setMessage,
     setAttachments,
     setTransferProgress,
+    compactContext.pending,
   );
   const rename = useRename(remote, t);
 
@@ -584,6 +587,8 @@ export function ChatScreen() {
                 decideApproval={decideApproval}
                 selector={selector}
                 setSelector={setSelector}
+                onCompactContext={compactContext.compact}
+                compactionPending={compactContext.pending}
               />
               </PausedTimeline>
             </View>

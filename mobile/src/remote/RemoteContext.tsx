@@ -74,6 +74,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   approvalTier: string;
   sandboxAvailable: boolean;
   busy: boolean;
+  compacting: boolean;
   fileTransferSupported: boolean;
   capabilities: Set<string>;
   pair(code: string): Promise<void>;
@@ -91,6 +92,15 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     attachments?: MobileAttachment[],
     onUploadProgress?: (completedBytes: number, totalBytes: number) => void,
   ): Promise<void>;
+  /** Request manual context compaction; resolves with the operation to correlate. */
+  compactContext(): Promise<{ sessionId: string; operationId: string }>;
+  /** Await that operation's terminal outcome (never rejects; `timeout` on expiry). */
+  awaitCompactionOutcome(
+    sessionId: string,
+    operationId: string,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<import("./types").CompactionOutcome>;
   listSessionFiles(path?: string): Promise<SessionFileListing>;
   listSkills(): Promise<RemoteSkill[]>;
   prepareAttachment(
@@ -207,9 +217,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
+    compactingRef,
     reconcileSession,
     handleEvent,
     applySessionStreaming,
+    awaitCompactionOutcome,
     resetTimeline,
     ensureDraftTimeline,
     retryTimeline,
@@ -314,6 +326,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     cachedAttachment,
     downloadAttachment,
     abort,
+    compactContext,
     setModel,
     setThinkingLevel,
     setApprovalTier,
@@ -350,6 +363,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     credentialsRef,
     selectedRef,
     streamingRef,
+    compactingRef,
     conversationEpochRef,
     syncEngineRef,
     phase,
@@ -390,6 +404,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const streaming = timeline.streaming;
+  const compacting = timeline.compacting === true;
   const timelineValue = useMemo<TimelineContextValue>(() => ({
     timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
   }), [timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
@@ -421,6 +436,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       draftMode,
       draftWorkspaceId,
       streaming,
+      compacting,
       modelId,
       thinkingLevel,
       approvalTier,
@@ -439,6 +455,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       newConversation,
       closeConversation,
       sendMessage,
+      compactContext,
+      awaitCompactionOutcome,
       listSkills,
       listSessionFiles,
       prepareAttachment,
@@ -463,6 +481,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktopSettingsRevision,
       skillsRevision,
       abort,
+      compactContext,
+      awaitCompactionOutcome,
       openingSession,
       sending,
       capabilities,
@@ -511,6 +531,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       downloadAttachment,
       sessions,
       streaming,
+      compacting,
       unreadSessions,
       workspaces,
       setModel,

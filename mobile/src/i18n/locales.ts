@@ -342,6 +342,12 @@ export const resources = {
         compacted: "Context compacted",
         manuallyCompacted: "You compacted this conversation's context",
         compactedTokens: "Context compacted · {{formattedCount}} tokens",
+        compactContext: "Compact context",
+        compactContextDescription: "Compact this conversation's context",
+        compactionNotNeeded: "There is no conversation context to compact.",
+        compactionNoNewContent: "No conversation content was added after the last compaction.",
+        compactionRequestFailed: "Context compaction failed: {{message}}",
+        compactionWaitTimedOut: "Timed out waiting for the compaction result.",
       },
       failure: {
         connect:
@@ -912,6 +918,12 @@ export const resources = {
         compacted: "上下文已压缩",
         manuallyCompacted: "你手动压缩了此对话的上下文",
         compactedTokens: "上下文已压缩 · {{formattedCount}} tokens",
+        compactContext: "压缩上下文",
+        compactContextDescription: "压缩此对话的上下文",
+        compactionNotNeeded: "当前没有可压缩的对话上下文。",
+        compactionNoNewContent: "自上次压缩后没有新增对话内容，无需再次压缩。",
+        compactionRequestFailed: "上下文压缩失败：{{message}}",
+        compactionWaitTimedOut: "等待压缩结果超时。",
       },
       failure: {
         connect:

@@ -4,6 +4,7 @@ use crate::remote::services::ReplySink;
 use serde_json::{json, Value};
 
 mod catalog;
+mod compaction;
 mod history;
 mod prompt;
 mod settings;
@@ -25,6 +26,9 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         }
         "prompt" | "get_prompt_receipt" | "abort" | "continue_run" | "approval_decision" => {
             prompt::execute(&cmd, sink).await;
+        }
+        "compact_context" => {
+            compaction::execute(&cmd, sink).await;
         }
         "get_desktop_settings"
         | "update_desktop_settings"

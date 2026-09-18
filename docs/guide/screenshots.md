@@ -311,6 +311,11 @@ Three platform-level knobs are worth knowing:
   search opens on ⌘F, which the driver cannot send as a keystroke, so the scenario
   navigates to `?press=meta%2Bf` and `desktop/shot/main.tsx` dispatches the
   shortcut at the real window listener.
+- **An assertion inside an `eval` step is a test.** A step eval that throws
+  fails the capture run (it counts toward `step(s) could not reach their
+  target`, same as an unreachable tap), which is what makes "the screen must be
+  in this state" worth writing: `if (document.body.innerText.includes('正在生成')) throw new Error('…');`.
+  The driver's own probes (`ready`, optional element reads) stay non-fatal.
 
 `desktop/shot/main.tsx` accepts `?lang=en` and `?settings=key:value,...` to pin
 the UI language and seed app settings before boot; `mobile/shot/mock/shareIntent.ts`

@@ -1,4 +1,4 @@
-import { completeSkill, filterSkills, insertSkillSlash, skillQuery } from "../skillCompletion";
+import { completeSkill, filterActions, filterSkills, insertSkillSlash, removeSkillQuery, skillQuery } from "../skillCompletion";
 
 const caret = (start: number) => ({ start, end: start });
 
@@ -47,4 +47,30 @@ test("search matches localized names/descriptions and excludes malformed command
   }
   expect(filterSkills(skills, "")).toHaveLength(2);
   expect(filterSkills(skills, "不存在")).toEqual([]);
+});
+
+test("context actions match their localized label and English command words", () => {
+  const action = {
+    id: "compact",
+    label: "压缩上下文",
+    description: "压缩此对话的上下文",
+    searchText: "compact compaction compress context 压缩 上下文",
+  };
+  expect(filterActions([action], "")).toEqual([action]);
+  for (const query of ["COMPACT", "compress", "压缩", "上下文"]) {
+    expect(filterActions([action], query)).toEqual([action]);
+  }
+  expect(filterActions([action], "skill")).toEqual([]);
+  expect(filterActions([], "compact")).toEqual([]);
+});
+
+test("running a context action removes its command from the draft", () => {
+  // Without this the leftover `/压缩` would be sent as a message, or appended
+  // to whatever the user writes next.
+  expect(removeSkillQuery("/压缩", skillQuery("/压缩", caret(3))!))
+    .toEqual({ text: "", selection: caret(0) });
+  expect(removeSkillQuery("请 /compress 一下", skillQuery("请 /compress 一下", caret(11))!))
+    .toEqual({ text: "请 一下", selection: caret(2) });
+  expect(removeSkillQuery("hi /compact", skillQuery("hi /compact", caret(11))!))
+    .toEqual({ text: "hi ", selection: caret(3) });
 });

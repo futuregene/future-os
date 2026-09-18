@@ -535,7 +535,7 @@ export class SyncEngine {
         // The run can finish between get_state and history. Its durable terminal
         // reply is newer evidence: never replace it with a cached active prefix.
         if (settledReply && activeRunId === targetRunId) activeRunId = "";
-        let base = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId };
+        let base: TimelineState = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId, compacting: state.isCompacting === true };
         // Refresh durable rows/attachments even on warm opens, but do not
         // download the already-proven active prefix again. Its projector and
         // visible items must be retained together, not just the cursor.
@@ -598,6 +598,13 @@ export class SyncEngine {
         }
       }
       if (!isCurrent()) throw new Error("stale_sync_lane");
+      // Historical run events may describe an older compaction. The session
+      // snapshot owns the baseline; live events queued during this reconcile
+      // are applied afterwards and can release or acquire the fence.
+      if (lane.timeline && (lane.timeline.compacting === true) !== (state.isCompacting === true)) {
+        lane.timeline = { ...lane.timeline, compacting: state.isCompacting === true };
+        this.commit(lane);
+      }
       lane.established = true;
       outcome = "success";
       return null;

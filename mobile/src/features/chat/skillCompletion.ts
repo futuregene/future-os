@@ -51,3 +51,37 @@ export function filterSkills(skills: RemoteSkill[], query: string) {
       .some(value => value?.toLocaleLowerCase().includes(search)),
   );
 }
+
+/**
+ * Remove a typed `/query` token after a context action ran. Desktop parity:
+ * the command is a control, not text, so leaving it in the draft would send
+ * `/压缩` as a message on the next tap of send.
+ */
+export function removeSkillQuery(text: string, query: SkillQuery) {
+  const before = text.slice(0, query.start);
+  const after = text.slice(query.end);
+  const rest = after.startsWith(" ") ? after.slice(1) : after;
+  const cursor = before.length;
+  return { text: before + rest, selection: { start: cursor, end: cursor } };
+}
+
+/**
+ * A non-skill entry in the composer's `/` menu. Context actions run instead of
+ * inserting text (desktop's slash menu groups them the same way), which is what
+ * keeps a low-frequency operation like manual compaction off the toolbar.
+ */
+export interface SlashAction {
+  id: string;
+  label: string;
+  description: string;
+  /** Extra search terms, e.g. the English and Chinese command words. */
+  searchText: string;
+}
+
+export function filterActions(actions: SlashAction[], query: string) {
+  const search = query.toLocaleLowerCase();
+  return actions.filter(action =>
+    [action.label, action.description, action.searchText]
+      .some(value => value.toLocaleLowerCase().includes(search)),
+  );
+}

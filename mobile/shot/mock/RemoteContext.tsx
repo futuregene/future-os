@@ -28,7 +28,7 @@ import type {
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
-import { timelineFromEntries } from "../../src/remote/projection";
+import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
 import {
   demoCredentials,
   demoDesktops,
@@ -83,7 +83,22 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   // A cheap stand-in for the real per-session timeline: the demo conversation
   // is fully projected, any other session shows its first turns.
-  const baseTimeline = useMemo(() => timelineFromEntries(demoEntries as unknown as HistoryEntry[]), []);
+  // `?compacted=1` additionally folds the exact wire sequence a manual
+  // compaction produces (standalone phase, stamped with the session's last run
+  // id) through the *real* reducer, so the composer state in a capture is the
+  // state the app would have.
+  const delayedCompaction = new URLSearchParams(window.location.search).get("compactionDelay") === "1";
+  const [compactionFinished, setCompactionFinished] = useState(false);
+  const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
+  const baseTimeline = useMemo(() => {
+    const history = timelineFromEntries(demoEntries as unknown as HistoryEntry[]);
+    if (!scriptedCompaction) return history;
+    const manualRun = "run_1";
+    return applyStreamEvents(history, [
+      { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
+      { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064 }) },
+    ]);
+  }, [scriptedCompaction]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
       ? baseTimeline
@@ -147,7 +162,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timelineError: null,
     canLoadOlderTimeline: false,
     loadingOlderTimeline: false,
-    streaming: false,
+    streaming: baseTimeline.streaming,
+    compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
     modelId: "future/deepseek-v4-pro",
@@ -165,6 +181,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "desktop_settings_v1",
       "skill_management_v1",
       "workspace_pinning_v1",
+      "compaction_v1",
     ]),
 
     // Actions the harness drives for real
@@ -218,6 +235,30 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     rename: async () => undefined,
     generateTitle: async () => "多巴胺与风险决策：任务不确定性下的效应方向",
+    // Manual compaction: the harness shows the request being accepted, then
+    // reports the outcome the divider cannot (here: nothing to compact).
+    compactContext: async () => {
+      if (delayedCompaction) await new Promise(resolve => setTimeout(resolve, 1500));
+      return { sessionId: selectedSessionId, operationId: "cmp_shot" };
+    },
+    awaitCompactionOutcome: async (_session: string, _operation: string, _timeout?: number, signal?: AbortSignal) => {
+      if (!delayedCompaction) return { status: "unchanged", alreadyCompacted: false, reused: false };
+      // No started event: the real hook must show pending before the mock ACK,
+      // and keep it until the scenario explicitly completes the operation.
+      return new Promise(resolve => {
+        const cleanup = () => {
+          window.removeEventListener("shot:complete-compaction", complete);
+          signal?.removeEventListener("abort", cancel);
+        };
+        const complete = () => {
+          cleanup(); setCompactionFinished(true); resolve({ status: "committed" });
+        };
+        const cancel = () => { cleanup(); resolve({ status: "cancelled" }); };
+        window.addEventListener("shot:complete-compaction", complete);
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+      });
+    },
   });
 
   const timelineValue = useMemo(() => ({

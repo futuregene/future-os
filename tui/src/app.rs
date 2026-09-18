@@ -180,6 +180,11 @@ pub enum UiCmd {
     UpdateAvailable(String),
     // ── async results ─────────────────────────────────────────────────
     Refreshed(Result<RpcSessionState, String>),
+    RefreshCompleted {
+        result: Result<RpcSessionState, String>,
+        session_id: String,
+        compaction_revision: u64,
+    },
     ModelsLoaded {
         result: Result<Vec<ModelInfo>, String>,
         purpose: ModelsPurpose,
@@ -198,7 +203,10 @@ pub enum UiCmd {
         state: Option<RpcSessionState>,
     },
     ThinkingCycled(Result<Value, String>),
-    CompactDone(Result<String, String>),
+    CompactDone {
+        session_id: String,
+        result: Result<String, String>,
+    },
     ReloadDone {
         result: Result<Value, String>,
         state: Option<RpcSessionState>,
@@ -344,6 +352,9 @@ struct AppState {
     model: String,
     thinking: String,
     streaming: bool,
+    compacting: bool,
+    compaction_requested: bool,
+    compaction_revision: u64,
     spinner_frame: usize,
     session_id: String,
     cwd: String,
@@ -371,6 +382,9 @@ impl Default for AppState {
             model: String::new(),
             thinking: "off".into(),
             streaming: false,
+            compacting: false,
+            compaction_requested: false,
+            compaction_revision: 0,
             spinner_frame: 0,
             session_id: String::new(),
             cwd: String::new(),
@@ -449,6 +463,18 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// the real cursor position is the last-resort net that catches that case.
 const CURSOR_RECHECK_INTERVAL: Duration = Duration::from_millis(1000);
 const SEGMENT_RESET: &str = "\x1b[0m\x1b]8;;\x07"; // SGR reset + OSC 8 close
+
+fn compaction_completed_text(before: Option<&Value>, after: Option<&Value>) -> String {
+    match (
+        before.and_then(Value::as_u64),
+        after.and_then(Value::as_u64),
+    ) {
+        (Some(before), Some(after)) => {
+            format!("Context compacted: {before} → {after} tokens (estimated)")
+        }
+        _ => "Context compacted".into(),
+    }
+}
 
 /// `crypto.randomUUID()`.
 fn random_id() -> String {
@@ -988,6 +1014,21 @@ impl<T: TerminalIo> App<T> {
                     self.add_system_message(notice);
                 }
             }
+            UiCmd::RefreshCompleted {
+                mut result,
+                session_id,
+                compaction_revision,
+            } => {
+                if session_id != self.state.session_id {
+                    return;
+                }
+                if compaction_revision != self.state.compaction_revision {
+                    if let Ok(state) = &mut result {
+                        state.is_compacting = self.state.compacting;
+                    }
+                }
+                self.handle_cmd(UiCmd::Refreshed(result));
+            }
             UiCmd::Refreshed(result) => match result {
                 Ok(state) => self.apply_refresh_state(state),
                 Err(_) => self.apply_refresh_error(),
@@ -1047,10 +1088,28 @@ impl<T: TerminalIo> App<T> {
                 }
             }
             UiCmd::ThinkingCycled(Err(_)) => {}
-            UiCmd::CompactDone(result) => match result {
-                Ok(_) => self.add_system_message("Context compaction started".into()),
-                Err(err) => self.add_system_message(format!("Compact failed: {err}")),
-            },
+            UiCmd::CompactDone { session_id, result } => {
+                if session_id != self.state.session_id {
+                    return;
+                }
+                match result {
+                    // Admission is not completion. A terminal event may already
+                    // have cleared the pending request; do not re-lock it then.
+                    Ok(_) => {
+                        if self.state.compaction_requested {
+                            self.state.compaction_revision += 1;
+                            self.state.compaction_requested = false;
+                            self.state.compacting = true;
+                            self.add_system_message("Context compaction request accepted".into());
+                        }
+                    }
+                    Err(err) => {
+                        self.state.compaction_requested = false;
+                        self.add_system_message(format!("Compact failed: {err}"));
+                        self.spawn_refresh();
+                    }
+                }
+            }
             UiCmd::ReloadDone { result, state } => match result {
                 Ok(value) => {
                     if let Some(s) = state {
@@ -1442,7 +1501,7 @@ impl<T: TerminalIo> App<T> {
             self.render_deadline = None;
             self.last_render_at = now;
             self.do_render();
-            if self.state.streaming {
+            if self.state.streaming || self.state.compacting || self.state.compaction_requested {
                 self.request_render(false);
             }
         }
@@ -1674,6 +1733,14 @@ impl<T: TerminalIo> App<T> {
     // ─── Agent event handling ──────────────────────────────────────────
 
     pub fn handle_agent_event(&mut self, event: &AgentEvent) {
+        if event.r#type.starts_with("compaction_")
+            && event
+                .session_id
+                .as_ref()
+                .is_some_and(|id| id != &self.state.session_id)
+        {
+            return;
+        }
         match event.r#type.as_str() {
             "user_message" => {
                 let text = event.text().to_string();
@@ -1887,6 +1954,39 @@ impl<T: TerminalIo> App<T> {
                     self.state.context_tokens = prompt + completion;
                 }
                 // Pull latest cumulative cost/token totals from the agent.
+                self.spawn_refresh();
+            }
+            "compaction_started" => {
+                self.state.compaction_revision += 1;
+                self.state.compacting = true;
+                self.add_system_message("Context compaction started".into());
+            }
+            "compaction_committed" | "compaction_failed" | "compaction_unchanged" => {
+                self.state.compaction_revision += 1;
+                self.state.compacting = false;
+                self.state.compaction_requested = false;
+                let text = match event.r#type.as_str() {
+                    "compaction_committed" => compaction_completed_text(
+                        event.data.get("tokens_before"),
+                        event.data.get("tokens_after"),
+                    ),
+                    "compaction_failed" => format!(
+                        "Compact failed: {}",
+                        event
+                            .data
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown error")
+                    ),
+                    _ if event.data.get("already_compacted").and_then(Value::as_bool)
+                        == Some(true)
+                        || event.data.get("reused").and_then(Value::as_bool) == Some(true) =>
+                    {
+                        "Context already compacted; no new content to compact".into()
+                    }
+                    _ => "Context compaction not needed".into(),
+                };
+                self.add_system_message(text);
                 self.spawn_refresh();
             }
             // ── Settings-change events ────────────────────────────────
@@ -2530,10 +2630,26 @@ impl<T: TerminalIo> App<T> {
                     });
                 }
                 "compact" => {
+                    if self.state.streaming
+                        || self.state.compacting
+                        || self.state.compaction_requested
+                    {
+                        self.add_system_message(
+                            "Cannot compact while a run or compaction is in progress".into(),
+                        );
+                        return;
+                    }
+                    self.state.compaction_revision += 1;
+                    self.state.compaction_requested = true;
+                    self.add_system_message("Requesting context compaction…".into());
                     let client = self.client.clone();
                     let tx = self.op_tx.clone();
+                    let session_id = self.state.session_id.clone();
                     tokio::spawn(async move {
-                        let _ = tx.send(UiCmd::CompactDone(client.compact(None).await));
+                        let _ = tx.send(UiCmd::CompactDone {
+                            session_id,
+                            result: client.compact(None).await,
+                        });
                     });
                 }
                 "export" => {
@@ -2744,6 +2860,17 @@ impl<T: TerminalIo> App<T> {
                 return;
             }
             // Unknown slash command — falls through to the regular prompt.
+        }
+
+        // Keep the draft intact: compaction rejects prompts rather than
+        // enqueueing them, even when ordinary running turns allow a queue.
+        if self.state.compacting || self.state.compaction_requested {
+            self.input.set_value(value, None);
+            self.add_system_message(
+                "Context compaction is in progress. Wait before sending; your draft is preserved."
+                    .into(),
+            );
+            return;
         }
 
         // Regular prompt — send to server.
@@ -3279,6 +3406,21 @@ impl<T: TerminalIo> App<T> {
 
         for msg in list {
             let Some(obj) = msg.as_object() else { continue };
+            if obj.get("kind").and_then(Value::as_str) == Some("compaction") {
+                let checkpoint = &obj["checkpoint"];
+                self.chat.add_message(ChatMessage::new(
+                    obj.get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("compaction")
+                        .to_string(),
+                    ChatRole::System,
+                    &compaction_completed_text(
+                        checkpoint.get("tokensBefore"),
+                        checkpoint.get("tokensAfter"),
+                    ),
+                ));
+                continue;
+            }
             let role = obj.get("role").and_then(Value::as_str).unwrap_or("");
             // Only render user, assistant, and tool messages.
             if !["user", "assistant", "tool"].contains(&role) {
@@ -3430,8 +3572,14 @@ impl<T: TerminalIo> App<T> {
     fn spawn_refresh(&mut self) {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
+        let session_id = self.state.session_id.clone();
+        let compaction_revision = self.state.compaction_revision;
         tokio::spawn(async move {
-            let _ = tx.send(UiCmd::Refreshed(client.get_state().await));
+            let _ = tx.send(UiCmd::RefreshCompleted {
+                result: client.get_state().await,
+                session_id,
+                compaction_revision,
+            });
         });
     }
 
@@ -3479,11 +3627,16 @@ impl<T: TerminalIo> App<T> {
             _ => false,
         };
         self.state.streaming = s.is_streaming && !stale_snapshot;
+        self.state.compacting = s.is_compacting;
         if !self.state.streaming {
             self.state.active_tool_count = 0;
             self.state.tool_start_time = None;
         }
         if !s.session_id.is_empty() {
+            if self.state.session_id != s.session_id {
+                self.state.compaction_requested = false;
+                self.state.compaction_revision += 1;
+            }
             self.state.session_id = s.session_id.clone();
         }
         self.state.cwd = s.cwd.clone().unwrap_or_default();
@@ -4079,7 +4232,7 @@ impl<T: TerminalIo> App<T> {
         if !self.running {
             return;
         }
-        if self.state.streaming {
+        if self.state.streaming || self.state.compacting || self.state.compaction_requested {
             self.state.spinner_frame += 1;
         }
         let w = self.terminal.columns() as usize;
@@ -4105,6 +4258,7 @@ impl<T: TerminalIo> App<T> {
             model: Some(self.state.model.clone()),
             thinking: Some(self.state.thinking.clone()),
             streaming: self.state.streaming,
+            compacting: self.state.compacting || self.state.compaction_requested,
             spinner_frame: Some(self.state.spinner_frame),
             pending: None,
             context_tokens: Some(self.state.context_tokens as usize),
@@ -5811,6 +5965,111 @@ mod tests {
         ev
     }
 
+    #[tokio::test]
+    async fn compaction_blocks_prompts_preserves_drafts_and_reports_all_outcomes() {
+        for (terminal, payload, expected) in [
+            (
+                "compaction_committed",
+                r#"{"tokens_before":33064,"tokens_after":11900}"#,
+                "33064 → 11900",
+            ),
+            (
+                "compaction_failed",
+                r#"{"error":"summary failed"}"#,
+                "Compact failed: summary failed",
+            ),
+            ("compaction_unchanged", r#"{}"#, "not needed"),
+            (
+                "compaction_unchanged",
+                r#"{"already_compacted":true}"#,
+                "no new content",
+            ),
+        ] {
+            let (mut app, _rx) = make_app(100, 30);
+            app.state.compaction_requested = true;
+            app.handle_submit("before acknowledgement");
+            assert_eq!(app.input.get_value(), "before acknowledgement");
+            assert!(!app.state.streaming);
+            app.handle_agent_event(&make_event("compaction_started", "{}"));
+            app.handle_submit("my next draft");
+            assert_eq!(app.input.get_value(), "my next draft");
+            assert!(!app.state.streaming);
+            app.handle_agent_event(&make_event(terminal, payload));
+            assert!(!app.state.compacting);
+            assert!(!app.state.compaction_requested);
+            assert!(last_system(&app).contains(expected));
+            // A fast worker can finish before its RPC acknowledgement arrives.
+            app.handle_cmd(UiCmd::CompactDone {
+                session_id: app.state.session_id.clone(),
+                result: Ok("accepted".into()),
+            });
+            assert!(last_system(&app).contains(expected));
+            assert_eq!(app.input.get_value(), "my next draft");
+            app.handle_submit("send after completion");
+            assert!(app.state.streaming);
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_admission_locks_immediately_and_recovers_a_missed_terminal() {
+        let (mut app, _rx) = make_app(100, 30);
+        let mut idle = sample_state();
+        idle.is_streaming = false;
+        app.apply_refresh_state(idle.clone());
+        app.handle_submit("/compact");
+        assert!(app.state.compaction_requested);
+        app.handle_submit("keep my draft");
+        assert_eq!(app.input.get_value(), "keep my draft");
+        assert!(!app.state.streaming);
+        app.handle_cmd(UiCmd::CompactDone {
+            session_id: app.state.session_id.clone(),
+            result: Ok("accepted".into()),
+        });
+        assert!(!app.state.compaction_requested);
+        assert!(app.state.compacting);
+        app.apply_refresh_state(idle);
+        assert!(
+            !app.state.compacting,
+            "reattach must release a missed terminal fence"
+        );
+        let mut foreign = make_event("compaction_started", "{}");
+        foreign.session_id = Some("other-session".into());
+        app.handle_agent_event(&foreign);
+        assert!(!app.state.compacting);
+    }
+
+    #[tokio::test]
+    async fn compaction_refresh_ignores_stale_snapshots_and_recovers_on_reattach() {
+        let (mut app, _rx) = make_app(100, 30);
+        let mut state = sample_state();
+        state.is_compacting = true;
+        app.apply_refresh_state(state.clone());
+        assert!(app.state.compacting);
+        let revision = app.state.compaction_revision;
+        app.handle_agent_event(&make_event("compaction_committed", "{}"));
+        app.handle_cmd(UiCmd::RefreshCompleted {
+            result: Ok(state),
+            session_id: app.state.session_id.clone(),
+            compaction_revision: revision,
+        });
+        assert!(
+            !app.state.compacting,
+            "old get_state must not re-lock sending after completion"
+        );
+        app.state.compaction_requested = true;
+        let mut other = sample_state();
+        other.session_id = "other-session".into();
+        app.apply_refresh_state(other);
+        assert!(!app.state.compaction_requested);
+    }
+
+    #[tokio::test]
+    async fn compaction_checkpoints_are_visible_in_reloaded_history() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.apply_messages(Ok(json_parse(r#"{"messages":[{"id":"cp","kind":"compaction","role":"system","checkpoint":{"tokensBefore":33064,"tokensAfter":11900}}]}"#)));
+        assert!(last_system(&app).contains("33064 → 11900"));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn handle_cmd_async_result_variants() {
         let (mut app, mut rx) = make_app(100, 30);
@@ -5897,9 +6156,16 @@ mod tests {
         app.handle_cmd(UiCmd::ThinkingCycled(Err("x".into())));
 
         // CompactDone ok/err.
-        app.handle_cmd(UiCmd::CompactDone(Ok("done".into())));
-        assert!(last_system(&app).contains("Context compaction started"));
-        app.handle_cmd(UiCmd::CompactDone(Err("bad".into())));
+        app.state.compaction_requested = true;
+        app.handle_cmd(UiCmd::CompactDone {
+            session_id: app.state.session_id.clone(),
+            result: Ok("done".into()),
+        });
+        assert!(last_system(&app).contains("Context compaction request accepted"));
+        app.handle_cmd(UiCmd::CompactDone {
+            session_id: app.state.session_id.clone(),
+            result: Err("bad".into()),
+        });
         assert!(last_system(&app).contains("Compact failed"));
 
         // ReloadDone ok (with skills + contextFiles) / err.
@@ -7347,7 +7613,7 @@ mod tests {
         pump(&mut app, &mut rx).await;
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Context compaction started")));
+            .any(|m| m.contains("Context compaction request accepted")));
         assert!(system_messages(&app)
             .iter()
             .any(|m| m.contains("Stopped current generation")));

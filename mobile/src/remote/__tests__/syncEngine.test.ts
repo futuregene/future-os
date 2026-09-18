@@ -41,6 +41,7 @@ class Journal {
 class Harness {
   journal = new Journal();
   activeRunId = "";
+  isCompacting = false;
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
   projection: StreamEvent[] | null = null;
@@ -56,7 +57,7 @@ class Harness {
     this.activeRunId = activeRunId;
     this.engine = new SyncEngine({
       requestGetState: async () => {
-        const state: { activeRun?: { runId: string } } = {};
+        const state: { activeRun?: { runId: string }; isCompacting: boolean } = { isCompacting: this.isCompacting };
         if (this.activeRunId) state.activeRun = { runId: this.activeRunId };
         return state;
       },
@@ -120,6 +121,56 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test("live queued standalone compaction reaches the UI through the production batch lane", async () => {
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      const end = agentEnd("r", 2);
+      h.journal.add(end);
+      h.engine.event("s", end);
+      await h.settle();
+      const started = evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" }));
+      h.journal.add(started);
+      h.engine.event("s", started);
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ streaming: false, segments: [{ status: "running" }] });
+      expect(h.timelineOf("s").streaming).toBe(false);
+      const committed = evt("compaction_committed", "r", 4, JSON.stringify({ operation_id: "cmp", checkpoint_id: "cp", phase: "standalone", trigger: "manual" }));
+      h.journal.add(committed);
+      h.engine.event("s", committed);
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", streaming: false, segments: [{ status: "completed" }] });
+      expect(h.timelineOf("s").streaming).toBe(false);
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
+  test.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("restores compaction on open and releases it on %s", async terminal => {
+    const h = new Harness();
+    h.isCompacting = true;
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(true);
+      expect(h.timelineOf("s").streaming).toBe(false);
+      h.isCompacting = false;
+      h.engine.event("s", { type: terminal, data: JSON.stringify({ operation_id: "cmp", trigger: "manual" }) });
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(false);
+      h.engine.event("s", { type: "compaction_started", data: JSON.stringify({ operation_id: "cmp2", trigger: "manual" }) });
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(true);
+      // A missed terminal must not leave sending disabled after reconnect.
+      h.engine.reconcile("s", "reconnect");
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
   test.each(["open", "reconnect"] as const)("%s clears a run that finished while hidden and restores its footer", async reason => {
     const h = new Harness("r");
     h.journal.add(agentStart("r"));

@@ -1,8 +1,8 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { BackHandler, Keyboard, type TextInput } from "react-native";
-import { completeSkill, insertSkillSlash, skillQuery, type TextSelection } from "./skillCompletion";
+import { completeSkill, insertSkillSlash, removeSkillQuery, skillQuery, type SlashAction, type TextSelection } from "./skillCompletion";
 
-export function useSkillCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>) {
+export function useSkillCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void) {
   const [selection, setSelection] = useState<TextSelection>({ start: message.length, end: message.length });
   // Observe normal native caret movement without controlling it on every
   // keystroke (important for IME composition and asynchronously restored drafts).
@@ -75,6 +75,17 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
       setInputSelection(next.selection);
       setDismissed(true);
       inputRef.current?.focus();
+    },
+    runAction: (action: SlashAction) => {
+      if (!query || !enabled) return;
+      // Clear the typed command first: it is a control, not part of the draft.
+      const next = removeSkillQuery(message, query);
+      setMessage(next.text);
+      setSelection(next.selection);
+      setInputSelection(next.selection);
+      setDismissed(true);
+      inputRef.current?.focus();
+      onAction?.(action);
     },
   };
 }

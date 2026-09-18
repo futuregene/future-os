@@ -1,6 +1,9 @@
 import { createElement, useState, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ComposerDock } from "../components/ComposerDock";
+import { useCompactContext } from "../useCompactContext";
+import { emptyTimeline } from "../../../remote/timeline";
+import type { CompactionOutcome } from "../../../remote/types";
 import { SkillPicker } from "../components/SkillPicker";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import { resources } from "../../../i18n/locales";
@@ -18,8 +21,7 @@ jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Chevron
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
-jest.mock("../components/SkillPicker", () => ({ SkillPicker: () => null }));
-
+jest.mock("../components/SkillPicker", () => ({ SkillPicker: jest.fn(() => null) }));
 test("streaming allows drafting while one stop press sends a request and exposes its outcome", async () => {
   let resolve!: () => void;
   const abort = jest.fn(() => new Promise<void>(done => { resolve = done; }));
@@ -111,6 +113,142 @@ test("streaming keeps the next draft through updates and completion without subm
       expect(send).toHaveBeenCalledTimes(2);
       expect(input().props.value).toBe("下一条消息\n  保留空格 ");
     }
+  } finally { act(() => tree.unmount()); }
+});
+
+test("compaction blocks button and keyboard sends without clearing or locking the draft", () => {
+  const send = jest.fn(async () => {});
+  const props = {
+    message: "next message", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, compacting: true, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
+  try {
+    expect(tree.root.findByType(TextInput).props.editable).toBe(true);
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    act(() => {
+      button("chat.compacting").props.onPress();
+      tree.root.findByType(TextInput).props.onSubmitEditing();
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(props.setMessage).not.toHaveBeenCalled();
+    act(() => tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, compacting: false } })));
+    expect(tree.root.findByType(TextInput).props.value).toBe("next message");
+    expect(button("chat.send").props.disabled).toBe(false);
+    act(() => button("chat.send").props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally { act(() => tree.unmount()); }
+});
+
+test("manual compaction is a slash action, gated by the Desktop and never a toolbar button", () => {
+  const onCompactContext = jest.fn();
+  const props = {
+    message: "/", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, compacting: false, busy: false, abort: jest.fn(),
+      capabilities: new Set(["skills_v1", "compaction_v1"]), listSkills: jest.fn(async () => []) },
+    openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+    onCompactContext,
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  const picker = jest.requireMock("../components/SkillPicker").SkillPicker as jest.Mock;
+  let tree!: ReactTestRenderer;
+  const openMenu = () => {
+    act(() => tree.root.findByType(TextInput).props.onFocus());
+    // A real caret sits after the typed token; running an action clears the
+    // draft, so the caret must be put back for the menu to reopen.
+    act(() => tree.root.findByType(TextInput).props.onSelectionChange({ nativeEvent: { selection: { start: 1, end: 1 } } }));
+    act(() => tree.root.findByType(TextInput).props.onChangeText("/"));
+  };
+  const actions = () => picker.mock.calls.at(-1)?.[0].actions ?? [];
+  const runAction = () => picker.mock.calls.at(-1)?.[0].onActionSelect;
+  try {
+    act(() => { tree = create(createElement(ComposerDock, props)); });
+    openMenu();
+    expect(actions()).toHaveLength(1);
+    expect(actions()[0]).toMatchObject({ id: "compact", label: "chat.compactContext" });
+    act(() => runAction()(actions()[0]));
+    expect(onCompactContext).toHaveBeenCalledTimes(1);
+    // The typed command is a control, not draft text: running the action must
+    // remove it, or the next send would post "/压缩" as a message.
+    expect(props.setMessage).toHaveBeenLastCalledWith("");
+
+    // Each gate is checked on a freshly opened menu: running the action closed
+    // it (and cleared the draft), so the picker's last props are stale.
+    for (const remote of [
+      { capabilities: new Set(["skills_v1"]) },
+      { compacting: true },
+      { streaming: true },
+    ]) {
+      act(() => tree.update(createElement(ComposerDock, {
+        ...props,
+        remote: { ...props.remote, ...remote },
+      })));
+      openMenu();
+      expect(actions()).toHaveLength(0);
+    }
+  } finally { act(() => tree.unmount()); }
+});
+
+test.each(["committed", "failed", "unchanged", "timeout", "unobserved"] as const)("real slash action locks sending before ACK, preserves the draft and releases on %s", async status => {
+  let acknowledge!: (value: { sessionId: string; operationId: string }) => void;
+  let finish!: (outcome: CompactionOutcome) => void;
+  const ack = new Promise<{ sessionId: string; operationId: string }>(done => { acknowledge = done; });
+  const terminal = new Promise<CompactionOutcome>(done => { finish = done; });
+  const compact = jest.fn(() => ack);
+  const send = jest.fn(async () => {});
+  const remote = {
+    selectedSessionId: "s1", draft: false, streaming: false, compacting: false, busy: false, desktopOnline: true,
+    connectionPresentation: { level: "connected" }, models: [], modelId: "model", timeline: emptyTimeline(),
+    credentials: { pairId: "pair" }, presence: { bridgeInstanceId: "bridge" },
+    capabilities: new Set(["skills_v1", "compaction_v1"]), listSkills: jest.fn(async () => []),
+    compactContext: compact, awaitCompactionOutcome: jest.fn(() => terminal), abort: jest.fn(),
+  } as unknown as Parameters<typeof useCompactContext>[0];
+  const props = {
+    attachments: [], setAttachments: jest.fn(), supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote, openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null, decideApproval: jest.fn(),
+    selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  function Harness() {
+    const [message, setMessage] = useState("keep /压缩 next");
+    const operation = useCompactContext(remote, props.t);
+    return createElement(ComposerDock, { ...props, message, setMessage, onCompactContext: operation.compact, compactionPending: operation.pending });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  const input = () => tree.root.findByType(TextInput);
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
+  try {
+    act(() => input().props.onFocus());
+    act(() => input().props.onSelectionChange({ nativeEvent: { selection: { start: 8, end: 8 } } }));
+    const picker = tree.root.findByType(SkillPicker);
+    act(() => picker.props.onActionSelect(picker.props.actions[0]));
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(input().props.value).toBe("keep next");
+    expect(input().props.editable).toBe(true);
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    act(() => { button("chat.compacting").props.onPress(); input().props.onSubmitEditing(); });
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => acknowledge({ sessionId: "s1", operationId: "cmp" }));
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    const outcome: CompactionOutcome = status === "unchanged" ? { status, alreadyCompacted: true, reused: true } : { status };
+    await act(async () => finish(outcome));
+    expect(button("chat.send").props.disabled).toBe(false);
+    expect(input().props.value).toBe("keep next");
+    act(() => button("chat.send").props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
   } finally { act(() => tree.unmount()); }
 });
 

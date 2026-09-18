@@ -478,6 +478,189 @@ fn fit_messages_keeps_the_newest_history_when_it_must_drop() {
 /// Returns whatever text it was constructed with, as one streamed delta.
 struct ScriptedSummary(Option<&'static str>);
 
+struct BudgetSummary {
+    text: String,
+    finish: crate::llm::schema::FinishReason,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for BudgetSummary {
+    async fn stream_model(
+        &self,
+        _: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        anyhow::bail!("must preserve the explicit summary output reservation")
+    }
+
+    async fn stream_model_with_output_limit(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+        limit: i32,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::ModelStreamEvent;
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(
+            limit, 8192,
+            "do not squeeze the provider's reasoning allowance"
+        );
+        assert!(request
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("4096 tokens"));
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.try_send(ModelStreamEvent::TextDelta {
+            id: "s".into(),
+            text: self.text.clone(),
+        })?;
+        tx.try_send(ModelStreamEvent::Finish {
+            reason: self.finish.clone(),
+            usage: Some(crate::types::Usage {
+                prompt_tokens: 100_000,
+                completion_tokens: 4181,
+                reasoning_tokens: Some(516),
+                credit_cost: Some(0.125),
+                ..Default::default()
+            }),
+        })?;
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+#[tokio::test]
+async fn summary_admission_uses_the_complete_projection_and_reports_fallbacks() {
+    use crate::compaction::{set_request_budget, CompactionSummaryStatus};
+    use crate::llm::schema::FinishReason;
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 25_600,
+        keep_recent_tokens: 8000,
+        context_window: 128_000,
+        model: "m".into(),
+    };
+    let raw = vec![
+        message(
+            "u",
+            "user",
+            vec![ContentBlock::text("keep this exact requirement")],
+        ),
+        message(
+            "a",
+            "assistant",
+            vec![
+                ContentBlock::text("keep this exact conclusion"),
+                call("x", "config.json"),
+            ],
+        ),
+        message(
+            "t",
+            "tool",
+            vec![result("x", &"version=old\n".repeat(40_000), true)],
+        ),
+    ];
+    for (tokens, finish, expected, reason) in [
+        (
+            4111,
+            FinishReason::Stop,
+            CompactionSummaryStatus::Generated,
+            None,
+        ),
+        (
+            40_000,
+            FinishReason::Stop,
+            CompactionSummaryStatus::EvidenceOnly,
+            Some("exceeding its admitted budget"),
+        ),
+        (
+            4111,
+            FinishReason::Length,
+            CompactionSummaryStatus::EvidenceOnly,
+            Some("provider length limit"),
+        ),
+        (
+            0,
+            FinishReason::Stop,
+            CompactionSummaryStatus::EvidenceOnly,
+            Some("before a complete response"),
+        ),
+    ] {
+        let provider = BudgetSummary {
+            text: "x".repeat(tokens * 4),
+            finish,
+            calls: Default::default(),
+        };
+        assert_eq!(estimate_text_tokens(&provider.text), tokens as u64);
+        let fallbacks = std::sync::Mutex::new(Vec::new());
+        let usage_count = std::sync::atomic::AtomicUsize::new(0);
+        let mut prompt = crate::compaction::project_prompt_context(&raw, None, None, 128_000);
+        set_request_budget(&mut prompt, "fixed input overhead", &[], 16_384);
+        let ContextPreparation::Compacted { checkpoint, prompt } = manager
+            .prepare_evidence_with_summary(
+                prompt,
+                &raw,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &AtomicBool::new(false),
+                None,
+                Some(&provider),
+                Some("fixed input overhead"),
+                &[],
+                Some(&|_| {
+                    usage_count.fetch_add(1, Ordering::Relaxed);
+                }),
+                Some(&|reason| fallbacks.lock().unwrap().push(reason.to_string())),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("checkpoint expected")
+        };
+        let outcome = checkpoint.summary_outcome.as_ref().unwrap();
+        assert_eq!(outcome.status, expected);
+        // Existing empty-response retries are unchanged; admission itself adds none.
+        let attempts = if tokens == 0 { 3 } else { 1 };
+        assert_eq!(provider.calls.load(Ordering::Relaxed), attempts);
+        assert_eq!(
+            usage_count.load(Ordering::Relaxed),
+            attempts,
+            "diagnostics must not double-charge"
+        );
+        assert_eq!(outcome.attempt_usage.len(), attempts);
+        assert_eq!(outcome.attempt_usage[0].reasoning_tokens, Some(516));
+        assert_eq!(outcome.attempt_usage[0].credit_cost, Some(0.125));
+        assert_eq!(checkpoint.protected_entry_ids, vec!["u", "a"]);
+        assert!(checkpoint.tokens_after < checkpoint.tokens_before);
+        assert!(checkpoint.tokens_after <= manager.input_limit_for_usage(&prompt.usage));
+        assert!(
+            summary_text(&checkpoint).contains("version=old"),
+            "evidence survives even on failure"
+        );
+        if let Some(reason) = reason {
+            assert_eq!(fallbacks.lock().unwrap().len(), 1);
+            assert!(
+                outcome.fallback_reason.as_ref().unwrap().contains(reason),
+                "{:?}",
+                outcome.fallback_reason
+            );
+            assert_eq!(checkpoint.algorithm_version, ALGORITHM_DETERMINISTIC);
+            assert!(!summary_text(&checkpoint).contains(HANDOFF_SUMMARY_HEADER));
+        } else {
+            assert!(fallbacks.lock().unwrap().is_empty());
+            assert!(outcome.fallback_reason.is_none());
+            assert_eq!(checkpoint.algorithm_version, ALGORITHM_SUMMARIZED);
+            assert!(
+                summary_text(&checkpoint).ends_with(&provider.text),
+                "accepted summary is not truncated"
+            );
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::types::LLMProvider for ScriptedSummary {
     async fn stream_model(

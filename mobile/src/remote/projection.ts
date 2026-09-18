@@ -30,6 +30,8 @@ export interface TimelineState {
   seenEvents: Set<string>;
   currentRunId: string | null;
   streaming: boolean;
+  /** Session-wide admission fence, separate from an active model reply. */
+  compacting?: boolean;
   /**
    * Per-run shared-projector accumulators for the live path. Kept out of the
    * render contract — the projector is stateful (slots/tool map), so folding a
@@ -320,12 +322,21 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
   const data = batch?.data ?? eventData(event);
   let items = state.items;
   let streaming = state.streaming;
+  let compacting = state.compacting;
   let liveRuns = state.liveRuns;
   // A `_truncated` marker (text_chunk with no text) short-circuits the run
   // projection — see the text_chunk case below.
   let runEvents = true;
 
   switch (event.type) {
+    case "compaction_started":
+      compacting = true;
+      break;
+    case "compaction_committed":
+    case "compaction_failed":
+    case "compaction_unchanged":
+      compacting = false;
+      break;
     case "user_message": {
       const canonical = userMessageFromEvent(data);
       const text = canonical?.content ?? textValue(data.text);
@@ -408,8 +419,13 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
       break;
   }
 
-  // Run events flow through the shared projector.
-  if (runEvents && isRunEvent(event.type)) {
+  // Standalone compaction is session activity, not a reply. Materialize it
+  // directly in both single-event and batched paths; it has no run accumulator
+  // or run-scoped sequence (a later run can restart idx at zero).
+  const standalone = event.type.startsWith("compaction_") && data.phase === "standalone";
+  if (standalone) {
+    items = applyStandaloneCompaction(items, event.type, data);
+  } else if (runEvents && isRunEvent(event.type)) {
     const result = applyLiveEvent(state, runId, event, data, batch?.deferRunSnapshot);
     items = result.items;
     streaming = result.streaming;
@@ -420,8 +436,9 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
     ...state,
     items,
     seenEvents,
-    currentRunId: event.runId ?? state.currentRunId,
+    currentRunId: standalone ? state.currentRunId : event.runId ?? state.currentRunId,
     streaming,
+    compacting,
     liveRuns,
   };
 }
@@ -454,6 +471,7 @@ export function createStreamEventBatch(initial: TimelineState) {
       const runId = event.runId ?? state.currentRunId ?? undefined;
       const data = eventData(event);
       const deferRunSnapshot = isRunEvent(event.type)
+        && !(event.type.startsWith("compaction_") && data.phase === "standalone")
         && !(event.type === "text_chunk" && data._truncated === true);
       // Materialize before an approval/user/error/notice or another run so
       // the same ordering and upsert semantics as single-event folding hold.
@@ -521,8 +539,43 @@ function isRunEvent(type: string): boolean {
     type === "compaction_started" ||
     type === "compaction_committed" ||
     type === "compaction_failed" ||
+    type === "compaction_unchanged" ||
     type === "agent_end"
   );
+}
+
+/** Operation-scoped placeholders become checkpoint-scoped history identities.
+ * This preserves chronology across multiple compactions/runs and deduplicates
+ * a terminal replay against a checkpoint already loaded from durable history. */
+function applyStandaloneCompaction(
+  items: TimelineItem[], type: string, data: Record<string, unknown>,
+): TimelineItem[] {
+  const operationId = textValue(data.operation_id);
+  const checkpointId = textValue(data.checkpoint_id);
+  if (!operationId && !checkpointId) return items;
+  const pendingId = `compaction:${operationId}`;
+  const id = type === "compaction_committed" && checkpointId ? `m_${checkpointId}` : pendingId;
+  if (type === "compaction_unchanged") return items.filter(item => item.id !== pendingId);
+  if (!["compaction_started", "compaction_committed", "compaction_failed"].includes(type)) return items;
+  const status = type === "compaction_started" ? "running" : type === "compaction_failed" ? "failed" : "completed";
+  const existing = items.find(item => item.id === id);
+  // A replayed start must not undo a failed/settled marker for this operation.
+  if (status === "running" && existing?.kind === "message"
+    && existing.segments?.some(segment => segment.kind === "compaction" && segment.status !== "running")) return items;
+  const item: TimelineItem = {
+    id, kind: "message", role: "assistant", text: "", streaming: false,
+    segments: [{
+      id: checkpointId ? `seg_${checkpointId}_compaction` : operationId,
+      kind: "compaction", status,
+      ...(typeof data.tokens_before === "number" ? { tokensBefore: data.tokens_before } : {}),
+      ...(typeof data.trigger === "string" ? { trigger: data.trigger } : {}),
+      ...(typeof data.error === "string" ? { error: data.error } : {}),
+    }],
+  };
+  if (existing) return items.filter(entry => entry.id !== pendingId || pendingId === id)
+    .map(entry => entry.id === id ? item : entry);
+  const pendingIndex = items.findIndex(entry => entry.id === pendingId);
+  return pendingIndex < 0 ? [...items, item] : items.map((entry, index) => index === pendingIndex ? item : entry);
 }
 
 /** Fold one run event through the run's shared projector and rebuild the
@@ -535,6 +588,7 @@ function applyLiveEvent(
   deferSnapshot = false,
 ): { items: TimelineItem[]; streaming: boolean; liveRuns: Map<string, LiveRunState> } {
   const liveRuns = state.liveRuns ?? new Map<string, LiveRunState>();
+  const compactionEvent = event.type.startsWith("compaction_");
   const runKey = runId ?? "__norun__";
   let acc = liveRuns.get(runKey);
   if (!acc) {
@@ -552,8 +606,9 @@ function applyLiveEvent(
     if (eventStartedAt) acc.startedAt = eventStartedAt;
     else if (!acc.startedAt) acc.startedAt = Date.now();
   }
-  // Any run event other than agent_end means the run is still active.
-  if (event.type !== "agent_end") acc.streaming = true;
+  // Any run event other than agent_end means the run is still active — except a
+  // compaction frame, which says nothing about whether a reply is in flight.
+  if (event.type !== "agent_end" && !compactionEvent) acc.streaming = true;
 
   // Feed through the shared projector (agent_start is a no-op for it).
   let projection: ReturnType<RunProjector["snapshot"]> | undefined;
@@ -583,7 +638,7 @@ function applyLiveEvent(
     const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
     items = upsertItem(items, acc.assistantId, () => assistantItem, () => assistantItem);
   }
-  return { items, streaming: acc.streaming, liveRuns };
+  return { items, streaming: compactionEvent ? state.streaming : acc.streaming, liveRuns };
 }
 
 function toRunEvent(

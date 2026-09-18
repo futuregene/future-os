@@ -4,16 +4,20 @@ import { Info, X } from "lucide-react-native";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { RemoteSkill } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
-import { filterSkills } from "../skillCompletion";
+import { filterActions, filterSkills, type SlashAction } from "../skillCompletion";
 
 /** Mounted only while completing a token. Reopening refreshes installed skills. */
-export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeight }: {
+export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeight, actions = [], onActionSelect }: {
   query: string;
   supported: boolean;
   load: () => Promise<RemoteSkill[]>;
   onSelect: (name: string) => void;
   onClose: () => void;
   maxHeight: number;
+  /** Context actions, rendered above the skills they can be confused with. */
+  actions?: SlashAction[];
+  /** Runs the chosen action; the picker owns no action behaviour itself. */
+  onActionSelect?: (action: SlashAction) => void;
 }) {
   const { t, i18n } = useTranslation();
   const [skills, setSkills] = useState<RemoteSkill[]>([]);
@@ -33,6 +37,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
     return () => { cancelled = true; };
   }, [load, supported, attempt]);
   const matches = filterSkills(skills, query);
+  const matchedActions = filterActions(actions, query);
   if (detailName && !matches.some(skill => skill.name === detailName)) setDetailName(null);
   const useZh = i18n.language.startsWith("zh");
   return (
@@ -45,6 +50,18 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
         </Pressable>
       </View>
       <ScrollView keyboardShouldPersistTaps="always" bounces={false}>
+        {matchedActions.map(action => (
+          <View key={action.id} style={styles.option}>
+            <Pressable accessibilityRole="button"
+              accessibilityLabel={action.label}
+              accessibilityHint={action.description}
+              onPress={() => onActionSelect?.(action)}
+              style={({ pressed }) => [styles.select, pressed && styles.pressed]}>
+              <Text numberOfLines={1} style={styles.name}>{action.label}</Text>
+              <Text numberOfLines={1} style={styles.description}>{action.description}</Text>
+            </Pressable>
+          </View>
+        ))}
         {!supported ? <Text style={styles.hint}>{t("skills.updateDesktop")}</Text>
           : status === "loading" ? <View style={styles.loading}>
             <ActivityIndicator color={colors.accent} />
@@ -56,7 +73,9 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
               <Text style={styles.retryText}>{t("common.retry")}</Text>
             </Pressable>
           </View>
-          : matches.length === 0 ? <Text style={styles.hint}>{t(skills.length ? "skills.noResults" : "skills.empty")}</Text>
+          : matches.length === 0 ? (matchedActions.length > 0
+            ? null
+            : <Text style={styles.hint}>{t(skills.length ? "skills.noResults" : "skills.empty")}</Text>)
           : matches.map(skill => {
             const description = useZh ? skill.descriptionZh || skill.description : skill.description;
             const expanded = detailName === skill.name;

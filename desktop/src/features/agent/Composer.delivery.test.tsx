@@ -22,6 +22,37 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+it("blocks button and Enter submission during external compaction, preserving the draft", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn(async () => {});
+  try {
+    await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress />));
+    const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
+    act(() => {
+      editor.textContent = "keep my next message";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor.textContent).toBe("keep my next message");
+    await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress={false} />));
+    expect(editor.textContent).toBe("keep my next message");
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(onSend).toHaveBeenCalledTimes(1);
+  }
+  finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});
+
 it.each(["accepted", "rejected", "edited"] as const)("handles %s delivery without losing a draft", async (outcome) => {
   const host = document.createElement("div");
   document.body.append(host);
