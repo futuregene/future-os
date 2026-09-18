@@ -15,5 +15,7 @@ pub mod mcp;
 pub mod models;
 pub mod run;
 pub mod session;
+mod session_compact;
+mod session_history;
 pub mod skills;
 pub mod tools;

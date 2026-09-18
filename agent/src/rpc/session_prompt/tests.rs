@@ -364,9 +364,17 @@ impl LLMProvider for ScriptedProvider {
         request: ModelRequest,
     ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
         self.requests.lock().unwrap().push(request.clone());
+        // A C3 summary request carries the agent's own system prompt so the provider
+        // can serve it from cache; recognise it by the instruction appended last.
+        let summary_instruction = request
+            .messages
+            .last()
+            .map(|message| message.text())
+            .unwrap_or_default();
         if request
             .system_prompt
             .contains("context summarization agent")
+            || summary_instruction.contains("handoff summary for another agent")
         {
             let (tx, rx) = mpsc::channel(2);
             tx.send(text_event(
@@ -831,17 +839,17 @@ async fn enqueue_prompt_fails_while_loop_is_locked() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_auto_compaction_appends_checkpoint_and_retains_history() {
-    // glm-4.5v has a 64k context window in the builtin catalog: a 50k-token
-    // first turn crosses the 90% threshold and forces compaction before turn 2.
+    // A large tool result plus reported usage crosses the request budget;
+    // the user's short original must survive S2 while tool history is summarized.
     let big_text = "lorem ipsum dolor sit amet ".repeat(6000); // ~150 KB
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
             tool_start_event("call-1", "read", serde_json::json!({"path": "x"})),
             tool_end_event(),
             ModelStreamEvent::Usage(crate::types::Usage {
-                prompt_tokens: 50_000,
+                prompt_tokens: 55_000,
                 completion_tokens: 100,
-                total_tokens: 50_100,
+                total_tokens: 55_100,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
                 reasoning_tokens: None,
@@ -853,9 +861,26 @@ async fn prompt_auto_compaction_appends_checkpoint_and_retains_history() {
         text_turn("done"),
     ]);
     let fixture = run_fixture(provider, "compact");
+    std::fs::write(fixture.workspace().join("x"), &big_text).unwrap();
     let mut session = fixture.session;
-    session.model = "glm-4.5v".to_string();
-    session.prompt(&big_text, &[], &[], None, None).unwrap();
+    session
+        .model_registry
+        .write()
+        .test_insert(crate::models::Model {
+            id: "compact-small".into(),
+            provider: "test".into(),
+            api: "openai-completions".into(),
+            api_key: "fixture".into(),
+            context_window: 64_000,
+            max_tokens: 4096,
+            input: vec!["text".into()],
+            output: vec!["text".into()],
+            ..Default::default()
+        });
+    session.model = "test/compact-small".to_string();
+    session
+        .prompt("read the lorem ipsum file", &[], &[], None, None)
+        .unwrap();
     wait_for_run_end(&session).await;
 
     let persisted = session.session_manager.load(&session.session_id).unwrap();
@@ -1969,7 +1994,7 @@ fn wire_auto_compaction_reports_no_valid_boundary() {
     // Report a huge API token count so compaction is "needed", but hand the
     // transform a history with no valid cut point > 0 (a lone user message),
     // so compact() returns None → the "needed but failed" arm.
-    session.last_prompt_tokens.store(50_000, Ordering::Relaxed);
+    session.last_prompt_tokens.store(70_000, Ordering::Relaxed);
     let agent_loop = session.agent_loop.clone();
     let mut loop_ = agent_loop.try_write().unwrap();
     session.wire_auto_compaction(&mut loop_, true, "glm-4.5v");
@@ -1980,10 +2005,17 @@ fn wire_auto_compaction_reports_no_valid_boundary() {
     );
     let mut message = crate::types::AgentMessage::new_user("user", serde_json::json!("hi"));
     message.ensure_journal_entry_id();
-    let prompt = crate::compaction::project_prompt_context(&[message], None, Some(50_000), 64_000);
-    let result = loop_.context_manager.as_ref().unwrap().prepare(
+    let raw = [message];
+    let prompt = crate::compaction::project_prompt_context(&raw, None, Some(70_000), 64_000);
+    // The runtime path, not the retired legacy one: a lone user message has no valid
+    // cut point in either, and this is the call a real turn makes.
+    let result = loop_.context_manager.as_ref().unwrap().prepare_evidence(
         prompt,
+        &raw,
         crate::compaction::CompactionTrigger::Automatic,
+        crate::compaction::CompactionPhase::PreTurn,
+        None,
+        &std::sync::atomic::AtomicBool::new(false),
         None,
     );
     assert!(matches!(
@@ -2036,6 +2068,7 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
 
     let checkpoint = ContextCheckpoint {
         entry_id: "cp-1".into(),
+        protected_entry_ids: Vec::new(),
         checkpoint_id: "cp-1".into(),
         covered_from_entry_id: Some("entry-a".into()),
         cutoff_entry_id: Some("entry-a".into()),
@@ -2048,7 +2081,6 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
         model: "model".into(),
         context_window: 200,
         created_at: chrono::Utc::now(),
-        legacy_without_cutoff: false,
     };
     let cp_entry = checkpoint_to_entry(&checkpoint);
 

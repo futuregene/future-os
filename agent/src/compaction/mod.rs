@@ -1,27 +1,42 @@
-//! Compaction — 1:1 compatible with Go internal/compaction/
+//! Compaction: the bounded projection a session sends in place of its full history.
+//!
+//! Two strategies, both built from the same protected originals and deterministic
+//! tool-evidence index — see `semantic::evidence`:
+//!
+//!   * `prepare_evidence` — no model call at all;
+//!   * `prepare_evidence_with_summary` — the same projection plus a model-written
+//!     handoff summary, and the runtime default.
 
-use crate::types::{AgentMessage, ContentBlock, ConvertToLLM, Message};
+pub(super) use crate::types::ConvertToLLM;
+use crate::types::{AgentMessage, ContentBlock, Message};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
+mod budget;
+mod durable;
 mod semantic;
+pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
+pub(crate) use durable::prepare_with_journal_and_summary;
+pub use durable::CompactionJournal;
+pub(crate) use semantic::evidence::remap_evidence_references;
+
+pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 
 pub(super) const INTERNAL_CHECKPOINT_METADATA_KEY: &str = "internal_context_checkpoint";
 
-/// Derive compaction budgets without allowing the historical 16K minimum to
-/// consume an entire small model window. The minimum remains useful for large
-/// models, but scales down to at most one quarter of the available context.
-/// A degenerate window <= 1 has no positive reserve that also leaves input
-/// room; return zero budgets rather than inventing unavailable capacity.
+/// Preserve the legacy (reserve, recent) interface while deriving the trigger
+/// from 80% of the model window (`budget::trigger_tokens`, which has no absolute
+/// cap). `reserve` is threshold headroom, not the model's output cap. Recent
+/// history is bounded independently at 8K. Degenerate windows do not invent
+/// capacity.
 pub fn context_token_budgets(context_window: i32) -> (i32, i32) {
     let window = context_window.max(1);
-    let proportional_reserve = ((window as f64 * 0.1) as i32).max(1);
-    let scaled_minimum = 16_384.min((window / 4).max(1));
-    let reserve_tokens = proportional_reserve.max(scaled_minimum).min(window - 1);
-    let usable_context = window.saturating_sub(reserve_tokens).max(1);
-    let keep_recent_tokens = ((window as f64 * 0.2) as i32)
-        .max(reserve_tokens)
-        .min(usable_context);
+    if window <= 1 {
+        return (0, 0);
+    }
+    let threshold = trigger_tokens(window as u64).max(1) as i32;
+    let reserve_tokens = window - threshold;
+    let keep_recent_tokens = (budget::RECENT_HISTORY as i32).min(threshold / 4).max(1);
     (reserve_tokens, keep_recent_tokens)
 }
 
@@ -46,6 +61,50 @@ pub(super) fn stamp_internal_checkpoint_message(message: &mut AgentMessage, entr
     );
 }
 
+pub(super) fn is_protected(message: &AgentMessage) -> bool {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get(INTERNAL_ANCHOR_METADATA_KEY))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(super) fn protected_text(original: &AgentMessage) -> Option<AgentMessage> {
+    if !matches!(original.role.as_str(), "user" | "assistant")
+        || original
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get(INTERNAL_CHECKPOINT_METADATA_KEY))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let id = original.journal_entry_id()?;
+    let content = original
+        .content
+        .iter()
+        .filter(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if content.is_empty() {
+        return None;
+    }
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+        serde_json::json!(id),
+    );
+    metadata.insert(INTERNAL_ANCHOR_METADATA_KEY.into(), serde_json::json!(true));
+    Some(AgentMessage {
+        role: original.role.clone(),
+        content,
+        metadata: Some(metadata),
+        ..Default::default()
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompactionSettings {
     pub enabled: bool,
@@ -53,32 +112,6 @@ pub struct CompactionSettings {
     pub reserve_tokens: i32,
     #[serde(rename = "keepRecentTokens")]
     pub keep_recent_tokens: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactOptions {
-    #[serde(rename = "reserveTokens")]
-    pub reserve_tokens: i32,
-    #[serde(rename = "keepRecentTokens")]
-    pub keep_recent_tokens: i32,
-    #[serde(rename = "contextWindow")]
-    pub context_window: i32,
-    /// Pre-computed context tokens (API-reported). If 0, falls back to estimate.
-    #[serde(default)]
-    pub tokens_before: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompactionResult {
-    pub summary: String,
-    #[serde(rename = "firstKeptEntryID")]
-    pub first_kept_entry_id: String,
-    #[serde(rename = "tokensBefore")]
-    pub tokens_before: i32,
-    #[serde(rename = "readFiles")]
-    pub read_files: Vec<String>,
-    #[serde(rename = "modifiedFiles")]
-    pub modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,6 +139,10 @@ pub struct ContextUsage {
     pub reasoning_tokens: Option<u64>,
     pub estimated_input_tokens: u64,
     pub context_window: u64,
+    #[serde(default)]
+    pub fixed_input_tokens: u64,
+    #[serde(default)]
+    pub output_reserve_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +156,10 @@ pub struct ContextCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cutoff_entry_id: Option<String>,
     pub summary: Vec<ContentBlock>,
+    /// Original user/assistant text to retain from the covered prefix. Bodies
+    /// remain in the immutable journal, not duplicated inside this checkpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protected_entry_ids: Vec<String>,
     pub tokens_before: u64,
     pub tokens_after: u64,
     pub trigger: CompactionTrigger,
@@ -128,11 +169,6 @@ pub struct ContextCheckpoint {
     pub model: String,
     pub context_window: u64,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Legacy compacted JSONL already discarded its covered prefix, so it has
-    /// no resolvable cutoff. In that case projection prefixes the summary and
-    /// keeps every remaining message entry.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub legacy_without_cutoff: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -168,6 +204,12 @@ pub enum ContextError {
     SummaryFailed(String),
     #[error("context compaction was cancelled")]
     Cancelled,
+    #[error("context compaction budget exceeded: {0}")]
+    BudgetExceeded(String),
+    #[error("context compaction made no token progress")]
+    NoProgress,
+    #[error("context compaction durability: {0}")]
+    PersistenceFailed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -180,113 +222,84 @@ pub struct ContextManager {
 }
 
 impl ContextManager {
-    /// Prepare context with a model-generated semantic summary. The selected
-    /// session model/provider is reused with tools disabled; no hidden
-    /// compaction model is involved. Provider failures remain observable so
-    /// callers do not commit a lossy checkpoint. Only the provider-context-
-    /// limit recovery path may use the deterministic emergency summary.
-    pub async fn prepare_semantic(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_phase(
-            prompt,
-            trigger,
-            default_phase(trigger),
-            custom_instructions,
-            provider,
-            interrupted,
-        )
-        .await
-    }
-
-    pub async fn prepare_semantic_with_phase(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_phase_and_fallback(
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            None,
-        )
-        .await
-    }
-
+    /// Default runtime compaction (C). The raw journal is used only for bounded
+    /// evidence selection; no LLM provider is accepted or called by this path.
     #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_semantic_with_phase_and_fallback(
+    pub fn prepare_evidence(
         &self,
         prompt: PromptContext,
+        raw: &[AgentMessage],
         trigger: CompactionTrigger,
         phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
+        instructions: Option<&str>,
         interrupted: &std::sync::atomic::AtomicBool,
-        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
-    ) -> Result<ContextPreparation, ContextError> {
-        self.prepare_semantic_with_lifecycle(
-            prompt,
-            trigger,
-            phase,
-            custom_instructions,
-            provider,
-            interrupted,
-            fallback,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_semantic_with_lifecycle(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        phase: CompactionPhase,
-        custom_instructions: Option<&str>,
-        provider: &dyn crate::types::LLMProvider,
-        interrupted: &std::sync::atomic::AtomicBool,
-        fallback: Option<(&dyn crate::types::LLMProvider, &str)>,
         on_started: Option<&(dyn Fn() + Sync)>,
     ) -> Result<ContextPreparation, ContextError> {
-        semantic::prepare(
+        semantic::evidence::prepare(
             self,
             prompt,
+            raw,
             trigger,
             phase,
-            custom_instructions,
-            provider,
+            instructions,
             interrupted,
-            fallback,
             on_started,
+        )
+    }
+
+    /// Summarised: the deterministic projection plus a model-written handoff summary.
+    ///
+    /// The summary is generated from the material being compressed and receives the
+    /// previous summary, so facts accumulate across successive compactions instead of
+    /// being rewritten from scratch. When the provider is absent or the call fails,
+    /// this commits the deterministic projection; the fallback is reported through
+    /// `on_fallback` rather than failing the compaction.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_evidence_with_summary(
+        &self,
+        prompt: PromptContext,
+        raw: &[AgentMessage],
+        trigger: CompactionTrigger,
+        phase: CompactionPhase,
+        instructions: Option<&str>,
+        interrupted: &std::sync::atomic::AtomicBool,
+        on_started: Option<&(dyn Fn() + Sync)>,
+        provider: Option<&dyn crate::types::LLMProvider>,
+        system_prompt: Option<&str>,
+        tools: &[crate::types::ToolDef],
+        on_usage: Option<&(dyn Fn(&crate::types::Usage) + Sync)>,
+        on_fallback: Option<&(dyn Fn(&str) + Sync)>,
+    ) -> Result<ContextPreparation, ContextError> {
+        semantic::evidence::prepare_with_handoff_summary(
+            self,
+            prompt,
+            raw,
+            trigger,
+            phase,
+            instructions,
+            interrupted,
+            on_started,
+            provider,
+            system_prompt,
+            tools,
+            on_usage,
+            on_fallback,
         )
         .await
     }
 
-    /// Synchronous compatibility path used by legacy callers and unit tests.
-    /// Runtime automatic/manual compaction should use `prepare_semantic`.
-    pub fn prepare(
-        &self,
-        prompt: PromptContext,
-        trigger: CompactionTrigger,
-        custom_instructions: Option<&str>,
-    ) -> Result<ContextPreparation, ContextError> {
-        semantic::prepare_deterministic(self, prompt, trigger, custom_instructions)
-    }
+    // The legacy semantic entry points (`prepare_semantic`, its `_with_phase`,
+    // `_with_phase_and_fallback`, `_with_lifecycle` and `_observed` wrappers, and the
+    // synchronous `prepare`) were removed: the runtime has used `prepare_evidence` /
+    // `prepare_evidence_with_summary` since `6a83a34a`, and nothing in the workspace
+    // called them. The implementation they reached is retained under `#[cfg(test)]` in
+    // `semantic.rs` so the tests that characterise legacy A still run; it is not part of
+    // a production build.
 }
 
+/// The phase a trigger implies. Only the legacy-A tests need this now: the runtime
+/// passes the phase explicitly at each call site.
+#[cfg(test)]
 fn default_phase(trigger: CompactionTrigger) -> CompactionPhase {
     match trigger {
         CompactionTrigger::Manual => CompactionPhase::Standalone,
@@ -304,24 +317,33 @@ pub fn project_prompt_context(
     context_window: u64,
 ) -> PromptContext {
     let cutoff_index = checkpoint.and_then(|checkpoint| {
-        if checkpoint.legacy_without_cutoff {
-            // A legacy string marker is itself a message entry, while the
-            // later structured legacy compaction entry is projection-invisible.
-            // Skip the former when present to avoid prefixing the summary twice.
-            messages.iter().position(|message| {
-                message.journal_entry_id() == Some(checkpoint.entry_id.as_str())
-            })
-        } else {
-            checkpoint.cutoff_entry_id.as_deref().and_then(|cutoff| {
-                messages
-                    .iter()
-                    .position(|message| message.journal_entry_id() == Some(cutoff))
-            })
-        }
+        checkpoint.cutoff_entry_id.as_deref().and_then(|cutoff| {
+            messages
+                .iter()
+                .position(|message| message.journal_entry_id() == Some(cutoff))
+        })
     });
     let tail_start = cutoff_index.map_or(0, |index| index.saturating_add(1));
     let mut projected = Vec::with_capacity(messages.len().saturating_sub(tail_start) + 1);
     if let Some(checkpoint) = checkpoint {
+        let protected: HashSet<&str> = checkpoint
+            .protected_entry_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for original in &messages[..tail_start] {
+            if original
+                .journal_entry_id()
+                .is_some_and(|id| protected.contains(id))
+            {
+                if let Some(message) = protected_text(original) {
+                    projected.push(ProjectedMessage {
+                        source_entry_ids: vec![message.journal_entry_id().unwrap().to_string()],
+                        message,
+                    });
+                }
+            }
+        }
         let summary = checkpoint
             .summary
             .iter()
@@ -370,18 +392,6 @@ pub fn project_prompt_context(
             ..Default::default()
         },
     }
-}
-
-/// ShouldCompact returns true if compaction should be triggered.
-pub fn should_compact(
-    context_tokens: i32,
-    context_window: i32,
-    settings: &CompactionSettings,
-) -> bool {
-    if !settings.enabled {
-        return false;
-    }
-    context_tokens > context_window - settings.reserve_tokens
 }
 
 /// EstimateTokens estimates tokens for a single message.
@@ -467,208 +477,6 @@ fn estimate_text_tokens(text: &str) -> i32 {
         .min(i32::MAX as u64) as i32
 }
 
-/// EstimateContextTokens estimates total tokens from messages.
-pub fn estimate_context_tokens(messages: &[Message]) -> i32 {
-    messages.iter().map(estimate_tokens).sum()
-}
-
-/// When `cut` falls on a tool message, walk backward to include the preceding
-/// assistant message that carries the tool_calls.  Without this, the LLM API
-/// rejects the request because tool results must always follow an assistant
-/// message with matching tool_calls.
-fn adjust_cut_for_tool_context(messages: &[Message], cut: usize) -> usize {
-    if cut >= messages.len() || messages[cut].role != "tool" {
-        return cut;
-    }
-    for i in (0..cut).rev() {
-        if messages[i].role == "assistant" && messages[i].tool_calls.is_some() {
-            return i;
-        }
-    }
-    cut
-}
-
-/// Find cut points where it's safe to cut (not in the middle of tool results).
-pub fn find_valid_cut_points(messages: &[Message]) -> Vec<usize> {
-    let mut points = vec![];
-    for (i, msg) in messages.iter().enumerate() {
-        match msg.role.as_str() {
-            "user" => points.push(i),
-            "assistant" if msg.tool_calls.as_ref().is_none_or(|v| v.is_empty()) => {
-                points.push(i);
-            }
-            "tool" => points.push(i),
-            "system" => points.push(i),
-            _ => {}
-        }
-    }
-    points
-}
-
-/// FindCutPoint finds the cut point that keeps approximately keepRecentTokens.
-pub fn find_cut_point(messages: &[Message], keep_recent_tokens: i32) -> usize {
-    let cut_points = find_valid_cut_points(messages);
-    if cut_points.is_empty() {
-        // No valid cut point at all — return 0 (below caller falls back).
-        return 0;
-    }
-
-    let mut accumulated = 0;
-    for i in (0..messages.len()).rev() {
-        accumulated += estimate_tokens(&messages[i]);
-        if accumulated >= keep_recent_tokens {
-            // unwrap_or: if no cut point >= i, use the LAST valid cut point
-            // before i instead of 0, so compaction still happens.
-            return cut_points
-                .iter()
-                .find(|&&cp| cp >= i)
-                .copied()
-                .or_else(|| cut_points.iter().rev().find(|&&cp| cp < i).copied())
-                .unwrap_or(cut_points[0]);
-        }
-    }
-    cut_points[0]
-}
-
-/// ExtractFileOperations scans messages for file read/write operations from tool calls.
-pub fn extract_file_operations(messages: &[Message]) -> (Vec<String>, Vec<String>) {
-    let mut read_set = HashSet::new();
-    let mut write_set = HashSet::new();
-
-    for msg in messages {
-        if msg.role != "assistant" {
-            continue;
-        }
-        for tc in msg.tool_calls.iter().flatten() {
-            let path = if let serde_json::Value::String(ref s) = tc.function.arguments {
-                // Try to extract path/file_path from args
-                if let Ok(args) = serde_json::from_str::<HashMap<String, String>>(s) {
-                    args.get("path")
-                        .or(args.get("file_path"))
-                        .cloned()
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-            if path.is_empty() {
-                continue;
-            }
-            match tc.function.name.as_str() {
-                "read" | "read_file" => {
-                    read_set.insert(path);
-                }
-                "write" | "write_file" | "edit" | "patch" => {
-                    write_set.insert(path);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut reads: Vec<_> = read_set.into_iter().collect();
-    let mut writes: Vec<_> = write_set.into_iter().collect();
-    reads.sort();
-    writes.sort();
-    (reads, writes)
-}
-
-/// Compact performs message compaction. Returns compacted messages and result.
-pub fn compact(
-    messages: Vec<Message>,
-    opts: &CompactOptions,
-) -> (Vec<Message>, Option<CompactionResult>) {
-    // Use API-reported count when available, but never let it go below the
-    // heuristic estimate. Tool results added since the last LLM call may
-    // have pushed the real context far beyond what the API last reported.
-    let estimated = estimate_context_tokens(&messages);
-    let tokens_before = if opts.tokens_before > 0 {
-        opts.tokens_before.max(estimated)
-    } else {
-        estimated
-    };
-    let context_window = if opts.context_window > 0 {
-        opts.context_window
-    } else {
-        200000
-    };
-    let settings = CompactionSettings {
-        enabled: true,
-        reserve_tokens: opts.reserve_tokens,
-        keep_recent_tokens: opts.keep_recent_tokens,
-    };
-
-    if !should_compact(tokens_before, context_window, &settings) {
-        return (messages, None);
-    }
-
-    let cut = find_cut_point(&messages, opts.keep_recent_tokens);
-    // When the cut lands on a tool message, back up to include the preceding
-    // assistant message (which carries the tool_calls the API requires).
-    let cut = adjust_cut_for_tool_context(&messages, cut);
-    if cut == 0 {
-        // find_cut_point may return 0 when its char-based estimate is much
-        // lower than the API-reported tokens (e.g. after a prior compaction
-        // produced short summary messages).  When should_compact already
-        // confirmed action is needed, fall back to the smallest non-zero
-        // valid cut point so we still trim something.
-        let valid = find_valid_cut_points(&messages);
-        if let Some(&fallback) = valid.iter().find(|&&cp| cp > 0) {
-            // find_valid_cut_points lists `tool` results too, so the fallback
-            // can land on a tool message whose preceding assistant tool_calls
-            // would be cut away — leaving the compacted conversation to open
-            // with a tool result and no matching assistant (the LLM API
-            // rejects that with HTTP 400). Re-run the same adjust step as the
-            // primary path, and only cut when it resolves to a safe non-zero
-            // point; otherwise give up rather than emit an invalid prefix.
-            let fallback = adjust_cut_for_tool_context(&messages, fallback);
-            if fallback > 0 {
-                return compact_from(messages, fallback, tokens_before);
-            }
-        }
-        return (messages, None);
-    }
-
-    compact_from(messages, cut, tokens_before)
-}
-
-fn compact_from(
-    messages: Vec<Message>,
-    cut: usize,
-    tokens_before: i32,
-) -> (Vec<Message>, Option<CompactionResult>) {
-    let (read_files, modified_files) = extract_file_operations(&messages);
-    let summary = format!(
-        "Previous conversation summarized. Files read: {}. Modified: {}.",
-        read_files.join(", "),
-        modified_files.join(", ")
-    );
-
-    let compaction_content = serde_json::json!([{
-        "type": "text",
-        "text": format!("[Context compaction: {}]", summary),
-    }]);
-
-    let mut result = vec![Message {
-        role: "user".to_string(),
-        content: Some(compaction_content),
-        ..Default::default()
-    }];
-    result.extend(messages[cut..].to_vec());
-
-    let comp_result = CompactionResult {
-        summary,
-        first_kept_entry_id: String::new(),
-        tokens_before,
-        read_files,
-        modified_files,
-    };
-
-    (result, Some(comp_result))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,88 +517,6 @@ mod tests {
     }
 
     #[test]
-    fn adjust_cut_returns_cut_when_no_tool_call_owner_exists() {
-        // cut points at a tool message, but no earlier assistant message
-        // carries tool_calls → return the original cut unchanged.
-        let messages = vec![
-            text_msg("user", "hi"),
-            text_msg("assistant", "thinking"),
-            text_msg("tool", "result"),
-        ];
-        assert_eq!(adjust_cut_for_tool_context(&messages, 2), 2);
-        // And the no-op arms: cut past the end / cut not on a tool message.
-        assert_eq!(adjust_cut_for_tool_context(&messages, 3), 3);
-        assert_eq!(adjust_cut_for_tool_context(&messages, 0), 0);
-    }
-
-    #[test]
-    fn extract_file_operations_skips_unusable_tool_calls() {
-        let tool_call = |name: &str, args: serde_json::Value| crate::types::ToolCall {
-            id: "c".to_string(),
-            call_type: "function".to_string(),
-            function: crate::types::ToolCallFn {
-                name: name.to_string(),
-                arguments: args,
-            },
-        };
-        let msg = |calls: Vec<crate::types::ToolCall>| Message {
-            role: "assistant".to_string(),
-            tool_calls: Some(calls),
-            ..Default::default()
-        };
-        let messages = vec![
-            // Unparseable JSON string args → no path.
-            msg(vec![tool_call(
-                "read",
-                serde_json::Value::String("not json".into()),
-            )]),
-            // Non-string args → no path.
-            msg(vec![tool_call("read", serde_json::json!({"path": "x.rs"}))]),
-            // Parseable args without a path key → skipped via continue.
-            msg(vec![tool_call(
-                "read",
-                serde_json::Value::String("{\"cmd\": \"ls\"}".into()),
-            )]),
-            // A tool that is neither a read nor a write → ignored.
-            msg(vec![tool_call(
-                "shell",
-                serde_json::Value::String("{\"path\": \"ignored.rs\"}".into()),
-            )]),
-            // One real read + one real write so the sets are non-empty.
-            msg(vec![
-                tool_call(
-                    "read",
-                    serde_json::Value::String("{\"path\": \"a.rs\"}".into()),
-                ),
-                tool_call(
-                    "edit",
-                    serde_json::Value::String("{\"file_path\": \"b.rs\"}".into()),
-                ),
-            ]),
-        ];
-        let (reads, writes) = extract_file_operations(&messages);
-        assert_eq!(reads, vec!["a.rs".to_string()]);
-        assert_eq!(writes, vec!["b.rs".to_string()]);
-    }
-
-    #[test]
-    fn compact_defaults_context_window_when_unset() {
-        // context_window = 0 → the 200k default kicks in; with these tiny
-        // numbers should_compact stays false, so this only exercises the
-        // window-defaulting arm.
-        let messages = vec![text_msg("user", "hello")];
-        let opts = CompactOptions {
-            reserve_tokens: 50,
-            keep_recent_tokens: 50,
-            context_window: 0,
-            tokens_before: 100,
-        };
-        let (out, result) = compact(messages.clone(), &opts);
-        assert!(result.is_none());
-        assert_eq!(out.len(), messages.len());
-    }
-
-    #[test]
     fn mixed_content_and_tool_args_are_classified_per_char() {
         // Content-parts array form.
         let msg = Message {
@@ -819,40 +545,6 @@ mod tests {
     // ─── should_compact ────────────────────────────────────────────────────
 
     #[test]
-    fn should_compact_disabled() {
-        let settings = CompactionSettings {
-            enabled: false,
-            reserve_tokens: 1000,
-            keep_recent_tokens: 5000,
-        };
-        assert!(!should_compact(200_000, 128_000, &settings));
-    }
-
-    #[test]
-    fn should_compact_when_exceeding_threshold() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 8000,
-            keep_recent_tokens: 5000,
-        };
-        // context_tokens (120_000) > context_window (128_000) - reserve (8000) = 120_000
-        // 120_000 > 120_000 is false, so not triggered
-        assert!(!should_compact(120_000, 128_000, &settings));
-        // 120_001 > 120_000 → triggers
-        assert!(should_compact(120_001, 128_000, &settings));
-    }
-
-    #[test]
-    fn should_compact_under_threshold() {
-        let settings = CompactionSettings {
-            enabled: true,
-            reserve_tokens: 8000,
-            keep_recent_tokens: 5000,
-        };
-        assert!(!should_compact(100_000, 128_000, &settings));
-    }
-
-    #[test]
     fn context_budgets_leave_room_for_small_model_windows() {
         for window in [4_096, 8_192, 16_384, 64_000, 1_000_000] {
             let (reserve, keep_recent) = context_token_budgets(window);
@@ -870,15 +562,6 @@ mod tests {
     }
 
     // ─── estimate_context_tokens ───────────────────────────────────────────
-
-    #[test]
-    fn estimate_context_tokens_sums_messages() {
-        let msgs = vec![
-            text_msg("user", &"a".repeat(100)),     // 25 tokens
-            text_msg("assistant", &"b".repeat(40)), // 10 tokens
-        ];
-        assert_eq!(estimate_context_tokens(&msgs), 35);
-    }
 
     #[test]
     fn checkpoint_projection_preserves_recent_provider_and_tool_metadata() {
@@ -903,6 +586,7 @@ mod tests {
         recent.ensure_journal_entry_id();
         let checkpoint = ContextCheckpoint {
             entry_id: "checkpoint-entry".into(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-1".into(),
             covered_from_entry_id: Some(covered_id.clone()),
             cutoff_entry_id: Some(covered_id),
@@ -915,7 +599,6 @@ mod tests {
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
 
         let projected =
@@ -971,301 +654,19 @@ mod tests {
 
     // ─── adjust_cut_for_tool_context ───────────────────────────────────────
 
-    #[test]
-    fn adjust_cut_after_tool_backs_up_to_assistant_with_tool_calls() {
-        let msgs = vec![
-            text_msg("user", "hello"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        // Cut on the tool msg (index 2), should back up to assistant (index 1)
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 2), 1);
-    }
-
-    #[test]
-    fn adjust_cut_on_user_unchanged() {
-        let msgs = vec![text_msg("user", "hello")];
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 0), 0);
-    }
-
-    #[test]
-    fn adjust_cut_out_of_bounds_returns_original() {
-        let msgs: Vec<Message> = vec![];
-        assert_eq!(adjust_cut_for_tool_context(&msgs, 5), 5);
-    }
-
     // ─── find_valid_cut_points ─────────────────────────────────────────────
-
-    #[test]
-    fn find_valid_cut_points_all_types() {
-        let msgs = vec![
-            text_msg("system", "prompt"),
-            text_msg("user", "question"),
-            text_msg("assistant", "answer"),
-            text_msg("tool", "output"),
-        ];
-        let points = find_valid_cut_points(&msgs);
-        assert_eq!(points, vec![0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn find_valid_cut_points_excludes_assistant_with_tool_calls() {
-        let msgs = vec![
-            text_msg("user", "q"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let points = find_valid_cut_points(&msgs);
-        // Index 1 (assistant with tool_calls) is excluded
-        assert_eq!(points, vec![0, 2]);
-    }
 
     // ─── find_cut_point ────────────────────────────────────────────────────
 
-    #[test]
-    fn find_cut_point_empty_messages_returns_zero() {
-        let msgs: Vec<Message> = vec![];
-        assert_eq!(find_cut_point(&msgs, 5000), 0);
-    }
-
-    #[test]
-    fn find_cut_point_returns_first_useful_cut() {
-        let msgs = vec![
-            text_msg("user", &"a".repeat(400)),     // ~100 tokens
-            text_msg("assistant", &"b".repeat(40)), // ~10 tokens
-            text_msg("user", &"c".repeat(100)),     // ~25 tokens
-        ];
-        // keep_recent 20 → keep last ~20 tokens → should cut before last msg
-        let cut = find_cut_point(&msgs, 20);
-        assert_eq!(cut, 2);
-    }
-
     // ─── extract_file_operations ───────────────────────────────────────────
 
-    #[test]
-    fn extract_file_operations_finds_reads_and_writes() {
-        let msgs = vec![
-            text_msg("user", "read file"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![
-                    crate::types::ToolCall {
-                        id: "tc1".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "read".to_string(),
-                            arguments: serde_json::json!(r#"{"path":"/tmp/a.txt"}"#),
-                        },
-                    },
-                    crate::types::ToolCall {
-                        id: "tc2".to_string(),
-                        call_type: "function".to_string(),
-                        function: crate::types::ToolCallFn {
-                            name: "write".to_string(),
-                            arguments: serde_json::json!(r#"{"file_path":"/tmp/b.txt"}"#),
-                        },
-                    },
-                ]),
-                ..Default::default()
-            },
-        ];
-        let (reads, writes) = extract_file_operations(&msgs);
-        assert_eq!(reads, vec!["/tmp/a.txt"]);
-        assert_eq!(writes, vec!["/tmp/b.txt"]);
-    }
-
-    #[test]
-    fn extract_file_operations_edit_and_patch_are_writes() {
-        let msgs = vec![Message {
-            role: "assistant".to_string(),
-            content: None,
-            tool_calls: Some(vec![crate::types::ToolCall {
-                id: "tc1".to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: "edit".to_string(),
-                    arguments: serde_json::json!(r#"{"path":"/tmp/edit.txt"}"#),
-                },
-            }]),
-            ..Default::default()
-        }];
-        let (reads, writes) = extract_file_operations(&msgs);
-        assert!(reads.is_empty());
-        assert_eq!(writes, vec!["/tmp/edit.txt"]);
-    }
-
     // ─── compact / compact_from ────────────────────────────────────────────
-
-    #[test]
-    fn compact_below_threshold_does_nothing() {
-        let msgs = vec![text_msg("user", "hello")];
-        let opts = CompactOptions {
-            reserve_tokens: 8000,
-            keep_recent_tokens: 4000,
-            context_window: 128_000,
-            tokens_before: 50,
-        };
-        let (result, compacted) = compact(msgs.clone(), &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), msgs.len());
-    }
-
-    #[test]
-    fn compact_fallback_never_opens_with_orphaned_tool_message() {
-        // When the primary cut point resolves to 0 (the char-based estimate
-        // is far below the API-reported tokens), the fallback branch picks
-        // the smallest non-zero valid cut point. That point can be a `tool`
-        // message (find_valid_cut_points lists tool results, but excludes the
-        // preceding assistant that owns the tool_calls). Cutting there would
-        // open the compacted conversation with a tool result and no matching
-        // assistant — which the LLM API rejects with HTTP 400. The fallback
-        // must re-run adjust_cut_for_tool_context exactly like the primary
-        // path.
-        let msgs = vec![
-            text_msg("user", "q"),
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1_000_000,
-            context_window: 1_000,
-            tokens_before: 100_000,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_some());
-        // [0] = compaction marker (user), [1] = assistant owning the
-        // tool_calls, [2] = tool result. Never [0]=marker, [1]=tool.
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].role, "user");
-        assert_eq!(result[1].role, "assistant");
-        assert!(result[1].tool_calls.is_some());
-        assert_eq!(result[2].role, "tool");
-    }
-
-    #[test]
-    fn compact_triggers_and_keeps_recent() {
-        // Build enough messages to trigger compaction
-        let mut msgs = vec![];
-        for i in 0..200 {
-            msgs.push(text_msg("user", &format!("message {i} ")));
-        }
-        let opts = CompactOptions {
-            reserve_tokens: 100,
-            keep_recent_tokens: 100,
-            context_window: 500,
-            tokens_before: 0,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_some());
-        // First message should be the compaction marker
-        assert_eq!(result[0].role, "user");
-        let content = result[0].content.as_ref().unwrap();
-        assert!(content.to_string().contains("compaction"));
-        // Result should be shorter than original
-        assert!(result.len() < 200);
-    }
-
-    #[test]
-    fn compact_uses_tokens_before_when_larger_than_estimate() {
-        // Need enough messages so that should_compact triggers
-        let mut msgs = vec![];
-        for i in 0..200 {
-            msgs.push(text_msg(
-                "user",
-                &format!(
-                    "message number {i} with extra text to push token count up higher and higher"
-                ),
-            ));
-        }
-        let opts = CompactOptions {
-            reserve_tokens: 50,
-            keep_recent_tokens: 50,
-            context_window: 300,
-            tokens_before: 500,
-        };
-        let (_, compact_opt) = compact(msgs, &opts);
-        assert!(compact_opt.is_some(), "should trigger compaction");
-        // tokens_before is max(opts.tokens_before, estimated), so it's at least 500
-        assert!(compact_opt.unwrap().tokens_before >= 500);
-    }
-
-    #[test]
-    fn checkpoint_projection_legacy_without_cutoff_skips_marker_entry() {
-        let mut covered = AgentMessage::new_user("user", serde_json::json!("old"));
-        covered.ensure_journal_entry_id();
-        let covered_id = covered.journal_entry_id().unwrap().to_string();
-        let mut recent = AgentMessage {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::text("recent")],
-            ..Default::default()
-        };
-        recent.ensure_journal_entry_id();
-        let checkpoint = ContextCheckpoint {
-            entry_id: covered_id.clone(),
-            checkpoint_id: "cp-1".to_string(),
-            covered_from_entry_id: None,
-            cutoff_entry_id: None,
-            summary: vec![ContentBlock::text("summary")],
-            tokens_before: 100,
-            tokens_after: 10,
-            trigger: CompactionTrigger::Automatic,
-            phase: None,
-            algorithm_version: "v1".to_string(),
-            model: "model".to_string(),
-            context_window: 200,
-            created_at: chrono::Utc::now(),
-            legacy_without_cutoff: true,
-        };
-
-        let projected = project_prompt_context(
-            &[covered.clone(), recent.clone()],
-            Some(&checkpoint),
-            None,
-            200,
-        );
-        // The legacy marker entry is skipped; summary + recent remain.
-        assert_eq!(projected.messages.len(), 2);
-        assert_eq!(
-            serde_json::to_value(&projected.messages[1].message).unwrap(),
-            serde_json::to_value(&recent).unwrap()
-        );
-    }
 
     #[test]
     fn checkpoint_projection_ignores_non_text_summary_blocks() {
         let checkpoint = ContextCheckpoint {
             entry_id: "e".to_string(),
+            protected_entry_ids: Vec::new(),
             checkpoint_id: "cp".to_string(),
             covered_from_entry_id: None,
             cutoff_entry_id: None,
@@ -1281,7 +682,6 @@ mod tests {
             model: "model".to_string(),
             context_window: 200,
             created_at: chrono::Utc::now(),
-            legacy_without_cutoff: false,
         };
 
         let projected = project_prompt_context(&[], Some(&checkpoint), None, 200);
@@ -1289,67 +689,5 @@ mod tests {
         let text = projected.messages[0].message.text();
         assert!(text.contains("visible"));
         assert!(!text.contains("hidden"));
-    }
-
-    #[test]
-    fn compact_gives_up_when_no_safe_cut_point_exists() {
-        // A single assistant message that owns tool_calls has no valid cut point
-        // (find_valid_cut_points excludes it), so the fallback branch must give
-        // up rather than emit an invalid prefix.
-        let msgs = vec![Message {
-            role: "assistant".to_string(),
-            content: None,
-            tool_calls: Some(vec![crate::types::ToolCall {
-                id: "t1".to_string(),
-                call_type: "function".to_string(),
-                function: crate::types::ToolCallFn {
-                    name: "shell".to_string(),
-                    arguments: serde_json::json!("{}"),
-                },
-            }]),
-            ..Default::default()
-        }];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1,
-            context_window: 10,
-            tokens_before: 100,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn compact_gives_up_when_fallback_adjusts_to_zero() {
-        // The first valid cut point > 0 is a `tool` message whose only
-        // tool-call owner sits at index 0, so adjust_cut_for_tool_context
-        // resolves it back to 0. The fallback must then give up rather than
-        // emit an invalid prefix (the inner `if fallback > 0` false branch).
-        let msgs = vec![
-            Message {
-                role: "assistant".to_string(),
-                content: None,
-                tool_calls: Some(vec![crate::types::ToolCall {
-                    id: "t1".to_string(),
-                    call_type: "function".to_string(),
-                    function: crate::types::ToolCallFn {
-                        name: "shell".to_string(),
-                        arguments: serde_json::json!("{}"),
-                    },
-                }]),
-                ..Default::default()
-            },
-            text_msg("tool", "result"),
-        ];
-        let opts = CompactOptions {
-            reserve_tokens: 0,
-            keep_recent_tokens: 1_000_000,
-            context_window: 1_000,
-            tokens_before: 100_000,
-        };
-        let (result, compacted) = compact(msgs, &opts);
-        assert!(compacted.is_none());
-        assert_eq!(result.len(), 2);
     }
 }

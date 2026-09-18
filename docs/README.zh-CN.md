@@ -16,6 +16,7 @@
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / Feishu / DingTalk 块、默认值） |
 | [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `futureos-headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、loop） |
+| [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.md) | 移动端端到端延迟测量与诊断（暂缺中文） |
 | [截图工具](guide/screenshots.zh-CN.md) | 用演示数据渲染真实桌面端 / 手机端界面，在无显示器环境产出截图、功能示意图与图文文档 |
 
@@ -40,6 +41,7 @@
 `packages/`、`orchestration/loop/` 与 `tests/`。
 
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（原 `desktop/DEV_MD/`；文档地图见 `desktop/CLAUDE.md`）
+- [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步性能/审计、鸿蒙兼容（原 `mobile/README.md` + `mobile/docs/`）
 - [tui/](internals/tui/tests.md) — TUI 测试框架约定（原 `tui/tests/README.md`）
 - [Desktop NATS 桥](internals/desktop-nats.md)（原 `desktop/nats/README.md`）

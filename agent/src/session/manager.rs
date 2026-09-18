@@ -234,14 +234,23 @@ impl Manager {
     }
 
     pub fn update_session_info(&self, id: &str, key: &str, value: serde_json::Value) -> Result<()> {
-        let (id, key) = (id.to_owned(), key.to_owned());
+        self.update_session_info_fields(id, [(key.to_owned(), value)].into_iter().collect())
+    }
+
+    /// Save one metadata snapshot so related usage counters survive restart together.
+    pub(crate) fn update_session_info_fields(
+        &self,
+        id: &str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let id = id.to_owned();
         self.storage()?.db.call(move |db| {
             let tx = db.transaction()?;
             let payload: String = tx.query_row("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type='session_info' ORDER BY position DESC LIMIT 1", [&id], |row| row.get(0))?;
             let entry: serde_json::Value = serde_json::from_str(&payload)?;
             let mut info = entry["content"].as_object().cloned()
                 .ok_or_else(|| anyhow!("session has no session_info object"))?;
-            info.insert(key, value);
+            info.extend(fields);
             let entry = SessionEntry::session_info(
                 serde_json::Value::Object(info),
                 String::new(),

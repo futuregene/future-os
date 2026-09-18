@@ -81,6 +81,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_messages",
     "get_runtime_metrics",
     "get_session_entries",
+    "get_session_history_entry",
+    "search_session_history",
     "get_session_events_since",
     "get_session_stats",
     "get_state",
@@ -173,6 +175,8 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_fork_messages"
         | "get_messages"
         | "get_session_entries"
+        | "get_session_history_entry"
+        | "search_session_history"
         | "get_session_events_since"
         | "list_session_ids"
         | "list_sessions"
@@ -250,6 +254,16 @@ mod tests {
                 command_policy(command).is_some(),
                 "missing policy for {command}"
             );
+        }
+    }
+
+    #[test]
+    fn history_recall_is_bounded_and_read_only() {
+        for name in ["search_session_history", "get_session_history_entry"] {
+            let p = command_policy(name).unwrap();
+            assert_eq!(p.timeout, STORAGE_TIMEOUT);
+            assert_eq!(p.retry, RetryPolicy::SafeRead);
+            assert_eq!(p.execution, ExecutionKind::Bounded);
         }
     }
 

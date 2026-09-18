@@ -12,6 +12,50 @@ use crate::rpc::commands::test_support::*;
 use crate::rpc::handle_command_internal;
 
 #[test]
+fn history_cli_reads_persisted_sessions_without_loading_a_runtime() {
+    let state = make_app_state();
+    state.session_manager.storage().unwrap().replace("history-only",vec![serde_json::json!({"id":"entry-1","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"saved history 中文"})]).unwrap();
+    let before = state
+        .session_manager
+        .session_revision("history-only")
+        .unwrap();
+    assert!(!state.sessions.read().contains_key("history-only"));
+    let mut search = make_cmd("search_session_history");
+    search.session_id = "history-only".into();
+    search.message = "中文".into();
+    let response = parse_response(&handle_command_internal(&state, search));
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["matches"][0]["entryId"], "entry-1");
+    let mut get = make_cmd("get_session_history_entry");
+    get.session_id = "history-only".into();
+    get.entry_id = "entry-1".into();
+    let response = parse_response(&handle_command_internal(&state, get));
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["chunks"][0]["text"], "saved history 中文");
+    assert!(!state.sessions.read().contains_key("history-only"));
+    assert!(
+        before
+            == state
+                .session_manager
+                .session_revision("history-only")
+                .unwrap()
+    );
+    let mut wrong = make_cmd("get_session_history_entry");
+    wrong.entry_id = "entry-1".into();
+    assert_eq!(
+        parse_response(&handle_command_internal(&state, wrong))["success"],
+        false
+    );
+    let mut empty = make_cmd("search_session_history");
+    empty.session_id.clear();
+    empty.message = "saved".into();
+    assert_eq!(
+        parse_response(&handle_command_internal(&state, empty))["success"],
+        false
+    );
+}
+
+#[test]
 fn delete_session_fences_admission_and_reclaims_queued_snapshots() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();
