@@ -9,8 +9,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -20,6 +21,33 @@ use tauri_plugin_shell::ShellExt;
 /// attached to an externally-managed agent (or failed to spawn).
 static AGENT_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
 static AGENT_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Debug)]
+enum AgentLifecycle {
+    NotStarted,
+    Spawning { since: Instant },
+    Running { since: Instant },
+    Attached,
+    SpawnFailed,
+    Exited,
+}
+
+static AGENT_LIFECYCLE: Mutex<AgentLifecycle> = Mutex::new(AgentLifecycle::NotStarted);
+
+/// The process may legitimately spend several seconds opening its database and
+/// importing records before binding the local endpoint. Past this boundary an
+/// alive child is no longer described as indefinitely "starting".
+const AGENT_STARTUP_GRACE: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatus {
+    /// checking | starting | ready | spawn_failed | exited |
+    /// startup_timeout | unavailable | incompatible
+    pub phase: String,
+    pub desktop_version: String,
+    pub agent_version: Option<String>,
+}
 
 /// Set once the user has confirmed a force-quit, so the follow-up programmatic
 /// `app.exit()` closes the window without the `CloseRequested` guard re-prompting.
@@ -76,7 +104,7 @@ pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// exchange can return a one-time credential, so discovering a dead Agent only
 /// after that exchange risks losing the credential before it is durably saved.
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
-    tokio::task::spawn_blocking(move || {
+    let reachable = tokio::task::spawn_blocking(move || {
         ensure_agent_running(&app);
         wait_for_agent_ready_with(
             LOGIN_AGENT_READY_ATTEMPTS,
@@ -85,7 +113,8 @@ pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHand
         )
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false);
+    reachable && agent_status().await.phase == "ready"
 }
 
 fn wait_for_agent_ready_with(
@@ -112,6 +141,9 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
 ) {
     let configured = crate::agent_bridge::raw_agent_addr();
     if reachable(&configured) {
+        if AGENT_CHILD.lock().unwrap().is_none() {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Attached;
+        }
         eprintln!("FutureOS: agent already reachable via {configured}; not spawning bundled agent");
         return;
     }
@@ -123,6 +155,9 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
         return;
     }
 
+    *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Spawning {
+        since: Instant::now(),
+    };
     spawn_bundled_agent(app, &configured);
     AGENT_SPAWN_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
@@ -143,6 +178,7 @@ fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured:
                 .trim_start_matches("https://"),
         ]),
         Err(error) => {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
             eprintln!(
                 "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
             );
@@ -153,12 +189,18 @@ fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured:
     match command.spawn() {
         Ok((rx, child)) => {
             *AGENT_CHILD.lock().unwrap() = Some(child);
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Running {
+                since: Instant::now(),
+            };
             eprintln!("FutureOS: started bundled agent via {configured}");
             // Drain the event channel on a background thread so agent stdout/stderr
             // surfaces in logs and the pipe never backs up.
             std::thread::spawn(move || drain_agent_events(rx));
         }
-        Err(error) => eprintln!("FutureOS: failed to start bundled agent: {error}"),
+        Err(error) => {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
+            eprintln!("FutureOS: failed to start bundled agent: {error}");
+        }
     }
 }
 
@@ -182,11 +224,64 @@ fn handle_agent_event(event: CommandEvent) {
         }
         CommandEvent::Terminated(payload) => {
             AGENT_CHILD.lock().unwrap().take();
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Exited;
             eprintln!("FutureOS: bundled agent exited: {payload:?}");
         }
         // `CommandEvent` is `#[non_exhaustive]` — the wildcard arm is required
         // for compilation and covers any future variants (currently none).
         _ => {}
+    }
+}
+
+/// Return the Agent lifecycle without consulting account or provider state.
+/// Readiness requires a successful business-RPC round trip. Only after that
+/// succeeds do we compare the two numeric release versions. Local build
+/// identity after the first `-` (commit hash / dirty marker) is deliberately
+/// ignored because Agent and Desktop use independent Cargo target caches.
+pub async fn agent_status() -> AgentStatus {
+    let desktop_version = crate::build_info::VERSION.to_string();
+    match crate::agent_bridge::get_agent_info().await {
+        Ok(info) => status_from_version(info.version, desktop_version),
+        Err(_) => status_from_lifecycle(AGENT_LIFECYCLE.lock().unwrap().clone(), desktop_version),
+    }
+}
+
+fn status_from_version(agent_version: String, desktop_version: String) -> AgentStatus {
+    AgentStatus {
+        phase: if numeric_version(&agent_version) == numeric_version(&desktop_version) {
+            "ready"
+        } else {
+            "incompatible"
+        }
+        .to_string(),
+        desktop_version,
+        agent_version: Some(agent_version),
+    }
+}
+
+fn numeric_version(version: &str) -> &str {
+    version
+        .split_once('-')
+        .map_or(version, |(numeric, _)| numeric)
+}
+
+fn status_from_lifecycle(lifecycle: AgentLifecycle, desktop_version: String) -> AgentStatus {
+    let phase = match lifecycle {
+        AgentLifecycle::NotStarted => "checking",
+        AgentLifecycle::Spawning { since } | AgentLifecycle::Running { since }
+            if since.elapsed() < AGENT_STARTUP_GRACE =>
+        {
+            "starting"
+        }
+        AgentLifecycle::Spawning { .. } | AgentLifecycle::Running { .. } => "startup_timeout",
+        AgentLifecycle::Attached => "unavailable",
+        AgentLifecycle::SpawnFailed => "spawn_failed",
+        AgentLifecycle::Exited => "exited",
+    };
+    AgentStatus {
+        phase: phase.to_string(),
+        desktop_version,
+        agent_version: None,
     }
 }
 
@@ -686,6 +781,62 @@ mod tests {
         ));
         assert_eq!(probes, 3);
         assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn lifecycle_distinguishes_starting_timeout_and_terminal_failures() {
+        let version = "1.2.3".to_string();
+        let starting = status_from_lifecycle(
+            AgentLifecycle::Running {
+                since: Instant::now(),
+            },
+            version.clone(),
+        );
+        assert_eq!(starting.phase, "starting");
+
+        let timed_out = status_from_lifecycle(
+            AgentLifecycle::Running {
+                since: Instant::now() - AGENT_STARTUP_GRACE - Duration::from_secs(1),
+            },
+            version.clone(),
+        );
+        assert_eq!(timed_out.phase, "startup_timeout");
+        assert_eq!(
+            status_from_lifecycle(AgentLifecycle::SpawnFailed, version.clone()).phase,
+            "spawn_failed"
+        );
+        assert_eq!(
+            status_from_lifecycle(AgentLifecycle::Exited, version).phase,
+            "exited"
+        );
+    }
+
+    #[test]
+    fn readiness_compares_only_the_numeric_agent_desktop_version() {
+        assert_eq!(
+            status_from_version("1.1.8".to_string(), "1.1.8".to_string()).phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version(
+                "0.0.0-6b7717e5+local".to_string(),
+                "0.0.0-fb53a3f5+local.dirty".to_string(),
+            )
+            .phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version(
+                "1.1.8-agent-build".to_string(),
+                "1.1.8-desktop-build".to_string(),
+            )
+            .phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version("1.1.7-old".to_string(), "1.1.8-new".to_string()).phase,
+            "incompatible"
+        );
     }
 
     fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {

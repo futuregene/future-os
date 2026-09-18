@@ -105,7 +105,7 @@ pub(crate) fn get_agent_info_response(state: &AppState, id: &str) -> String {
         id,
         "get_agent_info",
         serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": crate::utils::VERSION,
             "agentInstanceId": state.agent_instance_id,
             "skillsCount": skills_count,
         }),

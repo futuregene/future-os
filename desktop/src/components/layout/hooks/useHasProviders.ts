@@ -23,11 +23,14 @@ import { useAsyncResource } from "../../../lib/useAsyncResource";
  * transitions never flash the neutral frame — `initialLoading` is true only on
  * the very first load.
  */
-export function useHasProviders(futureSessionStatus: FutureSessionStatus) {
+export function useHasProviders(
+  futureSessionStatus: FutureSessionStatus,
+  initialProviders: ProvidersView | null = null,
+) {
   const { data, loading, reload } = useAsyncResource<ProvidersView | null>(
     listAgentProviders,
     [],
-    null,
+    initialProviders,
   );
 
   useEffect(() => onFutureEvent("future-auth-changed", reload), [reload]);

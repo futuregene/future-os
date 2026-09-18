@@ -971,6 +971,7 @@ mod gui {
             })
             .invoke_handler(tauri::generate_handler![
                 app_build_info,
+                get_agent_status,
                 check_app_update,
                 install_app_update,
                 restart_after_app_update,
