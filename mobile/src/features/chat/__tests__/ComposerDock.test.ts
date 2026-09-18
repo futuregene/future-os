@@ -188,6 +188,14 @@ test("manual compaction is a slash action, gated by the Desktop and never a tool
       remote: { ...props.remote, compacting: true },
     })));
     expect(actions()).toHaveLength(0);
+
+    // A run in flight rejects compaction, so the tool is hidden until it
+    // settles instead of offering an action that cannot run.
+    act(() => tree.update(createElement(ComposerDock, {
+      ...props,
+      remote: { ...props.remote, streaming: true },
+    })));
+    expect(actions()).toHaveLength(0);
   } finally { act(() => tree.unmount()); }
 });
 

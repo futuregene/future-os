@@ -110,9 +110,12 @@ function ComposerDockView({
   const editable = !remote.busy;
   const canSend = !remote.streaming && !remote.compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
+  // A run in flight rejects compaction, so the tool stays hidden rather than
+  // offering an action the Agent will refuse (desktop parity).
   const compactionActionEnabled = !!onCompactContext
     && (remote.capabilities?.has?.("compaction_v1") ?? false)
-    && !remote.compacting;
+    && !remote.compacting
+    && !remote.streaming;
   const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
     ? [{
       id: "compact",
