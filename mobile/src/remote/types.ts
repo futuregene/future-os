@@ -165,6 +165,20 @@ export interface RemoteSessionState {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+/**
+ * Terminal result of a context compaction, correlated by operation id.
+ *
+ * The Agent accepts a manual compaction asynchronously: the request returns an
+ * operation id before the summary runs, and the outcome arrives later on the
+ * session event stream. `timeout` means no terminal event was observed in time
+ * — never that the operation failed.
+ */
+export type CompactionOutcome =
+  | { status: "committed" }
+  | { status: "failed"; error?: string }
+  | { status: "unchanged"; alreadyCompacted: boolean; reused: boolean }
+  | { status: "timeout" };
+
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool" | string;
   blocks: import("@future-os/thread-projection").SessionEntry["blocks"];

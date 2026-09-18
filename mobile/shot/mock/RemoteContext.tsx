@@ -166,6 +166,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "desktop_settings_v1",
       "skill_management_v1",
       "workspace_pinning_v1",
+      "compaction_v1",
     ]),
 
     // Actions the harness drives for real
@@ -219,6 +220,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     rename: async () => undefined,
     generateTitle: async () => "多巴胺与风险决策：任务不确定性下的效应方向",
+    // Manual compaction: the harness shows the request being accepted, then
+    // reports the outcome the divider cannot (here: nothing to compact).
+    compactContext: async () => ({ sessionId: selectedSessionId, operationId: "cmp_shot" }),
+    awaitCompactionOutcome: async () => ({ status: "unchanged", alreadyCompacted: false, reused: false }),
   });
 
   const timelineValue = useMemo(() => ({

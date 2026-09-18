@@ -17,9 +17,57 @@ import {
   timelineFromEntries,
   type TimelineState,
 } from "./timeline";
-import type { EntriesData, RemoteSessionState, StreamEvent } from "./types";
+import type { EntriesData, RemoteSessionState, StreamEvent, CompactionOutcome } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
+/** Manual compaction waits for its terminal event, not for the summary itself. */
+export const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * The terminal compaction event behind an operation id.
+ *
+ * `compaction_end` is deliberately absent: it is the released-journal
+ * compatibility marker and carries no operation id from the async path.
+ */
+export function compactionTerminalOf(
+  event: StreamEvent,
+): { operationId: string; outcome: CompactionOutcome } | null {
+  if (
+    event.type !== "compaction_committed"
+    && event.type !== "compaction_failed"
+    && event.type !== "compaction_unchanged"
+  )
+    return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(event.data);
+  } catch {
+    return null;
+  }
+  const payload = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const operationId = typeof payload.operation_id === "string" ? payload.operation_id : "";
+  if (!operationId) return null;
+  if (event.type === "compaction_failed") {
+    return {
+      operationId,
+      outcome: {
+        status: "failed",
+        ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+      },
+    };
+  }
+  if (event.type === "compaction_unchanged") {
+    return {
+      operationId,
+      outcome: {
+        status: "unchanged",
+        alreadyCompacted: payload.already_compacted === true,
+        reused: payload.reused === true,
+      },
+    };
+  }
+  return { operationId, outcome: { status: "committed" } };
+}
 // One deadline covers transport retries AND waiting behind a replay. Expiry
 // cancels the transaction, so late responses/queued mutations cannot skip pages.
 const HISTORY_PAGE_TIMEOUT_MS = 30_000;
@@ -221,6 +269,17 @@ export function useTimelineController({
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
   const compactingRef = useRef<Record<string, boolean>>({});
+  // Manual compaction is asynchronous: the request returns before the summary
+  // runs, so the waiter and the event race in both directions. Waiters are
+  // keyed by operation id (a replayed older operation can never settle a new
+  // request), and a terminal event that arrives first is buffered per session
+  // until its initiator correlates it.
+  const compactionWaitersRef = useRef<Map<string, (outcome: CompactionOutcome) => void>>(
+    new Map(),
+  );
+  const compactionTerminalsRef = useRef<
+    Map<string, { operationId: string; outcome: CompactionOutcome }>
+  >(new Map());
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
@@ -275,6 +334,18 @@ export function useTimelineController({
       if (event.type === "model_changed" || event.type === "thinking_level_changed") {
         if (sid === selectedRef.current) settingsRevisionRef.current += 1;
         return;
+      }
+      const compactionTerminal = compactionTerminalOf(event);
+      if (compactionTerminal) {
+        // Settle before the visibility check below: a conversation switch during
+        // compaction must not leave the initiator waiting for its outcome.
+        const waiter = compactionWaitersRef.current.get(compactionTerminal.operationId);
+        if (waiter) {
+          compactionWaitersRef.current.delete(compactionTerminal.operationId);
+          waiter(compactionTerminal.outcome);
+        } else {
+          compactionTerminalsRef.current.set(sid, compactionTerminal);
+        }
       }
       if (event.type === "run_snapshot") {
         reconcileSession(sid, "resend", event.runId ?? undefined);
@@ -728,6 +799,38 @@ export function useTimelineController({
     [],
   );
 
+  /**
+   * Await the terminal event of the compaction behind `operationId`.
+   *
+   * A timeout is reported as `timeout`, not `failed`: an unobserved terminal
+   * event (backgrounded app, dropped stream, long summary) proves nothing
+   * about the operation itself.
+   */
+  const awaitCompactionOutcome = useCallback(
+    (
+      sessionId: string,
+      operationId: string,
+      timeoutMs: number = COMPACTION_TERMINAL_TIMEOUT_MS,
+    ): Promise<CompactionOutcome> => {
+      const buffered = compactionTerminalsRef.current.get(sessionId);
+      if (buffered?.operationId === operationId) {
+        compactionTerminalsRef.current.delete(sessionId);
+        return Promise.resolve(buffered.outcome);
+      }
+      return new Promise<CompactionOutcome>((resolve) => {
+        const timer = setTimeout(() => {
+          compactionWaitersRef.current.delete(operationId);
+          resolve({ status: "timeout" });
+        }, timeoutMs);
+        compactionWaitersRef.current.set(operationId, (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        });
+      });
+    },
+    [],
+  );
+
   const resetTimeline = useCallback(() => {
     olderRequestRef.current?.controller.abort();
     historyEpochRef.current += 1;
@@ -739,6 +842,8 @@ export function useTimelineController({
     cursorsRef.current = {};
     streamingRef.current = {};
     compactingRef.current = {};
+    compactionWaitersRef.current.clear();
+    compactionTerminalsRef.current.clear();
     historyPagingRef.current = {};
     committedHistoryRef.current = {};
     setHistoryPaging({});
@@ -834,6 +939,7 @@ export function useTimelineController({
     reconcileSession,
     handleEvent,
     applySessionStreaming,
+    awaitCompactionOutcome,
     resetTimeline,
     ensureDraftTimeline,
     retryTimeline,

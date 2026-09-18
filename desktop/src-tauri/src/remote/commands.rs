@@ -674,7 +674,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1603,7 +1603,8 @@ mod bridge_tests {
                 "selective_events_v1",
                 "workspace_pinning_v1",
                 "desktop_settings_v1",
-                "skill_management_v1"
+                "skill_management_v1",
+                "compaction_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2767,6 +2768,45 @@ mod bridge_tests {
         agent.script_for("abort", &session, false, json!(null), "cannot abort");
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "abort", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+
+        // Manual compaction requested from the phone: the Desktop forwards it
+        // to the same session-scoped RPC and relays the acceptance, while an
+        // Agent rejection (busy run, unknown session) stays a failure.
+        agent.script_for(
+            "compact",
+            &session,
+            true,
+            json!({ "accepted": true, "operationId": "cmp_remote" }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "compact_context", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["operationId"], json!("cmp_remote"));
+        assert!(agent.served("compact", &session));
+        agent.script_for(
+            "compact",
+            &session,
+            false,
+            json!(null),
+            "finish or stop the active run before manual compaction",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "compact_context", "sessionId": session }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("active run"),
+            "got: {reply}"
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "compact_context", "sessionId": "" }))
             .await;
         assert_eq!(reply["success"], json!(false));
 

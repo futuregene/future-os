@@ -32,6 +32,7 @@ import { useChatScroll } from "./useChatScroll";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useRename } from "./useRename";
 import { useSendMessage } from "./useSendMessage";
+import { useCompactContext } from "./useCompactContext";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
@@ -175,6 +176,7 @@ export function ChatScreen() {
     setTransferProgress,
   );
   const rename = useRename(remote, t);
+  const compactContext = useCompactContext(remote, t);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -584,6 +586,7 @@ export function ChatScreen() {
                 decideApproval={decideApproval}
                 selector={selector}
                 setSelector={setSelector}
+                onCompactContext={compactContext.compact}
               />
               </PausedTimeline>
             </View>

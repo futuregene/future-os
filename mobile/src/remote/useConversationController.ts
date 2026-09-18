@@ -248,8 +248,27 @@ export function useConversationController({
     [clientRef],
   );
 
-  const abort = useCallback(async () => {
+  /**
+   * Ask the Desktop to compact this conversation's context. The Agent accepts
+   * the operation asynchronously and reports the outcome on the session event
+   * stream, so callers correlate the returned operation id against
+   * `awaitCompactionOutcome`. A rejection (busy run, unknown session) throws
+   * with the Desktop's message instead of reporting a false acceptance.
+   */
+  const compactContext = useCallback(async () => {
     const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) throw new Error("not_connected");
+    const response = await client.request<{ accepted?: boolean; operationId?: string }>(
+      { type: "compact_context", sessionId },
+      sessionId,
+    );
+    const operationId = response.data?.operationId;
+    if (typeof operationId !== "string" || !operationId) throw new Error("compaction_invalid_ack");
+    return { sessionId, operationId };
+  }, [clientRef, selectedRef]);
+
+  const abort = useCallback(async () => {    const client = clientRef.current;
     const sessionId = selectedRef.current;
     if (!sessionId) return;
     // Do not acknowledge a stop that was never sent after a disconnect.
@@ -356,6 +375,7 @@ export function useConversationController({
     cachedAttachment,
     downloadAttachment,
     abort,
+    compactContext,
     setModel,
     setThinkingLevel,
     setApprovalTier,
