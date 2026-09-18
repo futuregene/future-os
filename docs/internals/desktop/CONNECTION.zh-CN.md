@@ -386,6 +386,7 @@ Desktop 新增的 `~/.future/remote_pending_revokes.json` 只记录配对 ID 与
 - 新回放响应包含 `watermark` 和 `nextSinceIdx`，后续请求带 `replayUntilIdx`，仅收集首轮水位以内的不可变事件。若保留窗口变为更新的投影，返回错误，让同步器从持久状态重建；不提交混合的半份结果。旧 Desktop 不返回这些字段时，手机保留既有 offset 分页。
 - 普通断网/续期保持访问身份；主动停止、Desktop 重开或休眠唤醒会更新身份。待发送记录缺少身份或身份不匹配时，自动恢复只能查询已接受回执；没有回执则清除自动投递意图，保留会话草稿。用户主动再次发送属于新的授权动作。
 - Agent 检测每轮最长 3 秒，间隔 3 秒，成功结果超过 10 秒不再视为可用；使用单调时钟。只连接既有 Agent，不启动第二个 Agent，也不创建常驻服务。
+- 手机端在 `/` 菜单首位提供与 Desktop 输入框相同的「压缩上下文」工具，握手以 `compaction_v1` 声明该能力；旧 Desktop 不显示该入口。`compact_context` 是会话级写操作：宿主转发同一个独立 `compact` RPC 并回传 operation id，手机只在匹配到终态 `compaction_*` 事件后才报告结果；缺少终态事件只报告"未收到结果"，不报告为失败。
 - Desktop 分块协议仅处理 NATS 消息；文件路径许可、会话附件归属、上传暂存、缩略图及受控读取均在宿主适配层保留。架构分离不改变文件访问授权。
 
 历史本地验证（2026-09-11）：Tauri 后端完整 1140 项测试通过，之后新增的监督器取消测试单独通过 1 项；Desktop 前端 92 组、846 项通过；Mobile 完整 48 组、678 项通过。该结果只对应当时基线，不代表 2026-09-14 候选已完成同等运行验证。当前候选按提交流程执行 Desktop/Mobile TypeScript 与 ESLint、Tauri `cargo fmt --check`/Clippy 和 `git diff --check`；本地测试套件不运行，由 GitHub Actions 执行。模拟器/实机生命周期、真实网关故障和 Desktop sidecar 退出仍需集中验收；静态检查和自动化测试不替代这些结果。

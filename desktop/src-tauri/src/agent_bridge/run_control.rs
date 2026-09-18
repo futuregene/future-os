@@ -237,11 +237,22 @@ pub async fn compact_thread_context(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "This conversation has no context to compact.".to_string())?;
+    compact_agent_session(session_id.to_string()).await
+}
+
+/// The `compact` RPC for a session the caller already owns — the shared path
+/// behind the GUI command and the remote (phone) bridge, so both request the
+/// same operation and validate the same acknowledgement. The Agent answers an
+/// acceptance carrying the operation id; the checkpoint itself is reported
+/// later on the compacting session's event stream.
+pub async fn compact_agent_session(
+    session_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent()
         .await
         .map_err(|error| format!("Future Agent unreachable: {error}"))?;
     let response = client
-        .execute_command(compact_command(session_id.to_string(), String::new()))
+        .execute_command(compact_command(session_id, String::new()))
         .await
         .map_err(|error| format!("compact RPC failed: {error}"))?
         .into_inner()

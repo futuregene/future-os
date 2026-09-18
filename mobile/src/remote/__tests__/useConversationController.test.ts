@@ -587,6 +587,24 @@ describe("command dispatchers", () => {
     expect(h.request).toHaveBeenCalledWith({ type: "abort", sessionId: "s1" }, "s1");
   });
 
+  it("compactContext sends the manual compaction for the selected session", async () => {
+    const request = jest.fn(async () => ({ data: { accepted: true, operationId: "cmp-1" } }));
+    const h = await mountController({ selected: "s1", request });
+    await expect(current(h).compactContext()).resolves.toEqual({
+      sessionId: "s1",
+      operationId: "cmp-1",
+    });
+    expect(request).toHaveBeenCalledWith({ type: "compact_context", sessionId: "s1" }, "s1");
+  });
+
+  it("compactContext never invents an operation for a missing acknowledgement", async () => {
+    const request = jest.fn(async () => ({ data: { accepted: true } }));
+    const h = await mountController({ selected: "s1", request });
+    await expect(current(h).compactContext()).rejects.toThrow("compaction_invalid_ack");
+    const disconnected = await mountController({ client: null, selected: "s1" });
+    await expect(current(disconnected).compactContext()).rejects.toThrow("not_connected");
+  });
+
   it("setModel persists the model and sends set_model when connected", async () => {
     const h = await mountController({ selected: "s1" });
     await act(async () => {

@@ -372,14 +372,19 @@ message, and the compacted prompt keeps only the new summary. Only when history
 exceeds the recent-tail budget is the most recent verbatim tail kept.
 
 Desktop offers the "Compact" context tool at the top of the `/` menu in the
-input box of conversations that already have an Agent session. Selecting it
-directly calls the standalone `compact` RPC, generating no `/compact` user
+input box of conversations that already have an Agent session; the phone
+offers the same tool at the top of its own `/` menu. Selecting it directly
+calls the standalone `compact` RPC, generating no `/compact` user
 message, ordinary Agent reply, or new Run; the summary request is the
 operation's only LLM communication. `Manual` explicitly skips the automatic
 context-window threshold but must still find valid turn/tool boundaries. A
 successful checkpoint appends to JSONL with `trigger: "manual"`, and
 Desktop/Mobile show the user's choice with the "you manually compacted this
-conversation's context" divider; failures keep the manual marker too. When the
+conversation's context" divider; failures keep the manual marker too. The
+phone reaches the same operation through the Desktop bridge: the
+`compact_context` command (advertised as `compaction_v1`) forwards to the
+session-scoped RPC and relays its operation id, which the phone correlates
+against the terminal `compaction_*` event before reporting the outcome. When the
 menu matches both context tools and Skills, tools are on top and Skills below,
 with the "技能 / Skills" divider text shown only before Skills in mixed
 results; single-category results show no divider. Chinese and English names and

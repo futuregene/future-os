@@ -761,6 +761,62 @@
         ],
         "note": "Composer focus via eval: a touch tap on the textarea opens the thinking-level sheet first."
       },
+      "compact-context": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "/压缩"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "const row = document.querySelector('[aria-label=\"压缩上下文\"]'); if (!row) throw new Error('compact action missing from the slash menu');"
+          },
+          {
+            "shot": "m-compact-menu.png"
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"压缩上下文\"]').click()"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "const input = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]'); if (input.value !== '') throw new Error('draft kept the slash command: ' + input.value); if (!document.body.innerText.includes('当前没有可压缩的对话上下文')) throw new Error('no compaction outcome was surfaced');"
+          },
+          {
+            "shot": "m-compact-outcome.png"
+          }
+        ],
+        "note": "The mock Desktop accepts the request and answers a no-op compaction, so the second shot is the outcome the divider cannot show."
+      },
       "files": {
         "steps": [
           {

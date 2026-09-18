@@ -56,6 +56,33 @@ test("skill choices keep name and description on one row, with full details only
   expect(load).toHaveBeenCalledTimes(1);
 });
 
+test("context actions lead the menu, filter like skills, and run instead of inserting text", async () => {
+  const onCompact = jest.fn();
+  const action = {
+    id: "compact",
+    label: "压缩上下文",
+    description: "压缩此对话的上下文",
+    searchText: "compact 压缩 上下文",
+  };
+  const withAction = { ...props, actions: [action], onActionSelect: onCompact };
+  await act(async () => { tree = create(createElement(SkillPicker, withAction)); });
+  const row = () => tree.root.findAll(node => node.props.accessibilityLabel === "压缩上下文" && node.props.onPress)[0]!;
+  expect(row()).toBeDefined();
+  // The action must be reachable by the English command word too, and must not
+  // be mistaken for a skill insertion.
+  await act(async () => { tree.update(createElement(SkillPicker, { ...withAction, query: "compact" })); });
+  act(() => row().props.onPress());
+  expect(onCompact).toHaveBeenCalledWith(action);
+  expect(onSelect).not.toHaveBeenCalled();
+  // A query that matches no skill still shows the action instead of "no results".
+  await act(async () => { tree.update(createElement(SkillPicker, { ...withAction, query: "压缩 上下文" })); });
+  expect(row()).toBeDefined();
+  expect(texts()).not.toContain("skills.noResults");
+  await act(async () => { tree.update(createElement(SkillPicker, { ...withAction, query: "不存在" })); });
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "压缩上下文" && node.props.onPress)).toHaveLength(0);
+  expect(texts()).toContain("skills.noResults");
+});
+
 test("distinguishes loading, failure with retry, and an empty installed catalogue", async () => {
   let reject!: (reason: Error) => void;
   load.mockImplementationOnce(() => new Promise((_, no) => { reject = no; }));

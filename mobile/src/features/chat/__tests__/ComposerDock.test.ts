@@ -18,8 +18,7 @@ jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Chevron
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
-jest.mock("../components/SkillPicker", () => ({ SkillPicker: () => null }));
-
+jest.mock("../components/SkillPicker", () => ({ SkillPicker: jest.fn(() => null) }));
 test("streaming allows drafting while one stop press sends a request and exposes its outcome", async () => {
   let resolve!: () => void;
   const abort = jest.fn(() => new Promise<void>(done => { resolve = done; }));
@@ -143,6 +142,52 @@ test("compaction blocks button and keyboard sends without clearing or locking th
     expect(button("chat.send").props.disabled).toBe(false);
     act(() => button("chat.send").props.onPress());
     expect(send).toHaveBeenCalledTimes(1);
+  } finally { act(() => tree.unmount()); }
+});
+
+test("manual compaction is a slash action, gated by the Desktop and never a toolbar button", () => {
+  const onCompactContext = jest.fn();
+  const props = {
+    message: "/", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, compacting: false, busy: false, abort: jest.fn(),
+      capabilities: new Set(["skills_v1", "compaction_v1"]), listSkills: jest.fn(async () => []) },
+    openAttachmentMenu: jest.fn(), send: jest.fn(), atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+    onCompactContext,
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  const picker = jest.requireMock("../components/SkillPicker").SkillPicker as jest.Mock;
+  let tree!: ReactTestRenderer;
+  const openMenu = () => {
+    act(() => tree.root.findByType(TextInput).props.onFocus());
+    act(() => tree.root.findByType(TextInput).props.onChangeText("/"));
+  };
+  const actions = () => picker.mock.calls.at(-1)?.[0].actions ?? [];
+  const runAction = () => picker.mock.calls.at(-1)?.[0].onActionSelect;
+  try {
+    act(() => { tree = create(createElement(ComposerDock, props)); });
+    openMenu();
+    expect(actions()).toHaveLength(1);
+    expect(actions()[0]).toMatchObject({ id: "compact", label: "chat.compactContext" });
+    act(() => runAction()(actions()[0]));
+    expect(onCompactContext).toHaveBeenCalledTimes(1);
+
+    // An older Desktop that cannot compact must not offer the action at all.
+    act(() => tree.update(createElement(ComposerDock, {
+      ...props,
+      remote: { ...props.remote, capabilities: new Set(["skills_v1"]) },
+    })));
+    expect(actions()).toHaveLength(0);
+
+    // While a compaction is already running there is nothing to start.
+    act(() => tree.update(createElement(ComposerDock, {
+      ...props,
+      remote: { ...props.remote, compacting: true },
+    })));
+    expect(actions()).toHaveLength(0);
   } finally { act(() => tree.unmount()); }
 });
 

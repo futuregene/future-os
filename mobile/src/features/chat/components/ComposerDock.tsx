@@ -21,6 +21,8 @@ import {
 } from "react-native";
 import {
   memo,
+  useCallback,
+  useMemo,
   useRef,
   useState,
   type Dispatch,
@@ -41,6 +43,7 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillPicker } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
@@ -71,6 +74,7 @@ function ComposerDockView({
   decideApproval,
   selector,
   setSelector,
+  onCompactContext,
   keyboardHeight = 0,
 }: {
   message: string;
@@ -94,6 +98,8 @@ function ComposerDockView({
   ) => Promise<void>;
   selector: "model" | "thinking" | null;
   setSelector: (value: "model" | "thinking" | null) => void;
+  /** Manual context compaction, offered as a `/` action (never a toolbar button). */
+  onCompactContext?: () => void;
   keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
@@ -104,6 +110,20 @@ function ComposerDockView({
   const editable = !remote.busy;
   const canSend = !remote.streaming && !remote.compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
+  const compactionActionEnabled = !!onCompactContext
+    && (remote.capabilities?.has?.("compaction_v1") ?? false)
+    && !remote.compacting;
+  const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
+    ? [{
+      id: "compact",
+      label: t("chat.compactContext"),
+      description: t("chat.compactContextDescription"),
+      searchText: "compact compaction compress context 压缩 上下文",
+    }]
+    : [], [compactionActionEnabled, t]);
+  const handleSlashAction = useCallback((action: SlashAction) => {
+    if (action.id === "compact") onCompactContext?.();
+  }, [onCompactContext]);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
@@ -115,6 +135,7 @@ function ComposerDockView({
     setMessage,
     editable && selector === null,
     inputRef,
+    handleSlashAction,
   );
   const pickerHeight = Math.max(
     100,
@@ -186,6 +207,8 @@ function ComposerDockView({
             onSelect={completion.select}
             onClose={completion.close}
             maxHeight={pickerHeight}
+            actions={slashActions}
+            onActionSelect={handleSlashAction}
           />
         )}
         <View style={styles.composer}>

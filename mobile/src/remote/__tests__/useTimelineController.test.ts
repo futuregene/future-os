@@ -1747,4 +1747,75 @@ describe("useTimelineController", () => {
       }
     });
   });
+
+  describe("manual compaction outcome", () => {
+    const terminal = (type: string, data: Record<string, unknown>) => evt(type, JSON.stringify(data));
+
+    test("settles on the matching operation and ignores another operation's event", async () => {
+      render();
+      await establish();
+      const settled = jest.fn();
+      let outcome: Promise<unknown> | null = null;
+      act(() => {
+        outcome = result.current.awaitCompactionOutcome("s1", "cmp-2");
+        void outcome.then(settled);
+      });
+      act(() => result.current.handleEvent(terminal("compaction_committed", { operation_id: "cmp-1" }), "s1"));
+      await flush();
+      expect(settled).not.toHaveBeenCalled();
+      act(() => result.current.handleEvent(terminal("compaction_committed", { operation_id: "cmp-2" }), "s1"));
+      await flush();
+      await expect(outcome).resolves.toEqual({ status: "committed" });
+    });
+
+    test("keeps a terminal event that arrives before its initiator correlates it", async () => {
+      render();
+      await establish();
+      act(() => result.current.handleEvent(terminal("compaction_failed", {
+        operation_id: "cmp-early",
+        error: "summary failed",
+      }), "s1"));
+      await flush();
+      await expect(result.current.awaitCompactionOutcome("s1", "cmp-early"))
+        .resolves.toEqual({ status: "failed", error: "summary failed" });
+    });
+
+    test("reports a missing terminal event as timeout, never as failure", async () => {
+      jest.useFakeTimers();
+      try {
+        render();
+        await establish();
+        const outcome = result.current.awaitCompactionOutcome("s1", "cmp-slow", 5_000);
+        await act(async () => {
+          await jest.advanceTimersByTimeAsync(5_001);
+        });
+        await expect(outcome).resolves.toEqual({ status: "timeout" });
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("carries the unchanged/reused flags and tolerates malformed payloads", async () => {
+      render();
+      await establish();
+      act(() => result.current.handleEvent(terminal("compaction_unchanged", {
+        operation_id: "cmp-reused",
+        already_compacted: true,
+        reused: true,
+      }), "s1"));
+      await flush();
+      await expect(result.current.awaitCompactionOutcome("s1", "cmp-reused"))
+        .resolves.toEqual({ status: "unchanged", alreadyCompacted: true, reused: true });
+      // A malformed terminal frame must not settle a waiter with garbage.
+      act(() => result.current.handleEvent(evt("compaction_failed", "not-json"), "s1"));
+      await flush();
+      act(() => result.current.handleEvent(terminal("compaction_failed", { error: "no id" }), "s1"));
+      await flush();
+      const outcome = result.current.awaitCompactionOutcome("s1", "cmp-none", 1);
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      });
+      await expect(outcome).resolves.toEqual({ status: "timeout" });
+    });
+  });
 });
