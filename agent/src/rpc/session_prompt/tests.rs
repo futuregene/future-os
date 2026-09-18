@@ -2078,6 +2078,7 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
         trigger: CompactionTrigger::Automatic,
         phase: None,
         algorithm_version: "v2".into(),
+        summary_outcome: None,
         model: "model".into(),
         context_window: 200,
         created_at: chrono::Utc::now(),

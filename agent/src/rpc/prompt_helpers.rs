@@ -71,6 +71,10 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
                     serde_json::json!(checkpoint.algorithm_version),
                 ),
                 ("summary", serde_json::json!(checkpoint.summary)),
+                (
+                    "summary_outcome",
+                    serde_json::json!(checkpoint.summary_outcome),
+                ),
             ]),
         ),
         RunEvent::CompactionFailed {

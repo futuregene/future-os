@@ -53,6 +53,12 @@ persist original user/assistant/tool entries
 by accident; the summarised path is a separate entry point that does. Evidence reserves
 `min(2048, W/8)` tokens independently of how long any summary turns out to be, while history
 keeps the 32K target, the 128K expansion ceiling and the real request-capacity guard.
+The handoff request still targets 4096 text tokens and retains its separate reasoning/output
+allowance. Acceptance checks the **complete projected request**, not just whether the text
+exceeded that target: a small estimator overrun is accepted when the admitted projection
+fits. A result exceeding the projection/request limits falls back without truncating the
+summary, shrinking evidence, or adding a model retry. Admission-policy fingerprinting
+prevents replaying a receipt computed under the previous text-only rejection rule.
 
 ### Evidence rendering
 
@@ -127,6 +133,28 @@ provider-limit recovery.
 Use project worktrees, an isolated `HOME` and fresh ports, and never stop the user's Agent.
 Raise the macOS file-descriptor limit for the full suite, and place sandbox-test `HOME` under
 the project target directory rather than the system temporary allowlist.
+
+### Summary outcome reporting
+
+A committed checkpoint is not proof that a model summary was retained. New summarised-path
+checkpoints persist optional `summary_outcome`, also sent on `compaction_committed` and
+receipt-reuse `compaction_unchanged` events. The manual result (and durable receipt) exposes
+it as `summaryOutcome`, beside `algorithmVersion`:
+
+```json
+{"status":"evidence_only","fallback_reason":"summary projection rejected: ...","attempt_usage":[{"prompt_tokens":100000,"completion_tokens":4181,"reasoning_tokens":516,"credit_cost":0.125}]}
+```
+
+`status` is `generated` (handoff retained) or `evidence_only` (successful compression without
+it). `fallback_reason` is absent on success; `attempt_usage` contains the final reported
+usage of each attempt, including discarded summaries and existing transient retries. An
+absent price is unknown, not free. This is diagnostic data, **not a second billing event**.
+A failure to commit still uses `compaction_failed`, never a success outcome. Older checkpoints
+and explicit deterministic-only preparations may lack this optional diagnostic field.
+Existing clients can ignore the additive JSON field; no protobuf change is required.
+
+Identical input/policy reuse returns the recorded outcome without another provider call,
+including when that outcome was a fallback. This does not add automatic retries on replay.
 
 A receipt hit still costs a fingerprint check and selection. Synthetic results establish
 feasibility, not that a complex natural-language task needs no semantic processing.

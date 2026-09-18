@@ -96,7 +96,7 @@ pub(crate) fn remap_evidence_references(
 /// outcome is not known at admission time. Like the summary prompt text, the composed text
 /// is therefore not itself part of the key.
 pub(in crate::compaction) fn policy_identity() -> serde_json::Value {
-    serde_json::json!({"algorithm":ALGORITHM_DETERMINISTIC,"budget":EVIDENCE_TOKENS,"head":HEAD_CHARS,"tail":TAIL_CHARS,"metadata":FIELD_CHARS,"header":HEADER})
+    serde_json::json!({"algorithm":ALGORITHM_DETERMINISTIC,"budget":EVIDENCE_TOKENS,"head":HEAD_CHARS,"tail":TAIL_CHARS,"metadata":FIELD_CHARS,"header":HEADER,"summaryAdmission":"projection-budget-v1"})
 }
 
 #[derive(Clone, Copy)]
@@ -472,7 +472,7 @@ pub(in crate::compaction) fn prepare(
         Staged::Unchanged(prompt) => Ok(ContextPreparation::Unchanged { prompt }),
         Staged::Ready { plan, evidence, .. } => finalize(
             manager,
-            *plan,
+            &plan,
             compose(HEADER, &evidence),
             ALGORITHM_DETERMINISTIC,
             &manager.model,
@@ -528,14 +528,21 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
             summary_reserve,
         } => (plan, evidence, summary_reserve),
     };
+    let mut fallback_reason = if provider.is_none() {
+        Some("no provider available for a model summary".to_string())
+    } else if reserve == 0 {
+        Some("no budget available for a model summary".to_string())
+    } else {
+        None
+    };
     let provider = provider.filter(|_| reserve > 0);
-    if provider.is_none() && on_fallback.is_some() {
-        // Reported once, so a silently deterministic checkpoint is never mistaken
-        // for a summarised one.
-        if let Some(report) = on_fallback {
-            report("no budget available for a model summary");
+    let attempt_usage = parking_lot::Mutex::new(Vec::new());
+    let record_usage = |usage: &crate::types::Usage| {
+        attempt_usage.lock().push(usage.clone());
+        if let Some(report) = on_usage {
+            report(usage);
         }
-    }
+    };
     let summary = match provider {
         None => None,
         Some(provider) => {
@@ -549,7 +556,7 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
                 tools,
                 reserve,
                 interrupted,
-                on_usage,
+                Some(&record_usage),
             )
             .await
             {
@@ -557,10 +564,7 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
                 Err(SummaryCallError::Cancelled) => return Err(ContextError::Cancelled),
                 Err(error) => {
                     let reason = error.to_string();
-                    tracing::warn!(%reason, "handoff summary failed; committing deterministic evidence only");
-                    if let Some(report) = on_fallback {
-                        report(&reason);
-                    }
+                    fallback_reason = Some(reason);
                     None
                 }
             }
@@ -571,30 +575,60 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
     if interrupted.load(Ordering::Relaxed) {
         return Err(ContextError::Cancelled);
     }
-    match summary {
-        Some(text) => {
-            // The index now really is followed by a summary, so it uses the header that says
-            // so; the stub would contradict the message it heads.
-            let combined = format!(
-                "{}\n\n{HANDOFF_SUMMARY_HEADER}\n\n{text}",
-                compose(HEADER_WITH_SUMMARY, &evidence)
-            );
+    // The requested length is a target. The hard limits apply to the complete
+    // projection, including originals, evidence, headers, tail and request overhead.
+    // Try it unchanged; never truncate text, shrink evidence or retry the model.
+    let summarized = summary.map(|text| {
+        let combined = format!(
+            "{}\n\n{HANDOFF_SUMMARY_HEADER}\n\n{text}",
+            compose(HEADER_WITH_SUMMARY, &evidence)
+        );
+        finalize(
+            manager,
+            &plan,
+            combined,
+            ALGORITHM_SUMMARIZED,
+            &manager.model,
+        )
+    });
+    let mut prepared = match summarized {
+        Some(Ok(prepared)) => prepared,
+        outcome => {
+            match outcome {
+                Some(Err(error @ (ContextError::BudgetExceeded(_) | ContextError::NoProgress))) => {
+                    fallback_reason = Some(format!("summary projection rejected: {error}"));
+                }
+                Some(Err(error)) => return Err(error),
+                None => {}
+                Some(Ok(_)) => unreachable!(),
+            }
+            if let Some(reason) = &fallback_reason {
+                tracing::warn!(%reason, "handoff summary unavailable; committing deterministic evidence only");
+                if let Some(report) = on_fallback {
+                    report(reason);
+                }
+            }
             finalize(
                 manager,
-                *plan,
-                combined,
-                ALGORITHM_SUMMARIZED,
+                &plan,
+                compose(HEADER, &evidence),
+                ALGORITHM_DETERMINISTIC,
                 &manager.model,
-            )
+            )?
         }
-        None => finalize(
-            manager,
-            *plan,
-            compose(HEADER, &evidence),
-            ALGORITHM_DETERMINISTIC,
-            &manager.model,
-        ),
+    };
+    if let ContextPreparation::Compacted { checkpoint, .. } = &mut prepared {
+        checkpoint.summary_outcome = Some(super::super::CompactionSummaryOutcome {
+            status: if fallback_reason.is_some() {
+                super::super::CompactionSummaryStatus::EvidenceOnly
+            } else {
+                super::super::CompactionSummaryStatus::Generated
+            },
+            fallback_reason,
+            attempt_usage: attempt_usage.into_inner(),
+        });
     }
+    Ok(prepared)
 }
 
 /// Ask the model for a handoff summary of the live conversation, handing it the
@@ -649,11 +683,8 @@ discarded if longer, so prefer terse bullets and keep the identifiers rather tha
     if text.trim().is_empty() {
         return Err(SummaryCallError::Other("summary came back empty".into()));
     }
-    if estimate_text_tokens(&text) > budget {
-        return Err(SummaryCallError::Other(
-            "summary exceeds its reserved text budget".into(),
-        ));
-    }
+    // `finalize` enforces the admitted projection/request budgets. A small
+    // estimator overrun must not discard a usable summary when that projection fits.
     Ok(text.trim().to_string())
 }
 
