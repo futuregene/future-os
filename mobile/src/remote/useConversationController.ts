@@ -264,7 +264,9 @@ export function useConversationController({
       sessionId,
     );
     const operationId = response.data?.operationId;
-    if (typeof operationId !== "string" || !operationId) throw new Error("compaction_invalid_ack");
+    if (response.data?.accepted !== true || typeof operationId !== "string" || !operationId.trim()) {
+      throw new Error("compaction_invalid_ack");
+    }
     return { sessionId, operationId };
   }, [clientRef, selectedRef]);
 

@@ -75,6 +75,7 @@ function ComposerDockView({
   selector,
   setSelector,
   onCompactContext,
+  compactionPending = false,
   keyboardHeight = 0,
 }: {
   message: string;
@@ -100,6 +101,7 @@ function ComposerDockView({
   setSelector: (value: "model" | "thinking" | null) => void;
   /** Manual context compaction, offered as a `/` action (never a toolbar button). */
   onCompactContext?: () => void;
+  compactionPending?: boolean;
   keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
@@ -108,13 +110,15 @@ function ComposerDockView({
   // A running reply blocks sending, not drafting the next message. Keep the
   // short send/upload busy phase locked so its acknowledgement cannot clear edits.
   const editable = !remote.busy;
-  const canSend = !remote.streaming && !remote.compacting && !remote.busy && remote.desktopOnline &&
+  const compacting = compactionPending || remote.compacting;
+  const canSend = !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
   const compactionActionEnabled = !!onCompactContext
     && (remote.capabilities?.has?.("compaction_v1") ?? false)
-    && !remote.compacting
+    && !compacting && !remote.busy && !remote.draft && !!remote.selectedSessionId
+    && remote.desktopOnline && remote.connectionPresentation.level === "connected"
     && !remote.streaming;
   const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
     ? [{
@@ -125,8 +129,8 @@ function ComposerDockView({
     }]
     : [], [compactionActionEnabled, t]);
   const handleSlashAction = useCallback((action: SlashAction) => {
-    if (action.id === "compact") onCompactContext?.();
-  }, [onCompactContext]);
+    if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
+  }, [compactionActionEnabled, onCompactContext]);
   const stopRequest = useStopRequest(
     remote.streaming,
     remote.selectedSessionId,
@@ -333,11 +337,11 @@ function ComposerDockView({
                 accessibilityState={{
                   expanded: selector === "model",
                   disabled:
-                    remote.streaming || remote.compacting ||
+                    remote.streaming || compacting ||
                     remote.connectionPresentation.level !== "connected",
                 }}
                 disabled={
-                  remote.streaming || remote.compacting ||
+                  remote.streaming || compacting ||
                   remote.connectionPresentation.level !== "connected"
                 }
                 onPress={() => setSelector("model")}
@@ -346,7 +350,7 @@ function ComposerDockView({
                   styles.modelTrigger,
                   compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
-                  (remote.streaming || remote.compacting) && styles.controlDisabled,
+                  (remote.streaming || compacting) && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -360,11 +364,11 @@ function ComposerDockView({
                 accessibilityState={{
                   expanded: selector === "thinking",
                   disabled:
-                    remote.streaming || remote.compacting ||
+                    remote.streaming || compacting ||
                     remote.connectionPresentation.level !== "connected",
                 }}
                 disabled={
-                  remote.streaming || remote.compacting ||
+                  remote.streaming || compacting ||
                   remote.connectionPresentation.level !== "connected"
                 }
                 onPress={() => setSelector("thinking")}
@@ -373,7 +377,7 @@ function ComposerDockView({
                   styles.thinkingTrigger,
                   compactToolbar && styles.selectorTriggerCompact,
                   pressed && styles.selectorTriggerPressed,
-                  (remote.streaming || remote.compacting) && styles.controlDisabled,
+                  (remote.streaming || compacting) && styles.controlDisabled,
                 ]}
               >
                 <Text numberOfLines={1} style={styles.selectorText}>
@@ -450,9 +454,9 @@ function ComposerDockView({
               </Pressable>
             ) : (
               <Pressable
-                accessibilityLabel={t(remote.compacting ? "chat.compacting" : "chat.send")}
+                accessibilityLabel={t(compacting ? "chat.compacting" : "chat.send")}
                 accessibilityRole="button"
-                accessibilityState={{ disabled: !canSend, busy: remote.compacting }}
+                accessibilityState={{ disabled: !canSend, busy: compacting }}
                 disabled={!canSend}
                 onPress={() => { if (canSend) void send(); }}
                 style={({ pressed }) => [
@@ -461,7 +465,7 @@ function ComposerDockView({
                   pressed && styles.sendPressed,
                 ]}
               >
-                {remote.compacting ? (
+                {compacting ? (
                   <ActivityIndicator color={colors.surface} size="small" />
                 ) : (
                   <Send color={colors.surface} size={17} />

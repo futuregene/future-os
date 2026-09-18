@@ -99,6 +99,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
     sessionId: string,
     operationId: string,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<import("./types").CompactionOutcome>;
   listSessionFiles(path?: string): Promise<SessionFileListing>;
   listSkills(): Promise<RemoteSkill[]>;

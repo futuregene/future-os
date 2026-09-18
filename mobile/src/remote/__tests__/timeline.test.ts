@@ -1251,12 +1251,12 @@ describe("shared-projection semantic flags", () => {
     expect(state.streaming).toBe(false);
     const messages = state.items.filter(item => item.kind === "message");
     // The finished reply is untouched: no second, empty streaming bubble.
-    expect(messages.map(item => item.id)).toEqual(["assistant:run-old", "assistant:__compaction__"]);
+    expect(messages.map(item => item.id)).toEqual(["assistant:run-old", "m_cp-manual"]);
     expect(messages[0]).toMatchObject({ streaming: false, text: "previous reply" });
     expect(messages[1]).toMatchObject({
       streaming: false,
       text: "",
-      segments: [{ id: "cp-manual", kind: "compaction", tokensBefore: 33_064, trigger: "manual" }],
+      segments: [{ id: "seg_cp-manual_compaction", kind: "compaction", tokensBefore: 33_064, trigger: "manual", status: "completed" }],
     });
     expect(messages[1]?.runId).toBeUndefined();
   });

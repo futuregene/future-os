@@ -1,68 +1,67 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { TFunction } from "i18next";
-import { useRemote } from "../../remote/RemoteContext";
+import type { useRemote } from "../../remote/RemoteContext";
 import { showToast } from "./utils";
 
 type Remote = ReturnType<typeof useRemote>;
+type Attempt = { scope: string; controller: AbortController };
 
 export interface CompactContextApi {
   compact: () => Promise<void>;
+  /** Immediate local admission/wait feedback, before the first Agent event. */
+  pending: boolean;
 }
 
-/**
- * Manual context compaction from the phone.
- *
- * The composer already renders the operation itself (a running divider, then a
- * committed or failed one), so this hook adds only what that divider cannot
- * say: a rejected request, a no-op compaction that leaves no marker at all, and
- * a missing result.
- */
 export function useCompactContext(remote: Remote, t: TFunction): CompactContextApi {
-  const { compactContext, awaitCompactionOutcome, compacting } = remote;
-  // The request itself is millisecond-scale; the operation is tracked by the
-  // session's own compacting state, not by this flag.
-  const requestInFlight = useRef(false);
-  const compact = useCallback(async () => {
-    if (requestInFlight.current) return;
-    // Gate on the *authoritative* compacting state rather than on this client's
-    // own bookkeeping: a terminal event that never reached the phone must not
-    // leave the action silently refusing every later tap. A duplicate that
-    // slips through the acknowledgement window comes back as the Agent's own
-    // rejection, which is a truthful message rather than silence.
-    if (compacting) {
-      showToast(t("chat.compacting"));
-      return;
+  const { compactContext, awaitCompactionOutcome, compacting, busy, draft, selectedSessionId } = remote;
+  const streaming = remote.timeline.streaming;
+  const supported = remote.capabilities.has("compaction_v1");
+  const scope = JSON.stringify([remote.credentials?.pairId, remote.presence?.bridgeInstanceId, selectedSessionId]);
+  const attemptRef = useRef<Attempt | null>(null);
+  const [attempt, setAttempt] = useState<Attempt | null>(null);
+  useLayoutEffect(() => () => {
+    const active = attemptRef.current;
+    if (active?.scope === scope) {
+      active.controller.abort();
+      attemptRef.current = null;
     }
-    requestInFlight.current = true;
+  }, [scope]);
+
+  const compact = useCallback(async () => {
+    if (attemptRef.current?.scope === scope || compacting) return;
+    if (!supported || draft || !selectedSessionId || streaming || busy) return;
+    attemptRef.current?.controller.abort();
+    const current = { scope, controller: new AbortController() };
+    attemptRef.current = current;
+    setAttempt(current); // render the spinner/disable sends before awaiting the RPC
+    const isCurrent = () => !current.controller.signal.aborted && attemptRef.current === current;
     try {
-      const { sessionId, operationId } = await compactContext();
-      const outcome = await awaitCompactionOutcome(sessionId, operationId);
+      const acknowledgement = await compactContext();
+      if (!isCurrent()) return;
+      if (acknowledgement.sessionId !== selectedSessionId) throw new Error("compaction_session_changed");
+      const outcome = await awaitCompactionOutcome(
+        acknowledgement.sessionId, acknowledgement.operationId, undefined, current.controller.signal,
+      );
+      if (!isCurrent()) return;
       if (outcome.status === "failed") {
-        showToast(t("chat.compactionRequestFailed", {
-          message: outcome.error || t("failure.unknown"),
-        }));
-      }
-      else if (outcome.status === "unchanged") {
-        showToast(t(outcome.alreadyCompacted || outcome.reused
-          ? "chat.compactionNoNewContent"
-          : "chat.compactionNotNeeded"));
-      }
-      else if (outcome.status === "timeout") {
+        showToast(t("chat.compactionRequestFailed", { message: outcome.error || t("failure.unknown") }));
+      } else if (outcome.status === "unchanged") {
+        showToast(t(outcome.alreadyCompacted || outcome.reused ? "chat.compactionNoNewContent" : "chat.compactionNotNeeded"));
+      } else if (outcome.status === "timeout") {
         showToast(t("chat.compactionWaitTimedOut"));
       }
-      // "committed" needs no toast (the divider reported it), and "unobserved"
-      // has no result to report: the session stopped compacting without this
-      // client seeing the terminal frame, so say nothing rather than invent one.
-    }
-    catch (error) {
-      showToast(t("chat.compactionRequestFailed", {
+      // committed is visible in history; unobserved/cancelled cannot claim success.
+    } catch (error) {
+      if (isCurrent()) showToast(t("chat.compactionRequestFailed", {
         message: error instanceof Error ? error.message : String(error),
       }));
+    } finally {
+      if (attemptRef.current === current) {
+        attemptRef.current = null;
+        setAttempt(null);
+      }
     }
-    finally {
-      requestInFlight.current = false;
-    }
-  }, [awaitCompactionOutcome, compactContext, compacting, t]);
+  }, [awaitCompactionOutcome, compactContext, compacting, streaming, busy, draft, selectedSessionId, supported, scope, t]);
 
-  return { compact };
+  return { compact, pending: attempt?.scope === scope && !attempt.controller.signal.aborted };
 }

@@ -179,6 +179,7 @@ export type CompactionOutcome =
   | { status: "unchanged"; alreadyCompacted: boolean; reused: boolean }
   /** No terminal event reached this client, but the session stopped compacting. */
   | { status: "unobserved" }
+  | { status: "cancelled" }
   | { status: "timeout" };
 
 export interface HistoryMessage {
