@@ -1749,6 +1749,79 @@ describe("useTimelineController", () => {
   });
 
   describe("manual compaction outcome", () => {
+    test("session identity and multiple early results are preserved", async () => {
+      render();
+      for (const op of ["mine", "other"]) {
+        act(() => result.current.handleEvent(evt("compaction_committed", JSON.stringify({ operation_id: op })), "s1"));
+      }
+      await expect(result.current.awaitCompactionOutcome("s1", "mine")).resolves.toEqual({ status: "committed" });
+      const settled = jest.fn();
+      const wait = result.current.awaitCompactionOutcome("s2", "other");
+      void wait.then(settled);
+      await flush();
+      expect(settled).not.toHaveBeenCalled();
+      act(() => result.current.handleEvent(evt("compaction_failed", JSON.stringify({ operation_id: "other", error: "own result" })), "s2"));
+      await expect(wait).resolves.toEqual({ status: "failed", error: "own result" });
+    });
+
+    test.each(["abort", "reset", "unmount"])("%s settles a wait and releases all timers", async how => {
+      jest.useFakeTimers();
+      try {
+        render();
+        const baselineTimers = jest.getTimerCount();
+        const controller = new AbortController();
+        const wait = result.current.awaitCompactionOutcome("s1", "op", 30_000, controller.signal);
+        expect(jest.getTimerCount()).toBe(baselineTimers + 2);
+        if (how === "abort") act(() => controller.abort());
+        if (how === "reset") act(() => result.current.resetTimeline());
+        if (how === "unmount") { act(() => renderer!.unmount()); renderer = null; }
+        await expect(wait).resolves.toEqual({ status: "cancelled" });
+        expect(jest.getTimerCount()).toBe(how === "unmount" ? 0 : baselineTimers);
+      } finally { jest.useRealTimers(); }
+    });
+
+    test("a read started before registration cannot settle the new operation", async () => {
+      let read!: (value: unknown) => void;
+      request.mockImplementation((cmd: { type: string }) => cmd.type === "get_state"
+        ? new Promise(resolve => { read = resolve; }) : Promise.resolve({ data: { entries: [] } }));
+      render();
+      await establish();
+      const done = jest.fn();
+      const wait = result.current.awaitCompactionOutcome("s1", "op");
+      void wait.then(done);
+      await act(async () => read({ data: { isCompacting: false } }));
+      await flush();
+      expect(done).not.toHaveBeenCalled();
+      act(() => result.current.handleEvent(evt("compaction_committed", '{"operation_id":"op"}'), "s1"));
+      await expect(wait).resolves.toEqual({ status: "committed" });
+    });
+
+    test("a projected falling flag is not authoritative completion evidence", async () => {
+      request.mockImplementation(async (cmd: { type: string }) => ({ data: cmd.type === "get_state" ? { isCompacting: true } : { entries: [] } }));
+      render();
+      await establish();
+      const done = jest.fn();
+      const wait = result.current.awaitCompactionOutcome("s1", "mine");
+      void wait.then(done);
+      act(() => result.current.syncEngineRef.current!.mutate("s1", state => ({ ...state, compacting: false })));
+      await flush();
+      expect(done).not.toHaveBeenCalled();
+      act(() => result.current.handleEvent(evt("compaction_committed", '{"operation_id":"mine"}'), "s1"));
+      await expect(wait).resolves.toEqual({ status: "committed" });
+    });
+
+    test("read-only probing recovers when both started and terminal frames are lost", async () => {
+      jest.useFakeTimers();
+      try {
+        request.mockImplementation(async (cmd: { type: string }) => ({ data: cmd.type === "get_state" ? { isCompacting: false } : { entries: [] } }));
+        render();
+        await establish();
+        const wait = result.current.awaitCompactionOutcome("s1", "lost");
+        await act(async () => { await jest.advanceTimersByTimeAsync(5_001); });
+        await expect(wait).resolves.toEqual({ status: "unobserved" });
+        expect(request.mock.calls.every(([cmd]) => cmd.type.startsWith("get_"))).toBe(true);
+      } finally { jest.useRealTimers(); }
+    });
     const terminal = (type: string, data: Record<string, unknown>) => evt(type, JSON.stringify(data));
 
     test("settles on the matching operation and ignores another operation's event", async () => {

@@ -578,6 +578,30 @@
           }
         ]
       },
+      "compact-context-delayed": {
+        "url": "http://localhost:8099/?compactionDelay=1",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()" },
+          { "type": "keep /压缩" },
+          { "wait": 500 },
+          { "eval": "document.querySelector('[aria-label=\"压缩上下文\"]').click()" },
+          { "wait": 100 },
+          { "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('no immediate pending feedback'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('draft not preserved'); }" },
+          { "shot": "m-compaction-requesting.png" },
+          { "wait": 2000 },
+          { "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('ACK incorrectly unlocked sends'); window.dispatchEvent(new Event('shot:complete-compaction')); }" },
+          { "wait": 500 },
+          { "eval": "{ const b = document.querySelector('[aria-label=\"发送\"]'); if (!b || b.getAttribute('aria-disabled') === 'true') throw new Error('send did not recover'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('completion consumed draft'); if (document.body.innerText.includes('正在生成')) throw new Error('compaction revived reply'); if (!document.body.innerText.includes('你手动压缩了此对话的上下文')) throw new Error('batch dropped checkpoint'); }" },
+          { "shot": "m-compaction-ready.png" }
+        ]
+      },
       "compact-context-outcome": {
         "url": "http://localhost:8099/?compacted=1",
         "steps": [

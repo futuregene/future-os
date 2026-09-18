@@ -121,6 +121,34 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test("live queued standalone compaction reaches the UI through the production batch lane", async () => {
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      const end = agentEnd("r", 2);
+      h.journal.add(end);
+      h.engine.event("s", end);
+      await h.settle();
+      const started = evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" }));
+      h.journal.add(started);
+      h.engine.event("s", started);
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ streaming: false, segments: [{ status: "running" }] });
+      expect(h.timelineOf("s").streaming).toBe(false);
+      const committed = evt("compaction_committed", "r", 4, JSON.stringify({ operation_id: "cmp", checkpoint_id: "cp", phase: "standalone", trigger: "manual" }));
+      h.journal.add(committed);
+      h.engine.event("s", committed);
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", streaming: false, segments: [{ status: "completed" }] });
+      expect(h.timelineOf("s").streaming).toBe(false);
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
   test.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("restores compaction on open and releases it on %s", async terminal => {
     const h = new Harness();
     h.isCompacting = true;

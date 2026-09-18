@@ -275,11 +275,14 @@ export function useTimelineController({
   // request), and a terminal event that arrives first is buffered per session
   // until its initiator correlates it.
   const compactionWaitersRef = useRef<
-    Map<string, { sessionId: string; settle: (outcome: CompactionOutcome) => void }>
+    Map<string, { sessionId: string; promise: Promise<CompactionOutcome>; settle: (outcome: CompactionOutcome) => void }>
   >(new Map());
-  const compactionTerminalsRef = useRef<
-    Map<string, { operationId: string; outcome: CompactionOutcome }>
-  >(new Map());
+  const compactionTerminalsRef = useRef<Map<string, CompactionOutcome>>(new Map());
+  const cancelCompactionWaiters = useCallback(() => {
+    for (const waiter of [...compactionWaitersRef.current.values()]) waiter.settle({ status: "cancelled" });
+    compactionTerminalsRef.current.clear();
+  }, []);
+  useEffect(() => cancelCompactionWaiters, [cancelCompactionWaiters]);
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
@@ -339,12 +342,17 @@ export function useTimelineController({
       if (compactionTerminal) {
         // Settle before the visibility check below: a conversation switch during
         // compaction must not leave the initiator waiting for its outcome.
-        const waiter = compactionWaitersRef.current.get(compactionTerminal.operationId);
+        const key = JSON.stringify([sid, compactionTerminal.operationId]);
+        const waiter = compactionWaitersRef.current.get(key);
         if (waiter) {
-          compactionWaitersRef.current.delete(compactionTerminal.operationId);
           waiter.settle(compactionTerminal.outcome);
         } else {
-          compactionTerminalsRef.current.set(sid, compactionTerminal);
+          // Bound early/replayed terminals; keep multiple operations in a
+          // session so an unrelated replay cannot overwrite a fast result.
+          compactionTerminalsRef.current.set(key, compactionTerminal.outcome);
+          if (compactionTerminalsRef.current.size > 32) {
+            compactionTerminalsRef.current.delete(compactionTerminalsRef.current.keys().next().value!);
+          }
         }
       }
       if (event.type === "run_snapshot") {
@@ -673,12 +681,18 @@ export function useTimelineController({
         const revision = settingsRevisionRef.current;
         const read = ++settingsReadRef.current;
         const epoch = historyEpochRef.current;
+        const waiting = [...compactionWaitersRef.current.values()].filter(waiter => waiter.sessionId === sessionId);
         const state = (
           await client.requestRetry<RemoteSessionState>(
             { type: "get_state", sessionId },
             sessionId,
           )
         ).data;
+        if (clientRef.current === client && historyEpochRef.current === epoch && state.isCompacting === false) {
+          // Only an explicit idle read started after registration can settle a
+          // lost result. Projected flags/history previews are not evidence.
+          for (const waiter of waiting) waiter.settle({ status: "unobserved" });
+        }
         if (clientRef.current === client && selectedRef.current === sessionId
           && settingsRevisionRef.current === revision && settingsReadRef.current === read
           && historyEpochRef.current === epoch) {
@@ -751,20 +765,7 @@ export function useTimelineController({
       });
       cursorsRef.current[commit.sessionId] = commit.cursor;
       streamingRef.current[commit.sessionId] = commit.timeline.streaming;
-      const wasCompacting = compactingRef.current[commit.sessionId] === true;
-      const isCompacting = commit.timeline.compacting === true;
-      compactingRef.current[commit.sessionId] = isCompacting;
-      // The session stopped compacting without the terminal event ever reaching
-      // this client (backgrounded app, dropped stream, missed frame). The
-      // authoritative state — not the event — ends the wait, so a lost frame
-      // cannot leave the composer refusing new requests for the whole timeout.
-      if (wasCompacting && !isCompacting) {
-        for (const [operationId, waiter] of [...compactionWaitersRef.current]) {
-          if (waiter.sessionId !== commit.sessionId) continue;
-          compactionWaitersRef.current.delete(operationId);
-          waiter.settle({ status: "unobserved" });
-        }
-      }
+      compactingRef.current[commit.sessionId] = commit.timeline.compacting === true;
     });
     syncEngineRef.current = engine;
     return () => {
@@ -824,25 +825,55 @@ export function useTimelineController({
       sessionId: string,
       operationId: string,
       timeoutMs: number = COMPACTION_TERMINAL_TIMEOUT_MS,
+      signal?: AbortSignal,
     ): Promise<CompactionOutcome> => {
-      const buffered = compactionTerminalsRef.current.get(sessionId);
-      if (buffered?.operationId === operationId) {
-        compactionTerminalsRef.current.delete(sessionId);
-        return Promise.resolve(buffered.outcome);
+      if (signal?.aborted) return Promise.resolve({ status: "cancelled" });
+      const key = JSON.stringify([sessionId, operationId]);
+      const buffered = compactionTerminalsRef.current.get(key);
+      if (buffered) {
+        compactionTerminalsRef.current.delete(key);
+        return Promise.resolve(buffered);
       }
-      return new Promise<CompactionOutcome>((resolve) => {
-        const settle = (outcome: CompactionOutcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        };
-        const timer = setTimeout(() => {
-          compactionWaitersRef.current.delete(operationId);
-          resolve({ status: "timeout" });
-        }, timeoutMs);
-        compactionWaitersRef.current.set(operationId, { sessionId, settle });
-      });
+      const existing = compactionWaitersRef.current.get(key);
+      if (existing) return existing.promise;
+      let resolve!: (outcome: CompactionOutcome) => void;
+      const promise = new Promise<CompactionOutcome>(done => { resolve = done; });
+      let finished = false;
+      let pollTimer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (outcome: CompactionOutcome) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        clearTimeout(pollTimer);
+        signal?.removeEventListener("abort", cancel);
+        compactionWaitersRef.current.delete(key);
+        resolve(outcome);
+      };
+      const cancel = () => settle({ status: "cancelled" });
+      const timer = setTimeout(() => settle({ status: "timeout" }), timeoutMs);
+      compactionWaitersRef.current.set(key, { sessionId, promise, settle });
+      signal?.addEventListener("abort", cancel, { once: true });
+      // Recover lost started AND terminal frames while staying on this screen.
+      // One bounded, read-only probe at a time; never retry the write operation.
+      const epoch = historyEpochRef.current;
+      const probe = async () => {
+        const client = clientRef.current;
+        if (finished) return;
+        if (client && selectedRef.current === sessionId && AppState.currentState !== "background") {
+          try {
+            const { data } = await client.requestRetry<RemoteSessionState>({ type: "get_state", sessionId }, sessionId);
+            if (!finished && clientRef.current === client && historyEpochRef.current === epoch && data.isCompacting === false) {
+              settle({ status: "unobserved" });
+              syncEngineRef.current?.reconcile(sessionId, "resend");
+            }
+          } catch { /* Unreachable is not idle; keep waiting within the deadline. */ }
+        }
+        if (!finished) pollTimer = setTimeout(() => { void probe(); }, 5_000);
+      };
+      pollTimer = setTimeout(() => { void probe(); }, 5_000);
+      return promise;
     },
-    [],
+    [clientRef, selectedRef],
   );
 
   const resetTimeline = useCallback(() => {
@@ -856,12 +887,11 @@ export function useTimelineController({
     cursorsRef.current = {};
     streamingRef.current = {};
     compactingRef.current = {};
-    compactionWaitersRef.current.clear();
-    compactionTerminalsRef.current.clear();
+    cancelCompactionWaiters();
     historyPagingRef.current = {};
     committedHistoryRef.current = {};
     setHistoryPaging({});
-  }, []);
+  }, [cancelCompactionWaiters]);
 
   const ensureDraftTimeline = useCallback(() => {
     setTimelines((previous) =>

@@ -1,6 +1,9 @@
 import { createElement, useState, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ComposerDock } from "../components/ComposerDock";
+import { useCompactContext } from "../useCompactContext";
+import { emptyTimeline } from "../../../remote/timeline";
+import type { CompactionOutcome } from "../../../remote/types";
 import { SkillPicker } from "../components/SkillPicker";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import { resources } from "../../../i18n/locales";
@@ -195,6 +198,57 @@ test("manual compaction is a slash action, gated by the Desktop and never a tool
       openMenu();
       expect(actions()).toHaveLength(0);
     }
+  } finally { act(() => tree.unmount()); }
+});
+
+test.each(["committed", "failed", "unchanged", "timeout", "unobserved"] as const)("real slash action locks sending before ACK, preserves the draft and releases on %s", async status => {
+  let acknowledge!: (value: { sessionId: string; operationId: string }) => void;
+  let finish!: (outcome: CompactionOutcome) => void;
+  const ack = new Promise<{ sessionId: string; operationId: string }>(done => { acknowledge = done; });
+  const terminal = new Promise<CompactionOutcome>(done => { finish = done; });
+  const compact = jest.fn(() => ack);
+  const send = jest.fn(async () => {});
+  const remote = {
+    selectedSessionId: "s1", draft: false, streaming: false, compacting: false, busy: false, desktopOnline: true,
+    connectionPresentation: { level: "connected" }, models: [], modelId: "model", timeline: emptyTimeline(),
+    credentials: { pairId: "pair" }, presence: { bridgeInstanceId: "bridge" },
+    capabilities: new Set(["skills_v1", "compaction_v1"]), listSkills: jest.fn(async () => []),
+    compactContext: compact, awaitCompactionOutcome: jest.fn(() => terminal), abort: jest.fn(),
+  } as unknown as Parameters<typeof useCompactContext>[0];
+  const props = {
+    attachments: [], setAttachments: jest.fn(), supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote, openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null, decideApproval: jest.fn(),
+    selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  function Harness() {
+    const [message, setMessage] = useState("keep /压缩 next");
+    const operation = useCompactContext(remote, props.t);
+    return createElement(ComposerDock, { ...props, message, setMessage, onCompactContext: operation.compact, compactionPending: operation.pending });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  const input = () => tree.root.findByType(TextInput);
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
+  try {
+    act(() => input().props.onFocus());
+    act(() => input().props.onSelectionChange({ nativeEvent: { selection: { start: 8, end: 8 } } }));
+    const picker = tree.root.findByType(SkillPicker);
+    act(() => picker.props.onActionSelect(picker.props.actions[0]));
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(input().props.value).toBe("keep next");
+    expect(input().props.editable).toBe(true);
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    act(() => { button("chat.compacting").props.onPress(); input().props.onSubmitEditing(); });
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => acknowledge({ sessionId: "s1", operationId: "cmp" }));
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    const outcome: CompactionOutcome = status === "unchanged" ? { status, alreadyCompacted: true, reused: true } : { status };
+    await act(async () => finish(outcome));
+    expect(button("chat.send").props.disabled).toBe(false);
+    expect(input().props.value).toBe("keep next");
+    act(() => button("chat.send").props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
   } finally { act(() => tree.unmount()); }
 });
 

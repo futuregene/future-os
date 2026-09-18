@@ -166,6 +166,7 @@ export function ChatScreen() {
   const markdownImageLoader = useMarkdownImageLoader(remote, t);
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
+  const compactContext = useCompactContext(remote, t);
   const { send, retryMessage, continueMessage } = useSendMessage(
     remote,
     t,
@@ -174,9 +175,9 @@ export function ChatScreen() {
     setMessage,
     setAttachments,
     setTransferProgress,
+    compactContext.pending,
   );
   const rename = useRename(remote, t);
-  const compactContext = useCompactContext(remote, t);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -587,6 +588,7 @@ export function ChatScreen() {
                 selector={selector}
                 setSelector={setSelector}
                 onCompactContext={compactContext.compact}
+                compactionPending={compactContext.pending}
               />
               </PausedTimeline>
             </View>

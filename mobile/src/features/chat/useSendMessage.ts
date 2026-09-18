@@ -22,9 +22,12 @@ export function useSendMessage(
   setMessage: Dispatch<SetStateAction<string>>,
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>,
   setTransferProgress: (value: number | null) => void,
+  compactionPending = false,
 ): SendMessageApi {
   const { sendMessage } = remote;
+  const compacting = compactionPending || remote.compacting;
   const send = useCallback(async () => {
+    if (compacting) { showToast(t("chat.compacting")); return; }
     const value = message.trim();
     if (!value && attachments.length === 0) return;
     const pendingAttachments = attachments;
@@ -44,10 +47,11 @@ export function useSendMessage(
     } finally {
       setTransferProgress(null);
     }
-  }, [attachments, message, sendMessage, setAttachments, setMessage, setTransferProgress, t]);
+  }, [attachments, compacting, message, sendMessage, setAttachments, setMessage, setTransferProgress, t]);
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {
+      if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant") return;
       const items = remote.timeline.items;
       const index = items.findIndex(entry => entry.id === item.id);
@@ -90,17 +94,18 @@ export function useSendMessage(
         }
       }
     },
-    [remote, t],
+    [compacting, remote, t],
   );
 
   const continueMessage = useCallback(
     (item: TimelineItem) => {
+      if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return;
       void remote
         .continueRun(remote.selectedSessionId, item.runId)
         .catch(() => showToast(t("chat.sendFailed")));
     },
-    [remote, t],
+    [compacting, remote, t],
   );
 
   return { send, retryMessage, continueMessage };
