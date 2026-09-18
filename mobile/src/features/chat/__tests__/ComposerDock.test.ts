@@ -163,6 +163,9 @@ test("manual compaction is a slash action, gated by the Desktop and never a tool
   let tree!: ReactTestRenderer;
   const openMenu = () => {
     act(() => tree.root.findByType(TextInput).props.onFocus());
+    // A real caret sits after the typed token; running an action clears the
+    // draft, so the caret must be put back for the menu to reopen.
+    act(() => tree.root.findByType(TextInput).props.onSelectionChange({ nativeEvent: { selection: { start: 1, end: 1 } } }));
     act(() => tree.root.findByType(TextInput).props.onChangeText("/"));
   };
   const actions = () => picker.mock.calls.at(-1)?.[0].actions ?? [];
@@ -174,28 +177,24 @@ test("manual compaction is a slash action, gated by the Desktop and never a tool
     expect(actions()[0]).toMatchObject({ id: "compact", label: "chat.compactContext" });
     act(() => runAction()(actions()[0]));
     expect(onCompactContext).toHaveBeenCalledTimes(1);
+    // The typed command is a control, not draft text: running the action must
+    // remove it, or the next send would post "/压缩" as a message.
+    expect(props.setMessage).toHaveBeenLastCalledWith("");
 
-    // An older Desktop that cannot compact must not offer the action at all.
-    act(() => tree.update(createElement(ComposerDock, {
-      ...props,
-      remote: { ...props.remote, capabilities: new Set(["skills_v1"]) },
-    })));
-    expect(actions()).toHaveLength(0);
-
-    // While a compaction is already running there is nothing to start.
-    act(() => tree.update(createElement(ComposerDock, {
-      ...props,
-      remote: { ...props.remote, compacting: true },
-    })));
-    expect(actions()).toHaveLength(0);
-
-    // A run in flight rejects compaction, so the tool is hidden until it
-    // settles instead of offering an action that cannot run.
-    act(() => tree.update(createElement(ComposerDock, {
-      ...props,
-      remote: { ...props.remote, streaming: true },
-    })));
-    expect(actions()).toHaveLength(0);
+    // Each gate is checked on a freshly opened menu: running the action closed
+    // it (and cleared the draft), so the picker's last props are stale.
+    for (const remote of [
+      { capabilities: new Set(["skills_v1"]) },
+      { compacting: true },
+      { streaming: true },
+    ]) {
+      act(() => tree.update(createElement(ComposerDock, {
+        ...props,
+        remote: { ...props.remote, ...remote },
+      })));
+      openMenu();
+      expect(actions()).toHaveLength(0);
+    }
   } finally { act(() => tree.unmount()); }
 });
 

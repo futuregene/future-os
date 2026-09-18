@@ -1216,6 +1216,108 @@ describe("shared-projection semantic flags", () => {
     ]);
   });
 
+  test("a standalone compaction becomes its own divider and never revives a finished run", () => {
+    // A settled run, then a manual compaction. The Agent stamps the compaction
+    // with the session's last run id, so keying it by that run would re-open
+    // the finished reply (and leave the composer on "generating" forever,
+    // because no agent_end follows a standalone compaction).
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "previous reply" }),
+      runId: "run-old",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, { type: "agent_end", data: "{}", runId: "run-old", idx: 1 });
+    expect(state.streaming).toBe(false);
+
+    state = applyStreamEvent(state, {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-manual", trigger: "manual", phase: "standalone" }),
+      runId: "run-old",
+      idx: 2,
+    });    state = applyStreamEvent(state, {
+      type: "compaction_committed",
+      data: JSON.stringify({
+        operation_id: "cmp-manual",
+        checkpoint_id: "cp-manual",
+        tokens_before: 33_064,
+        trigger: "manual",
+        phase: "standalone",
+      }),
+      runId: "run-old",
+      idx: 3,
+    });
+
+    expect(state.streaming).toBe(false);
+    const messages = state.items.filter(item => item.kind === "message");
+    // The finished reply is untouched: no second, empty streaming bubble.
+    expect(messages.map(item => item.id)).toEqual(["assistant:run-old", "assistant:__compaction__"]);
+    expect(messages[0]).toMatchObject({ streaming: false, text: "previous reply" });
+    expect(messages[1]).toMatchObject({
+      streaming: false,
+      text: "",
+      segments: [{ id: "cp-manual", kind: "compaction", tokensBefore: 33_064, trigger: "manual" }],
+    });
+    expect(messages[1]?.runId).toBeUndefined();
+  });
+
+  test("a mid-turn compaction stays inside the running reply", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-live",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-auto", trigger: "automatic", phase: "mid_turn" }),
+      runId: "run-live",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "compaction_committed",
+      data: JSON.stringify({ operation_id: "cmp-auto", checkpoint_id: "cp-auto", tokens_before: 120_000 }),
+      runId: "run-live",
+      idx: 2,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "continuing" }),
+      runId: "run-live",
+      idx: 3,
+    });
+
+    expect(state.streaming).toBe(true);
+    expect(state.items.filter(item => item.kind === "message")).toHaveLength(1);
+    expect(state.items[0]).toMatchObject({
+      id: "assistant:run-live",
+      streaming: true,
+      segments: [
+        { id: "cp-auto", kind: "compaction", tokensBefore: 120_000 },
+        { id: expect.any(String), kind: "text", text: "continuing" },
+      ],
+    });
+  });
+
+  test("a compaction with nothing to show leaves no placeholder behind", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "compaction_started",
+      data: JSON.stringify({ operation_id: "cmp-none", trigger: "manual", phase: "standalone" }),
+      idx: 0,
+    });
+    // The running placeholder is the immediate feedback for a manual compaction.
+    expect(state.items).toHaveLength(1);
+    expect(state.compacting).toBe(true);
+    state = applyStreamEvent(state, {
+      type: "compaction_unchanged",
+      data: JSON.stringify({ operation_id: "cmp-none", reused: true, phase: "standalone" }),
+      idx: 1,
+    });
+    expect(state.streaming).toBe(false);
+    expect(state.compacting).toBe(false);
+    expect(state.items).toEqual([]);
+  });
+
   test("compaction lifecycle replaces running state and retains failures", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "compaction_started",

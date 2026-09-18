@@ -211,7 +211,7 @@ function ComposerDockView({
             onClose={completion.close}
             maxHeight={pickerHeight}
             actions={slashActions}
-            onActionSelect={handleSlashAction}
+            onActionSelect={completion.runAction}
           />
         )}
         <View style={styles.composer}>

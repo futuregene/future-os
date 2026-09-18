@@ -28,7 +28,7 @@ import type {
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
-import { timelineFromEntries } from "../../src/remote/projection";
+import { applyStreamEvent, timelineFromEntries } from "../../src/remote/projection";
 import {
   demoCredentials,
   demoDesktops,
@@ -83,7 +83,20 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   // A cheap stand-in for the real per-session timeline: the demo conversation
   // is fully projected, any other session shows its first turns.
-  const baseTimeline = useMemo(() => timelineFromEntries(demoEntries as unknown as HistoryEntry[]), []);
+  // `?compacted=1` additionally folds the exact wire sequence a manual
+  // compaction produces (standalone phase, stamped with the session's last run
+  // id) through the *real* reducer, so the composer state in a capture is the
+  // state the app would have.
+  const scriptedCompaction = new URLSearchParams(window.location.search).get("compacted") === "1";
+  const baseTimeline = useMemo(() => {
+    const history = timelineFromEntries(demoEntries as unknown as HistoryEntry[]);
+    if (!scriptedCompaction) return history;
+    const manualRun = "run_1";
+    return [
+      { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
+      { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064 }) },
+    ].reduce((state, event) => applyStreamEvent(state, event), history);
+  }, [scriptedCompaction]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
       ? baseTimeline
@@ -147,8 +160,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timelineError: null,
     canLoadOlderTimeline: false,
     loadingOlderTimeline: false,
-    streaming: false,
-    compacting: new URLSearchParams(window.location.search).get("compacting") === "1",
+    streaming: baseTimeline.streaming,
+    compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
     // Composer settings
     modelId: "future/deepseek-v4-pro",

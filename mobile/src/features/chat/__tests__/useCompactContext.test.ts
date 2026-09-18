@@ -79,7 +79,7 @@ describe("useCompactContext", () => {
     act(() => reused.renderer.unmount());
   });
 
-  it("surfaces the Agent's failure reason and a missing result", async () => {
+  it("surfaces the Agent's failure reason, a missing result and an unobserved end", async () => {
     const failed = mount({ outcome: { status: "failed", error: "summary failed" } });
     await act(async () => { await failed.api.compact(); });
     expect(failed.t).toHaveBeenCalledWith("chat.compactionRequestFailed", {
@@ -93,6 +93,14 @@ describe("useCompactContext", () => {
     await act(async () => { await timedOut.api.compact(); });
     expect(mockedToast).toHaveBeenLastCalledWith("chat.compactionWaitTimedOut");
     act(() => timedOut.renderer.unmount());
+    mockedToast.mockClear();
+
+    // The session stopped compacting but the terminal frame never arrived: the
+    // transcript already shows the result, so inventing one would be a lie.
+    const unobserved = mount({ outcome: { status: "unobserved" } });
+    await act(async () => { await unobserved.api.compact(); });
+    expect(mockedToast).not.toHaveBeenCalled();
+    act(() => unobserved.renderer.unmount());
   });
 
   it("reports a rejected request instead of acknowledging it", async () => {
@@ -110,7 +118,7 @@ describe("useCompactContext", () => {
     act(() => h.renderer.unmount());
   });
 
-  it("does not stack a second request while one is already running", async () => {
+  it("does not stack a second request while one is already in flight", async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const compactContext = jest.fn(async () => {
@@ -126,10 +134,29 @@ describe("useCompactContext", () => {
     act(() => h.renderer.unmount());
   });
 
-  it("refuses to start while the Agent is already compacting that session", async () => {
+  it("never swallows a tap: a refused start says why", async () => {
     const h = mount({ compacting: true });
     await act(async () => { await h.api.compact(); });
     expect(h.compactContext).not.toHaveBeenCalled();
+    expect(mockedToast).toHaveBeenLastCalledWith("chat.compacting");
     act(() => h.renderer.unmount());
+  });
+
+  it("retries once the authoritative state says the session is idle again", async () => {
+    // A lost terminal frame must not leave the action permanently dead: the
+    // gate is the session's compacting state, not this client's bookkeeping.
+    const rejected = jest.fn(async () => {
+      throw new Error("context compaction is already running");
+    });
+    const busy = mount({ compacting: true, compactContext: rejected });
+    await act(async () => { await busy.api.compact(); });
+    expect(rejected).not.toHaveBeenCalled();
+    act(() => busy.renderer.unmount());
+    mockedToast.mockClear();
+
+    const idle = mount({ compacting: false });
+    await act(async () => { await idle.api.compact(); });
+    expect(idle.compactContext).toHaveBeenCalledTimes(1);
+    act(() => idle.renderer.unmount());
   });
 });

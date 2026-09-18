@@ -549,16 +549,64 @@
       "compacting": {
         "url": "http://localhost:8099/?compacting=1",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "eval": "const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('compaction did not disable Send');" },
-          { "shot": "m-compacting.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('compaction did not disable Send');"
+          },
+          {
+            "shot": "m-compacting.png"
+          }
         ]
+      },
+      "compact-context-outcome": {
+        "url": "http://localhost:8099/?compacted=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('你手动压缩了此对话的上下文')) throw new Error('committed compaction divider missing'); if (text.includes('正在生成')) throw new Error('committed compaction left the reply generating'); if (!document.querySelector('[aria-label=\"发送\"]')) throw new Error('composer did not return to its send state');"
+          },
+          {
+            "shot": "m-compact-committed.png"
+          }
+        ],
+        "note": "Folds the real manual-compaction wire sequence through the real reducer: the divider must appear without leaving the composer on 'generating'."
       },
       "chat": {
         "steps": [

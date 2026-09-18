@@ -274,9 +274,9 @@ export function useTimelineController({
   // keyed by operation id (a replayed older operation can never settle a new
   // request), and a terminal event that arrives first is buffered per session
   // until its initiator correlates it.
-  const compactionWaitersRef = useRef<Map<string, (outcome: CompactionOutcome) => void>>(
-    new Map(),
-  );
+  const compactionWaitersRef = useRef<
+    Map<string, { sessionId: string; settle: (outcome: CompactionOutcome) => void }>
+  >(new Map());
   const compactionTerminalsRef = useRef<
     Map<string, { operationId: string; outcome: CompactionOutcome }>
   >(new Map());
@@ -342,7 +342,7 @@ export function useTimelineController({
         const waiter = compactionWaitersRef.current.get(compactionTerminal.operationId);
         if (waiter) {
           compactionWaitersRef.current.delete(compactionTerminal.operationId);
-          waiter(compactionTerminal.outcome);
+          waiter.settle(compactionTerminal.outcome);
         } else {
           compactionTerminalsRef.current.set(sid, compactionTerminal);
         }
@@ -751,7 +751,20 @@ export function useTimelineController({
       });
       cursorsRef.current[commit.sessionId] = commit.cursor;
       streamingRef.current[commit.sessionId] = commit.timeline.streaming;
-      compactingRef.current[commit.sessionId] = commit.timeline.compacting === true;
+      const wasCompacting = compactingRef.current[commit.sessionId] === true;
+      const isCompacting = commit.timeline.compacting === true;
+      compactingRef.current[commit.sessionId] = isCompacting;
+      // The session stopped compacting without the terminal event ever reaching
+      // this client (backgrounded app, dropped stream, missed frame). The
+      // authoritative state — not the event — ends the wait, so a lost frame
+      // cannot leave the composer refusing new requests for the whole timeout.
+      if (wasCompacting && !isCompacting) {
+        for (const [operationId, waiter] of [...compactionWaitersRef.current]) {
+          if (waiter.sessionId !== commit.sessionId) continue;
+          compactionWaitersRef.current.delete(operationId);
+          waiter.settle({ status: "unobserved" });
+        }
+      }
     });
     syncEngineRef.current = engine;
     return () => {
@@ -818,14 +831,15 @@ export function useTimelineController({
         return Promise.resolve(buffered.outcome);
       }
       return new Promise<CompactionOutcome>((resolve) => {
+        const settle = (outcome: CompactionOutcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        };
         const timer = setTimeout(() => {
           compactionWaitersRef.current.delete(operationId);
           resolve({ status: "timeout" });
         }, timeoutMs);
-        compactionWaitersRef.current.set(operationId, (outcome) => {
-          clearTimeout(timer);
-          resolve(outcome);
-        });
+        compactionWaitersRef.current.set(operationId, { sessionId, settle });
       });
     },
     [],
