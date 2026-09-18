@@ -8,6 +8,31 @@ SCRIPT_DIR="${SCRIPT_PATH%/*}"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MOBILE_DIR="$ROOT_DIR/mobile"
 
+# CocoaPods needs to run when local Expo module metadata changes or when a
+# native source is added, removed, or renamed. Editing an already-listed source
+# only needs an Xcode build, so keep its contents out of the Pods cache key.
+checksum_apple_module_pod_inputs() {
+  find "$MOBILE_DIR/modules" -type f \
+    \( -name "expo-module.config.json" -o -name "*.podspec" \
+       -o -path "*/ios/*" -o -path "*/apple/*" \) \
+    -print | LC_ALL=C sort | while IFS= read -r native_file; do
+      case "$native_file" in
+        *.podspec|*/expo-module.config.json) shasum -a 256 "$native_file" ;;
+        *) printf 'source %s\n' "$native_file" ;;
+      esac
+    done
+}
+
+# Xcode must run for both source membership and content changes.
+checksum_apple_module_build_inputs() {
+  find "$MOBILE_DIR/modules" -type f \
+    \( -name "expo-module.config.json" -o -name "*.podspec" \
+       -o -path "*/ios/*" -o -path "*/apple/*" \) \
+    -print | LC_ALL=C sort | while IFS= read -r native_file; do
+      shasum -a 256 "$native_file"
+    done
+}
+
 RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-5"
 DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 DEVICE_NAME="iPhone 17 Pro"
@@ -174,6 +199,7 @@ POD_INPUT_HASH="$({
   shasum -a 256 "$ROOT_DIR/package-lock.json"
   shasum -a 256 "$MOBILE_DIR/ios/Podfile"
   shasum -a 256 "$POD_LOCK"
+  checksum_apple_module_pod_inputs
 } | shasum -a 256 | awk '{print $1}')"
 INSTALLED_POD_HASH="$(cat "$POD_STAMP" 2>/dev/null || true)"
 if [[ ! -f "$POD_LOCK" ]] || [[ ! -d "$MOBILE_DIR/ios/Pods" ]] || \
@@ -248,6 +274,7 @@ else
     shasum -a 256 "$ROOT_DIR/package-lock.json"
     shasum -a 256 "$MOBILE_DIR/package.json"
     shasum -a 256 "$MOBILE_DIR/app.config.ts"
+    checksum_apple_module_build_inputs
     find "$MOBILE_DIR/ios" -type f \
       ! -path "$MOBILE_DIR/ios/Pods/*" \
       ! -path "$MOBILE_DIR/ios/build/*" \
