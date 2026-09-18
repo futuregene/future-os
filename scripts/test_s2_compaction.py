@@ -46,7 +46,7 @@ def main():
     binary = args.binary.resolve()
     assert binary.name in ("future", "future.exe"), "expected the unified future binary"
     checks, model_requests, errors = [], [], []
-    state = {"normal": 0, "summary": 0}
+    state = {"normal": 0, "summary": 0, "system": None}
     secret = "MAGIC_HISTORY_TOKEN=delta_731"
     sid = "s2-smoke"
     originals = ["FIRST_USER: preserve the safety constraint", "FIRST_ANSWER: verified output 42",
@@ -108,6 +108,18 @@ def main():
                     body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     model_requests.append(body)
                     system = "\n".join(text_of(m) for m in body["messages"] if m["role"] == "system")
+                    # The runtime appends nothing to the session's system prompt. It used to
+                    # add a post-checkpoint recall guidance that named the session, which is
+                    # how a model learned the history CLI existed; that section is gone, so
+                    # every request in a session now carries one unchanging prompt. Assert
+                    # both halves here, on every request including the summary one.
+                    if state["system"] is None:
+                        state["system"] = system
+                    else:
+                        check(f"system prompt stable {state['normal'] + state['summary']}",
+                              system == state["system"])
+                    check("no recall guidance appended",
+                          "## Archived conversation recall" not in system)
                     last_user = next((text_of(m) for m in reversed(body["messages"])
                                       if m["role"] == "user"), "")
                     # C3's summary request appends its instruction last and carries the
@@ -119,12 +131,13 @@ def main():
                         # The summary request must reuse the session's own prompt, not the
                         # built-in summariser constant: providers cache on the request prefix,
                         # so a substituted prompt shares nothing with the turn that already
-                        # paid for those tokens. (On a first compaction there is no checkpoint
-                        # yet, so the recall guidance is correctly absent; it is added from
-                        # the NEXT turn, which is why the run loop reserves it in admission.)
+                        # paid for those tokens. The runtime used to append a post-checkpoint
+                        # recall guidance and reserve it in admission; that is gone, so the
+                        # prompt is the session's own at every point and this check is now
+                        # simply "same prompt as the turns".
                         step = state["summary"]
                         check(f"summary reuses the session prompt {step}",
-                              sid in system and "context summarization agent" not in system)
+                              "context summarization agent" not in system)
                         check(f"summary reuses the session tools {step}", bool(body.get("tools")))
                         # Reject the summary request in a way the agent does not retry
                         # (a retryable status would be attempted MAX_TRANSIENT_RETRIES more
@@ -144,8 +157,7 @@ def main():
                         state["normal"] += 1
                         step = state["normal"]
                         check(f"normal output cap unchanged {step}", body.get("max_tokens") == 32_000)
-                        check(f"one recall guide {step}", system.count("## Archived conversation recall") == 1)
-                        check(f"current session in guide {step}", sid in system)
+                        check(f"session prompt unchanged {step}", system == state["system"])
                         history = "\n".join(text_of(m) for m in body["messages"] if m["role"] != "system")
                         for original in originals:
                             check(f"original preserved {step}: {original[:12]}", original in history)
@@ -271,8 +283,10 @@ def main():
             _, restored_info = read_state()
             check("usage survives restart", restored_info["tokens_in"] == 400 and restored_info["tokens_out"] == 40)
             check("cost survives restart", abs(restored_info["total_cost"] - 0.008) < 1e-9)
-            check("exact model-call count", state == {"normal": 4, "summary": 1} and not errors)
-            report = {"ok": True, "checks": checks, "model_calls": state, "external_model_calls": 0,
+            check("exact model-call count",
+                  (state["normal"], state["summary"]) == (4, 1) and not errors)
+            calls = {"normal": state["normal"], "summary": state["summary"]}
+            report = {"ok": True, "checks": checks, "model_calls": calls, "external_model_calls": 0,
                       "tokens_before": checkpoint["tokens_before"], "tokens_after": checkpoint["tokens_after"],
                       "schema_version": checkpoint["schema_version"], "protected_entry_ids": checkpoint["protected_entry_ids"],
                       "synthetic_final_usage": {k: restored_info[k] for k in ("tokens_in", "tokens_out", "total_cost")},
