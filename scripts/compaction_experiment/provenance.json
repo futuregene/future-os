@@ -1,0 +1,62 @@
+{
+  "fetched": "2026-09-15",
+  "note": "Every file below was read from the upstream repository at the listed commit; the strategies in strategies.py are reimplementations of those exact selection rules and prompts.",
+  "codex": {
+    "repo": "openai/codex",
+    "commit": "b13164d86f9a70adc48d22f4a5a07ed0c001a1d0",
+    "date": "2026-09-15T10:07:37Z",
+    "modelled_path": "local inline summarization (compact.rs::build_compacted_history), used when the provider has no remote compaction and the TokenBudget feature is off",
+    "not_modelled": [
+      "remote v2 compaction (compact_remote_v2.rs, server-side)",
+      "Feature::TokenBudget compaction (compact_token_budget.rs, fresh context window, no summary)",
+      "history-notes extension (history/notes tools + thread hint): requires the Codex backend and a paid ChatGPT plan"
+    ],
+    "blobs": {
+      "codex-rs/prompts/templates/compact/prompt.md": "42fae605db8a71cb2becb7b4eabd1de963ccb7a3",
+      "codex-rs/prompts/templates/compact/summary_prefix.md": "62a7161b89b2d3834f50ae35dadb13ac3f0bd524",
+      "codex-rs/core/src/compact.rs": "77e28b85e5f92b9593e4778e9afc052a3b959bf4",
+      "codex-rs/core/src/compact_token_budget.rs": "3e6ce1beaa946a4a5f57df1150eb6dc84db48441",
+      "codex-rs/core/src/tasks/compact.rs": "14913d95c89bcbefeeb5a7b33e6cee5248f3cdb7"
+    },
+    "retrieval_capability": {
+      "found": true,
+      "summary": "Codex ships a first-party conversation-history retrieval tool set in the history-notes extension: the `history` namespace exposes list_windows, list_items, read_item and search_contents to 'recover prior conversation after a context-window reset', plus a `notes` namespace and an automatically injected thread hint.",
+      "data_source": "hosted Codex backend (alpha/history/v2/*, alpha/notes/v2/*), not local files",
+      "gating": [
+        "Feature::TokenBudget and Feature::ContextManagement — both Stage::UnderDevelopment, default_enabled: false",
+        "starting model supports_experimental_context",
+        "provider supports_codex_backend_routes() and requires_openai_auth, with no env_key/bearer/provider-auth/aws",
+        "config.model_provider.is_openai() and auth_manager.current_auth_uses_codex_backend()",
+        "AuthMode::Chatgpt with plan Plus, Pro or ProLite"
+      ],
+      "consequence": "The measured Codex arm is its local fallback compaction without experimental context management. The history tools cannot be exercised with API keys or third-party OpenAI-compatible providers, so a like-for-like 'Codex + its own search' arm is not reproducible in this experiment.",
+      "blobs": {
+        "codex-rs/ext/history-notes/src/tools.rs": "114ee2ece854c1ee176cb50bf0d9f2afc2e4da56",
+        "codex-rs/ext/history-notes/src/extension.rs": "dfbff12cacab2e713b6eccba848ee68ea48822f7",
+        "codex-rs/ext/history-notes/src/backend.rs": "f47027af6ec2e5118f08db25b4123d60af194533",
+        "codex-rs/ext/history-notes/src/lib.rs": "06cc5ed8f000880db51aa4a6b1ceef2b0647f545",
+        "codex-rs/core/src/session/token_budget.rs": "b56e21c43aca958110f4ea6f6d47dce7b7807684",
+        "codex-rs/features/src/lib.rs": "7e11d0b1ea8ae3e859aa9ccdc3d662c6526e4eeb"
+      }
+    }
+  },
+  "opencode": {
+    "repo": "anomalyco/opencode",
+    "commit": "e03db9bc6908f75c9334d8aa997deeaac81c0298",
+    "date": "2026-09-14T21:41:36Z",
+    "modelled_path": "summary + retained tail (core select/prompt + packages/opencode select/tail_start_id)",
+    "not_modelled": [
+      "compaction.prune (in-place clearing of old tool output, disabled unless cfg.compaction.prune is set)",
+      "plugin hooks (experimental.session.compacting)",
+      "provider-specific prompt transforms"
+    ],
+    "blobs": {
+      "packages/core/src/session/compaction.ts": "f714633295a5879f2a99cb7934fa9b3c66cee3ab",
+      "packages/core/src/config/compaction.ts": "3c5960c835568c73ef4167b90b2869e8e1a3b378",
+      "packages/opencode/src/session/compaction.ts": "75d6374bfa54e5f492c2f0be83fa3029794009eb",
+      "packages/opencode/src/session/message-v2.ts": "9b3f2c46f40578128001957004c67633a18da23a",
+      "packages/opencode/src/session/overflow.ts": "used for usable()",
+      "packages/opencode/src/agent/prompt/compaction.txt": "compaction agent system prompt"
+    }
+  }
+}

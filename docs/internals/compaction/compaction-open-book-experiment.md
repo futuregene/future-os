@@ -13,7 +13,7 @@ This page records the rounds, including the ones that failed.
 ## The instrument
 
 Production's request shape, taken from the Rust code rather than restated
-(`production_shape.RequestShape` → `abc_strategy_probe --print-request-shape`):
+(`production_shape.RequestShape` → `compaction_probe --print-request-shape`):
 
 | | value |
 |---|---|
@@ -21,7 +21,7 @@ Production's request shape, taken from the Rust code rather than restated
 | tools | `coding_tools()` — `read`, `write`, `edit`, `shell` |
 | retrieval affordance | `future session history search` / `get`, behind the ordinary shell tool |
 | archive under test | the same records the closed arm was scored on, in an isolated Agent database |
-| tool execution | production's handlers, through `abc_future_shell_probe` |
+| tool execution | production's handlers, through `production_tool_executor` |
 | model | `future/deepseek-flash`, matched generation settings |
 | scoring | `realistic_exam.score`, identical to the closed run's |
 
@@ -160,24 +160,46 @@ that the wording is not the lever.
 
 ## Reproducing
 
-`scripts/abc_experiment/open_one_arm.py`, one arm at a time:
+Everything is in [scripts/compaction_experiment/](../../../scripts/compaction_experiment/);
+[README.md](../../../scripts/compaction_experiment/README.md) has the commands and
+[OPEN_BOOK_PROTOCOL.md](../../../scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md) the design,
+including which flags change the question.
 
+```sh
+cargo build -p future-agent --example compaction_probe --example production_tool_executor \
+                          --example model_bridge
+cargo build -p future-cli --bin future
+
+# validate the whole path with no model call, then run for real
+python3 scripts/compaction_experiment/run_open_book.py \
+    --closed ~/compact-exp/v4-forced --arm summarized --output ~/compact-exp/open-summarized \
+    --future target/debug/future \
+    --executor   target/debug/examples/production_tool_executor \
+    --driver     target/debug/examples/compaction_probe \
+    --shape-probe target/debug/examples/compaction_probe \
+    --base-prompt ~/compact-exp/shape/system-prompt.txt \
+    --bridge target/debug/examples/model_bridge \
+    --smoke --only export
 ```
-python3 scripts/abc_experiment/open_one_arm.py \
-  --closed ~/compact-exp/v4-forced --arm summarized --output <dir> \
-  --future target/debug/future \
-  --executor target/fidelity/debug/examples/abc_future_shell_probe \
-  --driver  target/fidelity/debug/examples/abc_strategy_probe \
-  --shape-probe target/fidelity/debug/examples/abc_strategy_probe \
-  --base-prompt ~/compact-exp/shape/system-prompt.txt \
-  --bridge target/fidelity/debug/examples/abc_probe_bridge
-```
 
-`--smoke` validates the whole path with no model call; `--closed-reprobe` re-scores the frozen
-closed projections under the current wording; `--require-retrieval` runs round 5. The frozen
-inputs and the per-case results stay in `~/compact-exp`, outside any repository, because the
-real-session chains are private.
+Drop `--smoke` for the real run. The rounds differ only by flags, so each one is the same
+command:
 
-The prompt and tool assertions are in `verify_production_shape.py`, which checks the prompt is
-the session's own, that it does not change across a checkpoint, that the tool definitions from
-the probe and from the executor agree, and that the retrieval CLI is still present and usable.
+| Round | Flags |
+|---|---|
+| 1 | *(none)* |
+| 2 | *(none)* — with the guidance strengthened in `agent/src/agent/history_recall.rs`, since reverted |
+| 3 | `--exam-wording v2` |
+| 4 | `--exam-wording v2 --closed-reprobe` |
+| 5 | `--require-retrieval` |
+
+Interrupting is safe: finished cases are kept and skipped on restart. `--retry-unsettled`
+is the explicit escape hatch if a call was in flight when the run was aborted.
+
+Before quoting any number: run `verify_request_shape.py`, which needs no model and checks that
+the prompt is the session's own, unmodified, and that the tool definitions and the retrieval
+CLI are intact. `--smoke` then exercises the archive end to end for one chain.
+
+The frozen inputs and the per-case results stay in `~/compact-exp`, outside any repository,
+because the real-session chains are private. Third-party reproduction of that half means
+substituting your own sessions.

@@ -41,7 +41,7 @@
 `packages/`、`orchestration/loop/` 与 `tests/`。
 
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（原 `desktop/DEV_MD/`；文档地图见 `desktop/CLAUDE.md`）
-- [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及闭卷策略对比（`compaction-abc-experiment.zh-CN.md`）
+- [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
 - [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步性能/审计、鸿蒙兼容（原 `mobile/README.md` + `mobile/docs/`）
 - [tui/](internals/tui/tests.md) — TUI 测试框架约定（原 `tui/tests/README.md`）
 - [Desktop NATS 桥](internals/desktop-nats.md)（原 `desktop/nats/README.md`）

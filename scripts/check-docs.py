@@ -87,6 +87,12 @@ WHITELIST = {
     # still enforced through EXTRA_PAIR_SCOPED below.
     "orchestration/loop/UPSTREAM.md",
     "orchestration/loop/UPSTREAM.zh-CN.md",
+    # Experiment companion docs. They sit beside the scripts they describe because a reader
+    # reproducing a run needs the commands and the flags together with the code, and they
+    # must move with it. The findings themselves are under docs/internals/compaction/.
+    "scripts/compaction_experiment/README.md",
+    "scripts/compaction_experiment/CLOSED_BOOK_PROTOCOL.md",
+    "scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md",
 }
 
 # Bilingual pairing also applies to these paths outside docs/.

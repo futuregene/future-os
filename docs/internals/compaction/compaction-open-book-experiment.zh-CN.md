@@ -8,7 +8,7 @@
 
 ## 测量装置
 
-请求形状取自 Rust 代码而不是转写（`production_shape.RequestShape` → `abc_strategy_probe --print-request-shape`）：
+请求形状取自 Rust 代码而不是转写（`production_shape.RequestShape` → `compaction_probe --print-request-shape`）：
 
 | | 取值 |
 |---|---|
@@ -16,7 +16,7 @@
 | 工具 | `coding_tools()`——`read`、`write`、`edit`、`shell` |
 | 检索入口 | 普通 shell 工具背后的 `future session history search` / `get` |
 | 被测归档 | 与闭卷臂评分所用的同一批记录，放在隔离的 Agent 数据库里 |
-| 工具执行 | 生产 handler，经 `abc_future_shell_probe` |
+| 工具执行 | 生产 handler，经 `production_tool_executor` |
 | 模型 | `future/deepseek-flash`，生成参数与闭卷一致 |
 | 评分 | `realistic_exam.score`，与闭卷完全相同 |
 
@@ -107,19 +107,42 @@
 
 ## 复现
 
-`scripts/abc_experiment/open_one_arm.py`，一次一个臂：
+全部内容在 [scripts/compaction_experiment/](../../../scripts/compaction_experiment/)：命令见其
+[README.md](../../../scripts/compaction_experiment/README.md)，设计（含哪些 flag 会改变问题本身）见
+[OPEN_BOOK_PROTOCOL.md](../../../scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md)。
 
+```sh
+cargo build -p future-agent --example compaction_probe --example production_tool_executor \
+                          --example model_bridge
+cargo build -p future-cli --bin future
+
+# 先用零模型调用验证整条链路，再正式跑
+python3 scripts/compaction_experiment/run_open_book.py \
+    --closed ~/compact-exp/v4-forced --arm summarized --output ~/compact-exp/open-summarized \
+    --future target/debug/future \
+    --executor   target/debug/examples/production_tool_executor \
+    --driver     target/debug/examples/compaction_probe \
+    --shape-probe target/debug/examples/compaction_probe \
+    --base-prompt ~/compact-exp/shape/system-prompt.txt \
+    --bridge target/debug/examples/model_bridge \
+    --smoke --only export
 ```
-python3 scripts/abc_experiment/open_one_arm.py \
-  --closed ~/compact-exp/v4-forced --arm summarized --output <dir> \
-  --future target/debug/future \
-  --executor target/fidelity/debug/examples/abc_future_shell_probe \
-  --driver  target/fidelity/debug/examples/abc_strategy_probe \
-  --shape-probe target/fidelity/debug/examples/abc_strategy_probe \
-  --base-prompt ~/compact-exp/shape/system-prompt.txt \
-  --bridge target/fidelity/debug/examples/abc_probe_bridge
-```
 
-`--smoke` 用零模型调用验证整条链路；`--closed-reprobe` 用当前措辞重测冻结的闭卷投影；`--require-retrieval` 即第 5 轮。冻结输入与逐案例结果留在 `~/compact-exp`（任何仓库之外），因为真实会话链是私有的。
+正式跑时去掉 `--smoke`。各轮只差 flag，因此是同一个命令：
 
-提示词与工具的断言在 `verify_production_shape.py`：它检查提示词就是会话自己的、跨 checkpoint 不变、probe 与 executor 给出的工具定义一致，以及检索 CLI 仍然存在且可用。
+| 轮次 | flag |
+|---|---|
+| 1 | *（无）* |
+| 2 | *（无）*——当时把 `agent/src/agent/history_recall.rs` 里的指引加强，后已回退 |
+| 3 | `--exam-wording v2` |
+| 4 | `--exam-wording v2 --closed-reprobe` |
+| 5 | `--require-retrieval` |
+
+中断是安全的：已完成的案例会保留并在重启时跳过。若某次调用在中断时正处于进行中，
+`--retry-unsettled` 是显式的逃生口。
+
+引用任何数字之前：先跑 `verify_request_shape.py`（不需要模型），它检查提示词就是会话自己的、未被修改，
+工具定义与检索 CLI 完整；再用 `--smoke` 对一条链做端到端验证。
+
+冻结输入与逐案例结果留在 `~/compact-exp`（任何仓库之外），因为真实会话链是私有的。第三方若要复现那一半，
+需要换用自己的会话。

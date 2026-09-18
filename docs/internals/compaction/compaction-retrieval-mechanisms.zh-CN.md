@@ -170,7 +170,7 @@ done
 ```text
 native_open_exam.py
  → NativeFutureShell.execute_shell(原始 arguments)
- → abc_future_shell_probe
+ → production_tool_executor
  → 原生 tools::shell_tool().handler
  → 原生 with_tool_scope / shell_invocation
  → 宿主 shell 执行完整 command
@@ -214,7 +214,7 @@ launcher 只检查 shell 已解析好的单次 CLI argv 再转发，不解析 sh
 
 ### 实验适配器，不冒充产品源码
 
-- `agent/examples/abc_future_shell_probe.rs`、`scripts/abc_experiment/native_future_shell.py`：原生 Future shell 入口和 CLI 范围护栏。
+- `agent/examples/production_tool_executor.rs`、`scripts/compaction_experiment/native_future_shell.py`：原生 Future shell 入口和 CLI 范围护栏。
 - `native_codex.py`：原版 Codex 进程/工具事件转接。
 - `native_opencode.py`：原版 OpenCode CLI、原生 schema 与 ToolRegistry 调用。
 - `native_stores.py`：冻结记录转换与原生存储准备；旧单次 argv 执行仅保留用于历史结果追溯，不再作为完整 shell。

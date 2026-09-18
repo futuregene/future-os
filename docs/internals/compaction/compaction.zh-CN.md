@@ -11,7 +11,7 @@
 
 只写入这两个值，也只读取这两个值。`deterministic-evidence-v1` 同时是兜底策略：无 provider 可用或摘要调用失败时提交它。
 
-[对比实验](compaction-abc-experiment.zh-CN.md)测量两者各自保留了什么、以多大体积和多少成本保留；[开发文档](compaction-development.zh-CN.md)给出代码与持久化状态机的地图。
+[对比实验](compaction-closed-book-experiment.zh-CN.md)测量两者各自保留了什么、以多大体积和多少成本保留；[开发文档](compaction-development.zh-CN.md)给出代码与持久化状态机的地图。
 
 ## 触发与准入
 

@@ -2,7 +2,7 @@
 
 运行时压缩为下一次请求投影出会话自身 journal 的有界视图。两个策略：
 `deterministic-evidence-v1` 与 `summarized-evidence-v1`；[策略说明](compaction.zh-CN.md)定义两者，
-[对比实验](compaction-abc-experiment.zh-CN.md)给出测量结果。
+[对比实验](compaction-closed-book-experiment.zh-CN.md)给出测量结果。
 
 ## 1. 不变量
 

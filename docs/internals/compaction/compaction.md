@@ -14,7 +14,7 @@ Those are the only two values written, and the only two read. `deterministic-evi
 also the fallback: it is committed whenever no provider is reachable or the summary call
 fails.
 
-The [experiment](compaction-abc-experiment.md) measures what each retains, at what size and
+The [experiment](compaction-closed-book-experiment.md) measures what each retains, at what size and
 cost; the [developer guide](compaction-development.md) maps the code and the durable state
 machine.
 

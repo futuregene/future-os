@@ -2,7 +2,7 @@
 
 Runtime compaction projects a bounded view of a session's own journal for the next request.
 Two strategies, `deterministic-evidence-v1` and `summarized-evidence-v1`; the
-[policy](compaction.md) defines them and the [experiment](compaction-abc-experiment.md)
+[policy](compaction.md) defines them and the [experiment](compaction-closed-book-experiment.md)
 measures them.
 
 ## 1. Invariants

@@ -39,6 +39,9 @@ WHITELISTED_FILES = [
     "desktop/CLAUDE.md",
     "orchestration/loop/UPSTREAM.md",
     "orchestration/loop/UPSTREAM.zh-CN.md",
+    "scripts/compaction_experiment/README.md",
+    "scripts/compaction_experiment/CLOSED_BOOK_PROTOCOL.md",
+    "scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md",
     "docs/README.md",
     "docs/README.zh-CN.md",
 ]
