@@ -47,7 +47,7 @@ desktop/src/features/terminal/
 | --- | --- |
 | `GET /terminal/shells` | 客户端可提供的 shell |
 | `GET /terminal?threadId=` | 某会话的会话列表（运行中 + 保留的退出） |
-| `POST /terminal` | 创建 `{threadId, title?, cols?, rows?, cwdPolicy?}` |
+| `POST /terminal` | 创建 `{threadId, title?, cols?, rows?}` |
 | `GET /terminal/:id` | 单个会话 |
 | `PATCH /terminal/:id` | `{title?, cols?, rows?}` |
 | `DELETE /terminal/:id` | 终止进程树并遗忘该会话 |
@@ -119,12 +119,13 @@ socket 上：
 由服务端从会话解析；客户端从不发送路径。
 
 1. 与该线程严格关联的工作区（`workspace_id`，因此聊天临时工作区与真实工作区永不
-   混淆）；
-2. 用户家目录——但**仅当**什么都没配置时，或用户显式确认该回退之后。
+   混淆）——对单独聊天会话来说，这个临时工作区**就是**会话自己的目录；
+2. 用户家目录——配置的目录缺失或不可用时自动回退到这里。
 
-已配置但缺失/不是目录的路径以 `CWD_INVALID` 响亮失败。这很重要，因为
-`portable-pty` 对坏 cwd 会静默替换成 `$HOME`（在先前的 spike 中已验证）；后端在
-spawn 之前先行校验。
+配置目录在 spawn 前经过校验，回退 home 是自动的（没有确认步骤）：shell 必须落在一个
+可预测的地方，被跳过的路径会记入日志，最终目录随会话信息返回。校验本身保留，因为
+`portable-pty` 对坏 cwd 会静默替换成 `$HOME`（在先前的 spike 中已验证）——在这里这个
+选择是被显式做出的。只有 home 目录本身不可用时才报错（`CWD_INVALID`）。
 
 ## Shell 解析
 

@@ -48,14 +48,11 @@ export interface TerminalFrameMeta {
   exitCode?: number;
 }
 
-export type CwdPolicy = "thread" | "homeConfirmed";
-
 export interface CreateTerminalInput {
   threadId: string;
   title?: string;
   cols?: number;
   rows?: number;
-  cwdPolicy?: CwdPolicy;
 }
 
 export interface UpdateTerminalInput {

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::cwd::{self, CwdPolicy};
+use super::cwd;
 use super::session::{Info, Session};
 use super::shell;
 
@@ -64,11 +64,6 @@ impl ManagerError {
         }
     }
 
-    /// Only a bad working directory can be retried with `homeConfirmed`.
-    pub fn allows_home_fallback(&self) -> bool {
-        matches!(self, ManagerError::Cwd(error) if error.allows_home_fallback())
-    }
-
     pub fn message(&self) -> String {
         match self {
             ManagerError::NotFound(id) => format!("TERMINAL_NOT_FOUND: no terminal {id}"),
@@ -105,7 +100,6 @@ pub struct CreateRequest {
     pub title: Option<String>,
     pub cols: u16,
     pub rows: u16,
-    pub policy: CwdPolicy,
 }
 
 pub struct Manager {
@@ -128,7 +122,7 @@ impl Manager {
     /// Create a session for a conversation: resolve directory and shell, spawn,
     /// register.
     pub fn create(&self, request: CreateRequest) -> Result<Info, ManagerError> {
-        let resolved = cwd::resolve_for_thread(&request.thread_id, request.policy)?;
+        let resolved = cwd::resolve_for_thread(&request.thread_id)?;
         let choice = shell::resolve_shell().map_err(ManagerError::ShellUnavailable)?;
         let args = choice.args();
         let program = choice.path;

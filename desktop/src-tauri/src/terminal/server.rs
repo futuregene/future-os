@@ -200,7 +200,7 @@ impl TerminalServer {
             let _ = write_json(
                 &mut stream,
                 StatusCode::FORBIDDEN,
-                &error_body("ORIGIN_FORBIDDEN", "origin not allowed", false),
+                &error_body("ORIGIN_FORBIDDEN", "origin not allowed"),
                 None,
             )
             .await;
@@ -228,7 +228,7 @@ impl TerminalServer {
                 let _ = write_json(
                     &mut stream,
                     StatusCode::METHOD_NOT_ALLOWED,
-                    &error_body("METHOD_NOT_ALLOWED", "connect requires GET", false),
+                    &error_body("METHOD_NOT_ALLOWED", "connect requires GET"),
                     None,
                 )
                 .await;
@@ -238,11 +238,7 @@ impl TerminalServer {
                 let _ = write_json(
                     &mut stream,
                     StatusCode::BAD_REQUEST,
-                    &error_body(
-                        "INVALID_ARGUMENT",
-                        "connect requires a websocket upgrade",
-                        false,
-                    ),
+                    &error_body("INVALID_ARGUMENT", "connect requires a websocket upgrade"),
                     request.origin.clone(),
                 )
                 .await;
@@ -256,7 +252,7 @@ impl TerminalServer {
             let _ = write_json(
                 &mut stream,
                 StatusCode::UNAUTHORIZED,
-                &error_body("UNAUTHORIZED", "terminal token missing or invalid", false),
+                &error_body("UNAUTHORIZED", "terminal token missing or invalid"),
                 request.origin.clone(),
             )
             .await;
@@ -286,15 +282,11 @@ impl TerminalServer {
             (Route::ConnectToken(id), "POST") => self.connect_token(id),
             (Route::Unknown, _) => ControlResponse::status(
                 StatusCode::NOT_FOUND,
-                error_body("NOT_FOUND", "unknown terminal route", false),
+                error_body("NOT_FOUND", "unknown terminal route"),
             ),
             (_, _) => ControlResponse::status(
                 StatusCode::METHOD_NOT_ALLOWED,
-                error_body(
-                    "METHOD_NOT_ALLOWED",
-                    "method not allowed for this route",
-                    false,
-                ),
+                error_body("METHOD_NOT_ALLOWED", "method not allowed for this route"),
             ),
         };
 
@@ -311,19 +303,13 @@ impl TerminalServer {
         let Some(body) = parse_body::<CreateBody>(request) else {
             return ControlResponse::status(
                 StatusCode::BAD_REQUEST,
-                error_body("INVALID_ARGUMENT", "invalid create request body", false),
-            );
-        };
-        let Some(policy) = super::cwd::CwdPolicy::parse(body.cwd_policy.as_deref()) else {
-            return ControlResponse::status(
-                StatusCode::BAD_REQUEST,
-                error_body("INVALID_ARGUMENT", "unknown cwdPolicy", false),
+                error_body("INVALID_ARGUMENT", "invalid create request body"),
             );
         };
         if body.thread_id.trim().is_empty() {
             return ControlResponse::status(
                 StatusCode::BAD_REQUEST,
-                error_body("INVALID_ARGUMENT", "threadId is required", false),
+                error_body("INVALID_ARGUMENT", "threadId is required"),
             );
         }
         let created = self.manager.create(CreateRequest {
@@ -331,7 +317,6 @@ impl TerminalServer {
             title: body.title.clone(),
             cols: body.cols.unwrap_or(80),
             rows: body.rows.unwrap_or(24),
-            policy,
         });
         match created {
             Ok(info) => ControlResponse::ok(serde_json::to_value(info).unwrap_or_default()),
@@ -343,7 +328,7 @@ impl TerminalServer {
         let Some(body) = parse_body::<UpdateBody>(request) else {
             return ControlResponse::status(
                 StatusCode::BAD_REQUEST,
-                error_body("INVALID_ARGUMENT", "invalid update request body", false),
+                error_body("INVALID_ARGUMENT", "invalid update request body"),
             );
         };
         let size = match (body.cols, body.rows) {
@@ -372,11 +357,7 @@ impl TerminalServer {
             })),
             None => ControlResponse::status(
                 StatusCode::TOO_MANY_REQUESTS,
-                error_body(
-                    "CAPACITY_EXCEEDED",
-                    "too many outstanding connect tickets",
-                    false,
-                ),
+                error_body("CAPACITY_EXCEEDED", "too many outstanding connect tickets"),
             ),
         }
     }
@@ -397,7 +378,7 @@ impl TerminalServer {
                 let _ = write_json(
                     &mut stream,
                     StatusCode::NOT_FOUND,
-                    &error_body(error.code(), &error.message(), error.allows_home_fallback()),
+                    &error_body(error.code(), &error.message()),
                     request.origin.clone(),
                 )
                 .await;
@@ -413,7 +394,7 @@ impl TerminalServer {
             let _ = write_json(
                 &mut stream,
                 StatusCode::FORBIDDEN,
-                &error_body("UNAUTHORIZED", "connect ticket missing or invalid", false),
+                &error_body("UNAUTHORIZED", "connect ticket missing or invalid"),
                 request.origin.clone(),
             )
             .await;
@@ -603,17 +584,16 @@ impl ControlResponse {
     fn error(error: ManagerError) -> Self {
         ControlResponse {
             status: StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_REQUEST),
-            body: error_body(error.code(), &error.message(), error.allows_home_fallback()),
+            body: error_body(error.code(), &error.message()),
         }
     }
 }
 
-fn error_body(code: &str, message: &str, allows_home_fallback: bool) -> serde_json::Value {
+fn error_body(code: &str, message: &str) -> serde_json::Value {
     serde_json::json!({
         "error": {
             "code": code,
             "message": message,
-            "allowsHomeFallback": allows_home_fallback,
         }
     })
 }
@@ -628,8 +608,6 @@ struct CreateBody {
     cols: Option<u16>,
     #[serde(default)]
     rows: Option<u16>,
-    #[serde(default)]
-    cwd_policy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1285,7 +1263,8 @@ mod end_to_end {
         // process-global, so a second #[tokio::test] would fight over them.
         // Kept inside this function on purpose.
         let thread_id = create_thread_in_new_workspace("terminal-e2e-cwd");
-        // Point the conversation at a directory that no longer exists.
+        // A workspace directory that no longer exists must not block the tab:
+        // the shell starts in home instead.
         let thread = store::get_thread(&thread_id)
             .expect("thread")
             .expect("present");
@@ -1296,21 +1275,14 @@ mod end_to_end {
 
         let body = serde_json::json!({ "threadId": thread_id }).to_string();
         let response = request(port, "POST", "/terminal", Some(&token), Some(&body));
-        assert_eq!(response.status, 400, "body: {}", response.body);
-        let json = body_json(&response);
-        assert_eq!(json["error"]["code"], "CWD_INVALID");
-        assert_eq!(json["error"]["allowsHomeFallback"], true);
-
-        // With the explicit confirmation the same request succeeds in home.
-        let body = serde_json::json!({
-            "threadId": thread_id,
-            "cwdPolicy": "homeConfirmed"
-        })
-        .to_string();
-        let response = request(port, "POST", "/terminal", Some(&token), Some(&body));
         assert_eq!(response.status, 200, "body: {}", response.body);
         let created = body_json(&response);
-        assert!(created["cwd"].as_str().expect("cwd").starts_with('/'));
+        let home = std::env::var("HOME").expect("guarded HOME");
+        let home = std::fs::canonicalize(&home).unwrap_or_else(|_| std::path::PathBuf::from(home));
+        assert_eq!(
+            std::path::Path::new(created["cwd"].as_str().expect("cwd")),
+            home
+        );
         let id = created["id"].as_str().expect("id").to_string();
         let _ = request(
             port,
@@ -1364,10 +1336,10 @@ mod tests {
     }
 
     #[test]
-    fn error_bodies_carry_code_and_fallback_hint() {
-        let body = error_body("CWD_INVALID", "CWD_INVALID: nope", true);
+    fn error_bodies_carry_the_code() {
+        let body = error_body("CWD_INVALID", "CWD_INVALID: nope");
         assert_eq!(body["error"]["code"], "CWD_INVALID");
-        assert_eq!(body["error"]["allowsHomeFallback"], true);
+        assert_eq!(body["error"]["message"], "CWD_INVALID: nope");
     }
 
     #[tokio::test]

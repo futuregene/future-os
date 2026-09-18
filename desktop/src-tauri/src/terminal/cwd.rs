@@ -1,51 +1,27 @@
 //! Working-directory resolution for a new terminal tab.
 //!
-//! Order (design §5.2):
-//!   1. the thread's own working directory (a worktree checkout even when the
-//!      thread runs in one — this is just the real directory path);
-//!   2. the workspace strictly associated with that thread;
-//!   3. the user's home directory.
+//! Order:
+//!   1. the directory of the workspace strictly associated with the thread —
+//!      for a standalone chat session that temporary workspace IS the session's
+//!      own directory;
+//!   2. the user's home directory, when the configured directory is missing or
+//!      otherwise unusable.
 //!
 //! **Why this module validates instead of trusting the PTY layer:**
 //! `portable-pty` 0.9.0 builds its command as
 //! `cwd.filter(|d| Path::new(d).is_dir()).unwrap_or(home)` — a configured but
 //! missing/non-directory cwd is silently replaced with `$HOME`. Verified in the
-//! T02 spike (`T02-report.md`, FINDING-1). The product requirement is the
-//! opposite: fail loudly and offer an explicit home fallback, so every path
-//! that reaches the PTY is validated here first.
-//!
-//! A configured-but-broken directory is never papered over by a lower-priority
-//! source: the failure names the configured path and the client decides
-//! (retry after fixing it, or confirm the home fallback).
+//! T02 spike (`T02-report.md`, FINDING-1). Here the home fallback is a
+//! deliberate choice made before spawn and the resolved directory travels back
+//! in the session info, so a skipped configured path stays visible instead of
+//! silent.
 
 use std::path::{Path, PathBuf};
 
 use crate::store;
 
-/// What the client asked for when creating a tab.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CwdPolicy {
-    /// Use the thread/workspace directory; a broken configured directory is an
-    /// error the user must resolve (the default).
-    #[default]
-    Thread,
-    /// The user explicitly confirmed "start in home instead" after seeing
-    /// `CWD_INVALID`.
-    HomeConfirmed,
-}
-
-impl CwdPolicy {
-    pub fn parse(value: Option<&str>) -> Option<Self> {
-        match value {
-            None | Some("thread") => Some(CwdPolicy::Thread),
-            Some("homeConfirmed") => Some(CwdPolicy::HomeConfirmed),
-            Some(_) => None,
-        }
-    }
-}
-
-/// Why a directory was rejected. Kept separate from the resolved value so the
-/// client can say *which* configured directory is bad.
+/// Why a directory was rejected. Kept separate from the resolved value so
+/// diagnostics can name *which* configured directory is bad.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CwdError {
     /// The thread does not exist (or was deleted) in the local store.
@@ -63,26 +39,15 @@ pub enum CwdError {
 }
 
 impl CwdError {
-    /// Wire code returned to the client. The UI pairs `CWD_INVALID` with an
-    /// explicit "use home instead" action; it is never applied silently.
+    /// Wire code returned to the client. Only the thread errors and
+    /// `NoUsableDirectory` still reach a client: a broken configured directory
+    /// now resolves to home instead of surfacing as `CWD_INVALID`.
     pub fn code(&self) -> &'static str {
         match self {
             CwdError::ThreadNotFound(_) => "THREAD_NOT_FOUND",
             CwdError::ThreadNotWritable(_) => "THREAD_READONLY",
             _ => "CWD_INVALID",
         }
-    }
-
-    /// Machine-readable hint for the client: only `CWD_INVALID` is retryable
-    /// with `cwdPolicy: "homeConfirmed"`.
-    pub fn allows_home_fallback(&self) -> bool {
-        matches!(
-            self,
-            CwdError::NotADirectory(_)
-                | CwdError::Missing(_)
-                | CwdError::NotAccessible { .. }
-                | CwdError::NoUsableDirectory { .. }
-        )
     }
 }
 
@@ -130,7 +95,8 @@ impl std::fmt::Display for CwdError {
 pub enum CwdSource {
     /// The workspace the thread belongs to (including a chat's temp workspace).
     Workspace,
-    /// The user's home directory, chosen explicitly.
+    /// The user's home directory — the fallback when nothing usable is
+    /// configured.
     Home,
 }
 
@@ -182,13 +148,11 @@ fn home_dir() -> Option<PathBuf> {
 
 /// Resolve a directory from a candidate source.
 ///
-/// `allow_home_fallback` is false for the default path: a configured-but-broken
-/// directory must surface as an error so the client can ask the user, rather
-/// than quietly opening a terminal in the wrong place.
-pub fn resolve_initial_cwd(
-    configured: Option<&str>,
-    allow_home_fallback: bool,
-) -> Result<ResolvedCwd, CwdError> {
+/// A configured-but-broken directory falls back to home: the shell must start
+/// somewhere, and home is the predictable choice. The skipped path is logged so
+/// the fallback stays diagnosable, and the resolved directory is reported back
+/// in the session info.
+pub fn resolve_initial_cwd(configured: Option<&str>) -> Result<ResolvedCwd, CwdError> {
     if let Some(trimmed) = configured.map(str::trim).filter(|value| !value.is_empty()) {
         match validate_dir(Path::new(trimmed)) {
             Ok(path) => {
@@ -197,10 +161,11 @@ pub fn resolve_initial_cwd(
                     source: CwdSource::Workspace,
                 })
             }
-            Err(error) if !allow_home_fallback => return Err(error),
-            // The user explicitly confirmed the home fallback: go to home
-            // rather than to another configured directory.
-            Err(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "FutureOS: terminal cwd {trimmed} is unusable ({error}); starting in home"
+                );
+            }
         }
     }
 
@@ -223,7 +188,7 @@ pub fn resolve_initial_cwd(
 /// arbitrary path. The workspace is looked up by the thread's own
 /// `workspace_id` (never by "the currently active workspace"), so a chat's
 /// temporary workspace and a real workspace can never be confused.
-pub fn resolve_for_thread(thread_id: &str, policy: CwdPolicy) -> Result<ResolvedCwd, CwdError> {
+pub fn resolve_for_thread(thread_id: &str) -> Result<ResolvedCwd, CwdError> {
     let thread = store::get_thread(thread_id)
         .map_err(|error| CwdError::ThreadNotFound(format!("{thread_id}: {error}")))?
         .ok_or_else(|| CwdError::ThreadNotFound(thread_id.to_string()))?;
@@ -234,25 +199,21 @@ pub fn resolve_for_thread(thread_id: &str, policy: CwdPolicy) -> Result<Resolved
         .ok()
         .flatten()
         .map(|workspace| workspace.path);
-    resolve_initial_cwd(
-        workspace_path.as_deref(),
-        policy == CwdPolicy::HomeConfirmed,
-    )
+    resolve_initial_cwd(workspace_path.as_deref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Regression for T02 FINDING-1: a missing cwd must be an error, never a
-    /// silent `$HOME` substitution.
+    /// Regression for T02 FINDING-1: a missing cwd must be rejected by
+    /// validation, never silently passed through for a `$HOME` substitution.
     #[test]
     fn missing_directory_is_rejected_not_substituted() {
         let error =
             validate_dir(Path::new("/definitely/not/a/real/dir/t02")).expect_err("missing dir");
         assert_eq!(error.code(), "CWD_INVALID");
         assert!(matches!(error, CwdError::Missing(_)));
-        assert!(error.allows_home_fallback());
     }
 
     #[test]
@@ -276,38 +237,32 @@ mod tests {
     #[test]
     fn configured_directory_wins() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let resolved = resolve_initial_cwd(Some(&dir.path().to_string_lossy()), false)
-            .expect("valid configured cwd");
+        let resolved =
+            resolve_initial_cwd(Some(&dir.path().to_string_lossy())).expect("valid configured cwd");
         assert_eq!(resolved.source, CwdSource::Workspace);
     }
 
+    /// A configured-but-broken directory starts the shell in home instead of
+    /// erroring: the shell must land somewhere predictable.
     #[test]
-    fn broken_configured_directory_fails_loudly() {
-        let error = resolve_initial_cwd(Some("/definitely/not/a/real/dir/t02"), false)
-            .expect_err("broken configured cwd must fail loudly");
-        assert!(matches!(error, CwdError::Missing(_)));
+    fn broken_configured_directory_falls_back_to_home() {
+        let resolved = resolve_initial_cwd(Some("/definitely/not/a/real/dir/t02"))
+            .expect("broken configured cwd falls back to home");
+        assert_eq!(resolved.source, CwdSource::Home);
+        assert!(resolved.path.is_absolute());
     }
 
     #[test]
     fn nothing_configured_falls_back_to_home() {
-        let resolved = resolve_initial_cwd(None, false).expect("home fallback");
+        let resolved = resolve_initial_cwd(None).expect("home fallback");
         assert_eq!(resolved.source, CwdSource::Home);
         assert!(resolved.path.is_absolute());
     }
 
     #[test]
     fn empty_and_whitespace_config_are_treated_as_absent() {
-        let resolved = resolve_initial_cwd(Some("   "), false).expect("blank config falls through");
+        let resolved = resolve_initial_cwd(Some("   ")).expect("blank config falls through");
         assert_eq!(resolved.source, CwdSource::Home);
-    }
-
-    /// The explicit user-confirmed fallback reaches home, and only when asked.
-    #[test]
-    fn explicit_home_fallback_succeeds_after_broken_config() {
-        let resolved = resolve_initial_cwd(Some("/definitely/not/a/real/dir/t02"), true)
-            .expect("explicit home fallback");
-        assert_eq!(resolved.source, CwdSource::Home);
-        assert!(resolved.path.is_absolute());
     }
 
     /// Browsing the error must not leak anything but the configured path.
@@ -317,16 +272,5 @@ mod tests {
         let text = error.to_string();
         assert!(text.starts_with("CWD_INVALID:"));
         assert!(text.contains("/tmp/t02-secret-should-not-appear"));
-    }
-
-    #[test]
-    fn policy_parsing_rejects_unknown_values() {
-        assert_eq!(CwdPolicy::parse(None), Some(CwdPolicy::Thread));
-        assert_eq!(CwdPolicy::parse(Some("thread")), Some(CwdPolicy::Thread));
-        assert_eq!(
-            CwdPolicy::parse(Some("homeConfirmed")),
-            Some(CwdPolicy::HomeConfirmed)
-        );
-        assert_eq!(CwdPolicy::parse(Some("anywhere")), None);
     }
 }
