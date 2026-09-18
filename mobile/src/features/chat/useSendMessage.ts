@@ -40,7 +40,7 @@ export function useSendMessage(
       // swallowing the input — always restore the draft so nothing vanishes.
       setMessage(value);
       const key = error instanceof Error ? error.message : "";
-      showToast(key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
+      showToast(key === "send_compacting" ? t("chat.compacting") : key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }

@@ -220,6 +220,7 @@ export function useTimelineController({
   const syncEngineRef = useRef<SyncEngine | null>(null);
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
+  const compactingRef = useRef<Record<string, boolean>>({});
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
@@ -523,6 +524,7 @@ export function useTimelineController({
       delete committedHistoryRef.current[id];
       delete cursorsRef.current[id];
       delete streamingRef.current[id];
+      delete compactingRef.current[id];
     }
     timelinesRef.current = next;
     historyPagingRef.current = paging;
@@ -678,6 +680,7 @@ export function useTimelineController({
       });
       cursorsRef.current[commit.sessionId] = commit.cursor;
       streamingRef.current[commit.sessionId] = commit.timeline.streaming;
+      compactingRef.current[commit.sessionId] = commit.timeline.compacting === true;
     });
     syncEngineRef.current = engine;
     return () => {
@@ -735,6 +738,7 @@ export function useTimelineController({
     setSyncStatuses({});
     cursorsRef.current = {};
     streamingRef.current = {};
+    compactingRef.current = {};
     historyPagingRef.current = {};
     committedHistoryRef.current = {};
     setHistoryPaging({});
@@ -825,6 +829,7 @@ export function useTimelineController({
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
+    compactingRef,
     hydrateAttachmentsRef,
     reconcileSession,
     handleEvent,

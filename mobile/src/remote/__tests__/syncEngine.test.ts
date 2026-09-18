@@ -41,6 +41,7 @@ class Journal {
 class Harness {
   journal = new Journal();
   activeRunId = "";
+  isCompacting = false;
   history: ReturnType<typeof emptyTimeline> = emptyTimeline();
   /** Optional folded projection; when set, fetchReplay returns it instead. */
   projection: StreamEvent[] | null = null;
@@ -56,7 +57,7 @@ class Harness {
     this.activeRunId = activeRunId;
     this.engine = new SyncEngine({
       requestGetState: async () => {
-        const state: { activeRun?: { runId: string } } = {};
+        const state: { activeRun?: { runId: string }; isCompacting: boolean } = { isCompacting: this.isCompacting };
         if (this.activeRunId) state.activeRun = { runId: this.activeRunId };
         return state;
       },
@@ -120,6 +121,28 @@ class Harness {
 }
 
 describe("SyncEngine", () => {
+  test.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("restores compaction on open and releases it on %s", async terminal => {
+    const h = new Harness();
+    h.isCompacting = true;
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(true);
+      expect(h.timelineOf("s").streaming).toBe(false);
+      h.isCompacting = false;
+      h.engine.event("s", { type: terminal, data: JSON.stringify({ operation_id: "cmp", trigger: "manual" }) });
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(false);
+      h.engine.event("s", { type: "compaction_started", data: JSON.stringify({ operation_id: "cmp2", trigger: "manual" }) });
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(true);
+      // A missed terminal must not leave sending disabled after reconnect.
+      h.engine.reconcile("s", "reconnect");
+      await h.settle();
+      expect(h.timelineOf("s").compacting).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
   test.each(["open", "reconnect"] as const)("%s clears a run that finished while hidden and restores its footer", async reason => {
     const h = new Harness("r");
     h.journal.add(agentStart("r"));

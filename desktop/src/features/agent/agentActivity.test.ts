@@ -53,6 +53,15 @@ describe("buildAssistantRunProjection segments", () => {
     expect(projection.content).toBe("Continuing.");
   });
 
+  it("removes only the matching pending marker when compaction is unchanged", () => {
+    const projection = buildAssistantRunProjection(events([
+      ["compaction_committed", { operation_id: "old", checkpoint_id: "cp-old", tokens_before: 100 }],
+      ["compaction_started", { operation_id: "cmp", trigger: "manual" }],
+      ["compaction_unchanged", { operation_id: "cmp", reused: true }],
+    ]));
+    expect(projection.segments).toEqual([{ id: "cp-old", kind: "compaction", tokensBefore: 100 }]);
+  });
+
   it("projects compaction started, committed, and failed as correlated UI messages", () => {
     const completed = buildAssistantRunProjection(
       events([

@@ -114,6 +114,38 @@ test("streaming keeps the next draft through updates and completion without subm
   } finally { act(() => tree.unmount()); }
 });
 
+test("compaction blocks button and keyboard sends without clearing or locking the draft", () => {
+  const send = jest.fn(async () => {});
+  const props = {
+    message: "next message", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, compacting: true, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
+  try {
+    expect(tree.root.findByType(TextInput).props.editable).toBe(true);
+    expect(button("chat.compacting").props.disabled).toBe(true);
+    act(() => {
+      button("chat.compacting").props.onPress();
+      tree.root.findByType(TextInput).props.onSubmitEditing();
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(props.setMessage).not.toHaveBeenCalled();
+    act(() => tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, compacting: false } })));
+    expect(tree.root.findByType(TextInput).props.value).toBe("next message");
+    expect(button("chat.send").props.disabled).toBe(false);
+    act(() => button("chat.send").props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally { act(() => tree.unmount()); }
+});
+
 test("only the approval which failed receives the error", () => {
   type Props = ComponentProps<typeof ComposerDock>;
   const props = {

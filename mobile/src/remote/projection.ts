@@ -30,6 +30,8 @@ export interface TimelineState {
   seenEvents: Set<string>;
   currentRunId: string | null;
   streaming: boolean;
+  /** Session-wide admission fence, separate from an active model reply. */
+  compacting?: boolean;
   /**
    * Per-run shared-projector accumulators for the live path. Kept out of the
    * render contract — the projector is stateful (slots/tool map), so folding a
@@ -320,12 +322,21 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
   const data = batch?.data ?? eventData(event);
   let items = state.items;
   let streaming = state.streaming;
+  let compacting = state.compacting;
   let liveRuns = state.liveRuns;
   // A `_truncated` marker (text_chunk with no text) short-circuits the run
   // projection — see the text_chunk case below.
   let runEvents = true;
 
   switch (event.type) {
+    case "compaction_started":
+      compacting = true;
+      break;
+    case "compaction_committed":
+    case "compaction_failed":
+    case "compaction_unchanged":
+      compacting = false;
+      break;
     case "user_message": {
       const canonical = userMessageFromEvent(data);
       const text = canonical?.content ?? textValue(data.text);
@@ -422,6 +433,7 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
     seenEvents,
     currentRunId: event.runId ?? state.currentRunId,
     streaming,
+    compacting,
     liveRuns,
   };
 }
@@ -521,6 +533,7 @@ function isRunEvent(type: string): boolean {
     type === "compaction_started" ||
     type === "compaction_committed" ||
     type === "compaction_failed" ||
+    type === "compaction_unchanged" ||
     type === "agent_end"
   );
 }

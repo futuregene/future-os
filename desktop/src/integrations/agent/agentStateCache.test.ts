@@ -390,7 +390,7 @@ describe("agentStateCache event listener", () => {
     expect(received).toHaveLength(5);
   });
 
-  it("tracks compaction lifecycle in cached agent state", async () => {
+  it.each(["compaction_committed", "compaction_failed", "compaction_unchanged"])("releases cached compaction state on %s", async (terminal) => {
     invokeMock.mockResolvedValue(statePayload({ isCompacting: false }));
     await getAgentState("t-compaction");
 
@@ -403,7 +403,7 @@ describe("agentStateCache event listener", () => {
     expect(getCachedAgentState("t-compaction")?.isCompacting).toBe(true);
 
     emit({
-      _eventType: "compaction_committed",
+      _eventType: terminal,
       sessionId: "s1",
       threadId: "t-compaction",
       operation_id: "cmp_1",
