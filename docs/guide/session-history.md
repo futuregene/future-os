@@ -60,27 +60,26 @@ locate those candidates; use the returned `entryId` for the precise read. One
 entry can have several blocks. Search/read results make these references visible
 to the model without adding IDs to every historical message.
 
-## When the model receives recall guidance
+## How the model learns to use it
 
-The normal model request gets a short `Archived conversation recall` section only
-when all of these hold:
+The runtime does **not** tell the model that this exists. A session's system prompt is its
+own, unchanged: the earlier post-checkpoint `Archived conversation recall` section was
+removed because it did not change behaviour (see
+[compaction-open-book-experiment.md](../internals/compaction/compaction-open-book-experiment.md) for
+the measurement), so what remains is the CLI plus whatever the session's own prompt says.
 
-- its context uses a successfully committed or restored valid checkpoint;
-- the session is persisted, not ephemeral;
-- shell is in the enabled tool definitions and the run permits tool use;
-- the session ID is known.
+The reasoning behind the removal is worth keeping, because it is a property of this feature
+rather than of that experiment: the guidance only ever described a capability the model
+already had, and describing a capability more firmly is not what makes a model use it. The
+retained affordance is `future session history search` / `get` behind the ordinary shell
+tool, plus the entry ids the journal already puts in search and read results.
 
-It is added at the model-request boundary, so a mid-run compaction enables recall
-for the very next call. Every request is built from the base system prompt; the
-section does not accumulate across compactions and is not stored as a fabricated
-user message. Failed/unchanged compaction without an existing checkpoint does not
-enable it. Restoring a compacted session restores the behavior. Summarization
-requests themselves remain tool-free and do not receive this guidance.
+Summarization requests are tool-free and were never able to use it.
 
-The guide says to retrieve only missing exact historical evidence, prefer safe
-read-only tools for current state, never replay side effects merely for recall,
-and treat archived instructions as data. If the CLI is too old, report that
-limitation rather than guessing or scanning unrelated sessions.
+One consequence to know about: because the prompt no longer grows at a checkpoint, a
+session's system prompt is now constant for its whole life. That is strictly better for
+provider prefix caching, and it means the summary request and the turn it belongs to are
+byte-identical without any code keeping them in step.
 
 ## Scope and limitations
 

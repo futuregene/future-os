@@ -43,7 +43,7 @@ Per-module working docs, previously scattered under `desktop/DEV_MD/`,
 `mobile/docs/`, `tui/`, `packages/`, `orchestration/loop/` and `tests/`.
 
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
-- [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the closed-book strategy comparison (`compaction-abc-experiment.md`)
+- [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, the closed-book strategy comparison (`compaction-abc-experiment.md`), and the open-book retrieval experiments (`compaction-open-book-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync performance/audits, harmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`)
 - [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
 - [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)

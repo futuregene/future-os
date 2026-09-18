@@ -29,7 +29,7 @@
 | 内容指纹、claim、原子完成 | [compaction_ops.rs](../../../agent/src/session/compaction_ops.rs) |
 | 有序 writer／barrier | [persistence.rs](../../../agent/src/session/persistence.rs) |
 | checkpoint／fork 引用 | [checkpoint.rs](../../../agent/src/session/checkpoint.rs)、[fork.rs](../../../agent/src/session/fork.rs) |
-| 原始历史读取与召回指导 | [history_query.rs](../../../agent/src/session/history_query.rs)、[history_recall.rs](../../../agent/src/agent/history_recall.rs) |
+| 原始历史读取 | [history_query.rs](../../../agent/src/session/history_query.rs) |
 
 ## 3. 执行链
 

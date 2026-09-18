@@ -32,10 +32,11 @@ BYTE_STOP=262144
 def future_shape(args,sid):
     """Production's system prompt and tool definitions for this replay's session.
 
-    Taken from the Rust code, not restated here: `--print-request-shape` calls
-    `history_recall::system_prompt` and returns `coding_tools()`. The exam used to build a
-    hand-written guide and rename the history commands to `history_search(query=...)`, tool
-    names no product has; that is what this replaces.
+    Taken from the Rust code, not restated here: `--print-request-shape` returns the prompt
+    the runtime builds and `coding_tools()`. The exam used to build a hand-written guide and
+    rename the history commands to `history_search(query=...)`, tool names no product has; the
+    runtime has since stopped appending any guidance at all, so what a session sends is simply
+    its own system prompt.
     """
     return ps.RequestShape(args.shape_probe,args.base_prompt,sid)
 
@@ -69,12 +70,14 @@ def native_case(args,root,identity,arm,records):
                                  tool_names=shape.tool_names())
         tools=engine.tools
         assert tools==shape.tools(),'executor and request-shape tool definitions disagree'
-        # The system prompt is production's, verbatim: the captured base prompt plus the
-        # recall guidance the runtime appends once a checkpoint exists. A replay starts from
-        # a compacted projection, so the checkpoint form is the one a session would send.
+        # The system prompt is production's, verbatim: the session's own, with nothing
+        # appended. The runtime used to add a recall guidance once a checkpoint existed; it
+        # does not any more, and the exam would otherwise silently measure the old shape.
         system=shape.system_prompt(has_checkpoint=True)
-        assert ps.has_guidance(system,Path(args.base_prompt).read_text()), \
-            'the replay system prompt is missing the recall guidance'
+        assert system==Path(args.base_prompt).read_text(), \
+            'the replay system prompt is not the session\'s own'
+        assert ps.guidance_removed(system), \
+            'a recall guidance reappeared in the system prompt'
         def execute(name,arguments):
             if name not in {t['function']['name'] for t in tools}:
                 raise ValueError('STUDY_SCOPE_DENIED: unknown tool')

@@ -12,7 +12,7 @@ use crate::rpc::commands::test_support::*;
 use crate::rpc::handle_command_internal;
 
 #[test]
-fn history_recall_reads_persisted_sessions_without_loading_a_runtime() {
+fn history_cli_reads_persisted_sessions_without_loading_a_runtime() {
     let state = make_app_state();
     state.session_manager.storage().unwrap().replace("history-only",vec![serde_json::json!({"id":"entry-1","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"saved history 中文"})]).unwrap();
     let before = state

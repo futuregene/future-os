@@ -1,9 +1,6 @@
 //! Agent Loop — 1:1 compatible with Go internal/agent/
 
 mod events;
-// Public so a measurement driver can reproduce the exact request shape a turn
-// sends; re-implementing this text elsewhere is how a replay drifts from production.
-pub mod history_recall;
 mod run_loop;
 
 use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall};
@@ -94,7 +91,6 @@ pub struct Loop {
     pub verbose: bool,
     pub session_id: String,
     /// Enabled explicitly on the run snapshot when shell access is permitted.
-    pub(crate) history_recall_allowed: bool,
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
     pub context_manager: Option<crate::compaction::ContextManager>,
@@ -139,7 +135,6 @@ impl Loop {
             config: crate::types::AgentConfig::default(),
             verbose: false,
             session_id: String::new(),
-            history_recall_allowed: false,
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             context_manager: None,

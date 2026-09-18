@@ -23,7 +23,7 @@
 
 ### 2. 模型如何知道可以查
 
-`agent/src/agent/history_recall.rs::system_prompt` 在适用的请求中附加 `Archived conversation recall`：当前 session ID、原生 search/get 用法、引用 ID 和分页规则。
+运行时不向模型宣传这套能力。会话的 system prompt 就是它自己的，保持不变；原先在 checkpoint 之后追加的 `Archived conversation recall` 说明已删除（理由与测量见 [compaction-open-book-experiment.zh-CN.md](compaction-open-book-experiment.zh-CN.md)）。保留下来的入口是普通 shell 工具背后的 CLI。
 
 `agent/src/agent/run_loop.rs` 构造请求时检查有效 checkpoint、允许历史召回、以及 shell 工具是否可用。`rpc/session_prompt.rs` 对 ephemeral/权限关闭条件限制召回。说明不写成一条新的持久聊天消息。
 
@@ -190,7 +190,6 @@ launcher 只检查 shell 已解析好的单次 CLI argv 再转发，不解析 sh
 
 ### FutureOS 原生 Rust
 
-- `agent/src/agent/history_recall.rs`：召回提示。
 - `agent/src/agent/run_loop.rs`、`rpc/session_prompt.rs`：启用条件与请求注入。
 - `agent/src/tools/mod.rs`：shell schema/handler、超时、输出与退出码。
 - `agent/src/sandbox/mod.rs`：宿主 shell 调用与各平台封装。

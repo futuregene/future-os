@@ -1,12 +1,12 @@
 """Source-derived functional recall guidance for the existing local interfaces.
 
-For Future arms this returns **production's own text, unmodified**, fetched from
-`history_recall::system_prompt` by `production_shape`. It previously rewrote it: "use the
-existing shell tool" became "use these read-only adapters of the native Future history CLI",
-and the two `future session history ...` commands became `history_search(query=...)` /
-`history_get(entry_id=...)` — tool names no product has. A replay that measures those
-measures an adaptation, so the substitutions are gone; the `future_mappings` attribute is
-retained, empty, so older callers that recorded it keep working.
+For Future arms this returns **nothing**: the runtime no longer appends a recall guidance to
+the session's system prompt, so there is no production text to reproduce. It previously
+returned a rewritten version of that guidance — "use the existing shell tool" became "use
+these read-only adapters of the native Future history CLI", and the two
+`future session history ...` commands became `history_search(query=...)` /
+`history_get(entry_id=...)`, tool names no product has. Both the rewrite and the guidance are
+gone; the retrieval CLI itself is retained and reachable through the ordinary shell tool.
 
 Codex and OpenCode keep their own products' guidance, which is production for those arms;
 those are still selected/assembled from the pinned sources below.
@@ -15,6 +15,11 @@ import json
 from pathlib import Path
 import re
 
+# Imported lazily inside `text` to keep this module importable without the shape probe.
+def ps_guidance_removed(system_prompt):
+    import production_shape
+    return production_shape.guidance_removed(system_prompt)
+
 
 class Guidance:
     def __init__(self,future_source,codex_source,opencode_source,shape=None,shape_factory=None):
@@ -22,9 +27,9 @@ class Guidance:
         # embeds the session id literally, so it cannot be shared across cases).
         self.shape=shape
         self.shape_factory=shape_factory
+        # No `future`/`future_gate` source any more: the runtime stopped appending the
+        # guidance and its module is deleted, so there is nothing to read from it.
         self.paths={
-            'future':Path(future_source)/'agent/src/agent/history_recall.rs',
-            'future_gate':Path(future_source)/'agent/src/agent/run_loop.rs',
             'codex':Path(codex_source)/'codex-rs/ext/history-notes/src/tools.rs',
             'codex_hint':Path(codex_source)/'codex-rs/ext/history-notes/src/extension.rs',
             'opencode_glob':Path(opencode_source)/'packages/opencode/src/tool/glob.txt',
@@ -78,13 +83,13 @@ class Guidance:
         if arm in ('C','C3'):
             if not has_checkpoint:
                 return ''
+            # Nothing is appended by production, so nothing is returned. The shape is still
+            # consulted so that a regression (guidance reappearing) fails here rather than
+            # changing what an exam measures.
             shape=self.shape_factory(session_id) if self.shape_factory else self.shape
-            if shape is None:
-                raise ValueError('Future arms need a production_shape.RequestShape; a hand-written paraphrase is not production')
-            # Only the appended guidance, not the whole prompt: callers already hold the base
-            # prompt in place and append this to it. Production's leading blank line is kept
-            # so the concatenation is byte-exact.
-            return shape.guidance(has_checkpoint=True)
+            if shape is not None and not ps_guidance_removed(shape.system_prompt(has_checkpoint)):
+                raise ValueError('the runtime appended a recall guidance again; review before running')
+            return ''
         if arm=='codex':
             self._derive()
             return ('## Archived conversation recall — history interface\n'+self.codex_functional+'\n'
@@ -106,7 +111,7 @@ class Guidance:
     def adaptations(self):
         self._derive()
         return {'future':{'routing_replacements':self.future_mappings,
-                         'source':'verbatim from history_recall::system_prompt via production_shape',
+                         'source':'nothing: the runtime appends no guidance, so the Future arms add none',
                          'gate':'append only for frozen projections with checkpoints; the CLI and shell tool are the real ones, so no routing substitution remains'},
                 'codex':{'functional_prefix':self.codex_functional,
                          'omitted_source_tail':self.codex_description[len(self.codex_functional):],

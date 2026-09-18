@@ -312,17 +312,14 @@ impl Loop {
                 reported_input,
                 context_window,
             );
-            // Reserve the post-checkpoint guidance as well, so committing the
-            // first checkpoint cannot make its next request exceed admission.
-            let budget_system = super::history_recall::system_prompt(
-                &ctx.system_prompt,
-                &self.session_id,
-                self.history_recall_allowed
-                    && tool_defs.iter().any(|tool| tool.function.name == "shell"),
-            );
+            // The turn's system prompt is the session's own, unchanged. It used to grow a
+            // post-checkpoint recall guidance, which the budget had to reserve in advance so
+            // committing a checkpoint could not push the next request past admission; with
+            // the guidance gone there is nothing to reserve and nothing to keep in step.
+            let budget_system = ctx.system_prompt.as_str();
             crate::compaction::set_request_budget(
                 &mut projected,
-                &budget_system,
+                budget_system,
                 &tool_defs,
                 output_reserve,
             );
@@ -351,16 +348,9 @@ impl Loop {
                     phase: automatic_phase,
                 });
             };
-            // The summary request must carry the same system prompt the agent turn
-            // sends, otherwise its prefix diverges and the provider bills the whole
-            // conversation again instead of serving it from cache.
-            let compaction_system_prompt = super::history_recall::system_prompt(
-                &ctx.system_prompt,
-                &self.session_id,
-                self.history_recall_allowed
-                    && active_checkpoint.is_some()
-                    && tool_defs.iter().any(|tool| tool.function.name == "shell"),
-            );
+            // The summary request carries the session's own system prompt, so its prefix
+            // matches the turn that was just sent and the provider serves it from cache.
+            let compaction_system_prompt = ctx.system_prompt.as_str();
             // The summary request is billed to the session, but it is not the user's
             // turn: `last_prompt_tokens` drives the compaction threshold and must keep
             // describing the conversation the agent actually sent.
@@ -409,7 +399,7 @@ impl Loop {
                         ctx.compaction_journal.as_ref(),
                         &automatic_operation_id,
                         Some(self.provider.as_ref()),
-                        Some(compaction_system_prompt.as_ref()),
+                        Some(compaction_system_prompt),
                         &tool_defs,
                         Some(&record_summary_usage),
                         None,
@@ -544,16 +534,7 @@ impl Loop {
                 );
             }
 
-            // A committed/restored checkpoint enables recall starting with this
-            // request, including mid-run compaction. Rebuild from the base each
-            // time: never accumulate duplicate guidance or persist it as chat.
-            let request_system_prompt = super::history_recall::system_prompt(
-                &ctx.system_prompt,
-                &self.session_id,
-                self.history_recall_allowed
-                    && active_checkpoint.is_some()
-                    && tool_defs.iter().any(|tool| tool.function.name == "shell"),
-            );
+            let request_system_prompt = ctx.system_prompt.as_str();
 
             // Stream chat — interruptible so a stop during connect / TLS /
             // time-to-first-byte takes effect immediately instead of blocking
@@ -566,7 +547,7 @@ impl Loop {
                             model: ctx.model.clone(),
                             messages: work_messages.clone(),
                             tools: tool_defs.clone(),
-                            system_prompt: request_system_prompt.into_owned(),
+                            system_prompt: request_system_prompt.to_string(),
                         }),
                     interrupt_rx.as_mut(),
                 )
@@ -641,7 +622,7 @@ impl Loop {
                             );
                             crate::compaction::set_request_budget(
                                 &mut projected,
-                                &budget_system,
+                                budget_system,
                                 &tool_defs,
                                 output_reserve,
                             );
@@ -666,7 +647,7 @@ impl Loop {
                                 ctx.compaction_journal.as_ref(),
                                 &provider_limit_operation_id,
                                 Some(self.provider.as_ref()),
-                                Some(compaction_system_prompt.as_ref()),
+                                Some(compaction_system_prompt),
                                 &tool_defs,
                                 Some(&record_summary_usage),
                                 None,
@@ -3641,134 +3622,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("no valid journal boundary"));
-    }
-
-    #[tokio::test]
-    async fn history_recall_appears_after_commit_and_restores_without_duplication() {
-        let provider = ScriptedProvider::new(vec![
-            Script::Events(vec![
-                ev_toolcall_start(0, "c1", "shell", "{}"),
-                ev_toolcall_end(),
-                ev_usage(9000, 0, None),
-                ev_stop(),
-            ]),
-            Script::Events(vec![
-                ev_toolcall_start(0, "c2", "shell", "{}"),
-                ev_toolcall_end(),
-                ev_usage(20, 0, None),
-                ev_stop(),
-            ]),
-            Script::Events(vec![ev_text("done"), ev_stop()]),
-        ]);
-        let mut shell = echo_tool();
-        shell.def.function.name = "shell".into();
-        let mut loop_ = Loop::new(provider.clone(), "mock").with_tools(vec![shell.clone()]);
-        loop_.session_id = "history-session".into();
-        loop_.history_recall_allowed = true;
-        loop_.context_manager = Some(crate::compaction::ContextManager {
-            enabled: true,
-            reserve_tokens: 1000,
-            keep_recent_tokens: 2000,
-            context_window: 8000,
-            model: "mock".into(),
-        });
-        let commits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let ctx = StreamContext {
-            compaction_journal: None,
-            model: "mock".into(),
-            system_prompt: "base".into(),
-            save_callback: Some(Arc::new(|m| {
-                m.ensure_journal_entry_id();
-            })),
-            on_tool_result: Some(Arc::new(|m| {
-                m.ensure_journal_entry_id();
-            })),
-            on_checkpoint: Some({
-                let commits = commits.clone();
-                Arc::new(move |_| {
-                    commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Ok(())
-                })
-            }),
-        };
-        let (_, messages) = loop_
-            .run_streaming_with_messages(user_messages("go"), &ctx, noop_on_text, |_| {}, None)
-            .await
-            .unwrap();
-        assert_eq!(commits.load(std::sync::atomic::Ordering::Relaxed), 1);
-        let prompts = provider.system_prompts.lock().clone();
-        assert_eq!(prompts.len(), 3);
-        assert_eq!(prompts[0], "base");
-        for prompt in &prompts[1..] {
-            assert_eq!(prompt.matches("## Archived conversation recall").count(), 1);
-            assert!(prompt.contains("history-session"));
-        }
-        assert_eq!(ctx.system_prompt, "base");
-        assert!(messages
-            .iter()
-            .all(|m| !m.text().contains("Archived conversation recall")));
-        let checkpoint = loop_.active_checkpoint.lock().clone().unwrap();
-        // A durable checkpoint round-trip models the session restore path.
-        let mut entries = messages
-            .iter()
-            .map(crate::session::agent_message_to_entry)
-            .collect::<Vec<_>>();
-        entries.push(crate::session::checkpoint_to_entry(&checkpoint));
-        let restored = crate::session::latest_context_checkpoint(&entries).unwrap();
-        for (has_shell, allowed) in [(true, true), (false, true), (true, false)] {
-            let p = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
-            let mut restored_loop = Loop::new(p.clone(), "mock");
-            restored_loop.session_id = "history-session".into();
-            restored_loop.history_recall_allowed = allowed;
-            if has_shell {
-                restored_loop.tools = vec![shell.clone()];
-            }
-            *restored_loop.active_checkpoint.lock() = Some(restored.clone());
-            let mut next_messages = messages.clone();
-            next_messages.extend(user_messages("next question"));
-            restored_loop
-                .run_streaming_with_messages(next_messages, &ctx, noop_on_text, |_| {}, None)
-                .await
-                .unwrap();
-            assert_eq!(
-                p.system_prompts.lock()[0].contains("Archived conversation recall"),
-                has_shell && allowed
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn history_recall_is_not_enabled_by_a_failed_checkpoint_commit() {
-        let provider = ScriptedProvider::new(vec![Script::Events(vec![
-            ev_toolcall_start(0, "c1", "shell", "{}"),
-            ev_toolcall_end(),
-            ev_usage(9000, 0, None),
-            ev_stop(),
-        ])]);
-        let mut shell = echo_tool();
-        shell.def.function.name = "shell".into();
-        let mut loop_ = Loop::new(provider.clone(), "mock").with_tools(vec![shell]);
-        loop_.session_id = "s".into();
-        loop_.history_recall_allowed = true;
-        loop_.context_manager = Some(crate::compaction::ContextManager {
-            enabled: true,
-            reserve_tokens: 1000,
-            keep_recent_tokens: 2000,
-            context_window: 8000,
-            model: "mock".into(),
-        });
-        let ctx = StreamContext {
-            model: "mock".into(),
-            system_prompt: "base".into(),
-            on_checkpoint: Some(Arc::new(|_| Err(anyhow!("commit failed")))),
-            ..Default::default()
-        };
-        assert!(loop_
-            .run_streaming_with_messages(user_messages("go"), &ctx, noop_on_text, |_| {}, None)
-            .await
-            .is_err());
-        assert!(loop_.active_checkpoint.lock().is_none());
-        assert_eq!(*provider.system_prompts.lock(), vec!["base".to_string()]);
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]

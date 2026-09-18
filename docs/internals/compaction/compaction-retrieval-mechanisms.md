@@ -34,9 +34,11 @@ Missing earlier fact
   -> next model request
 ```
 
-`history_recall.rs` appends request-only recall guidance with the current session
-ID. `run_loop.rs` and `rpc/session_prompt.rs` gate it on a valid checkpoint,
-persistent/eligible session, permissions and shell availability. It is not a new
+The runtime does not advertise this to the model. A session's system prompt is its own,
+unchanged; the guidance that used to be appended after a checkpoint is gone, because it did
+not change behaviour (see
+[compaction-open-book-experiment.md](compaction-open-book-experiment.md)). What remains is the CLI behind
+the ordinary shell tool. It is not a new
 persistent chat message. The production instruction says to query **when exact
 old information is missing**, not routinely reload the entire database. This
 is different from an experimental mandatory-retrieval condition.
@@ -95,8 +97,8 @@ retains at most the last 500000 output bytes, and appends an exit footer. A
 compound command's final zero status does not prove every earlier command
 succeeded.
 
-Relevant native Rust: `agent/src/agent/history_recall.rs`,
-`agent/src/agent/run_loop.rs`, `agent/src/rpc/session_prompt.rs`,
+Relevant native Rust: `agent/src/agent/run_loop.rs`,
+`agent/src/rpc/session_prompt.rs`,
 `agent/src/tools/mod.rs`, `agent/src/sandbox/mod.rs`,
 `cli/src/commands/session_history.rs`, `cli/src/rpc.rs`,
 `agent/src/rpc/commands/mod.rs`, `agent/src/session/history_query.rs`.

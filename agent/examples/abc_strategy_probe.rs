@@ -28,7 +28,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
-use future_agent::agent::history_recall;
 use future_agent::compaction::{
     context_token_budgets, project_prompt_context, set_request_budget, CompactionPhase,
     CompactionTrigger, ContextManager, ContextPreparation,
@@ -375,7 +374,6 @@ async fn main() -> Result<()> {
     let mut thinking_level: Option<String> = None;
     let mut base_system_prompt: Option<String> = None;
     let mut session_id = String::new();
-    let mut recall_allowed = true;
     let mut tools: Vec<ToolDef> = Vec::new();
     let mut instructions: Option<String> = None;
     // The runtime compacts an ordinary turn before it sends it, in the pre-turn phase.
@@ -408,7 +406,6 @@ async fn main() -> Result<()> {
                 )?);
             }
             "--session-id" => session_id = args.next().context("session id")?,
-            "--no-recall" => recall_allowed = false,
             "--tools-file" => {
                 tools = serde_json::from_str(&std::fs::read_to_string(
                     args.next().context("tools file")?,
@@ -419,14 +416,15 @@ async fn main() -> Result<()> {
         }
     }
     let model_id = model.context("--model is required")?;
-    // `--print-request-shape` emits the request a session turn sends: the system prompt
-    // built by production's own `history_recall::system_prompt`, and the tool definitions
-    // production installs. A harness that builds either by hand drifts from them silently,
-    // which is exactly what this mode exists to prevent.
+    // `--print-request-shape` emits the request a session turn sends: the system prompt the
+    // runtime builds, and the tool definitions it installs. A harness that assembles either
+    // by hand drifts from them silently, which is what this mode exists to prevent.
+    //
+    // Both fields are reported for the pre- and post-checkpoint states even though they are
+    // currently identical: a session's system prompt no longer changes when a checkpoint is
+    // committed, and a replay should be able to assert that rather than assume it.
     if print_request_shape {
         let base = base_system_prompt.as_deref().unwrap_or_default();
-        // The tools production installs by default. `coding_tools()` is the set the
-        // runtime builds a session with; the recall guidance needs `shell` among them.
         let installed: Vec<ToolDef> = if tools.is_empty() {
             future_agent::tools::coding_tools()
                 .into_iter()
@@ -435,12 +433,10 @@ async fn main() -> Result<()> {
         } else {
             tools.clone()
         };
-        let enables = |enabled: bool| {
-            let prompt = history_recall::system_prompt(base, &session_id, enabled);
+        let state = || {
             serde_json::json!({
-                "system_prompt": prompt,
-                "system_prompt_chars": prompt.len(),
-                "recall_guidance": prompt.len() != base.len(),
+                "system_prompt": base,
+                "system_prompt_chars": base.len(),
                 "tools": installed,
             })
         };
@@ -448,10 +444,8 @@ async fn main() -> Result<()> {
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "base_system_prompt_chars": base.len(),
-                // Before the first checkpoint and after it. Production sends the second
-                // once a checkpoint exists, which is the state every replay starts from.
-                "no_checkpoint": enables(false),
-                "with_checkpoint": enables(recall_allowed),
+                "no_checkpoint": state(),
+                "with_checkpoint": state(),
                 "session_id": session_id,
                 "tool_source": if tools.is_empty() { "installed" } else { "tools file" },
             }))?
@@ -540,15 +534,14 @@ async fn main() -> Result<()> {
     //   * the budget prompt always reserves the recall guidance, so committing the first
     //     checkpoint cannot make the next request exceed admission;
     //   * the outgoing prompt carries it only once a checkpoint exists.
+    // A session's system prompt is its own, unchanged at every point in the session.
     let base = base_system_prompt.as_deref().unwrap_or_default();
-    let can_recall = recall_allowed && tools.iter().any(|tool| tool.function.name == "shell");
-    let budget_system = history_recall::system_prompt(base, &session_id, can_recall);
-    let request_system =
-        history_recall::system_prompt(base, &session_id, can_recall && checkpoint.is_some());
+    let budget_system = base;
+    let request_system = base;
     // The runtime calls this at the call site before invoking the strategy. Skipping it
     // leaves `fixed_input_tokens` and `output_reserve_tokens` at zero, which raises the
     // effective limit and compacts later than production.
-    set_request_budget(&mut prompt, &budget_system, &tools, output_reserve);
+    set_request_budget(&mut prompt, budget_system, &tools, output_reserve);
     let (reserve_tokens, keep_recent_tokens) = context_token_budgets(window);
     let manager = ContextManager {
         enabled: true,
@@ -600,7 +593,7 @@ async fn main() -> Result<()> {
                 &AtomicBool::new(false),
                 None,
                 Some(&provider),
-                Some(&request_system),
+                Some(request_system),
                 &tools,
                 None,
                 Some(&|reason: &str| eprintln!("SUMMARY_FALLBACK: {reason}")),

@@ -2,8 +2,8 @@
 """Open-book exam for one arm, against a production-shaped closed run.
 
 This is the end-to-end path for a single arm: read that arm's frozen closed projection, build
-the request production would send (system prompt from `history_recall::system_prompt`, tools
-from `coding_tools()`), let the model call those tools, execute the calls through production's
+the request production would send (the session's own system prompt, tools from
+`coding_tools()`), let the model call those tools, execute the calls through production's
 handlers against an isolated archive of the same history, and score the answer exactly as the
 closed run did.
 

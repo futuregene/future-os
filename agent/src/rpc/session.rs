@@ -656,37 +656,21 @@ impl ServerSession {
             .iter()
             .map(|tool| tool.def.clone())
             .collect::<Vec<_>>();
-        // The summary request must carry the system prompt this session's turns send,
-        // including the post-checkpoint recall guidance. Providers cache on the request
-        // prefix, so a summary that omits it shares no prefix with the turn that already
-        // paid for those tokens and the whole conversation is billed again. The automatic
-        // path does the same thing with the same expression (`run_loop.rs`); keeping them
-        // identical is the point.
-        let recall_allowed = !self.ephemeral
-            && self.permission_level != "none"
-            && tool_defs.iter().any(|tool| tool.function.name == "shell");
-        let summary_system_prompt = crate::agent::history_recall::system_prompt(
-            &budget_system,
-            &self.session_id,
-            recall_allowed && active_checkpoint.is_some(),
-        )
-        .into_owned();
-        // Admission, unlike the request itself, is computed for the widest prompt a turn
-        // can send: the recall guidance is reserved before the checkpoint exists, so
-        // committing the first one cannot push the next request past what was admitted.
-        let budget_system = crate::agent::history_recall::system_prompt(
-            &budget_system,
-            &self.session_id,
-            recall_allowed,
-        )
-        .into_owned();
+        // The summary request carries the system prompt this session's turns send. Providers
+        // cache on the request prefix, so a summary that differs from the turn that already
+        // paid for those tokens shares no prefix with it and the whole conversation is billed
+        // again. The automatic path does the same thing with the same expression
+        // (`run_loop.rs`); keeping them identical is the point. There is no longer a
+        // post-checkpoint addition to keep in step, so both simply send the session's prompt.
+        let budget_system = budget_system.as_str();
+        let summary_system_prompt = budget_system.to_string();
         let max_output = self
             .model_registry
             .read()
             .resolve(&self.model)
             .map(|model| crate::models::effective_max_tokens(&model))
             .unwrap_or(0);
-        crate::compaction::set_request_budget(&mut prompt, &budget_system, &tool_defs, max_output);
+        crate::compaction::set_request_budget(&mut prompt, budget_system, &tool_defs, max_output);
         let journal = (!self.ephemeral).then(|| crate::compaction::CompactionJournal::new(
             self.session_manager.clone(), self.persistence.clone(), self.session_id.clone(),
             serde_json::json!({"model":self.model,"thinking":self.thinking_level,"cwd":self.cwd,"tools":tool_defs,
@@ -726,9 +710,9 @@ impl ServerSession {
         // Summarised compaction: C's projection plus a handoff summary, so a
         // user-initiated compaction gets the same retention as an automatic one. The
         // system prompt is passed through so the summary request reuses the prefix the
-        // session already sent and can be served from the provider cache. The prompt
-        // passed here is the session's own (recall guidance included when a checkpoint
-        // exists), not the base prompt, for exactly that reason.
+        // session already sent and can be served from the provider cache. The prompt passed
+        // here is the session's own, which is the base prompt at every point now that the
+        // post-checkpoint recall guidance is gone.
         let prepared = crate::compaction::prepare_with_journal_and_summary(
             &manager,
             prompt,
@@ -3261,10 +3245,10 @@ mod tests {
     #[test]
     fn manual_compaction_sends_the_prompt_a_session_turn_sends() {
         // Providers cache on the request prefix, so `/compact`'s summary request has to
-        // carry the same system prompt the session's turns send — including the
-        // post-checkpoint recall guidance. Passing the bare base prompt (which is what
-        // this path used to do) shares no prefix with the turn that already paid for
-        // those tokens, and the whole conversation is billed again.
+        // carry the same system prompt the session's turns send. Passing a bare base prompt
+        // when a turn sent something longer (which is what this path used to do, and what
+        // the post-checkpoint guidance made possible) shares no prefix with the turn that
+        // already paid for those tokens, and the whole conversation is billed again.
         let mut session = make_test_session("compact-cache-prefix");
         let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
         {
@@ -3305,27 +3289,15 @@ mod tests {
         }
         persist_transcript(&session);
 
-        // No checkpoint yet: the summary request equals the bare base prompt, exactly as
-        // a first turn's request does. Recall guidance is not sent before there is
-        // anything to recall past, and sending it here would break the prefix instead.
+        // The session's system prompt is the base prompt at every point now that the
+        // post-checkpoint recall guidance is gone, so the manual summary request must equal
+        // it whether a checkpoint exists or not. This still pins the manual path to the same
+        // prompt a turn sends, which is what keeps its prefix cacheable.
         session.compact("").unwrap();
         let first = captured.lock().clone();
         assert_eq!(first.len(), 1, "the first compaction must call the model");
         assert_eq!(first[0], base(&session));
-        assert!(!first[0].contains("## Archived conversation recall"));
 
-        // With a committed checkpoint the turn sends the recall guidance, so the next
-        // summary request must send it too. `history_recall::system_prompt` is the same
-        // function `run_loop.rs` uses for its own turn and for its summary request, so
-        // this assertion pins the two call sites to one prompt.
-        let expected =
-            crate::agent::history_recall::system_prompt(&base(&session), &session.session_id, true)
-                .into_owned();
-        assert!(expected.contains("## Archived conversation recall"));
-        assert_eq!(
-            expected.matches("## Archived conversation recall").count(),
-            1
-        );
         let persisted = session.session_manager.load(&session.session_id).unwrap();
         assert!(
             crate::session::latest_context_checkpoint(&persisted.entries).is_some(),
@@ -3350,27 +3322,11 @@ mod tests {
             2,
             "the second compaction must call the model"
         );
-        assert_eq!(prompts[1], expected);
-
-        // A session that may not run the shell must not be told to recall through it:
-        // the guidance is a capability description, not decoration.
-        session.set_permission_level("none");
-        let recall_allowed = !session.ephemeral
-            && session.permission_level != "none"
-            && session
-                .agent_loop
-                .try_read()
-                .unwrap()
-                .tools
-                .iter()
-                .any(|tool| tool.def.function.name == "shell");
-        assert!(!recall_allowed);
-        assert!(!crate::agent::history_recall::system_prompt(
-            &base(&session),
-            &session.session_id,
-            recall_allowed
-        )
-        .contains("## Archived conversation recall"));
+        assert_eq!(prompts[1], base(&session));
+        assert_eq!(
+            prompts[0], prompts[1],
+            "the prompt must not change with a checkpoint"
+        );
     }
 
     #[test]

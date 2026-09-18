@@ -74,10 +74,10 @@ arbitrary path. No reasoning, image body or wholesale provider metadata enters t
 instruction appended last, so the prefix is untouched and the request can be served from the
 provider's prefix cache. That prefix is the system prompt, then the tool definitions, then
 the messages, compared from token zero — so the request carries the **session's own system
-prompt** (post-checkpoint recall guidance included) and the **session's own tool
-definitions**, and both the automatic path (`run_loop.rs`) and the standalone `/compact`
-(`rpc/session.rs`) build it with the same `history_recall::system_prompt` expression, pinned
-to one string by a test.
+prompt** and the **session's own tool definitions**. The system prompt used to grow a
+post-checkpoint recall guidance, which meant the budget had to reserve it in advance and the
+summary request had to reproduce it; the guidance is gone, so both paths simply send the
+session's prompt and a test pins them to one string.
 
 Changing any of the three diverges the prefix and the whole conversation is billed again.
 Measured: substituting the system prompt, dropping the tool definitions, or adding one line

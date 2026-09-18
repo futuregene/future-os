@@ -1,20 +1,14 @@
 """The request shape a real session sends, taken from the Rust code rather than restated.
 
-An open-book exam has to exercise the same prompt and the same tools a session uses, or it
-measures an adaptation instead of the product. Two things drifted in the earlier scripts:
+An exam has to exercise the same prompt and the same tools a session uses, or it measures an
+adaptation instead of the product. Earlier scripts drifted twice: they assembled the system
+prompt from the examiner's own text, and they renamed the retrieval commands into
+`history_search(query=...)` adapters no product exposes.
 
-* the recall guidance was extracted from `history_recall.rs` by regex and then **rewritten** —
-  "use the existing shell tool" became "use these read-only adapters of the native Future
-  history CLI", and the two `future session history ...` commands became
-  `history_search(query=...)` / `history_get(entry_id=...)`, tool names that do not exist in
-  the product;
-* the system prompt was the examiner's own text (`b.SYSTEM`) rather than the session's, so the
-  model never saw the prompt production sends.
-
-This module removes both by asking the Rust code. `--print-request-shape` calls
-`history_recall::system_prompt` and returns `coding_tools()`'s definitions, so the text and
-the schemas are the ones the runtime installs. A transcription cannot drift from them because
-there is no transcription.
+Both are gone. A session's system prompt is now simply its own base prompt — the runtime no
+longer appends anything after a checkpoint — and the retrieval CLI lives behind the ordinary
+shell tool, exactly as a session finds it. This module asks the Rust code for both, so a
+transcription cannot drift from them because there is no transcription.
 """
 import json
 import os
@@ -25,10 +19,9 @@ import subprocess
 class RequestShape:
     """The system prompt and tool definitions production installs, for one session id.
 
-    `base_prompt` is the session's own system prompt without recall guidance. A frozen
-    session's prompt is rebuilt per turn from its working directory and is not in the journal,
-    so it cannot be replayed; capture a real one with `capture_shape.py` and pass it here.
-    Everything appended to it is production's, not the caller's.
+    `base_prompt` is the session's own system prompt. A frozen session's prompt is rebuilt per
+    turn from its working directory and is not in the journal, so it cannot be replayed;
+    capture a real one with `capture_shape.py` and pass it here.
     """
 
     def __init__(self, probe, base_prompt, session_id, tools=None):
@@ -50,42 +43,26 @@ class RequestShape:
         shape = json.loads(raw.strip().splitlines()[-1])
         base = self.base_prompt.read_text()
         # Rust's `.len()` on a `String` counts bytes, and a real prompt contains multi-byte
-        # characters, so compare bytes rather than Python characters.
-        # Fail rather than adapt: a base prompt production would not have used means the
-        # caller passed the wrong file, not that this module should patch it.
+        # characters, so compare bytes rather than Python characters. Fail rather than adapt:
+        # a base prompt production would not have used means the caller passed the wrong file.
         assert shape["base_system_prompt_chars"] == len(base.encode()), (
             "base prompt length disagrees between Rust and the file it read: "
             f"rust={shape['base_system_prompt_chars']} bytes={len(base.encode())}")
         for state in ("no_checkpoint", "with_checkpoint"):
-            text = shape[state]["system_prompt"]
-            assert text.startswith(base), f"{state} prompt does not extend the base prompt"
-        assert shape["with_checkpoint"]["recall_guidance"], (
-            "the checkpoint form must carry the recall guidance")
-        assert not shape["no_checkpoint"]["recall_guidance"], (
-            "the no-checkpoint form must not carry the recall guidance")
-        assert shape["no_checkpoint"]["system_prompt"] == base, (
-            "the no-checkpoint prompt must be the base prompt unchanged")
+            assert shape[state]["system_prompt"] == base, (
+                f"{state}: the system prompt must be the session's own, unchanged")
+        # A checkpoint must not change the prompt: it used to, and that is what made a
+        # session's prefix diverge from its own summary request. Assert the property that
+        # replaced it rather than assuming it.
+        assert shape["no_checkpoint"] == shape["with_checkpoint"], (
+            "committing a checkpoint must not change the system prompt")
         self._shape = shape
         return shape
 
     def system_prompt(self, has_checkpoint=True):
-        """The exact system prompt. A replay starts from a compacted projection, so the
-        checkpoint form is the default."""
-        shape = self._load()
+        """The exact system prompt a session sends, at either point in its life."""
         key = "with_checkpoint" if has_checkpoint else "no_checkpoint"
-        return shape[key]["system_prompt"]
-
-    def guidance(self, has_checkpoint=True):
-        """Only the part production appends to the base prompt.
-
-        Callers that already have a base prompt in place need this rather than the whole
-        prompt, or they would duplicate it.
-        """
-        whole = self.system_prompt(has_checkpoint)
-        base = self.base_prompt.read_text()
-        if not whole.startswith(base):
-            raise ValueError("production prompt does not extend the base prompt")
-        return whole[len(base):]
+        return self._load()[key]["system_prompt"]
 
     def tools(self):
         """The tool definitions production installs, verbatim."""
@@ -98,6 +75,13 @@ class RequestShape:
         return self._load()
 
 
+def guidance_removed(system_prompt):
+    """The runtime used to append a recall guidance after a checkpoint. It is gone, and an
+    exam should fail loudly if it comes back rather than silently changing what it measures.
+    """
+    return "## Archived conversation recall" not in system_prompt
+
+
 def executor_path(env_var="ABC_TOOL_EXECUTOR"):
     """The production tool executor (a build of `abc_future_shell_probe`)."""
     value = os.environ.get(env_var)
@@ -106,10 +90,3 @@ def executor_path(env_var="ABC_TOOL_EXECUTOR"):
             f"{env_var} must point at a build of agent/examples/abc_future_shell_probe; "
             "the exam executes tool calls through production handlers, not a re-implementation")
     return Path(value).resolve()
-
-
-def has_guidance(system_prompt, base_prompt):
-    """True when the recall guidance is present. The exam asserts this so a production
-    prompt cannot silently degrade into the base prompt."""
-    return len(system_prompt) != len(base_prompt) and \
-        "## Archived conversation recall" in system_prompt

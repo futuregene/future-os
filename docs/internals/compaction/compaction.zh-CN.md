@@ -39,7 +39,7 @@
 
 ## 摘要请求
 
-`summarized-evidence-v1` 把活动对话作为**真实消息**发送、指令**追加在最后**，从而不动前缀，使请求有机会由 provider 的前缀缓存提供。前缀依次是 system prompt、工具定义、消息数组，从第 0 个 token 起比对，因此请求携带**会话自己的 system prompt**（含 checkpoint 之后的召回指引）与**会话自己的工具定义**；自动路径（`run_loop.rs`）与独立 `/compact`（`rpc/session.rs`）用同一个 `history_recall::system_prompt` 表达式构造它，并有测试把两处钉在同一个字符串上。
+`summarized-evidence-v1` 把活动对话作为**真实消息**发送、指令**追加在最后**，从而不动前缀，使请求有机会由 provider 的前缀缓存提供。前缀依次是 system prompt、工具定义、消息数组，从第 0 个 token 起比对，因此请求携带**会话自己的 system prompt** 与**会话自己的工具定义**。system prompt 原先会在 checkpoint 之后追加召回指引，预算必须预留它、摘要请求必须复现它；该指引已删除，两条路径现在都只发送会话自己的提示词，并有测试把两处钉在同一个字符串上。
 
 改动这三项中任何一项都会使前缀分叉，整段对话重新按全量计费。实测：替换 system prompt、去掉工具定义、或只多一行，在已预热前缀上的命中都是 **0%**，而同形状请求为 93.7%。在隔离 agent 上跑该路径实测：会话增长到 212 911 tokens 后压缩，`cache_read = 212 548`——**99.8%** 由缓存提供，`cache_write = 360`，约 ¥0.003，而冷启动约 ¥0.53。
 
@@ -69,7 +69,7 @@ future session compact --help
 
 确定性压缩**不发起任何摘要调用**；默认策略每次压缩增加一次摘要请求，按普通请求计费。普通用量与费用计数保持原样，后续请求仍需为证据索引与召回文本的输入付费，本地扫描也消耗时间与内存。
 
-仅在持久化会话存在有效 checkpoint、且 shell 可用／允许时附加一份[历史召回说明](../../guide/session-history.zh-CN.md)。它只随请求发送，从不累积为聊天消息。缺少精确旧事实时通过已有 history search/get 查原文，不重放历史副作用。
+运行时不向模型附加任何[历史召回说明](../../guide/session-history.zh-CN.md)：该说明已删除，因为它没有改变行为。检索入口是普通 shell 工具背后的 history search/get；缺少精确旧事实时模型需自行查原文，且不得重放历史副作用。
 
 ## 验证
 
