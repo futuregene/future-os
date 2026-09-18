@@ -907,7 +907,9 @@ mod gui {
                 // TCP probe and we don't want to delay the window. In dev (no
                 // sidecar binary) this no-ops and the user runs the agent manually.
                 let agent_handle = app.handle().clone();
-                std::thread::spawn(move || agent_supervisor::ensure_agent_running(&agent_handle));
+                std::thread::spawn(move || {
+                    agent_supervisor::start_agent_supervision(&agent_handle)
+                });
                 start_thread_streaming_monitor();
                 // Per-session observers: the always-on tap into every agent
                 // session's event stream (settings fan-out, projection of runs no

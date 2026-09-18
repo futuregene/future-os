@@ -9,7 +9,7 @@ export interface AgentStatusGateProps {
 
 export function AgentStatusGate({ status, showWait = false }: AgentStatusGateProps) {
   const { t } = useTranslation("layout");
-  const pending = status.phase === "checking" || status.phase === "starting";
+  const pending = status.phase === "checking" || status.phase === "starting" || status.phase === "recovering";
   const statusKey = status.phase === "incompatible"
     ? "agentStatus.incompatible"
     : "agentStatus.failed";

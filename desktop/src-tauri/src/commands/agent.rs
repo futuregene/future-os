@@ -3,8 +3,10 @@
 use crate::agent_bridge;
 
 #[tauri::command]
-pub async fn get_agent_status() -> crate::agent_supervisor::AgentStatus {
-    crate::agent_supervisor::agent_status().await
+pub async fn get_agent_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> crate::agent_supervisor::AgentStatus {
+    crate::agent_supervisor::agent_status_with_recovery(app).await
 }
 
 #[tauri::command]
@@ -131,7 +133,7 @@ mod tests {
             )]),
             ..Default::default()
         });
-        assert_eq!(get_agent_status().await.phase, "ready");
+        assert_eq!(crate::agent_supervisor::agent_status().await.phase, "ready");
 
         script_mock_agent(MockScript {
             data: HashMap::from([(
@@ -140,7 +142,10 @@ mod tests {
             )]),
             ..Default::default()
         });
-        assert_eq!(get_agent_status().await.phase, "incompatible");
+        assert_eq!(
+            crate::agent_supervisor::agent_status().await.phase,
+            "incompatible"
+        );
         script_mock_agent(MockScript::default());
     }
 

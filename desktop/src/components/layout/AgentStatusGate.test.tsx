@@ -39,6 +39,12 @@ describe("agent status gate", () => {
     expect(text).toContain("Please wait a moment.");
   });
 
+  it("keeps showing progress while automatic recovery runs", () => {
+    const text = renderStatus("recovering", true);
+    expect(text).toContain("Please wait a moment.");
+    expect(text).not.toContain("could not start");
+  });
+
   it("shows restart and reinstall guidance for startup failures", () => {
     const text = renderStatus("spawn_failed");
     expect(text).toContain("Future Agent could not start");
