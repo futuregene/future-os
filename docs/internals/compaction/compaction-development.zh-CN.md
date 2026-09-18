@@ -47,6 +47,8 @@
 
 `prepare_evidence` 不接收 provider，因此确定性路径不会意外发起摘要调用；摘要路径是另一个显式入口。证据上限独立计算为 `min(2048, W/8)`，与摘要有多少无关；整体历史保持 32K 目标、128K 扩展上限与真实请求容量保护。
 
+摘要请求仍以 4096 正文 tokens 为目标，并保留独立的输出／reasoning 额度。接受时检查**整个投影与请求硬预算**，不只看正文是否超过目标：估算轻微超出但完整投影装得下时仍可采纳。真正超出硬预算则退回，不截断摘要、不挤占证据、不新增模型重试。策略指纹已更新，避免复用旧的“正文超目标即拒绝”规则计算的收据。
+
 ### 证据渲染
 
 只扫描到已覆盖边界。结果只与无歧义的前置调用关联，并行重复 ID 的路径未知时不猜测。按错误、分组首末记录、关键目标与新近程度选择。元数据与摘录都限制长度，按 JSON 转义后的文本估算预算，不输出半条 JSON。`entryId`／`blockIndex`／`sourceOrder` 区分原始时序与优先级顺序；reasoning、图片正文与 provider 私有对象不进入证据。
@@ -83,5 +85,17 @@ future session compact --session SESSION_ID --instructions "不要部署" --json
 需覆盖：确定性路径零摘要请求且已有用量不变；首末分组证据、错误排序、UTF-8 与大块结果、歧义调用 ID、伪指令与隐藏内容；证据预算、用户文本保护、降级说明、取消与非法边界；退役 schema 条目被忽略、fork 重映射、字节查询；同键并发、重启复用、输入修改、缓存损坏与持久化失败；以及真实 CLI 的异步 ACK、忙状态拒绝与有界超限恢复。
 
 在项目 worktree 中开发；Agent 实测使用隔离 HOME 与新端口，不停止用户现有服务。macOS 全套测试需提高文件描述符上限，涉及 sandbox 断言的 HOME 放在项目 target 目录下，避开系统 temp 放行区。
+
+### 摘要结果上报
+
+checkpoint 提交成功不等于模型摘要被采纳。摘要路径新建的 checkpoint 持久化可选 `summary_outcome`，并通过 `compaction_committed` 和收据复用的 `compaction_unchanged` 事件上报。手动结果及持久收据使用 `summaryOutcome`，同时带 `algorithmVersion`：
+
+```json
+{"status":"evidence_only","fallback_reason":"summary projection rejected: ...","attempt_usage":[{"prompt_tokens":100000,"completion_tokens":4181,"reasoning_tokens":516,"credit_cost":0.125}]}
+```
+
+`generated` 表示采纳 handoff；`evidence_only` 表示压缩成功但只有原文和证据，没有采纳模型摘要。成功时不带 `fallback_reason`；`attempt_usage` 逐次记录 provider 最终报告的用量，包括被丢弃的摘要和既有瞬态重试。缺少价格意味着未知，不是免费；这些是诊断信息，**不是第二次计费事件**。提交失败仍发送 `compaction_failed`，不会上报为成功。旧 checkpoint 与显式纯确定性调用可能不带这个可选诊断字段。旧客户端可忽略新增 JSON 字段，不需要修改 protobuf。
+
+相同输入与策略的重放返回之前记录的结果，包括退回结果，不再次调用 provider。此次没有增加重放时自动重试摘要的行为。
 
 同键命中仍有指纹与选择的成本。合成评估支持证据规则的可行性，不证明复杂自然语言任务都无需语义整理。

@@ -556,6 +556,7 @@ mod tests {
             trigger: CompactionTrigger::Automatic,
             phase: None,
             algorithm_version: "v2".into(),
+            summary_outcome: None,
             model: "test-model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),

@@ -265,6 +265,8 @@ pub(crate) fn handle_compact(
                             "reused": result.get("reused").and_then(serde_json::Value::as_bool).unwrap_or(false),
                             "checkpoint_id": result.get("checkpointId"),
                             "source_operation_id": result.get("sourceOperationId"),
+                            "summary_outcome": result.get("summaryOutcome"),
+                            "algorithm_version": result.get("algorithmVersion"),
                             "tokens_before": result
                                 .get("tokensBefore")
                                 .and_then(serde_json::Value::as_i64)

@@ -145,6 +145,26 @@ pub struct ContextUsage {
     pub output_reserve_tokens: u64,
 }
 
+/// Outcome of the auxiliary model summary, separate from checkpoint commit success.
+/// Kept with the checkpoint so receipt replay and restart report the same outcome.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionSummaryOutcome {
+    pub status: CompactionSummaryStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Final provider-reported usage for each attempt, including discarded summaries.
+    /// Missing cost remains unknown; this is diagnostic data, not another billing event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempt_usage: Vec<crate::types::Usage>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionSummaryStatus {
+    Generated,
+    EvidenceOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextCheckpoint {
     /// Journal entry that stores this checkpoint. Separate from checkpoint_id
@@ -166,6 +186,9 @@ pub struct ContextCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<CompactionPhase>,
     pub algorithm_version: String,
+    /// Absent for older checkpoints and explicit deterministic-only preparations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_outcome: Option<CompactionSummaryOutcome>,
     pub model: String,
     pub context_window: u64,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -596,6 +619,7 @@ mod tests {
             trigger: CompactionTrigger::Automatic,
             phase: None,
             algorithm_version: "v2".into(),
+            summary_outcome: None,
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc::now(),
@@ -679,6 +703,7 @@ mod tests {
             trigger: CompactionTrigger::Automatic,
             phase: None,
             algorithm_version: "v1".to_string(),
+            summary_outcome: None,
             model: "model".to_string(),
             context_window: 200,
             created_at: chrono::Utc::now(),
