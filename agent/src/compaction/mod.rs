@@ -18,6 +18,7 @@ mod semantic;
 pub use budget::{set_request_budget, trigger_tokens, TARGET_HISTORY};
 pub(crate) use durable::prepare_with_journal_and_summary;
 pub use durable::CompactionJournal;
+pub(crate) use semantic::evidence::remap_evidence_references;
 
 pub(super) const INTERNAL_ANCHOR_METADATA_KEY: &str = "internal_context_anchor";
 

@@ -94,6 +94,17 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
                 *id = serde_json::Value::String(mapped.clone());
             }
         }
+        if let Some(summary) = content.get_mut("summary") {
+            let Ok(mut blocks) =
+                serde_json::from_value::<Vec<crate::types::ContentBlock>>(summary.clone())
+            else {
+                return false;
+            };
+            if crate::compaction::remap_evidence_references(&mut blocks, &id_map).is_none() {
+                return false;
+            }
+            *summary = serde_json::json!(blocks);
+        }
         true
     });
     // Read parent metadata from the authoritative (last) session_info snapshot.
@@ -246,6 +257,92 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("future-{tag}-{}", generate_id()));
         let manager = Manager::new(dir.clone());
         (dir, manager)
+    }
+
+    #[test]
+    fn forked_checkpoint_evidence_resolves_through_history_after_restart() {
+        use crate::compaction::{
+            project_prompt_context, CompactionPhase, ContextManager, ContextPreparation,
+        };
+        use crate::types::ContentBlock;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().to_owned());
+        let output = format!(
+            "head {} exact-middle-value {} tail",
+            "x".repeat(2000),
+            "y".repeat(2000)
+        );
+        let mut raw = vec![
+            AgentMessage::new_user("user", serde_json::json!("inspect the config")),
+            AgentMessage {
+                role: "assistant".into(),
+                content: vec![ContentBlock::tool_call(
+                    "call",
+                    "read",
+                    serde_json::json!({"path":"config.json"}),
+                    Default::default(),
+                )],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "tool".into(),
+                content: vec![ContentBlock::tool_result("call", &output, false)],
+                ..Default::default()
+            },
+        ];
+        for message in &mut raw {
+            message.ensure_journal_entry_id();
+        }
+        let policy = ContextManager {
+            enabled: true,
+            reserve_tokens: 6400,
+            keep_recent_tokens: 4000,
+            context_window: 32_000,
+            model: "m".into(),
+        };
+        let ContextPreparation::Compacted { checkpoint, .. } = policy
+            .prepare_evidence(
+                project_prompt_context(&raw, None, None, 32_000),
+                &raw,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("checkpoint expected")
+        };
+        let mut parent = Session::new(".", "m");
+        parent.entries = raw.iter().map(agent_message_to_entry).collect();
+        parent.entries.push(checkpoint_to_entry(&checkpoint));
+        // Repeated forks must keep resolving the child-local IDs, not IDs in
+        // either ancestor. Read through the actual indexed history API.
+        for _ in 0..2 {
+            let checkpoint = latest_context_checkpoint(&parent.entries).unwrap();
+            let child = fork_session(&parent, &checkpoint.entry_id);
+            manager.save(&child).unwrap();
+            let restarted = Manager::new(dir.path().to_owned());
+            let child = restarted.load(&child.id).unwrap();
+            let checkpoint = latest_context_checkpoint(&child.entries).unwrap();
+            let ContentBlock::Text { text } = &checkpoint.summary[0] else {
+                panic!("text expected")
+            };
+            let rows: Vec<serde_json::Value> = text
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert_eq!(rows.len(), 1);
+            let id = rows[0]["entryId"].as_str().unwrap();
+            assert!(!parent.entries.iter().any(|entry| entry.id == id));
+            let full = restarted
+                .read_history_entry(&child.id, id, 0, 8192)
+                .unwrap();
+            assert_eq!(full["chunks"][0]["text"], output);
+            assert_eq!(checkpoint.cutoff_entry_id.as_deref(), Some(id));
+            parent = child;
+        }
     }
 
     #[test]

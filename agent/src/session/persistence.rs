@@ -17,8 +17,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 256;
 enum PersistenceCommand {
     Append(Vec<SessionEntry>),
     UpdateInfo {
-        key: String,
-        value: serde_json::Value,
+        fields: serde_json::Map<String, serde_json::Value>,
         ack: mpsc::SyncSender<std::result::Result<(), String>>,
     },
     RewriteRun {
@@ -149,10 +148,17 @@ impl SessionPersistence {
 
     /// Persist a session-info field in queue order.
     pub fn update_info(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.update_info_fields([(key.to_owned(), value)].into_iter().collect())
+    }
+
+    /// Persist related metadata fields atomically, in queue order.
+    pub(crate) fn update_info_fields(
+        &self,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         self.send_boundary(PersistenceCommand::UpdateInfo {
-            key: key.to_string(),
-            value,
+            fields,
             ack: ack_tx,
         })?;
         receive_ack(ack_rx)
@@ -592,8 +598,11 @@ fn execute(state: &PersistenceInner, command: PersistenceCommand) {
                 .map_err(|error| error.to_string());
             record_result(state, &result, false);
         }
-        PersistenceCommand::UpdateInfo { key, value, ack } => {
-            let result = update_info(state, &key, value).map_err(|error| error.to_string());
+        PersistenceCommand::UpdateInfo { fields, ack } => {
+            let result = state
+                .manager
+                .update_session_info_fields(&state.session_id, fields)
+                .map_err(|error| error.to_string());
             // A successful metadata update does not supersede a failed history
             // append, so keep any earlier error observable by barrier/finalize.
             record_result(state, &result, false);
@@ -733,12 +742,6 @@ fn record_result(
     }
 }
 
-fn update_info(state: &PersistenceInner, key: &str, value: serde_json::Value) -> Result<()> {
-    state
-        .manager
-        .update_session_info(&state.session_id, key, value)
-}
-
 /// Session-info keys that a mid-run `update_info` (rename / model / thinking /
 /// cwd / auto-compaction) may change out-of-band. The append-only run commit
 /// builds its `session_info` from values frozen at run *start*, so these keys
@@ -875,6 +878,39 @@ mod tests {
         );
         manager.save(&session).unwrap();
         (dir, manager, session)
+    }
+
+    #[test]
+    fn usage_fields_are_saved_in_one_ordered_metadata_snapshot() {
+        let (_dir, manager, _) = fixture();
+        let persistence = SessionPersistence::new(manager.clone(), "session-1".into());
+        let assistant = SessionEntry::new_assistant(serde_json::json!("last answer"), vec![]);
+        persistence.append(vec![assistant.clone()]).unwrap();
+        persistence
+            .update_info_fields(serde_json::Map::from_iter([
+                ("tokens_in".into(), serde_json::json!(100)),
+                ("tokens_out".into(), serde_json::json!(20)),
+                ("total_cost".into(), serde_json::json!(0.125)),
+            ]))
+            .unwrap();
+        let loaded = manager.load("session-1").unwrap();
+        let snapshots: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
+            .collect();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "SQLite keeps one current metadata record"
+        );
+        let info = loaded.get_session_info().unwrap();
+        assert_eq!(info["tokens_in"], 100);
+        assert_eq!(info["tokens_out"], 20);
+        assert_eq!(info["total_cost"], 0.125);
+        assert_eq!(info["model"], "old-model");
+        assert_eq!(info["session_name"], "old name");
+        assert_eq!(loaded.entries.last().unwrap().id, assistant.id);
     }
 
     #[test]

@@ -1,4 +1,115 @@
 use super::*;
+
+struct CancelledSummary(Option<std::sync::Arc<AtomicBool>>);
+
+#[async_trait::async_trait]
+impl LLMProvider for CancelledSummary {
+    async fn stream_model(
+        &self,
+        _request: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::{FinishReason, ModelStreamEvent};
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        tx.try_send(ModelStreamEvent::TextDelta {
+            id: "s".into(),
+            text: "valid summary".into(),
+        })
+        .unwrap();
+        let reason = if let Some(flag) = &self.0 {
+            flag.store(true, Ordering::Relaxed);
+            FinishReason::Stop
+        } else {
+            FinishReason::Cancelled
+        };
+        tx.try_send(ModelStreamEvent::Finish {
+            reason,
+            usage: None,
+        })
+        .unwrap();
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+#[tokio::test]
+async fn cancelled_summary_never_becomes_a_deterministic_checkpoint() {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 1600,
+        keep_recent_tokens: 1000,
+        context_window: 128_000,
+        model: "m".into(),
+    };
+    let raw = vec![
+        message("u", "user", vec![ContentBlock::text("keep my requirement")]),
+        message("a", "assistant", vec![call("x", "config.json")]),
+        message("t", "tool", vec![result("x", "cap=128MiB", false)]),
+    ];
+    // Both a provider cancellation and a user interrupt during a successful
+    // response must propagate, not invoke the ordinary failure fallback.
+    for user_interrupt in [false, true] {
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let provider = CancelledSummary(user_interrupt.then(|| flag.clone()));
+        let fallback = AtomicBool::new(false);
+        let result = manager
+            .prepare_evidence_with_summary(
+                crate::compaction::project_prompt_context(&raw, None, None, 128_000),
+                &raw,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &flag,
+                None,
+                Some(&provider),
+                None,
+                &[],
+                None,
+                Some(&|_| {
+                    fallback.store(true, Ordering::Relaxed);
+                }),
+            )
+            .await;
+        assert!(matches!(result, Err(ContextError::Cancelled)), "{result:?}");
+        assert!(!fallback.load(Ordering::Relaxed));
+    }
+}
+
+#[test]
+fn fork_remaps_index_references_without_rewriting_historical_text() {
+    let original = "old-entry";
+    let mut ids = HashMap::new();
+    ids.insert(original.to_string(), "child-entry".to_string());
+    for header in [HEADER, HEADER_WITH_SUMMARY] {
+        let row = serde_json::json!({"entryId":original,"head":original,"tail":original,"target":original});
+        let suffix = format!("\n\n{HANDOFF_SUMMARY_HEADER}\n\n{{\"entryId\":\"{original}\"}}\n\n[Retention note: historical {original}]");
+        let note = format!("User compaction note (verbatim; the deterministic selector does not interpret it): {original}");
+        let mut blocks = vec![ContentBlock::text(format!(
+            "{header}\nCoverage cutoff: \"{original}\"\n{note}\n{row}{suffix}"
+        ))];
+        remap_evidence_references(&mut blocks, &ids).unwrap();
+        let ContentBlock::Text { text } = &blocks[0] else {
+            panic!("text expected")
+        };
+        assert!(text.contains("Coverage cutoff: \"child-entry\""));
+        assert!(text.contains(&note));
+        assert!(text.ends_with(&suffix));
+        let mapped: serde_json::Value = serde_json::from_str(text.lines().nth(3).unwrap()).unwrap();
+        assert_eq!(mapped["entryId"], "child-entry");
+        for key in ["head", "tail", "target"] {
+            assert_eq!(mapped[key], original);
+        }
+    }
+}
+
+#[test]
+fn fork_rejects_dangling_evidence_references() {
+    let ids = HashMap::from([("cutoff".into(), "child-cutoff".into())]);
+    let mut summary = vec![ContentBlock::text(format!(
+        "{HEADER}\nCoverage cutoff: \"cutoff\"\n{{\"entryId\":\"missing\"}}"
+    ))];
+    assert!(remap_evidence_references(&mut summary, &ids).is_none());
+}
+
 use serde_json::json;
 
 fn message(id: &str, role: &str, content: Vec<ContentBlock>) -> AgentMessage {

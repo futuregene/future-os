@@ -47,6 +47,49 @@ fn compose(header: &str, body: &str) -> String {
     format!("{header}\n{body}")
 }
 
+/// Rebind only the generated index's references when a fork re-ids its journal.
+/// Excerpts, the verbatim user note and the model handoff are historical text;
+/// replacing IDs inside those bodies would silently alter the recorded evidence.
+/// A dangling index makes the checkpoint unusable in the child.
+pub(crate) fn remap_evidence_references(
+    summary: &mut [ContentBlock],
+    ids: &HashMap<String, String>,
+) -> Option<()> {
+    for block in summary {
+        let ContentBlock::Text { text } = block else {
+            continue;
+        };
+        let (index, rest) = text.split_once("\n\n").unwrap_or((text, ""));
+        let mut lines = index.lines();
+        let Some(header @ (HEADER | HEADER_WITH_SUMMARY)) = lines.next() else {
+            continue;
+        };
+        let cutoff = lines.next()?.strip_prefix("Coverage cutoff: ")?;
+        let cutoff: String = serde_json::from_str(cutoff).ok()?;
+        let mut mapped = format!(
+            "{header}\nCoverage cutoff: {}",
+            serde_json::json!(ids.get(&cutoff)?)
+        );
+        for line in lines {
+            mapped.push('\n');
+            if line.starts_with("User compaction note (verbatim;") {
+                mapped.push_str(line);
+            } else {
+                let mut row: serde_json::Value = serde_json::from_str(line).ok()?;
+                let id = ids.get(row.get("entryId")?.as_str()?)?;
+                row["entryId"] = serde_json::json!(id);
+                mapped.push_str(&row.to_string());
+            }
+        }
+        if !rest.is_empty() {
+            mapped.push_str("\n\n");
+            mapped.push_str(rest);
+        }
+        *text = mapped;
+    }
+    Some(())
+}
+
 /// The evidence policy an idempotency key is built from. It names the stub header, not the
 /// outcome-dependent one: which header a message carries follows from `summaryStrategy`
 /// (already a separate field in that key) plus whether the summary call succeeded, and the
@@ -511,6 +554,7 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
             .await
             {
                 Ok(text) => Some(text),
+                Err(SummaryCallError::Cancelled) => return Err(ContextError::Cancelled),
                 Err(error) => {
                     let reason = error.to_string();
                     tracing::warn!(%reason, "handoff summary failed; committing deterministic evidence only");
@@ -522,6 +566,11 @@ pub(in crate::compaction) async fn prepare_with_handoff_summary(
             }
         }
     };
+    // Cancellation is not an unavailable summary: do not replace the active
+    // context with a lower-retention checkpoint after the user stopped the run.
+    if interrupted.load(Ordering::Relaxed) {
+        return Err(ContextError::Cancelled);
+    }
     match summary {
         Some(text) => {
             // The index now really is followed by a summary, so it uses the header that says

@@ -692,6 +692,9 @@ impl ServerSession {
             let tokens_out = self.tokens_out.clone();
             let cache_r = self.tokens_cache_r.clone();
             let cache_w = self.tokens_cache_w.clone();
+            let cumulative_cost = self.cumulative_cost.clone();
+            let registry = self.model_registry.clone();
+            let model = self.model.clone();
             move |reported: &crate::types::Usage| {
                 use std::sync::atomic::Ordering;
                 tokens_in.fetch_add(reported.prompt_tokens, Ordering::Relaxed);
@@ -702,7 +705,14 @@ impl ServerSession {
                 if let Some(write) = reported.cache_write_tokens {
                     cache_w.fetch_add(write, Ordering::Relaxed);
                 }
-                // Providers send progressive cost; keep only the final chunk.
+                // The observer receives the final usage of EACH attempt, including
+                // charged retries and cancelled/failed summary streams.
+                let cost = reported.credit_cost.unwrap_or_else(|| {
+                    crate::agent::estimate_usage_cost_with(Some(&registry), &model, reported)
+                });
+                if cost > 0.0 {
+                    *cumulative_cost.lock() += cost;
+                }
                 *usage.lock() = Some(reported.clone());
             }
         };
@@ -713,7 +723,7 @@ impl ServerSession {
         // session already sent and can be served from the provider cache. The prompt passed
         // here is the session's own, which is the base prompt at every point now that the
         // post-checkpoint recall guidance is gone.
-        let prepared = crate::compaction::prepare_with_journal_and_summary(
+        let mut prepared = crate::compaction::prepare_with_journal_and_summary(
             &manager,
             prompt,
             &messages,
@@ -755,9 +765,6 @@ impl ServerSession {
                     &usage,
                 )
             });
-            if cost > 0.0 {
-                *self.cumulative_cost.lock() += cost;
-            }
             tracing::info!(
                 cost,
                 input = usage.prompt_tokens,
@@ -766,6 +773,29 @@ impl ServerSession {
                 cache_write = usage.cache_write_tokens.unwrap_or(0),
                 "charged a manual compaction summary"
             );
+            // Unlike a normal run, manual compaction has no run-end metadata
+            // commit. Save all cumulative counters even when preparation failed
+            // or was cancelled; a replay with no model call must not charge again.
+            if !self.ephemeral {
+                let fields = serde_json::json!({
+                    "tokens_in": self.tokens_in.load(Ordering::Relaxed),
+                    "tokens_out": self.tokens_out.load(Ordering::Relaxed),
+                    "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
+                    "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
+                    "total_cost": *self.cumulative_cost.lock(),
+                });
+                if let Err(error) = self.persistence.update_info_fields(
+                    fields
+                        .as_object()
+                        .expect("usage fields are an object")
+                        .clone(),
+                ) {
+                    if let Ok((_, Some(ticket))) = &prepared {
+                        ticket.fail(&error.to_string());
+                    }
+                    prepared = Err(error.context("could not persist manual compaction usage"));
+                }
+            }
         }
         let (prepared, ticket) = match prepared {
             Ok(prepared) => prepared,
@@ -1377,7 +1407,7 @@ mod tests {
         }
     }
 
-    struct UsageSummaryProvider;
+    struct UsageSummaryProvider(FinishReason);
 
     #[async_trait::async_trait]
     impl LLMProvider for UsageSummaryProvider {
@@ -1392,16 +1422,26 @@ mod tests {
                 .collect::<Vec<_>>()
                 .await;
             let (tx, rx) = mpsc::channel(events.len() + 1);
-            for event in events {
-                tx.try_send(event).unwrap();
-            }
-            tx.try_send(ModelStreamEvent::Usage(crate::types::Usage {
+            let usage = crate::types::Usage {
                 prompt_tokens: 100,
                 completion_tokens: 20,
+                cache_read_tokens: Some(80),
+                cache_write_tokens: Some(10),
                 credit_cost: Some(0.125),
                 ..Default::default()
-            }))
-            .unwrap();
+            };
+            for event in events {
+                let event = match event {
+                    ModelStreamEvent::Finish { .. } => ModelStreamEvent::Finish {
+                        reason: self.0.clone(),
+                        usage: Some(usage.clone()),
+                    },
+                    event => event,
+                };
+                tx.try_send(event).unwrap();
+            }
+            // A trailing usage frame must not double-charge the attempt.
+            tx.try_send(ModelStreamEvent::Usage(usage)).unwrap();
             Ok(ReceiverStream::new(rx))
         }
     }
@@ -3339,8 +3379,9 @@ mod tests {
             .tokens_out
             .store(20, std::sync::atomic::Ordering::Relaxed);
         *session.cumulative_cost.lock() = 0.125;
-        session.model = "glm-4.5v".into();
-        session.agent_loop.try_write().unwrap().provider = Arc::new(UsageSummaryProvider);
+        session.set_model("glm-4.5v").unwrap();
+        session.agent_loop.try_write().unwrap().provider =
+            Arc::new(UsageSummaryProvider(FinishReason::Stop));
         let mut messages = vec![
             crate::types::AgentMessage::new_user("user", serde_json::json!("keep my requirement")),
             crate::types::AgentMessage::new_user("assistant", serde_json::json!("verified answer")),
@@ -3393,9 +3434,163 @@ mod tests {
             .content
             .as_ref()
             .unwrap();
-        assert_eq!(info["tokens_in"], 100);
-        assert_eq!(info["tokens_out"], 20);
-        assert_eq!(info["total_cost"], 0.125);
+        assert_eq!(info["tokens_in"], 200);
+        assert_eq!(info["tokens_out"], 40);
+        assert_eq!(info["tokens_cache_r"], 80);
+        assert_eq!(info["tokens_cache_w"], 10);
+        assert_eq!(info["total_cost"], 0.25);
+        let mut restarted = ServerSession::new(
+            session.session_id.clone(),
+            Arc::new(tokio::sync::RwLock::new(Loop::new(
+                Arc::new(FailingProvider),
+                "mock",
+            ))),
+            session.session_manager.clone(),
+            &session.cwd,
+            Arc::new(SseBroadcaster::new()),
+            ApprovalGate::default(),
+            session.model_registry.clone(),
+        );
+        restarted.switch_session(&session.session_id).unwrap();
+        assert_eq!(*restarted.cumulative_cost.lock(), 0.25);
+        assert_eq!(
+            restarted
+                .tokens_in
+                .load(std::sync::atomic::Ordering::Relaxed),
+            200
+        );
+        assert_eq!(
+            restarted
+                .tokens_out
+                .load(std::sync::atomic::Ordering::Relaxed),
+            40
+        );
+        assert_eq!(
+            restarted
+                .tokens_cache_r
+                .load(std::sync::atomic::Ordering::Relaxed),
+            80
+        );
+        assert_eq!(
+            restarted
+                .tokens_cache_w
+                .load(std::sync::atomic::Ordering::Relaxed),
+            10
+        );
+        // A durable replay must not charge this model request for a second time.
+        restarted.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
+        assert_eq!(restarted.compact("").unwrap()["reused"], true);
+        assert_eq!(*restarted.cumulative_cost.lock(), 0.25);
+        let stored = restarted.session_manager.load(&session.session_id).unwrap();
+        assert_eq!(stored.get_session_info().unwrap()["total_cost"], 0.25);
+    }
+
+    #[test]
+    fn manual_summary_usage_includes_charged_retry_attempts() {
+        struct RetrySummaryProvider(std::sync::atomic::AtomicBool);
+        #[async_trait::async_trait]
+        impl LLMProvider for RetrySummaryProvider {
+            async fn stream_model(
+                &self,
+                request: ModelRequest,
+            ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+                if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    return UsageSummaryProvider(FinishReason::Stop)
+                        .stream_model(request)
+                        .await;
+                }
+                let (tx, rx) = mpsc::channel(2);
+                tx.try_send(ModelStreamEvent::Usage(crate::types::Usage {
+                    prompt_tokens: 50,
+                    completion_tokens: 5,
+                    credit_cost: Some(0.0625),
+                    ..Default::default()
+                }))
+                .unwrap();
+                tx.try_send(ModelStreamEvent::Error {
+                    message: "connection reset".into(),
+                })
+                .unwrap();
+                Ok(ReceiverStream::new(rx))
+            }
+        }
+        let mut session = make_test_session("manual-summary-retry");
+        session.model = "glm-4.5v".into();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(RetrySummaryProvider(
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+        let mut message =
+            crate::types::AgentMessage::new_user("user", serde_json::json!("keep this request"));
+        message.ensure_journal_entry_id();
+        *session.messages.write() = vec![message];
+        persist_transcript(&session);
+        session.compact("").unwrap();
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let info = stored.get_session_info().unwrap();
+        assert_eq!(info["tokens_in"], 150);
+        assert_eq!(info["tokens_out"], 25);
+        assert_eq!(info["total_cost"], 0.1875);
+        assert_eq!(*session.cumulative_cost.lock(), 0.1875);
+    }
+
+    #[test]
+    fn manual_summary_usage_survives_cancellation_and_fallback() {
+        use std::sync::atomic::Ordering;
+        for reason in [FinishReason::Cancelled, FinishReason::Length] {
+            let mut session = make_test_session("manual-summary-failure");
+            session.model = "glm-4.5v".into();
+            session.agent_loop.try_write().unwrap().provider =
+                Arc::new(UsageSummaryProvider(reason.clone()));
+            let mut messages = vec![
+                crate::types::AgentMessage::new_user("user", serde_json::json!("requirement")),
+                crate::types::AgentMessage::new_user("assistant", serde_json::json!("answer")),
+            ];
+            for message in &mut messages {
+                message.ensure_journal_entry_id();
+            }
+            *session.messages.write() = messages;
+            persist_transcript(&session);
+            let mut events = session.broadcaster.subscribe();
+            let result = session.compact("");
+            let stored = session.session_manager.load(&session.session_id).unwrap();
+            let checkpoint = crate::session::latest_context_checkpoint(&stored.entries);
+            if reason == FinishReason::Cancelled {
+                assert!(result.unwrap_err().to_string().contains("cancelled"));
+                assert!(
+                    checkpoint.is_none(),
+                    "a cancelled summary must never commit a checkpoint"
+                );
+                assert!(session
+                    .agent_loop
+                    .try_read()
+                    .unwrap()
+                    .active_checkpoint
+                    .lock()
+                    .is_none());
+                let mut failed = false;
+                while let Ok(event) = events.try_recv() {
+                    assert_ne!(event.event_type, "compaction_committed");
+                    failed |= event.event_type == "compaction_failed";
+                }
+                assert!(failed);
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    checkpoint.unwrap().algorithm_version,
+                    "deterministic-evidence-v1"
+                );
+            }
+            let info = stored.get_session_info().unwrap();
+            assert_eq!(info["tokens_in"], 100);
+            assert_eq!(info["tokens_out"], 20);
+            assert_eq!(info["tokens_cache_r"], 80);
+            assert_eq!(info["tokens_cache_w"], 10);
+            assert_eq!(info["total_cost"], 0.125);
+            assert_eq!(session.tokens_in.load(Ordering::Relaxed), 100);
+            assert_eq!(*session.cumulative_cost.lock(), 0.125);
+            session.switch_session(&session.session_id.clone()).unwrap();
+            assert_eq!(*session.cumulative_cost.lock(), 0.125);
+        }
     }
 
     #[test]
