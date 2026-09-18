@@ -906,7 +906,7 @@ fn retention_note(count: usize, algorithm: &str) -> String {
 
 fn finalize(
     manager: &ContextManager,
-    plan: CompactionPlan,
+    plan: &CompactionPlan,
     mut summary: String,
     algorithm_version: &str,
     summary_model: &str,
@@ -932,12 +932,12 @@ fn finalize(
         .iter()
         .flat_map(|item| item.source_entry_ids.iter().cloned())
         .collect::<Vec<_>>();
-    let mut compacted_messages = plan.protected;
+    let mut compacted_messages = plan.protected.clone();
     compacted_messages.push(ProjectedMessage {
         message: summary_message,
         source_entry_ids: vec![entry_id.clone()],
     });
-    compacted_messages.extend(plan.retained);
+    compacted_messages.extend(plan.retained.iter().cloned());
     let history_after = compacted_messages
         .iter()
         .map(projected_token_cost)
@@ -955,8 +955,8 @@ fn finalize(
     let checkpoint = ContextCheckpoint {
         entry_id,
         checkpoint_id,
-        covered_from_entry_id: Some(plan.covered_from_entry_id),
-        cutoff_entry_id: Some(plan.cutoff_entry_id),
+        covered_from_entry_id: Some(plan.covered_from_entry_id.clone()),
+        cutoff_entry_id: Some(plan.cutoff_entry_id.clone()),
         summary: vec![ContentBlock::text(summary)],
         protected_entry_ids,
         tokens_before: plan.tokens_before,
@@ -964,6 +964,7 @@ fn finalize(
         trigger: plan.trigger,
         phase: Some(plan.phase),
         algorithm_version: algorithm_version.to_string(),
+        summary_outcome: None,
         model: summary_model.to_string(),
         context_window: window,
         created_at: chrono::Utc::now(),
@@ -983,7 +984,7 @@ fn finalize(
                 input_tokens: None,
                 estimated_input_tokens: tokens_after,
                 context_window: window,
-                ..plan.usage
+                ..plan.usage.clone()
             },
         },
         checkpoint: Box::new(checkpoint),
@@ -2005,7 +2006,7 @@ mod tests {
     fn finalize_rejects_empty_summary() {
         let manager = test_manager();
         let plan = test_plan(vec![projected("user", "hi", "e1")]);
-        let result = finalize(&manager, plan, "   ".to_string(), "v", "m");
+        let result = finalize(&manager, &plan, "   ".to_string(), "v", "m");
         assert_eq!(result.unwrap_err(), ContextError::InvalidSummary);
     }
 

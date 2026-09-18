@@ -37,6 +37,12 @@ pub fn checkpoint_to_entry(checkpoint: &ContextCheckpoint) -> SessionEntry {
         "protected_entry_ids".into(),
         serde_json::json!(checkpoint.protected_entry_ids),
     );
+    if let Some(outcome) = &checkpoint.summary_outcome {
+        content
+            .as_object_mut()
+            .expect("checkpoint object")
+            .insert("summary_outcome".into(), serde_json::json!(outcome));
+    }
     if let Some(phase) = checkpoint.phase {
         content
             .as_object_mut()
@@ -159,6 +165,10 @@ fn compaction_entry_to_checkpoint(entry: &SessionEntry) -> Option<ContextCheckpo
             .get("phase")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
+        summary_outcome: content
+            .get("summary_outcome")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok()),
         algorithm_version: content
             .get("algorithm_version")
             .and_then(serde_json::Value::as_str)?
@@ -196,6 +206,7 @@ mod tests {
             trigger: CompactionTrigger::ProviderContextLimit,
             phase: Some(crate::compaction::CompactionPhase::MidTurn),
             algorithm_version: "v2".into(),
+            summary_outcome: None,
             model: "model".into(),
             context_window: 200,
             created_at: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
@@ -213,6 +224,7 @@ mod tests {
     #[test]
     fn optional_phase_is_omitted_instead_of_serialized_as_null() {
         let checkpoint = ContextCheckpoint {
+            summary_outcome: None,
             entry_id: "entry-no-phase".into(),
             protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-no-phase".into(),
@@ -308,6 +320,7 @@ mod tests {
         let first = SessionEntry::new_user("user", serde_json::json!("first"));
         let cutoff = SessionEntry::new_user("user", serde_json::json!("cutoff"));
         let valid = ContextCheckpoint {
+            summary_outcome: None,
             entry_id: "entry-valid-cp".into(),
             protected_entry_ids: Vec::new(),
             checkpoint_id: "valid-cp".into(),
@@ -371,6 +384,7 @@ mod tests {
     #[test]
     fn latest_checkpoint_rejects_a_checkpoint_without_range_refs() {
         let checkpoint = ContextCheckpoint {
+            summary_outcome: None,
             entry_id: "entry-no-range".into(),
             protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-no-range".into(),
@@ -393,6 +407,7 @@ mod tests {
     fn latest_checkpoint_rejects_a_checkpoint_with_dangling_covered_from() {
         let first = SessionEntry::new_user("user", serde_json::json!("first"));
         let checkpoint = ContextCheckpoint {
+            summary_outcome: None,
             entry_id: "entry-dangling-covered".into(),
             protected_entry_ids: Vec::new(),
             checkpoint_id: "cp-dangling-covered".into(),

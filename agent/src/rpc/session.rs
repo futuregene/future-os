@@ -864,6 +864,7 @@ impl ServerSession {
                     .join("\n");
                 let result = serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,
                     "tokensAfter":checkpoint.tokens_after,"summary":summary,
+                    "algorithmVersion":checkpoint.algorithm_version,"summaryOutcome":checkpoint.summary_outcome,
                     "messagesRemoved":projected_messages_before.saturating_sub(prompt.messages.len()),
                     "tokensSaved":checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),"protectedEntries":checkpoint.protected_entry_ids.len()});
                 let committed = if let Some(ticket) = &ticket {
@@ -3531,6 +3532,11 @@ mod tests {
         assert_eq!(info["tokens_out"], 25);
         assert_eq!(info["total_cost"], 0.1875);
         assert_eq!(*session.cumulative_cost.lock(), 0.1875);
+        let cp = crate::session::latest_context_checkpoint(&stored.entries).unwrap();
+        let usage = cp.summary_outcome.unwrap().attempt_usage;
+        assert_eq!(usage.len(), 2);
+        assert_eq!(usage[0].prompt_tokens, 50);
+        assert_eq!(usage[1].prompt_tokens, 100);
     }
 
     #[test]
@@ -3574,11 +3580,29 @@ mod tests {
                 }
                 assert!(failed);
             } else {
-                result.unwrap();
+                let result = result.unwrap();
+                let checkpoint = checkpoint.unwrap();
+                assert_eq!(checkpoint.algorithm_version, "deterministic-evidence-v1");
+                let outcome = &result["summaryOutcome"];
+                assert_eq!(outcome["status"], "evidence_only");
+                assert!(outcome["fallback_reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("provider length limit"));
+                assert_eq!(outcome["attempt_usage"][0]["credit_cost"], 0.125);
                 assert_eq!(
-                    checkpoint.unwrap().algorithm_version,
-                    "deterministic-evidence-v1"
+                    serde_json::to_value(&checkpoint.summary_outcome).unwrap(),
+                    *outcome
                 );
+                let committed = std::iter::from_fn(|| events.try_recv().ok())
+                    .find(|e| e.event_type == "compaction_committed")
+                    .unwrap();
+                let data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
+                assert_eq!(data["summary_outcome"], *outcome);
+                session.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
+                let reused = session.compact("").unwrap();
+                assert_eq!(reused["reused"], true);
+                assert_eq!(reused["summaryOutcome"], *outcome);
             }
             let info = stored.get_session_info().unwrap();
             assert_eq!(info["tokens_in"], 100);
@@ -3667,6 +3691,8 @@ mod tests {
         let started_data: serde_json::Value = serde_json::from_str(&started.data).unwrap();
         let committed_data: serde_json::Value = serde_json::from_str(&committed.data).unwrap();
         assert_eq!(started_data["operation_id"], committed_data["operation_id"]);
+        assert_eq!(result["summaryOutcome"]["status"], "generated");
+        assert_eq!(committed_data["summary_outcome"], result["summaryOutcome"]);
         // The first pass asks the model for exactly one handoff summary; the replay
         // must reuse the recorded checkpoint and ask for nothing.
         assert_eq!(
@@ -3720,6 +3746,7 @@ mod tests {
         let restored = restarted.compact("").unwrap();
         assert_eq!(restored["checkpointId"], result["checkpointId"]);
         assert_eq!(restored["reused"], true);
+        assert_eq!(restored["summaryOutcome"], result["summaryOutcome"]);
     }
 
     #[test]

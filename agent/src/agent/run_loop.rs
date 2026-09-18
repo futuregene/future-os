@@ -424,7 +424,7 @@ impl Loop {
                 }
                 Ok(crate::compaction::ContextPreparation::Compacted { prompt, checkpoint }) => {
                     let commit_result = if let Some(ticket) = &compaction_ticket {
-                        ticket.finish(Some(&checkpoint),serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after}))
+                        ticket.finish(Some(&checkpoint),serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after,"algorithmVersion":checkpoint.algorithm_version,"summaryOutcome":checkpoint.summary_outcome}))
                     } else if let Some(commit) = &ctx.on_checkpoint {
                         commit(&checkpoint)
                     } else {
@@ -662,7 +662,7 @@ impl Loop {
                                     ..
                                 }) => {
                                     let committed = if let Some(ticket) = &recovery_ticket {
-                                        ticket.finish(Some(&checkpoint), serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after}))
+                                        ticket.finish(Some(&checkpoint), serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,"tokensAfter":checkpoint.tokens_after,"algorithmVersion":checkpoint.algorithm_version,"summaryOutcome":checkpoint.summary_outcome}))
                                     } else if let Some(commit) = &ctx.on_checkpoint {
                                         commit(&checkpoint)
                                     } else {
@@ -3880,6 +3880,7 @@ mod tests {
         });
         let messages = compactable_messages(26_000);
         let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let outcome = Arc::new(parking_lot::Mutex::new(None));
         let (text, final_messages) = loop_
             .run_streaming_with_messages(
                 messages,
@@ -3887,7 +3888,11 @@ mod tests {
                 noop_on_text,
                 {
                     let failed = failed.clone();
+                    let outcome = outcome.clone();
                     move |event| {
+                        if let RunEvent::CompactionCommitted { checkpoint, .. } = &event {
+                            *outcome.lock() = checkpoint.summary_outcome.clone();
+                        }
                         if matches!(event, RunEvent::CompactionFailed { .. }) {
                             failed.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -3899,6 +3904,17 @@ mod tests {
             .unwrap();
         assert_eq!(text, "ok");
         assert!(!failed.load(std::sync::atomic::Ordering::Relaxed));
+        let outcome = outcome.lock();
+        let outcome = outcome.as_ref().expect("committed outcome is observable");
+        assert_eq!(
+            outcome.status,
+            crate::compaction::CompactionSummaryStatus::EvidenceOnly
+        );
+        assert!(outcome
+            .fallback_reason
+            .as_ref()
+            .unwrap()
+            .contains("summary provider unavailable"));
         assert_eq!(
             final_messages.len(),
             5,
