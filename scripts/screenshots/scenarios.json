@@ -256,6 +256,22 @@
           }
         ]
       },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（桌面端头部右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 1200 },
+          { "inject": "{variantInject}" },
+          { "shot": "d-usage-icon.png" }
+        ]
+      },
       "custom-model-prices": {
         "steps": [
           { "wait": 900 },
@@ -720,6 +736,28 @@
           {
             "shot": "m-chat.png"
           }
+        ]
+      },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（手机端顶栏右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "inject": "{variantInject}" },
+          { "shot": "m-usage-icon.png" }
         ]
       },
       "usage-sheet": {

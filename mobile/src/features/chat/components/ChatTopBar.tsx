@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen } from "lucide-react-native";
+import { ArrowLeft, FolderOpen, ReceiptText } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
@@ -8,7 +8,6 @@ export function ChatTopBar({
   draft,
   backLabel,
   usageLabel,
-  usageText,
   onBack,
   onUsage,
   filesLabel,
@@ -20,13 +19,13 @@ export function ChatTopBar({
   draft: boolean;
   backLabel: string;
   /**
-   * The conversation's running amount, kept in the bar and tappable for the
-   * token/amount breakdown. Renaming lives in that sheet instead of here: the
-   * bar keeps one row, and the low-frequency action rides along with the
-   * title it edits.
+   * Opens the conversation's token/amount breakdown. An icon rather than the
+   * amount: the bar belongs to the conversation, and a number that changes
+   * every turn competes with the title for attention. Renaming is not here
+   * either — the session list already owns that, so repeating it in the
+   * conversation only lengthens the row.
    */
   usageLabel: string;
-  usageText: string;
   onBack: () => void;
   onUsage: () => void;
   filesLabel: string;
@@ -67,13 +66,15 @@ export function ChatTopBar({
           accessibilityLabel={usageLabel}
           accessibilityRole="button"
           onPress={onUsage}
-          style={({ pressed }) => [styles.usageButton, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
         >
-          <Text numberOfLines={1} style={styles.usageText}>
-            {usageText}
-          </Text>
+          <ReceiptText color={colors.ink} size={20} />
         </Pressable>
       )}
+      {/* A draft has no session, so neither icon applies; the two spacers keep
+          the centered title from jumping sideways when the first message is
+          sent and they appear. */}
+      {draft && <View style={styles.iconButton} />}
       {draft && <View style={styles.iconButton} />}
     </View>
   );
@@ -98,22 +99,6 @@ const styles = StyleSheet.create({
   },
   pressed: { backgroundColor: colors.surfaceSubtle },
   titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
-  // Sized to the touch target but allowed to grow with the digits, so the
-  // amount never truncates ("¥1,234.5679" stays readable on a narrow phone).
-  usageButton: {
-    minWidth: layout.touchTarget,
-    height: layout.touchTarget,
-    alignItems: "flex-end",
-    justifyContent: "center",
-    paddingHorizontal: spacing.sm,
-    borderRadius: radius.md,
-  },
-  usageText: {
-    color: colors.inkSoft,
-    fontSize: 13,
-    fontWeight: "600",
-    fontVariant: ["tabular-nums"],
-  },
   context: { color: colors.inkSoft, fontSize: 12, maxWidth: "100%", marginTop: 2 },
   title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
 });
