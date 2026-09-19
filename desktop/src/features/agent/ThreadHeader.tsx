@@ -53,6 +53,7 @@ export function ThreadHeader({
       {thread?.agentSessionId
         ? (
             <button
+              aria-label={t("usage.open")}
               className="mr-2 inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium tabular-nums text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
               data-testid="thread-usage"
               onClick={() => setUsageOpen(true)}

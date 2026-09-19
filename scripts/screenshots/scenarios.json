@@ -256,6 +256,68 @@
           }
         ]
       },
+      "custom-model-prices": {
+        "steps": [
+          { "wait": 900 },
+          { "tapText": "lixin" },
+          { "wait": 1500 },
+          { "tapText": "设置" },
+          { "wait": 2000 },
+          { "tapText": "提供商" },
+          { "wait": 2000 },
+          { "tap": "编辑" },
+          { "wait": 2000 },
+          {
+            "eval": "(() => { const sc = [...document.querySelectorAll('div')].find(n => n.className.toString().includes('overflow-y-auto') && n.scrollHeight > n.clientHeight + 4); if (!sc) throw new Error('no scrollable dialog body'); sc.scrollTop = sc.scrollHeight; return sc.scrollTop; })()"
+          },
+          { "wait": 600 },
+          {
+            "eval": "{ if (!document.body.innerText.includes('价格（每 100 万 Token）')) throw new Error('price fields not in the DOM'); }"
+          },
+          { "shot": "d-custom-model-prices.png" }
+        ]
+      },
+      "thread-usage": {
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "shot": "d-thread-usage.png"
+          },
+          {
+            "tap": "Token 用量与金额"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "shot": "d-thread-usage-dialog.png"
+          }
+        ]
+      },
+      "thread-usage-unpriced": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "解释一下 p 值的常见误用"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "Token 用量与金额"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "shot": "d-thread-usage-unpriced.png"
+          }
+        ]
+      },
       "custom-model": {
         "steps": [
           {
@@ -658,6 +720,63 @@
           {
             "shot": "m-chat.png"
           }
+        ]
+      },
+      "usage-sheet": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-usage-entry.png"
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]').click()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "{ if (!document.body.innerText.includes('缓存读取')) throw new Error('usage sheet did not open'); }"
+          },
+          {
+            "shot": "m-usage-sheet.png"
+          }
+        ]
+      },
+      "usage-sheet-unpriced": {
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tapText": "解释一下 p 值的常见误用" },
+          { "wait": 2500 },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]').click()"
+          },
+          { "wait": 1200 },
+          {
+            "eval": "{ if (!document.body.innerText.includes('该模型未配置价格')) throw new Error('unpriced hint missing'); }"
+          },
+          { "shot": "m-usage-sheet-unpriced.png" }
         ]
       },
       "steps-folded": {

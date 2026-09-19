@@ -426,4 +426,5 @@ than silent:
 | `target not found: …` | The `aria-label` changed, or the step ran before the screen settled — raise the preceding `wait`. |
 | A tap does nothing | Inside a scrollable list, react-native-web prefers the scroll responder; the driver already sends touch sequences, so check `--touch` was not disabled. |
 | Empty or partial mobile screen | Expo web is still bundling on the first request; wait for the first capture, then re-run. If the page is blank and the console reports "Incompatible React versions", the mobile workspace's react/react-dom pair drifted — `serve-mobile` checks this and prints the fix. |
+| `cdp: app not ready after … ms` with the UI stuck on its startup state | The new screen calls a command the mock does not implement. Unknown commands return null, so the frontend throws while rendering and the whole UI stops (on desktop it stays on the splash). Search the console for `[mock] UNHANDLED COMMAND` — that names the missing handler. |
 | `error: nothing is listening on port …` | The dev server is not running: start `capture.py serve-desktop|serve-mobile` first. |

@@ -73,6 +73,43 @@ export const sessions = [
   session("sess_chat_pvalue", "ws_temp", "解释一下 p 值的常见误用", { mode: "chat" }),
 ];
 
+/**
+ * Session token usage + amount, mirroring the agent's `get_state` usage object.
+ *
+ * The per-category figures are the agent's estimate from the model's
+ * per-1M-token rates (input 4 / output 16 / cache read 0.4 / cache write 5 CNY),
+ * billing only the non-cached input remainder. The token counts are chosen so
+ * each row is exact at the four decimals the sheet shows and the rows add up to
+ * the total, so the demo never looks like an off-by-rounding bug.
+ *
+ * The p-value conversation stands in for a model with no prices on file: the
+ * agent reports zeros per category, so the sheet shows tokens only and must not
+ * invent a ¥0 breakdown — the billed total is still a real figure.
+ */
+export const demoSessionUsage = {
+  inputTokens: 600_050,
+  outputTokens: 9_825,
+  cacheReadTokens: 412_750,
+  cacheWriteTokens: 18_900,
+  costCny: 1.0904,
+  costInputCny: 0.6736,
+  costOutputCny: 0.1572,
+  costCacheReadCny: 0.1651,
+  costCacheWriteCny: 0.0945,
+};
+
+export const demoUnpricedSessionUsage = {
+  inputTokens: 84_600,
+  outputTokens: 2_140,
+  cacheReadTokens: 51_300,
+  cacheWriteTokens: 0,
+  costCny: 0.32,
+  costInputCny: 0,
+  costOutputCny: 0,
+  costCacheReadCny: 0,
+  costCacheWriteCny: 0,
+};
+
 const ANSWER = `两篇文献结论并不冲突，只是结论的**适用条件**不同。
 
 ## 结论对比

@@ -291,4 +291,5 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | `target not found: …` | `aria-label` 变了，或步骤跑在界面稳定之前——把前一个 `wait` 调大。 |
 | 点击没有反应 | 在可滚动列表里，react-native-web 会优先响应滚动手势；驱动已经发送触摸序列，请确认没有关掉 `--touch`。 |
 | 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`serve-mobile` 会检查并给出修复命令。 |
+| `cdp: app not ready after … ms` 且界面停在启动态 | 新界面调用了 mock 还没有的命令。mock 会对未知命令返回 null，前端随后在渲染里抛错、整个界面卡住（桌面端表现为停在「请稍候」）。控制台里搜 `[mock] UNHANDLED COMMAND` —— 那就是缺的处理器，补上即可（`get_agent_status` 就是这么缺的）。 |
 | `error: nothing is listening on port …` | dev server 没起：先跑 `capture.py serve-desktop` 或 `serve-mobile`。 |
