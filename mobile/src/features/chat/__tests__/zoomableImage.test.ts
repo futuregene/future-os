@@ -1,9 +1,18 @@
 import { Animated, PanResponder, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
-import { MAX_SCALE, MIN_SCALE, clampScale, clampTranslation, createZoomController, pinchDistance } from "../components/ZoomableImage";
+import {
+  DOUBLE_TAP_MS,
+  DOUBLE_TAP_SCALE,
+  MAX_SCALE,
+  MIN_SCALE,
+  clampScale,
+  clampTranslation,
+  createZoomController,
+  pinchDistance,
+} from "../components/ZoomableImage";
 
-function gestureHarness() {
+function gestureHarness(options: { now?: () => number } = {}) {
   const create = jest.spyOn(PanResponder, "create");
-  const zoom = createZoomController();
+  const zoom = createZoomController(options);
   const handlers = create.mock.calls[0]![0];
   create.mockRestore();
   zoom.measure(400, 600, 0, 100);
@@ -14,27 +23,93 @@ function gestureHarness() {
   const values = () => zoom.transform.map(track =>
     (Object.values(track)[0] as Animated.Value & { __getValue(): number }).__getValue(),
   );
-  return { zoom, handlers, gesture, event, values };
+  /** A press that starts and ends at one point, the way a tap arrives. */
+  const tapAt = (x: number, y: number) => {
+    const start = event([x, y]);
+    handlers.onPanResponderGrant!(start, { x0: x, y0: y, dx: 0, dy: 0 } as PanResponderGestureState);
+    handlers.onPanResponderRelease!(start, { x0: x, y0: y, dx: 0, dy: 0 } as PanResponderGestureState);
+  };
+  return { zoom, handlers, gesture, event, values, tapAt };
 }
 
-test("the second finger claims the preview and repeated pinches change the actual transform", () => {
+test("the picture owns the gesture from the first finger, and repeated pinches change the transform", () => {
   const { handlers, gesture, event, values } = gestureHarness();
-  expect(handlers.onStartShouldSetPanResponder!(event([150, 400]), gesture)).toBe(false);
+  // Claiming only on the second finger would leave the zoom dependent on how the
+  // surrounding container handles the initial touch, which is what broke on device.
+  expect(handlers.onStartShouldSetPanResponder!(event([150, 400]), gesture)).toBe(true);
+  expect(handlers.onStartShouldSetPanResponderCapture!(event([150, 400]), gesture)).toBe(true);
+  expect(handlers.onMoveShouldSetPanResponder!(event([150, 400]), gesture)).toBe(true);
   const start = event([150, 400], [250, 400]);
-  expect(handlers.onStartShouldSetPanResponder!(start, gesture)).toBe(true);
-  expect(handlers.onStartShouldSetPanResponderCapture!(start, gesture)).toBe(true);
-  handlers.onPanResponderGrant!(start, gesture);
+  handlers.onPanResponderGrant!(start, { x0: 150, y0: 400, dx: 0, dy: 0 } as PanResponderGestureState);
   handlers.onPanResponderStart!(start, gesture);
   handlers.onPanResponderMove!(event([100, 400], [300, 400]), gesture);
   expect(values()).toEqual([0, 0, 2]);
   handlers.onPanResponderRelease!(event(), gesture);
-  handlers.onPanResponderGrant!(start, gesture);
+  handlers.onPanResponderGrant!(start, { x0: 150, y0: 400, dx: 0, dy: 0 } as PanResponderGestureState);
   handlers.onPanResponderMove!(event([100, 400], [300, 400]), gesture);
   expect(values()).toEqual([0, 0, 4]);
   handlers.onPanResponderMove!(event([0, 400], [400, 400]), gesture);
   expect(values()[2]).toBe(MAX_SCALE);
   handlers.onPanResponderMove!(event([199, 400], [201, 400]), gesture);
   expect(values()).toEqual([0, 0, MIN_SCALE]);
+});
+
+test("a double-tap zooms in about the tapped point and a third tap returns to fit", () => {
+  const now = jest.fn(() => 1_000);
+  const { zoom, values, tapAt } = gestureHarness({ now });
+  // A lone tap leaves the picture alone.
+  tapAt(300, 500);
+  expect(values()).toEqual([0, 0, MIN_SCALE]);
+  // The second tap inside the window zooms to the tapped point. The double-tap is
+  // delivered by a spring, so read the controller's state rather than the
+  // animated value the spring is driving. The tap sits 100px right/below the frame
+  // centre (300,500 vs 200,400), so at 2.5× holding it there needs −150,−150.
+  now.mockReturnValue(1_000 + DOUBLE_TAP_MS);
+  tapAt(300, 500);
+  expect(zoom.state()).toEqual({ scale: DOUBLE_TAP_SCALE, x: -150, y: -150 });
+  // And the next pair returns to fit.
+  now.mockReturnValue(2_000);
+  tapAt(300, 500);
+  now.mockReturnValue(2_000 + DOUBLE_TAP_MS);
+  tapAt(300, 500);
+  expect(zoom.state()).toEqual({ scale: MIN_SCALE, x: 0, y: 0 });
+});
+
+test("two slow, far-apart or travelling presses are not a double-tap", () => {
+  const now = jest.fn(() => 1_000);
+  const { zoom, tapAt, handlers, event } = gestureHarness({ now });
+  // Too slow: outside the window.
+  tapAt(300, 500);
+  now.mockReturnValue(1_000 + DOUBLE_TAP_MS + 1);
+  tapAt(300, 500);
+  expect(zoom.state().scale).toBe(MIN_SCALE);
+  // In time but on a different spot.
+  now.mockReturnValue(3_000);
+  tapAt(60, 120);
+  now.mockReturnValue(3_050);
+  tapAt(300, 500);
+  expect(zoom.state().scale).toBe(MIN_SCALE);
+  // A drag is a pan attempt, never a tap: two quick press-and-drags must not zoom.
+  now.mockReturnValue(4_000);
+  const drag = event([300, 500]);
+  handlers.onPanResponderGrant!(drag, { x0: 300, y0: 500, dx: 0, dy: 0 } as PanResponderGestureState);
+  handlers.onPanResponderRelease!(drag, { x0: 300, y0: 500, dx: 90, dy: 0 } as PanResponderGestureState);
+  now.mockReturnValue(4_050);
+  handlers.onPanResponderGrant!(drag, { x0: 300, y0: 500, dx: 0, dy: 0 } as PanResponderGestureState);
+  handlers.onPanResponderRelease!(drag, { x0: 300, y0: 500, dx: 90, dy: 0 } as PanResponderGestureState);
+  expect(zoom.state().scale).toBe(MIN_SCALE);
+});
+
+test("a two-finger press is never read as a tap", () => {
+  const now = jest.fn(() => 1_000);
+  const { zoom, handlers, event } = gestureHarness({ now });
+  for (const at of [1_000, 1_020]) {
+    now.mockReturnValue(at);
+    const both = event([290, 500], [310, 500]);
+    handlers.onPanResponderGrant!(both, { x0: 300, y0: 500, dx: 0, dy: 0 } as PanResponderGestureState);
+    handlers.onPanResponderRelease!(both, { x0: 300, y0: 500, dx: 0, dy: 0 } as PanResponderGestureState);
+  }
+  expect(zoom.state().scale).toBe(MIN_SCALE);
 });
 
 test("an off-center pinch keeps its focal point and follows midpoint movement", () => {

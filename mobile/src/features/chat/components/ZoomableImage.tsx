@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Animated, PanResponder, StyleSheet, View } from "react-native";
 import { colors } from "../../../theme/tokens";
 
@@ -9,6 +9,11 @@ export const MAX_SCALE = 6;
 
 /** Below this, a released pinch springs back to fit — an easy way to reset. */
 const RESET_THRESHOLD = 1.05;
+
+/** Double-tap zoom target, and the window/slop that make two taps a double-tap. */
+export const DOUBLE_TAP_SCALE = 2.5;
+export const DOUBLE_TAP_MS = 300;
+const TAP_SLOP = 14;
 
 type Touch = { pageX: number; pageY: number };
 
@@ -55,6 +60,17 @@ export interface ZoomController {
     | { scale: Animated.Value }
   )[];
   measure(width: number, height: number, pageX?: number, pageY?: number): void;
+  /**
+   * The zoom/pan the controller currently holds. Render never reads it; it exists
+   * so a caller can observe where a gesture ended up, including the changes a
+   * spring delivers rather than a direct `setValue` (a double-tap).
+   */
+  state(): { scale: number; x: number; y: number };
+}
+
+/** Injectable clock, so the double-tap window is testable without fake timers. */
+export interface ZoomOptions {
+  now?: () => number;
 }
 
 /**
@@ -65,12 +81,17 @@ export interface ZoomController {
  *
  * Both the bounds and responder transitions are covered by tests.
  */
-export function createZoomController(): ZoomController {
+export function createZoomController({ now = Date.now }: ZoomOptions = {}): ZoomController {
   const scale = new Animated.Value(MIN_SCALE);
   const translateX = new Animated.Value(0);
   const translateY = new Animated.Value(0);
   let current: GestureState = { scale: MIN_SCALE, x: 0, y: 0 };
   let start: GestureStart = { scale: MIN_SCALE, x: 0, y: 0, distance: 0, centerX: 0, centerY: 0 };
+  let lastTap: { at: number; x: number; y: number } | null = null;
+  // Set for the duration of one press: where it started, and whether a second
+  // finger was ever down. Release turns these into tap-vs-pinch/pan.
+  let press: { x: number; y: number } | null = null;
+  let multiFinger = false;
   const frame = { width: 0, height: 0, pageX: 0, pageY: 0 };
 
   const settle = (next: GestureState) => {
@@ -92,22 +113,33 @@ export function createZoomController(): ZoomController {
   };
 
   /**
-   * Zoom about the pinch midpoint. Scaling by (start × distance ratio) rather than
-   * multiplying per-frame keeps the gesture free of compounding error and makes
-   * the back-to-fit release below trivially reversible.
+   * Focal-point zoom: grow the content about (`centerX`, `centerY`) so that point
+   * stays under the fingers, then clamp the result. Shared by the pinch (which
+   * scales by a distance ratio, so the gesture accumulates no compounding error)
+   * and the double-tap (which moves to an absolute scale).
    */
-  const zoom = (distance: number, [centerX, centerY]: [number, number]) => {
+  const zoomTo = (
+    base: GestureStart,
+    next: number,
+    [centerX, centerY]: [number, number],
+  ): GestureState => {
+    const ratio = next / base.scale;
+    const anchorX = base.centerX - frame.pageX - frame.width / 2;
+    const anchorY = base.centerY - frame.pageY - frame.height / 2;
+    const nextX = clampTranslation(
+      centerX - base.centerX + anchorX * (1 - ratio) + base.x * ratio, next, frame.width);
+    const nextY = clampTranslation(
+      centerY - base.centerY + anchorY * (1 - ratio) + base.y * ratio, next, frame.height);
+    return { scale: next, x: nextX, y: nextY };
+  };
+
+  const zoom = (distance: number, center: [number, number]) => {
     const next = clampScale(start.scale * (distance / start.distance));
-    // Keep the point under the fingers pinned while the content grows around it.
-    const ratio = next / start.scale;
-    const anchorX = start.centerX - frame.pageX - frame.width / 2;
-    const anchorY = start.centerY - frame.pageY - frame.height / 2;
-    const nextX = clampTranslation(centerX - start.centerX + anchorX * (1 - ratio) + start.x * ratio, next, frame.width);
-    const nextY = clampTranslation(centerY - start.centerY + anchorY * (1 - ratio) + start.y * ratio, next, frame.height);
-    current = { scale: next, x: nextX, y: nextY };
-    scale.setValue(next);
-    translateX.setValue(nextX);
-    translateY.setValue(nextY);
+    const state = zoomTo(start, next, center);
+    current = state;
+    scale.setValue(state.scale);
+    translateX.setValue(state.x);
+    translateY.setValue(state.y);
   };
 
   const begin = (touches: Touch[]) => {
@@ -115,21 +147,48 @@ export function createZoomController(): ZoomController {
     start = { ...current, distance: pinchDistance(touches) ?? 0, centerX, centerY };
   };
 
+  /**
+   * A tap on the picture: the second one in quick succession zooms in about that
+   * point, a third returns to fit. A single finger is the only way to zoom when
+   * two-finger gestures are unavailable (assistive settings, a stolen gesture) or
+   * simply not obvious, so the surface must not depend on pinch alone.
+   */
+  const tap = (x: number, y: number) => {
+    const at = now();
+    const previous = lastTap;
+    const isDouble = previous !== null
+      && at - previous.at <= DOUBLE_TAP_MS
+      && Math.abs(x - previous.x) <= TAP_SLOP
+      && Math.abs(y - previous.y) <= TAP_SLOP;
+    lastTap = isDouble ? null : { at, x, y };
+    if (!isDouble) return;
+    const next = current.scale > MIN_SCALE ? MIN_SCALE : DOUBLE_TAP_SCALE;
+    settle(zoomTo(
+      { ...current, distance: 0, centerX: x, centerY: y },
+      clampScale(next),
+      [x, y],
+    ));
+  };
+
   const responder = PanResponder.create({
-    // Claim the second finger immediately, including when it lands on the image.
-    // Waiting for movement discards the initial part of the pinch.
-    onStartShouldSetPanResponder: event => event.nativeEvent.touches.length === 2,
-    onStartShouldSetPanResponderCapture: event => event.nativeEvent.touches.length === 2,
-    // Claim the gesture once it is unambiguously a pinch (two fingers) or a drag
-    // while already zoomed in.
-    onMoveShouldSetPanResponder: (event, gesture) =>
-      event.nativeEvent.touches.length === 2
-      || (current.scale > MIN_SCALE && (Math.abs(gesture.dx) > 2 || Math.abs(gesture.dy) > 2)),
-    onPanResponderGrant: event => {
+    // Claim the surface on the FIRST finger, at the capture phase, so the gesture
+    // is owned from the outset: waiting for a second finger to negotiate leaves
+    // the zoom at the mercy of whatever the surrounding container does with the
+    // initial touch. The picture has no other gesture to protect, and a press that
+    // does not travel is only read as a double-tap candidate (see `tap`).
+    onStartShouldSetPanResponder: () => true,
+    onStartShouldSetPanResponderCapture: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: (event, gesture) => {
       scale.stopAnimation();
       translateX.stopAnimation();
       translateY.stopAnimation();
-      begin(event.nativeEvent.touches as Touch[]);
+      const touches = event.nativeEvent.touches as Touch[];
+      begin(touches);
+      // Where this press started, and whether two fingers were ever involved:
+      // together with the release travel this decides tap vs pinch/pan.
+      press = { x: gesture.x0, y: gesture.y0 };
+      multiFinger = touches.length > 1;
     },
     onPanResponderStart: event => begin(event.nativeEvent.touches as Touch[]),
     onPanResponderEnd: event => begin(event.nativeEvent.touches as Touch[]),
@@ -138,6 +197,7 @@ export function createZoomController(): ZoomController {
       const touches = event.nativeEvent.touches as Touch[];
       const distance = pinchDistance(touches);
       if (distance !== null) {
+        multiFinger = true;
         // A finger landed or lifted mid-gesture: restart from the live state
         // rather than jumping by a ratio against a stale distance.
         if (start.distance === 0) begin(touches);
@@ -150,7 +210,16 @@ export function createZoomController(): ZoomController {
         pan(centerX - start.centerX, centerY - start.centerY);
       }
     },
-    onPanResponderRelease: () => {
+    onPanResponderRelease: (_event, gesture) => {
+      const started = press;
+      press = null;
+      if (started && !multiFinger
+        && Math.abs(gesture.dx) <= TAP_SLOP && Math.abs(gesture.dy) <= TAP_SLOP) {
+        // A tap settles only when it turns out to be a double-tap; a lone tap
+        // leaves the picture as it was.
+        tap(started.x, started.y);
+        return;
+      }
       // Back to fit when barely zoomed, so no separate reset control is needed.
       if (current.scale < RESET_THRESHOLD) settle({ scale: MIN_SCALE, x: 0, y: 0 });
       else settle(current);
@@ -161,6 +230,7 @@ export function createZoomController(): ZoomController {
   return {
     panHandlers: responder.panHandlers,
     transform: [{ translateX }, { translateY }, { scale }],
+    state: () => ({ ...current }),
     measure(width, height, pageX = 0, pageY = 0) {
       const resized = frame.width !== width || frame.height !== height;
       Object.assign(frame, { width, height, pageX, pageY });
@@ -188,14 +258,15 @@ function centerOf(touches: Touch[]): [number, number] {
  * stack, and adding one (plus its native build config) for a single preview
  * surface is a large dependency for one interaction.
  *
- * Bounds and finger transitions are tested through the controller; native gesture
- * delivery still needs device validation.
+ * Bounds and finger transitions are covered by tests through the controller; the
+ * gesture itself is verified in the harness by dispatching real touch sequences.
  */
 export function ZoomableImage({ uri, accessibilityLabel }: {
   uri: string;
   accessibilityLabel?: string;
 }) {
   const [zoom] = useState(() => createZoomController());
+  const frameRef = useRef<View>(null);
 
   return (
     <View
@@ -203,9 +274,12 @@ export function ZoomableImage({ uri, accessibilityLabel }: {
       onLayout={event => {
         const { width, height } = event.nativeEvent.layout;
         zoom.measure(width, height);
-        // Touches use screen coordinates; account for the modal header/safe area.
-        event.currentTarget.measureInWindow((x, y) => zoom.measure(width, height, x, y));
+        // The zoom anchor needs screen coordinates. `event.currentTarget` is not a
+        // measurable instance on every renderer (on web it is undefined, which
+        // threw here), so measure through the ref the way RN documents it.
+        frameRef.current?.measureInWindow?.((x, y) => zoom.measure(width, height, x, y));
       }}
+      ref={frameRef}
       style={styles.frame}
       {...zoom.panHandlers}
     >
