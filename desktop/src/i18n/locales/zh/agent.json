@@ -56,6 +56,21 @@
     "responseStopped": "你已停止本次回复",
     "workspaceAccessError": "工作区目录无法访问（{{message}}）。请检查其路径和权限后重试。"
   },
+  "usage": {
+    "title": "Token 用量与金额",
+    "open": "Token 用量与金额",
+    "category": "类别",
+    "tokens": "Token",
+    "cost": "金额",
+    "input": "输入",
+    "output": "输出",
+    "cacheRead": "缓存读取",
+    "cacheWrite": "缓存写入",
+    "total": "合计",
+    "hintPriced": "各类别金额按模型价格估算，合计为服务商实际计费金额。",
+    "hintUnpriced": "该模型未配置价格，只能显示实际计费总额；如需分类明细，请在提供商设置中填写输入/输出/缓存价格。",
+    "unavailable": "本会话尚无用量记录。"
+  },
   "failure": {
     "connect": "请完全退出 FutureOS 后重新打开，然后再试一次。",
     "connectTitle": "后台服务连接失败",

@@ -62,6 +62,10 @@ describe("custom model thinking capability", () => {
       contextWindow: 128000,
       maxTokens: 16384,
       reasoning: false,
+      inputCost: 0,
+      outputCost: 0,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
     }] };
     const container = document.createElement("div");
     document.body.append(container);

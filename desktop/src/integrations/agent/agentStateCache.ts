@@ -7,6 +7,24 @@ import i18n from "../../i18n";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { invokeCommand } from "../tauri/invoke";
 
+/**
+ * Session-level token usage and the amount it represents, from `usage` in the
+ * agent's get_state payload.
+ */
+export interface AgentSessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Total spent (¥): the provider's own billing, or the priced estimate. */
+  costCny: number;
+  /** Per-category estimates; all 0 for a model with no prices on file. */
+  costInputCny: number;
+  costOutputCny: number;
+  costCacheReadCny: number;
+  costCacheWriteCny: number;
+}
+
 /** Agent-side session state, fetched via get_state RPC. */
 export interface AgentSessionState {
   model?: string | null;
@@ -19,6 +37,12 @@ export interface AgentSessionState {
   isStreaming?: boolean;
   /** Whether a manual context compaction is currently running. */
   isCompacting?: boolean;
+  /**
+   * Token usage and amount for the whole session. Absent until the first
+   * successful state read (and for agents too old to report per-category
+   * costs).
+   */
+  usage?: AgentSessionUsage;
   activeRun?: {
     runId: string;
     epoch: number;
@@ -118,6 +142,7 @@ export async function getAgentState(
           typeof raw.isStreaming === "boolean" ? raw.isStreaming : undefined,
         isCompacting:
           typeof raw.isCompacting === "boolean" ? raw.isCompacting : undefined,
+        usage: parseUsage(raw.usage),
         activeRun: parseActiveRun(raw.activeRun),
       };
       if ((versions.get(threadId) ?? 0) === requestVersion) {
@@ -134,6 +159,32 @@ export async function getAgentState(
     });
   inFlight.set(threadId, request);
   return request;
+}
+
+/**
+ * Session token usage + amount from `usage` in the state payload. Returns
+ * undefined when the field is missing or malformed (legacy agent) so callers
+ * render nothing rather than a fabricated ¥0.
+ */
+function parseUsage(value: unknown): AgentSessionUsage | undefined {
+  if (!value || typeof value !== "object")
+    return undefined;
+  const usage = value as Record<string, unknown>;
+  const count = (key: string) => {
+    const field = usage[key];
+    return typeof field === "number" && Number.isFinite(field) ? field : 0;
+  };
+  return {
+    inputTokens: count("inputTokens"),
+    outputTokens: count("outputTokens"),
+    cacheReadTokens: count("cacheReadTokens"),
+    cacheWriteTokens: count("cacheWriteTokens"),
+    costCny: count("costCny"),
+    costInputCny: count("costInputCny"),
+    costOutputCny: count("costOutputCny"),
+    costCacheReadCny: count("costCacheReadCny"),
+    costCacheWriteCny: count("costCacheWriteCny"),
+  };
 }
 
 function parseActiveRun(value: unknown): AgentSessionState["activeRun"] {

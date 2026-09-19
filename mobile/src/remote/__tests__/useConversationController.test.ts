@@ -9,7 +9,7 @@ import {
 } from "../files";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "../storage";
 import { emptyTimeline } from "../timeline";
-import { modelReference, type DownloadInfo, type HistoryAttachment, type RemoteModel, type RemoteSessionState } from "../types";
+import { modelReference, type DownloadInfo, type HistoryAttachment, type RemoteModel, type RemoteSessionState, type RemoteSessionUsage } from "../types";
 import type { SyncEngine } from "../syncEngine";
 import { useConversationController } from "../useConversationController";
 
@@ -353,6 +353,56 @@ describe("desktop session setting synchronization", () => {
     await act(async () => { resolve({ data: { model: "p/old" } }); await opening; });
     expect(current(h).modelId).toBe("p/new");
     expect(current(h).openingSession).toBe(false);
+    act(() => h.renderer.unmount());
+  });
+});
+
+describe("session usage", () => {
+  const usage: RemoteSessionUsage = {
+    inputTokens: 1_000,
+    outputTokens: 200,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costCny: 0.5,
+    costInputCny: 0.3,
+    costOutputCny: 0.2,
+    costCacheReadCny: 0,
+    costCacheWriteCny: 0,
+  };
+
+  it("shows the amount the agent reported as soon as the conversation opens", async () => {
+    const h = await mountController({
+      selected: "s1",
+      engine: fakeEngine(),
+      requestRetry: jest.fn(async () => ({
+        data: { model: "openai/gpt-4", thinkingLevel: "high", usage } as RemoteSessionState,
+      })),
+    });
+    expect(current(h).sessionUsage).toBeNull();
+    await act(async () => {
+      await current(h).selectSession("s1");
+    });
+    expect(current(h).sessionUsage).toEqual(usage);
+    act(() => h.renderer.unmount());
+  });
+
+  it("refreshes on a later state read and survives a settings-only update", async () => {
+    const h = await mountController({ selected: "s1" });
+    act(() => current(h).applySessionSettings("s1", { usage }));
+    expect(current(h).sessionUsage).toEqual(usage);
+    // Every reconnect / run settle read replaces the figures.
+    const later = { ...usage, costCny: 0.9 };
+    act(() => current(h).applySessionSettings("s1", { usage: later }));
+    expect(current(h).sessionUsage).toEqual(later);
+    // A model/thinking notification carries no usage: it must not wipe the
+    // amount, and another conversation's state must not leak in.
+    act(() => current(h).applySessionSettings("s1", { model: "p/other" }));
+    expect(current(h).sessionUsage).toEqual(later);
+    act(() => current(h).applySessionSettings("other", { usage: null }));
+    expect(current(h).sessionUsage).toEqual(later);
+    // An agent that reports no usage leaves the header blank rather than at ¥0.
+    act(() => current(h).applySessionSettings("s1", { usage: null }));
+    expect(current(h).sessionUsage).toBeNull();
     act(() => h.renderer.unmount());
   });
 });

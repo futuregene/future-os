@@ -353,6 +353,16 @@ message ProviderModel {
   int32 max_tokens = 5;
   // Omitted by older clients: custom models default to true.
   optional bool reasoning = 6;
+
+  // Per-1M-token prices used to estimate the cost of a request for providers
+  // that do not report an authoritative `credit_cost` (everything except the
+  // Future platform). Same currency as the displayed amount (CNY). 0 means
+  // "unpriced": the agent falls back to the built-in catalog price when the
+  // model id matches one, and the request then prices at zero.
+  double cost_input = 7;
+  double cost_output = 8;
+  double cost_cache_read = 9;
+  double cost_cache_write = 10;
 }
 
 // ── ImageContent ───────────────────────────────────────────────────────────
@@ -889,7 +899,19 @@ message SessionUsage {
   int64 output_tokens = 2;
   int64 cache_read_tokens = 3;
   int64 cache_write_tokens = 4;
+  // Amount this session has spent (¥). Authoritative when the provider bills
+  // itself (the Future platform reports `credit_cost`); otherwise the sum of
+  // the per-category estimates below.
   double cost_cny = 5;
+  // Per-category estimates from the model's per-1M-token prices, so a client
+  // can show where the amount came from. All zero when the model has no
+  // prices on file — the client then shows tokens only. A provider that bills
+  // itself need not report these, in which case the client must not assume
+  // they sum to `cost_cny`.
+  double cost_input_cny = 6;
+  double cost_output_cny = 7;
+  double cost_cache_read_cny = 8;
+  double cost_cache_write_cny = 9;
 }
 
 // ── get_state sub-objects ───────────────────────────────────────────────────

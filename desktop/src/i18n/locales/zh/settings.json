@@ -198,6 +198,12 @@
     "modalityLabel": "模态",
     "modalityText": "文本",
     "modalityImage": "图片",
+    "priceHeading": "价格（每 100 万 Token）",
+    "priceInput": "输入",
+    "priceOutput": "输出",
+    "priceCacheRead": "缓存读取",
+    "priceCacheWrite": "缓存写入",
+    "priceHint": "留空或填 0 表示不单独定价。价格用于估算本身不上报账单的模型（除 Future 以外的提供商）所消耗的金额。",
     "errors": {
       "idRequired": "请填写提供商 ID。",
       "idLength": "提供商 ID 长度需在 {{min}}–{{max}} 个字符之间。",
@@ -214,6 +220,7 @@
       "modelNameLength": "模型名称「{{name}}」过长。",
       "tokenLimitsPositive": "模型「{{id}}」的 Token 上限必须为正整数。",
       "maxTokensExceedContext": "模型「{{id}}」的最大输出 Token 不能超过上下文窗口。",
+      "priceInvalid": "模型「{{id}}」的价格必须为非负数。",
       "modelsMax": "模型数量不能超过 {{max}} 个。"
     }
   },

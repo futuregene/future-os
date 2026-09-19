@@ -57,7 +57,7 @@ fn get_state_fixture() -> Value {
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
-            "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5,"costCny":0.01},
+            "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5,"costCny":0.01,"costInputCny":0.002,"costOutputCny":0.004,"costCacheReadCny":0.003,"costCacheWriteCny":0.001},
             "permissionLevel": "workspace",
             "createdBy": "desktop",
             "sourceMeta": {"threadId": "t1"},

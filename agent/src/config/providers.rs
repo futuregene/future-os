@@ -40,7 +40,7 @@ pub struct AuthMutation {
 }
 
 /// A model entry under a custom provider, persisted to `models.json`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProviderModelSpec {
     pub id: String,
     pub name: String,
@@ -52,6 +52,27 @@ pub struct ProviderModelSpec {
     pub max_tokens: i32,
     /// Whether to send thinking controls; resolved to true for older RPC clients.
     pub reasoning: bool,
+    /// Per-1M-token prices (`models.json` `cost` object) for providers that do
+    /// not report an authoritative `credit_cost`. 0 = unpriced, which lets the
+    /// registry inherit a matching built-in catalog price.
+    pub cost: ModelCostSpec,
+}
+
+/// Per-1M-token prices of one model, persisted as the `models.json` `cost`
+/// object `{input, output, cache_read, cache_write}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ModelCostSpec {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl ModelCostSpec {
+    /// True when every field is zero, the "no explicit price" state.
+    fn is_unset(&self) -> bool {
+        self.input == 0.0 && self.output == 0.0 && self.cache_read == 0.0 && self.cache_write == 0.0
+    }
 }
 
 /// Create/update of a `models.json` `providers` entry, optionally with the
@@ -466,14 +487,26 @@ pub fn apply_provider_upsert(
             .models
             .iter()
             .map(|model| {
-                json!({
+                // `cost` carries per-1M-token prices; omit it entirely when the
+                // user left every field at 0 so the entry keeps inheriting the
+                // built-in catalog price for a matching model id.
+                let mut entry = json!({
                     "id": model.id,
                     "name": model.name,
                     "modalities": model.modalities,
                     "contextWindow": model.context_window,
                     "maxTokens": model.max_tokens,
                     "reasoning": model.reasoning,
-                })
+                });
+                if !model.cost.is_unset() {
+                    entry["cost"] = json!({
+                        "input": model.cost.input,
+                        "output": model.cost.output,
+                        "cache_read": model.cost.cache_read,
+                        "cache_write": model.cost.cache_write,
+                    });
+                }
+                entry
             })
             .collect::<Vec<_>>();
         provider.insert("models".to_string(), Value::Array(models));
@@ -783,6 +816,7 @@ mod tests {
                 context_window: 128000,
                 max_tokens: 16384,
                 reasoning: false,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -812,6 +846,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(root["providers"]["myprov"]["models"], json!([]));
+    }
+
+    #[test]
+    fn model_cost_is_persisted_only_when_set() {
+        let mut root: Map<String, Value> = Map::new();
+        apply_provider_upsert(
+            &mut root,
+            &ProviderUpsertSpec {
+                id: "myprov".to_string(),
+                replace_models: true,
+                models: vec![
+                    ProviderModelSpec {
+                        id: "priced".to_string(),
+                        name: "Priced".to_string(),
+                        cost: ModelCostSpec {
+                            input: 1.25,
+                            output: 5.0,
+                            cache_read: 0.0,
+                            cache_write: 0.0,
+                        },
+                        ..Default::default()
+                    },
+                    ProviderModelSpec {
+                        id: "unpriced".to_string(),
+                        name: "Unpriced".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let models = root["providers"]["myprov"]["models"].as_array().unwrap();
+        // A partially set price still writes the whole object, so the fields a
+        // user left at 0 stay explicit.
+        assert_eq!(
+            models[0]["cost"],
+            json!({"input": 1.25, "output": 5.0, "cache_read": 0.0, "cache_write": 0.0})
+        );
+        // An all-zero price omits `cost` entirely: the registry then inherits
+        // the built-in catalog price for a matching model id.
+        assert!(models[1].get("cost").is_none(), "{:?}", models[1]);
     }
 
     #[test]
@@ -1015,6 +1091,7 @@ mod tests {
                 context_window: 128000,
                 max_tokens: 16384,
                 reasoning: true,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1364,6 +1441,7 @@ mod tests {
             context_window: 4096,
             max_tokens: 1024,
             reasoning: true,
+            ..Default::default()
         }
     }
 

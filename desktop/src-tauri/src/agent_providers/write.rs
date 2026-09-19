@@ -347,6 +347,10 @@ pub(super) fn provider_upsert_message(
                 context_window: model.context_window,
                 max_tokens: model.max_tokens,
                 reasoning: Some(model.reasoning),
+                cost_input: model.cost.input,
+                cost_output: model.cost.output,
+                cost_cache_read: model.cost.cache_read,
+                cost_cache_write: model.cost.cache_write,
             })
             .collect(),
         replace_models: true,

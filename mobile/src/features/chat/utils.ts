@@ -68,6 +68,23 @@ export function formatBytes(bytes: number): string {
   return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 }
 
+/**
+ * A spent amount in yuan, matching the desktop header/dialog formatting: up to
+ * four decimals with trailing zeros dropped, thousands grouped with Latin
+ * digits in both UI languages (a currency figure reads the same either way).
+ */
+export function formatCostCny(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "¥0";
+  // A single request can cost ¥0.0004; the fourth decimal is the one that
+  // moves, so `toFixed` rather than a 3-digit default.
+  const rounded = value.toFixed(4);
+  if (Number(rounded) === 0) return "¥<0.0001";
+  const trimmed = rounded.replace(/0+$/, "").replace(/\.$/, "");
+  const [whole, fraction] = trimmed.split(".");
+  const grouped = new Intl.NumberFormat("en-US").format(Number(whole));
+  return fraction ? `¥${grouped}.${fraction}` : `¥${grouped}`;
+}
+
 export function plainText(bytes: Uint8Array, truncated = false): string | null {
   // Mobile's fast-text-encoding fallback rejects fatal/stream options. Validate
   // UTF-8 ourselves before using the common no-options decoder, including a

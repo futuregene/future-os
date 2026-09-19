@@ -287,6 +287,12 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                         .get("modalities")
                         .and_then(serde_json::Value::as_array)
                         .is_some_and(|items| items.iter().any(|item| item.as_str() == Some("image")));
+                    let cost = model.get("cost").and_then(serde_json::Value::as_object);
+                    let price = |field: &str| {
+                        cost.and_then(|cost| cost.get(field))
+                            .and_then(serde_json::Value::as_f64)
+                            .unwrap_or(0.0)
+                    };
                     Some(serde_json::json!({
                         "id": model_id,
                         "name": model_name,
@@ -294,6 +300,10 @@ fn provider_view(state: &AppState) -> Result<serde_json::Value, String> {
                         "reasoning": model.get("reasoning").and_then(serde_json::Value::as_bool).unwrap_or(true),
                         "contextWindow": model.get("contextWindow").and_then(serde_json::Value::as_i64).unwrap_or(128_000),
                         "maxTokens": model.get("maxTokens").and_then(serde_json::Value::as_i64).unwrap_or(16_384),
+                        "inputCost": price("input"),
+                        "outputCost": price("output"),
+                        "cacheReadCost": price("cache_read"),
+                        "cacheWriteCost": price("cache_write"),
                     }))
                 })
                 .collect::<Vec<_>>();
