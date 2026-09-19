@@ -311,6 +311,10 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
                 cache_read_tokens: usage.cache_read_tokens,
                 cache_write_tokens: usage.cache_write_tokens,
                 cost_cny: usage.cost_cny,
+                cost_input_cny: usage.cost_input_cny,
+                cost_output_cny: usage.cost_output_cny,
+                cost_cache_read_cny: usage.cost_cache_read_cny,
+                cost_cache_write_cny: usage.cost_cache_write_cny,
             })
             .unwrap_or_default(),
         permission_level: state.permission_level.clone(),

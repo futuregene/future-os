@@ -271,6 +271,19 @@ pub struct ProviderModel {
     /// Omitted by older clients: custom models default to true.
     #[prost(bool, optional, tag = "6")]
     pub reasoning: ::core::option::Option<bool>,
+    /// Per-1M-token prices used to estimate the cost of a request for providers
+    /// that do not report an authoritative `credit_cost` (everything except the
+    /// Future platform). Same currency as the displayed amount (CNY). 0 means
+    /// "unpriced": the agent falls back to the built-in catalog price when the
+    /// model id matches one, and the request then prices at zero.
+    #[prost(double, tag = "7")]
+    pub cost_input: f64,
+    #[prost(double, tag = "8")]
+    pub cost_output: f64,
+    #[prost(double, tag = "9")]
+    pub cost_cache_read: f64,
+    #[prost(double, tag = "10")]
+    pub cost_cache_write: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -941,8 +954,24 @@ pub struct SessionUsage {
     pub cache_read_tokens: i64,
     #[prost(int64, tag = "4")]
     pub cache_write_tokens: i64,
+    /// Amount this session has spent (¥). Authoritative when the provider bills
+    /// itself (the Future platform reports `credit_cost`); otherwise the sum of
+    /// the per-category estimates below.
     #[prost(double, tag = "5")]
     pub cost_cny: f64,
+    /// Per-category estimates from the model's per-1M-token prices, so a client
+    /// can show where the amount came from. All zero when the model has no
+    /// prices on file — the client then shows tokens only. A provider that bills
+    /// itself need not report these, in which case the client must not assume
+    /// they sum to `cost_cny`.
+    #[prost(double, tag = "6")]
+    pub cost_input_cny: f64,
+    #[prost(double, tag = "7")]
+    pub cost_output_cny: f64,
+    #[prost(double, tag = "8")]
+    pub cost_cache_read_cny: f64,
+    #[prost(double, tag = "9")]
+    pub cost_cache_write_cny: f64,
 }
 /// ── get_state sub-objects ───────────────────────────────────────────────────
 /// These typed sub-messages map to the canonical camelCase JSON contract.

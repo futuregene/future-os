@@ -28,6 +28,17 @@ export interface CustomProviderModel {
   contextWindow: number;
   /** Maximum tokens generated in one response. */
   maxTokens: number;
+  /**
+   * Per-1M-token prices (same currency as the amount shown in chat, CNY) used
+   * to estimate what a request costs. The Future platform reports its own
+   * authoritative billing, so prices only matter for other providers. 0 means
+   * unpriced: the model contributes nothing to the displayed amount (or keeps
+   * a matching built-in catalog price).
+   */
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
 }
 
 export interface CustomProvider {

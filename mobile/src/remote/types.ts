@@ -154,10 +154,30 @@ export function modelProviderFromReference(modelReference: string): string | und
   return separator > 0 ? modelReference.slice(0, separator) : undefined;
 }
 
+/**
+ * Session-level token usage and the amount it represents, mirroring the
+ * agent's get_state `usage` object. The per-category amounts are priced by the
+ * agent from the model's rates; a model with no rates on file reports zeros.
+ */
+export interface RemoteSessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Total spent (¥): the provider's own billing, or the priced estimate. */
+  costCny: number;
+  costInputCny: number;
+  costOutputCny: number;
+  costCacheReadCny: number;
+  costCacheWriteCny: number;
+}
+
 export interface RemoteSessionState {
   isCompacting?: boolean;
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  /** Token usage + amount for the session; absent until the agent reports it. */
+  usage?: RemoteSessionUsage | null;
   /** The session's active (in-flight) run, if any — the tail of its events
    *  can be backfilled from `get_events_since` to resync on open/reconnect. */
   activeRun?: { runId?: string } | null;

@@ -8,15 +8,19 @@ import {
 } from "react-native";
 import { ChatTopBar } from "../components/ChatTopBar";
 import { SessionFilesPanel } from "../components/SessionFilesPanel";
+import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { ChatScreen } from "../ChatScreen";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
-import type { RemoteSession, RemoteWorkspace } from "../../../remote/types";
+import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace } from "../../../remote/types";
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
   selectedSessionId: "history",
   selectedTitle: "History",
+  // No usage reported until a get_state read lands; the sheet must still open
+  // and say so rather than invent a ¥0 breakdown.
+  sessionUsage: null as RemoteSessionUsage | null,
   closeConversation: jest.fn(),
   sessions: [] as RemoteSession[],
   workspaces: [] as RemoteWorkspace[],
@@ -67,7 +71,8 @@ jest.mock("../useAttachmentPicker", () => ({
 const mockFileDownload: { preview: unknown; activeDownload: unknown } = { preview: null, activeDownload: null };
 jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
 jest.mock("../useSendMessage", () => ({ useSendMessage: () => ({}) }));
-jest.mock("../useRename", () => ({ useRename: () => ({}) }));
+const mockOpenRename = jest.fn();
+jest.mock("../useRename", () => ({ useRename: () => ({ openRename: mockOpenRename }) }));
 jest.mock("../components/ChatTopBar", () => ({ ChatTopBar: "ChatTopBar" }));
 jest.mock("../components/SessionFilesPanel", () => ({
   SessionFilesPanel: "SessionFilesPanel",
@@ -85,6 +90,9 @@ jest.mock("../components/PreviewModal", () => ({
   PreviewModal: "PreviewModal",
 }));
 jest.mock("../components/RenameModal", () => ({ RenameModal: "RenameModal" }));
+jest.mock("../components/SessionUsageSheet", () => ({
+  SessionUsageSheet: "SessionUsageSheet",
+}));
 jest.mock("../components/NativeFileActionSheet", () => ({
   NativeFileActionSheet: "NativeFileActionSheet",
 }));
@@ -105,6 +113,7 @@ beforeEach(() => {
   mockRemote.loadingOlderTimeline = false;
   mockRemote.sessions = [];
   mockRemote.workspaces = [];
+  mockRemote.sessionUsage = null;
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
   act(() => {
     tree = create(createElement(ChatScreen));
@@ -167,6 +176,35 @@ test("file browsing owns system back while the header still returns directly to 
   expect(BackHandler.addEventListener).toHaveBeenCalledTimes(2);
   act(() => tree.root.findByType(ChatTopBar).props.onBack());
   expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
+});
+
+test("the amount in the top bar opens the usage sheet, which owns renaming", () => {
+  mockRemote.sessionUsage = {
+    inputTokens: 2_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0,
+    costCny: 0.5, costInputCny: 0.3, costOutputCny: 0.2, costCacheReadCny: 0, costCacheWriteCny: 0,
+  };
+  act(() => tree.update(createElement(ChatScreen)));
+  const bar = tree.root.findByType(ChatTopBar);
+  expect(bar.props.usageText).toBe("¥0.5");
+  expect(tree.root.findByType(SessionUsageSheet).props.visible).toBe(false);
+
+  act(() => bar.props.onUsage());
+  const sheet = tree.root.findByType(SessionUsageSheet);
+  expect(sheet.props.visible).toBe(true);
+  expect(sheet.props.usage).toBe(mockRemote.sessionUsage);
+
+  // Renaming is reached from inside the sheet, and the sheet must stand down
+  // rather than sit behind the rename modal.
+  act(() => sheet.props.onRename());
+  expect(tree.root.findByType(SessionUsageSheet).props.visible).toBe(false);
+  expect(mockOpenRename).toHaveBeenCalledTimes(1);
+});
+
+test("a conversation without reported usage still opens the sheet", () => {
+  act(() => tree.root.findByType(ChatTopBar).props.onUsage());
+  const sheet = tree.root.findByType(SessionUsageSheet);
+  expect(sheet.props.visible).toBe(true);
+  expect(sheet.props.usage).toBeNull();
 });
 
 test("an ordinary conversation does not expose its internal storage workspace", () => {

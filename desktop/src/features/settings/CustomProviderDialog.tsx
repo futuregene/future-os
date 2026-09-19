@@ -169,6 +169,12 @@ export function CustomProviderDialog({
         reasoning: model.reasoning,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
+        // Prices stay as typed; validation below rejects negative / non-finite
+        // values before anything is sent (an empty input already reads as 0).
+        inputCost: model.inputCost,
+        outputCost: model.outputCost,
+        cacheReadCost: model.cacheReadCost,
+        cacheWriteCost: model.cacheWriteCost,
       }))
       .filter(model => model.id.length > 0);
     const seenModelIds = new Set<string>();
@@ -197,6 +203,11 @@ export function CustomProviderDialog({
       }
       if (model.maxTokens > model.contextWindow) {
         setError(t("customProvider.errors.maxTokensExceedContext", { id: model.id }));
+        return;
+      }
+      if ([model.inputCost, model.outputCost, model.cacheReadCost, model.cacheWriteCost]
+        .some(price => !Number.isFinite(price) || price < 0)) {
+        setError(t("customProvider.errors.priceInvalid", { id: model.id }));
         return;
       }
     }
@@ -285,6 +296,10 @@ export function CustomProviderDialog({
                 reasoning: true,
                 contextWindow: 128000,
                 maxTokens: 16384,
+                inputCost: 0,
+                outputCost: 0,
+                cacheReadCost: 0,
+                cacheWriteCost: 0,
               }])}
               type="button"
             >
@@ -363,6 +378,59 @@ export function CustomProviderDialog({
                             />
                             {t("customProvider.modalityImage")}
                           </label>
+                        </div>
+                        {/* Prices are uncontrolled on purpose: re-parsing every
+                            keystroke into a number would drop the trailing
+                            decimal point ("1." → 1) and make 1.5 untruthable. */}
+                        <div className="space-y-2 border-t border-line-soft pt-3">
+                          <span className="text-xs text-ink-muted">{t("customProvider.priceHeading")}</span>
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                              <span>{t("customProvider.priceInput")}</span>
+                              <TextInput
+                                min="0"
+                                defaultValue={model.inputCost === 0 ? "" : model.inputCost}
+                                onChange={event => updateModel(index, { inputCost: Number(event.target.value) })}
+                                placeholder="0"
+                                step="any"
+                                type="number"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                              <span>{t("customProvider.priceOutput")}</span>
+                              <TextInput
+                                min="0"
+                                defaultValue={model.outputCost === 0 ? "" : model.outputCost}
+                                onChange={event => updateModel(index, { outputCost: Number(event.target.value) })}
+                                placeholder="0"
+                                step="any"
+                                type="number"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                              <span>{t("customProvider.priceCacheRead")}</span>
+                              <TextInput
+                                min="0"
+                                defaultValue={model.cacheReadCost === 0 ? "" : model.cacheReadCost}
+                                onChange={event => updateModel(index, { cacheReadCost: Number(event.target.value) })}
+                                placeholder="0"
+                                step="any"
+                                type="number"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5 text-xs text-ink-muted">
+                              <span>{t("customProvider.priceCacheWrite")}</span>
+                              <TextInput
+                                min="0"
+                                defaultValue={model.cacheWriteCost === 0 ? "" : model.cacheWriteCost}
+                                onChange={event => updateModel(index, { cacheWriteCost: Number(event.target.value) })}
+                                placeholder="0"
+                                step="any"
+                                type="number"
+                              />
+                            </label>
+                          </div>
+                          <p className="text-xs text-ink-soft">{t("customProvider.priceHint")}</p>
                         </div>
                       </div>
                       <IconButton

@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen, Pencil } from "lucide-react-native";
+import { ArrowLeft, FolderOpen } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
@@ -7,9 +7,10 @@ export function ChatTopBar({
   contextLabel,
   draft,
   backLabel,
-  renameLabel,
+  usageLabel,
+  usageText,
   onBack,
-  onRename,
+  onUsage,
   filesLabel,
   filesOpen,
   onFiles,
@@ -18,9 +19,16 @@ export function ChatTopBar({
   contextLabel: string;
   draft: boolean;
   backLabel: string;
-  renameLabel: string;
+  /**
+   * The conversation's running amount, kept in the bar and tappable for the
+   * token/amount breakdown. Renaming lives in that sheet instead of here: the
+   * bar keeps one row, and the low-frequency action rides along with the
+   * title it edits.
+   */
+  usageLabel: string;
+  usageText: string;
   onBack: () => void;
-  onRename: () => void;
+  onUsage: () => void;
   filesLabel: string;
   filesOpen: boolean;
   onFiles: () => void;
@@ -56,12 +64,14 @@ export function ChatTopBar({
       )}
       {!draft && (
         <Pressable
-          accessibilityLabel={renameLabel}
+          accessibilityLabel={usageLabel}
           accessibilityRole="button"
-          onPress={onRename}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+          onPress={onUsage}
+          style={({ pressed }) => [styles.usageButton, pressed && styles.pressed]}
         >
-          <Pencil color={colors.ink} size={18} />
+          <Text numberOfLines={1} style={styles.usageText}>
+            {usageText}
+          </Text>
         </Pressable>
       )}
       {draft && <View style={styles.iconButton} />}
@@ -88,6 +98,22 @@ const styles = StyleSheet.create({
   },
   pressed: { backgroundColor: colors.surfaceSubtle },
   titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
+  // Sized to the touch target but allowed to grow with the digits, so the
+  // amount never truncates ("¥1,234.5679" stays readable on a narrow phone).
+  usageButton: {
+    minWidth: layout.touchTarget,
+    height: layout.touchTarget,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+  },
+  usageText: {
+    color: colors.inkSoft,
+    fontSize: 13,
+    fontWeight: "600",
+    fontVariant: ["tabular-nums"],
+  },
   context: { color: colors.inkSoft, fontSize: 12, maxWidth: "100%", marginTop: 2 },
   title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
 });

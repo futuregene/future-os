@@ -32,6 +32,7 @@ import type {
   RemoteModel,
   RemoteSession,
   RemoteSessionState,
+  RemoteSessionUsage,
   RemoteSkill,
   RemoteWorkspace,
   SessionFileListing,
@@ -71,6 +72,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   loadingOlderTimeline: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
+  /** Token usage + amount for the open conversation (null until reported). */
+  sessionUsage: RemoteSessionUsage | null;
   approvalTier: string;
   sandboxAvailable: boolean;
   busy: boolean;
@@ -200,6 +203,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     settingsSink.current?.applySessionSettings(sessionId, {
       model: state.model ?? "",
       thinkingLevel: state.thinkingLevel ?? "off",
+      usage: state.usage,
     });
   }, []);
   useEffect(() => {
@@ -315,6 +319,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const {
     modelId,
     thinkingLevel,
+    sessionUsage,
     applySessionSettings,
     handleSessionSettingsEvent,
     openingSession,
@@ -439,6 +444,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       compacting,
       modelId,
       thinkingLevel,
+      sessionUsage,
       approvalTier,
       sandboxAvailable,
       busy: sending || openingSession,
@@ -508,6 +514,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       error,
       agentAvailable,
       modelId,
+      sessionUsage,
       models,
       newConversation,
       pair,

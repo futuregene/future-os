@@ -65,6 +65,10 @@ fn custom_model(id: &str, name: &str, supports_images: bool) -> CustomProviderMo
         reasoning: true,
         context_window: 128_000,
         max_tokens: 16_384,
+        input_cost: 0.0,
+        output_cost: 0.0,
+        cache_read_cost: 0.0,
+        cache_write_cost: 0.0,
     }
 }
 
@@ -362,6 +366,66 @@ fn model_reasoning_round_trips_through_validation_rpc_and_persistence() {
         assert_eq!(
             doc["providers"]["p1"]["models"][0]["reasoning"],
             json!(reasoning)
+        );
+    }
+}
+
+#[test]
+fn model_prices_round_trip_and_are_validated() {
+    let _home = HomeGuard::new("prices");
+    let catalog = fixture_catalog();
+    let mut in_ = input("p1", "P1", true);
+    let mut priced = custom_model("priced", "", false);
+    priced.input_cost = 1.5;
+    priced.output_cost = 6.0;
+    priced.cache_read_cost = 0.15;
+    priced.cache_write_cost = 2.25;
+    let unpriced = custom_model("unpriced", "", false);
+    in_.models = vec![priced, unpriced];
+
+    // The RPC payload carries every rate through to the agent.
+    let validated = validate_custom_provider(in_.clone()).unwrap();
+    let first = &super::write::provider_upsert_message(&validated).models[0];
+    assert_eq!(first.cost_input, 1.5);
+    assert_eq!(first.cost_output, 6.0);
+    assert_eq!(first.cost_cache_read, 0.15);
+    assert_eq!(first.cost_cache_write, 2.25);
+
+    upsert_custom_provider_with_catalog(in_, &catalog).unwrap();
+
+    // Persisted under the loader's `cost` object; a model the user left
+    // unpriced omits the object entirely so it keeps inheriting the catalog.
+    let doc = config_io::read_json_lenient(&models_json_path().unwrap());
+    let models = doc["providers"]["p1"]["models"].as_array().unwrap();
+    let stored = models.iter().find(|m| m["id"] == "priced").unwrap();
+    assert_eq!(
+        stored["cost"],
+        json!({"input": 1.5, "output": 6.0, "cache_read": 0.15, "cache_write": 2.25})
+    );
+    let stored = models.iter().find(|m| m["id"] == "unpriced").unwrap();
+    assert!(stored.get("cost").is_none(), "{stored}");
+
+    // And reads back into the providers view for the edit form.
+    let view = providers_view(&catalog);
+    let provider = view.custom.iter().find(|p| p.id == "p1").unwrap();
+    let priced = provider.models.iter().find(|m| m.id == "priced").unwrap();
+    assert_eq!(priced.input_cost, 1.5);
+    assert_eq!(priced.output_cost, 6.0);
+    assert_eq!(priced.cache_read_cost, 0.15);
+    assert_eq!(priced.cache_write_cost, 2.25);
+    let unpriced = provider.models.iter().find(|m| m.id == "unpriced").unwrap();
+    assert_eq!(unpriced.input_cost, 0.0);
+
+    // A negative or non-finite rate would corrupt the displayed total.
+    for bad in [-0.01, f64::NAN, f64::INFINITY] {
+        let mut invalid = input("p2", "P2", true);
+        let mut model = custom_model("m", "", false);
+        model.output_cost = bad;
+        invalid.models = vec![model];
+        let error = upsert_custom_provider_with_catalog(invalid, &catalog).unwrap_err();
+        assert!(
+            error.to_string().contains("Output price"),
+            "unexpected error for {bad}: {error}"
         );
     }
 }

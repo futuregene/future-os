@@ -60,6 +60,21 @@
     "responseStopped": "You stopped this response",
     "workspaceAccessError": "The workspace directory is not accessible ({{message}}). Please check its path and permissions, then try again."
   },
+  "usage": {
+    "title": "Token usage and amount",
+    "open": "Token usage and amount",
+    "category": "Category",
+    "tokens": "Tokens",
+    "cost": "Amount",
+    "input": "Input",
+    "output": "Output",
+    "cacheRead": "Cache read",
+    "cacheWrite": "Cache write",
+    "total": "Total",
+    "hintPriced": "Per-category amounts are estimated from the model's prices; the total is what the provider actually billed.",
+    "hintUnpriced": "This model has no prices configured, so only the total billed is known. Add input/output/cache prices in the provider settings for a breakdown.",
+    "unavailable": "No usage recorded for this conversation yet."
+  },
   "failure": {
     "connect": "Please quit FutureOS completely, reopen it, and try again.",
     "connectTitle": "Background service connection failed",

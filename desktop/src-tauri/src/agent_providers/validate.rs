@@ -34,6 +34,30 @@ pub(super) struct ValidatedModel {
     pub(super) context_window: i32,
     pub(super) max_tokens: i32,
     pub(super) reasoning: bool,
+    /// Per-1M-token prices; all-zero means "unpriced" (inherit the catalog).
+    pub(super) cost: ModelCost,
+}
+
+/// Per-1M-token prices of one custom model. Persisted as the models.json
+/// `cost` object the agent's loader reads (`{input, output, cache_read,
+/// cache_write}`).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ModelCost {
+    pub(super) input: f64,
+    pub(super) output: f64,
+    pub(super) cache_read: f64,
+    pub(super) cache_write: f64,
+}
+
+impl ModelCost {
+    /// True when no price was supplied — the `cost` object is then omitted so
+    /// the model keeps inheriting a matching built-in catalog price. Only the
+    /// local (test-only) models.json writer needs this: the RPC path forwards
+    /// the raw rates and the agent decides which ones to persist.
+    #[cfg(test)]
+    fn is_unset(&self) -> bool {
+        self.input == 0.0 && self.output == 0.0 && self.cache_read == 0.0 && self.cache_write == 0.0
+    }
 }
 
 /// Serialize validated models to the models.json entry shape.
@@ -42,14 +66,23 @@ pub(super) fn model_json_values(models: &[ValidatedModel]) -> Vec<Value> {
     models
         .iter()
         .map(|model| {
-            json!({
+            let mut entry = json!({
                 "id": model.id,
                 "name": model.name,
                 "modalities": model.modalities,
                 "contextWindow": model.context_window,
                 "maxTokens": model.max_tokens,
                 "reasoning": model.reasoning,
-            })
+            });
+            if !model.cost.is_unset() {
+                entry["cost"] = json!({
+                    "input": model.cost.input,
+                    "output": model.cost.output,
+                    "cache_read": model.cost.cache_read,
+                    "cache_write": model.cost.cache_write,
+                });
+            }
+            entry
         })
         .collect()
 }
@@ -218,6 +251,28 @@ pub(super) fn validate_custom_provider(
         if model.supports_images {
             modalities.push("image".to_string());
         }
+        // Prices are optional; when given they must be finite and non-negative
+        // (a negative or NaN rate would corrupt the running total the GUI
+        // displays).
+        let cost = ModelCost {
+            input: model.input_cost,
+            output: model.output_cost,
+            cache_read: model.cache_read_cost,
+            cache_write: model.cache_write_cost,
+        };
+        for (label, value) in [
+            ("Input", cost.input),
+            ("Output", cost.output),
+            ("Cache read", cost.cache_read),
+            ("Cache write", cost.cache_write),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!(
+                    "Model `{model_id}` {label} price must be a non-negative number."
+                )
+                .into());
+            }
+        }
         models.push(ValidatedModel {
             id: model_id.to_string(),
             name: model_name.to_string(),
@@ -225,6 +280,7 @@ pub(super) fn validate_custom_provider(
             context_window: model.context_window,
             max_tokens: model.max_tokens,
             reasoning: model.reasoning,
+            cost,
         });
     }
     if models.len() > MAX_MODELS {

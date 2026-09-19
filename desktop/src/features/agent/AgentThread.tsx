@@ -449,6 +449,7 @@ export function AgentThread({
         action={headerAction}
         leftPanelExpanded={leftPanelExpanded}
         thread={thread}
+        usage={agentState?.usage}
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="group relative min-h-0 flex-1 overflow-hidden">

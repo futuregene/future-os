@@ -18,6 +18,7 @@ import type {
   HistoryAttachment,
   RemoteModel,
   RemoteSessionState,
+  RemoteSessionUsage,
   RemoteSkill,
   SessionFileListing,
   StreamEvent,
@@ -65,14 +66,18 @@ export function useConversationController({
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
+  // Session token usage + amount, refreshed by every get_state read (open,
+  // run settle, reconnect). Null until the first read for this session.
+  const [sessionUsage, setSessionUsage] = useState<RemoteSessionUsage | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
   const settingsRevision = useRef(0);
 
-  const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel">) => {
+  const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel" | "usage">) => {
     if (!sessionId || sessionId !== selectedRef.current) return;
     settingsRevision.current += 1;
     if (typeof state.model === "string") setModelId(state.model);
     if (state.thinkingLevel !== undefined) setThinkingLevelState(state.thinkingLevel);
+    if (state.usage !== undefined) setSessionUsage(state.usage ?? null);
   }, [selectedRef]);
 
   const handleSessionSettingsEvent = useCallback((event: StreamEvent, sessionId: string) => {
@@ -119,6 +124,9 @@ export function useConversationController({
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.thinkingLevel ?? "off");
+        // A conversation opened from the list shows its running amount right
+        // away, before any stream event arrives.
+        setSessionUsage(state.usage ?? null);
       } catch (nextError) {
         if (isCurrent()) recordError(nextError);
       } finally {
@@ -366,6 +374,7 @@ export function useConversationController({
   return {
     modelId,
     thinkingLevel,
+    sessionUsage,
     applySessionSettings,
     handleSessionSettingsEvent,
     openingSession,

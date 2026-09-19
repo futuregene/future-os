@@ -41,7 +41,23 @@ pub struct SessionUsage {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_write_tokens: i64,
+    /// Amount this session has spent (¥): the provider's own billing when it
+    /// reports one (the Future platform's `credit_cost`), else the sum of the
+    /// per-category estimates below.
     pub cost_cny: f64,
+    /// Per-category estimates from the resolved model's per-1M-token prices, so
+    /// a client can show where the amount came from. All zero for a model with
+    /// no prices on file — a client must then show tokens only, never a
+    /// fabricated ¥0 breakdown, and must not assume these sum to `cost_cny` for
+    /// a provider that bills itself.
+    #[serde(default)]
+    pub cost_input_cny: f64,
+    #[serde(default)]
+    pub cost_output_cny: f64,
+    #[serde(default)]
+    pub cost_cache_read_cny: f64,
+    #[serde(default)]
+    pub cost_cache_write_cny: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -139,6 +155,13 @@ pub fn session_metadata(value: &Value) -> Value {
             .remove("total_cost")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0),
+        // The per-category split is derived live from the resolved model's
+        // prices (get_state), not journalled: a replay prices tokens at today's
+        // rates rather than freezing the rate a run was billed at.
+        cost_input_cny: 0.0,
+        cost_output_cny: 0.0,
+        cost_cache_read_cny: 0.0,
+        cost_cache_write_cny: 0.0,
     };
     for (old, new) in [
         ("session_name", "sessionName"),

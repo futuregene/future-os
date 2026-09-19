@@ -41,8 +41,9 @@ import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
 import { RenameModal } from "./components/RenameModal";
+import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
-import { COMPOSER_FADE_CLEARANCE } from "./utils";
+import { COMPOSER_FADE_CLEARANCE, formatCostCny } from "./utils";
 import { newestFirst } from "./timelineListModel";
 
 const SYNC_NOTICE_MIN_MS = 750;
@@ -106,6 +107,10 @@ export function ChatScreen() {
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [filesSession, setFilesSession] = useState<string | null>(null);
+  // The amount in the top bar opens the conversation's account book. Renaming
+  // lives inside that sheet (next to the title it edits) rather than in the
+  // top bar, which keeps the bar to a single row of controls.
+  const [usageOpen, setUsageOpen] = useState(false);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
   const filesOpen = !remote.draft && filesSession === conversationKey;
   const goBack = useCallback(() => {
@@ -391,9 +396,13 @@ export function ChatScreen() {
             contextLabel={contextLabel}
             draft={remote.draft}
             backLabel={t("common.back")}
-            renameLabel={t("chat.rename")}
+            usageLabel={t("chat.usageOpen")}
+            usageText={formatCostCny(remote.sessionUsage?.costCny ?? 0)}
             onBack={goBack}
-            onRename={rename.openRename}
+            onUsage={() => {
+              Keyboard.dismiss();
+              setUsageOpen(true);
+            }}
             filesLabel={t("files.title")}
             filesOpen={filesOpen}
             onFiles={() => {
@@ -659,6 +668,20 @@ export function ChatScreen() {
             selector={selector}
             setSelector={setSelector}
             remote={remote}
+            t={t}
+          />
+
+          <SessionUsageSheet
+            title={title}
+            usage={remote.sessionUsage}
+            visible={usageOpen}
+            onClose={() => setUsageOpen(false)}
+            onRename={() => {
+              // The rename modal takes over the screen; leaving the sheet open
+              // behind it would stack two overlays over the transcript.
+              setUsageOpen(false);
+              rename.openRename();
+            }}
             t={t}
           />
 

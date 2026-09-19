@@ -361,6 +361,12 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                             context_window: model.context_window,
                             max_tokens: model.max_tokens,
                             reasoning: model.reasoning.unwrap_or(true),
+                            cost: crate::config::providers::ModelCostSpec {
+                                input: model.cost_input,
+                                output: model.cost_output,
+                                cache_read: model.cost_cache_read,
+                                cache_write: model.cost_cache_write,
+                            },
                         })
                         .collect(),
                     replace_models: config.replace_models,
@@ -814,6 +820,7 @@ mod tests {
                     context_window: 128000,
                     max_tokens: 16384,
                     reasoning: Some(false),
+                    ..Default::default()
                 }],
                 replace_models: true,
                 create_only: false,
@@ -862,6 +869,7 @@ mod tests {
                             context_window: 128000,
                             max_tokens: 16384,
                             reasoning: configured,
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }),

@@ -496,6 +496,30 @@ fn get_state_internal(
         0.0
     };
 
+    // Per-category split of the amount, priced with the model's per-1M-token
+    // rates (the same rates the estimate above uses). This is always derived —
+    // a provider that bills itself reports one `credit_cost` number with no
+    // breakdown, so this is an estimate of where the money went, not a
+    // re-labelling of the provider's invoice. All-zero rates (an unpriced
+    // model) leave every figure at 0 so clients can show tokens only.
+    let breakdown = registry
+        .resolve(&sess.model)
+        .map(|model_config| {
+            let per_million = |tokens: i64, rate: f64| (tokens.max(0) as f64 / 1_000_000.0) * rate;
+            let cost = &model_config.cost;
+            // `tokens_in` already includes the cached subset; bill the
+            // non-cached remainder at the input rate so the categories do not
+            // double-count (same rule as `Cost::estimate`).
+            let uncached_in = tokens_in.saturating_sub(cache_r).saturating_sub(cache_w);
+            [
+                per_million(uncached_in, cost.input),
+                per_million(tokens_out, cost.output),
+                per_million(cache_r, cost.cache_read),
+                per_million(cache_w, cost.cache_write),
+            ]
+        })
+        .unwrap_or([0.0; 4]);
+
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
     // Query count: number of user messages (prompts and follow-ups).
@@ -651,6 +675,10 @@ fn get_state_internal(
             cache_read_tokens: cache_r,
             cache_write_tokens: cache_w,
             cost_cny: total_cost,
+            cost_input_cny: breakdown[0],
+            cost_output_cny: breakdown[1],
+            cost_cache_read_cny: breakdown[2],
+            cost_cache_write_cny: breakdown[3],
         },
         permission_level: sess.permission_level.clone(),
         parent_session_id: if parent_session_id.is_empty() {
@@ -1472,6 +1500,16 @@ mod tests {
             .read()
             .tokens_in
             .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
+        // 1M prompt tokens with 200k served from cache: input 1.0/M, cache
+        // read 0.5/M → 0.8 + 0.1 (see the per-category assertions below).
+        session
+            .read()
+            .tokens_cache_r
+            .store(200_000, std::sync::atomic::Ordering::Relaxed);
+        session
+            .read()
+            .tokens_out
+            .store(100_000, std::sync::atomic::Ordering::Relaxed);
 
         let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
         assert_eq!(value["activeRun"]["runId"], "run-live");
@@ -1479,6 +1517,15 @@ mod tests {
         // deepseek-chat is in the catalog with a non-zero price, so the
         // estimate replaces the (zero) API cost.
         assert!(value["usage"]["costCny"].as_f64().unwrap() > 0.0);
+        // The per-category split bills the non-cached input remainder at the
+        // input rate (only `input` is priced on this fixture model), so cached
+        // tokens never double-count and unpriced categories stay at 0.
+        let usage = &value["usage"];
+        let price = |field: &str| usage[field].as_f64().unwrap();
+        assert_eq!(price("costInputCny"), 0.8);
+        assert_eq!(price("costOutputCny"), 0.0);
+        assert_eq!(price("costCacheReadCny"), 0.0);
+        assert_eq!(price("costCacheWriteCny"), 0.0);
     }
 
     #[tokio::test(flavor = "current_thread")]
