@@ -141,6 +141,45 @@ export const threads: MockThread[] = [
 /** The conversation rendered in the chat screenshots. */
 export const MAIN_THREAD_ID = "th_review";
 
+/**
+ * Session-level token usage + amount for the conversation the screenshots open
+ * on. The per-category figures are the agent's estimate from the model's
+ * per-1M-token rates (input 4 / output 16 / cache read 0.4 / cache write 5 CNY),
+ * billing only the non-cached input remainder; the total is what the provider
+ * actually charged. So the rows are an estimate and sum to it here because this
+ * demo model reports no billing of its own — the token counts are chosen so
+ * every row is exact at the four decimals the dialog shows, and they add up to
+ * the total rather than looking like an off-by-rounding bug.
+ */
+export const sessionUsage = {
+  inputTokens: 600_050,
+  outputTokens: 9_825,
+  cacheReadTokens: 412_750,
+  cacheWriteTokens: 18_900,
+  costCny: 1.0904,
+  costInputCny: 0.6736,
+  costOutputCny: 0.1572,
+  costCacheReadCny: 0.1651,
+  costCacheWriteCny: 0.0945,
+};
+
+/**
+ * The honest degraded case: a model with no prices on file. The agent reports
+ * zeros per category, so the client shows tokens only and must not invent a
+ * ¥0 breakdown — the billed total is still a real figure.
+ */
+export const unpricedSessionUsage = {
+  inputTokens: 84_600,
+  outputTokens: 2_140,
+  cacheReadTokens: 51_300,
+  cacheWriteTokens: 0,
+  costCny: 0.32,
+  costInputCny: 0,
+  costOutputCny: 0,
+  costCacheReadCny: 0,
+  costCacheWriteCny: 0,
+};
+
 export interface MockBlock {
   kind: string;
   text?: string;
@@ -506,7 +545,20 @@ export const providersView = {
       baseUrl: "http://10.0.12.7:8000/v1",
       hasApiKey: true,
       models: [
-        { id: "qwen3-32b", name: "Qwen3 32B", supportsImages: false, reasoning: true, contextWindow: 32_768, maxTokens: 4_096 },
+        {
+          id: "qwen3-32b",
+          name: "Qwen3 32B",
+          supportsImages: false,
+          reasoning: true,
+          contextWindow: 32_768,
+          maxTokens: 4_096,
+          // Filled in so the edit form shows the price fields populated. The
+          // rates are the ones the demo session's breakdown is priced with.
+          inputCost: 4,
+          outputCost: 16,
+          cacheReadCost: 0.4,
+          cacheWriteCost: 5,
+        },
       ],
     },
   ],

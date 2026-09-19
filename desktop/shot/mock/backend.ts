@@ -20,9 +20,11 @@ import {
   providersView,
   reviewFiles,
   runs,
+  sessionUsage,
   threads,
   toolCalls,
   toolOutputs,
+  unpricedSessionUsage,
   workspaceFiles,
   workspaces,
 } from "./data";
@@ -84,6 +86,13 @@ const handlers: Record<string, (args: any) => unknown> = {
   get_future_environment: () => ({ environment: "production", platformUrl: "https://api.future-os.cn" }),
   set_future_environment: () => ({ environment: "production", platformUrl: "https://api.future-os.cn" }),
   probe_sandbox: () => ({ available: true, tier: "sandbox", platform: "macos" }),
+  // The desktop gates all account/provider work behind this handshake; without
+  // it the app never leaves its splash ("请稍候").
+  get_agent_status: () => ({
+    phase: "ready",
+    desktopVersion: buildInfo.version,
+    agentVersion: buildInfo.version,
+  }),
   list_streaming_thread_ids: () => [],
   check_app_update: () => ({ available: false, version: null, notes: null }),
   get_skill_guide: () => ({
@@ -165,6 +174,9 @@ const handlers: Record<string, (args: any) => unknown> = {
       isStreaming: false,
       isCompacting: false,
       activeRun: null,
+      // The chat-mode conversations stand in for a model with no prices on
+      // file, so the usage dialog's tokens-only fallback is capturable.
+      usage: target.mode === "chat" ? unpricedSessionUsage : sessionUsage,
     };
   },
   reconcile_thread_workspace: () => null,

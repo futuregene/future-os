@@ -37,7 +37,9 @@ import {
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
+  demoSessionUsage,
   demoSkills,
+  demoUnpricedSessionUsage,
   demoWorkspaces,
   sessions,
 } from "./data";
@@ -168,6 +170,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // Composer settings
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "medium",
+    // The amount in the top bar, refreshed by every state read in the app.
+    sessionUsage: selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage,
     approvalTier: "off",
     sandboxAvailable: true,
     busy: false,
