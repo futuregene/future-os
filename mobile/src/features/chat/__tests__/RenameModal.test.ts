@@ -1,11 +1,9 @@
 import { createElement } from "react";
 import { StyleSheet, Text, TextInput } from "react-native";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
 import { RenameModal } from "../components/RenameModal";
-
-jest.mock("lucide-react-native", () => ({ Info: "Info", Sparkles: "Sparkles" }));
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -18,8 +16,10 @@ const submitRename = jest.fn(async () => {});
 const onClose = jest.fn();
 const onGenerate = jest.fn<Promise<string>, []>();
 const props = { renameOpen: true, renameValue: "Original", generationKey: "s1", setRenameValue, submitRename, onClose, onGenerate, t };
-const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)
-  ?? tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
+// The explanation lives in the same block as the generate action, under it.
+const hintsIn = (root: ReactTestInstance) =>
+  root.findAllByType(Text).map(node => node.props.children).filter(child => child === "chat.generateTitleHint");
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -34,25 +34,20 @@ test("tints the original Android input background and draws the border on a sepa
   expect(style.borderWidth).toBeUndefined();
   expect(style.borderRadius).toBeUndefined();
   expect(style.backgroundColor).toBeUndefined();
-  expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ borderWidth: 1, flex: 1, minWidth: 0 });
+  expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ borderWidth: 1 });
 });
 
-test("generation stays beside the input and its explanation is hidden until requested", () => {
-  const input = tree.root.findByType(TextInput);
-  expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
+test("generation is a full-width action with its explanation always shown below it", () => {
   const generate = button("chat.generateTitle");
-  expect(StyleSheet.flatten(generate.props.style({ pressed: false }))).toMatchObject({ width: 44, height: 44 });
-  expect(generate.parent!.findAllByType(TextInput)).toHaveLength(1);
-  const hints = () => tree.root.findAllByType(Text).filter(node => node.props.children === "chat.generateTitleHint");
-  expect(hints()).toHaveLength(0);
-  act(() => button("chat.generateTitleHelp").props.onPress());
-  expect(hints()).toHaveLength(1);
+  expect(generate.props.variant).toBe("secondary");
+  expect(generate.props.disabled).toBe(false);
+  expect(hintsIn(tree.root)).toHaveLength(1);
+  expect(hintsIn(generate.parent!)).toHaveLength(1);
+  expect(generate.parent!.findAllByType(TextInput)).toHaveLength(0);
   expect(onGenerate).not.toHaveBeenCalled();
-  act(() => tree.update(createElement(RenameModal, { ...props, generationKey: "s2" })));
-  expect(hints()).toHaveLength(0);
   act(() => tree.update(createElement(RenameModal, { ...props, onGenerate: undefined })));
-  expect(tree.root.findAll(node => node.props.accessibilityLabel === "chat.generateTitleHelp")).toHaveLength(0);
-  expect(tree.root.findAll(node => node.props.accessibilityLabel === "chat.generateTitle")).toHaveLength(0);
+  expect(hintsIn(tree.root)).toHaveLength(0);
+  expect(tree.root.findAllByType(Button).some(node => node.props.label === "chat.generateTitle")).toBe(false);
 });
 
 test("opening does not generate; click fills the draft without saving", async () => {
