@@ -1,10 +1,10 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { ScrollView, SectionList, StyleSheet, Text } from "react-native";
+import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsScreen } from "../SettingsScreen";
 import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
-import type { DesktopSettings, InstalledSkill } from "../../../remote/types";
+import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
@@ -24,6 +24,7 @@ const mockRemote = {
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
   listSettingsModels: jest.fn(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]),
+  listProviders: jest.fn(async () => providers),
   listInstalledSkills: jest.fn(async () => [...installed]),
   listAvailableSkills: jest.fn(async () => [{ id: "skill", name: "Skill", description: "", latestVersion: "1.2.0" }, { id: "new", name: "New", description: "", latestVersion: "1.0" }]),
   installSkill: jest.fn(async () => {}),
@@ -31,15 +32,26 @@ const mockRemote = {
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
-jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronRight: "ChevronRight" }));
+jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { language: "en" } }) }));
 
 let tree: ReactTestRenderer;
+let providers: ProvidersView;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const toggle = (label: string) => tree.root.findAllByType(SettingsSwitch).find(node => node.props.label === label)!;
+const input = (label: string) => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
+const type = async (label: string, text: string) => act(async () => input(label).props.onChangeText(text));
+/** Provider headings on the model-visibility page, in render order (the
+ * Pressable and the view it renders both carry the props, so de-duplicate). */
+const headings = () => [...new Set(tree.root
+  .findAll(node => node.props.accessibilityRole === "button" && node.props.accessibilityState?.expanded !== undefined)
+  .map(node => node.props.accessibilityLabel as string))];
+/** A provider heading: the pressable that folds its models. */
+const group = (title: string) => tree.root.findAll(node => node.props.accessibilityLabel === title && node.props.accessibilityRole === "button")[0]!;
+const modelSwitches = () => tree.root.findAllByType(SettingsSwitch).filter(node => node.props.description === "same");
 async function openPreferences() { await act(async () => link("desktopSettings.preferences").props.onPress()); }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
@@ -52,6 +64,15 @@ beforeEach(async () => {
   mockRemote.desktopSettingsRevision = 0;
   mockRemote.skillsRevision = 0;
   mockRemote.getDesktopSettings.mockImplementation(async () => ({ ...stored }));
+  mockRemote.listProviders.mockImplementation(async () => providers);
+  providers = {
+    // `one` has no key: it cannot be called, so it is not offered here.
+    builtin: [
+      { id: "one", name: "One", baseUrl: "https://one.example.com/v1", hasApiKey: false, modelCount: 1, requiresBaseUrl: false },
+      { id: "two", name: "Two", baseUrl: "https://two.example.com/v1", hasApiKey: true, modelCount: 1, requiresBaseUrl: false },
+    ],
+    custom: [],
+  };
   await act(async () => { tree = create(createElement(SettingsScreen, props)); });
 });
 afterEach(() => act(() => tree.unmount()));
@@ -92,14 +113,52 @@ test("offline and old desktops cannot write new preferences", async () => {
   expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
 });
 
-test("visibility uses a separate virtualized all-models page and provider-qualified ids", async () => {
+test("visibility groups models under a foldable heading and only offers callable providers", async () => {
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
   await act(async () => link("desktopSettings.models").props.onPress());
   expect(tree.root.findAllByType(SectionList)).toHaveLength(1);
   expect(mockRemote.listSettingsModels).toHaveBeenCalled();
-  const models = tree.root.findAllByType(SettingsSwitch).filter(node => node.props.description === "same");
-  expect(models.map(node => node.props.value)).toEqual([false, true]);
-  await act(async () => models[0]!.props.onChange(true));
-  expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ hiddenModels: ["other/hidden"] });
+  expect(mockRemote.listProviders).toHaveBeenCalled();
+  // The keyless `one` cannot be called, so it is not offered; `two` is a heading
+  // carrying the desktop's provider name, opened so its models are listed.
+  expect(headings()).toEqual(["Two"]);
+  expect(group("Two").props.accessibilityState.expanded).toBe(true);
+  expect(modelSwitches().map(node => node.props.value)).toEqual([true]);
+
+  await act(async () => group("Two").props.onPress());
+  expect(group("Two").props.accessibilityState.expanded).toBe(false);
+  expect(modelSwitches()).toHaveLength(0);
+  // The bulk switch stays on the heading and hides every model it covers.
+  const bulk = tree.root.findAllByType(Switch).find(node => node.props.accessibilityLabel === "desktopSettings.toggleProvider: Two")!;
+  await act(async () => bulk.props.onValueChange(false));
+  expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ hiddenModels: ["one/same", "other/hidden", "two/same"] });
+});
+
+test("a search opens matching groups, and a keyless desktop explains the empty list", async () => {
+  // No provider-management capability: the desktop cannot report credentials,
+  // so every provider it reports stays listed rather than being hidden blind.
+  await act(async () => link("desktopSettings.models").props.onPress());
+  expect(headings()).toEqual(["one", "two"]);
+  await type("desktopSettings.searchModels", "one");
+  // Only matching providers are left, and a match is always shown: folding is
+  // suspended while a query is active.
+  expect(headings()).toEqual(["one"]);
+  expect(group("one").props.accessibilityState).toMatchObject({ disabled: true, expanded: true });
+  expect(modelSwitches()).toHaveLength(1);
+  await type("desktopSettings.searchModels", "nothing-matches");
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noModels");
+
+  await type("desktopSettings.searchModels", "");
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  mockRemote.listProviders.mockImplementation(async () => ({
+    ...providers,
+    builtin: providers.builtin.map(provider => ({ ...provider, hasApiKey: false })),
+  }));
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await flush();
+  expect(headings()).toEqual([]);
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noUsableProviders");
 });
 
 test("skill operations target desktop and removal needs confirmation", async () => {
