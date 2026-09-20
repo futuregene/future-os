@@ -713,12 +713,39 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
     { name: "draft-v3.md", path: `${HOME}/Research/dopamine-decision/draft-v3.md`, isDir: false, size: 24_800, modified: now - 22 * minute },
     { name: "README.md", path: `${HOME}/Research/dopamine-decision/README.md`, isDir: false, size: 1_240, modified: now - 5 * hour },
   ],
+  [`${HOME}/Research/dopamine-decision/figures`]: [
+    { name: "plot-effect-size.py", path: `${HOME}/Research/dopamine-decision/figures/plot-effect-size.py`, isDir: false, size: 486, modified: now - 40 * minute },
+  ],
   [`${HOME}/Research/dopamine-decision/notes`]: [
     { name: "compare.md", path: `${HOME}/Research/dopamine-decision/notes/compare.md`, isDir: false, size: 4_180, modified: now - 3 * minute },
     { name: "dreher-summary.md", path: `${HOME}/Research/dopamine-decision/notes/dreher-summary.md`, isDir: false, size: 2_960, modified: now - 2 * hour },
     { name: "frank-summary.md", path: `${HOME}/Research/dopamine-decision/notes/frank-summary.md`, isDir: false, size: 3_120, modified: now - 2 * hour },
     { name: "effect-size.png", path: `${HOME}/Research/dopamine-decision/notes/effect-size.png`, isDir: false, size: 62_400, modified: now - 4 * minute },
   ],
+};
+
+/**
+ * Source the text preview shows for a demo file, keyed by file name. Files
+ * without an entry fall back to the markdown sample. `plot-effect-size.py` is
+ * the script the agent's reply quotes, so the file preview and the chat code
+ * block show the same code.
+ */
+export const demoFileContents: Record<string, string> = {
+  "plot-effect-size.py": `# 复现图 3b 的效应量对比
+import matplotlib.pyplot as plt
+import numpy as np
+
+studies = ["Frank 2024", "Dreher 2025"]
+effects = [0.41, -0.33]
+
+fig, ax = plt.subplots(figsize=(6, 3))
+ax.barh(studies, effects, color=["#4f7cff", "#e2685f"])
+ax.axvline(0, color="#888", lw=1, label="no effect")
+ax.set_xlabel("效应量 r")
+ax.legend(loc="lower right", frameon=False)
+fig.tight_layout()
+fig.savefig("figures/effect-size.pdf", dpi=300)  # 论文里用的是矢量图
+`,
 };
 
 export const reviewFiles = [

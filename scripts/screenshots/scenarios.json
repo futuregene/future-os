@@ -195,6 +195,34 @@
           }
         ]
       },
+      "code-preview": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开上下文面板"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "figures"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "plot-effect-size.py"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-code-preview.png"
+          }
+        ]
+      },
       "terminal": {
         "url": "http://localhost:5299/shot/?press=meta%2Bj",
         "steps": [

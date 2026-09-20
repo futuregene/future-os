@@ -4,17 +4,17 @@ import { bundledLanguagesInfo, createHighlighter } from "shiki";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
 
-interface HighlightedToken {
+export interface HighlightedToken {
   content: string;
   color: string;
   fontStyle?: number;
 }
 
-interface HighlightedLine {
+export interface HighlightedLine {
   tokens: HighlightedToken[];
 }
 
-interface HighlightResult {
+export interface HighlightResult {
   lines: HighlightedLine[];
   fgColor: string;
 }
@@ -130,7 +130,14 @@ function normalizeLanguage(language: string | undefined): BundledLanguage | null
 // skipped (tokenizing them once is cheaper than pinning the cache).
 const highlightCache = new Map<string, HighlightResult>();
 const HIGHLIGHT_CACHE_MAX = 400;
-const HIGHLIGHT_CACHE_MAX_CODE_LENGTH = 100_000;
+
+/**
+ * The largest source worth tokenizing: past this, `highlight` still works but
+ * the result is not cached. That single bound is why full-screen previews gate
+ * on it too — above it a 200KB source costs ~200ms of tokenizing plus tens of
+ * thousands of spans, and the preview shows plain monospace instead.
+ */
+export const MAX_HIGHLIGHTABLE_CODE_LENGTH = 100_000;
 
 export function useCodeHighlighter() {
   // `version` bumps when the highlighter becomes ready or a grammar loads.
@@ -194,7 +201,7 @@ export function useCodeHighlighter() {
         }));
 
         const result: HighlightResult = { lines, fgColor };
-        if (code.length <= HIGHLIGHT_CACHE_MAX_CODE_LENGTH) {
+        if (code.length <= MAX_HIGHLIGHTABLE_CODE_LENGTH) {
           if (highlightCache.size >= HIGHLIGHT_CACHE_MAX) {
             const oldest = highlightCache.keys().next().value;
             if (oldest !== undefined)

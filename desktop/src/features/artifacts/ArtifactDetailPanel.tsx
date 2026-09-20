@@ -21,8 +21,10 @@ import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { pathBasename } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
-import { isTextReadablePath, previewKindForPath } from "../filepreview/previewKind";
+import { codeLanguageForPath, isTextReadablePath, previewKindForPath } from "../filepreview/previewKind";
+import { HighlightedCode } from "../markdown/HighlightedCode";
 import { MarkdownContent } from "../markdown/MarkdownContent";
+import { MAX_HIGHLIGHTABLE_CODE_LENGTH, useCodeHighlighter } from "../markdown/useCodeHighlighter";
 
 // pdfjs-dist is ~500KB of the main bundle's eager parse cost while PDF preview
 // is a rare path — split it out and load it on first use.
@@ -87,6 +89,27 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
     && !imageSrc
     && !shouldShowPdfPreview
     && !shouldLoadTextPreview;
+
+  // The inline text preview colors code the same way the fullscreen overlay
+  // does — otherwise enlarging a `.rs` artifact would change how it reads.
+  // Bounded like every other highlight call site; past the bound (or without a
+  // grammar) the source renders plain.
+  const inlinePreviewLanguage = useMemo(
+    () => (isMarkdown ? null : codeLanguageForPath(artifact.path ?? "")),
+    [artifact.path, isMarkdown],
+  );
+  const { highlight } = useCodeHighlighter();
+  const inlinePreviewContent = filePreview?.content;
+  const inlinePreviewHighlighted = useMemo(() => {
+    if (
+      !inlinePreviewLanguage
+      || inlinePreviewContent === undefined
+      || inlinePreviewContent.length > MAX_HIGHLIGHTABLE_CODE_LENGTH
+    ) {
+      return null;
+    }
+    return highlight(inlinePreviewContent, inlinePreviewLanguage);
+  }, [highlight, inlinePreviewContent, inlinePreviewLanguage]);
 
   const showUnsupportedPreview = Boolean(
     artifact.path
@@ -230,8 +253,15 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                       </div>
                     )
                   : (
-                      <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
-                        <code>{filePreview.content}</code>
+                      <pre
+                        className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft"
+                        style={inlinePreviewHighlighted ? { color: inlinePreviewHighlighted.fgColor } : undefined}
+                      >
+                        <code>
+                          {inlinePreviewHighlighted
+                            ? <HighlightedCode code={filePreview.content} highlighted={inlinePreviewHighlighted} />
+                            : filePreview.content}
+                        </code>
                       </pre>
                     )}
                 <div className="mt-1 text-[11px] text-ink-muted">

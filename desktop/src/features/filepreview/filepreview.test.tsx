@@ -1,6 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import { bundledLanguagesInfo } from "shiki";
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
@@ -8,7 +9,7 @@ import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
 import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { imageMimeForPath, isTextReadablePath, previewKindForPath } from "./previewKind";
+import { codeLanguageForPath, imageMimeForPath, isTextReadablePath, LANGUAGE_BY_EXTENSION, previewKindForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
 import { TextPreview } from "./TextPreview";
 import {
@@ -18,6 +19,20 @@ import {
 } from "./usePreviewLoadingGate";
 
 const invokeMock = vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(() => Promise.resolve(null));
+
+// Fake the highlighter so text-preview assertions are deterministic: real Shiki
+// tokenizes asynchronously and would only ever be ready after the assertions.
+// The real module is kept for `MAX_HIGHLIGHTABLE_CODE_LENGTH`, so the bound the
+// previews gate on stays the production one.
+let highlighterState: {
+  highlight: (code: string, language?: string) => unknown;
+  isLoaded: boolean;
+};
+
+vi.mock("../markdown/useCodeHighlighter", async importOriginal => ({
+  ...await importOriginal<typeof import("../markdown/useCodeHighlighter")>(),
+  useCodeHighlighter: () => highlighterState,
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset:${path}`,
@@ -29,6 +44,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 beforeEach(() => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
+  highlighterState = { highlight: () => null, isLoaded: false };
 });
 
 afterEach(() => {
@@ -82,6 +98,32 @@ describe("previewKind", () => {
     expect(isTextReadablePath("/a/b.json")).toBe(true);
     expect(isTextReadablePath("/a/b.pdf")).toBe(false);
     expect(isTextReadablePath("/a/b.png")).toBe(false);
+  });
+
+  it("maps extensions to a syntax grammar", () => {
+    expect(codeLanguageForPath("/w/main.rs")).toBe("rust");
+    expect(codeLanguageForPath("/w/App.TSX")).toBe("tsx");
+    expect(codeLanguageForPath("C:\\w\\boot.asm")).toBe("asm");
+    expect(codeLanguageForPath("/w/Cargo.toml")).toBe("toml");
+    expect(codeLanguageForPath("/w/deploy.sh")).toBe("shellscript");
+    expect(codeLanguageForPath("/w/main.tf")).toBe("hcl");
+    expect(codeLanguageForPath("/w/solver.m")).toBe("matlab");
+    expect(codeLanguageForPath("/w/AppDelegate.mm")).toBe("objective-cpp");
+    expect(codeLanguageForPath("/w/legacy.f")).toBe("fortran-fixed-form");
+    expect(codeLanguageForPath("/w/modern.f90")).toBe("fortran-free-form");
+    expect(codeLanguageForPath("/w/rows.jsonl")).toBe("jsonl");
+    // Reads as text but has no grammar: the preview stays plain.
+    expect(codeLanguageForPath("/w/notes.txt")).toBeNull();
+    expect(codeLanguageForPath("/w/wire.h5")).toBeNull();
+    expect(codeLanguageForPath("/w/.bashrc")).toBeNull();
+    expect(codeLanguageForPath("/w/README")).toBeNull();
+  });
+
+  it("maps every extension to a grammar the highlighter can actually load", () => {
+    // A typo'd id silently degrades to plain text, which no screenshot would
+    // flag; Shiki's registry is the authority the highlighter itself uses.
+    const known = new Set(bundledLanguagesInfo.flatMap(language => [language.id, ...(language.aliases ?? [])]));
+    expect(Object.entries(LANGUAGE_BY_EXTENSION).filter(([, language]) => !known.has(language))).toEqual([]);
   });
 
   it("maps extensions to MIME types with a fallback", () => {
@@ -294,6 +336,65 @@ describe("textPreview", () => {
     // Nothing was rendered for the failed read.
     expect(binary.container.querySelector("pre")).toBeNull();
     binary.cleanup();
+  });
+
+  it("renders the source plain while the highlighter or grammar is still loading", async () => {
+    const source = "fn main() {}\n";
+    highlighterState = { highlight: () => null, isLoaded: false };
+    invokeMock.mockResolvedValue({ content: source, size: source.length, truncated: false, validUtf8: true });
+    const { container, cleanup } = mount(createElement(TextPreview, { path: "/w/main.rs", onError: vi.fn() }));
+    await flushAsync();
+    const pre = container.querySelector("pre")!;
+    expect(pre.textContent).toBe(source);
+    expect(pre.querySelector("span")).toBeNull();
+    cleanup();
+  });
+
+  it("colors code with the grammar for its extension, without altering the source", async () => {
+    // CRLF on purpose: Shiki's token stream drops line separators, so this is
+    // what proves the preview re-inserts the source's own ones.
+    const source = "fn main() {\r\n    let x = 1;\r\n}\r\n";
+    const highlight = vi.fn(() => ({
+      fgColor: "#24292e",
+      lines: source.split("\r\n").map(content => ({
+        tokens: content ? [{ content, color: "#d73a49", fontStyle: 1 }] : [],
+      })),
+    }));
+    highlighterState = { highlight, isLoaded: true };
+    invokeMock.mockResolvedValue({ content: source, size: source.length, truncated: false, validUtf8: true });
+    const { container, cleanup } = mount(createElement(TextPreview, { path: "/w/main.rs", onError: vi.fn() }));
+    await flushAsync();
+    expect(highlight).toHaveBeenCalledWith(source, "rust");
+    const pre = container.querySelector("pre") as HTMLPreElement;
+    expect(pre.textContent).toBe(source);
+    // jsdom normalizes inline hex colors to `rgb(...)`.
+    const token = pre.querySelector("span > span") as HTMLSpanElement;
+    expect(token.style.color).toBe("rgb(215, 58, 73)");
+    expect(token.style.fontStyle).toBe("italic");
+    expect(pre.style.color).toBe("rgb(36, 41, 46)");
+    cleanup();
+  });
+
+  it.each([
+    ["no grammar", "/w/notes.txt"],
+    ["source past the highlight bound", "/w/huge.py"],
+  ])("stays plain monospace with %s", async (_case, path) => {
+    const content = path.endsWith(".py") ? "#".repeat(100_001) : "just words";
+    const highlight = vi.fn(() => ({
+      fgColor: "#24292e",
+      lines: [{ tokens: [{ content, color: "#111" }] }],
+    }));
+    highlighterState = { highlight, isLoaded: true };
+    invokeMock.mockResolvedValue({ content, size: content.length, truncated: true, validUtf8: true });
+    const { container, cleanup } = mount(createElement(TextPreview, { path, onError: vi.fn() }));
+    await flushAsync();
+    expect(highlight).not.toHaveBeenCalled();
+    const pre = container.querySelector("pre")!;
+    expect(pre.textContent).toBe(content);
+    // Unchanged styling: the muted text class, no per-token spans.
+    expect(pre.className).toContain("text-ink-soft");
+    expect(pre.querySelector("span")).toBeNull();
+    cleanup();
   });
 
   it("shows a loading notice while a slow read is in flight", async () => {
