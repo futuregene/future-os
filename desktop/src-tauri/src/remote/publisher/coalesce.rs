@@ -201,14 +201,19 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
 /// comes from the newest source event, so the run identity, cursor and event id
 /// stay consistent with the index the merged event now occupies.
 fn merged_payload(event: &EventPublish, text: &str, covered: usize) -> Option<Vec<u8>> {
-    let mut body: Value = serde_json::from_slice(&event.payload).ok()?;
-    let raw = body.get("data")?.as_str()?;
-    let mut data: Value = serde_json::from_str(raw).ok()?;
+    let body: Value = serde_json::from_slice(&event.payload).ok()?;
+    let raw = body.get("data")?.as_str()?.to_owned();
+    let mut data: Value = serde_json::from_str(&raw).ok()?;
     let object = data.as_object_mut()?;
     object.insert("text".into(), Value::String(text.to_owned()));
-    // The client accepts an index jump only when it is told how many source
-    // events this one stands for.
-    object.insert("coalescedCount".into(), Value::from(covered));
+    // The count belongs on the ENVELOPE, next to `idx`: the client reads
+    // `event.coalescedCount` off the decoded event, and a copy inside `data` is
+    // invisible to it. That mistake made every merged event look like a gap —
+    // the client discarded it and re-fetched the same range over reconcile,
+    // which is what the reader sees as a repeatedly flashing sync notice.
+    let mut body = body;
+    body.as_object_mut()?
+        .insert("coalescedCount".into(), Value::from(covered));
     body.as_object_mut()?
         .insert("data".into(), Value::String(data.to_string()));
     serde_json::to_vec(&body).ok()
@@ -282,8 +287,11 @@ mod tests {
         // jump from a lost range.
         assert_eq!(idx_of(&out[0]), 3);
         let body: Value = serde_json::from_slice(&out[0].payload).unwrap();
+        // On the ENVELOPE, beside `idx`: that is where the client reads it, and
+        // a copy inside `data` is invisible to `nextEvent`.
+        assert_eq!(body["coalescedCount"], 4, "count must ride on the envelope");
         let data: Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
-        assert_eq!(data["coalescedCount"], 4);
+        assert_eq!(data["text"], fragments.concat());
         assert_eq!(body["eventId"], "s:r:1:3");
     }
 
@@ -562,7 +570,9 @@ mod tests {
             coalesced_data_bytes += body["data"].as_str().unwrap_or("").len();
             let data: Value =
                 serde_json::from_str(body["data"].as_str().unwrap_or("{}")).unwrap_or(Value::Null);
-            parties += data["coalescedCount"].as_u64().unwrap_or(1) as usize;
+            // The count is envelope metadata; the measurement must read it there
+            // or it under-counts the events each publish stands for.
+            parties += body["coalescedCount"].as_u64().unwrap_or(1) as usize;
             if let Some(text) = data["text"].as_str() {
                 merged_characters += text.chars().count();
             }
