@@ -195,9 +195,18 @@ describe("entry reducer", () => {
     });
   });
 
-  test.each([undefined, "pre_turn", "mid_turn"])(
-    "preserves a reply across an in-turn checkpoint (phase=%s)",
-    phase => {
+  test.each([
+    [2, undefined],
+    [2, "pre_turn"],
+    [2, "mid_turn"],
+    // v3 is the schema the agent writes today; a literal `=== 2` gate here
+    // dropped every entry after an in-turn checkpoint.
+    [3, undefined],
+    [3, "pre_turn"],
+    [3, "mid_turn"],
+  ])(
+    "preserves a reply across an in-turn checkpoint (schema=%s phase=%s)",
+    (schemaVersion, phase) => {
       const entries: HistoryEntry[] = [
         {
           id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r1",
@@ -212,7 +221,7 @@ describe("entry reducer", () => {
         },
         {
           id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
-          checkpoint: { schemaVersion: 2, checkpointId: "cp1", tokensBefore: 903_386, trigger: "automatic", phase },
+          checkpoint: { schemaVersion, checkpointId: "cp1", tokensBefore: 903_386, trigger: "automatic", phase },
         },
         {
           id: "t1", kind: "tool", role: "tool", createdAtMs: 3,
@@ -318,6 +327,20 @@ describe("entry reducer", () => {
       expect(state.items.map(item => item.id)).toEqual(["m_u1", "m_a1", "m_cp1", "m_u2", "m_a2"]);
     },
   );
+
+  test("keeps a v3 manual checkpoint between turns standalone", () => {
+    const state = timelineFromEntries([
+      { id: "u1", kind: "user", role: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "first" }] },
+      { id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, blocks: [{ kind: "text", text: "reply" }] },
+      {
+        id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+        checkpoint: { schemaVersion: 3, checkpointId: "cp1", trigger: "manual", phase: "standalone" },
+      },
+      { id: "u2", kind: "user", role: "user", createdAtMs: 3, blocks: [{ kind: "text", text: "next" }] },
+      { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 4, blocks: [{ kind: "text", text: "next reply" }] },
+    ]);
+    expect(state.items.map(item => item.id)).toEqual(["m_u1", "m_a1", "m_cp1", "m_u2", "m_a2"]);
+  });
 
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([

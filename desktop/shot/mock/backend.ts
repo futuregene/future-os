@@ -13,6 +13,7 @@ import {
   appSettings,
   availableSkills,
   buildInfo,
+  compactResumeEntries,
   entriesByThread,
   HOME,
   installedSkills,
@@ -45,6 +46,15 @@ export function patchSettings(patch: Record<string, unknown>) {
 }
 
 export function entriesForThread(threadId: string): MockEntry[] {
+  // `?compactHistory=1` swaps in the history of a run that compacted mid-turn,
+  // so a capture can assert the reply after the divider survives the durable
+  // projection (the schemaVersion 3 path).
+  if (
+    typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("compactHistory") === "1"
+  ) {
+    return compactResumeEntries;
+  }
   return entriesByThread[threadId] ?? [];
 }
 

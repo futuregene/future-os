@@ -517,6 +517,30 @@
             "shot": "d-compare-baseline.png"
           }
         ]
+      },
+      "compact-resume": {
+        "url": "http://localhost:5299/shot/?compactHistory=1",
+        "note": "Durable history with a schemaVersion 3 mid-turn checkpoint. The reply written after the divider must still be in the transcript: a `=== 2` version gate in the projector treated every newer in-turn checkpoint as an exchange boundary and dropped everything after it.",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "scroll": [
+              0,
+              -760
+            ]
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+          },
+          {
+            "shot": "d-compact-resume.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -693,6 +717,48 @@
           }
         ],
         "note": "Folds the real manual-compaction wire sequence through the real reducer: the divider must appear without leaving the composer on 'generating'."
+      },
+      "compact-resume": {
+        "url": "http://localhost:8099/?compactHistory=1",
+        "note": "Durable history with a schemaVersion 3 mid-turn checkpoint. The reply written after the divider must still be in the transcript: a `=== 2` version gate in the projector treated every newer in-turn checkpoint as an exchange boundary and dropped everything after it.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -700
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+          },
+          {
+            "shot": "m-compact-resume.png"
+          }
+        ]
       },
       "chat": {
         "steps": [
