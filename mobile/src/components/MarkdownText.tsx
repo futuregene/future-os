@@ -12,9 +12,9 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
+import { CodeTokens } from "./CodeTokens";
 import { codePreviewRows } from "./codePreviewRows";
 import { codeTokenRows, highlightCode } from "./codeHighlight";
-import type { CodeToken } from "./codeHighlight";
 import { markdownTableWidths } from "./markdownTableWidths";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -149,12 +149,6 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
   });
 }
 
-function renderCodeTokens(tokens: CodeToken[] | null, fallback: string): ReactNode {
-  return tokens ? tokens.map((token, index) => token.color
-    ? <Text key={index} style={{ color: token.color }}>{token.text}</Text>
-    : token.text) : fallback;
-}
-
 /** Collapsed height of a long block, in wrapped lines. The source chunks bound
  * the mounted characters; this bounds the painted height, which one long CJK
  * paragraph can otherwise blow past. 16 keeps the previous fixed viewport's
@@ -189,10 +183,10 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
         <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
           ellipsizeMode={collapsed ? "tail" : undefined}>
           {row.continuation ? "↪ " : ""}
-          {renderCodeTokens(rowTokens[index] ?? null, row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text)}
+          <CodeTokens fallback={row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text} tokens={rowTokens[index] ?? null} />
         </Text>
       )) : (
-        <Text selectable style={styles.code}>{renderCodeTokens(tokens, code)}</Text>
+        <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>
       )}
       {large ? (
         <Pressable accessibilityRole="button"

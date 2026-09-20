@@ -98,7 +98,8 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".xz": { mimeType: "application/x-xz", route: "external" },
   ".zst": { mimeType: "application/zstd", route: "external" },
 
-  // Code and configuration files read in-app as plain monospace text.
+  // Code and configuration files read in-app as text. The preview renders them
+  // with the grammar for their suffix (`components/codeHighlight.ts`).
   ".asm": { mimeType: "text/plain", route: "text" },
   ".c": { mimeType: "text/plain", route: "text" },
   ".cc": { mimeType: "text/plain", route: "text" },

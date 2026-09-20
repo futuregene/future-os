@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Download, Ellipsis, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,8 @@ import {
 } from "react-native";
 import type { TFunction } from "i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { CodeTokens } from "../../../components/CodeTokens";
+import { codeLanguageForFile, highlightCode } from "../../../components/codeHighlight";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
@@ -38,6 +41,19 @@ export function PreviewModal({
 }) {
   const [menuFor, setMenuFor] = useState<PreviewState | null>(null);
   const [headerHeight, setHeaderHeight] = useState(60);
+  // Highlight here rather than in `useFileDownload`: the plain-text route serves
+  // both code files and prose (`.txt`, `.log`), so only the file name knows
+  // whether this is source. Tokenizing is bounded — `highlightCode` refuses
+  // oversized files and grammars it does not ship — and the fallback is the
+  // untouched source, never mangled text. Recognized code keeps the monospace
+  // metrics even when it is too large to color.
+  const fileName = preview?.attachment.name ?? "";
+  const previewText = preview?.text;
+  const language = useMemo(() => codeLanguageForFile(fileName), [fileName]);
+  const tokens = useMemo(
+    () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
+    [language, previewText],
+  );
   // Do not carry an expanded menu into a new preview or an active download.
   if (menuFor && (menuFor !== preview || activeDownload !== null)) setMenuFor(null);
   const menuOpen = menuFor !== null && menuFor === preview && activeDownload === null;
@@ -118,8 +134,8 @@ export function PreviewModal({
                 {!!preview?.truncated && (
                   <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
                 )}
-                <Text selectable style={styles.previewText}>
-                  {preview?.text ?? ""}
+                <Text selectable style={language ? styles.previewCode : styles.previewText}>
+                  <CodeTokens fallback={preview?.text ?? ""} tokens={tokens} />
                 </Text>
               </ScrollView>
             )}
@@ -161,6 +177,9 @@ export function PreviewModal({
     </Modal>
   );
 }
+
+// Matches the chat's code blocks (`MarkdownText`).
+const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
@@ -209,4 +228,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   previewText: { color: colors.ink, fontSize: 14, lineHeight: 21 },
+  // Code files get the monospace metrics the chat's code blocks use, so columns
+  // line up in the colored spans; prose (`.txt`, `.log`) keeps the proportional
+  // `previewText` it had before.
+  previewCode: { color: colors.ink, fontFamily: monospace, fontSize: 13, lineHeight: 20 },
 });
