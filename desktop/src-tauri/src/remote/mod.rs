@@ -8,7 +8,7 @@
 //! Web/App commands through the GUI persistence path, publishes presence, and
 //! refreshes credentials before expiry.
 
-mod commands;
+pub(crate) mod commands;
 mod diagnostics;
 mod health;
 mod lifecycle;

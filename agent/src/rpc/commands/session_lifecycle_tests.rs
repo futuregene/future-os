@@ -1489,6 +1489,20 @@ fn get_session_entries_handles_empty_tool_and_rich_meta() {
 
 #[test]
 fn fork_inherits_parent_disk_model() {
+    // The fork resolves its model through the registry, and `replacement_model`
+    // needs an available model to fall back to: the on-disk catalog plus a
+    // credential. Supply both instead of inheriting whatever the developer
+    // machine has — a parallel test that redirects HOME process-wide (TestHome
+    // holds that lock) otherwise leaves this one with no usable model and the
+    // unwrap below fails.
+    let home = crate::test_support::TestHome::new();
+    let auth_path = home.auth_path();
+    std::fs::create_dir_all(auth_path.parent().expect("auth dir")).expect("create auth dir");
+    std::fs::write(
+        &auth_path,
+        r#"{"deepseek": {"type": "api_key", "key": "sk-x"}}"#,
+    )
+    .expect("write auth");
     let state = make_app_state();
     let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork me"));
     let entry_id = user.id.clone();

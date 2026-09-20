@@ -317,6 +317,27 @@ export class SyncEngine {
     return this.lanes.get(sessionId)?.timeline?.streaming ?? false;
   }
 
+  /**
+   * Whether a run is already whole on this device.
+   *
+   * `agent_end` is the last event a finished run writes (119 of 119 completed
+   * and cancelled runs), and the cursor only ever advances over contiguous
+   * ranges, so a settled timeline whose prefix is complete holds every event of
+   * that run. Re-reading it from the journal would download what is already
+   * rendered — which a reader sees as the sync notice appearing at the end of
+   * every reply, for no new content.
+   *
+   * False when the terminal never arrived (the timeline still says streaming),
+   * when the prefix is incomplete (a mid-run join), or when the run is unknown —
+   * those are exactly the cases the settle reconcile exists to heal.
+   */
+  runCompleteLocally(sessionId: string, runId: string): boolean {
+    if (!runId) return false;
+    const lane = this.lanes.get(sessionId);
+    if (!lane || lane.timeline?.streaming !== false) return false;
+    return isPrefixComplete(lane.cursor, runId);
+  }
+
   /** Evict inactive cached conversations as a unit (timeline, cursor, queued
    * work and retry). Called on navigation, not every streaming frame. The
    * selected session and optimistic draft are never truncated to meet a cache
@@ -786,7 +807,20 @@ export class SyncEngine {
       }
       const event = op.event;
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
-      const verdict = nextEvent(lane.cursor, event.runId, event.idx);
+      const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
+      if (verdict.kind === "overlap") {
+        // A merged event whose range starts below the high-water: a reconcile
+        // landed while the desktop was still holding its merge window open, so
+        // the merge covers source events this session already applied. Its text
+        // cannot be trimmed (the merge hides where the already-seen head ends),
+        // and appending it wholesale would render that overlap twice — the
+        // reader sees the reply's tail again with a code fence reopened inside
+        // it. Drop the merge and take the range from durable replay, which
+        // carries every source event exactly once.
+        lane.bufferedBytes -= op.bytes;
+        if (event.runId) this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
+        continue;
+      }
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));
@@ -834,7 +868,15 @@ export class SyncEngine {
     }
     // A run settling in this batch may have lost its tail (M11) — reconcile
     // the settled run so the durable journal supersedes the partial replay.
-    if (beforeStreaming && !timeline.streaming && flipRunId) {
+    // Only when it might have: a terminal applied over a contiguous prefix
+    // means the run is already whole here, and re-reading it would show a sync
+    // notice for content that is on screen.
+    if (
+      beforeStreaming &&
+      !timeline.streaming &&
+      flipRunId &&
+      !this.runCompleteLocally(lane.sessionId, flipRunId)
+    ) {
       this.enqueueReplay(lane, { reason: "snapshot-flip", runId: flipRunId });
     }
   }

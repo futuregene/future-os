@@ -21,6 +21,7 @@
 export type CursorEvent =
   | { kind: "apply"; idx: number }
   | { kind: "dup" }
+  | { kind: "overlap"; fromIdx: number }
   | { kind: "gap"; fromIdx: number }
   | { kind: "untracked" };
 
@@ -47,29 +48,55 @@ export function newCursor(): RunCursor {
  * - idx = high-water + 1, or first event for this run → "apply".
  *   A first event with idx > 0 is accepted for live rendering but recorded
  *   prefix-incomplete; the caller must reconcile the prefix.
- * - idx > high-water + 1 → "gap" (fromIdx = current high-water).
+ * - idx > high-water + 1 with the covered range starting at high-water + 1 →
+ *   "apply" (a coalesced range that continues the cursor).
+ * - a coalesced range starting *below* the high-water → "overlap": part of its
+ *   content is already applied and the merge hides where that head ends.
+ * - idx > high-water + 1 otherwise → "gap" (fromIdx = current high-water).
+ *
+ * `coalescedCount` marks an event the desktop merged from several source
+ * events: its `idx` is the END of that range and its content covers all of it,
+ * so the jump is declared rather than lost and is applied without a gap.
  */
 export function nextEvent(
   cursor: RunCursor,
   runId: string | undefined | null,
   idx: number | undefined | null,
+  coalescedCount?: number,
 ): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
+  const covered = coveredFrom(idx, coalescedCount);
   const entry = cursor.get(runId);
   if (entry === undefined) {
     // First event for this run — accept and start tracking. A run that begins
     // above idx 0 has an unknown prefix (H3): the caller reconciles from -1.
-    advanceCursor(cursor, runId, idx, idx === 0);
+    advanceCursor(cursor, runId, idx, covered.start === 0);
     return { kind: "apply", idx };
   }
   if (idx <= entry.highWater) return { kind: "dup" };
-  if (idx === entry.highWater + 1) {
+  // A merged range is only applicable when it continues exactly where the
+  // cursor sits. Its text is one opaque concatenation, so a range that starts
+  // below the high-water covers text the cursor already applied and cannot be
+  // trimmed — that head was merged with content we still need. Applying it
+  // would append the overlap a second time, which reads as a duplicated
+  // fragment and a fence reopened mid-message. The journal still holds every
+  // source event, so the caller recovers the range from replay instead.
+  if (covered.start === entry.highWater + 1) {
     cursor.set(runId, { ...entry, highWater: idx });
     return { kind: "apply", idx };
   }
-  // idx > high-water + 1 → gap
+  if (covered.start <= entry.highWater) return { kind: "overlap", fromIdx: entry.highWater };
+  // idx > high-water + 1 with nothing covering the hole → gap
   return { kind: "gap", fromIdx: entry.highWater };
+}
+
+/** The source-index range an event covers. A plain event covers exactly `idx`. */
+function coveredFrom(idx: number, coalescedCount?: number): { start: number } {
+  const count = Number.isSafeInteger(coalescedCount) && (coalescedCount as number) > 0
+    ? Math.min(coalescedCount as number, idx + 1)
+    : 1;
+  return { start: idx - count + 1 };
 }
 
 /**

@@ -1,4 +1,12 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+mod coalesce;
+
+/// Capability a client declares on `secure_ready` to receive the coalesced
+/// event lane. Named so an older desktop ignores it and an older client never
+/// asks for it.
+pub(super) const EVENT_COALESCING_FEATURE: &str = "event_coalescing_v1";
 
 /// Cap on a single event's serialized size. A huge event (e.g. a large tool
 /// result) would otherwise exceed the NATS 1MB user-JWT payload limit and be
@@ -12,6 +20,16 @@ pub(super) struct EventPublish {
     pub(super) subject: String,
     pub(super) payload: Vec<u8>,
     pub(super) status_subject: Option<String>,
+}
+
+impl Clone for EventPublish {
+    fn clone(&self) -> Self {
+        Self {
+            subject: self.subject.clone(),
+            payload: self.payload.clone(),
+            status_subject: self.status_subject.clone(),
+        }
+    }
 }
 
 pub(super) fn is_catalog_event(event_type: &str) -> bool {
@@ -225,33 +243,100 @@ pub(super) fn spawn_event_publisher(
     client: async_nats::Client,
     rx: tokio::sync::mpsc::Receiver<EventPublish>,
 ) -> tokio::task::JoinHandle<()> {
-    spawn_secure_event_publisher(client, rx, secure::Transport::legacy_fixture())
+    spawn_secure_event_publisher(
+        client,
+        rx,
+        secure::Transport::legacy_fixture(),
+        Arc::new(AtomicBool::new(false)),
+    )
 }
 
+/// Drain the ordered event queue, optionally merging a run's text fragments.
+///
+/// The queue is the single ordered lane to this connection, so coalescing here
+/// (rather than per publisher) is what makes "any non-fragment flushes first" a
+/// property of the code instead of a hope. A client that never declares the
+/// capability takes the pass-through path unchanged.
 pub(super) fn spawn_secure_event_publisher(
     client: async_nats::Client,
     mut rx: tokio::sync::mpsc::Receiver<EventPublish>,
     security: secure::Transport,
+    coalesce: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let sent = async {
-                if let Some(subject) = event.status_subject {
-                    secure::publish(&client, &security, subject, event.payload.clone()).await?;
+        let mut coalescer = coalesce::Coalescer::default();
+        let mut out: Vec<EventPublish> = Vec::new();
+        loop {
+            let coalescing = coalesce.load(Ordering::Relaxed);
+            let received = if coalescing {
+                // The window is what makes merging possible at all: an
+                // unmerged fragment is published alone, so a slow stream keeps
+                // its latency and only bursts are merged.
+                tokio::time::timeout(coalesce::COALESCE_WINDOW, rx.recv())
+                    .await
+                    .ok()
+            } else {
+                // Leaving the lane must not strand a buffered group.
+                coalescer.flush(&mut out);
+                Some(rx.recv().await)
+            };
+            match received {
+                None => coalescer.flush(&mut out),
+                Some(None) => {
+                    coalescer.flush(&mut out);
+                    if publish_batch(&client, &security, &mut out).await.is_err() {
+                        return;
+                    }
+                    return;
                 }
-                secure::publish(&client, &security, event.subject, event.payload).await
+                Some(Some(event)) => {
+                    if coalescing {
+                        coalescer.offer(event, std::time::Instant::now(), &mut out);
+                    } else {
+                        out.push(event);
+                    }
+                }
             }
-            .await;
-            if let Err(error) = sent {
-                if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
-                    eprintln!("{line}");
-                }
-                break;
-            } else if let Some(line) = EVENT_PUBLISH_EPISODE.recovered() {
-                eprintln!("{line}");
+            if publish_batch(&client, &security, &mut out).await.is_err() {
+                return;
             }
         }
     })
+}
+
+/// Publish one batch in order, stopping at the first transport failure. The
+/// caller ends the drain then, exactly as the per-event loop did.
+async fn publish_batch(
+    client: &async_nats::Client,
+    security: &secure::Transport,
+    batch: &mut Vec<EventPublish>,
+) -> Result<(), crate::AppError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    for event in std::mem::take(batch) {
+        let sent = async {
+            if let Some(subject) = event.status_subject {
+                secure::publish(client, security, subject, event.payload.clone()).await?;
+            }
+            secure::publish(client, security, event.subject, event.payload).await
+        }
+        .await;
+        match sent {
+            Ok(()) => {
+                if let Some(line) = EVENT_PUBLISH_EPISODE.recovered() {
+                    eprintln!("{line}");
+                }
+            }
+            Err(error) => {
+                if let Some(line) = EVENT_PUBLISH_EPISODE.record("event_publish", error) {
+                    eprintln!("{line}");
+                }
+                return Err(crate::AppError::Message("event publish failed".into()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Heartbeat cadence. Tests shrink it to milliseconds so the publish pattern

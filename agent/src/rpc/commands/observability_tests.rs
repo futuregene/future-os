@@ -337,6 +337,62 @@ fn get_run_snapshot_reuses_active_projection_and_folds_completed_journal() {
     let historical = read();
     assert_eq!(historical["success"], true);
     assert_eq!(historical["data"], active["data"]);
+
+    // The same equivalence must hold for a run full of tool calls, where the
+    // live projection and the journal fold reach the argument de-duplication
+    // from opposite directions (in-memory entries vs. re-folded journal rows).
+    b.start_run("tools".into(), 4);
+    b.broadcast(SseEvent::new(
+        "agent_start",
+        serde_json::json!({"started_at_ms":1}),
+    ));
+    for tool in 0..3 {
+        let args = format!("{{\"command\":\"echo {tool}\"}}");
+        b.broadcast(SseEvent::new(
+            "tool_start",
+            serde_json::json!({"tool_id": format!("call-{tool}"), "phase": "input", "tool_args": ""}),
+        ));
+        for character in args.chars() {
+            b.broadcast(SseEvent::new(
+                "tool_delta",
+                serde_json::json!({"tool_id": format!("call-{tool}"), "text": character.to_string()}),
+            ));
+        }
+        b.broadcast(SseEvent::new(
+            "tool_start",
+            serde_json::json!({"tool_id": format!("call-{tool}"), "phase": "execution",
+                               "tool_args": serde_json::from_str::<serde_json::Value>(&args).unwrap()}),
+        ));
+        b.broadcast(SseEvent::new(
+            "tool_end",
+            serde_json::json!({"tool_id": format!("call-{tool}"), "text": "ok"}),
+        ));
+    }
+    b.broadcast(SseEvent::new(
+        "agent_end",
+        serde_json::json!({"duration_ms": 1}),
+    ));
+    let mut live_tools = make_cmd("get_run_snapshot");
+    live_tools.run_id = "tools".into();
+    let live = parse_response(&handle_command_internal(&state, live_tools));
+    assert_eq!(live["success"], true);
+    b.start_run("next-again".into(), 5);
+    let mut folded_tools = make_cmd("get_run_snapshot");
+    folded_tools.run_id = "tools".into();
+    let folded = parse_response(&handle_command_internal(&state, folded_tools));
+    assert_eq!(folded["success"], true);
+    assert_eq!(folded["data"], live["data"]);
+    // The duplicate argument fragments are gone, and each call keeps exactly
+    // the two starts that describe it (input, then execution).
+    let events = folded["data"]["projection"]["events"].as_array().unwrap();
+    assert!(events.iter().all(|event| event["type"] != "tool_delta"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "tool_start")
+            .count(),
+        6
+    );
     // A missing interior journal event must not become a trusted snapshot.
     state
         .session_manager

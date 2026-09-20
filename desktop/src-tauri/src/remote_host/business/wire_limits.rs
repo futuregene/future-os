@@ -38,18 +38,25 @@ pub(crate) fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usiz
 /// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
 /// complete oldest exchanges until the page fits and advance the returned
 /// cursor past those omitted rows; they remain reachable on the next pull.
+///
+/// `cap_item_content` truncates a single oversized body: only the non-chunked
+/// path needs that, because it must fit one NATS reply. A chunked client pays a
+/// bounded page instead, so its content stays lossless (and its page budget is
+/// still enforced — the byte budget is about first-paint cost, not just about
+/// the transport limit).
 #[cfg(test)]
 pub(crate) fn prepare_backward_entries_page(_session_id: &str, data: Value) -> Value {
-    prepare_backward_entries_page_with_cap(_session_id, data, true)
+    prepare_backward_entries_page_with_cap(_session_id, data, true, true)
 }
 
 pub(crate) fn prepare_backward_entries_page_with_cap(
     _session_id: &str,
     data: Value,
-    cap_items: bool,
+    cap_item_content: bool,
+    enforce_page_bytes: bool,
 ) -> Value {
     let mut entries = entries_vec(data.clone());
-    if cap_items {
+    if cap_item_content {
         for entry in &mut entries {
             cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
         }
@@ -65,7 +72,7 @@ pub(crate) fn prepare_backward_entries_page_with_cap(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut removed = 0usize;
-    while cap_items
+    while enforce_page_bytes
         && serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
     {
         let Some(next_user) = entries

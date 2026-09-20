@@ -35,6 +35,12 @@ const REMOTE_JSON_GZIP_ENV: &str = "FUTURE_REMOTE_JSON_GZIP";
 /// path available for high-latency/low-bandwidth deployments; opt in with
 /// `FUTURE_REMOTE_JSON_GZIP=1` (also accepts true/yes/on).
 fn remote_json_gzip_enabled() -> bool {
+    // Either the connection asked for it, or an operator forced it on for
+    // diagnostics. Both are needed: the capability is what makes the feature
+    // safe against older clients, the override is what makes it testable.
+    if reply_gzip_allowed() {
+        return true;
+    }
     std::env::var(REMOTE_JSON_GZIP_ENV).is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -67,6 +73,37 @@ pub(super) struct HandshakeState {
     active: Arc<AtomicBool>,
     bridge_instance_id: String,
     pending: Arc<Mutex<HashMap<String, PendingHandshake>>>,
+    /// Whether this connection's replies may be gzipped, set when the client
+    /// declares it on `secure_ready`. It lives with the handshake — not the
+    /// process — because an older client that never declares it must keep
+    /// receiving plain JSON: it has no magic-byte detection and would fail to
+    /// parse a compressed reply.
+    pub(super) gzip_replies: Arc<AtomicBool>,
+}
+
+/// Capability a client declares on `secure_ready` to accept gzip-compressed
+/// command replies. Additive: a client that does not ask never receives one.
+pub(super) const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
+
+/// Record what a connection declared on `secure_ready`. Both capabilities are
+/// opt-in, and the declared set is authoritative: a declaration always writes
+/// the flag, so an empty list clears a previous declaration rather than
+/// leaving it latched.
+pub(super) fn apply_declared_features(
+    handshake: &HandshakeState,
+    pair_id: &str,
+    features: &[String],
+) {
+    super::SUPERVISOR.coalesce_events(pair_id).store(
+        features
+            .iter()
+            .any(|feature| feature == super::publisher::EVENT_COALESCING_FEATURE),
+        Ordering::Release,
+    );
+    handshake.gzip_replies.store(
+        features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
+        Ordering::Release,
+    );
 }
 
 #[derive(Clone)]
@@ -92,6 +129,7 @@ impl HandshakeState {
             active: Arc::new(AtomicBool::new(false)),
             bridge_instance_id,
             pending: Arc::new(Mutex::new(HashMap::new())),
+            gzip_replies: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -133,6 +171,18 @@ tokio::task_local! {
     static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
 }
 
+tokio::task_local! {
+    /// Whether the connection serving this command accepts gzipped replies.
+    /// A task-local keeps the flag on the reply path without threading it
+    /// through every handler between the command loop and `reply`.
+    static REPLY_GZIP: bool;
+}
+
+/// Read the reply-encoding permission, defaulting to off outside a command.
+fn reply_gzip_allowed() -> bool {
+    REPLY_GZIP.try_with(|allowed| *allowed).unwrap_or(false)
+}
+
 #[cfg(test)]
 pub(super) async fn command_loop(
     client: async_nats::Client,
@@ -171,6 +221,7 @@ pub(super) async fn command_loop_with_ready(
         let client = client.clone();
         let reply_slots = reply_slots.clone();
         let handshake = handshake.clone();
+        let pair_id = pair_id.clone();
         // Spawn per command: prevent a slow command from blocking others.
         tokio::spawn(async move {
             if handshake.secure.enabled() {
@@ -196,6 +247,12 @@ pub(super) async fn command_loop_with_ready(
                         return;
                     }
                     if parsed.as_ref().is_ok_and(|c| c.cmd_type == "secure_ready") {
+                        // Declared capabilities are per connection: a client that
+                        // asks for the coalesced lane gets it, and every other
+                        // client keeps the legacy one-event-per-token lane.
+                        if let Some(features) = parsed.as_ref().ok().map(|c| &c.features) {
+                            apply_declared_features(&handshake, &pair_id, features);
+                        }
                         let activate = || {
                             handshake.secure.activate(&security)?;
                             handshake.active.store(true, Ordering::Release);
@@ -335,8 +392,12 @@ async fn handle_command_singleflight(
     }
 
     let capture = Arc::new(Mutex::new(None));
+    let gzip_replies = handshake.gzip_replies.load(Ordering::Acquire);
     REPLY_CAPTURE
-        .scope(capture.clone(), handle_command(client, msg, handshake))
+        .scope(
+            capture.clone(),
+            REPLY_GZIP.scope(gzip_replies, handle_command(client, msg, handshake)),
+        )
         .await;
     *cached = capture.lock().unwrap().clone();
     if inserted {
@@ -716,7 +777,7 @@ fn encode_reply_payload(body: &Value) -> Vec<u8> {
     encode_reply_payload_with_gzip(body, remote_json_gzip_enabled())
 }
 
-fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
+pub(crate) fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
     let plain = serde_json::to_vec(body).expect("a response Value always serializes");
     // Enforce the decoded JSON budget too: compressing a larger reply would
     // still be rejected by Mobile's decompression guard. Negotiated read pages
@@ -778,6 +839,7 @@ async fn publish_reply_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::test_support::{jwt, now_secs, unique};
     use flate2::read::GzDecoder;
     use std::io::Read;
 
@@ -836,6 +898,90 @@ mod tests {
 
         let disabled = encode_reply_payload_with_gzip(&body, false);
         assert_eq!(disabled, plain, "gzip must remain opt-in");
+    }
+
+    /// The capability — not the process — decides, so an older client on the
+    /// same pairing keeps receiving plain JSON. It has no magic-byte detection
+    /// and would fail to parse a compressed reply.
+    #[test]
+    fn gzip_follows_the_per_connection_capability() {
+        let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
+        let plain = serde_json::to_vec(&body).unwrap();
+
+        let key_pair = nkeys::KeyPair::new_user();
+        let handshake = HandshakeState::new(
+            crate::remote::pairing::PairingCreds {
+                handshake_version: 1,
+                secure: None,
+                pair_id: format!("pair_{}", unique("gzip")),
+                desktop_id: format!("desktop_{}", unique("gzip")),
+                nkey_seed: key_pair.seed().unwrap().to_string(),
+                user_jwt: jwt(now_secs() + 3600),
+                nats_url: "nats://127.0.0.1:1".to_string(),
+                nats_ws_url: "ws://127.0.0.1:1".to_string(),
+                jwt_expires_at: now_secs() + 3600,
+            },
+            Arc::new(AtomicBool::new(true)),
+            "bridge_test".to_string(),
+        );
+        assert!(
+            !handshake.gzip_replies.load(Ordering::Acquire),
+            "a connection that never declares the capability is not gzipped"
+        );
+
+        // A command served on a connection that declared it is compressed.
+        let declared = REPLY_GZIP.sync_scope(true, || encode_reply_payload(&body));
+        assert!(declared.starts_with(&[0x1f, 0x8b]));
+        assert!(declared.len() < plain.len() / 4);
+
+        // A connection that did not declare it still gets plain JSON, even
+        // while another connection on this process receives gzip.
+        let silent = REPLY_GZIP.sync_scope(false, || encode_reply_payload(&body));
+        assert_eq!(silent, plain);
+
+        // Outside any command there is no permission: default to plain JSON.
+        assert!(!reply_gzip_allowed());
+        assert_eq!(encode_reply_payload(&body), plain);
+    }
+
+    /// `build_transport` clears the permission on every new connection so an
+    /// older client on the same pairing cannot inherit the previous client's
+    /// gzip request. That reset is only meaningful if it reaches the copy the
+    /// command loop holds, so pin the shared-Arc behaviour.
+    #[test]
+    fn clearing_the_capability_reaches_the_loop_copy() {
+        let key_pair = nkeys::KeyPair::new_user();
+        let handshake = HandshakeState::new(
+            crate::remote::pairing::PairingCreds {
+                handshake_version: 1,
+                secure: None,
+                pair_id: format!("pair_{}", unique("stale")),
+                desktop_id: format!("desktop_{}", unique("stale")),
+                nkey_seed: key_pair.seed().unwrap().to_string(),
+                user_jwt: jwt(now_secs() + 3600),
+                nats_url: "nats://127.0.0.1:1".to_string(),
+                nats_ws_url: "ws://127.0.0.1:1".to_string(),
+                jwt_expires_at: now_secs() + 3600,
+            },
+            Arc::new(AtomicBool::new(true)),
+            "bridge_test".to_string(),
+        );
+        // A declaring client connects and turns gzip on.
+        handshake.gzip_replies.store(true, Ordering::Release);
+        // The loop receives a clone, exactly as `build_transport` hands it over.
+        let loop_copy = handshake.clone();
+        assert!(loop_copy.gzip_replies.load(Ordering::Acquire));
+        // The next connection clears it before anything can declare otherwise.
+        handshake.gzip_replies.store(false, Ordering::Release);
+        assert!(
+            !loop_copy.gzip_replies.load(Ordering::Acquire),
+            "the reset must be visible to a loop holding a clone"
+        );
+        assert!(!REPLY_GZIP
+            .sync_scope(loop_copy.gzip_replies.load(Ordering::Acquire), || {
+                encode_reply_payload(&json!({ "entries": ["x".repeat(40_000)] }))
+            })
+            .starts_with(&[0x1f, 0x8b]));
     }
 
     #[test]
@@ -999,6 +1145,60 @@ mod tests {
         let page = paginate_items_with_cap(entries, 0, 100, "entries", false);
         assert_eq!(page["entries"][0]["blocks"][0]["text"], text);
         assert!(page["entries"][0].get("metadata").is_none());
+    }
+
+    #[test]
+    fn chunked_backward_history_is_bounded_without_truncating_content() {
+        // A chunked backward page (the phone's first paint) must respect the
+        // page budget — an unbounded first page is pure first-paint cost — yet
+        // it may not lose content: there is no lazy body fetch to recover a
+        // truncated tool result with.
+        // One exchange must fit the budget; three must not — that is the case
+        // the byte budget exists for (a page made of many small entries).
+        let big = "完整内容".repeat(17_000); // ~200 KiB per entry, ~400 KiB per exchange
+        let mut entries = Vec::new();
+        for index in 0..3 {
+            entries.push(json!({"id": format!("u{index}"), "role": "user",
+                "blocks": [{"kind": "text", "text": format!("q{index}")}]}));
+            entries.push(json!({"id": format!("a{index}"), "role": "assistant",
+                "blocks": [{"kind": "text", "text": big.clone()}]}));
+        }
+        let page = prepare_backward_entries_page_with_cap(
+            "missing-session",
+            json!({"entries": entries, "hasMore": false, "nextOffset": 10}),
+            false,
+            true,
+        );
+        let rows = page["entries"].as_array().unwrap();
+        // The oldest exchange is deferred to the next pull, and the omitted
+        // rows stay reachable from the advanced cursor.
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0]["id"], "u1");
+        assert_eq!(page["nextOffset"], 12);
+        assert_eq!(page["hasMore"], true);
+        assert!(serde_json::to_vec(rows).unwrap().len() <= BACKWARD_HISTORY_PAGE_BYTES);
+        // Lossless: the surviving exchange's text is byte-identical.
+        assert_eq!(rows[3]["blocks"][0]["text"].as_str().unwrap(), big);
+        assert!(rows[3].get("metadata").is_none());
+    }
+
+    #[test]
+    fn chunked_backward_history_keeps_one_oversized_exchange() {
+        // A single exchange larger than the budget cannot be trimmed without
+        // splitting an exchange, so it is served whole rather than emptied.
+        let huge = "x".repeat(BACKWARD_HISTORY_PAGE_BYTES * 2);
+        let page = prepare_backward_entries_page_with_cap(
+            "missing-session",
+            json!({"entries": [
+                json!({"id": "u0", "role": "user", "blocks": [{"kind": "text", "text": "q"}]}),
+                json!({"id": "a0", "role": "assistant", "blocks": [{"kind": "text", "text": huge}]}),
+            ], "hasMore": false, "nextOffset": 0}),
+            false,
+            true,
+        );
+        assert_eq!(page["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(page["nextOffset"], 0);
+        assert_eq!(page["hasMore"], false);
     }
 
     #[test]
@@ -1282,7 +1482,9 @@ mod bridge_tests {
     };
     use super::*;
     use crate::remote_host::files as transfer;
+    use flate2::read::GzDecoder;
     use serde_json::json;
+    use std::io::Read as _;
     use std::time::Duration;
 
     #[test]
@@ -1364,13 +1566,19 @@ mod bridge_tests {
 
         /// Send a command and await its reply envelope.
         async fn call(&self, cmd: Value) -> Value {
+            serde_json::from_slice(&self.call_raw(cmd).await).expect("reply is JSON")
+        }
+
+        /// Send a command and return the reply bytes exactly as the client
+        /// would receive them, before any decoding.
+        async fn call_raw(&self, cmd: Value) -> Vec<u8> {
             let subject = format!("p.{}.cmd.rpc", self.pair_id);
             let message = self
                 .client
                 .request(subject, serde_json::to_vec(&cmd).unwrap().into())
                 .await
                 .expect("bridge reply");
-            serde_json::from_slice(&message.payload).expect("reply is JSON")
+            message.payload.to_vec()
         }
 
         async fn stop(self) {
@@ -1380,6 +1588,82 @@ mod bridge_tests {
             // cancelled command loop has stopped running on every Tokio worker.
             let _ = self.loop_handle.await;
         }
+    }
+
+    /// The whole feature is only real if the flag reaches the encoder through
+    /// the running command loop. Drive it end to end: a large reply is plain
+    /// JSON until the connection declares the capability, and compressed after.
+    #[tokio::test]
+    async fn declared_capability_reaches_the_running_command_loop() {
+        struct Big;
+        impl super::super::services::BusinessHost for Big {
+            fn execute<'a>(
+                &'a self,
+                _cmd: IncomingCmd,
+                sink: &'a dyn ReplySink,
+            ) -> futures::future::BoxFuture<'a, ()> {
+                Box::pin(async move {
+                    // Comfortably past the gzip threshold, and repetitive enough
+                    // that compression is unambiguous.
+                    sink.send(
+                        true,
+                        json!({ "entries": ["repeated history ".repeat(2_000)] }),
+                        None,
+                    )
+                    .await
+                })
+            }
+        }
+        static BIG: Big = Big;
+        let bridge = Bridge::start_with_host(&BIG).await;
+        bridge.activate();
+        // A distinct id per call: a repeated id is served from the single-flight
+        // response cache, and the cached bytes carry the encoding of the first
+        // reply — which would mask the flag change this test is about.
+        let command = |id: &str| json!({"id": id, "type": "get_state"});
+
+        // Before the declaration: plain JSON, byte for byte.
+        let plain = bridge.call_raw(command("gzip-before")).await;
+        assert_eq!(plain.first(), Some(&b'{'), "expected an uncompressed reply");
+
+        // The client now declares the capability on secure_ready.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[REPLY_GZIP_FEATURE.to_string()],
+        );
+
+        let compressed = bridge.call_raw(command("gzip-declared")).await;
+        assert_eq!(
+            compressed.first().copied(),
+            Some(0x1f),
+            "expected a gzip reply after the declaration"
+        );
+        assert_eq!(compressed.get(1), Some(&0x8b));
+        assert!(compressed.len() < plain.len() / 4);
+
+        // The compressed reply must decode back to exactly what was sent
+        // uncompressed: this is the client's promise, not an approximation.
+        let mut decoder = GzDecoder::new(compressed.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, plain);
+
+        // A later connection that declares only the other capability must not
+        // inherit this one.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        let plain_again = bridge.call_raw(command("gzip-withdrawn")).await;
+        assert_eq!(
+            plain_again.first(),
+            Some(&b'{'),
+            "withdrawing the declaration must restore plain JSON"
+        );
+        assert_eq!(plain_again, plain);
+        bridge.stop().await;
     }
 
     #[tokio::test]

@@ -61,6 +61,10 @@ pub(crate) struct IncomingCmd {
     pub(crate) expected_desktop_id: String,
     pub(crate) expected_desktop_public_key: String,
     pub(crate) client_signature: String,
+    /// Client capabilities declared once per connection (currently on
+    /// `secure_ready`). Additive: a client that sends none gets the legacy
+    /// per-event lane, and an unknown name is ignored.
+    pub(crate) features: Vec<String>,
 }
 
 impl Default for IncomingCmd {
@@ -111,6 +115,7 @@ impl Default for IncomingCmd {
             expected_desktop_id: String::new(),
             expected_desktop_public_key: String::new(),
             client_signature: String::new(),
+            features: Vec::new(),
         }
     }
 }

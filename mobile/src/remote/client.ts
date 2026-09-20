@@ -1234,7 +1234,19 @@ export class RemoteClient {
   }
 
   private async activateSecureChannel(connection: NatsConnection): Promise<void> {
-    await this.requestWithConnection(connection, { type: "secure_ready" }, "handshake");
+    // Declare this client's capabilities. Both are opt-in so the desktop keeps
+    // its legacy behaviour for a client that never asks:
+    //   event_coalescing_v1 — the desktop may merge a run's text fragments, and
+    //     this client reads a coalesced index range instead of one step per
+    //     event (see `nextEvent`'s `coalescedCount`).
+    //   reply_gzip_v1 — replies may be gzip-compressed; `decodeRemoteJson`
+    //     detects the magic bytes. An older client does not have that check and
+    //     would fail to parse a compressed reply, hence the declaration.
+    await this.requestWithConnection(
+      connection,
+      { type: "secure_ready", features: ["event_coalescing_v1", "reply_gzip_v1"] },
+      "handshake",
+    );
   }
 
   private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {

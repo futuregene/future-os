@@ -273,6 +273,13 @@ export interface StreamEvent {
   data: string;
   runId?: string;
   idx?: number;
+  /**
+   * How many source events this one carries, when the desktop merged a run's
+   * text fragments (see `event_coalescing_v1`). The merged event occupies the
+   * newest source index and its text is the concatenation of all of them, so a
+   * client must treat `idx` as the end of a range instead of a single step.
+   */
+  coalescedCount?: number;
 }
 
 export interface ApprovalPayload {
@@ -396,6 +403,8 @@ export interface RemoteCommand {
   chunkedRead?: boolean;
   /** Cold run bootstrap from a resumable semantic snapshot, when supported. */
   preferSnapshot?: boolean;
+  /** Client capabilities declared on `secure_ready` (additive, opt-in). */
+  features?: string[];
   replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;

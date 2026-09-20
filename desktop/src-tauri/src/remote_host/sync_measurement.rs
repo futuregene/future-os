@@ -74,7 +74,10 @@ async fn handle(
         .map(|s| s.parse::<usize>())
         .transpose()?
         .unwrap_or(0);
-    if size > 32768 {
+    // Bounds any request this loopback probe accepts. The scenario result
+    // document is the largest one it sees, and the plain/gzip passes are
+    // reported together so one snapshot is one result — ~40 KB for six samples.
+    if size > 262_144 {
         return Err("body too large".into());
     }
     while bytes.len() < header_end + size {
@@ -90,6 +93,20 @@ async fn handle(
         ("GET", "/") => ("text/html", std::fs::read(root.join("index.html"))?),
         ("GET", "/bundle.js") => ("text/javascript", std::fs::read(root.join("bundle.js"))?),
         ("GET", "/samples") => ("application/json", serde_json::to_vec(&*samples)?),
+        // Measurement clients POST their own result document here instead of
+        // relying on a human clicking a button and copying console output. Same
+        // origin + probe header are enforced by the shared check below.
+        ("POST", "/result") => {
+            if headers.get("origin") != Some(&origin)
+                || headers.get("x-sync-measurement").map(String::as_str) != Some("1")
+            {
+                return Err("same-origin probe header required".into());
+            }
+            let path = root.join("results.json");
+            std::fs::write(&path, &bytes[header_end..header_end + size])?;
+            println!("measurement results written to {}", path.display());
+            ("application/json", b"{\"stored\":true}".to_vec())
+        }
         ("POST", "/rpc") => {
             if headers.get("origin") != Some(&origin)
                 || headers.get("x-sync-measurement").map(String::as_str) != Some("1")
@@ -113,7 +130,24 @@ async fn handle(
             let sink = Capture::default();
             host().execute(command, &sink).await;
             let response = sink.0.into_inner().unwrap().ok_or("missing response")?;
-            ("application/json", serde_json::to_vec(&response)?)
+            // Route through the production reply encoder so the measurement
+            // reflects the real wire bytes, including the gzip decision. The
+            // per-request header models the per-connection capability the
+            // desktop negotiates in production; the env var is the operator
+            // override, kept for a whole-run sweep.
+            let mut gzip = std::env::var("SYNC_MEASURE_GZIP").is_ok_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+            if let Some(header) = headers.get("x-sync-measure-gzip") {
+                gzip = header == "1";
+            }
+            (
+                "application/octet-stream",
+                crate::remote::commands::encode_reply_payload_with_gzip(&response, gzip),
+            )
         }
         _ => ("text/plain", b"not found".to_vec()),
     };

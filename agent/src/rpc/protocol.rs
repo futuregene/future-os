@@ -1074,7 +1074,13 @@ impl SseBroadcaster {
                 epoch: run.epoch,
                 run_sequence: run.run_sequence,
                 cursor: run.idx.saturating_sub(1),
-                events: run.projection_events.clone(),
+                // The live projection and the historical fold both pass through
+                // the same argument de-duplication, so a client that joins a
+                // running session and one that opens it later receive the same
+                // events rather than two dialect of the same run.
+                events: super::run_snapshot::strip_repeated_tool_arguments(
+                    run.projection_events.clone(),
+                ),
             });
         }
         // Historical reads must not block active broadcasts while decoding or
