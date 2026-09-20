@@ -302,11 +302,16 @@ export function ContextPanel({
   ]);
 
   if (!expanded) {
+    // Collapsed, this toggle floats over the conversation header instead of
+    // living in a panel header, so its inset is spelled out here. 16px + a 32px
+    // button is the 56px (`pr-14`) that header reserves, which leaves the same
+    // 8px gap the usage button has from the terminal button, and puts this
+    // button where it sits once the panel is expanded (that header uses `px-4`).
     return (
       <button
         aria-label={t("contextPanel.expand")}
         title={t("contextPanel.expand")}
-        className="absolute right-3 top-2 z-30 inline-flex size-8 items-center justify-center rounded-md border border-transparent bg-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+        className="absolute right-4 top-2 z-30 inline-flex size-8 items-center justify-center rounded-md border border-transparent bg-transparent text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
         onClick={onToggleExpanded}
         type="button"
       >
@@ -365,6 +370,7 @@ export function ContextPanel({
           </Select>
         </div>
         <IconButton
+          className="size-8"
           icon={<PanelRightClose className="size-3.5" />}
           label={t("contextPanel.collapse")}
           onClick={onToggleExpanded}
