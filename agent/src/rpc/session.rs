@@ -156,8 +156,7 @@ pub struct ServerSession {
 
 /// Default workspace directory for new sessions.
 pub fn default_workspace() -> String {
-    crate::utils::home_dir()
-        .join(".future")
+    crate::utils::future_home()
         .join("agent")
         .join("workspace")
         .to_string_lossy()

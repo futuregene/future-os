@@ -13,6 +13,7 @@
 //! discovers the same per-user Agent endpoint.
 
 pub mod command_policy;
+pub mod home;
 pub mod transport;
 
 pub mod proto {

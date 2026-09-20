@@ -141,13 +141,14 @@ fn inject_test_panic() {
 }
 
 fn future_models_cache_path() -> String {
-    future_models_cache_path_in(crate::utils::home_dir_opt())
+    future_models_cache_path_in(crate::utils::future_home_opt())
 }
 
-/// `future_models_cache_path` with the home dir injected, so the no-home
+/// `future_models_cache_path` with the FutureOS home injected, so the no-home
 /// fallback arm is testable (a real host always resolves one).
-fn future_models_cache_path_in(home: Option<std::path::PathBuf>) -> String {
-    home.map(|h| h.join(".future/agent/.future-models-cache.json"))
+fn future_models_cache_path_in(future_home: Option<std::path::PathBuf>) -> String {
+    future_home
+        .map(|h| h.join("agent/.future-models-cache.json"))
         // No home to cache under: fall back to the platform temp directory
         // (a hard-coded `/tmp` is not a real path on Windows).
         .unwrap_or_else(|| std::env::temp_dir().join(".future/agent/.future-models-cache.json"))
@@ -1446,10 +1447,12 @@ mod tests {
                 .to_string_lossy()
                 .into_owned()
         );
+        // A resolved FutureOS home (the `~/.future` root itself, which is what
+        // `FUTURE_HOME` redirects) holds the cache directly.
         assert_eq!(
-            future_models_cache_path_in(Some(std::path::PathBuf::from("/home/x"))),
-            std::path::Path::new("/home/x")
-                .join(tail)
+            future_models_cache_path_in(Some(std::path::PathBuf::from("/home/x/.future"))),
+            std::path::Path::new("/home/x/.future")
+                .join("agent/.future-models-cache.json")
                 .to_string_lossy()
                 .into_owned()
         );

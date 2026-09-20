@@ -12,17 +12,16 @@ pub struct ScreenshotWriteResult {
     pub filename: String,
 }
 
-/// `FUTURE_HOME`-derived artifacts dir: `~/.future/agent/browser/artifacts`.
+/// `<future home>`-derived artifacts dir: `~/.future/agent/browser/artifacts`.
 pub fn artifacts_dir() -> PathBuf {
     browser_dir().join("artifacts")
 }
 
-/// `~/.future/agent/browser` (honors `FUTURE_HOME`).
+/// `<future home>/agent/browser` (see `future_agent::utils::future_home`).
 pub fn browser_dir() -> PathBuf {
-    let future_home = std::env::var("FUTURE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".future"));
-    future_home.join("agent").join("browser")
+    future_agent::utils::future_home()
+        .join("agent")
+        .join("browser")
 }
 
 /// `resolveScreenshotPath(explicitPath?)` — timestamped default in artifacts.

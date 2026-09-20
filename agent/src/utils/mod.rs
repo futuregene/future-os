@@ -172,14 +172,46 @@ pub fn home_dir() -> PathBuf {
     home_dir_opt().unwrap_or_else(std::env::temp_dir)
 }
 
+/// The configured FutureOS home override, when this process has one — set by
+/// `future agent --home DIR` (see [`future_home`]). `None` means the state root
+/// is the default `~/.future`.
+pub fn future_home_override() -> Option<PathBuf> {
+    future_rpc::home::future_home_override()
+}
+
+/// FutureOS home root: the directory that owns all local Agent state
+/// (`<home>/agent`, `<home>/run`, ...), normally `~/.future`.
+///
+/// `FUTURE_HOME` replaces the whole root, which is how a second, fully isolated
+/// Agent instance runs beside the default one: its own singleton lock,
+/// database, sessions, logs and local IPC endpoint. Only paths FutureOS owns
+/// move — the user's real home (sandbox guards over `~/.ssh`, the shared
+/// `~/.agents/skills` scope) is unaffected.
+///
+/// None only on a host where neither environment nor the platform profile API
+/// yields a home directory (same edge case as [`home_dir_opt`]).
+pub fn future_home_opt() -> Option<PathBuf> {
+    future_home_from(future_home_override(), home_dir_opt())
+}
+
+fn future_home_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    override_dir.or_else(|| home.map(|home| home.join(".future")))
+}
+
+/// FutureOS home root, falling back to the OS temporary directory only when no
+/// home can be resolved at all (see [`future_home_opt`]).
+pub fn future_home() -> PathBuf {
+    future_home_opt().unwrap_or_else(|| std::env::temp_dir().join(".future"))
+}
+
 /// Default base session directory (contains per-cwd subdirectories)
 pub fn default_session_dir(_cwd: &str) -> PathBuf {
-    home_dir().join(".future/agent").join("sessions")
+    future_home().join("agent").join("sessions")
 }
 
 /// Default config directory
 pub fn default_config_dir() -> PathBuf {
-    home_dir().join(".future/agent")
+    future_home().join("agent")
 }
 
 /// Get default settings paths (global and project-level)
@@ -201,13 +233,14 @@ pub fn is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
-/// True when `path` lives under the FutureOS-managed data root
-/// (`~/.future/`). These directories (chat temp workspaces, the agent's
-/// default workspace) are owned by FutureOS, so the agent may auto-create and
-/// repair them. A user-chosen workspace directory never qualifies — it must
-/// not be silently recreated or chmod'ed.
+/// True when `path` lives under the FutureOS-managed data root (default
+/// `~/.future/`, or the `FUTURE_HOME` override — see [`future_home`]). These
+/// directories (chat temp workspaces, the agent's default workspace) are owned
+/// by FutureOS, so the agent may auto-create and repair them. A user-chosen
+/// workspace directory never qualifies — it must not be silently recreated or
+/// chmod'ed.
 pub fn is_future_managed_dir(path: &Path) -> bool {
-    home_dir_opt().is_some_and(|home| path.starts_with(home.join(".future")))
+    future_home_opt().is_some_and(|home| path.starts_with(home))
 }
 
 /// Ensure a workspace directory exists and is writable. Creates the directory
@@ -430,6 +463,26 @@ mod util_tests {
             Some(system)
         );
         assert_eq!(home_dir_from(None, None, None), None);
+    }
+
+    #[test]
+    fn future_home_defaults_to_dot_future_under_the_user_home() {
+        let home = std::env::temp_dir().join("futureos-user-home");
+        assert_eq!(
+            future_home_from(None, Some(home.clone())),
+            Some(home.join(".future"))
+        );
+        assert_eq!(future_home_from(None, None), None);
+    }
+
+    #[test]
+    fn future_home_override_replaces_the_whole_root() {
+        let home = std::env::temp_dir().join("futureos-user-home");
+        let isolated = std::env::temp_dir().join("futureos-isolated-home");
+        assert_eq!(
+            future_home_from(Some(isolated.clone()), Some(home)),
+            Some(isolated)
+        );
     }
 
     #[test]
