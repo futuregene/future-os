@@ -316,6 +316,7 @@ export const demoFiles = {
  * must stay a single token — the picker drops anything with spaces.
  */
 export const demoInstalledSkills = [
+  { id: "future-software-install", name: "future-software-install", nameZh: "轻量软件安装与镜像配置", description: "Install or update lightweight software, command-line tools, browser automation prerequisites, and document-processing libraries for FutureOS across Windows, macOS, and Linux. Use when the user asks to install a tool, configure Homebrew or a package manager, set up Chrome/headless browsing, add Python document libraries, or use mainland China download mirrors.", descriptionZh: "跨 Windows、macOS 和 Linux 安装轻量命令行工具、Chrome 与文档处理库，并提供中国大陆网络镜像策略", version: "1.0.1" },
   { id: "future-paper", name: "future-paper", nameZh: "文献检索", description: "Search academic literature and retrieve full text by DOI or PMID.", descriptionZh: "按 DOI / PMID 检索文献并取回全文", version: "1.2.0" },
   { id: "future-deep-research", name: "future-deep-research", nameZh: "深度研究", description: "Evidence-driven research with traceable citations.", descriptionZh: "可溯源引用的深度研究报告", version: "2.0.1" },
   { id: "future-experimental-design", name: "future-experimental-design", nameZh: "实验设计", description: "Design experiments, randomization and blocking.", descriptionZh: "实验设计、随机化与区组安排", version: "1.1.3" },

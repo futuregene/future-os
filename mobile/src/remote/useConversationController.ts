@@ -14,6 +14,7 @@ import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from
 import { markApprovalDecision } from "./timeline";
 import { modelProviderFromReference, modelReference } from "./types";
 import type {
+  AvailableSkill,
   DownloadInfo,
   HistoryAttachment,
   RemoteModel,
@@ -24,6 +25,25 @@ import type {
   StreamEvent,
   ThinkingLevel,
 } from "./types";
+
+/** The platform catalogue's zh text, fetched once per connection. Installed
+ * skills carry name_zh/description_zh only when their frontmatter has them
+ * (builtins do not), so a Chinese UI falls back to this — and the `/` menu
+ * opens often enough that it must not wait on the platform every time. */
+const skillCatalogues = new WeakMap<RemoteClient, Promise<AvailableSkill[]>>();
+function skillCatalogue(client: RemoteClient): Promise<AvailableSkill[]> {
+  let catalogue = skillCatalogues.get(client);
+  if (!catalogue) {
+    // Best-effort: offline, or an old desktop without the command, only costs
+    // the localization.
+    catalogue = requestReadPage<{ skills: AvailableSkill[] }>(
+      client, { type: "list_available_skills" }, "settings",
+    ).then(response => Array.isArray(response.data.skills) ? response.data.skills : [])
+      .catch(() => []);
+    skillCatalogues.set(client, catalogue);
+  }
+  return catalogue;
+}
 
 interface ConversationControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -209,12 +229,24 @@ export function useConversationController({
     const client = clientRef.current;
     const epoch = conversationEpochRef.current;
     if (!client) throw new Error("skills_not_connected");
-    const response = await client.request<{ skills: RemoteSkill[] }>({ type: "list_skills" });
+    const [response, catalogue] = await Promise.all([
+      client.request<{ skills: RemoteSkill[] }>({ type: "list_skills" }),
+      skillCatalogue(client),
+    ]);
     if (clientRef.current !== client || conversationEpochRef.current !== epoch) {
       throw new Error("skills_context_changed");
     }
     if (!Array.isArray(response.data.skills)) throw new Error("skills_invalid_response");
-    return response.data.skills;
+    const zhById = new Map(catalogue.map(entry => [entry.id, entry]));
+    return response.data.skills.map(skill => {
+      const zh = zhById.get(skill.name);
+      if (!zh || (skill.nameZh && skill.descriptionZh)) return skill;
+      return {
+        ...skill,
+        nameZh: skill.nameZh || zh.nameZh || null,
+        descriptionZh: skill.descriptionZh || zh.descriptionZh || null,
+      };
+    });
   }, [clientRef, conversationEpochRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {

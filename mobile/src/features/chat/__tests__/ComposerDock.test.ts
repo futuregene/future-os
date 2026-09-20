@@ -21,7 +21,12 @@ jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "Chevron
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
-jest.mock("../components/SkillPicker", () => ({ SkillPicker: jest.fn(() => null) }));
+// The picker itself is replaced, but its sizing helpers are the real ones: the
+// composer's height budget is what's under test here.
+jest.mock("../components/SkillPicker", () => ({
+  ...jest.requireActual("../components/SkillPicker"),
+  SkillPicker: jest.fn(() => null),
+}));
 test("streaming allows drafting while one stop press sends a request and exposes its outcome", async () => {
   let resolve!: () => void;
   const abort = jest.fn(() => new Promise<void>(done => { resolve = done; }));
