@@ -808,6 +808,19 @@ export class SyncEngine {
       const event = op.event;
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
       const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
+      if (verdict.kind === "overlap") {
+        // A merged event whose range starts below the high-water: a reconcile
+        // landed while the desktop was still holding its merge window open, so
+        // the merge covers source events this session already applied. Its text
+        // cannot be trimmed (the merge hides where the already-seen head ends),
+        // and appending it wholesale would render that overlap twice — the
+        // reader sees the reply's tail again with a code fence reopened inside
+        // it. Drop the merge and take the range from durable replay, which
+        // carries every source event exactly once.
+        lane.bufferedBytes -= op.bytes;
+        if (event.runId) this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
+        continue;
+      }
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));
