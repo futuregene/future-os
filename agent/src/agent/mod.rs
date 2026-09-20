@@ -7,7 +7,7 @@ use crate::types::{AgentMessage, AgentTool, ContentBlock, LLMProvider, ToolCall}
 use anyhow::{anyhow, Result};
 pub use events::RunEvent;
 use parking_lot::Mutex;
-pub(crate) use run_loop::estimate_usage_cost_with;
+pub(crate) use run_loop::{estimate_usage_cost_with, usage_cost_split_with};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -101,6 +101,10 @@ pub struct Loop {
     pub cumulative_cache_write_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Cumulative cost as reported by upstream (Future API `credit_cost`).
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
+    /// Cumulative cost split by token category, accumulated per request at the
+    /// rates of the model that served it. Charged alongside `cumulative_cost`;
+    /// see [`crate::models::CostSplit`] for why it is not derived from totals.
+    pub cumulative_cost_split: Arc<parking_lot::Mutex<crate::models::CostSplit>>,
     /// Last API call's prompt_tokens (actual context size, not cumulative across turns)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Set when the provider stream ended without a genuine terminal event.
@@ -144,6 +148,9 @@ impl Loop {
             cumulative_cache_read_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cache_write_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
+            cumulative_cost_split: Arc::new(parking_lot::Mutex::new(
+                crate::models::CostSplit::default(),
+            )),
             last_prompt_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             stream_incomplete: Arc::new(AtomicBool::new(false)),
             stream_truncation: Arc::new(parking_lot::Mutex::new(None)),
