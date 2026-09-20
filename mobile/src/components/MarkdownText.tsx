@@ -5,6 +5,7 @@ import {
   classifyMarkdownTarget,
   localFilePath,
   createStreamingMarkdownParser,
+  joinSoftBreaks,
   parseFutureMarkdown,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
@@ -396,11 +397,15 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
   const reveal = useStreamingText(text, mode === "message" && streaming);
   const displayedText = mode === "message" ? reveal.text : text;
   const projectingStream = streaming || displayedText !== text;
-  const document = useMemo(() => mode === "file-preview"
+  const document = useMemo(() => {
+    if (mode !== "file-preview") return project(displayedText, projectingStream);
+    // A previewed document reflows to the reader's width: its source soft breaks
+    // join into spaces instead of showing the wrap column of the file. Chat
+    // keeps the author's newlines.
     // Large file ASTs should die with the preview, not occupy the shared
     // 512-entry message cache after the modal closes.
-    ? parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024)
-    : project(displayedText, projectingStream), [mode, project, displayedText, projectingStream]);
+    return joinSoftBreaks(parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024));
+  }, [mode, project, displayedText, projectingStream]);
   const [initialBlockCount] = useState(document.nodes.length);
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);

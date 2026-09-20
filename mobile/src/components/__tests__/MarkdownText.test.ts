@@ -351,6 +351,22 @@ describe("MarkdownText", () => {
     alert.mockRestore();
   });
 
+  test("a file preview reflows the source's soft-wrapped lines while a message keeps them", () => {
+    const text = "投影最小（1 706 tok）、回本最快\n基础指令，压缩只要 0.42 元。";
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(createElement(MarkdownText, { mode: "file-preview", text }));
+    });
+    // A document's own wrap column is a soft break: CommonMark renders it as a space.
+    expect(renderer?.root.findByType(FlatList).props.data).toEqual([{
+      type: "paragraph",
+      children: [{ type: "text", text: "投影最小（1 706 tok）、回本最快 基础指令，压缩只要 0.42 元。" }],
+    }]);
+    // A chat bubble keeps the newline its author typed.
+    act(() => renderer?.update(createElement(MarkdownText, { text })));
+    expect(JSON.stringify(renderer?.toJSON())).toContain("回本最快\\n基础指令");
+  });
+
   test("renders only http(s) Markdown images as remote images", () => {
     let renderer: ReactTestRenderer | undefined;
     act(() => {

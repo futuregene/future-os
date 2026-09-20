@@ -5,7 +5,7 @@ import type { FutureReference, InlineNode, MarkdownNode } from "./futureMarkdown
 import { memo, useMemo } from "react";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
-import { parseFutureMarkdown } from "./parseFutureMarkdown";
+import { joinSoftBreaks, parseFutureMarkdown } from "./parseFutureMarkdown";
 import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
 import { CodeBlock } from "./renderers/CodeBlock";
 import { FileLink } from "./renderers/FileLink";
@@ -39,7 +39,13 @@ interface MarkdownContentProps {
 }
 
 function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, live }: MarkdownContentProps) {
-  const document = useMemo(() => parsedDocument ?? parseFutureMarkdown(content), [content, parsedDocument]);
+  const document = useMemo(() => {
+    const parsed = parsedDocument ?? parseFutureMarkdown(content);
+    // A previewed document reflows to the reader's width: its source soft breaks
+    // join into spaces instead of showing the wrap column of the file. Chat
+    // keeps the author's newlines.
+    return basePath ? joinSoftBreaks(parsed) : parsed;
+  }, [content, parsedDocument, basePath]);
   useFutureReferences(workspaceId, document.references);
 
   const body = (

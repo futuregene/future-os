@@ -1,1 +1,1 @@
-export { parseFutureMarkdown } from "@future-os/markdown";
+export { joinSoftBreaks, parseFutureMarkdown } from "@future-os/markdown";
