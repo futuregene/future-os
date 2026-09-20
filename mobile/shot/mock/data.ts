@@ -201,6 +201,103 @@ export const demoEntries = [
   },
 ];
 
+/**
+ * The reply that follows an in-turn checkpoint.
+ *
+ * `?compactHistory=1` renders this history instead of `demoEntries`: one run
+ * that compacted mid-turn (the schemaVersion 3 checkpoint the agent writes
+ * today) and then kept writing. The text after the divider exists so a capture
+ * can prove it still reaches the transcript — a version-gated projector used
+ * to treat the divider as an exchange boundary and drop everything after it.
+ */
+const POST_COMPACTION_ANSWER = `## 结论
+
+压缩之后我把最后一步做完了：
+
+- **流量**：一次冷开从 15.03 MB 降到 5.89 MB（2.55×），弱网路径上省 18 秒；
+- **代价**：服务端多 35 ms，客户端解压 74 ms，任何真实链路都净赚；
+- **建议**：先上 gzip 协商，再考虑先压缩后分片。
+
+要不要我把这四步写成一份设计文档？`;
+
+export const compactResumeEntries = [
+  {
+    id: "c1",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 22 * minute,
+    runId: "run_compact",
+    blocks: [{
+      kind: "text",
+      text: "接着上一轮：把三个方案的实测代价和收益整理成一个表格，最后给出结论。",
+    }],
+  },
+  {
+    id: "c2",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 21 * minute,
+    runId: "run_compact",
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "这一轮已经很长了，先把前三步的实测数字固定下来，再决定第四步怎么写。",
+      },
+      { kind: "tool_call", toolCallId: "cc_1", name: "read", arguments: { path: "notes/stream-traffic.md" } },
+      { kind: "tool_call", toolCallId: "cc_2", name: "shell", arguments: { command: "wc -c results/*.json" } },
+      { kind: "tool_call", toolCallId: "cc_3", name: "read", arguments: { path: "notes/gzip-bench.md" } },
+      {
+        kind: "text",
+        text: "前三步已经跑完，先把中间结论记一下：gzip 协商把冷开流量压到 2.55×，服务端只多花 35 ms。",
+      },
+    ],
+  },
+  {
+    id: "c3",
+    kind: "compaction",
+    role: "system",
+    createdAtMs: now - 20.5 * minute,
+    blocks: [],
+    checkpoint: {
+      schemaVersion: 3,
+      checkpointId: "cp_shot_v3",
+      coveredFromEntryId: "c1",
+      cutoffEntryId: "c2",
+      tokensBefore: 613_994,
+      tokensAfter: 51_081,
+      trigger: "automatic",
+      phase: "mid_turn",
+      algorithmVersion: "deterministic-evidence-v1",
+    },
+  },
+  {
+    id: "c4",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 20 * minute,
+    runId: "run_compact",
+    usage: { inputTokens: 131_997, outputTokens: 1_450, cacheReadTokens: 131_840 },
+    run: { status: "completed", durationMs: 1_182_754 },
+    blocks: [
+      { kind: "tool_call", toolCallId: "cc_4", name: "write", arguments: { path: "notes/stream-summary.md" } },
+      { kind: "text", text: POST_COMPACTION_ANSWER },
+    ],
+  },
+  {
+    id: "c5",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 19.9 * minute,
+    runId: "run_compact",
+    blocks: [
+      { kind: "tool_result", toolCallId: "cc_1" },
+      { kind: "tool_result", toolCallId: "cc_2" },
+      { kind: "tool_result", toolCallId: "cc_3" },
+      { kind: "tool_result", toolCallId: "cc_4" },
+    ],
+  },
+];
+
 export const demoFiles = {
   rootPath: "/Users/lixin/Research/dopamine-decision",
   path: "/Users/lixin/Research/dopamine-decision",

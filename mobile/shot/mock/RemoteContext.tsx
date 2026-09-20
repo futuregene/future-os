@@ -31,6 +31,7 @@ import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
 import {
+  compactResumeEntries,
   demoCredentials,
   demoDesktops,
   demoEntries,
@@ -96,7 +97,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   const baseTimeline = useMemo(() => {
-    const history = timelineFromEntries(demoEntries as unknown as HistoryEntry[]);
+    // `?compactHistory=1` swaps in the history of a run that compacted
+    // mid-turn, so a capture can assert the reply after the divider survives
+    // the durable projection (the schemaVersion 3 path).
+    const historyEntries = new URLSearchParams(window.location.search).get("compactHistory") === "1"
+      ? compactResumeEntries
+      : demoEntries;
+    const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     if (!scriptedCompaction) return history;
     const manualRun = "run_1";
     return applyStreamEvents(history, [
