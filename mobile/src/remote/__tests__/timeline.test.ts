@@ -2,6 +2,7 @@ import {
   applyStreamEvent,
   appendUserMessage,
   commitAcknowledgedUserMessage,
+  dropSupersededCompactionDividers,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,
@@ -534,6 +535,34 @@ describe("projection reducer", () => {
     };
     const stripped = stripRunItems(base, "run-1");
     expect(stripped.items.map(item => item.id)).toEqual(["u1", "a2"]);
+  });
+
+  test("dropSupersededCompactionDividers drops only the durable copy of a shared checkpoint", () => {
+    const divider = (id: string, checkpointId?: string) => ({
+      id,
+      kind: "message" as const,
+      role: "assistant" as const,
+      text: "",
+      ...(checkpointId
+        ? { segments: [{ id: `seg_${checkpointId}_compaction`, kind: "compaction" as const, checkpointId }] }
+        : { segments: [{ id: "seg", kind: "compaction" as const }] }),
+    });
+    const live = divider("assistant:live", "cp-1");
+    const history = [
+      divider("m_cp-1", "cp-1"),
+      divider("m_cp-old", "cp-old"),
+      divider("m_cp-anonymous"),
+      { id: "u1", kind: "message" as const, role: "user" as const, text: "hi" },
+    ];
+
+    expect(dropSupersededCompactionDividers(history, [live]).map(item => item.id))
+      .toEqual(["m_cp-old", "m_cp-anonymous", "u1"]);
+    // No identity to compare on either side — nothing is superseded.
+    expect(dropSupersededCompactionDividers(history, [divider("assistant:live")]))
+      .toEqual(history);
+    // The live row is a divider-only row too; it must never drop itself.
+    expect(dropSupersededCompactionDividers([live], [live]).map(item => item.id))
+      .toEqual(["assistant:live"]);
   });
 });
 
@@ -1235,7 +1264,7 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments?.filter(segment => segment.kind === "compaction")).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 190_000 },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 190_000 },
     ]);
   });
 
@@ -1363,7 +1392,7 @@ describe("shared-projection semantic flags", () => {
     reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     let failedState = applyStreamEvent(emptyTimeline(), {

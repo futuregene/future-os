@@ -876,6 +876,57 @@ describe("streamingBubbleBase", () => {
     const base = streamingBubbleBase(current, RUN, BUBBLE, "live text");
     expect(base?.some(m => m.id === "div")).toBe(true);
   });
+
+  it("drops the durable divider row for a checkpoint the live bubble renders", () => {
+    // A checkpoint that opened the exchange has no reply entry persisted yet, so
+    // durable history renders it as a divider-ONLY row; the run's replay renders
+    // the same checkpoint inside the bubble. Keeping both drew it twice.
+    const divider = assistant("m_cp_1", {
+      content: "",
+      segments: [
+        { id: "seg_cp_1_compaction", kind: "compaction", checkpointId: "cp_1", tokensBefore: 903_386 },
+      ],
+    });
+    const current = [user("u1"), divider];
+    const base = streamingBubbleBase(current, RUN, BUBBLE, "live text", new Set(["cp_1"]));
+    expect(base?.some(m => m.id === "m_cp_1")).toBe(false);
+    expect(base?.some(m => m.id === "u1")).toBe(true);
+  });
+
+  it("keeps a divider for a different checkpoint than the live bubble renders", () => {
+    // An older exchange's checkpoint is not superseded by this run's replay.
+    const earlier = assistant("m_cp_old", {
+      content: "",
+      segments: [
+        { id: "seg_cp_old_compaction", kind: "compaction", checkpointId: "cp_old" },
+      ],
+    });
+    const base = streamingBubbleBase([user("u1"), earlier], RUN, BUBBLE, "live", new Set(["cp_1"]));
+    expect(base?.some(m => m.id === "m_cp_old")).toBe(true);
+  });
+
+  it("keeps a divider whose checkpoint neither side names", () => {
+    // A running divider (or a checkpoint released from the journal) carries no
+    // id — the durable row is the only copy, so it must stay.
+    const divider = assistant("div", {
+      content: "",
+      segments: [{ id: "s", kind: "compaction", tokensBefore: 900_000 }],
+    });
+    const base = streamingBubbleBase([user("u1"), divider], RUN, BUBBLE, "live", new Set(["cp_1"]));
+    expect(base?.some(m => m.id === "div")).toBe(true);
+  });
+
+  it("keeps a divider nested inside a reply that also has other content", () => {
+    // Only a divider-only row is a placeholder for the live reply; a persisted
+    // reply that merely contains a divider is a real snapshot (and is replaced
+    // by the bubble through the same-turn rule, not by checkpoint identity).
+    const reply = assistant("a-partial", {
+      content: "reply so far",
+      segments: [{ id: "seg_cp_1_compaction", kind: "compaction", checkpointId: "cp_1" }],
+    });
+    const base = streamingBubbleBase([user("u1"), reply], RUN, BUBBLE, "live", new Set(["cp_1"]));
+    expect(base?.some(m => m.id === "a-partial")).toBe(false);
+  });
 });
 
 describe("mergeStreamingPreview", () => {
@@ -911,5 +962,32 @@ describe("mergeStreamingPreview", () => {
 
     const current = [user("u1"), settled];
     expect(mergeStreamingPreview(current, preview)).toBe(current);
+  });
+
+  it("draws a checkpoint carried by both the durable row and the live reply exactly once", () => {
+    // End-to-end shape of the residue: a pre-turn/mid-turn checkpoint commits
+    // before any reply entry of that exchange is persisted, so history has a
+    // divider-only row while the run's replay already renders the checkpoint.
+    const divider = assistant("m_cp_1", {
+      content: "",
+      segments: [
+        { id: "seg_cp_1_compaction", kind: "compaction", checkpointId: "cp_1", tokensBefore: 903_386 },
+      ],
+    });
+    const preview = assistant("stream_r1", {
+      content: "",
+      runId: "r1",
+      status: "streaming",
+      segments: [
+        { id: "cp_1", kind: "compaction", checkpointId: "cp_1", tokensBefore: 903_386, status: "completed" },
+      ],
+    });
+
+    const result = mergeStreamingPreview([user("u1"), divider], preview);
+
+    expect(result.map(message => message.id)).toEqual(["u1", "stream_r1"]);
+    expect(
+      result.flatMap(message => message.segments ?? []).filter(segment => segment.kind === "compaction"),
+    ).toHaveLength(1);
   });
 });

@@ -40,6 +40,14 @@ export type MessageSegment
     | {
         kind: "compaction";
         id: string;
+        /**
+         * The durable checkpoint this divider renders. One compaction reaches a
+         * client twice — as a history row and, while its run is live, as part of
+         * that run's streamed reply — under unrelated ids, so this is the only
+         * identity the two copies share. Absent for a checkpoint the agent never
+         * named (a running divider, a released journal).
+         */
+        checkpointId?: string;
         tokensBefore?: number;
         /** Why the checkpoint was created; `manual` marks an explicit user action. */
         trigger?: string;

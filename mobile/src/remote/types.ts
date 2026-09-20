@@ -319,6 +319,8 @@ export type TimelineSegment =
   | {
       id: string;
       kind: "compaction";
+      /** Durable checkpoint this divider renders — see the shared model. */
+      checkpointId?: string;
       tokensBefore?: number;
       trigger?: string;
       status?: "running" | "completed" | "failed";

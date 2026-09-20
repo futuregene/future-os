@@ -78,4 +78,74 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
     expect(after.items[0]).toMatchObject({ streaming: true, segments: [{ kind: "compaction" }, { kind: "text", text: "continued" }] });
     expect(after.streaming).toBe(true);
   });
+
+  test("a checkpoint that opened the turn is drawn once, not also from durable history", async () => {
+    // The checkpoint commits before any reply entry of that exchange is saved,
+    // so durable history renders the turn as a divider-only row. The run's own
+    // replay carries the same checkpoint — both drew it, one after the other.
+    const history = timelineFromEntries([
+      { id: "u1", role: "user", kind: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "go" }] },
+      {
+        id: "cp-entry",
+        role: "system",
+        kind: "compaction",
+        createdAtMs: 1,
+        blocks: [],
+        checkpoint: {
+          schemaVersion: 3,
+          checkpointId: "cp-auto",
+          phase: "pre_turn",
+          trigger: "automatic",
+          tokensBefore: 903_386,
+        },
+      },
+    ]);
+    expect(history.items).toHaveLength(2);
+
+    const after = await apply(history, [
+      event("agent_start", "live", 0),
+      event("compaction_started", "live", 1, { operation_id: "auto", phase: "pre_turn" }),
+      event("compaction_committed", "live", 2, {
+        operation_id: "auto",
+        checkpoint_id: "cp-auto",
+        phase: "pre_turn",
+        tokens_before: 903_386,
+      }),
+      event("text_chunk", "live", 3, { text: "continued" }),
+    ]);
+
+    const dividers = after.items.flatMap(item =>
+      item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : []);
+    expect(dividers).toHaveLength(1);
+    expect(after.items.map(item => item.id)).toEqual(["m_u1", "assistant:live"]);
+  });
+
+  test("a durable divider for another checkpoint is not superseded by this run", async () => {
+    const history = timelineFromEntries([
+      { id: "u1", role: "user", kind: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "go" }] },
+      {
+        id: "cp-old",
+        role: "system",
+        kind: "compaction",
+        createdAtMs: 1,
+        blocks: [],
+        checkpoint: { schemaVersion: 3, checkpointId: "cp-other", phase: "pre_turn", trigger: "automatic" },
+      },
+    ]);
+
+    const after = await apply(history, [
+      event("agent_start", "live", 0),
+      event("compaction_started", "live", 1, { operation_id: "auto", phase: "pre_turn" }),
+      event("compaction_committed", "live", 2, {
+        operation_id: "auto",
+        checkpoint_id: "cp-auto",
+        phase: "pre_turn",
+        tokens_before: 903_386,
+      }),
+    ]);
+
+    expect(after.items.flatMap(item =>
+      item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : [],
+    )).toHaveLength(2);
+  });
 });
