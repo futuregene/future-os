@@ -21,7 +21,7 @@ import { errorMessage } from "../../lib/errors";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { pathBasename } from "../../lib/workspacePath";
 import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
-import { previewKindForPath } from "../filepreview/previewKind";
+import { isTextReadablePath, previewKindForPath } from "../filepreview/previewKind";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 
 // pdfjs-dist is ~500KB of the main bundle's eager parse cost while PDF preview
@@ -391,7 +391,7 @@ function isImageArtifact(artifact: StoredArtifact) {
 
 function isTextPreviewArtifact(artifact: StoredArtifact) {
   return ["code", "data", "document", "text"].includes(artifact.artifactType)
-    || /\.(?:css|csv|html?|js|json|jsonl|jsx|md|py|rs|toml|ts|tsx|txt|xml|ya?ml)$/i.test(artifact.path ?? "");
+    || isTextReadablePath(artifact.path ?? "");
 }
 
 function isPdfArtifact(artifact: StoredArtifact) {
