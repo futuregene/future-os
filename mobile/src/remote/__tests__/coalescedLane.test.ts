@@ -1,4 +1,5 @@
 import { applyStreamEvents, emptyTimeline } from "../timeline";
+import { SyncEngine } from "../syncEngine";
 import type { StreamEvent } from "../types";
 
 /**
@@ -161,6 +162,145 @@ test("interleaved tool streams still render per tool after merging", async () =>
   const fromRaw = await applyStreamEvents(emptyTimeline(), events);
   const fromMerged = await applyStreamEvents(emptyTimeline(), coalesce(events));
   expect(JSON.stringify(fromMerged.items)).toEqual(JSON.stringify(fromRaw.items));
+});
+
+/**
+ * A merged event and a reconcile can cover the same source indices: the live
+ * lane holds a merge window open (100 ms) while a reconcile pins the journal
+ * watermark behind it. The merged event then starts *below* what the cursor has
+ * already applied, and its text cannot be trimmed — the merge hides where the
+ * already-seen head ends. Appending it verbatim renders the overlap twice, and
+ * at a reply's tail that is what a reader sees as a duplicated fragment and a
+ * reopened code fence.
+ */
+class LiveLane {
+  /** Durable journal: one text fragment per source index, in order. */
+  texts: string[] = [];
+  /** The journal head a replay may read up to (the pinned watermark). */
+  head = 0;
+  /** When set, the next replay reply waits on it (the in-flight reconcile). */
+  gate: Promise<void> | null = null;
+  /** Notified when a replay request is being served (its watermark is pinned). */
+  issued: (() => void) | null = null;
+  replayCalls: number[] = [];
+  timeline: ReturnType<typeof emptyTimeline> | null = null;
+  engine: SyncEngine;
+
+  constructor() {
+    this.engine = new SyncEngine({
+      requestGetState: async () => ({ activeRun: { runId: "r" }, isCompacting: false }),
+      requestHistory: async () => emptyTimeline(),
+      fetchReplay: async (_sessionId, _runId, since) => {
+        this.replayCalls.push(since);
+        const notify = this.issued;
+        this.issued = null;
+        notify?.();
+        // The watermark is pinned when the request is served, not when the
+        // reply lands: the journal keeps growing while the reply is in flight.
+        const watermark = this.head;
+        const gate = this.gate;
+        if (gate) {
+          this.gate = null;
+          await gate;
+        }
+        const events = this.journal()
+          .filter(event => (event.idx ?? -1) > since && (event.idx ?? -1) <= watermark)
+          .map(event => ({ type: event.type, data: event.data, runId: event.runId, idx: event.idx }));
+        return { events, watermark };
+      },
+    });
+    this.engine.subscribe(commit => { this.timeline = commit.timeline; });
+  }
+
+  journal(): StreamEvent[] {
+    return [
+      { type: "agent_start", idx: 0, runId: "r", data: "{}" },
+      ...this.texts.map((text, index) => fragment("text_chunk", index + 1, text)),
+    ];
+  }
+
+  text(): string {
+    return (this.timeline?.items ?? [])
+      .filter((item) => item.kind === "message")
+      .map((item) => (item.kind === "message" ? item.text : ""))
+      .join("");
+  }
+
+  async drain(): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+/** A merge of sources `from..to`, the way the desktop publishes one. */
+function mergedRange(lane: LiveLane, from: number, to: number): StreamEvent {
+  const text = lane.texts.slice(from - 1, to).join("");
+  return { type: "text_chunk", idx: to, runId: "r", coalescedCount: to - from + 1, data: JSON.stringify({ text }) };
+}
+
+function journalText(count: number): string[] {
+  return Array.from({ length: count }, (_value, index) => `<${index + 1}>`);
+}
+
+/** A gate plus its resolver, so a test can hold a reply in flight. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(r => { resolve = r; });
+  return { promise, resolve };
+}
+
+test("a merged range overlapping an applied prefix is recovered, not appended twice", async () => {
+  const lane = new LiveLane();
+  lane.texts = journalText(12);
+  lane.head = 4;
+  try {
+    await lane.engine.open("s");
+    await lane.drain();
+    expect(lane.text()).toBe("<1><2><3><4>");
+
+    // A reconcile is in flight and pins a watermark behind the journal head;
+    // the desktop meanwhile flushes one merge covering sources 5..12.
+    const gate = deferred();
+    const served = deferred();
+    lane.gate = gate.promise;
+    lane.issued = served.resolve;
+    lane.head = 9;
+    lane.engine.reconcile("s", "gap", "r");
+    // The reply is pinned at source 9 and still in flight when the merge lands.
+    await served.promise;
+    lane.engine.event("s", mergedRange(lane, 5, 12));
+    // The journal advances while the reply is in flight, so the merge reaches
+    // past the watermark the reconcile pinned.
+    lane.head = 12;
+    gate.resolve();
+    await lane.drain();
+    await lane.drain();
+
+    // The merged text overlaps sources 5..9, which the reconcile already
+    // applied. Every fragment must appear exactly once.
+    expect(lane.text()).toBe(lane.texts.join(""));
+  } finally {
+    lane.engine.clear();
+  }
+});
+
+test("a merged range that continues the cursor needs no replay", async () => {
+  const lane = new LiveLane();
+  lane.texts = journalText(12);
+  lane.head = 4;
+  try {
+    await lane.engine.open("s");
+    await lane.drain();
+    const before = lane.replayCalls.length;
+
+    lane.head = 12;
+    lane.engine.event("s", mergedRange(lane, 5, 12));
+    await lane.drain();
+
+    expect(lane.text()).toBe(lane.texts.join(""));
+    expect(lane.replayCalls.length).toBe(before);
+  } finally {
+    lane.engine.clear();
+  }
 });
 
 test("snapshot-style fragments replace rather than append after merging", async () => {

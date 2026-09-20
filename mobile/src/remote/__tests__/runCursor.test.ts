@@ -140,22 +140,34 @@ describe("runCursor", () => {
       expect(nextEvent(cursor, "run1", 9, 2).kind).toBe("gap");
     });
 
-    test("a range overlapping what we applied stays contiguous", () => {
+    test("a range that continues the high-water is applied", () => {
       const cursor = newCursor();
       for (const idx of [0, 1, 2, 3]) nextEvent(cursor, "run1", idx);
-      // Covers 2..5: indices 2 and 3 were already applied, so the range is
-      // contiguous with the high-water and must not read as a gap.
-      expect(nextEvent(cursor, "run1", 5, 4).kind).toBe("apply");
-      expect(cursorHighWater(cursor, "run1")).toBe(5);
+      // Covers 4..6: exactly the sources that follow the high-water.
+      expect(nextEvent(cursor, "run1", 6, 3).kind).toBe("apply");
+      expect(cursorHighWater(cursor, "run1")).toBe(6);
       // A range that leaves a hole is still a gap.
       expect(nextEvent(cursor, "run1", 12, 3).kind).toBe("gap");
+    });
+
+    test("a range overlapping what we applied is not appended verbatim", () => {
+      const cursor = newCursor();
+      for (const idx of [0, 1, 2, 3]) nextEvent(cursor, "run1", idx);
+      // Covers 2..5: a reconcile landed while the merge window was still open,
+      // so indices 2 and 3 were already applied from the journal. The merged
+      // text is one opaque concatenation, so its already-seen head cannot be
+      // trimmed — appending it would duplicate indices 2..3 in the rendered
+      // reply. The caller recovers the range from replay instead.
+      expect(nextEvent(cursor, "run1", 5, 4)).toEqual({ kind: "overlap", fromIdx: 3 });
+      expect(cursorHighWater(cursor, "run1")).toBe(3);
     });
 
     test("a nonsensical count cannot invent a range past the run start", () => {
       const cursor = newCursor();
       nextEvent(cursor, "run1", 0);
-      // count larger than idx+1 clamps to covering from index 0.
-      expect(nextEvent(cursor, "run1", 4, 99).kind).toBe("apply");
+      // count larger than idx+1 clamps to covering from index 0 — an overlap,
+      // never a negative start and never a silent append.
+      expect(nextEvent(cursor, "run1", 4, 99)).toEqual({ kind: "overlap", fromIdx: 0 });
       const fresh = newCursor();
       // A first coalesced event still records the run as prefix-incomplete
       // unless it begins at zero.
