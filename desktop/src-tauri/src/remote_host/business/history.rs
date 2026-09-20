@@ -7,6 +7,16 @@ use super::{
     paginate_messages, prepare_backward_entries_page_with_cap, reply, DEFAULT_MESSAGE_PAGE_LIMIT,
 };
 
+/// The cursor meaning "the page at the end of the session". Clients open a
+/// conversation with `Number.MAX_SAFE_INTEGER`; anything at or above it is a
+/// first paint, and anything below it is a scrolled-up page.
+const NEWEST_PAGE_CURSOR: i64 = 9_007_199_254_740_991;
+
+fn is_newest_page(before: Option<i64>) -> bool {
+    // An absent cursor is the forward-paging path, which carries its own bounds.
+    before.is_none_or(|before| before >= NEWEST_PAGE_CURSOR)
+}
+
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
         "get_messages" => {
@@ -54,15 +64,19 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(data) => {
-                        // A chunked read has no transport limit, but it still
-                        // gets the page budget: an unbounded first page is a
-                        // first-paint cost on the phone, not a transport need.
-                        // Its content stays lossless (no per-item truncation).
+                        // The newest page is a first paint: the user is waiting
+                        // for the first screenful, so it pays the byte budget.
+                        // A scrolled-up page ("the page before this cursor") gets
+                        // whole user exchanges instead — trimming those only
+                        // splits the same bytes into more round trips, which is
+                        // what the one-second loading indicator shows the user.
+                        // Chunked content stays lossless either way.
+                        let first_paint = is_newest_page(cmd.before);
                         let page = prepare_backward_entries_page_with_cap(
                             &cmd.session_id,
                             data,
                             !cmd.chunked_read,
-                            true,
+                            first_paint,
                         );
                         reply(sink, true, page, None).await;
                     }
@@ -185,5 +199,30 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
         }
         _ => unreachable!("history handler received {}", cmd.cmd_type),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_newest_page, NEWEST_PAGE_CURSOR};
+
+    /// Only the page the user is waiting to see pays the byte budget. A page
+    /// asked for as "the one before cursor X" is a scroll-up, where trimming
+    /// the same bytes into more pages only adds round trips and loading-indicator
+    /// flashes.
+    #[test]
+    fn only_the_newest_page_is_a_first_paint() {
+        // How the mobile opens a conversation.
+        assert_eq!(NEWEST_PAGE_CURSOR, 9_007_199_254_740_991);
+        assert!(is_newest_page(Some(NEWEST_PAGE_CURSOR)));
+        // A cursor at or above the tail is still "from the end".
+        assert!(is_newest_page(Some(i64::MAX)));
+        // An absent cursor is the forward-paging path, bounded on its own.
+        assert!(is_newest_page(None));
+        // A real scroll-up cursor is not a first paint. These are the values
+        // the phone actually sends (session ordinals).
+        for before in [2_173_i64, 1_950, 859, 1, 0] {
+            assert!(!is_newest_page(Some(before)), "cursor {before}");
+        }
     }
 }
