@@ -1,28 +1,101 @@
-//! Session forking: cut a parent session at an entry and re-id the copy.
+//! Session forking: resolve a typed durable fork point, then re-id an
+//! independent snapshot of the parent journal.
 
 use super::entry::{SessionEntry, ENTRY_TYPE_SESSION_INFO};
 use super::model::{Session, CURRENT_SESSION_VERSION};
-use super::run_journal::is_run_marker;
 use crate::utils::{generate_entry_id, generate_id};
+use anyhow::{bail, Result};
 use chrono::Local;
+use serde::{Deserialize, Serialize};
 
-pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
-    let chain = for_each_entry(&parent.entries, from_entry_id);
-    // If from_entry_id wasn't found, for_each_entry returns every entry
-    // (never hits the break).  Guard against a bad entry ID silently
-    // producing an unforked clone.
-    if chain.is_empty() || chain.last().map(|e| e.id.as_str()) != Some(from_entry_id) {
-        // Fall back to cloning the whole session without a cut — better
-        // than losing history.  Callers should validate the entry ID first.
-        tracing::warn!(
-            "fork point {from_entry_id} not found in session {}; cloning without a cut",
-            parent.id
-        );
+/// Durable fork semantics. Clients identify one persisted entry and let the
+/// Agent resolve the journal boundary; they never infer a cut from UI ordinals
+/// or message text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "entry_id")]
+pub enum ForkPoint {
+    /// Include the selected entry only (legacy CLI/TUI behavior).
+    ThroughEntry(String),
+    /// Include the complete settled turn that starts at the selected user
+    /// entry, including tools and the terminal assistant response.
+    ThroughTurn(String),
+    /// Clone through the most recent settled run, excluding an active tail.
+    LatestSettled,
+}
+
+impl ForkPoint {
+    pub fn from_rpc(mode: &str, entry_id: &str) -> Result<Self> {
+        match mode {
+            "" | "through_entry" => {
+                if entry_id.is_empty() {
+                    bail!("No message selected to fork from. Choose a persisted message.");
+                }
+                Ok(Self::ThroughEntry(entry_id.to_string()))
+            }
+            "through_turn" => {
+                if entry_id.is_empty() {
+                    bail!("No message selected to fork from. Choose a persisted user message.");
+                }
+                Ok(Self::ThroughTurn(entry_id.to_string()))
+            }
+            "latest_settled" => Ok(Self::LatestSettled),
+            other => bail!("Unsupported fork point mode: {other}"),
+        }
     }
-    let mut entries: Vec<SessionEntry> = chain.into_iter().cloned().collect();
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkRequest {
+    pub request_id: String,
+    pub parent_session_id: String,
+    pub point: ForkPoint,
+    pub created_by: String,
+    pub creator_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForkResult {
+    pub session: Session,
+    pub created: bool,
+}
+
+#[cfg(test)]
+fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
+    build_fork_session(parent, &ForkPoint::ThroughEntry(from_entry_id.to_string()))
+        .expect("validated fork point")
+}
+
+pub fn build_fork_session(parent: &Session, point: &ForkPoint) -> Result<Session> {
+    let cutoff = resolve_cutoff(&parent.entries, point)?;
+    if parent.entries[..=cutoff]
+        .iter()
+        .any(|entry| entry.entry_type != ENTRY_TYPE_SESSION_INFO && entry.id.trim().is_empty())
+    {
+        bail!("Fork history contains an entry without a persisted identity");
+    }
+    let mut entries: Vec<SessionEntry> = parent.entries[..=cutoff]
+        .iter()
+        .filter(|entry| entry.entry_type != ENTRY_TYPE_SESSION_INFO)
+        .cloned()
+        .collect();
     let mut id_map = std::collections::HashMap::with_capacity(entries.len());
     for e in &mut entries {
         let old_id = std::mem::replace(&mut e.id, generate_entry_id());
+        let meta = e.meta.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(meta) = meta.as_object_mut() {
+            let source_run_id = meta
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            meta.insert(
+                "fork_origin".into(),
+                serde_json::json!({
+                    "session_id": parent.id,
+                    "entry_id": old_id.clone(),
+                    "run_id": source_run_id,
+                }),
+            );
+        }
         id_map.insert(old_id, e.id.clone());
     }
     // Copied history belongs to the child. Keep grouping, but never expose a
@@ -41,6 +114,31 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
             {
                 let new = run_ids.entry(old).or_insert_with(generate_id);
                 meta.insert("run_id".into(), serde_json::Value::String(new.clone()));
+            }
+        }
+        if matches!(
+            entry.entry_type.as_str(),
+            super::ENTRY_TYPE_RUN_STARTED | super::ENTRY_TYPE_RUN_TERMINAL
+        ) {
+            if let Some(content) = entry
+                .content
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                if let Some(old) = content
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                {
+                    let new = run_ids.entry(old.clone()).or_insert_with(generate_id);
+                    content.insert("run_id".into(), serde_json::Value::String(new.clone()));
+                    content.insert("inherited".into(), serde_json::Value::Bool(true));
+                    content.insert(
+                        "source_session_id".into(),
+                        serde_json::Value::String(parent.id.clone()),
+                    );
+                    content.insert("source_run_id".into(), serde_json::Value::String(old));
+                }
             }
         }
     }
@@ -184,7 +282,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         },
     );
     let now = Local::now();
-    Session {
+    Ok(Session {
         id: generate_id(),
         version: CURRENT_SESSION_VERSION,
         cwd: parent.cwd.clone(),
@@ -195,7 +293,7 @@ pub fn fork_session(parent: &Session, from_entry_id: &str) -> Session {
         entries,
         created_at: now,
         updated_at: now,
-    }
+    })
 }
 
 /// Replace the inherited provenance snapshot on a freshly forked session.
@@ -226,20 +324,92 @@ pub fn set_creation_provenance(session: &mut Session, created_by: &str, creator_
     }
 }
 
-fn for_each_entry<'a>(entries: &'a [SessionEntry], from_id: &str) -> Vec<&'a SessionEntry> {
-    // Include all entries from the beginning up to and including from_id,
-    // skipping the original session_info (fork_session prepends its own) and
-    // run lifecycle markers (they belong to the parent's runs, not the fork).
-    let mut result = vec![];
-    for e in entries.iter() {
-        if e.entry_type != ENTRY_TYPE_SESSION_INFO && !is_run_marker(&e.entry_type) {
-            result.push(e);
+fn resolve_cutoff(entries: &[SessionEntry], point: &ForkPoint) -> Result<usize> {
+    match point {
+        ForkPoint::ThroughEntry(entry_id) => entries
+            .iter()
+            .position(|entry| entry.id == *entry_id)
+            .ok_or_else(|| anyhow::anyhow!("Fork point not found in the parent session")),
+        ForkPoint::ThroughTurn(entry_id) => {
+            let start = entries
+                .iter()
+                .position(|entry| entry.id == *entry_id)
+                .ok_or_else(|| anyhow::anyhow!("Fork point not found in the parent session"))?;
+            if entries[start].entry_type != super::ENTRY_TYPE_USER {
+                bail!("A through_turn fork point must identify a persisted user message");
+            }
+            let end = entries
+                .iter()
+                .enumerate()
+                .skip(start + 1)
+                .find(|(_, entry)| entry.entry_type == super::ENTRY_TYPE_USER)
+                .map(|(index, _)| index.saturating_sub(1))
+                .unwrap_or_else(|| entries.len().saturating_sub(1));
+            let run_id = entries[start]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("run_id"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    entries[start..=end].iter().find_map(|entry| {
+                        (entry.entry_type == super::ENTRY_TYPE_RUN_STARTED)
+                            .then_some(entry.content.as_ref())
+                            .flatten()
+                            .and_then(|value| value.get("run_id"))
+                            .and_then(serde_json::Value::as_str)
+                    })
+                });
+            if let Some(run_id) = run_id {
+                let started = entries[start..=end].iter().any(|entry| {
+                    entry.entry_type == super::ENTRY_TYPE_RUN_STARTED
+                        && entry
+                            .content
+                            .as_ref()
+                            .and_then(|value| value.get("run_id"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some(run_id)
+                });
+                let settled = entries[start..=end].iter().any(|entry| {
+                    entry.entry_type == super::ENTRY_TYPE_RUN_TERMINAL
+                        && entry
+                            .content
+                            .as_ref()
+                            .and_then(|value| value.get("run_id"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some(run_id)
+                });
+                if started && !settled {
+                    bail!("The selected turn is not settled yet");
+                }
+            }
+            Ok(end)
         }
-        if e.id == from_id {
-            break;
+        ForkPoint::LatestSettled => {
+            if let Some((index, _)) = entries
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, entry)| entry.entry_type == super::ENTRY_TYPE_RUN_TERMINAL)
+            {
+                return Ok(index);
+            }
+            if entries
+                .iter()
+                .any(|entry| entry.entry_type == super::ENTRY_TYPE_RUN_STARTED)
+            {
+                bail!("Nothing to clone: the session has no settled run");
+            }
+            entries
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, entry)| entry.entry_type != ENTRY_TYPE_SESSION_INFO)
+                .map(|(index, _)| index)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Nothing to clone: the session has no settled history")
+                })
         }
     }
-    result
 }
 
 #[cfg(test)]
@@ -346,14 +516,123 @@ mod tests {
     }
 
     #[test]
-    fn fork_session_bad_entry_id_clones_all() {
+    fn fork_session_bad_entry_id_is_rejected() {
         let mut parent = Session::new("/tmp", "model");
         parent
             .entries
             .push(SessionEntry::new_user("user", serde_json::json!("hello")));
-        let forked = fork_session(&parent, "nonexistent_id");
-        // Should still produce a session with entries (fallback behavior)
-        assert!(!forked.entries.is_empty());
+        let error = build_fork_session(
+            &parent,
+            &ForkPoint::ThroughEntry("nonexistent_id".to_string()),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Fork point not found"));
+    }
+
+    #[test]
+    fn through_turn_rejects_an_unsettled_persisted_run() {
+        let mut user = SessionEntry::new_user("user", serde_json::json!("hello"));
+        user.meta = Some(serde_json::json!({"run_id": "run-open"}));
+        let user_id = user.id.clone();
+        let mut parent = Session::new("/tmp", "model");
+        parent.entries = vec![user, SessionEntry::run_started("run-open", 1)];
+
+        let error = build_fork_session(&parent, &ForkPoint::ThroughTurn(user_id))
+            .expect_err("active run must not be snapshotted as settled");
+        assert!(error.to_string().contains("not settled"));
+    }
+
+    #[test]
+    fn manager_create_fork_is_atomic_idempotent_and_preserves_the_turn() {
+        let (_dir, manager) = temp_manager("fork-operation");
+        let mut user = SessionEntry::new_user("user", serde_json::json!("first"));
+        user.meta = Some(serde_json::json!({"run_id": "parent-run"}));
+        let user_id = user.id.clone();
+        let mut assistant = SessionEntry::new_assistant(serde_json::json!("answer"), vec![]);
+        assistant.meta = Some(serde_json::json!({"run_id": "parent-run"}));
+        let next_user = SessionEntry::new_user("user", serde_json::json!("second"));
+        let mut parent = Session::snapshot(
+            "parent".to_string(),
+            "/tmp".to_string(),
+            "model".to_string(),
+            "Parent".to_string(),
+            String::new(),
+            vec![
+                SessionEntry::session_info(
+                    serde_json::json!({
+                        "cwd": "/tmp",
+                        "model": "model",
+                        "session_name": "Parent",
+                        "thinking_level": "low"
+                    }),
+                    "model".to_string(),
+                    "low".to_string(),
+                ),
+                user,
+                SessionEntry::run_started("parent-run", 1),
+                assistant,
+                SessionEntry::run_terminal("parent-run", RUN_STATE_COMPLETED, 7, 20, None),
+                next_user,
+            ],
+        );
+        for entry in &mut parent.entries {
+            entry.timestamp -= chrono::Duration::days(1);
+        }
+        manager.save(&parent).unwrap();
+        let request = ForkRequest {
+            request_id: "stable-request".to_string(),
+            parent_session_id: parent.id.clone(),
+            point: ForkPoint::ThroughTurn(user_id),
+            created_by: "desktop".to_string(),
+            creator_id: "device".to_string(),
+        };
+
+        let fork_started_at_ms = chrono::Utc::now().timestamp_millis();
+        let first = manager.create_fork(request.clone()).unwrap();
+        let fork_finished_at_ms = chrono::Utc::now().timestamp_millis();
+        let repeated = manager.create_fork(request.clone()).unwrap();
+        assert!(first.created);
+        assert!(!repeated.created);
+        assert_eq!(first.session.id, repeated.session.id);
+        assert_eq!(first.session.parent_session_id, "parent");
+        let child_created_at_ms = first.session.created_at.timestamp_millis();
+        assert!(
+            (fork_started_at_ms..=fork_finished_at_ms).contains(&child_created_at_ms),
+            "fork creation time must come from the fork transaction, not copied history"
+        );
+        assert_eq!(repeated.session.created_at, first.session.created_at);
+        assert_eq!(
+            first
+                .session
+                .entries
+                .iter()
+                .filter(|entry| entry.entry_type == ENTRY_TYPE_USER)
+                .count(),
+            1
+        );
+        assert!(first
+            .session
+            .entries
+            .iter()
+            .any(|entry| entry.entry_type == ENTRY_TYPE_ASSISTANT));
+        assert!(first
+            .session
+            .entries
+            .iter()
+            .any(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL));
+        let info = first.session.get_session_info().unwrap();
+        assert_eq!(info["created_by"], "desktop");
+        assert_eq!(info["creator_id"], "device");
+
+        let mut conflicting = request;
+        conflicting.point = ForkPoint::LatestSettled;
+        let error = manager.create_fork(conflicting).unwrap_err();
+        assert!(error.to_string().contains("different parameters"));
+        assert_eq!(
+            manager.list_all().unwrap().len(),
+            2,
+            "one parent and one child only"
+        );
     }
 
     #[test]
@@ -395,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_inherits_last_session_info_and_skips_markers() {
+    fn fork_inherits_last_session_info_and_preserves_run_outcome() {
         let (dir, manager) = temp_manager("fork-last");
         let info_v0 = SessionEntry::session_info(
             serde_json::json!({"cwd": "/a", "model": "old", "session_name": "orig", "thinking_level": "low"}),
@@ -432,12 +711,25 @@ mod tests {
             .unwrap();
 
         let parent = manager.load("s-fork").unwrap();
-        let forked = fork_session(&parent, &user_id);
+        let forked = build_fork_session(&parent, &ForkPoint::ThroughTurn(user_id)).unwrap();
         // The fork inherits the CURRENT (last) model/name, not the original.
         assert_eq!(forked.model, "new");
         assert!(forked.name.contains("renamed"));
-        // No run markers or duplicate session_info leak into the fork.
-        assert!(!forked.entries.iter().any(|e| is_run_marker(&e.entry_type)));
+        // Historical lifecycle markers are retained under child-local run ids
+        // so failure/cancellation/completion is not rewritten as success.
+        let markers = forked
+            .entries
+            .iter()
+            .filter(|entry| crate::session::is_run_marker(&entry.entry_type))
+            .collect::<Vec<_>>();
+        assert_eq!(markers.len(), 2);
+        assert!(markers.iter().all(|entry| {
+            entry
+                .content
+                .as_ref()
+                .and_then(|content| content.get("inherited"))
+                == Some(&serde_json::Value::Bool(true))
+        }));
         let info_count = forked
             .entries
             .iter()

@@ -147,6 +147,30 @@ fn open_connection(path: &Path) -> Result<Connection> {
             result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
             PRIMARY KEY(session_id,input_key)
         );
+        CREATE TABLE IF NOT EXISTS fork_operations (
+            request_id TEXT PRIMARY KEY NOT NULL,
+            request_fingerprint TEXT NOT NULL,
+            parent_session_id TEXT NOT NULL,
+            child_session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS fork_operations_parent
+            ON fork_operations(parent_session_id, created_at_ms);
+        UPDATE sessions AS child
+        SET created_at_ms = (
+            SELECT operation.created_at_ms
+            FROM fork_operations operation
+            WHERE operation.child_session_id = child.id
+        )
+        WHERE EXISTS (
+            SELECT 1
+            FROM fork_operations operation
+            WHERE operation.child_session_id = child.id
+              AND (
+                  child.created_at_ms IS NULL
+                  OR child.created_at_ms != operation.created_at_ms
+              )
+        );
         CREATE TABLE IF NOT EXISTS entries (
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             position INTEGER NOT NULL,
@@ -372,6 +396,37 @@ mod tests {
             assert_eq!((entries, imports), (0, 1));
             Ok(())
         }).unwrap();
+    }
+
+    #[test]
+    fn opening_repairs_fork_session_creation_time_from_the_operation_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let db = Database::open(&path).unwrap();
+        db.call(|connection| {
+            connection.execute_batch(
+                "INSERT INTO sessions(id,created_at_ms) VALUES ('parent',100),('child',100);
+                 INSERT INTO fork_operations(
+                    request_id,request_fingerprint,parent_session_id,
+                    child_session_id,created_at_ms
+                 ) VALUES ('request','{}','parent','child',200);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        drop(db);
+
+        let reopened = Database::open(&path).unwrap();
+        let created_at_ms = reopened
+            .call(|connection| {
+                Ok(connection.query_row(
+                    "SELECT created_at_ms FROM sessions WHERE id='child'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(created_at_ms, 200);
     }
 
     #[test]

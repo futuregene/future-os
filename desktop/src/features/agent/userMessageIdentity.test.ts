@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 
 it("places a late user event before its own assistant, not in another exchange", () => {
   const user = userMessageFromEvent({ entry_id: "u2", run_id: "r2", text: "same" })!;
+  expect(user.sourceEntryId).toBe("u2");
   const old = { ...user, id: "m_u1", runId: "r1" };
   const reply = { ...user, id: "assistant2", role: "assistant" as const };
   expect(upsertUserMessage([old, reply], user).map(message => message.id)).toEqual(["m_u1", "m_u2", "assistant2"]);

@@ -21,6 +21,7 @@ pub struct ThreadRecord {
     // model_provider, model_id, thinking_level — dropped, now from agent
     pub agent_session_id: Option<String>,
     pub parent_session_id: Option<String>,
+    pub asset_root_id: Option<String>,
     pub last_message_at: Option<i64>,
     pub last_opened_at: Option<i64>,
     pub created_at: i64,
@@ -33,7 +34,7 @@ pub struct ThreadRecord {
 // stored 0/1 integers (same as the prior explicit `i64 != 0`).
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     id, workspace_id, mode, title, status, pinned, readonly,
-    agent_session_id, parent_session_id, last_message_at, last_opened_at,
+    agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
     created_at, updated_at, archived_at, deleted_at,
 });
 
@@ -132,8 +133,8 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     tx.execute(
         "INSERT INTO threads (
              id, workspace_id, mode, title, status, pinned, readonly,
-             agent_session_id, last_opened_at, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?6, ?6, ?6)",
+             agent_session_id, asset_root_id, last_opened_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?1, ?6, ?6, ?6)",
         params![thread_id, workspace.id, mode, title, agent_session_id, now],
     )?;
 
@@ -176,6 +177,40 @@ pub fn get_or_create_thread_for_agent_session(
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     get_thread_in(&conn, thread_id)
+}
+
+/// Make a fork share the ancestor's durable attachment root. The root id is
+/// independent of the ancestor row's lifetime; cleanup retains the directory
+/// while any live descendant references it.
+pub fn inherit_thread_asset_root(
+    thread_id: &str,
+    parent_thread_id: &str,
+) -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    if conn.execute(
+        "UPDATE threads
+             SET asset_root_id = COALESCE(
+                 (SELECT NULLIF(asset_root_id, '') FROM threads WHERE id = ?2),
+                 ?2
+             ), updated_at = ?3
+         WHERE id = ?1",
+        params![thread_id, parent_thread_id, now_millis()],
+    )? == 0
+    {
+        return Err("Thread could not be loaded.".to_string().into());
+    }
+    Ok(())
+}
+
+pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::AppError> {
+    let conn = connect()?;
+    conn.query_row(
+        "SELECT COALESCE(NULLIF(asset_root_id, ''), id) FROM threads WHERE id = ?1",
+        [thread_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| "Thread could not be loaded.".to_string().into())
 }
 
 pub(super) fn get_thread_in(
@@ -988,6 +1023,31 @@ mod tests {
         let other = create_thread(chat_input()).expect("create unbound thread");
         assert!(update_thread_session_id(&other.id, "sess-one").is_err());
         assert!(update_thread_session_id(&other.id, "   ").is_err());
+    }
+
+    #[test]
+    fn fork_asset_root_is_reference_counted_by_live_descendants() {
+        let (_home, _conn) = guarded_conn("thread_asset_root");
+        let parent = create_thread(chat_input()).expect("parent");
+        let child = create_thread(chat_input()).expect("child");
+        inherit_thread_asset_root(&child.id, &parent.id).expect("inherit root");
+        assert_eq!(thread_asset_root_id(&parent.id).unwrap(), parent.id);
+        assert_eq!(thread_asset_root_id(&child.id).unwrap(), parent.id);
+
+        let root = crate::store::thread_images_dir(&parent.id).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("kept.png"), b"image").unwrap();
+
+        delete_thread(&parent.id).expect("delete parent");
+        crate::store::reconcile_orphan_images().expect("reconcile with child");
+        assert!(root.exists(), "live descendant must retain the shared root");
+
+        delete_thread(&child.id).expect("delete child");
+        crate::store::reconcile_orphan_images().expect("reconcile without owners");
+        assert!(
+            !root.exists(),
+            "last owner deletion releases the shared root"
+        );
     }
 
     #[test]

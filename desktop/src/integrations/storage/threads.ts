@@ -159,19 +159,18 @@ export async function getThreadCleanupSummary(threadId: string) {
 }
 
 /**
- * Fork the agent session at the given user message, returning the new session
- * id. `userMessageIndex` is the 0-based ordinal of the message among user
- * messages — the authoritative fork point; content is a fallback.
+ * Fork the agent session through the settled turn started by a canonical
+ * persisted user entry. `requestId` makes UI retries converge on one child.
  */
 export function forkThread(
   threadId: string,
-  userMessageContent: string,
-  userMessageIndex: number,
+  sourceEntryId: string,
+  requestId: string,
 ) {
   return invokeCommand<string>("fork_thread", {
     threadId,
-    userMessageContent,
-    userMessageIndex,
+    sourceEntryId,
+    requestId,
   });
 }
 

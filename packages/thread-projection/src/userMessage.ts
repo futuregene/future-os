@@ -21,7 +21,9 @@ export function userMessageFromEvent(payload: Record<string, unknown>): AgentMes
     metadata: { attachments: Array.isArray(payload.attachments) ? payload.attachments : [] },
   };
   const message = entriesToMessages([entry])[0];
-  return message ? { ...message, runId: payload.run_id } : null;
+  return message
+    ? { ...message, sourceEntryId: payload.entry_id, runId: payload.run_id }
+    : null;
 }
 
 /** Identity, never text, distinguishes retries from a new identical prompt. */

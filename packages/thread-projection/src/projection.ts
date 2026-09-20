@@ -198,6 +198,7 @@ function newExchangeAcc(): ExchangeAcc {
 function userMessageFromEntry(entry: SessionEntry, now: string): AgentMessage {
   return {
     id: `m_${entryKey(entry)}`,
+    sourceEntryId: entry.id,
     role: "user",
     authorKey: "author.you",
     content: entryText(entry),
@@ -332,6 +333,7 @@ function turnFromAcc(acc: ExchangeAcc): SessionTurn | null {
         : turnRunId
           ? `${failed ? "failed" : "stopped"}_${turnRunId}`
           : segId(),
+      sourceEntryId: acc.assistantEntryId,
       role: "assistant",
       authorKey: "author.researchCopilot",
       content: acc.finalText || textSegments.map((s) => s.text).join("\n"),

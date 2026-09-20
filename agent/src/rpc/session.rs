@@ -1321,6 +1321,7 @@ impl ServerSession {
             if !session.name.is_empty() {
                 self.session_name = session.name.clone();
             }
+            self.parent_session_id = session.parent_session_id.clone();
             // Restore metadata from session_info entry
             if let Some(info) = session.get_session_info() {
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {

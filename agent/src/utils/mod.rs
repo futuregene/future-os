@@ -3,30 +3,21 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-/// GenerateID creates a unique session ID with timestamp and random hex.
-/// Format: "20260508-090513-a1b2c3" (time-6randomhex for uniqueness)
+/// GenerateID creates a time-prefixed ID with a UUID-strength random suffix.
+/// The former 24-bit suffix had a meaningful birthday-collision risk during
+/// bursty imports/forks; 122 random UUID bits make identity independent of
+/// process timing and safe across machines.
 pub fn generate_id() -> String {
-    use rand::RngCore;
     let now = chrono::Local::now();
     let ts = now.format("%Y%m%d-%H%M%S").to_string();
-    let mut rng = rand::thread_rng();
-    let mut buf = [0u8; 3];
-    rng.fill_bytes(&mut buf);
-    let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
-    format!("{}-{}", ts, hex)
+    format!("{}-{}", ts, uuid::Uuid::new_v4().simple())
 }
 
-/// GenerateEntryID creates a time-sortable entry ID.
-/// Format: "20260508-090513-a1b2c3" (date-time-6randomhex)
+/// GenerateEntryID creates a time-prefixed, globally strong journal identity.
 pub fn generate_entry_id() -> String {
-    use rand::RngCore;
     let now = chrono::Local::now();
     let ts = now.format("%Y%m%d-%H%M%S").to_string();
-    let mut rng = rand::thread_rng();
-    let mut buf = [0u8; 3];
-    rng.fill_bytes(&mut buf);
-    let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
-    format!("{}-{}", ts, hex)
+    format!("{}-{}", ts, uuid::Uuid::new_v4().simple())
 }
 
 /// encode_cwd converts a filesystem path into a safe directory name using base32.
@@ -550,7 +541,7 @@ mod util_tests {
     fn generate_entry_id_format() {
         let id = generate_entry_id();
         // Format: YYYYMMDD-HHMMSS-hex
-        assert!(id.len() >= 21);
+        assert_eq!(id.len(), 48);
         let parts: Vec<&str> = id.split('-').collect();
         assert_eq!(parts.len(), 3);
     }

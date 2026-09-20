@@ -283,8 +283,8 @@ describe("storage invoke wrappers", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("batch_delete_threads", { input: { threadIds: ["t"], deleteFiles: false } });
     await getThreadCleanupSummary("t");
     expect(invokeMock).toHaveBeenLastCalledWith("get_thread_cleanup_summary", { threadId: "t" });
-    await forkThread("t", "content", 2);
-    expect(invokeMock).toHaveBeenLastCalledWith("fork_thread", { threadId: "t", userMessageContent: "content", userMessageIndex: 2 });
+    await forkThread("t", "entry-2", "request-2");
+    expect(invokeMock).toHaveBeenLastCalledWith("fork_thread", { threadId: "t", sourceEntryId: "entry-2", requestId: "request-2" });
     await getSessionEntries("t");
     expect(invokeMock).toHaveBeenLastCalledWith("get_session_entries", { threadId: "t" });
   });

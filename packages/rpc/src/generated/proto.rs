@@ -31,7 +31,8 @@ pub struct RpcCommand {
     /// Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
     #[prost(string, tag = "40")]
     pub level: ::prost::alloc::string::String,
-    /// Generic decision/rule mode (approval_result, add_session_rule).
+    /// Generic decision/rule mode. Fork accepts through_entry (legacy default),
+    /// through_turn, or latest_settled.
     #[prost(string, tag = "50")]
     pub mode: ::prost::alloc::string::String,
     /// Optional custom instructions for the compaction summariser.
@@ -109,7 +110,8 @@ pub struct RpcCommand {
     /// canonical id in the prompt acknowledgement.
     #[prost(string, tag = "142")]
     pub requested_run_id: ::prost::alloc::string::String,
-    /// Idempotency key for retrying StartRun independently of run identity.
+    /// Idempotency key for retrying StartRun or fork/clone independently of
+    /// transport command correlation identity.
     #[prost(string, tag = "143")]
     pub client_request_id: ::prost::alloc::string::String,
     /// Atomic behavior when the session already has an active run:

@@ -29,6 +29,8 @@ describe("entriesToMessages", () => {
     const messages = entriesToMessages(entries);
 
     expect(messages).toHaveLength(2);
+    expect(messages[0]?.sourceEntryId).toBe("u1");
+    expect(messages[1]?.sourceEntryId).toBe("a1");
     expect(messages[0]?.createdAt).toBe(new Date(userTs).toISOString());
     expect(messages[1]?.createdAt).toBe(new Date(asstTs).toISOString());
   });
