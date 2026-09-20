@@ -23,6 +23,8 @@ const mockRemote = {
   // and say so rather than invent a ¥0 breakdown.
   sessionUsage: null as RemoteSessionUsage | null,
   closeConversation: jest.fn(),
+  // The app re-reads the session as the sheet opens.
+  refreshSessionUsage: jest.fn(async () => {}),
   sessions: [] as RemoteSession[],
   workspaces: [] as RemoteWorkspace[],
   models: [],
@@ -197,6 +199,9 @@ test("the spend icon opens the usage sheet, and renaming is not duplicated here"
   const sheet = tree.root.findByType(SessionUsageSheet);
   expect(sheet.props.visible).toBe(true);
   expect(sheet.props.usage).toBe(mockRemote.sessionUsage);
+  // Opening the sheet re-reads the session: the cached amount can be a run
+  // behind, and the sheet is the moment it is looked at.
+  expect(mockRemote.refreshSessionUsage).toHaveBeenCalledTimes(1);
   // The sheet is an accounting view: closing it is its only action.
   expect(sheet.props.onRename).toBeUndefined();
 });

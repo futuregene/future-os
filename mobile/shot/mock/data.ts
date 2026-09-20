@@ -110,6 +110,23 @@ export const demoUnpricedSessionUsage = {
   costCacheWriteCny: 0,
 };
 
+/**
+ * What the same conversation returns once a later run has been paid for — the
+ * figure a fresh read produces. Each category grows by a whole number of
+ * tokens, so the rows still add up to the total at four decimals.
+ */
+export const demoRefreshedSessionUsage = {
+  inputTokens: 677_050,
+  outputTokens: 14_825,
+  cacheReadTokens: 437_750,
+  cacheWriteTokens: 20_900,
+  costCny: 1.3904,
+  costInputCny: 0.8736,
+  costOutputCny: 0.2372,
+  costCacheReadCny: 0.1751,
+  costCacheWriteCny: 0.1045,
+};
+
 const ANSWER = `两篇文献结论并不冲突，只是结论的**适用条件**不同。
 
 ## 结论对比

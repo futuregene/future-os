@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { IconButton } from "../../components/ui/IconButton";
+import { revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { SessionUsageDialog } from "./SessionUsageDialog";
 
@@ -64,7 +65,16 @@ export function ThreadHeader({
               data-testid="thread-usage"
               icon={<ReceiptText className="size-4" />}
               label={t("usage.open")}
-              onClick={() => setUsageOpen(true)}
+              onClick={() => {
+                // Read the session before showing its account book: the cached
+                // figure can be behind (a run that ended while this window was
+                // in the background, an event missed during a reconnect), and a
+                // spend panel that opens on yesterday's numbers is worse than
+                // one that opens a moment later. The cached values stay on
+                // screen until the fresh read lands.
+                revalidateAgentState(thread.id);
+                setUsageOpen(true);
+              }}
             />
           )
         : null}

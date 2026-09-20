@@ -294,6 +294,7 @@
         ]
       },
       "thread-usage": {
+        "_comment": "The mock answers later state reads with a larger figure (refreshedSessionUsage), so opening the dialog is asserted to show the refreshed total rather than re-displaying the header's cached amount.",
         "steps": [
           {
             "wait": 1200
@@ -305,10 +306,13 @@
             "tap": "Token 用量与金额"
           },
           {
-            "wait": 1200
+            "wait": 1500
           },
           {
             "shot": "d-thread-usage-dialog.png"
+          },
+          {
+            "eval": "(() => { const total = document.querySelector('[data-testid=usage-total]'); if (!total) throw new Error('the dialog did not open'); if (total.textContent !== '¥1.3904') throw new Error('the dialog shows a stale amount: ' + total.textContent); return 'refreshed'; })()"
           }
         ]
       },
@@ -761,6 +765,7 @@
         ]
       },
       "usage-sheet": {
+        "_comment": "Asserting ¥1.3904: opening the sheet re-reads the session, and the mock answers with a larger figure (demoRefreshedSessionUsage), so this proves the refreshed amount reached the UI rather than the sheet re-displaying the figure the top bar already had.",
         "steps": [
           {
             "wait": 900
@@ -797,6 +802,21 @@
           },
           {
             "shot": "m-usage-sheet.png"
+          },
+          {
+            "eval": "(() => { if (!document.body.innerText.includes('¥1.3904')) throw new Error('the refreshed amount did not reach the sheet'); return 'refreshed'; })()"
+          },
+          {
+            "eval": "(() => { const close = document.querySelector('[aria-label=\"关闭\"]'); if (!close) throw new Error('no close button in the sheet'); close.click(); return 'closed'; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const bar = document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]'); return bar ? 'bar present' : 'bar missing'; })()"
+          },
+          {
+            "shot": "m-usage-entry-refreshed.png"
           }
         ]
       },

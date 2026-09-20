@@ -395,6 +395,10 @@ export function ChatScreen() {
             onBack={goBack}
             onUsage={() => {
               Keyboard.dismiss();
+              // The sheet shows the session's spend, so read it as it opens: the
+              // figure is only as fresh as the last get_state, and this is the
+              // moment it is being looked at.
+              void remote.refreshSessionUsage();
               setUsageOpen(true);
             }}
             filesLabel={t("files.title")}

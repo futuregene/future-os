@@ -12,6 +12,11 @@ vi.mock("../../components/layout/LeftPanelTitlebarToggle", () => ({
   LeftPanelTitlebarToggle: () => null,
 }));
 
+const revalidateUsage = vi.fn();
+vi.mock("../../integrations/agent/agentStateCache", () => ({
+  revalidateAgentState: (threadId: string) => revalidateUsage(threadId),
+}));
+
 const thread = {
   id: "t1",
   title: "Priced conversation",
@@ -48,6 +53,7 @@ function render(element: Parameters<Root["render"]>[0]) {
 }
 
 it("opens the breakdown from an icon, and keeps the amount out of the header", async () => {
+  revalidateUsage.mockClear();
   const container = render(
     <ThreadHeader
       leftPanelExpanded
@@ -63,6 +69,10 @@ it("opens the breakdown from an icon, and keeps the amount out of the header", a
   expect(container.textContent).not.toContain("¥");
 
   await act(async () => button.click());
+
+  // Opening the panel re-reads the session: a cached figure can be a run behind,
+  // and the panel's whole job is to show what this conversation spent.
+  expect(revalidateUsage).toHaveBeenCalledWith("t1");
 
   // The dialog names the conversation and splits the tokens by category, with
   // the non-cached input remainder billed as plain input.
