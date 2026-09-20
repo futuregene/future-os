@@ -54,10 +54,15 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(data) => {
+                        // A chunked read has no transport limit, but it still
+                        // gets the page budget: an unbounded first page is a
+                        // first-paint cost on the phone, not a transport need.
+                        // Its content stays lossless (no per-item truncation).
                         let page = prepare_backward_entries_page_with_cap(
                             &cmd.session_id,
                             data,
                             !cmd.chunked_read,
+                            true,
                         );
                         reply(sink, true, page, None).await;
                     }
