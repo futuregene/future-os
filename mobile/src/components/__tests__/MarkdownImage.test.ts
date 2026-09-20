@@ -111,6 +111,21 @@ test("unsupported inline images retain the existing open-file fallback", async (
   expect(onOpenFile).toHaveBeenCalledWith("a.svg");
 });
 
+test("an image's intrinsic size sets the layout, and a renderer that omits it does not throw", () => {
+  const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn() };
+  act(() => { tree = create(render(loader)); });
+  const ratio = () => tree.root.findByType(Image).props.style[1].aspectRatio;
+  expect(ratio()).toBe(1.5);
+  act(() => tree.root.findByType(Image).props.onLoad({ nativeEvent: { source: { width: 400, height: 200 } } }));
+  expect(ratio()).toBe(2);
+  // react-native-web reports no `source` at all; the load callback must survive it
+  // (this threw "Cannot read properties of undefined (reading 'width')").
+  act(() => tree.root.findByType(Image).props.onLoad({ nativeEvent: {} }));
+  act(() => tree.root.findByType(Image).props.onLoad({}));
+  act(() => tree.root.findByType(Image).props.onLoad({ nativeEvent: { source: { width: 0, height: 0 } } }));
+  expect(ratio()).toBe(2);
+});
+
 test("local-link-wrapped images and formatted labels are not flattened into text", () => {
   const loader = { scope: "one", cached: () => "file:///cached.png", load: jest.fn() };
   act(() => { tree = create(render(loader, "[![chart](a.png)](./report.md) [**bold**](./report.md)")); });
