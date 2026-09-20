@@ -911,6 +911,74 @@
           }
         ]
       },
+      "image-zoom": {
+        "_comment": "Pinch and double-tap the preview with real TouchEvents and assert what RN applied, so a regression fails the run. The controller works in coordinates relative to the picture, so a centred pinch must leave the picture in place, which is asserted too (an earlier version anchored on a window origin measured once per layout, which a sliding-in sheet made stale — the pinch then threw the picture off screen). Absolute focal offsets are not asserted: the browser's measureInWindow is in page space while the dispatched touches are in viewport space, so in the harness only 'did the scale change' is meaningful (the anchor math is covered by zoomableImage.test.ts).",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -270
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "tap": "效应量对比"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const img = [...document.querySelectorAll('img')].filter(n => n.getBoundingClientRect().width > 100).sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width)[0]; if (!img) throw new Error('no preview image'); const touch = (x, y, id) => new Touch({ identifier: id, target: img, clientX: x, clientY: y, pageX: x, pageY: y }); const fire = (type, points, changed) => img.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, composed: true, touches: points, targetTouches: points, changedTouches: changed ?? points })); window.__zoomScale = () => { let node = img, t = 'none'; while (node && t === 'none') { t = getComputedStyle(node).transform; node = node.parentElement; } if (t === 'none') return 1; const parts = t.match(/matrix\\(([^)]+)\\)/); return parts ? parseFloat(parts[1].split(',')[0]) : 1; }; window.__zoomTranslate = () => { let node = img, t = 'none'; while (node && t === 'none') { t = getComputedStyle(node).transform; node = node.parentElement; } const parts = t === 'none' ? null : t.match(/matrix\\(([^)]+)\\)/); return parts ? { x: Number(parts[1].split(',')[4]), y: Number(parts[1].split(',')[5]) } : { x: 0, y: 0 }; }; window.__zoomPinch = () => { const r = img.getBoundingClientRect(); const cx = r.x + r.width / 2, cy = r.y + r.height / 2; const pair = (s) => [touch(cx - s, cy, 1), touch(cx + s, cy, 2)]; fire('touchstart', pair(30)); for (const s of [45, 60, 80, 100]) fire('touchmove', pair(s)); fire('touchend', [], pair(100)); }; window.__zoomDoubleTap = () => { const r = img.getBoundingClientRect(); const x = r.x + r.width * 0.3, y = r.y + r.height * 0.3; for (let i = 0; i < 2; i++) { const one = [touch(x, y, 1)]; fire('touchstart', one); fire('touchend', [], one); } }; return 1; })()"
+          },
+          {
+            "eval": "(() => { window.__zoomPinch(); return window.__zoomScale(); })()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const s = window.__zoomScale(); const t = window.__zoomTranslate(); if (!(s > 1.5)) throw new Error('pinch did not zoom, scale=' + s); if (Math.abs(t.x) > 40 || Math.abs(t.y) > 40) throw new Error('the pinched picture left its focal point: ' + JSON.stringify(t)); return { scale: s, translate: t }; })()"
+          },
+          {
+            "shot": "m-image-pinched.png"
+          },
+          {
+            "eval": "(() => { window.__zoomDoubleTap(); return 'tapped'; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const s = window.__zoomScale(); if (!(s < 1.5)) throw new Error('double-tap did not return to fit, scale=' + s); return s; })()"
+          },
+          {
+            "shot": "m-image-double-tap.png"
+          }
+        ]
+      },
       "slash-skills": {
         "steps": [
           {
