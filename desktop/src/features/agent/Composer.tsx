@@ -5,7 +5,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
@@ -834,20 +834,39 @@ function ComposerImpl({
                 </button>
               )
             : (
-                <button
-                  className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                  disabled={
-                    (inputEmpty && attachments.length === 0)
-                    || disabled
-                    || sendPending
-                    || compactionPending
-                  }
-                  type="submit"
-                  aria-label={t("composer.send")}
-                  title={t("composer.send")}
-                >
-                  <ArrowUp className="size-3.5" />
-                </button>
+                <>
+                  {/* Compaction blocks submission for as long as the agent
+                      takes to summarize (minutes on a long conversation) and
+                      the send button below has no room to say why. Without
+                      this the composer looks inert: typed text stays, Enter
+                      does nothing. */}
+                  {compactionPending
+                    ? (
+                        <span
+                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
+                          role="status"
+                        >
+                          {t("composer.compacting")}
+                        </span>
+                      )
+                    : null}
+                  <button
+                    className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+                    disabled={
+                      (inputEmpty && attachments.length === 0)
+                      || disabled
+                      || sendPending
+                      || compactionPending
+                    }
+                    type="submit"
+                    aria-label={compactionPending ? t("composer.compacting") : t("composer.send")}
+                    title={compactionPending ? t("composer.compacting") : t("composer.send")}
+                  >
+                    {compactionPending
+                      ? <Loader2 className="size-3.5 animate-spin" />
+                      : <ArrowUp className="size-3.5" />}
+                  </button>
+                </>
               )}
         </div>
       </div>
