@@ -59,14 +59,18 @@ pub struct UserMessageData {
 pub struct ThinkingDeltaData {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub block_id: String,
 }
 
-/// thinking_start / thinking_end: lifecycle markers (no payload today, but
-/// tolerate a text fragment if a provider ever sends one).
+/// thinking_start / thinking_end: lifecycle markers. `block_id` correlates
+/// deltas even when text arrives before the provider closes its reasoning.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThinkingMarkerData {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub block_id: String,
 }
 
 // ── run lifecycle ────────────────────────────────────────────────────────────

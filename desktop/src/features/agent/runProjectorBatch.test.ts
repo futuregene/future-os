@@ -40,6 +40,26 @@ describe("deferred projector snapshots", () => {
     }
   });
 
+  it("fork preserves active reasoning identity across interleaved answer text", () => {
+    const original = createRunProjector();
+    original.ingest([
+      event(0, "thinking_start", { block_id: "reasoning" }),
+      event(1, "thinking_delta", { block_id: "reasoning", text: "thought" }),
+      event(2, "text_chunk", { text: "不" }),
+    ]);
+    const fork = original.fork();
+
+    fork.ingest([
+      event(3, "thinking_delta", { block_id: "reasoning", text: " tail" }),
+      event(4, "text_chunk", { text: "完全是" }),
+    ]);
+
+    expect(fork.snapshot().segments.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    expect(fork.snapshot().content).toBe("不完全是");
+    expect(original.snapshot().thinking).toBe("thought");
+    expect(original.snapshot().content).toBe("不");
+  });
+
   it("fork isolates tools, compaction, usage, retry and terminal flags", () => {
     const original = createRunProjector({ preferEndTokens: true });
     original.ingest([

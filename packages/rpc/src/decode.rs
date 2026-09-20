@@ -857,10 +857,19 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
         .ok(),
         K::ThinkingDelta(data) => serde_json::to_value(ev::ThinkingDeltaData {
             text: data.text.clone(),
+            block_id: data.block_id.clone(),
         })
         .ok(),
-        K::ThinkingStart(_) => serde_json::to_value(ev::ThinkingMarkerData::default()).ok(),
-        K::ThinkingEnd(_) => serde_json::to_value(ev::ThinkingMarkerData::default()).ok(),
+        K::ThinkingStart(data) => serde_json::to_value(ev::ThinkingMarkerData {
+            block_id: data.block_id.clone(),
+            ..Default::default()
+        })
+        .ok(),
+        K::ThinkingEnd(data) => serde_json::to_value(ev::ThinkingMarkerData {
+            block_id: data.block_id.clone(),
+            ..Default::default()
+        })
+        .ok(),
         K::AgentStart(data) => serde_json::to_value(ev::AgentStartData {
             started_at_ms: data.started_at_ms,
         })
@@ -1162,6 +1171,7 @@ mod tests {
                         kind: Some(proto::event_payload::Kind::ThinkingDelta(
                             proto::ThinkingDelta {
                                 text: "streamed thought".to_string(),
+                                block_id: String::new(),
                             },
                         )),
                     }),

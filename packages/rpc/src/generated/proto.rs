@@ -697,17 +697,26 @@ pub struct TextChunk {
     #[prost(string, tag = "1")]
     pub text: ::prost::alloc::string::String,
 }
-/// No payload fields today; the message exists so the event type is typed.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ThinkingStart {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingStart {
+    /// Provider block identity, used to join late deltas back to this block.
+    #[prost(string, tag = "1")]
+    pub block_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ThinkingDelta {
     #[prost(string, tag = "1")]
     pub text: ::prost::alloc::string::String,
+    /// Provider block identity, used to preserve reasoning/text interleaving.
+    #[prost(string, tag = "2")]
+    pub block_id: ::prost::alloc::string::String,
 }
-/// No payload fields today.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ThinkingEnd {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingEnd {
+    /// Provider block identity, used to close the matching block.
+    #[prost(string, tag = "1")]
+    pub block_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct AgentStart {
     /// Wall-clock run start (ms since epoch) for anchoring elapsed timers.

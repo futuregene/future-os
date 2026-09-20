@@ -655,15 +655,19 @@ message TextChunk {
 }
 
 message ThinkingStart {
-  // No payload fields today; the message exists so the event type is typed.
+  // Provider block identity, used to join late deltas back to this block.
+  string block_id = 1;
 }
 
 message ThinkingDelta {
   string text = 1;
+  // Provider block identity, used to preserve reasoning/text interleaving.
+  string block_id = 2;
 }
 
 message ThinkingEnd {
-  // No payload fields today.
+  // Provider block identity, used to close the matching block.
+  string block_id = 1;
 }
 
 message AgentStart {
