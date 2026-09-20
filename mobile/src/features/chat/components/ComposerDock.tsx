@@ -33,7 +33,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
-import type { MobileAttachment, TimelineItem } from "../../../remote/types";
+import type { MobileAttachment, RemoteSkill, TimelineItem } from "../../../remote/types";
 import {
   chatTypography,
   colors,
@@ -45,6 +45,7 @@ import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
+import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillPicker } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
@@ -105,6 +106,9 @@ function ComposerDockView({
   keyboardHeight?: number;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
+  // The skill whose description is open. Owned here rather than by the picker,
+  // which is unmounted as soon as the composer loses its slash token.
+  const [skillDetails, setSkillDetails] = useState<RemoteSkill | null>(null);
   const { width, height, fontScale } = useWindowDimensions();
   const compactToolbar = width < 380 || fontScale > 1.2;
   // A running reply blocks sending, not drafting the next message. Keep the
@@ -213,6 +217,8 @@ function ComposerDockView({
             load={remote.listSkills}
             onSelect={completion.select}
             onClose={completion.close}
+            onShowDetails={skill => setSkillDetails(current => current?.name === skill.name ? null : skill)}
+            detailsName={skillDetails?.name ?? null}
             maxHeight={pickerHeight}
             actions={slashActions}
             onActionSelect={completion.runAction}
@@ -486,6 +492,7 @@ function ComposerDockView({
           )}
         </View>
       </View>
+      <SkillDetailsDialog onClose={() => setSkillDetails(null)} skill={skillDetails} />
     </View>
   );
 }

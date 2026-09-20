@@ -1144,6 +1144,59 @@
         ],
         "note": "Composer focus via eval: a touch tap on the textarea opens the thinking-level sheet first."
       },
+      "slash-skill-description": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "/software"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "shot": "m-slash-skill-row.png"
+          },
+          {
+            "eval": "const info = [...document.querySelectorAll('[role=\"button\"]')].find(el => /详情/.test(el.getAttribute('aria-label') || '')); if (!info) throw new Error('the skills menu has no description button'); info.click(); 'opened'"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "if (!document.body.innerText.includes('/future-software-install')) throw new Error('the description dialog did not open'); 'ok'"
+          },
+          {
+            "shot": "m-skill-description.png"
+          }
+        ],
+        "note": "Opened by eval click: the description button sits in a row that the emulated tap offset would miss."
+      },
       "compact-context": {
         "steps": [
           {

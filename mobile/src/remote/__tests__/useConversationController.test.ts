@@ -219,6 +219,42 @@ describe("installed skills", () => {
     await expect(h.result.current!.listSkills()).rejects.toThrow("skills_invalid_response");
     act(() => h.renderer.unmount());
   });
+
+  it("fills missing zh text from the platform catalogue and keeps frontmatter's own", async () => {
+    const skills = [
+      { name: "future-software-install", description: "Install tools" },
+      { name: "my-skill", description: "Mine", nameZh: "我的技能", descriptionZh: "自述" },
+    ];
+    const catalogue = [
+      { id: "future-software-install", name: "Software install", nameZh: "轻量软件安装", descriptionZh: "安装命令行工具" },
+      { id: "my-skill", name: "Mine", nameZh: "目录名", descriptionZh: "目录自述" },
+    ];
+    const requestRetry = jest.fn(async () => ({ data: { skills: catalogue } }));
+    const h = await mountController({ request: jest.fn(async () => ({ data: { skills } })), requestRetry });
+    await expect(current(h).listSkills()).resolves.toEqual([
+      { name: "future-software-install", description: "Install tools",
+        nameZh: "轻量软件安装", descriptionZh: "安装命令行工具" },
+      // Frontmatter wins over the catalogue, which only fills gaps.
+      { name: "my-skill", description: "Mine", nameZh: "我的技能", descriptionZh: "自述" },
+    ]);
+    // The catalogue is read once per connection, not on every open of the menu.
+    await current(h).listSkills();
+    expect(requestRetry).toHaveBeenCalledTimes(1);
+    expect(requestRetry).toHaveBeenCalledWith(
+      { type: "list_available_skills", chunkedRead: true }, "settings",
+    );
+    act(() => h.renderer.unmount());
+  });
+
+  it("still lists skills when the catalogue is unavailable", async () => {
+    const skills = [{ name: "web", description: "Search" }];
+    const h = await mountController({
+      request: jest.fn(async () => ({ data: { skills } })),
+      requestRetry: jest.fn(async () => { throw new Error("offline"); }),
+    });
+    await expect(current(h).listSkills()).resolves.toEqual(skills);
+    act(() => h.renderer.unmount());
+  });
 });
 
 describe("session file browsing", () => {

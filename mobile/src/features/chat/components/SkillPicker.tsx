@@ -1,47 +1,22 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, X } from "lucide-react-native";
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { DialogSurface } from "../../../components/DialogSurface";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { RemoteSkill } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { filterActions, filterSkills, type SlashAction } from "../skillCompletion";
 
-/** One skill's full description. The picker panel is capped to a slice of the
- * screen above the composer, so a description expanded inside a row could only
- * ever show a few lines; the dialog gets the whole viewport instead. */
-function SkillDetailsDialog({ name, command, description, onClose, closeLabel }: {
-  name: string;
-  /** Shown only when the displayed name is not the command itself. */
-  command?: string;
-  description: string;
-  onClose: () => void;
-  closeLabel: string;
-}) {
-  return (
-    <Modal animationType="fade" onRequestClose={onClose} transparent visible>
-      <DialogSurface>
-        <View style={styles.dialogHeader}>
-          <Text accessibilityRole="header" style={styles.dialogTitle} numberOfLines={3}>{name}</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel={closeLabel}
-            onPress={onClose} style={({ pressed }) => [styles.dialogClose, pressed && styles.pressed]}>
-            <X color={colors.inkSoft} size={20} />
-          </Pressable>
-        </View>
-        {command ? <Text style={styles.dialogCommand}>{command}</Text> : null}
-        <Text style={styles.dialogDescription}>{description}</Text>
-      </DialogSurface>
-    </Modal>
-  );
-}
-
 /** Mounted only while completing a token. Reopening refreshes installed skills. */
-export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeight, actions = [], onActionSelect }: {
+export function SkillPicker({ query, supported, load, onSelect, onClose, onShowDetails, detailsName, maxHeight, actions = [], onActionSelect }: {
   query: string;
   supported: boolean;
   load: () => Promise<RemoteSkill[]>;
   onSelect: (name: string) => void;
   onClose: () => void;
+  /** Opens a skill's description; the surface itself lives with the composer. */
+  onShowDetails: (skill: RemoteSkill) => void;
+  /** Skill whose description is currently on screen, for the row's state. */
+  detailsName?: string | null;
   maxHeight: number;
   /** Context actions, rendered above the skills they can be confused with. */
   actions?: SlashAction[];
@@ -52,7 +27,6 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
   const [skills, setSkills] = useState<RemoteSkill[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [attempt, setAttempt] = useState(0);
-  const [detailName, setDetailName] = useState<string | null>(null);
   useEffect(() => {
     if (!supported) return;
     let cancelled = false;
@@ -68,13 +42,6 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
   const matches = filterSkills(skills, query);
   const matchedActions = filterActions(actions, query);
   const useZh = i18n.language.startsWith("zh");
-  // A skill that stops matching (the query changed) closes its dialog with it.
-  const detail = detailName ? matches.find(skill => skill.name === detailName) : undefined;
-  if (detailName && !detail) setDetailName(null);
-  const detailZhName = detail && useZh ? detail.nameZh : undefined;
-  const detailDescription = detail
-    ? useZh ? detail.descriptionZh || detail.description : detail.description
-    : "";
   return (
     <View style={[styles.panel, { maxHeight }]}>
       <View style={styles.header}>
@@ -116,7 +83,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
             // The row names the skill; only a localized name differs from the
             // command, so only then is the command worth spelling out.
             const zhName = useZh ? skill.nameZh : undefined;
-            const expanded = detailName === skill.name;
+            const expanded = detailsName === skill.name;
             return (
               <View key={skill.name} style={styles.option}>
                 <View style={styles.row}>
@@ -131,7 +98,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
                   <Pressable accessibilityRole="button"
                     accessibilityLabel={t("skills.details", { name: skill.name })}
                     accessibilityState={{ expanded }}
-                    onPress={() => setDetailName(expanded ? null : skill.name)}
+                    onPress={() => onShowDetails(skill)}
                     style={({ pressed }) => [styles.detailsButton, (pressed || expanded) && styles.pressed]}>
                     <Info color={colors.inkMuted} size={18} />
                   </Pressable>
@@ -140,15 +107,6 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
             );
           })}
       </ScrollView>
-      {detail && (
-        <SkillDetailsDialog
-          closeLabel={t("common.close")}
-          command={detailZhName ? `/${detail.name}` : undefined}
-          description={detailDescription}
-          name={detailZhName || detail.name}
-          onClose={() => setDetailName(null)}
-        />
-      )}
     </View>
   );
 }
@@ -166,11 +124,6 @@ const styles = StyleSheet.create({
   pressed: { backgroundColor: colors.surfaceSubtle },
   name: { maxWidth: "50%", flexShrink: 1, fontSize: 14, fontWeight: "600", color: colors.ink },
   description: { flex: 1, minWidth: 0, fontSize: 12, color: colors.inkSoft },
-  dialogHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
-  dialogTitle: { flex: 1, minWidth: 0, paddingVertical: spacing.sm, fontSize: 18, fontWeight: "700", color: colors.inkStrong },
-  dialogClose: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
-  dialogCommand: { fontSize: 13, color: colors.inkMuted },
-  dialogDescription: { fontSize: 14, lineHeight: 21, color: colors.inkSoft },
   hint: { fontSize: 13, color: colors.inkSoft, padding: spacing.md, flexShrink: 1 },
   loading: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md },
   retry: { minHeight: 44, justifyContent: "center", alignItems: "center" },
