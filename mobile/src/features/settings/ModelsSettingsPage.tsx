@@ -82,8 +82,10 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
     for (const model of resource.data ?? []) {
       const provider = model.provider ?? "";
       // A provider with no credential cannot be called, so its models are not
-      // offered here. Models the desktop reports without a provider are kept —
-      // there is nothing to judge them by.
+      // offered here. That deliberately includes a user-defined provider left
+      // keyless (a local Ollama-style endpoint): this page only manages the
+      // providers the desktop holds a credential for. Models the desktop
+      // reports without a provider are kept — there is nothing to judge them by.
       if (provider && callable && !callable.has(provider)) continue;
       const name = providerNames.get(provider) ?? provider;
       if (needle && !`${provider} ${name} ${model.label ?? ""} ${model.id}`.toLowerCase().includes(needle)) continue;

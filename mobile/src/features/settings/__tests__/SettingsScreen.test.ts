@@ -161,6 +161,34 @@ test("a search opens matching groups, and a keyless desktop explains the empty l
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noUsableProviders");
 });
 
+test("a keyless user-defined provider is dropped as well — hiding it is deliberate", async () => {
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  // A local endpoint the agent can call without a key is still not offered here:
+  // the page manages credentialed providers only.
+  providers = {
+    builtin: [],
+    custom: [{
+      id: "two",
+      name: "Local Ollama",
+      api: "openai-completions",
+      baseUrl: "http://127.0.0.1:11434/v1",
+      hasApiKey: false,
+      models: [],
+    }],
+  };
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => link("desktopSettings.models").props.onPress());
+  expect(headings()).toEqual([]);
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noUsableProviders");
+
+  // Giving it a key brings its models back, under the desktop's display name.
+  providers = { ...providers, custom: [{ ...providers.custom[0]!, hasApiKey: true }] };
+  mockRemote.desktopSettingsRevision++;
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await flush();
+  expect(headings()).toEqual(["Local Ollama"]);
+});
+
 test("skill operations target desktop and removal needs confirmation", async () => {
   await act(async () => link("desktopSettings.skills").props.onPress());
   expect(mockRemote.listInstalledSkills).toHaveBeenCalled();
