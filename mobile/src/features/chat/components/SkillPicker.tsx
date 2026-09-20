@@ -78,6 +78,8 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
             : <Text style={styles.hint}>{t(skills.length ? "skills.noResults" : "skills.empty")}</Text>)
           : matches.map(skill => {
             const description = useZh ? skill.descriptionZh || skill.description : skill.description;
+            // Only worth showing the command when the row shows a different (localized) name.
+            const zhName = useZh ? skill.nameZh : undefined;
             const expanded = detailName === skill.name;
             return (
               <View key={skill.name} style={styles.option}>
@@ -87,7 +89,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
                     accessibilityHint={description}
                     onPress={() => onSelect(skill.name)}
                     style={({ pressed }) => [styles.select, pressed && styles.pressed]}>
-                    <Text numberOfLines={1} style={styles.name}>{useZh && skill.nameZh ? skill.nameZh : skill.name}</Text>
+                    <Text numberOfLines={1} style={styles.name}>{zhName || skill.name}</Text>
                     <Text numberOfLines={1} style={styles.description}>{description}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button"
@@ -100,7 +102,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
                 </View>
                 {expanded && (
                   <View style={styles.details}>
-                    <Text style={styles.command}>{`/${skill.name}`}</Text>
+                    {zhName ? <Text style={styles.command}>{`/${skill.name}`}</Text> : null}
                     <Text style={styles.detailDescription}>{description}</Text>
                   </View>
                 )}

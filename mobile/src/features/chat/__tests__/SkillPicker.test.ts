@@ -2,11 +2,12 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SkillPicker } from "../components/SkillPicker";
+import type { RemoteSkill } from "../../../remote/types";
 
 jest.mock("lucide-react-native", () => ({ Info: () => null, X: () => null }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh" } }) }));
 
-const skills = [{ name: "future-web", description: "Search pages", nameZh: "网页搜索", descriptionZh: "读取网页" }];
+const skills: RemoteSkill[] = [{ name: "future-web", description: "Search pages", nameZh: "网页搜索", descriptionZh: "读取网页" }];
 const load = jest.fn(async () => skills);
 const onSelect = jest.fn();
 const onClose = jest.fn();
@@ -112,4 +113,14 @@ test("late replies from a previous desktop cannot populate the new picker", asyn
   await act(async () => { resolve(skills); });
   expect(texts()).toContain("skills.empty");
   expect(texts()).not.toContain("网页搜索");
+});
+
+test("details do not repeat the command when the row already shows it as the name", async () => {
+  load.mockResolvedValueOnce([{ name: "lark-doc", description: "Feishu docs" }]);
+  await act(async () => { tree = create(createElement(SkillPicker, props)); });
+  expect(texts()).toContain("lark-doc");
+  const details = tree.root.findAll(node => node.props.accessibilityLabel === "skills.details" && node.props.onPress)[0]!;
+  act(() => details.props.onPress());
+  expect(texts()).toContain("Feishu docs");
+  expect(texts()).not.toContain("/lark-doc");
 });
