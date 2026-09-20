@@ -60,6 +60,8 @@ type Slot
     | {
         type: "compaction";
         id: string;
+        /** Checkpoint the committed divider renders (absent while it is pending). */
+        checkpointId?: string;
         tokensBefore: number;
         trigger?: string;
         status: "running" | "completed" | "failed";
@@ -294,6 +296,8 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           : undefined;
         if (pending?.type === "compaction") {
           pending.id = id;
+          if (record && typeof record.checkpoint_id === "string")
+            pending.checkpointId = record.checkpoint_id;
           pending.tokensBefore = numberFromPayload(payload, ["tokens_before", "tokensBefore"]);
           if (record && typeof record.trigger === "string")
             pending.trigger = record.trigger;
@@ -303,6 +307,9 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           slots.push({
             type: "compaction",
             id,
+            ...(record && typeof record.checkpoint_id === "string"
+              ? { checkpointId: record.checkpoint_id }
+              : {}),
             tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
             ...(record && typeof record.trigger === "string" ? { trigger: record.trigger } : {}),
             status: "completed",
@@ -598,6 +605,7 @@ function buildSegments(
       segments.push({
         kind: "compaction",
         id: slot.id,
+        ...(slot.checkpointId ? { checkpointId: slot.checkpointId } : {}),
         ...(slot.tokensBefore > 0 ? { tokensBefore: slot.tokensBefore } : {}),
         ...(slot.trigger ? { trigger: slot.trigger } : {}),
         ...(slot.status !== "completed" ? { status: slot.status } : {}),

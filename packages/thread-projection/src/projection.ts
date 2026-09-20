@@ -177,6 +177,11 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
       {
         id: `seg_${key}_compaction`,
         kind: "compaction",
+        // The checkpoint is the divider's identity: the live projection renders
+        // the same checkpoint while the run is still streaming, under its own id.
+        ...(entry.checkpoint?.checkpointId
+          ? { checkpointId: entry.checkpoint.checkpointId }
+          : {}),
         ...(tokensBefore ? { tokensBefore } : {}),
         ...(entry.checkpoint?.trigger
           ? { trigger: entry.checkpoint.trigger }
