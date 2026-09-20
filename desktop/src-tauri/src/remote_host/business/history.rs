@@ -17,6 +17,18 @@ fn is_newest_page(before: Option<i64>) -> bool {
     before.is_none_or(|before| before >= NEWEST_PAGE_CURSOR)
 }
 
+/// Whether a backward page pays the byte budget, which costs one round trip per
+/// deferred exchange but caps what a single reply has to carry.
+///
+/// A non-chunked client has one reply to fit, so every page it reads is
+/// bounded — budget or not, the reply has to fit, and an oversized one is
+/// rejected outright. Only a chunked reader may trade the budget away, and only
+/// on a scroll-up, where the deferred exchange is the *next* pull rather than
+/// the screen the user is waiting for.
+fn enforce_backward_page_bytes(chunked_read: bool, before: Option<i64>) -> bool {
+    !chunked_read || is_newest_page(before)
+}
+
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
     match cmd.cmd_type.as_str() {
         "get_messages" => {
@@ -64,19 +76,25 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(data) => {
-                        // The newest page is a first paint: the user is waiting
-                        // for the first screenful, so it pays the byte budget.
-                        // A scrolled-up page ("the page before this cursor") gets
-                        // whole user exchanges instead — trimming those only
-                        // splits the same bytes into more round trips, which is
-                        // what the one-second loading indicator shows the user.
-                        // Chunked content stays lossless either way.
-                        let first_paint = is_newest_page(cmd.before);
+                        // A chunked first paint is the one page that pays the
+                        // byte budget for a reader who is waiting: dropping the
+                        // oldest complete exchange sends it to the next pull
+                        // instead of delaying the first screenful.
+                        //
+                        // Everything else keeps its whole exchanges: a
+                        // scrolled-up chunked page (trimming it only splits the
+                        // same bytes into more round trips, which is what the
+                        // one-second loading indicator shows the user), and a
+                        // non-chunked page, which must still fit one reply — an
+                        // unbounded one is rejected as `remote_reply_too_large`,
+                        // so a legacy client would lose the page entirely.
+                        let enforce_page_bytes =
+                            enforce_backward_page_bytes(cmd.chunked_read, cmd.before);
                         let page = prepare_backward_entries_page_with_cap(
                             &cmd.session_id,
                             data,
                             !cmd.chunked_read,
-                            first_paint,
+                            enforce_page_bytes,
                         );
                         reply(sink, true, page, None).await;
                     }
@@ -204,7 +222,31 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newest_page, NEWEST_PAGE_CURSOR};
+    use super::{enforce_backward_page_bytes, is_newest_page, NEWEST_PAGE_CURSOR};
+
+    /// The page budget exists for first paint, but a legacy client has no
+    /// second chance at a page it cannot fit: it receives one reply, and an
+    /// oversized one comes back as `remote_reply_too_large`. So the trade-off
+    /// (whole exchanges, one extra round trip per deferred exchange) is only
+    /// available to a chunked scroll-up.
+    #[test]
+    fn a_legacy_page_always_pays_the_byte_budget() {
+        for before in [None, Some(NEWEST_PAGE_CURSOR), Some(2_173), Some(0)] {
+            assert!(
+                enforce_backward_page_bytes(false, before),
+                "non-chunked page with before {before:?}"
+            );
+        }
+    }
+
+    /// The chunked lane keeps the first paint bounded and the scroll-up whole.
+    #[test]
+    fn only_a_chunked_scroll_up_trades_the_budget_for_fewer_round_trips() {
+        assert!(enforce_backward_page_bytes(true, None));
+        assert!(enforce_backward_page_bytes(true, Some(NEWEST_PAGE_CURSOR)));
+        assert!(!enforce_backward_page_bytes(true, Some(2_173)));
+        assert!(!enforce_backward_page_bytes(true, Some(0)));
+    }
 
     /// Only the page the user is waiting to see pays the byte budget. A page
     /// asked for as "the one before cursor X" is a scroll-up, where trimming
