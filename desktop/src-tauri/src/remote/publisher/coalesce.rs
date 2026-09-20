@@ -14,7 +14,7 @@
 //! replacement, so a client that appends each event's text ends up with exactly
 //! the text it would have had; nothing about the rendered result changes.
 //!
-//! Two rules keep ordering honest:
+//! Four rules keep the merge honest:
 //!
 //! * Any non-fragment event flushes the buffer first, so a tool result can
 //!   never overtake the arguments it follows. One stream's fragments are
@@ -24,6 +24,19 @@
 //!   `eventId`, `timestamp` — because its content now covers every source index
 //!   up to that one. The covered count rides along in `coalescedCount`, which
 //!   is how a client distinguishes a merged index jump from a lost range.
+//! * Merging requires the *whole* identity the client routes and dedups on:
+//!   session, run, epoch, event type, tool and reasoning block. This queue carries
+//!   every session at once, so a key of type + tool alone merged one's tokens into
+//!   another's event — published on whichever subject the last fragment
+//!   belonged to, which the client attributes by subject.
+//! * Merging requires *consecutive* source indices. `coalescedCount` is a claim
+//!   that every index in the range arrived, so a group spanning a hole would
+//!   silently cover an event the queue dropped — the client would advance past
+//!   it and never heal. Non-consecutive fragments publish separately and the
+//!   client's existing gap detection still recovers the hole.
+//! * The merged payload stays inside the per-event byte budget: fragments are
+//!   capped individually before the queue, and a burst of them must not
+//!   reassemble into an event the transport refuses to publish.
 
 use serde_json::Value;
 
@@ -49,10 +62,27 @@ pub(super) const COALESCE_WINDOW: std::time::Duration = std::time::Duration::fro
 /// thousand events per second; this keeps one merged payload small regardless.
 const MAX_MERGED_FRAGMENTS: usize = 512;
 
-/// Identifies the stream a fragment belongs to. Fragments may only merge when
-/// the type and the tool identity match — an interleaved tool would otherwise
-/// collect another tool's arguments.
-type StreamKey = (String, String);
+/// Bound on the bytes a merged event may stand for, counted as the sum of the
+/// source payloads — an upper bound of the merged payload, because the merge
+/// keeps every source's text but only one envelope, and JSON escaping is
+/// per-character so escaped concatenation equals concatenated escaping. Slack
+/// covers the fields a merge adds (`coalescedCount`, `snapshot`).
+const MAX_MERGED_BYTES: usize = super::MAX_EVENT_BYTES - 4096;
+
+/// Identifies the stream a fragment belongs to: everything the client routes,
+/// dedups and renders by. Fragments may only merge when all of it matches — a
+/// narrower key leaks one session's tokens into another's event, or one run's
+/// text into its successor's.
+#[derive(PartialEq, Eq)]
+struct StreamKey {
+    session: String,
+    run: String,
+    epoch: i64,
+    event_type: String,
+    tool: String,
+    // Reasoning blocks can interleave inside one run, even at adjacent indices.
+    block: String,
+}
 
 #[derive(Default)]
 pub(super) struct Coalescer {
@@ -81,14 +111,32 @@ impl Coalescer {
 
 struct Pending {
     key: StreamKey,
+    /// Index of the newest source event; the next merge must be its successor.
+    newest_idx: i64,
+    /// Sum of the source payload lengths, an upper bound of the merged payload.
+    bytes: usize,
     /// The newest source event; its payload is the base for the merged body.
     event: EventPublish,
     /// Fragment text accumulated across every merged source.
     text: String,
+    /// A source replaced the accumulated text (`snapshot: true`), so the group
+    /// is no longer a pure concatenation and the flag must survive the merge.
+    replaces: bool,
     /// Source events folded into `event` beyond itself.
     merged: usize,
     /// When this group opened; the window is measured from here.
     opened: std::time::Instant,
+}
+
+impl Pending {
+    /// Whether `fragment` may join this group: same stream, the very next
+    /// source index, and still inside both merged-event bounds.
+    fn accepts(&self, fragment: &Fragment, event: &EventPublish) -> bool {
+        self.key == fragment.key
+            && self.newest_idx.checked_add(1) == Some(fragment.idx)
+            && self.merged + 1 < MAX_MERGED_FRAGMENTS
+            && self.bytes + event.payload.len() <= MAX_MERGED_BYTES
+    }
 }
 
 impl Coalescer {
@@ -115,19 +163,22 @@ impl Coalescer {
             out.push(event);
             return;
         };
-        let same_stream = self
+        let merges = self
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.key == fragment.key);
-        if self.pending.is_some() && (!same_stream || self.full()) {
+            .is_some_and(|pending| pending.accepts(&fragment, &event));
+        if self.pending.is_some() && !merges {
             self.flush(out);
         }
         match self.pending.as_mut() {
             None => {
                 self.pending = Some(Pending {
                     key: fragment.key,
+                    newest_idx: fragment.idx,
+                    bytes: event.payload.len(),
                     event,
                     text: fragment.text,
+                    replaces: fragment.replaces,
                     merged: 0,
                     opened: now,
                 });
@@ -138,9 +189,12 @@ impl Coalescer {
                 } else {
                     pending.text.push_str(&fragment.text);
                 }
+                pending.replaces |= fragment.replaces;
                 pending.merged += 1;
+                pending.bytes += event.payload.len();
                 // The newest source owns the identity: its index is the end of
                 // the range this event now covers.
+                pending.newest_idx = fragment.idx;
                 pending.event = event;
             }
         }
@@ -156,22 +210,23 @@ impl Coalescer {
             out.push(pending.event);
             return;
         }
-        if let Some(payload) = merged_payload(&pending.event, &pending.text, pending.merged + 1) {
+        if let Some(payload) = merged_payload(
+            &pending.event,
+            &pending.text,
+            pending.merged + 1,
+            pending.replaces,
+        ) {
             pending.event.payload = payload;
             out.push(pending.event);
         }
-    }
-
-    fn full(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|pending| pending.merged + 1 >= MAX_MERGED_FRAGMENTS)
     }
 }
 
 /// The parts of a fragment event the coalescer needs.
 struct Fragment {
     key: StreamKey,
+    /// The source index this fragment occupies, for contiguity.
+    idx: i64,
     text: String,
     /// `snapshot: true` means "replace the accumulated text".
     replaces: bool,
@@ -183,6 +238,12 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
     if !FRAGMENT_TYPES.contains(&event_type) {
         return None;
     }
+    let text_of = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let data: Value = serde_json::from_str(body.get("data")?.as_str()?).ok()?;
     let text = data.get("text")?.as_str()?;
     let tool = data
@@ -191,7 +252,23 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
         .and_then(Value::as_str)
         .unwrap_or("");
     Some(Fragment {
-        key: (event_type.to_owned(), tool.to_owned()),
+        key: StreamKey {
+            session: text_of("sessionId"),
+            run: text_of("runId"),
+            epoch: body
+                .get("epoch")
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+            event_type: event_type.to_owned(),
+            tool: tool.to_owned(),
+            block: data
+                .get("block_id")
+                .and_then(Value::as_str)
+                .or_else(|| data.get("blockId").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_owned(),
+        },
+        idx: body.get("idx").and_then(Value::as_i64).unwrap_or(-1),
         text: text.to_owned(),
         replaces: data.get("snapshot").and_then(Value::as_bool) == Some(true),
     })
@@ -199,13 +276,27 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
 
 /// Rebuild a published body around the merged text. Everything except `data`
 /// comes from the newest source event, so the run identity, cursor and event id
-/// stay consistent with the index the merged event now occupies.
-fn merged_payload(event: &EventPublish, text: &str, covered: usize) -> Option<Vec<u8>> {
+/// stay consistent with the index the merged event now occupies. The stream key
+/// already guarantees that identity is the same for every source in the group.
+fn merged_payload(
+    event: &EventPublish,
+    text: &str,
+    covered: usize,
+    replaces: bool,
+) -> Option<Vec<u8>> {
     let body: Value = serde_json::from_slice(&event.payload).ok()?;
     let raw = body.get("data")?.as_str()?.to_owned();
     let mut data: Value = serde_json::from_str(&raw).ok()?;
     let object = data.as_object_mut()?;
     object.insert("text".into(), Value::String(text.to_owned()));
+    if replaces {
+        // A source in this group replaced the accumulated text, so the merged
+        // text is the state *after* that replacement. Without the flag the
+        // client would append it to its own accumulated text and render the
+        // pre-replacement prefix twice (visible as duplicated arguments, and as
+        // a tool target parsed out of half-merged JSON).
+        object.insert("snapshot".into(), Value::Bool(true));
+    }
     // The count belongs on the ENVELOPE, next to `idx`: the client reads
     // `event.coalescedCount` off the decoded event, and a copy inside `data` is
     // invisible to it. That mistake made every merged event look like a gap —
@@ -258,6 +349,283 @@ mod tests {
     fn idx_of(published: &EventPublish) -> i64 {
         let body: Value = serde_json::from_slice(&published.payload).unwrap();
         body["idx"].as_i64().unwrap()
+    }
+
+    /// One event whose envelope identity can be varied, for the tests that pin
+    /// which differences forbid a merge.
+    fn identified(
+        session: &str,
+        run: &str,
+        epoch: i64,
+        kind: &str,
+        data: Value,
+        idx: i64,
+    ) -> EventPublish {
+        let mut body: Value = serde_json::from_slice(&body(kind, data, idx)).unwrap();
+        body["sessionId"] = Value::String(session.into());
+        body["runId"] = Value::String(run.into());
+        body["epoch"] = Value::from(epoch);
+        EventPublish {
+            subject: format!("p.pair.evt.{session}"),
+            payload: serde_json::to_vec(&body).unwrap(),
+            status_subject: None,
+        }
+    }
+
+    /// The event lane carries every session at once, and the client attributes
+    /// an event to the *subject* the desktop published it on. A merge key that
+    /// ignored the session therefore shipped one session's tokens as another
+    /// session's event, and the session they belonged to never received them.
+    #[test]
+    fn fragments_from_different_sessions_never_merge() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        coalescer.offer(
+            identified(
+                "A",
+                "r",
+                1,
+                "text_chunk",
+                serde_json::json!({"text":"A"}),
+                11,
+            ),
+            base,
+            &mut out,
+        );
+        coalescer.offer(
+            identified(
+                "B",
+                "r",
+                1,
+                "text_chunk",
+                serde_json::json!({"text":"B"}),
+                // Consecutive indices isolate the session check from gap detection.
+                12,
+            ),
+            base,
+            &mut out,
+        );
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 2, "each session keeps its own event");
+        assert_eq!(out[0].subject, "p.pair.evt.A");
+        assert_eq!(text_of(&out[0]), "A");
+        assert_eq!(out[1].subject, "p.pair.evt.B");
+        assert_eq!(text_of(&out[1]), "B");
+    }
+
+    #[test]
+    fn interleaved_thinking_blocks_keep_their_own_text_and_ranges() {
+        for field in ["block_id", "blockId"] {
+            let mut coalescer = Coalescer::default();
+            let base = Instant::now();
+            let mut out = Vec::new();
+            let sources = [
+                ("thinking_start", "a", ""),
+                ("thinking_start", "b", ""),
+                ("thinking_delta", "a", "alpha"),
+                ("thinking_delta", "a", "!"),
+                ("thinking_delta", "b", "beta"),
+                ("thinking_delta", "b", "!"),
+                ("thinking_delta", "a", "more"),
+                ("thinking_delta", "a", "!"),
+            ];
+            for (idx, (kind, block, text)) in sources.into_iter().enumerate() {
+                let mut data = serde_json::json!({"text": text});
+                data[field] = Value::String(block.into());
+                coalescer.offer(event(kind, data, idx as i64), base, &mut out);
+            }
+            coalescer.flush(&mut out);
+
+            assert_eq!(out.len(), 5, "two starts and three separate block ranges");
+            for (published, (block, text, idx)) in
+                out[2..]
+                    .iter()
+                    .zip([("a", "alpha!", 3), ("b", "beta!", 5), ("a", "more!", 7)])
+            {
+                let body: Value = serde_json::from_slice(&published.payload).unwrap();
+                let data: Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
+                assert_eq!(data[field], block);
+                assert_eq!(data["text"], text);
+                assert_eq!(body["idx"], idx);
+                assert_eq!(body["coalescedCount"], 2);
+            }
+        }
+    }
+
+    #[test]
+    fn thinking_block_aliases_merge_but_an_unidentified_block_stays_separate() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        for (idx, data) in [
+            serde_json::json!({"block_id":"a", "text":"alpha"}),
+            serde_json::json!({"blockId":"a", "text":"!"}),
+            serde_json::json!({"text":"unidentified"}),
+            serde_json::json!({"block_id":"b", "text":"beta"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            coalescer.offer(event("thinking_delta", data, idx as i64), base, &mut out);
+        }
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 3);
+        assert_eq!(text_of(&out[0]), "alpha!");
+        assert_eq!(text_of(&out[1]), "unidentified");
+        assert_eq!(text_of(&out[2]), "beta");
+        let first: Value = serde_json::from_slice(&out[0].payload).unwrap();
+        assert_eq!(first["idx"], 1);
+        assert_eq!(first["coalescedCount"], 2);
+        let data: Value = serde_json::from_str(first["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["blockId"], "a");
+    }
+
+    /// A new run in the same session must not collect the previous run's
+    /// tokens: the merged event would carry the new run's id and index while
+    /// rendering the old run's text.
+    #[test]
+    fn fragments_from_different_runs_or_epochs_never_merge() {
+        for (run, epoch) in [("next", 1), ("r", 2)] {
+            let mut coalescer = Coalescer::default();
+            let base = Instant::now();
+            let mut out = Vec::new();
+            coalescer.offer(
+                identified(
+                    "A",
+                    "r",
+                    1,
+                    "text_chunk",
+                    serde_json::json!({"text":"first"}),
+                    4,
+                ),
+                base,
+                &mut out,
+            );
+            coalescer.offer(
+                identified(
+                    "A",
+                    run,
+                    epoch,
+                    "text_chunk",
+                    serde_json::json!({"text":"second"}),
+                    5,
+                ),
+                base,
+                &mut out,
+            );
+            coalescer.flush(&mut out);
+            assert_eq!(out.len(), 2, "run {run} epoch {epoch}");
+            assert_eq!(text_of(&out[1]), "second");
+            let last: Value = serde_json::from_slice(&out[1].payload).unwrap();
+            assert_eq!(last["runId"], Value::String(run.into()));
+            assert_eq!(last["epoch"], Value::from(epoch));
+        }
+    }
+
+    /// `coalescedCount` claims that every index in the range arrived, so a
+    /// group must not span a hole: a dropped event would be silently covered,
+    /// and the client would advance past it instead of healing the gap.
+    #[test]
+    fn a_merge_never_spans_a_source_index_hole() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        for idx in [7, 8, 10] {
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text":"x"}), idx),
+                base,
+                &mut out,
+            );
+        }
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 2, "the hole splits the burst");
+        let first: Value = serde_json::from_slice(&out[0].payload).unwrap();
+        assert_eq!(first["idx"], 8);
+        assert_eq!(first["coalescedCount"], 2, "covers exactly 7 and 8");
+        // The fragment after the hole is published as itself: index 10 claiming
+        // a range would have hidden index 9 from the client's gap detection.
+        let second: Value = serde_json::from_slice(&out[1].payload).unwrap();
+        assert_eq!(second["idx"], 10);
+        assert!(second.get("coalescedCount").is_none());
+    }
+
+    /// Fragments are size-capped one by one *before* the queue, so a burst of
+    /// legal events could reassemble into one the transport refuses to publish
+    /// — and a failed publish ends the lane for every session on the
+    /// connection.
+    #[test]
+    fn a_merge_stays_within_the_event_byte_budget() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        // Each source is legal on its own (under the event cap); two of them
+        // together are too big for one merged event.
+        let fragment = "x".repeat(super::MAX_MERGED_BYTES / 2 - 1024);
+        assert!(fragment.len() < super::super::MAX_EVENT_BYTES);
+        for idx in 0..4 {
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text": fragment}), idx),
+                base,
+                &mut out,
+            );
+        }
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 2, "the burst splits into budget-sized groups");
+        for published in &out {
+            assert!(
+                published.payload.len() <= super::super::MAX_EVENT_BYTES,
+                "merged event of {} bytes exceeds the publish budget",
+                published.payload.len()
+            );
+        }
+        assert!(
+            out[0].payload.len() > fragment.len(),
+            "the first group merged"
+        );
+        let merged: String = out.iter().map(text_of).collect();
+        assert_eq!(merged, fragment.repeat(4), "no text may be lost");
+    }
+
+    /// A provider that resends the accumulated arguments mid-stream makes the
+    /// group a replacement, not a concatenation. The merged event must keep
+    /// that meaning, or a client that appends renders the pre-replacement
+    /// prefix twice.
+    #[test]
+    fn a_replacing_source_keeps_its_replacement_semantics_through_a_merge() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        coalescer.offer(
+            event(
+                "tool_delta",
+                serde_json::json!({"text":"NEW", "tool_id":"t", "snapshot":true}),
+                1,
+            ),
+            base,
+            &mut out,
+        );
+        coalescer.offer(
+            event(
+                "tool_delta",
+                serde_json::json!({"text":"!", "tool_id":"t"}),
+                2,
+            ),
+            base,
+            &mut out,
+        );
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 1, "one group, one event");
+        let published: Value = serde_json::from_slice(&out[0].payload).unwrap();
+        let data: Value = serde_json::from_str(published["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["text"], "NEW!");
+        // The flag is the whole point: without it a client holding `OLD`
+        // appends and renders `OLDNEW!`, with it the client replaces and
+        // renders `NEW!` — the text the provider actually sent.
+        assert_eq!(
+            data["snapshot"], true,
+            "the merged text replaces the client's accumulation"
+        );
     }
 
     /// The merge must be invisible to a client that accumulates text: what it
