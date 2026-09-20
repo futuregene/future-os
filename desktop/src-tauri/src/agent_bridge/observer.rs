@@ -118,6 +118,22 @@ const FORWARDED_EVENTS: &[&str] = &[
     "config_reloaded",
 ];
 
+/// The subset of [`FORWARDED_EVENTS`] that is session fan-out rather than run
+/// content. The broadcaster keeps the last run's `run_id` + `idx` until the
+/// next `start_run`, so a standalone (manual) compaction — and any settings
+/// change emitted between runs — arrives stamped with that settled run,
+/// looking like an `idx` gap inside it. An observer re-created after a
+/// restart, an idle sleep, or a thread opened long after its last run holds
+/// no cursor for that run, yet these events are the *only* signal the webview
+/// gets that a compaction is running and that it finished; rejecting them
+/// wedges the composer's 30-minute compaction wait with no terminal event.
+/// Run content (`agent_start`, `agent_end`, `user_message`) keeps the strict
+/// gap check: it belongs to the run and must be healed by a re-attach replay.
+fn is_run_stamped_fanout(event_type: &str) -> bool {
+    FORWARDED_EVENTS.contains(&event_type)
+        && !matches!(event_type, "agent_start" | "agent_end" | "user_message")
+}
+
 pub(super) struct ObserverHandle {
     cancel: oneshot::Sender<()>,
     pub(super) shared: Arc<ObserverShared>,
@@ -932,14 +948,18 @@ async fn handle_event(
         }
         None => {
             if event.idx != 0 {
-                if state.last_settled_run.as_deref() == Some(run_id) {
+                if state.last_settled_run.as_deref() == Some(run_id)
+                    || is_run_stamped_fanout(event_type)
+                {
                     // The broadcaster keeps the settled run's identity until
-                    // the next `start_run`, so between-runs settings changes
-                    // (model, thinking level, …) arrive stamped with it at the
-                    // idx the run ended on. They are session fan-out, not run
-                    // content: forward and mirror without cursor bookkeeping —
-                    // treating them as gaps would force a pointless re-attach
-                    // on every settings change.
+                    // the next `start_run`, so between-runs fan-out
+                    // (compaction lifecycle, settings changes) arrives stamped
+                    // with it at an idx beyond the run's. It is session
+                    // fan-out, not run content: forward and mirror without
+                    // cursor bookkeeping — treating it as a gap would force a
+                    // pointless re-attach on every settings change, and would
+                    // drop a manual compaction's only terminal event outright
+                    // whenever this observer never witnessed that run.
                     let event_data = future_rpc::decode::event_data_json(&event);
                     #[cfg(feature = "gui")]
                     if FORWARDED_EVENTS.contains(&event_type) {
@@ -1488,6 +1508,53 @@ mod tests {
         assert!(
             !state.cursors.contains_key("run-late"),
             "no cursor bookkeeping before the replay heals the head"
+        );
+    }
+
+    /// A manual compaction's only signal is stamped with the session's last
+    /// run, which this observer may never have witnessed (fresh state after a
+    /// restart, an idle sleep, or a thread opened long after its last run). It
+    /// must reach the webview anyway — dropping it leaves the composer waiting
+    /// for a terminal event that never comes.
+    #[tokio::test]
+    async fn manual_compaction_after_an_unwitnessed_run_still_fans_out() {
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        let mut state = ObserverState::default();
+        for event_type in [
+            "compaction_started",
+            "compaction_committed",
+            "compaction_failed",
+            "compaction_unchanged",
+        ] {
+            assert!(
+                handle_event(
+                    "sess-order",
+                    &shared,
+                    &mut state,
+                    stream_event(event_type, "run-previous", 9)
+                )
+                .await,
+                "{event_type} is session fan-out, not a gap in an untracked run"
+            );
+        }
+        assert!(
+            !state.cursors.contains_key("run-previous"),
+            "fan-out must not open cursor bookkeeping for the settled run"
+        );
+        assert!(
+            state.last_settled_run.is_none(),
+            "forwarding does not invent a settled-run identity"
+        );
+        // Run content keeps the strict check: a mid-run hole still re-attaches.
+        assert!(
+            !handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                stream_event("text_chunk", "run-previous", 9)
+            )
+            .await,
+            "run content above idx 0 with no cursor is still a gap"
         );
     }
 
