@@ -74,11 +74,23 @@ pub fn global_skill_dirs() -> Vec<String> {
 /// Windows that reads the token profile and ignores a redirected `HOME`, so
 /// skills were discovered in a different home than sessions/config use — and
 /// than the CLI installs them into.
+///
+/// `~/.future/...` (the app skill directory) resolves against the FutureOS home
+/// instead, so an instance running with `FUTURE_HOME` / `future agent --home`
+/// discovers the skills that live in its own root. The shared `~/.agents/skills`
+/// scope deliberately stays on the real user home.
 fn expand_tilde(dir: &str) -> PathBuf {
     let Some(rest) = dir.strip_prefix('~') else {
         return PathBuf::from(dir);
     };
     let rest = rest.trim_start_matches(['/', '\\']);
+    let rest_path = Path::new(rest);
+    if rest_path == Path::new(".future") {
+        return crate::utils::future_home();
+    }
+    if let Ok(inside_future) = rest_path.strip_prefix(".future") {
+        return crate::utils::future_home().join(inside_future);
+    }
     let home = crate::utils::home_dir();
     if rest.is_empty() {
         home
@@ -478,6 +490,29 @@ version: "1.0.0"
         // Absolute (and relative) paths are passed through untouched.
         assert_eq!(expand_tilde("/tmp/skills"), PathBuf::from("/tmp/skills"));
         assert_eq!(expand_tilde("skills"), PathBuf::from("skills"));
+    }
+
+    /// An instance with its own FutureOS home discovers the skills under that
+    /// root, while the shared user-level scope (`~/.agents/skills`) keeps
+    /// pointing at the real home.
+    #[test]
+    fn expand_tilde_follows_a_redirected_future_home() {
+        let _home = crate::test_support::TestHome::new();
+        let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
+        let isolated = std::env::temp_dir().join("futureos-skills-instance-b");
+        std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, &isolated);
+
+        assert_eq!(
+            expand_tilde("~/.future/agent/skills/"),
+            isolated.join("agent/skills/")
+        );
+        assert_eq!(expand_tilde("~/.future"), isolated);
+        assert_eq!(
+            expand_tilde("~/.agents/skills/"),
+            crate::utils::home_dir().join(".agents/skills/")
+        );
+
+        crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
     #[test]

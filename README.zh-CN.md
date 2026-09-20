@@ -141,7 +141,7 @@ future skills install          # 不带名字：安装全部内置技能
 
 ### 启动 Agent
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 未指定时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，未设置该变量则回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。TUI 和桌面应用在没有可连接 Agent 时会自动启动 sidecar，也可以手动启动：
+终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；Linux 未指定时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，未设置该变量则回退到 `~/.future/run/agent.sock`（也是 macOS 默认路径）。用 `future agent --home DIR` 指定自己 FutureOS home 的实例，则由该 home 寻址——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。TUI 和桌面应用在没有可连接 Agent 时会自动启动 sidecar，也可以手动启动：
 
 ```bash
 future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）

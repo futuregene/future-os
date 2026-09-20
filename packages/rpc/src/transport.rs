@@ -131,16 +131,43 @@ fn normalize_tcp_uri(addr: &str) -> String {
 
 #[cfg(unix)]
 pub fn local_socket_path() -> std::path::PathBuf {
-    if let Some(path) = std::env::var_os("FUTURE_AGENT_SOCKET").filter(|v| !v.is_empty()) {
+    local_socket_path_from(
+        std::env::var_os("FUTURE_AGENT_SOCKET"),
+        crate::home::future_home_override(),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// Local endpoint of the instance that owns `future_home` (see
+/// [`crate::home`]), with every environment input injected for testability.
+///
+/// A redirected FutureOS home owns its own endpoint under `<home>/run`, in
+/// front of the shared `$XDG_RUNTIME_DIR`: the runtime directory is per-user,
+/// not per-instance, so a second isolated Agent binding there would steal the
+/// default instance's socket instead of running beside it.
+#[cfg(unix)]
+fn local_socket_path_from(
+    explicit: Option<std::ffi::OsString>,
+    future_home: Option<std::path::PathBuf>,
+    xdg_runtime_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    if let Some(path) = explicit.filter(|v| !v.is_empty()) {
         return path.into();
     }
+    if let Some(future_home) = future_home {
+        return future_home.join("run").join("agent.sock");
+    }
     #[cfg(target_os = "linux")]
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+    if let Some(runtime) = xdg_runtime_dir.filter(|v| !v.is_empty()) {
         return std::path::PathBuf::from(runtime)
             .join("future")
             .join("agent.sock");
     }
-    let home = std::env::var_os("HOME")
+    #[cfg(not(target_os = "linux"))]
+    let _ = xdg_runtime_dir;
+    let home = home
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     home.join(".future").join("run").join("agent.sock")
@@ -332,8 +359,26 @@ async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
 
 #[cfg(windows)]
 fn local_pipe_name() -> String {
-    let sid = current_user_sid_string().unwrap_or_else(|_| "unknown-user".to_string());
-    format!(r"\\.\pipe\future-agent-{sid}")
+    local_pipe_name_for(
+        current_user_sid_string().unwrap_or_else(|_| "unknown-user".to_string()),
+        crate::home::future_home_override(),
+    )
+}
+
+/// Named pipe of the instance that owns `future_home`.
+///
+/// The pipe is otherwise keyed by the current user's SID alone, which two
+/// isolated instances on the same account would share — the isolated instance
+/// therefore gets its own pipe, tagged by its FutureOS home.
+#[cfg(windows)]
+fn local_pipe_name_for(sid: String, future_home: Option<std::path::PathBuf>) -> String {
+    match future_home {
+        Some(home) => format!(
+            r"\\.\pipe\future-agent-{sid}-{}",
+            crate::home::home_tag(&home)
+        ),
+        None => format!(r"\\.\pipe\future-agent-{sid}"),
+    }
 }
 
 #[cfg(windows)]
@@ -472,6 +517,71 @@ mod tests {
             connection_plan(Some("http://127.0.0.1:50051")),
             vec![AgentEndpoint::Tcp("http://127.0.0.1:50051".into())]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_socket_env_wins_over_a_redirected_future_home() {
+        let path = local_socket_path_from(
+            Some("/tmp/explicit.sock".into()),
+            Some(std::path::PathBuf::from("/tmp/futureos-home")),
+            Some("/run/user/1000".into()),
+            Some("/home/user".into()),
+        );
+        assert_eq!(path, std::path::PathBuf::from("/tmp/explicit.sock"));
+    }
+
+    /// The XDG runtime dir is per-user, so an instance with its own FutureOS
+    /// home must not bind there — it would take over the default instance's
+    /// socket. Regression guard for multi-instance isolation.
+    #[cfg(unix)]
+    #[test]
+    fn redirected_future_home_owns_its_endpoint_and_ignores_xdg() {
+        let home = std::path::PathBuf::from("/tmp/futureos-home");
+        let path = local_socket_path_from(
+            None,
+            Some(home.clone()),
+            Some("/run/user/1000".into()),
+            Some("/home/user".into()),
+        );
+        assert_eq!(path, home.join("run").join("agent.sock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_a_redirect_the_endpoint_keeps_its_documented_chain() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            local_socket_path_from(
+                None,
+                None,
+                Some("/run/user/1000".into()),
+                Some("/home/user".into()),
+            ),
+            std::path::PathBuf::from("/run/user/1000/future/agent.sock")
+        );
+        assert_eq!(
+            local_socket_path_from(
+                None,
+                None,
+                Some(String::new().into()),
+                Some("/home/user".into()),
+            ),
+            std::path::PathBuf::from("/home/user/.future/run/agent.sock")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn redirected_future_home_gets_its_own_named_pipe() {
+        let default = local_pipe_name_for("S-1-5-21".into(), None);
+        assert_eq!(default, r"\\.\pipe\future-agent-S-1-5-21");
+        let isolated = local_pipe_name_for(
+            "S-1-5-21".into(),
+            Some(std::path::PathBuf::from(r"C:\futureos-home")),
+        );
+        assert_ne!(isolated, default);
+        assert!(isolated.starts_with(r"\\.\pipe\future-agent-S-1-5-21-"));
     }
 
     #[cfg(unix)]

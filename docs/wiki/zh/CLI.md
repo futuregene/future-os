@@ -147,10 +147,14 @@ future models --json     # 机器可读输出
 future agent              # 启动 agent gRPC 服务
 future agent --help       # 查看 Agent 选项（连接覆盖、日志、profiling）
 future agent --probe-sandbox # 一次性 OS 沙箱诊断，不启动常驻服务
+future agent --home /tmp/futureos-b  # 第二个实例：独立状态与 IPC 端点
 ```
 
 `future agent <args>` 直接运行 agent 后端——参数与独立二进制 `future-agent`
-完全一致。
+完全一致，包括 `--home DIR`：它把该实例的 FutureOS home（默认 `~/.future`，即
+`$FUTURE_HOME`）换成另一个目录，于是多个 Agent 可以并存而无需共享会话、锁或
+socket（见[多实例运行](../../guide/directory-layout.zh-CN.md#多实例运行future_home)）。
+客户端设置同一个 `FUTURE_HOME` 即接入对应实例。
 
 ### `tui` / `channel` / `loop` —— 运行其他组件
 

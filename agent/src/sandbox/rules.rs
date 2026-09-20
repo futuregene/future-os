@@ -14,7 +14,8 @@
 //!    secret; secrets are "allow once" only)
 //! 2. session — runtime "allow in this workspace/chat", current run
 //! 3. workspace rule file — `${WS}/.future/approval_rule.json`
-//! 4. user rule file — `~/.future/approval_rule.json`
+//! 4. user rule file — `<future home>/approval_rule.json` (`~/.future/…` by
+//!    default, `FUTURE_HOME` when the instance is redirected)
 //! - fallback: read → allow; write → in workspace/temp ? allow : ask
 
 use parking_lot::Mutex;
@@ -370,44 +371,55 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         Access::Write,
         Decision::Deny,
     )];
-    if let Some(home) = home {
+    // The app's own state root is `~/.future`, plus the redirect when this
+    // instance runs isolated (`FUTURE_HOME` / `future agent --home`). The
+    // default root stays denied either way: a redirected instance must not
+    // become a way to rewrite the real user's rule file or credentials.
+    let mut state_roots: Vec<std::path::PathBuf> =
+        home.map(|home| home.join(".future")).into_iter().collect();
+    if let Some(redirected) = crate::utils::future_home_override() {
+        state_roots.push(redirected);
+    }
+    for state_root in &state_roots {
         rules.push(PathRule::new(
-            &home.join(".future/approval_rule.json").to_string_lossy(),
+            &state_root.join("approval_rule.json").to_string_lossy(),
             Access::Write,
             Decision::Deny,
         ));
-        // NOTE: auth.json is TEMPORARILY allowed (omitted from the deny list
-        // below). Re-add it once the trusted-CLI credential-access story is
-        // designed.
-        //
-        // Background: skills sometimes shell out to our official `future` CLI,
-        // which legitimately reads `~/.future/agent/auth.json`. With a hard-deny
-        // in place, `future` is blocked inside the Seatbelt sandbox (this
-        // override is layer-0, unoverridable by any user approval rule), so
-        // those skill flows fail during testing.
-        //
-        // We WANT to trust `future` specifically without opening auth.json to
-        // arbitrary shell commands — but a shared sandbox can't distinguish
-        // `future` from a sibling `cat` in the same command, so per-binary
-        // trust isn't expressible here. The proper fix is a dedicated
-        // credential channel (agent injects a short-lived scoped token via env,
-        // or `future` reverse-requests the key from the agent over a socket
-        // with peer-credential verification), not a path allow-hole. This is
-        // the tracked auth.json follow-up, intentionally not scheduled yet;
-        // see docs/internals/desktop/SANDBOX/COMMON.md §3.1.
-        //
-        // Omitting this override can expose auth.json to arbitrary reads; it
-        // does not add an unconditional write allow (other rules/roots still
-        // apply). This testing exception is not a trusted credential channel.
-        // models.json stays denied.
-        for cred in [
-            // ".future/agent/auth.json",      // TEMPORARILY allowed — see above
-            ".future/agent/models.json",
-            // ".future/agent-app/auth.json",  // TEMPORARILY allowed — see above
-            ".future/agent-app/models.json",
-        ] {
+    }
+    // NOTE: auth.json is TEMPORARILY allowed (omitted from the deny list
+    // below). Re-add it once the trusted-CLI credential-access story is
+    // designed.
+    //
+    // Background: skills sometimes shell out to our official `future` CLI,
+    // which legitimately reads `~/.future/agent/auth.json`. With a hard-deny
+    // in place, `future` is blocked inside the Seatbelt sandbox (this
+    // override is layer-0, unoverridable by any user approval rule), so
+    // those skill flows fail during testing.
+    //
+    // We WANT to trust `future` specifically without opening auth.json to
+    // arbitrary shell commands — but a shared sandbox can't distinguish
+    // `future` from a sibling `cat` in the same command, so per-binary
+    // trust isn't expressible here. The proper fix is a dedicated
+    // credential channel (agent injects a short-lived scoped token via env,
+    // or `future` reverse-requests the key from the agent over a socket
+    // with peer-credential verification), not a path allow-hole. This is
+    // the tracked auth.json follow-up, intentionally not scheduled yet;
+    // see docs/internals/desktop/SANDBOX/COMMON.md §3.1.
+    //
+    // Omitting this override can expose auth.json to arbitrary reads; it
+    // does not add an unconditional write allow (other rules/roots still
+    // apply). This testing exception is not a trusted credential channel.
+    // models.json stays denied.
+    for cred in [
+        // "agent/auth.json",      // TEMPORARILY allowed — see above
+        "agent/models.json",
+        // "agent-app/auth.json",  // TEMPORARILY allowed — see above
+        "agent-app/models.json",
+    ] {
+        for state_root in &state_roots {
             rules.push(PathRule::new(
-                &home.join(cred).to_string_lossy(),
+                &state_root.join(cred).to_string_lossy(),
                 Access::Both,
                 Decision::Deny,
             ));
@@ -521,7 +533,10 @@ impl RuleSet {
     /// this workspace") are visible to the live sandbox.
     pub fn resolve_with_session(workspace: &Path, session: SessionRules) -> Self {
         let home = crate::utils::home_dir_opt();
-        let user_rule_file = home.as_ref().map(|h| h.join(".future/approval_rule.json"));
+        // The user rule file lives in the FutureOS home: the default
+        // `~/.future`, or the `FUTURE_HOME` redirect an isolated instance runs
+        // with (its own rules, not the default instance's).
+        let user_rule_file = crate::utils::future_home_opt().map(|h| h.join("approval_rule.json"));
         Self::resolve_impl(
             workspace,
             home.as_deref(),
@@ -795,6 +810,44 @@ mod tests {
         assert_eq!(rules.evaluate(&path, Op::Read), Decision::Deny);
         assert_eq!(rules.evaluate(&path, Op::Write), Decision::Allow);
         assert_eq!(rules.resolution_errors.len(), 2);
+    }
+
+    /// A redirected FutureOS home (`FUTURE_HOME` / `future agent --home`) holds
+    /// the app's credentials and rule file, so the layer-0 overrides have to
+    /// cover it — while the default `~/.future` stays denied too, or the
+    /// redirect would become a way around them.
+    #[test]
+    fn redirected_future_home_is_covered_by_the_builtin_overrides() {
+        let _guard = crate::test_support::home_env_lock();
+        let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
+        let root = tempfile::tempdir().unwrap();
+        let base = paths::canonicalize_lenient(root.path());
+        let user_home = base.join("user-home");
+        let redirected = base.join("instance-b");
+        std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, &redirected);
+
+        let rules = RuleSet::resolve_impl(
+            &base.join("workspace"),
+            Some(&user_home),
+            None,
+            Arc::new(Mutex::new(vec![])),
+        );
+        assert_eq!(
+            rules.evaluate(&redirected.join("approval_rule.json"), Op::Write),
+            Decision::Deny
+        );
+        assert_eq!(
+            rules.evaluate(&redirected.join("agent/models.json"), Op::Read),
+            Decision::Deny
+        );
+        // The default root stays denied: redirecting must not become a way to
+        // rewrite the real user's rule file.
+        assert_eq!(
+            rules.evaluate(&user_home.join(".future/approval_rule.json"), Op::Write),
+            Decision::Deny
+        );
+
+        crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
     #[cfg(windows)]

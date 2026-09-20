@@ -24,10 +24,10 @@ pub struct AuthStore {
 impl AuthStore {
     /// Load auth from standard paths
     pub fn load() -> Self {
-        let home = crate::utils::home_dir();
+        let future_home = crate::utils::future_home();
         let paths = vec![
-            home.join(".future/agent/auth.json"),
-            home.join(".future/agent-app/auth.json"),
+            future_home.join("agent/auth.json"),
+            future_home.join("agent-app/auth.json"),
         ];
 
         for path in paths {
