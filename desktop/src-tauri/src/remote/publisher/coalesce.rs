@@ -25,8 +25,8 @@
 //!   up to that one. The covered count rides along in `coalescedCount`, which
 //!   is how a client distinguishes a merged index jump from a lost range.
 //! * Merging requires the *whole* identity the client routes and dedups on:
-//!   session, run, epoch, event type and tool. This queue carries every session
-//!   at once, so a key of type + tool alone merged one session's tokens into
+//!   session, run, epoch, event type, tool and reasoning block. This queue carries
+//!   every session at once, so a key of type + tool alone merged one's tokens into
 //!   another's event — published on whichever subject the last fragment
 //!   belonged to, which the client attributes by subject.
 //! * Merging requires *consecutive* source indices. `coalescedCount` is a claim
@@ -80,6 +80,8 @@ struct StreamKey {
     epoch: i64,
     event_type: String,
     tool: String,
+    // Reasoning blocks can interleave inside one run, even at adjacent indices.
+    block: String,
 }
 
 #[derive(Default)]
@@ -259,6 +261,12 @@ fn fragment_of(event: &EventPublish) -> Option<Fragment> {
                 .unwrap_or_default(),
             event_type: event_type.to_owned(),
             tool: tool.to_owned(),
+            block: data
+                .get("block_id")
+                .and_then(Value::as_str)
+                .or_else(|| data.get("blockId").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_owned(),
         },
         idx: body.get("idx").and_then(Value::as_i64).unwrap_or(-1),
         text: text.to_owned(),
@@ -392,7 +400,8 @@ mod tests {
                 1,
                 "text_chunk",
                 serde_json::json!({"text":"B"}),
-                21,
+                // Consecutive indices isolate the session check from gap detection.
+                12,
             ),
             base,
             &mut out,
@@ -403,6 +412,73 @@ mod tests {
         assert_eq!(text_of(&out[0]), "A");
         assert_eq!(out[1].subject, "p.pair.evt.B");
         assert_eq!(text_of(&out[1]), "B");
+    }
+
+    #[test]
+    fn interleaved_thinking_blocks_keep_their_own_text_and_ranges() {
+        for field in ["block_id", "blockId"] {
+            let mut coalescer = Coalescer::default();
+            let base = Instant::now();
+            let mut out = Vec::new();
+            let sources = [
+                ("thinking_start", "a", ""),
+                ("thinking_start", "b", ""),
+                ("thinking_delta", "a", "alpha"),
+                ("thinking_delta", "a", "!"),
+                ("thinking_delta", "b", "beta"),
+                ("thinking_delta", "b", "!"),
+                ("thinking_delta", "a", "more"),
+                ("thinking_delta", "a", "!"),
+            ];
+            for (idx, (kind, block, text)) in sources.into_iter().enumerate() {
+                let mut data = serde_json::json!({"text": text});
+                data[field] = Value::String(block.into());
+                coalescer.offer(event(kind, data, idx as i64), base, &mut out);
+            }
+            coalescer.flush(&mut out);
+
+            assert_eq!(out.len(), 5, "two starts and three separate block ranges");
+            for (published, (block, text, idx)) in
+                out[2..]
+                    .iter()
+                    .zip([("a", "alpha!", 3), ("b", "beta!", 5), ("a", "more!", 7)])
+            {
+                let body: Value = serde_json::from_slice(&published.payload).unwrap();
+                let data: Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
+                assert_eq!(data[field], block);
+                assert_eq!(data["text"], text);
+                assert_eq!(body["idx"], idx);
+                assert_eq!(body["coalescedCount"], 2);
+            }
+        }
+    }
+
+    #[test]
+    fn thinking_block_aliases_merge_but_an_unidentified_block_stays_separate() {
+        let mut coalescer = Coalescer::default();
+        let base = Instant::now();
+        let mut out = Vec::new();
+        for (idx, data) in [
+            serde_json::json!({"block_id":"a", "text":"alpha"}),
+            serde_json::json!({"blockId":"a", "text":"!"}),
+            serde_json::json!({"text":"unidentified"}),
+            serde_json::json!({"block_id":"b", "text":"beta"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            coalescer.offer(event("thinking_delta", data, idx as i64), base, &mut out);
+        }
+        coalescer.flush(&mut out);
+        assert_eq!(out.len(), 3);
+        assert_eq!(text_of(&out[0]), "alpha!");
+        assert_eq!(text_of(&out[1]), "unidentified");
+        assert_eq!(text_of(&out[2]), "beta");
+        let first: Value = serde_json::from_slice(&out[0].payload).unwrap();
+        assert_eq!(first["idx"], 1);
+        assert_eq!(first["coalescedCount"], 2);
+        let data: Value = serde_json::from_str(first["data"].as_str().unwrap()).unwrap();
+        assert_eq!(data["blockId"], "a");
     }
 
     /// A new run in the same session must not collect the previous run's
