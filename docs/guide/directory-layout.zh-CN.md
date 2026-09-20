@@ -56,8 +56,9 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
   `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`。
 - `agent.db` — 会话、消息、运行及回放事件的 SQLite 权威存储。
 - `sessions/`、`run-events/<session_id>/` — 保留的旧 JSONL 迁移来源；自定义旧目录的事件来源为 `.run-events/`。迁移后不再更新这些文件。排队 prompt 仍只保存在内存中。
-- `agent-instance.lock` — 每用户单例锁。测试应隔离 HOME（Windows 同时隔离 USERPROFILE）；
-  仅更换 TCP 端口无法绕过单例锁。
+- `agent-instance.lock` — 当前 FutureOS home 的单例锁。测试应隔离 HOME（Windows 同时
+  隔离 USERPROFILE），或用 `FUTURE_HOME` / `future agent --home` 把 Agent 指向另一个
+  FutureOS home（见[多实例运行](#多实例运行future_home)）；仅更换 TCP 端口无法绕过单例锁。
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是
   `~/.agents/skills/`（`AGENTS_SKILLS_DIR`）。技能是含 `SKILL.md` +
   YAML frontmatter 的普通目录。
@@ -68,9 +69,11 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 
 ## IPC、审批规则与 Windows 清理
 
-Unix socket 依次选择显式 `FUTURE_AGENT_SOCKET`、Linux 上已设置时的
-`$XDG_RUNTIME_DIR/future/agent.sock`、`~/.future/run/agent.sock`（也是 macOS 默认）。
-Windows 使用每用户命名管道而不是 socket 文件。`future agent --grpc-addr <host:port>`
+Unix socket 依次选择显式 `FUTURE_AGENT_SOCKET`；设置 `FUTURE_HOME` 时使用该 home 自己的
+`<home>/run/agent.sock`（XDG 运行时目录是按用户而非按实例的，被重定向的实例不能绑定在
+那里）；Linux 上已设置时使用 `$XDG_RUNTIME_DIR/future/agent.sock`；最后回退到
+`~/.future/run/agent.sock`（也是 macOS 默认）。Windows 使用每用户命名管道而不是 socket
+文件——home 被重定向时管道名会带上该 home 的标记。`future agent --grpc-addr <host:port>`
 显式开启 TCP；客户端可用 `FUTURE_AGENT_GRPC_ADDR` 覆盖（渠道使用 `agent.grpc_addr`），
 显式客户端 TCP 地址具有权威性——连接失败会直接报错，不会回退本地 IPC。
 
@@ -79,6 +82,33 @@ Windows 使用每用户命名管道而不是 socket 文件。`future agent --grp
 Windows 将 capability/ACL 清理元数据保存在 `~/.future/windows-capabilities.json`；
 使用 `future agent --reset-windows-sandbox` 清理，不要在 ACL 尚存时手动删除元数据。
 权限仍被活动沙箱使用时，reset 会拒绝清理。
+
+## 多实例运行（`FUTURE_HOME`）
+
+`FUTURE_HOME` 替换整个 FutureOS home（即 `~/.future` 根目录本身）。启动时的等价开关是
+`future agent --home DIR`（该选项默认取 `$FUTURE_HOME`），这正是第二个完全隔离实例的基础：
+
+```bash
+# 实例 A：默认 home
+future agent
+
+# 实例 B：自己的锁、数据库、会话、日志、技能与 IPC 端点
+future agent --home /tmp/futureos-b
+
+# 客户端设置同一个 home，即接入实例 B
+FUTURE_HOME=/tmp/futureos-b future tui
+```
+
+FutureOS 自己拥有的一切都会随之移动：`<home>/agent`（settings、models、`auth.json`、
+`agent.db`、sessions、`agent-instance.lock`、skills、images、logs）、
+`<home>/run/agent.sock`、`<home>/approval_rule.json` 与
+`<home>/windows-capabilities.json`。因此两个实例不会共享锁、数据库或端点，相互也无需停掉。
+
+**不**随之移动的是操作系统的 home：针对 `~/.ssh` 的沙箱守卫和共享的 `~/.agents/skills`
+目录仍指向真实用户 home。覆盖值必须是绝对路径——相对或空的 `FUTURE_HOME` 会被忽略，
+`future agent --home` 会直接报错——目录不存在时会自动创建。客户端通过设置同一个
+`FUTURE_HOME` 选择实例；客户端自身的 UI 状态（`~/.future/tui/`、桌面应用的
+`~/.future/app/`）仍留在真实 home 中。
 
 ## `~/.future/agent-app/` — 遗留凭据目录
 

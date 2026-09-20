@@ -292,9 +292,13 @@ pub fn reconcile_orphan_review_repos() -> Result<usize, crate::AppError> {
     reclaim_orphan_subdirs(crate::store::review_repos_root()?, live_workspace_ids)
 }
 
-/// Live (non-deleted) thread ids — the owners of `images/<tid>` directories.
+/// Live attachment-root ids. Fork descendants keep their ancestor's root alive
+/// even after that ancestor thread is deleted.
 fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
-    let mut stmt = conn.prepare("SELECT id FROM threads WHERE status != 'deleted'")?;
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(asset_root_id, ''), id)
+         FROM threads WHERE status != 'deleted'",
+    )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect()
 }

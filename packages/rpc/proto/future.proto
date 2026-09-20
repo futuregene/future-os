@@ -86,7 +86,8 @@ message RpcCommand {
   // Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
   string level = 40;
 
-  // Generic decision/rule mode (approval_result, add_session_rule).
+  // Generic decision/rule mode. Fork accepts through_entry (legacy default),
+  // through_turn, or latest_settled.
   string mode = 50;
 
   // ── compact ────────────────────────────────────────────────────────────
@@ -178,7 +179,8 @@ message RpcCommand {
   // canonical id in the prompt acknowledgement.
   string requested_run_id = 142;
 
-  // Idempotency key for retrying StartRun independently of run identity.
+  // Idempotency key for retrying StartRun or fork/clone independently of
+  // transport command correlation identity.
   string client_request_id = 143;
 
   // Atomic behavior when the session already has an active run:
@@ -653,15 +655,19 @@ message TextChunk {
 }
 
 message ThinkingStart {
-  // No payload fields today; the message exists so the event type is typed.
+  // Provider block identity, used to join late deltas back to this block.
+  string block_id = 1;
 }
 
 message ThinkingDelta {
   string text = 1;
+  // Provider block identity, used to preserve reasoning/text interleaving.
+  string block_id = 2;
 }
 
 message ThinkingEnd {
-  // No payload fields today.
+  // Provider block identity, used to close the matching block.
+  string block_id = 1;
 }
 
 message AgentStart {

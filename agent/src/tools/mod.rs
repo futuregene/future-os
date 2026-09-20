@@ -603,9 +603,20 @@ const PROTECTED_RM_ROOTS: &[&str] = &[
     "/private/var",
 ];
 
-/// True if a recursive-removal target points at the user's home or a
-/// protected system root. `.`/`..` are resolved lexically so "/tmp/.." can't
-/// dodge the root check.
+/// Lexically equal (and case-insensitively so on case-insensitive filesystems),
+/// without touching the filesystem.
+fn same_lexical_path(a: &Path, b: &Path) -> bool {
+    crate::sandbox::paths::normalize_lexically(a)
+        .to_string_lossy()
+        .to_lowercase()
+        == crate::sandbox::paths::normalize_lexically(b)
+            .to_string_lossy()
+            .to_lowercase()
+}
+
+/// True if a recursive-removal target points at the user's home, a redirected
+/// FutureOS home, or a protected system root. `.`/`..` are resolved lexically
+/// so "/tmp/.." can't dodge the root check.
 fn is_protected_rm_target(target: &str) -> bool {
     let t = target.trim().trim_end_matches('/');
     let t = if t.is_empty() { "/" } else { t };
@@ -620,15 +631,18 @@ fn is_protected_rm_target(target: &str) -> bool {
         return true;
     }
 
+    // The FutureOS home (credentials, database, approvals, skills) is covered
+    // through the user home by default; a redirected root (`FUTURE_HOME` /
+    // `future agent --home`) sits outside it and has to be named explicitly.
+    if t == "$future_home" || t.starts_with("$future_home/") || t.starts_with("${future_home}") {
+        return true;
+    }
+
     if std::path::Path::new(t).is_absolute()
-        && crate::utils::home_dir_opt().is_some_and(|home| {
-            crate::sandbox::paths::normalize_lexically(std::path::Path::new(t))
-                .to_string_lossy()
-                .to_lowercase()
-                == crate::sandbox::paths::normalize_lexically(&home)
-                    .to_string_lossy()
-                    .to_lowercase()
-        })
+        && crate::utils::home_dir_opt()
+            .into_iter()
+            .chain(crate::utils::future_home_override())
+            .any(|protected| same_lexical_path(Path::new(t), &protected))
     {
         return true;
     }
@@ -2017,6 +2031,26 @@ mod tests {
                 "should reject: {cmd}"
             );
         }
+    }
+
+    /// A redirected FutureOS home sits outside the user home, so the recursive
+    /// rm guard has to name it explicitly: it holds credentials, approvals and
+    /// the session database exactly like the default `~/.future` does.
+    #[test]
+    fn rejects_recursive_rm_of_a_redirected_futureos_home() {
+        let _guard = crate::test_support::home_env_lock();
+        let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
+        let isolated = std::env::temp_dir().join("futureos-redirected-home");
+        std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, &isolated);
+
+        let path = isolated.to_string_lossy().to_string();
+        assert!(reject_dangerous_command(&format!("rm -rf {path}")).is_err());
+        assert!(reject_dangerous_command(&format!("rm -rf {path}/")).is_err());
+        assert!(reject_dangerous_command("rm -rf $FUTURE_HOME").is_err());
+        // Deeper paths stay removable — the sandbox is the primary boundary.
+        assert!(reject_dangerous_command(&format!("rm -rf {path}/agent/logs")).is_ok());
+
+        crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
     #[test]

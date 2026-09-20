@@ -385,11 +385,31 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
         "thinking_delta" => {
             serde_json::from_value::<crate::event_payloads::ThinkingDeltaData>(value)
                 .ok()
-                .map(|data| Kind::ThinkingDelta(proto::ThinkingDelta { text: data.text }))
+                .map(|data| {
+                    Kind::ThinkingDelta(proto::ThinkingDelta {
+                        text: data.text,
+                        block_id: data.block_id,
+                    })
+                })
         }
-        // Lifecycle markers carry no payload on the wire today.
-        "thinking_start" => Some(Kind::ThinkingStart(proto::ThinkingStart {})),
-        "thinking_end" => Some(Kind::ThinkingEnd(proto::ThinkingEnd {})),
+        "thinking_start" => {
+            serde_json::from_value::<crate::event_payloads::ThinkingMarkerData>(value)
+                .ok()
+                .map(|data| {
+                    Kind::ThinkingStart(proto::ThinkingStart {
+                        block_id: data.block_id,
+                    })
+                })
+        }
+        "thinking_end" => {
+            serde_json::from_value::<crate::event_payloads::ThinkingMarkerData>(value)
+                .ok()
+                .map(|data| {
+                    Kind::ThinkingEnd(proto::ThinkingEnd {
+                        block_id: data.block_id,
+                    })
+                })
+        }
         "agent_start" => serde_json::from_value::<crate::event_payloads::AgentStartData>(value)
             .ok()
             .map(|data| {

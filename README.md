@@ -151,7 +151,10 @@ The terminal and CLI clients are thin gRPC clients. They connect over
 **per-user local IPC** by default (a Unix-domain socket on macOS/Linux,
 a current-user-only named pipe on Windows). Unix honors `FUTURE_AGENT_SOCKET`;
 Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock` when set, falling
-back to `~/.future/run/agent.sock` (also the macOS default). The TUI and desktop
+back to `~/.future/run/agent.sock` (also the macOS default). An Agent started
+with its own FutureOS home (`future agent --home DIR`) is addressed by that
+home instead — see
+[isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home). The TUI and desktop
 app start the agent automatically as a sidecar when none is running; you can
 also start it yourself:
 

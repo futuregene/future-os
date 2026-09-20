@@ -35,6 +35,7 @@
   "filePreview": {
     "loading": "Loading preview…",
     "close": "Close preview",
+    "truncated": "Large file — showing only the beginning.",
     "unavailable": "Can't preview {{name}} — opening it with the default app instead."
   },
   "jsonPreview": {

@@ -35,6 +35,7 @@
   "filePreview": {
     "loading": "正在加载预览…",
     "close": "关闭预览",
+    "truncated": "文件较大，仅显示开头部分。",
     "unavailable": "无法预览 {{name}}，已改用默认程序打开。"
   },
   "jsonPreview": {

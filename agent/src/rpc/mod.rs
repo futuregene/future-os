@@ -67,10 +67,10 @@ pub fn publish_provider_config_changed(
 }
 
 /// Announce a newly minted session on the global control-plane stream. Fired
-/// by `AppState::create_session` (new_session / fork / clone — never disk
-/// hydration) so other clients (e.g. the desktop) can surface the session
-/// immediately instead of waiting for their discovery polls. An idempotent
-/// hint: consumers reconcile against their own state, so no revision counter.
+/// after a new session is durably created and activated (never during ordinary
+/// disk hydration) so other clients can surface it without waiting for their
+/// discovery polls. An idempotent hint: consumers reconcile against their own
+/// state, so no revision counter.
 pub fn publish_session_created(session_id: &str, created_by: &str, cwd: &str) {
     publish_session_created_with_creator(session_id, created_by, "", cwd);
 }
@@ -297,22 +297,27 @@ impl AppState {
     }
 
     /// Create a new session and return its ID.
-    /// Each session gets its own private SseBroadcaster so events are only
-    /// delivered to subscribers of that specific session (not globally).
-    /// The journal is (re)bound to the broadcaster that will actually
-    /// broadcast: construction configured a transient one that is discarded
-    /// here, and an unbound broadcaster would silently keep events in memory.
+    /// A normal session arrives with its final, privately-owned broadcaster
+    /// already bound by construction. Registration never rebinds a journal;
+    /// it retains the owner, or replaces a foreign broadcaster with a fresh
+    /// private one as a defensive boundary.
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         let created_by = session.created_by.clone();
         let creator_id = session.creator_id.clone();
         let cwd = session.cwd.clone();
-        session.broadcaster = Arc::new(SseBroadcaster::new());
-        if let Err(error) = session
-            .broadcaster
-            .configure_journal(id.clone(), &session.session_manager)
-        {
-            tracing::error!(session_id = %id, "failed to configure event journal: {error:#}");
+        if session.broadcaster.journal_session_id() != id {
+            tracing::error!(
+                session_id = %id,
+                broadcaster_owner = %session.broadcaster.journal_session_id(),
+                "session arrived with a foreign event journal; installing a private broadcaster"
+            );
+            let broadcaster = Arc::new(SseBroadcaster::new());
+            if let Err(error) = broadcaster.configure_journal(id.clone(), &session.session_manager)
+            {
+                tracing::error!(session_id = %id, "failed to configure replacement event journal: {error:#}");
+            }
+            session.broadcaster = broadcaster;
         }
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
@@ -321,6 +326,31 @@ impl AppState {
         // session (e.g. get_state) the moment they see the event.
         publish_session_created_with_creator(&id, &created_by, &creator_id, &cwd);
         id
+    }
+
+    /// Activate a session that has already crossed its SQLite commit boundary.
+    /// Fork/clone use this instead of hand-building a second runtime shape, so
+    /// a fresh child and a child restored after process restart have identical
+    /// model, thinking, scheduler, provenance, history-loading, and journal
+    /// behavior.
+    pub fn activate_persisted_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Arc<RwLock<ServerSession>>> {
+        let was_resident = self.sessions.read().contains_key(session_id);
+        let session = self
+            .try_get_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("persisted session disappeared before activation"))?;
+        if !was_resident {
+            let session = session.read();
+            publish_session_created_with_creator(
+                session_id,
+                &session.created_by,
+                &session.creator_id,
+                &session.cwd,
+            );
+        }
+        Ok(session)
     }
 
     /// Reconcile live sessions after the Agent atomically replaces its

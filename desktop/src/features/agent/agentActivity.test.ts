@@ -21,6 +21,23 @@ function edit(id: string, path: string) {
 }
 
 describe("buildAssistantRunProjection segments", () => {
+  it("rejoins a late reasoning delta instead of splitting answer text", () => {
+    const projection = buildAssistantRunProjection(events([
+      ["thinking_start", {}],
+      ["thinking_delta", { text: "Initial thought. " }],
+      ["text_chunk", { text: "不" }],
+      ["thinking_delta", { text: "Trailing thought." }],
+      ["text_chunk", { text: "完全是，它是登录账户的后缀。" }],
+      ["thinking_end", {}],
+    ]));
+
+    expect(projection.content).toBe("不完全是，它是登录账户的后缀。");
+    expect(projection.segments).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Initial thought. Trailing thought." }),
+      expect.objectContaining({ kind: "text", text: "不完全是，它是登录账户的后缀。" }),
+    ]);
+  });
+
   it("interleaves text and tool activity in chronological order", () => {
     const projection = buildAssistantRunProjection(
       events([
