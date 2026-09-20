@@ -118,6 +118,18 @@ pub struct ServerSession {
     /// the rates of the model that served it (see [`crate::models::CostSplit`]).
     /// Persisted alongside the token counters so a restart keeps the split.
     pub cumulative_cost_split: Arc<parking_lot::Mutex<crate::models::CostSplit>>,
+    /// Whether `cumulative_cost_split` accounts for the session's *whole*
+    /// history. A split that only covers requests made since this code shipped
+    /// (an older agent accumulated nothing, and the first build to accumulate
+    /// started mid-session) understates the session, so a load replaces it by
+    /// replaying the journal rather than trusting it. Rides in `session_info`
+    /// next to the split itself.
+    ///
+    /// True by default: a session built in this process starts from zero
+    /// counters, so everything it accumulates is its whole history, and a
+    /// session loaded from disk goes through the check below (trust a complete
+    /// split, replay otherwise) — either way it is complete afterwards.
+    pub cost_split_complete: Arc<std::sync::atomic::AtomicBool>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Approval gate: holds pending approval requests and their decisions.
@@ -260,6 +272,7 @@ impl ServerSession {
             cumulative_cost_split: Arc::new(parking_lot::Mutex::new(
                 crate::models::CostSplit::default(),
             )),
+            cost_split_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             last_prompt_tokens: lpt,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
@@ -798,6 +811,11 @@ impl ServerSession {
                     "total_cost": *self.cumulative_cost.lock(),
                     "cost_split": serde_json::to_value(*self.cumulative_cost_split.lock())
                         .unwrap_or(serde_json::Value::Null),
+                    // Only true when it covers the whole history; a load
+                    // re-prices the journal otherwise.
+                    "cost_split_complete": self
+                        .cost_split_complete
+                        .load(Ordering::Relaxed),
                 });
                 if let Err(error) = self.persistence.update_info_fields(
                     fields
@@ -1342,39 +1360,51 @@ impl ServerSession {
                 if let Some(cost) = info.get("total_cost").and_then(|v| v.as_f64()) {
                     *self.cumulative_cost.lock() = cost;
                 }
-                match info.get("cost_split") {
-                    Some(parts) => {
+                match (
+                    info.get("cost_split"),
+                    info.get("cost_split_complete").and_then(|v| v.as_bool()),
+                ) {
+                    // Accumulated from the session's first request, so it covers
+                    // the whole history: authoritative.
+                    (Some(parts), Some(true)) => {
                         if let Ok(split) =
                             serde_json::from_value::<crate::models::CostSplit>(parts.clone())
                         {
                             *self.cumulative_cost_split.lock() = split;
+                            self.cost_split_complete
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
-                    // Recorded before the split was accumulated per request, so
-                    // it carries none. Price the journal instead of deriving the
-                    // split from this session's totals at whatever model is
-                    // current now: a session that switched models (or merely
-                    // switched one temporarily, then back) would have its whole
-                    // history billed at the wrong rates, which is exactly the
-                    // mismatch this split exists to avoid.
-                    None => {
+                    // Either no split at all (recorded before the split was
+                    // accumulated per request) or one that began mid-session and
+                    // therefore understates it. Price the journal instead of
+                    // deriving the split from this session's totals at whatever
+                    // model is current now: a session that switched models would
+                    // have its whole history billed at the wrong rates, which is
+                    // exactly the mismatch this split exists to avoid.
+                    _ => {
                         let split = self.replay_cost_split();
                         *self.cumulative_cost_split.lock() = split;
+                        self.cost_split_complete
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                         // Cache it so the replay happens once per session, not on
-                        // every load. Sessions recorded from now on write their
-                        // own split at run end (see `run_terminal`).
+                        // every load. Later runs write it back with the rest of
+                        // the counters (see the run-end `session_info`).
                         let _ = self
                             .persistence
                             .update_info_fields(
-                                serde_json::json!({"cost_split": split})
-                                    .as_object()
-                                    .cloned()
-                                    .unwrap_or_default(),
+                                serde_json::json!({
+                                    "cost_split": split,
+                                    "cost_split_complete": true,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
                             )
                             .inspect_err(|error| {
                                 tracing::warn!(
                                     "[session] could not persist the replayed cost split: {error}"
-                                )
+                                );
                             });
                     }
                 }
@@ -3587,6 +3617,56 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_split_is_replaced_by_the_journal() {
+        // A split that began mid-session — the first build to accumulate one
+        // started counting wherever a session happened to be at the time, so the
+        // session's earlier spend is missing from it. Trusting it understates the
+        // session (a real one reported ¥0.91 of rows against a ¥9.32 total), so
+        // the journal decides instead.
+        let mut session = make_test_session("partial-cost-split");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({
+                        "cwd": session.cwd,
+                        "model": session.model,
+                        // Covers only the tail of the session.
+                        "cost_split": {"input": 3.0, "output": 0.0,
+                                       "cache_read": 0.0, "cache_write": 0.0},
+                    }),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        seed_switching_cost_journal(&session);
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        assert!(
+            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
+            "the journal covers the whole session: {:?}",
+            *session.cumulative_cost_split.lock()
+        );
+        // Marked complete, so the next load keeps it instead of replaying again.
+        let stored = session.session_manager.load(&id).unwrap();
+        assert_eq!(
+            stored.get_session_info().unwrap()["cost_split_complete"],
+            serde_json::Value::Bool(true)
+        );
+        session.switch_session(&id).unwrap();
+        assert!((session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn a_recorded_cost_split_is_kept_as_is() {
         // Sessions written by the current agent carry their own split; loading
         // one must not overwrite it with a replay.
@@ -3607,6 +3687,7 @@ mod tests {
                         "model": session.model,
                         "cost_split": {"input": 7.5, "output": 0.25,
                                        "cache_read": 0.0, "cache_write": 0.0},
+                        "cost_split_complete": true,
                     }),
                     session.model.clone(),
                     session.thinking_level.clone(),
@@ -3652,7 +3733,7 @@ mod tests {
             message.ensure_journal_entry_id();
         }
         let mut entries = vec![crate::session::SessionEntry::session_info(
-            serde_json::json!({"cwd":session.cwd,"model":session.model,"tokens_in":100,"tokens_out":20,"total_cost":0.125}),
+            serde_json::json!({"cwd":session.cwd,"model":session.model,"tokens_in":100,"tokens_out":20,"total_cost":0.125,"cost_split_complete":true}),
             session.model.clone(),
             session.thinking_level.clone(),
         )];
