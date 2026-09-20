@@ -1,11 +1,12 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, ScrollView, StyleSheet, Text } from "react-native";
 import { SkillPicker } from "../components/SkillPicker";
 import type { RemoteSkill } from "../../../remote/types";
 
 jest.mock("lucide-react-native", () => ({ Info: () => null, X: () => null }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "zh" } }) }));
+jest.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 
 const skills: RemoteSkill[] = [{ name: "future-web", description: "Search pages", nameZh: "网页搜索", descriptionZh: "读取网页" }];
 const load = jest.fn(async () => skills);
@@ -14,6 +15,11 @@ const onClose = jest.fn();
 const props = { query: "", supported: true, load, onSelect, onClose, maxHeight: 220 };
 let tree: ReactTestRenderer;
 const texts = () => tree.root.findAllByType(Text).map(node => node.props.children);
+/** The open details dialog, or undefined while none is open. */
+const dialog = () => tree.root.findAllByType(Modal)[0];
+const dialogTexts = () => dialog()!.findAllByType(Text).map(node => node.props.children);
+const details = () => tree.root.findAll(node => node.props.accessibilityLabel === "skills.details" && node.props.onPress)[0]!;
+const closeDialog = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.close" && node.props.onPress)[0]!;
 beforeEach(() => { jest.clearAllMocks(); load.mockReset().mockResolvedValue(skills); });
 afterEach(() => { if (tree) act(() => tree.unmount()); });
 
@@ -34,25 +40,31 @@ test("loads once per opening, searches locally and selects without dismissing ke
   expect(texts()).toContain("skills.noResults");
 });
 
-test("skill choices keep name and description on one row, with full details only on demand", async () => {
+test("skill rows stay one line and the info button opens the full description in a dialog", async () => {
   await act(async () => { tree = create(createElement(SkillPicker, props)); });
   const option = tree.root.findAll(node => node.props.accessibilityLabel === "/future-web · 网页搜索" && node.props.onPress)[0]!;
   expect(StyleSheet.flatten(option.props.style({ pressed: false }))).toMatchObject({ flexDirection: "row", minHeight: 44, minWidth: 0 });
   expect(option.findAllByType(Text)).toHaveLength(2);
   expect(option.findAllByType(Text).every(node => node.props.numberOfLines === 1)).toBe(true);
+  // Nothing about the skill is expanded inside the height-capped picker panel.
+  expect(dialog()).toBeUndefined();
   expect(texts()).not.toContain("/future-web");
-  const details = () => tree.root.findAll(node => node.props.accessibilityLabel === "skills.details" && node.props.onPress)[0]!;
   act(() => details().props.onPress());
   expect(details().props.accessibilityState.expanded).toBe(true);
-  expect(texts()).toContain("/future-web");
-  const expanded = tree.root.findAllByType(View).find(node => node.findAllByType(Text).some(text => text.props.children === "/future-web") && StyleSheet.flatten(node.props.style)?.gap === 4)!;
-  expect(expanded.findAllByType(Text).every(node => node.props.numberOfLines === undefined)).toBe(true);
   expect(onSelect).not.toHaveBeenCalled();
-  act(() => details().props.onPress());
-  expect(texts()).not.toContain("/future-web");
+  // The dialog gets the whole viewport, so the description is no longer clamped.
+  expect(dialogTexts()).toEqual(expect.arrayContaining(["网页搜索", "/future-web", "读取网页"]));
+  const paragraph = dialog()!.findAllByType(Text).find(node => node.props.children === "读取网页")!;
+  expect(paragraph.props.numberOfLines).toBeUndefined();
+  act(() => closeDialog().props.onPress());
+  expect(dialog()).toBeUndefined();
+  // A skill the query no longer matches takes its dialog with it, even when the
+  // query comes back.
   act(() => details().props.onPress());
   await act(async () => tree.update(createElement(SkillPicker, { ...props, query: "missing" })));
+  expect(dialog()).toBeUndefined();
   await act(async () => tree.update(createElement(SkillPicker, props)));
+  expect(dialog()).toBeUndefined();
   expect(texts()).not.toContain("/future-web");
   expect(load).toHaveBeenCalledTimes(1);
 });
@@ -115,12 +127,13 @@ test("late replies from a previous desktop cannot populate the new picker", asyn
   expect(texts()).not.toContain("网页搜索");
 });
 
-test("details do not repeat the command when the row already shows it as the name", async () => {
+test("the dialog only spells out the command when it differs from the shown name", async () => {
+  // With no localized name the row already reads "lark-doc", so a "/lark-doc"
+  // line under it would repeat the same string.
   load.mockResolvedValueOnce([{ name: "lark-doc", description: "Feishu docs" }]);
   await act(async () => { tree = create(createElement(SkillPicker, props)); });
   expect(texts()).toContain("lark-doc");
-  const details = tree.root.findAll(node => node.props.accessibilityLabel === "skills.details" && node.props.onPress)[0]!;
-  act(() => details.props.onPress());
-  expect(texts()).toContain("Feishu docs");
-  expect(texts()).not.toContain("/lark-doc");
+  act(() => details().props.onPress());
+  expect(dialogTexts()).toEqual(expect.arrayContaining(["lark-doc", "Feishu docs"]));
+  expect(dialogTexts()).not.toContain("/lark-doc");
 });

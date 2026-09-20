@@ -1,10 +1,39 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, X } from "lucide-react-native";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { DialogSurface } from "../../../components/DialogSurface";
 import type { RemoteSkill } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { filterActions, filterSkills, type SlashAction } from "../skillCompletion";
+
+/** One skill's full description. The picker panel is capped to a slice of the
+ * screen above the composer, so a description expanded inside a row could only
+ * ever show a few lines; the dialog gets the whole viewport instead. */
+function SkillDetailsDialog({ name, command, description, onClose, closeLabel }: {
+  name: string;
+  /** Shown only when the displayed name is not the command itself. */
+  command?: string;
+  description: string;
+  onClose: () => void;
+  closeLabel: string;
+}) {
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible>
+      <DialogSurface>
+        <View style={styles.dialogHeader}>
+          <Text accessibilityRole="header" style={styles.dialogTitle} numberOfLines={3}>{name}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={closeLabel}
+            onPress={onClose} style={({ pressed }) => [styles.dialogClose, pressed && styles.pressed]}>
+            <X color={colors.inkSoft} size={20} />
+          </Pressable>
+        </View>
+        {command ? <Text style={styles.dialogCommand}>{command}</Text> : null}
+        <Text style={styles.dialogDescription}>{description}</Text>
+      </DialogSurface>
+    </Modal>
+  );
+}
 
 /** Mounted only while completing a token. Reopening refreshes installed skills. */
 export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeight, actions = [], onActionSelect }: {
@@ -38,8 +67,14 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
   }, [load, supported, attempt]);
   const matches = filterSkills(skills, query);
   const matchedActions = filterActions(actions, query);
-  if (detailName && !matches.some(skill => skill.name === detailName)) setDetailName(null);
   const useZh = i18n.language.startsWith("zh");
+  // A skill that stops matching (the query changed) closes its dialog with it.
+  const detail = detailName ? matches.find(skill => skill.name === detailName) : undefined;
+  if (detailName && !detail) setDetailName(null);
+  const detailZhName = detail && useZh ? detail.nameZh : undefined;
+  const detailDescription = detail
+    ? useZh ? detail.descriptionZh || detail.description : detail.description
+    : "";
   return (
     <View style={[styles.panel, { maxHeight }]}>
       <View style={styles.header}>
@@ -78,7 +113,8 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
             : <Text style={styles.hint}>{t(skills.length ? "skills.noResults" : "skills.empty")}</Text>)
           : matches.map(skill => {
             const description = useZh ? skill.descriptionZh || skill.description : skill.description;
-            // Only worth showing the command when the row shows a different (localized) name.
+            // The row names the skill; only a localized name differs from the
+            // command, so only then is the command worth spelling out.
             const zhName = useZh ? skill.nameZh : undefined;
             const expanded = detailName === skill.name;
             return (
@@ -100,16 +136,19 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, maxHeig
                     <Info color={colors.inkMuted} size={18} />
                   </Pressable>
                 </View>
-                {expanded && (
-                  <View style={styles.details}>
-                    {zhName ? <Text style={styles.command}>{`/${skill.name}`}</Text> : null}
-                    <Text style={styles.detailDescription}>{description}</Text>
-                  </View>
-                )}
               </View>
             );
           })}
       </ScrollView>
+      {detail && (
+        <SkillDetailsDialog
+          closeLabel={t("common.close")}
+          command={detailZhName ? `/${detail.name}` : undefined}
+          description={detailDescription}
+          name={detailZhName || detail.name}
+          onClose={() => setDetailName(null)}
+        />
+      )}
     </View>
   );
 }
@@ -124,12 +163,14 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center" },
   select: { flex: 1, minWidth: 0, minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingLeft: spacing.lg, paddingVertical: spacing.sm },
   detailsButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
-  details: { paddingHorizontal: spacing.lg, paddingBottom: spacing.md, gap: spacing.xs },
   pressed: { backgroundColor: colors.surfaceSubtle },
   name: { maxWidth: "50%", flexShrink: 1, fontSize: 14, fontWeight: "600", color: colors.ink },
-  command: { fontSize: 12, color: colors.inkMuted },
   description: { flex: 1, minWidth: 0, fontSize: 12, color: colors.inkSoft },
-  detailDescription: { fontSize: 13, lineHeight: 19, color: colors.inkSoft },
+  dialogHeader: { flexDirection: "row", alignItems: "flex-start", gap: spacing.sm },
+  dialogTitle: { flex: 1, minWidth: 0, paddingVertical: spacing.sm, fontSize: 18, fontWeight: "700", color: colors.inkStrong },
+  dialogClose: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
+  dialogCommand: { fontSize: 13, color: colors.inkMuted },
+  dialogDescription: { fontSize: 14, lineHeight: 21, color: colors.inkSoft },
   hint: { fontSize: 13, color: colors.inkSoft, padding: spacing.md, flexShrink: 1 },
   loading: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md },
   retry: { minHeight: 44, justifyContent: "center", alignItems: "center" },
