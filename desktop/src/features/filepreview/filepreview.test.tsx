@@ -212,6 +212,18 @@ describe("markdownPreview", () => {
     cleanup();
   });
 
+  it("reflows prose wrapped at the file's column instead of showing its line breaks", async () => {
+    // The file's newlines are soft breaks, which CommonMark renders as spaces.
+    invokeMock.mockResolvedValue({ content: "投影最小（1 706 tok）、回本最快\n基础指令，压缩只要 0.42 元。", size: 40, truncated: false });
+    const { container, cleanup } = mount(createElement(MarkdownPreview, {
+      path: "/w/doc.md",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.querySelector("p")?.textContent).toBe("投影最小（1 706 tok）、回本最快 基础指令，压缩只要 0.42 元。");
+    cleanup();
+  });
+
   it("routes read failures to onError", async () => {
     invokeMock.mockRejectedValue(new Error("gone"));
     const onError = vi.fn();
