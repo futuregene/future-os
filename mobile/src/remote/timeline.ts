@@ -9,6 +9,7 @@ export {
   createStreamEventBatch,
   applyReplayEvents,
   commitAcknowledgedUserMessage,
+  dropSupersededCompactionDividers,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,

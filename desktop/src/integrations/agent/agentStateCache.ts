@@ -356,7 +356,6 @@ export function installAgentEventListener() {
       //     projection path instead.
       case "user_message":
       case "agent_start":
-      case "agent_end":
       case "compaction_started":
       case "compaction_committed":
       case "compaction_failed":
@@ -368,6 +367,23 @@ export function installAgentEventListener() {
           sessionId,
           eventType === "compaction_started",
         );
+        window.dispatchEvent(
+          new CustomEvent("future:agent-event", {
+            detail: { threadId, sessionId, eventType, payload: p },
+          }),
+        );
+        break;
+
+      case "agent_end":
+        // The run's spend is final at this point, and nothing else re-reads the
+        // session: without this the cached usage behind the header figure and the
+        // usage dialog stays one run behind until an agent reconnect. One state
+        // read per run end is cheap, and reading (never inventing) the totals is
+        // what keeps the figure honest.
+        if (!threadId)
+          return;
+        applyCompactionEvent(threadId, sessionId, false);
+        revalidateAgentState(threadId);
         window.dispatchEvent(
           new CustomEvent("future:agent-event", {
             detail: { threadId, sessionId, eventType, payload: p },

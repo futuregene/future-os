@@ -94,6 +94,28 @@ export function useConversationController({
     } catch { /* Ignore malformed notifications; the next state read recovers. */ }
   }, [applySessionSettings]);
 
+  /**
+   * Re-read the open conversation's state.
+   *
+   * The amount is only as fresh as the last `get_state` (open, run settle,
+   * reconnect), so a session that spent tokens while this phone was idle — or
+   * whose settle event was missed — would otherwise show the old figure. Called
+   * when the amount is about to be shown, where being right matters. Failures
+   * are swallowed: the previously known figures stay on screen.
+   */
+  const refreshSessionUsage = useCallback(async () => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) return;
+    try {
+      const { data } = await client.requestRetry<RemoteSessionState>(
+        { type: "get_state", sessionId },
+        sessionId,
+      );
+      applySessionSettings(sessionId, { usage: data.usage });
+    } catch { /* Keep the last known figures rather than blanking the sheet. */ }
+  }, [applySessionSettings, clientRef, selectedRef]);
+
   const selectSession = useCallback(
     async (sessionId: string) => {
       const client = clientRef.current;
@@ -377,6 +399,7 @@ export function useConversationController({
     sessionUsage,
     applySessionSettings,
     handleSessionSettingsEvent,
+    refreshSessionUsage,
     openingSession,
     selectSession,
     newConversation,

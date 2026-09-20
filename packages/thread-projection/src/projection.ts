@@ -177,6 +177,11 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
       {
         id: `seg_${key}_compaction`,
         kind: "compaction",
+        // The checkpoint is the divider's identity: the live projection renders
+        // the same checkpoint while the run is still streaming, under its own id.
+        ...(entry.checkpoint?.checkpointId
+          ? { checkpointId: entry.checkpoint.checkpointId }
+          : {}),
         ...(tokensBefore ? { tokensBefore } : {}),
         ...(entry.checkpoint?.trigger
           ? { trigger: entry.checkpoint.trigger }
@@ -388,14 +393,20 @@ export function entriesToTurns(
       // Durable checkpoints do not end the current turn. Flushing here would
       // orphan (and drop) every following assistant/tool entry until the next
       // user message. Keep automatic checkpoints inline, including released
-      // v2 checkpoints without a phase. Manual standalone compaction and the
-      // old destructive summary format remain exchange boundaries.
+      // checkpoints without a phase. Manual standalone compaction and the old
+      // destructive summary format remain exchange boundaries.
+      //
+      // The gate is "v2 or newer", not "=== 2": the agent bumps its checkpoint
+      // schema (v2 → v3 in #715) independently of this projector, and pinning a
+      // literal version silently reclassified every newer in-turn checkpoint as
+      // an exchange boundary — the reply that followed it disappeared from the
+      // rendered transcript even though the journal still had it.
       const inTurn =
-        entry.checkpoint?.schemaVersion === 2 &&
+        (entry.checkpoint?.schemaVersion ?? 0) >= 2 &&
         phase !== "standalone" &&
         (phase === "pre_turn" ||
           phase === "mid_turn" ||
-          entry.checkpoint.trigger !== "manual");
+          entry.checkpoint?.trigger !== "manual");
       if (acc?.userMessage && inTurn) {
         acc.segments.push(...(divider.segments ?? []));
         // A reload may stop at the checkpoint before any reply is persisted.

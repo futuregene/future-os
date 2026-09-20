@@ -405,6 +405,33 @@ describe("session usage", () => {
     expect(current(h).sessionUsage).toBeNull();
     act(() => h.renderer.unmount());
   });
+
+  it("refreshSessionUsage reads the open conversation and applies what came back", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { model: "openai/gpt-4", thinkingLevel: "high", usage } as RemoteSessionState,
+    }));
+    const h = await mountController({ selected: "s1", requestRetry });
+    expect(current(h).sessionUsage).toBeNull();
+    await act(async () => { await current(h).refreshSessionUsage(); });
+    expect(requestRetry).toHaveBeenCalledWith({ type: "get_state", sessionId: "s1" }, "s1");
+    expect(current(h).sessionUsage).toEqual(usage);
+    act(() => h.renderer.unmount());
+  });
+
+  it("a failed refresh keeps the last known figures and never blanks the sheet", async () => {
+    const h = await mountController({ selected: "s1" });
+    act(() => current(h).applySessionSettings("s1", { usage }));
+    const requestRetry = jest.fn(async () => { throw new Error("offline"); });
+    (h.clientRef as { current: unknown }).current = { requestRetry };
+    await act(async () => { await current(h).refreshSessionUsage(); });
+    expect(requestRetry).toHaveBeenCalled();
+    expect(current(h).sessionUsage).toEqual(usage);
+    // No conversation open: nothing to read, and no request either.
+    h.selectedRef.current = "";
+    await act(async () => { await current(h).refreshSessionUsage(); });
+    expect(requestRetry).toHaveBeenCalledTimes(1);
+    act(() => h.renderer.unmount());
+  });
 });
 
 describe("selectSession", () => {

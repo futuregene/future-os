@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, StyleSheet, View } from "react-native";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 
-jest.mock("lucide-react-native", () => ({ Pencil: "Pencil", X: "X" }));
+jest.mock("lucide-react-native", () => ({ X: "X" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 
 const usage = {
@@ -22,7 +22,6 @@ const props = {
   usage,
   visible: true,
   onClose: jest.fn(),
-  onRename: jest.fn(),
   t: ((key: string) => key) as unknown as ComponentProps<typeof SessionUsageSheet>["t"],
 };
 let tree: ReactTestRenderer;
@@ -39,7 +38,7 @@ const texts = () => tree.root.findAll(node => typeof node.children[0] === "strin
 // against the same formatter rather than hard-coding a grouping separator.
 const count = (value: number) => new Intl.NumberFormat(undefined).format(value);
 
-test("splits the tokens by category and keeps the rename entry beside the title", () => {
+test("splits the tokens by category and names the conversation it accounts for", () => {
   const rendered = texts();
   // The non-cached input remainder is what the input row bills.
   expect(rendered).toContain(count(750_000));
@@ -52,8 +51,10 @@ test("splits the tokens by category and keeps the rename entry beside the title"
   expect(rendered).toContain("chat.usageHintPriced");
   expect(rendered).toContain("Priced conversation");
 
-  act(() => press("chat.rename").props.onPress());
-  expect(props.onRename).toHaveBeenCalledTimes(1);
+  // Only the two accounting actions: closing the sheet, and nothing that
+  // edits the conversation (renaming stays in the top bar).
+  const actions = tree.root.findAll(node => typeof node.props.onPress === "function" && node.props.accessibilityRole === "button");
+  expect(actions.map(node => node.props.accessibilityLabel)).toEqual(["common.close"]);
   act(() => press("common.close").props.onPress());
   expect(props.onClose).toHaveBeenCalledTimes(1);
 });

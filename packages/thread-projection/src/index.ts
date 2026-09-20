@@ -15,6 +15,8 @@ export type {
 export type { CollapseRun, ToolKind } from "./group";
 export type { ApprovalAction, ApprovalSaveSuggestion } from "./approval";
 export type { FriendlyAgentError, RunStatus } from "./format";
+export type { CompactionDividerCarrier } from "./compaction";
+export { compactionCheckpoints } from "./compaction";
 
 export {
   buildAssistantRunProjection,

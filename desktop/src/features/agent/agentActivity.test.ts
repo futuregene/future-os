@@ -59,7 +59,9 @@ describe("buildAssistantRunProjection segments", () => {
       ["compaction_started", { operation_id: "cmp", trigger: "manual" }],
       ["compaction_unchanged", { operation_id: "cmp", reused: true }],
     ]));
-    expect(projection.segments).toEqual([{ id: "cp-old", kind: "compaction", tokensBefore: 100 }]);
+    expect(projection.segments).toEqual([
+      { id: "cp-old", kind: "compaction", checkpointId: "cp-old", tokensBefore: 100 },
+    ]);
   });
 
   it("projects compaction started, committed, and failed as correlated UI messages", () => {
@@ -70,7 +72,7 @@ describe("buildAssistantRunProjection segments", () => {
       ]),
     );
     expect(completed.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     const failed = buildAssistantRunProjection(

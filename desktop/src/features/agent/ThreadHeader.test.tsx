@@ -12,6 +12,11 @@ vi.mock("../../components/layout/LeftPanelTitlebarToggle", () => ({
   LeftPanelTitlebarToggle: () => null,
 }));
 
+const revalidateUsage = vi.fn();
+vi.mock("../../integrations/agent/agentStateCache", () => ({
+  revalidateAgentState: (threadId: string) => revalidateUsage(threadId),
+}));
+
 const thread = {
   id: "t1",
   title: "Priced conversation",
@@ -47,7 +52,8 @@ function render(element: Parameters<Root["render"]>[0]) {
   return container;
 }
 
-it("shows the running amount by default and opens the breakdown on click", async () => {
+it("opens the breakdown from an icon, and keeps the amount out of the header", async () => {
+  revalidateUsage.mockClear();
   const container = render(
     <ThreadHeader
       leftPanelExpanded
@@ -57,9 +63,16 @@ it("shows the running amount by default and opens the breakdown on click", async
     />,
   );
   const button = container.querySelector<HTMLButtonElement>("[data-testid=thread-usage]")!;
-  expect(button.textContent).toBe("¥1.2345");
+  // An icon, not the figure: the header is for the conversation.
+  expect(button.textContent).toBe("");
+  expect(button.querySelector("svg")).not.toBeNull();
+  expect(container.textContent).not.toContain("¥");
 
   await act(async () => button.click());
+
+  // Opening the panel re-reads the session: a cached figure can be a run behind,
+  // and the panel's whole job is to show what this conversation spent.
+  expect(revalidateUsage).toHaveBeenCalledWith("t1");
 
   // The dialog names the conversation and splits the tokens by category, with
   // the non-cached input remainder billed as plain input.
@@ -93,7 +106,7 @@ it("omits the button without an agent session and reports missing usage honestly
       thread={thread}
     />,
   );
-  expect(withSession.querySelector("[data-testid=thread-usage]")!.textContent).toBe("¥0");
+  expect(withSession.querySelector("[data-testid=thread-usage]")).not.toBeNull();
   await act(async () => withSession.querySelector<HTMLButtonElement>("[data-testid=thread-usage]")!.click());
   expect(document.body.textContent).toContain("No usage recorded for this conversation yet.");
 });

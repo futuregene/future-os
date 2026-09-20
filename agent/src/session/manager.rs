@@ -238,6 +238,12 @@ impl Manager {
     }
 
     /// Save one metadata snapshot so related usage counters survive restart together.
+    /// The journal payloads needed to price a session's spend request by
+    /// request; see `SqliteStore::pricing_event_payloads`.
+    pub(crate) fn pricing_event_payloads(&self, id: &str) -> Result<Vec<String>> {
+        self.storage()?.pricing_event_payloads(id)
+    }
+
     pub(crate) fn update_session_info_fields(
         &self,
         id: &str,

@@ -9,6 +9,7 @@ import {
 import { ChatTopBar } from "../components/ChatTopBar";
 import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
+import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
@@ -22,6 +23,8 @@ const mockRemote = {
   // and say so rather than invent a ¥0 breakdown.
   sessionUsage: null as RemoteSessionUsage | null,
   closeConversation: jest.fn(),
+  // The app re-reads the session as the sheet opens.
+  refreshSessionUsage: jest.fn(async () => {}),
   sessions: [] as RemoteSession[],
   workspaces: [] as RemoteWorkspace[],
   models: [],
@@ -71,8 +74,9 @@ jest.mock("../useAttachmentPicker", () => ({
 const mockFileDownload: { preview: unknown; activeDownload: unknown } = { preview: null, activeDownload: null };
 jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
 jest.mock("../useSendMessage", () => ({ useSendMessage: () => ({}) }));
-const mockOpenRename = jest.fn();
-jest.mock("../useRename", () => ({ useRename: () => ({ openRename: mockOpenRename }) }));
+jest.mock("../components/SessionUsageSheet", () => ({
+  SessionUsageSheet: "SessionUsageSheet",
+}));
 jest.mock("../components/ChatTopBar", () => ({ ChatTopBar: "ChatTopBar" }));
 jest.mock("../components/SessionFilesPanel", () => ({
   SessionFilesPanel: "SessionFilesPanel",
@@ -178,26 +182,28 @@ test("file browsing owns system back while the header still returns directly to 
   expect(mockRemote.closeConversation).toHaveBeenCalledTimes(1);
 });
 
-test("the amount in the top bar opens the usage sheet, which owns renaming", () => {
+test("the spend icon opens the usage sheet, and renaming is not duplicated here", () => {
   mockRemote.sessionUsage = {
     inputTokens: 2_000, outputTokens: 500, cacheReadTokens: 0, cacheWriteTokens: 0,
     costCny: 0.5, costInputCny: 0.3, costOutputCny: 0.2, costCacheReadCny: 0, costCacheWriteCny: 0,
   };
   act(() => tree.update(createElement(ChatScreen)));
   const bar = tree.root.findByType(ChatTopBar);
-  expect(bar.props.usageText).toBe("¥0.5");
+  // The session list owns renaming, so the conversation header exposes neither
+  // a rename action nor a rename modal.
+  expect(bar.props.onRename).toBeUndefined();
+  expect(tree.root.findAllByType(RenameModal)).toHaveLength(0);
   expect(tree.root.findByType(SessionUsageSheet).props.visible).toBe(false);
 
   act(() => bar.props.onUsage());
   const sheet = tree.root.findByType(SessionUsageSheet);
   expect(sheet.props.visible).toBe(true);
   expect(sheet.props.usage).toBe(mockRemote.sessionUsage);
-
-  // Renaming is reached from inside the sheet, and the sheet must stand down
-  // rather than sit behind the rename modal.
-  act(() => sheet.props.onRename());
-  expect(tree.root.findByType(SessionUsageSheet).props.visible).toBe(false);
-  expect(mockOpenRename).toHaveBeenCalledTimes(1);
+  // Opening the sheet re-reads the session: the cached amount can be a run
+  // behind, and the sheet is the moment it is looked at.
+  expect(mockRemote.refreshSessionUsage).toHaveBeenCalledTimes(1);
+  // The sheet is an accounting view: closing it is its only action.
+  expect(sheet.props.onRename).toBeUndefined();
 });
 
 test("a conversation without reported usage still opens the sheet", () => {

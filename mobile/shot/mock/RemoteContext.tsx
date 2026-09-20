@@ -24,12 +24,14 @@ import type {
   MobileAttachment,
   RemoteCredentials,
   RemoteModel,
+  RemoteSessionUsage,
   SessionFileListing,
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
 import {
+  compactResumeEntries,
   demoCredentials,
   demoDesktops,
   demoEntries,
@@ -37,6 +39,7 @@ import {
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
+  demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
   demoUnpricedSessionUsage,
@@ -76,6 +79,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
+  const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
@@ -93,7 +97,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   const baseTimeline = useMemo(() => {
-    const history = timelineFromEntries(demoEntries as unknown as HistoryEntry[]);
+    // `?compactHistory=1` swaps in the history of a run that compacted
+    // mid-turn, so a capture can assert the reply after the divider survives
+    // the durable projection (the schemaVersion 3 path).
+    const historyEntries = new URLSearchParams(window.location.search).get("compactHistory") === "1"
+      ? compactResumeEntries
+      : demoEntries;
+    const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     if (!scriptedCompaction) return history;
     const manualRun = "run_1";
     return applyStreamEvents(history, [
@@ -171,7 +181,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "medium",
     // The amount in the top bar, refreshed by every state read in the app.
-    sessionUsage: selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage,
+    sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
     approvalTier: "off",
     sandboxAvailable: true,
     busy: false,
@@ -192,6 +202,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectSession: async (sessionId: string) => {
       setDraft(false);
       setSelectedSessionId(sessionId);
+    },
+    // The app re-reads the session when the usage sheet opens. Answer with a
+    // larger figure, the way a session that spent more since the last read
+    // would — the top bar and the sheet share this state, so a capture shows
+    // both moving to the refreshed amount.
+    refreshSessionUsage: async () => {
+      setUsageOverride(demoRefreshedSessionUsage);
     },
     newConversation: async () => setDraft(true),
     closeConversation: () => {

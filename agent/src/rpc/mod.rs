@@ -298,11 +298,10 @@ impl AppState {
 
     /// Create a new session and return its ID.
     /// Each session gets its own private SseBroadcaster so events are only
-    /// delivered to subscribers of that specific session (not globally) —
-    /// fork/clone pass the parent's broadcaster in and must not keep sharing
-    /// it. The journal is (re)bound to the broadcaster that will actually
-    /// broadcast: construction configured one that may be discarded here, and
-    /// an unbound broadcaster silently holds events in memory only.
+    /// delivered to subscribers of that specific session (not globally).
+    /// The journal is (re)bound to the broadcaster that will actually
+    /// broadcast: construction configured a transient one that is discarded
+    /// here, and an unbound broadcaster would silently keep events in memory.
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         let created_by = session.created_by.clone();
@@ -496,29 +495,21 @@ fn get_state_internal(
         0.0
     };
 
-    // Per-category split of the amount, priced with the model's per-1M-token
-    // rates (the same rates the estimate above uses). This is always derived —
-    // a provider that bills itself reports one `credit_cost` number with no
-    // breakdown, so this is an estimate of where the money went, not a
-    // re-labelling of the provider's invoice. All-zero rates (an unpriced
-    // model) leave every figure at 0 so clients can show tokens only.
-    let breakdown = registry
-        .resolve(&sess.model)
-        .map(|model_config| {
-            let per_million = |tokens: i64, rate: f64| (tokens.max(0) as f64 / 1_000_000.0) * rate;
-            let cost = &model_config.cost;
-            // `tokens_in` already includes the cached subset; bill the
-            // non-cached remainder at the input rate so the categories do not
-            // double-count (same rule as `Cost::estimate`).
-            let uncached_in = tokens_in.saturating_sub(cache_r).saturating_sub(cache_w);
-            [
-                per_million(uncached_in, cost.input),
-                per_million(tokens_out, cost.output),
-                per_million(cache_r, cost.cache_read),
-                per_million(cache_w, cost.cache_write),
-            ]
-        })
-        .unwrap_or([0.0; 4]);
+    // Per-category split of the amount, accumulated one request at a time with
+    // the rates of the model that served it — so a session that switched models
+    // keeps each request billed at the price in force when it ran. A provider
+    // that bills itself reports one `credit_cost` number with no breakdown, so
+    // the split is always an estimate of where the money went, not a
+    // re-labelling of the provider's invoice. Unpriced models leave every figure
+    // at 0 so clients can show tokens only.
+    //
+    // Never derived from the session's token totals here: pricing the whole
+    // history at whatever model happens to be current re-bills every earlier
+    // request at the wrong rates (a model switched and switched back turns a
+    // ¥8.41 session into a ¥1925 breakdown). Sessions recorded before the split
+    // was accumulated supply one by replaying their journal on load instead —
+    // see `RpcSession::replay_cost_split`.
+    let split = *sess.cumulative_cost_split.lock();
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
@@ -675,10 +666,10 @@ fn get_state_internal(
             cache_read_tokens: cache_r,
             cache_write_tokens: cache_w,
             cost_cny: total_cost,
-            cost_input_cny: breakdown[0],
-            cost_output_cny: breakdown[1],
-            cost_cache_read_cny: breakdown[2],
-            cost_cache_write_cny: breakdown[3],
+            cost_input_cny: split.input,
+            cost_output_cny: split.output,
+            cost_cache_read_cny: split.cache_read,
+            cost_cache_write_cny: split.cache_write,
         },
         permission_level: sess.permission_level.clone(),
         parent_session_id: if parent_session_id.is_empty() {
@@ -1495,13 +1486,11 @@ mod tests {
             .runtime
             .begin(Some("run-live"), Some("request-live"))
             .unwrap();
-        // Token counters make the token×price estimation arm observable.
+        // Token counters drive the context figures and the total's estimate arm.
         session
             .read()
             .tokens_in
             .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
-        // 1M prompt tokens with 200k served from cache: input 1.0/M, cache
-        // read 0.5/M → 0.8 + 0.1 (see the per-category assertions below).
         session
             .read()
             .tokens_cache_r
@@ -1510,6 +1499,12 @@ mod tests {
             .read()
             .tokens_out
             .store(100_000, std::sync::atomic::Ordering::Relaxed);
+        // What the run loop charged this session, request by request.
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 0.8,
+            output: 0.1,
+            ..Default::default()
+        };
 
         let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
         assert_eq!(value["activeRun"]["runId"], "run-live");
@@ -1517,15 +1512,73 @@ mod tests {
         // deepseek-chat is in the catalog with a non-zero price, so the
         // estimate replaces the (zero) API cost.
         assert!(value["usage"]["costCny"].as_f64().unwrap() > 0.0);
-        // The per-category split bills the non-cached input remainder at the
-        // input rate (only `input` is priced on this fixture model), so cached
-        // tokens never double-count and unpriced categories stay at 0.
+        // The per-category split is what the session accumulated — never a
+        // re-pricing of its token totals at the current model (a session that
+        // switched models would have that figure wrong by orders of magnitude).
         let usage = &value["usage"];
         let price = |field: &str| usage[field].as_f64().unwrap();
         assert_eq!(price("costInputCny"), 0.8);
-        assert_eq!(price("costOutputCny"), 0.0);
+        assert_eq!(price("costOutputCny"), 0.1);
         assert_eq!(price("costCacheReadCny"), 0.0);
         assert_eq!(price("costCacheWriteCny"), 0.0);
+    }
+
+    #[test]
+    fn get_state_prefers_the_accumulated_split_over_re_pricing_the_totals() {
+        // A session whose first request ran on a cheap model and whose second ran
+        // on a model priced 100× higher. The accumulated split knows both; any
+        // derivation from the session's totals can only apply the current model's
+        // rate to everything, which would bill the cheap request 100× over.
+        let (_dir, state) = bare_app_state();
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![crate::models::Model {
+                id: "pricey".to_string(),
+                name: "Pricey".to_string(),
+                provider: "test".to_string(),
+                api: "chat".to_string(),
+                base_url: "https://example.test".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                cost: crate::models::Cost {
+                    input: 100.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            r#"{"test":{"type":"api_key","key":"key"}}"#,
+        );
+        let snapshot = crate::session::Session::snapshot(
+            "s-split".to_string(),
+            "/tmp".to_string(),
+            "test/pricey".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "test/pricey"}),
+                "test/pricey".to_string(),
+                "low".to_string(),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+
+        let session = state.get_session("s-split").unwrap();
+        session
+            .read()
+            .tokens_in
+            .store(2_000_000, std::sync::atomic::Ordering::Relaxed);
+        // 1M on the cheap model (1.0/M) + 1M on the pricey one (100.0/M).
+        *session.read().cumulative_cost.lock() = 101.0;
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 101.0,
+            ..Default::default()
+        };
+
+        let value = get_state_internal(&state, "s-split", None).expect("state");
+        let usage = &value["usage"];
+        assert_eq!(usage["costInputCny"].as_f64().unwrap(), 101.0);
+        assert_eq!(usage["costCny"].as_f64().unwrap(), 101.0);
+        // Re-pricing both million-token requests at the current model's rate.
+        assert_ne!(usage["costInputCny"].as_f64().unwrap(), 200.0);
     }
 
     #[tokio::test(flavor = "current_thread")]

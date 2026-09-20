@@ -1138,6 +1138,7 @@ impl Loop {
                 if cost > 0.0 {
                     *self.cumulative_cost.lock() += cost;
                 }
+                self.charge_cost_split(&summary_usage);
                 // Always reported: a zero-priced summary must not look like no request.
                 tracing::info!(
                     cost,
@@ -1160,6 +1161,7 @@ impl Loop {
                 if cost > 0.0 {
                     *self.cumulative_cost.lock() += cost;
                 }
+                self.charge_cost_split(u);
             }
 
             // Build a partial assistant message from whatever was accumulated
@@ -1620,6 +1622,26 @@ impl Loop {
         };
         estimate_usage_cost_with(self.model_registry.as_ref(), model_ref, usage)
     }
+
+    /// Add this request's per-category amounts to the session's running split.
+    ///
+    /// Priced with the rates of the model that served *this* request, which is
+    /// what keeps a session that switches models honest: the tokens of each
+    /// request are billed at the price in force when it ran. The provider's own
+    /// `credit_cost` (when present) is a single number with no breakdown, so the
+    /// split is always our price-list estimate and the total stays authoritative.
+    /// An unpriced model contributes nothing, leaving that request out of the split.
+    fn charge_cost_split(&self, usage: &crate::types::Usage) {
+        let model_ref = if self.model_ref.is_empty() {
+            self.model.as_str()
+        } else {
+            self.model_ref.as_str()
+        };
+        let parts = usage_cost_split_with(self.model_registry.as_ref(), model_ref, usage);
+        if parts.iter().any(|amount| *amount > 0.0) {
+            self.cumulative_cost_split.lock().add(parts);
+        }
+    }
 }
 
 /// Estimate a request's cost from the model's per-1M-token prices, for providers
@@ -1634,6 +1656,26 @@ pub(crate) fn estimate_usage_cost_with(
         return 0.0;
     };
     model.cost.estimate(
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.cache_read_tokens.unwrap_or(0),
+        usage.cache_write_tokens.unwrap_or(0),
+    )
+}
+
+/// The per-category amounts (in yuan) of one request, priced with `model_ref`'s
+/// rates; all-zero when the model is unknown or unpriced. The counterpart of
+/// [`estimate_usage_cost_with`], used to accumulate a session's split request by
+/// request rather than re-pricing its totals at whatever model it runs today.
+pub(crate) fn usage_cost_split_with(
+    registry: Option<&std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>>,
+    model_ref: &str,
+    usage: &crate::types::Usage,
+) -> [f64; 4] {
+    let Some(model) = registry.and_then(|registry| registry.read().resolve(model_ref)) else {
+        return [0.0; 4];
+    };
+    model.cost.parts(
         usage.prompt_tokens,
         usage.completion_tokens,
         usage.cache_read_tokens.unwrap_or(0),
@@ -2064,6 +2106,56 @@ mod tests {
     }
 
     fn noop_on_text(_: String) {}
+
+    /// A model priced per 1M tokens, on the shared `test` provider.
+    fn priced_model(id: &str, input: f64, output: f64) -> crate::models::Model {
+        crate::models::Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "test".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://example.test".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            cost: crate::models::Cost {
+                input,
+                output,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn priced_registry(
+        models: Vec<crate::models::Model>,
+    ) -> std::sync::Arc<parking_lot::RwLock<crate::models::Registry>> {
+        std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                models,
+                r#"{"test":{"type":"api_key","key":"key"}}"#,
+            ),
+        ))
+    }
+
+    /// One request that reports usage (with no `credit_cost`, so our price list
+    /// is what is billed) and then answers.
+    fn usage_script(prompt_tokens: i64, completion_tokens: i64) -> Script {
+        Script::Events(vec![
+            ModelStreamEvent::Usage(crate::types::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+                credit_cost: None,
+                provider_metadata: None,
+            }),
+            ev_text("answer"),
+            ev_stop(),
+        ])
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_consumes_typed_tool_state_and_emits_typed_events() {
@@ -2504,6 +2596,75 @@ mod tests {
             .unwrap();
         // 1M input × 1.0 + 1M output × 2.0 = 3.0.
         assert!((*loop_.cumulative_cost.lock() - 3.0).abs() < 1e-9);
+        // Same request, split by category so clients can show where it went.
+        let split = *loop_.cumulative_cost_split.lock();
+        assert!((split.input - 1.0).abs() < 1e-9, "{split:?}");
+        assert!((split.output - 2.0).abs() < 1e-9, "{split:?}");
+        assert_eq!(split.cache_read, 0.0);
+        assert_eq!(split.cache_write, 0.0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_split_bills_each_request_at_its_own_models_rates() {
+        // A conversation that switches models mid-session: the first request runs
+        // on a cheap model, the second on one priced 100× higher. Each request's
+        // tokens belong to the rates in force when it ran, so the split is the
+        // sum of the two — not the session's totals re-priced at whatever model
+        // happens to be current, which would bill the cheap request's million
+        // tokens at the expensive model's rate.
+        let registry = priced_registry(vec![
+            priced_model("cheap", 1.0, 0.0),
+            priced_model("pricey", 100.0, 0.0),
+        ]);
+
+        let mut first = Loop::new(
+            ScriptedProvider::new(vec![usage_script(1_000_000, 0)]),
+            "cheap",
+        );
+        first.model_ref = "test/cheap".to_string();
+        first.model_registry = Some(registry.clone());
+        first
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A second run on another model rebuilds the loop but keeps pointing at
+        // the session's shared counters, exactly as swap_token_counters_into_loop
+        // does when a session's model changes.
+        let mut second = Loop::new(
+            ScriptedProvider::new(vec![usage_script(1_000_000, 0)]),
+            "pricey",
+        );
+        second.model_ref = "test/pricey".to_string();
+        second.model_registry = Some(registry);
+        second.cumulative_cost_split = first.cumulative_cost_split.clone();
+        second.cumulative_cost = first.cumulative_cost.clone();
+        second
+            .run_streaming_with_messages(
+                user_messages("again"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        let split = *first.cumulative_cost_split.lock();
+        // 1M at 1.0 + 1M at 100.0.
+        assert!((split.input - 101.0).abs() < 1e-9, "{split:?}");
+        assert!((*first.cumulative_cost.lock() - 101.0).abs() < 1e-9);
+        // What the old derived-from-totals split would have produced.
+        assert!(
+            (split.input - 200.0).abs() > 1.0,
+            "every request must stay at its own model's rates: {split:?}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

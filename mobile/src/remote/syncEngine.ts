@@ -40,6 +40,7 @@
 import {
   createStreamEventBatch,
   applyReplayEvents,
+  dropSupersededCompactionDividers,
   emptyTimeline,
   normalizeReplayEvents,
   stripRunItems,
@@ -902,7 +903,14 @@ function requiresFreshPrefix(reason: ReconcileReason): boolean {
  * History may already contain a partial assistant entry with a different id;
  * replace that mirror, while retaining authoritative user attachments. */
 function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: string): TimelineState {
-  const stripped = stripRunItems(base, runId);
+  const strippedBase = stripRunItems(base, runId);
+  // The durable copy of a checkpoint the retained prefix already renders (the
+  // prefix outranks a freshly loaded history row — see the compaction identity
+  // note in projection.ts).
+  const stripped: TimelineState = {
+    ...strippedBase,
+    items: dropSupersededCompactionDividers(strippedBase.items, cached.items),
+  };
   return {
     ...stripped,
     items: [...stripped.items, ...cached.items.filter(item =>
@@ -953,7 +961,7 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
       ? [[item.runId, item] as const] : [],
   ));
-  const items = history.items.map(item => {
+  const items = dropSupersededCompactionDividers(history.items, live.items).map(item => {
     if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
     const cached = settledReplies.get(item.runId);
     if (!cached) return item;

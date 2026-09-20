@@ -143,10 +143,6 @@ fn set_cwd_trims_trailing_slash() {
     assert_eq!(resp["data"]["cwd"], "/tmp/project");
 }
 
-/// `create_session` swaps in a fresh private broadcaster (fork/clone pass
-/// the parent's); the event journal must be rebound to that broadcaster or
-/// events silently stay memory-only and the durable journal is never
-/// written. Regression guard for the Runs-panel blanking bug.
 #[test]
 fn set_sandbox_policy_missing_payload() {
     let state = make_app_state();

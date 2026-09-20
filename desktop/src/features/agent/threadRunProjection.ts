@@ -1,7 +1,7 @@
 import type { AgentMessage, AssistantRunProjection, MessageSegment, RunProjector } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import type { StoredRun, StoredRunEvent } from "../../integrations/storage/threadStore";
-import { buildAssistantRunProjection, createRunProjector, matchesSettledRun } from "@future-os/thread-projection";
+import { buildAssistantRunProjection, compactionCheckpoints, createRunProjector, matchesSettledRun } from "@future-os/thread-projection";
 import { getRun, listRunEvents, listRunEventsBulk, listRunEventsSince, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { buildAgentFailureContent, buildAgentFailureTitle, userStoppedNotice } from "./agentMessageFormatters";
@@ -135,6 +135,7 @@ export function streamingBubbleBase(
   runId: string,
   bubbleId: string,
   content: string,
+  liveCheckpoints: ReadonlySet<string> = new Set(),
 ): AgentMessage[] | null {
   // A persisted assistant message already carries this run — the run settled
   // and the thread was reloaded; don't resurrect a synthetic bubble.
@@ -162,9 +163,14 @@ export function streamingBubbleBase(
     // even when the snapshot carries no text yet (thinking/tools-only — its
     // `content` is empty but its segments render) or when no event has landed
     // in the log at all (the very first reattach tick may fire before the
-    // collector persists the first chunks). The one thing that is NOT a reply
-    // snapshot is a compaction divider — keep it in place.
-    if (sameTurn && !isCompactionDivider(lastAssistant)) {
+    // collector persists the first chunks). A compaction divider is not a reply
+    // snapshot, so it normally stays — except when the bubble renders the same
+    // checkpoint, where keeping it would draw that divider twice.
+    if (
+      sameTurn
+      && (!isCompactionDivider(lastAssistant)
+        || isSupersededCompactionDivider(lastAssistant, liveCheckpoints))
+    ) {
       return current.filter(message => message.id !== lastAssistant.id);
     }
 
@@ -214,6 +220,7 @@ export function mergeStreamingPreview(
     preview.runId,
     preview.id,
     preview.content.trim(),
+    compactionCheckpoints([preview]),
   );
   if (!base)
     return current;
@@ -247,7 +254,13 @@ export async function upsertStreamingPreview(
       // different UI id as evidence that this run has already settled.
       const bubbleId = current.find(message => message.role === "assistant"
         && message.runId === runId && message.status === "streaming")?.id ?? `stream_${runId}`;
-      const base = streamingBubbleBase(current, runId, bubbleId, content);
+      const base = streamingBubbleBase(
+        current,
+        runId,
+        bubbleId,
+        content,
+        compactionCheckpoints([{ segments: projection.segments }]),
+      );
       if (!base)
         return current;
 
@@ -435,6 +448,27 @@ function isCompactionDivider(message: AgentMessage): boolean {
     && !message.content
     && message.segments?.length === 1
     && message.segments[0]?.kind === "compaction";
+}
+
+/**
+ * A divider row the live bubble already renders. Until the exchange's first
+ * reply entry is persisted, a checkpoint that opened the turn projects as a
+ * message that IS the divider; the run's streamed reply carries the same
+ * checkpoint, so both would draw it — the durable row is the copy to drop.
+ * Returns false for every other divider (an earlier exchange's checkpoint, a
+ * standalone manual one), which the bubble does not supersede.
+ */
+function isSupersededCompactionDivider(
+  message: AgentMessage,
+  liveCheckpoints: ReadonlySet<string>,
+): boolean {
+  if (!isCompactionDivider(message))
+    return false;
+  return (message.segments ?? []).some(segment =>
+    segment.kind === "compaction"
+    && !!segment.checkpointId
+    && liveCheckpoints.has(segment.checkpointId),
+  );
 }
 
 /**
