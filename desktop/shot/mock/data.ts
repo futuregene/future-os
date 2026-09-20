@@ -164,6 +164,24 @@ export const sessionUsage = {
 };
 
 /**
+ * What the same conversation reports once a later run has been paid for — the
+ * answer to a *second* read, so a capture can show the panel moving to fresh
+ * figures when it opens instead of re-displaying what the header already had.
+ * Each category grows by whole tokens, so the rows still add up to the total.
+ */
+export const refreshedSessionUsage = {
+  inputTokens: 677_050,
+  outputTokens: 14_825,
+  cacheReadTokens: 437_750,
+  cacheWriteTokens: 20_900,
+  costCny: 1.3904,
+  costInputCny: 0.8736,
+  costOutputCny: 0.2372,
+  costCacheReadCny: 0.1751,
+  costCacheWriteCny: 0.1045,
+};
+
+/**
  * The honest degraded case: a model with no prices on file. The agent reports
  * zeros per category, so the client shows tokens only and must not invent a
  * ¥0 breakdown — the billed total is still a real figure.

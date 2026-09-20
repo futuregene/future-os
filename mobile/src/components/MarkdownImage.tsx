@@ -110,8 +110,16 @@ function LoadedImage({ alt, uri, onFailure }: { alt: string; uri: string; onFail
   if (failed) return <Text selectable style={styles.caption}>{alt || uri}</Text>;
   return <Image accessibilityLabel={alt} source={{ uri }} resizeMode="contain" style={[styles.image, { aspectRatio }]}
     onError={() => { setFailed(true); onFailure?.(); }}
-    onLoad={({ nativeEvent: { source } }) => {
-      if (source.width > 0 && source.height > 0 && Number.isFinite(source.width / source.height)) setAspectRatio(source.width / source.height);
+    onLoad={(event) => {
+      // The intrinsic size only exists on renderers that decode the image
+      // natively; react-native-web's Image reports no `source`, so this must not
+      // assume it is there (it threw inside the load callback on the web harness).
+      // The 1.5 default above keeps the layout sane when the size is unknown.
+      const source = event?.nativeEvent?.source;
+      if (source && source.width > 0 && source.height > 0
+        && Number.isFinite(source.width / source.height)) {
+        setAspectRatio(source.width / source.height);
+      }
     }} />;
 }
 

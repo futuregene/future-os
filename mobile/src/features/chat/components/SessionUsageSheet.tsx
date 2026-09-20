@@ -1,4 +1,4 @@
-import { Pencil, X } from "lucide-react-native";
+import { X } from "lucide-react-native";
 import {
   Modal,
   Pressable,
@@ -14,9 +14,8 @@ import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { formatCostCny } from "../utils";
 
 /**
- * The conversation's own account book, opened from the amount in the chat top
- * bar: the session title (with the rename entry that used to sit in the top
- * bar) plus the token/amount breakdown.
+ * The conversation's own account book, opened from the spend icon in the chat
+ * top bar: the session it accounts for plus the token/amount breakdown.
  *
  * The rows are priced per category by the agent from the model's rates; the
  * total is the agent's authoritative figure when the provider bills itself
@@ -28,14 +27,12 @@ export function SessionUsageSheet({
   usage,
   visible,
   onClose,
-  onRename,
   t,
 }: {
   title: string;
   usage: RemoteSessionUsage | null;
   visible: boolean;
   onClose: () => void;
-  onRename: () => void;
   t: TFunction;
 }) {
   const priced = usage
@@ -75,18 +72,10 @@ export function SessionUsageSheet({
             </Pressable>
           </View>
           <ScrollView bounces={false} contentContainerStyle={styles.body}>
-            {/* The rename entry that used to live in the top bar now lives
-                here, beside the title it edits. */}
+            {/* The conversation this accounts for. Renaming stays in the top
+                bar; this sheet is only about what the conversation spent. */}
             <View style={styles.subject}>
               <Text numberOfLines={2} style={styles.subjectTitle}>{title}</Text>
-              <Pressable
-                accessibilityLabel={t("chat.rename")}
-                accessibilityRole="button"
-                onPress={onRename}
-                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-              >
-                <Pencil color={colors.ink} size={18} />
-              </Pressable>
             </View>
 
             {usage ? (
@@ -155,12 +144,9 @@ const styles = StyleSheet.create({
   pressed: { backgroundColor: colors.surfaceSubtle },
   body: { gap: spacing.sm, paddingBottom: spacing.sm },
   subject: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingLeft: spacing.md,
+    paddingHorizontal: spacing.md,
   },
-  subjectTitle: { flex: 1, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
+  subjectTitle: { color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
   table: { borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   headRow: { backgroundColor: colors.surfaceSubtle },

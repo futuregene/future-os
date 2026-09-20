@@ -366,6 +366,45 @@ describe("agentStateCache event listener", () => {
     });
   });
 
+  it("re-reads the session when a run ends, so the amount is not a run behind", async () => {
+    // `agent_end` needs a thread that already has a cached entry, otherwise the
+    // event only forwards and the read happens through the compaction path.
+    invokeMock.mockResolvedValue(statePayload({
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costCny: 0.01,
+        costInputCny: 0.01,
+        costOutputCny: 0,
+        costCacheReadCny: 0,
+        costCacheWriteCny: 0,
+      },
+    }));
+    await getAgentState("t-run-end");
+    const readsBefore = invokeMock.mock.calls.filter(([cmd]) => cmd === "get_thread_agent_state").length;
+    invokeMock.mockResolvedValue(statePayload({
+      usage: {
+        inputTokens: 900,
+        outputTokens: 220,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costCny: 0.42,
+        costInputCny: 0.3,
+        costOutputCny: 0.12,
+        costCacheReadCny: 0,
+        costCacheWriteCny: 0,
+      },
+    }));
+    emit({ _eventType: "agent_end", sessionId: "s1", threadId: "t-run-end" });
+    await flushAsync();
+    await flushAsync();
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "get_thread_agent_state").length)
+      .toBeGreaterThan(readsBefore);
+    expect(getCachedAgentState("t-run-end")?.usage?.costCny).toBe(0.42);
+  });
+
   it("forwards content events as window CustomEvents", () => {
     const received: CustomEvent[] = [];
     window.addEventListener("future:agent-event", e =>

@@ -78,11 +78,35 @@ pub struct Cost {
 }
 
 impl Cost {
-    /// Estimate the cost (in yuan) of a request's token usage. Prices are per
-    /// 1M tokens. `prompt_tokens` already includes the cached subset, so the
-    /// non-cached remainder is billed at the input rate and the cached tokens
-    /// at their own (usually cheaper or zero) rate — billing both would
-    /// double-count cached input.
+    /// Per-category amounts (in yuan) for one request's token usage, in the order
+    /// input / output / cache read / cache write. Prices are per 1M tokens.
+    ///
+    /// `prompt_tokens` already includes the cached subset, so the non-cached
+    /// remainder is billed at the input rate and the cached tokens at their own
+    /// (usually cheaper or zero) rate — billing both would double-count cached
+    /// input. This is the single definition of that rule: [`Cost::estimate`] sums
+    /// it, and the session's accumulated split charges it.
+    pub fn parts(
+        &self,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+    ) -> [f64; 4] {
+        let prompt = prompt_tokens.max(0) as f64;
+        let completion = completion_tokens.max(0) as f64;
+        let cache_read = cache_read_tokens.max(0) as f64;
+        let cache_write = cache_write_tokens.max(0) as f64;
+        let uncached_input = (prompt - cache_read - cache_write).max(0.0);
+        [
+            (uncached_input / 1_000_000.0) * self.input,
+            (completion / 1_000_000.0) * self.output,
+            (cache_read / 1_000_000.0) * self.cache_read,
+            (cache_write / 1_000_000.0) * self.cache_write,
+        ]
+    }
+
+    /// Estimate the cost (in yuan) of a request's token usage.
     pub fn estimate(
         &self,
         prompt_tokens: i64,
@@ -90,15 +114,49 @@ impl Cost {
         cache_read_tokens: i64,
         cache_write_tokens: i64,
     ) -> f64 {
-        let prompt = prompt_tokens.max(0) as f64;
-        let completion = completion_tokens.max(0) as f64;
-        let cache_read = cache_read_tokens.max(0) as f64;
-        let cache_write = cache_write_tokens.max(0) as f64;
-        let uncached_input = (prompt - cache_read - cache_write).max(0.0);
-        (uncached_input / 1_000_000.0) * self.input
-            + (completion / 1_000_000.0) * self.output
-            + (cache_read / 1_000_000.0) * self.cache_read
-            + (cache_write / 1_000_000.0) * self.cache_write
+        self.parts(
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+        .iter()
+        .sum()
+    }
+}
+
+/// A session's spend, split by token category and accumulated one request at a
+/// time — each request priced with the rates of the model that served it.
+///
+/// Deriving the split from the session's token totals and its *current* model
+/// would re-price everything a session ever spent at the last model's rates,
+/// which is wrong as soon as one conversation switches models (a cheap model's
+/// tokens billed at an expensive one's rates, or the reverse). The total is
+/// accumulated per request for the same reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CostSplit {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+}
+
+impl CostSplit {
+    pub fn add(&mut self, parts: [f64; 4]) {
+        self.input += parts[0];
+        self.output += parts[1];
+        self.cache_read += parts[2];
+        self.cache_write += parts[3];
+    }
+
+    /// True when nothing has been priced yet — an agent too old to have
+    /// accumulated a split, or a session whose models have no prices on file.
+    pub fn is_unset(&self) -> bool {
+        self.input == 0.0 && self.output == 0.0 && self.cache_read == 0.0 && self.cache_write == 0.0
     }
 }
 

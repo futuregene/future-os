@@ -24,6 +24,7 @@ import type {
   MobileAttachment,
   RemoteCredentials,
   RemoteModel,
+  RemoteSessionUsage,
   SessionFileListing,
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
@@ -38,6 +39,7 @@ import {
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
+  demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
   demoUnpricedSessionUsage,
@@ -77,6 +79,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
+  const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
@@ -178,7 +181,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "medium",
     // The amount in the top bar, refreshed by every state read in the app.
-    sessionUsage: selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage,
+    sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
     approvalTier: "off",
     sandboxAvailable: true,
     busy: false,
@@ -199,6 +202,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectSession: async (sessionId: string) => {
       setDraft(false);
       setSelectedSessionId(sessionId);
+    },
+    // The app re-reads the session when the usage sheet opens. Answer with a
+    // larger figure, the way a session that spent more since the last read
+    // would — the top bar and the sheet share this state, so a capture shows
+    // both moving to the refreshed amount.
+    refreshSessionUsage: async () => {
+      setUsageOverride(demoRefreshedSessionUsage);
     },
     newConversation: async () => setDraft(true),
     closeConversation: () => {
