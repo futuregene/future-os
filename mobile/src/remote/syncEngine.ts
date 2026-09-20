@@ -317,6 +317,27 @@ export class SyncEngine {
     return this.lanes.get(sessionId)?.timeline?.streaming ?? false;
   }
 
+  /**
+   * Whether a run is already whole on this device.
+   *
+   * `agent_end` is the last event a finished run writes (119 of 119 completed
+   * and cancelled runs), and the cursor only ever advances over contiguous
+   * ranges, so a settled timeline whose prefix is complete holds every event of
+   * that run. Re-reading it from the journal would download what is already
+   * rendered — which a reader sees as the sync notice appearing at the end of
+   * every reply, for no new content.
+   *
+   * False when the terminal never arrived (the timeline still says streaming),
+   * when the prefix is incomplete (a mid-run join), or when the run is unknown —
+   * those are exactly the cases the settle reconcile exists to heal.
+   */
+  runCompleteLocally(sessionId: string, runId: string): boolean {
+    if (!runId) return false;
+    const lane = this.lanes.get(sessionId);
+    if (!lane || lane.timeline?.streaming !== false) return false;
+    return isPrefixComplete(lane.cursor, runId);
+  }
+
   /** Evict inactive cached conversations as a unit (timeline, cursor, queued
    * work and retry). Called on navigation, not every streaming frame. The
    * selected session and optimistic draft are never truncated to meet a cache
@@ -834,7 +855,15 @@ export class SyncEngine {
     }
     // A run settling in this batch may have lost its tail (M11) — reconcile
     // the settled run so the durable journal supersedes the partial replay.
-    if (beforeStreaming && !timeline.streaming && flipRunId) {
+    // Only when it might have: a terminal applied over a contiguous prefix
+    // means the run is already whole here, and re-reading it would show a sync
+    // notice for content that is on screen.
+    if (
+      beforeStreaming &&
+      !timeline.streaming &&
+      flipRunId &&
+      !this.runCompleteLocally(lane.sessionId, flipRunId)
+    ) {
       this.enqueueReplay(lane, { reason: "snapshot-flip", runId: flipRunId });
     }
   }

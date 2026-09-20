@@ -50,6 +50,9 @@ class Harness {
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
   replayFailures = 0;
+  /** Every replay the engine asked for, so a test can assert that a settled
+   * run was not re-read from the journal. */
+  replayCalls: { run: string; since: number }[] = [];
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
   engine: SyncEngine;
 
@@ -63,6 +66,7 @@ class Harness {
       },
       requestHistory: async () => this.history,
       fetchReplay: async (_sessionId, run, since) => {
+        this.replayCalls.push({ run, since });
         if (this.replayFailures > 0) {
           this.replayFailures -= 1;
           throw new Error("temporary replay failure");
@@ -728,7 +732,7 @@ describe("SyncEngine", () => {
     expect(h.textOf("s1")).toBe("hi");
   });
 
-  test("a run settling in a batch triggers an internal snapshot-flip reconcile (M11)", async () => {
+  test("a run settling in a batch is not re-read when it arrived whole", async () => {
     const run = nextRunId();
     const h = new Harness(run);
     h.journal.add(agentStart(run, 0));
@@ -739,11 +743,61 @@ describe("SyncEngine", () => {
     await h.settle();
     expect(h.timelineOf("s1").streaming).toBe(true);
 
+    const reads = h.replayCalls.length;
     h.journal.add(agentEnd(run, 2));
     h.engine.event("s1", agentEnd(run, 2));
     await h.settle();
     expect(h.timelineOf("s1").streaming).toBe(false);
     expect(h.textOf("s1")).toBe("reply");
+    // The terminal arrived over a contiguous prefix, so the run is whole here:
+    // re-reading it would download what is on screen and show the sync notice
+    // for it. `agent_end` is a finished run's last event.
+    expect(h.replayCalls.length).toBe(reads);
+  });
+
+  test("a settle still reconciles when the prefix is incomplete", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    // The journal's head is no longer readable (only 0 and 5 survive), so a
+    // replay cannot establish a contiguous prefix even though the run is live.
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 5, "tail"));
+
+    h.engine.event("s1", textChunk(run, 5, "tail"));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(true);
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(false);
+
+    const reads = h.replayCalls.length;
+    h.journal.add(agentEnd(run, 6));
+    h.engine.event("s1", agentEnd(run, 6));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    // The terminal proves the end, not the beginning: the run is still read
+    // back so the unreadable prefix can be recovered.
+    expect(h.replayCalls.length).toBeGreaterThan(reads);
+  });
+
+  test("a dropped terminal is still healed by the catalog's snapshot flip (M11)", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "full reply"));
+
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "full reply"));
+    await h.settle();
+
+    // The journal grows to include the end; the live relay dropped it, so this
+    // client still believes the run is generating — the state that must keep
+    // healing rather than being skipped as complete.
+    h.journal.add(agentEnd(run, 2));
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(false);
+    h.engine.reconcile("s1", "snapshot-flip", run);
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    expect(h.textOf("s1")).toBe("full reply");
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(true);
   });
 
   test("projection replay without an explicit cursor derives it from event idx", async () => {
