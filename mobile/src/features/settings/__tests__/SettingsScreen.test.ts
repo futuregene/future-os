@@ -64,9 +64,10 @@ beforeEach(async () => {
   mockRemote.desktopSettingsRevision = 0;
   mockRemote.skillsRevision = 0;
   mockRemote.getDesktopSettings.mockImplementation(async () => ({ ...stored }));
+  mockRemote.listSettingsModels.mockImplementation(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]);
   mockRemote.listProviders.mockImplementation(async () => providers);
   providers = {
-    // `one` has no key: it cannot be called, so it is not offered here.
+    // `one` is deliberately keyless: the page must list it anyway.
     builtin: [
       { id: "one", name: "One", baseUrl: "https://one.example.com/v1", hasApiKey: false, modelCount: 1, requiresBaseUrl: false },
       { id: "two", name: "Two", baseUrl: "https://two.example.com/v1", hasApiKey: true, modelCount: 1, requiresBaseUrl: false },
@@ -113,32 +114,54 @@ test("offline and old desktops cannot write new preferences", async () => {
   expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
 });
 
-test("visibility groups models under a foldable heading and only offers callable providers", async () => {
+test("visibility groups models under a foldable provider heading", async () => {
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
   await act(async () => tree.update(createElement(SettingsScreen, props)));
   await act(async () => link("desktopSettings.models").props.onPress());
   expect(tree.root.findAllByType(SectionList)).toHaveLength(1);
   expect(mockRemote.listSettingsModels).toHaveBeenCalled();
   expect(mockRemote.listProviders).toHaveBeenCalled();
-  // The keyless `one` cannot be called, so it is not offered; `two` is a heading
-  // carrying the desktop's provider name, opened so its models are listed.
-  expect(headings()).toEqual(["Two"]);
+  // Every provider the desktop offers is grouped, key or no key, under the
+  // desktop's display name — the models are already the desktop's scoped list.
+  expect(headings()).toEqual(["One", "Two"]);
   expect(group("Two").props.accessibilityState.expanded).toBe(true);
-  expect(modelSwitches().map(node => node.props.value)).toEqual([true]);
+  expect(modelSwitches().map(node => node.props.value)).toEqual([false, true]);
 
   await act(async () => group("Two").props.onPress());
   expect(group("Two").props.accessibilityState.expanded).toBe(false);
-  expect(modelSwitches()).toHaveLength(0);
+  expect(modelSwitches().map(node => node.props.value)).toEqual([false]);
+  expect(group("One").props.accessibilityState.expanded).toBe(true);
   // The bulk switch stays on the heading and hides every model it covers.
   const bulk = tree.root.findAllByType(Switch).find(node => node.props.accessibilityLabel === "desktopSettings.toggleProvider: Two")!;
   await act(async () => bulk.props.onValueChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ hiddenModels: ["one/same", "other/hidden", "two/same"] });
 });
 
-test("a search opens matching groups, and a keyless desktop explains the empty list", async () => {
-  // No provider-management capability: the desktop cannot report credentials,
-  // so every provider it reports stays listed rather than being hidden blind.
+test("a keyless provider stays listed: the desktop already scoped the model list", async () => {
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  // A local endpoint the agent can call without a key is reported as-is, and a
+  // keyless built-in stays whatever the desktop decided to report.
+  providers = {
+    builtin: [{ id: "one", name: "One", baseUrl: "https://one.example.com/v1", hasApiKey: false, modelCount: 2, requiresBaseUrl: false }],
+    custom: [{ id: "local", name: "Local Ollama", api: "openai-completions", baseUrl: "http://127.0.0.1:11434/v1", hasApiKey: false, models: [] }],
+  };
+  mockRemote.listSettingsModels.mockImplementation(async () => [
+    { id: "same", provider: "one" },
+    { id: "llama", provider: "local" },
+  ]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
   await act(async () => link("desktopSettings.models").props.onPress());
+  await flush();
+  expect(headings()).toEqual(["Local Ollama", "One"]);
+  // Both groups are open and both models are switchable, with the stored
+  // visibility applied per provider-qualified reference.
+  expect(tree.root.findAllByType(SettingsSwitch).map(node => [node.props.description, node.props.value]))
+    .toEqual([["llama", true], ["same", false]]);
+});
+
+test("a search narrows to matching providers, opens them, and reports no match", async () => {
+  await act(async () => link("desktopSettings.models").props.onPress());
+  // Without the capability the names fall back to provider ids.
   expect(headings()).toEqual(["one", "two"]);
   await type("desktopSettings.searchModels", "one");
   // Only matching providers are left, and a match is always shown: folding is
@@ -148,17 +171,6 @@ test("a search opens matching groups, and a keyless desktop explains the empty l
   expect(modelSwitches()).toHaveLength(1);
   await type("desktopSettings.searchModels", "nothing-matches");
   expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noModels");
-
-  await type("desktopSettings.searchModels", "");
-  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
-  mockRemote.listProviders.mockImplementation(async () => ({
-    ...providers,
-    builtin: providers.builtin.map(provider => ({ ...provider, hasApiKey: false })),
-  }));
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
-  await flush();
-  expect(headings()).toEqual([]);
-  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noUsableProviders");
 });
 
 test("skill operations target desktop and removal needs confirmation", async () => {

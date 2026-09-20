@@ -57,11 +57,13 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const resource = useDesktopResource(remote.listSettingsModels, remote.desktopSettingsRevision, remote.desktopOnline);
-  // Which providers can actually be called is desktop state too: one is either
-  // signed in (the account provider — signing in writes its key) or holds a
-  // saved API key. A desktop too old to report credentials keeps the full list.
-  const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
-  const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, remote.desktopOnline && providersSupported);
+  // The desktop's own view, read for provider display names only. Whether a
+  // provider can be called is already decided before the list ever reaches the
+  // phone: the agent reports user-defined models as-is (a local endpoint may be
+  // deliberately keyless) and built-in catalog models only when their provider
+  // holds a credential. Nothing here filters on key state again.
+  const named = remote.capabilities?.has("provider_management_v1") ?? false;
+  const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, remote.desktopOnline && named);
   const [query, setQuery] = useState("");
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const hidden = useMemo(() => new Set(settings?.hiddenModels ?? []), [settings?.hiddenModels]);
@@ -71,20 +73,11 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   const providerNames = useMemo(() => new Map(
     [...providers.data?.builtin ?? [], ...providers.data?.custom ?? []].map(provider => [provider.id, provider.name]),
   ), [providers.data]);
-  const callable = useMemo(() => {
-    const view = providers.data;
-    if (!view) return null;
-    return new Set([...view.builtin, ...view.custom].filter(provider => provider.hasApiKey).map(provider => provider.id));
-  }, [providers.data]);
 
   const groups = useMemo<ModelGroup[]>(() => {
     const byProvider = new Map<string, RemoteModel[]>();
     for (const model of resource.data ?? []) {
       const provider = model.provider ?? "";
-      // A provider with no credential cannot be called, so its models are not
-      // offered here. Models the desktop reports without a provider are kept —
-      // there is nothing to judge them by.
-      if (provider && callable && !callable.has(provider)) continue;
       const name = providerNames.get(provider) ?? provider;
       if (needle && !`${provider} ${name} ${model.label ?? ""} ${model.id}`.toLowerCase().includes(needle)) continue;
       const models = byProvider.get(provider) ?? [];
@@ -96,7 +89,7 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
       // A folded group keeps its heading (and bulk switch) but no model rows.
       return { id, title: providerNames.get(id) ?? id, models, data: expanded ? models : [], expanded };
     }).sort((left, right) => left.title.localeCompare(right.title));
-  }, [callable, folded, needle, providerNames, resource.data, searching]);
+  }, [folded, needle, providerNames, resource.data, searching]);
 
   const setVisibility = (models: RemoteModel[], visible: boolean) => {
     if (!settings || disabled) return;
@@ -125,9 +118,7 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
       <Text style={settingsStyles.description}>{t("desktopSettings.modelsHint")}</Text>
       <TextInput accessibilityLabel={t("desktopSettings.searchModels")} placeholder={t("desktopSettings.searchModels")}
         placeholderTextColor={colors.inkMuted} value={query} onChangeText={setQuery} style={settingsStyles.search} />
-      <ResourceStatus loading={resource.loading || providers.loading}
-        failed={resource.failed || (providersSupported && providers.failed)}
-        onReload={() => { void resource.reload(); void providers.reload(); }} />
+      <ResourceStatus loading={resource.loading} failed={resource.failed} onReload={() => void resource.reload()} />
     </View>}
     renderSectionHeader={({ section }) => {
       const hiddenCount = section.models.filter(model => hidden.has(modelReference(model))).length;
@@ -146,9 +137,7 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
         onChange={visible => setVisibility([item], visible)} />
     </View>}
     ListEmptyComponent={!resource.loading
-      ? <Text style={settingsStyles.description}>
-        {t(searching ? "desktopSettings.noModels" : "desktopSettings.noUsableProviders")}
-      </Text>
+      ? <Text style={settingsStyles.description}>{t("desktopSettings.noModels")}</Text>
       : null}
   />;
 }
