@@ -2969,6 +2969,16 @@ mod bridge_tests {
         let (_home, bridge) = active_bridge("cmd-provider-management").await;
         let agent = ensure_mock_agent();
         agent.clear_scripts();
+        // The mock agent's request log is process-wide, so a test running after
+        // another agent-writing test must compare counts, not presence.
+        let writes = |command: &str| {
+            agent
+                .requests()
+                .iter()
+                .filter(|(served, _)| served == command)
+                .count()
+        };
+        let (set_auth_before, upsert_before) = (writes("set_auth"), writes("upsert_provider"));
 
         // The phone reads the same snapshot the Settings dialog does, with no
         // API key material in it.
@@ -2987,7 +2997,7 @@ mod bridge_tests {
             .call(json!({ "type": "update_builtin_provider", "provider": { "id": "future", "apiKey": "sk-x", "updateApiKey": true } }))
             .await;
         assert_eq!(reply["success"], false, "{reply}");
-        assert!(!agent.served("set_auth", ""));
+        assert_eq!(writes("set_auth"), set_auth_before);
 
         // An unknown built-in is rejected before the agent is called.
         let reply = bridge
@@ -3006,7 +3016,7 @@ mod bridge_tests {
                 .await;
             assert_eq!(reply["success"], false, "{reply}");
         }
-        assert!(!agent.served("upsert_provider", ""));
+        assert_eq!(writes("upsert_provider"), upsert_before);
 
         // An accepted built-in write reaches the agent as its own config write,
         // with the key and Base URL applied in one atomic upsert.
@@ -3017,7 +3027,7 @@ mod bridge_tests {
             }))
             .await;
         assert_eq!(reply["success"], true, "{reply}");
-        assert!(agent.served("upsert_provider", ""));
+        assert_eq!(writes("upsert_provider"), upsert_before + 1);
 
         // A malformed custom provider payload never reaches the agent…
         for invalid in [
@@ -3032,8 +3042,10 @@ mod bridge_tests {
                 .await;
             assert_eq!(reply["success"], false, "{reply}");
         }
+        assert_eq!(writes("upsert_provider"), upsert_before + 1);
 
         // …while a valid one is applied through the shared upsert path.
+        let upserts = writes("upsert_provider");
         let reply = bridge
             .call(json!({
                 "type": "upsert_custom_provider",
@@ -3060,10 +3072,11 @@ mod bridge_tests {
             }))
             .await;
         assert_eq!(reply["success"], true, "{reply}");
-        assert!(agent.served("upsert_provider", ""));
+        assert_eq!(writes("upsert_provider"), upserts + 1);
 
         // Built-in providers stay undeletable from a phone, while a custom one
         // is removed through the shared delete path.
+        let deletes = writes("delete_provider");
         let reply = bridge
             .call(json!({ "type": "delete_custom_provider", "providerId": "deepseek" }))
             .await;
@@ -3072,7 +3085,7 @@ mod bridge_tests {
             .call(json!({ "type": "delete_custom_provider", "providerId": "acme" }))
             .await;
         assert_eq!(reply["success"], true, "{reply}");
-        assert!(agent.served("delete_provider", ""));
+        assert_eq!(writes("delete_provider"), deletes + 1);
         bridge.stop().await;
     }
 
