@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, StyleSheet, Text } from "react-native";
-import { SkillPicker } from "../components/SkillPicker";
+import { SKILL_ROW_HEIGHT, SkillPicker, VISIBLE_SKILL_ROWS, skillPickerHeight } from "../components/SkillPicker";
 import type { RemoteSkill } from "../../../remote/types";
 
 jest.mock("lucide-react-native", () => ({ Info: () => null, X: () => null }));
@@ -22,7 +22,7 @@ afterEach(() => { if (tree) act(() => tree.unmount()); });
 test("loads once per opening, searches locally and selects without dismissing keyboard", async () => {
   await act(async () => { tree = create(createElement(SkillPicker, props)); });
   expect(load).toHaveBeenCalledTimes(1);
-  expect(texts()).toEqual(expect.arrayContaining(["网页搜索", "读取网页"]));
+  expect(texts()).toEqual(expect.arrayContaining(["/future-web", "读取网页"]));
   expect(tree.root.findByType(ScrollView).props.keyboardShouldPersistTaps).toBe("always");
   await act(async () => { tree.update(createElement(SkillPicker, { ...props, query: "读取" })); });
   expect(load).toHaveBeenCalledTimes(1);
@@ -36,14 +36,16 @@ test("loads once per opening, searches locally and selects without dismissing ke
   expect(texts()).toContain("skills.noResults");
 });
 
-test("skill rows stay one line and the info button asks the composer for the description", async () => {
+test("each row is the English command over one localized description line", async () => {
   await act(async () => { tree = create(createElement(SkillPicker, props)); });
   const option = tree.root.findAll(node => node.props.accessibilityLabel === "/future-web · 网页搜索" && node.props.onPress)[0]!;
-  expect(StyleSheet.flatten(option.props.style({ pressed: false }))).toMatchObject({ flexDirection: "row", minHeight: 44, minWidth: 0 });
-  expect(option.findAllByType(Text)).toHaveLength(2);
+  // Stacked, never side by side: the command is wide enough to own a line.
+  expect(StyleSheet.flatten(option.props.style({ pressed: false }))).toMatchObject({ flexDirection: "column", minHeight: 56, minWidth: 0 });
+  expect(option.findAllByType(Text).map(node => node.props.children)).toEqual(["/future-web", "读取网页"]);
   expect(option.findAllByType(Text).every(node => node.props.numberOfLines === 1)).toBe(true);
-  // The description never gets expanded inside the height-capped panel.
-  expect(texts()).not.toContain("/future-web");
+  // English name over the localized description; an English UI swaps the line.
+  expect(texts()).not.toContain("网页搜索");
+  expect(texts()).not.toContain("Search pages");
   expect(details().props.accessibilityState.expanded).toBe(false);
   act(() => details().props.onPress());
   expect(onShowDetails).toHaveBeenCalledWith(skills[0]);
@@ -54,6 +56,20 @@ test("skill rows stay one line and the info button asks the composer for the des
   await act(async () => tree.update(createElement(SkillPicker, { ...props, detailsName: "other-skill" })));
   expect(details().props.accessibilityState.expanded).toBe(false);
   expect(load).toHaveBeenCalledTimes(1);
+});
+
+test("the menu is tall enough for the skills it shows, and never taller than the room", () => {
+  // A portrait phone with the keyboard up: three skills plus the context action
+  // that leads them, measured with the separator and the panel's own border.
+  const rows = (count: number) => count * (SKILL_ROW_HEIGHT + 1) + 44 + 2;
+  expect(skillPickerHeight(844, 300, 1)).toBe(rows(VISIBLE_SKILL_ROWS + 1));
+  expect(skillPickerHeight(844, 300)).toBe(rows(VISIBLE_SKILL_ROWS));
+  // A short screen with a tall keyboard cannot give that much: the list scrolls.
+  expect(skillPickerHeight(568, 260, 1)).toBe(208);
+  // Never negative or absurd on a nonsense measurement.
+  expect(skillPickerHeight(300, 400, 1)).toBe(120);
+  // The keyboard only ever takes room away, never adds.
+  expect(skillPickerHeight(844, 0, 1)).toBe(skillPickerHeight(844, 300, 1));
 });
 
 test("context actions lead the menu, filter like skills, and run instead of inserting text", async () => {

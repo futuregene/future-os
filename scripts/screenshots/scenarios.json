@@ -1174,10 +1174,19 @@
             "wait": 600
           },
           {
+            "eval": "(() => { const input = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]'); const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ''); input.dispatchEvent(new Event('input', { bubbles: true })); return input.value; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
             "type": "/software"
           },
           {
             "wait": 2000
+          },
+          {
+            "eval": "const panel = [...document.querySelectorAll('[role=\"button\"]')].filter(el => /^\\//.test(el.getAttribute('aria-label') || ''))[0].closest('div').parentElement.parentElement.parentElement; const box = panel.getBoundingClientRect(); if (box.bottom > window.innerHeight + 0.5) throw new Error('the skill menu runs off the bottom of the screen'); 'ok'"
           },
           {
             "shot": "m-slash-skill-row.png"
@@ -1189,13 +1198,13 @@
             "wait": 900
           },
           {
-            "eval": "if (!document.body.innerText.includes('/future-software-install')) throw new Error('the description dialog did not open'); 'ok'"
+            "eval": "if (!document.body.innerText.includes('轻量软件安装与镜像配置')) throw new Error('the description dialog did not open'); if (!document.body.innerText.includes('跨 Windows、macOS 和 Linux 安装轻量命令行工具')) throw new Error('the dialog did not show the full description'); 'ok'"
           },
           {
             "shot": "m-skill-description.png"
           }
         ],
-        "note": "Opened by eval click: the description button sits in a row that the emulated tap offset would miss."
+        "note": "Clears the restored draft first (scenarios share one tab), then opens the description by eval click: the button sits in a row the emulated tap offset would miss."
       },
       "compact-context": {
         "steps": [

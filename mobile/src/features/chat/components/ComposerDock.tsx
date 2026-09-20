@@ -46,7 +46,7 @@ import { useSkillCompletion } from "../useSkillCompletion";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
-import { SkillPicker } from "./SkillPicker";
+import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
 type Remote = RemoteControls;
@@ -148,10 +148,7 @@ function ComposerDockView({
     inputRef,
     handleSlashAction,
   );
-  const pickerHeight = Math.max(
-    100,
-    Math.min(240, (height - keyboardHeight - 100) * 0.5),
-  );
+  const pickerHeight = skillPickerHeight(height, keyboardHeight, slashActions.length);
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
     Math.min(

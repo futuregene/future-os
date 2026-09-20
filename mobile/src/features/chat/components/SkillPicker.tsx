@@ -6,7 +6,30 @@ import type { RemoteSkill } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 import { filterActions, filterSkills, type SlashAction } from "../skillCompletion";
 
-/** Mounted only while completing a token. Reopening refreshes installed skills. */
+/** One two-line row: the command, then a single description line. */
+export const SKILL_ROW_HEIGHT = 56;
+/** A row plus the hairline that separates it from the row above. */
+const ROW_PITCH = SKILL_ROW_HEIGHT + 1;
+const HEADER_HEIGHT = 44;
+const PANEL_BORDER = 1;
+/** The menu shows this many skills without scrolling. */
+export const VISIBLE_SKILL_ROWS = 3;
+
+/** How tall the `/` menu above the composer is: exactly as tall as the skills it
+ * has to show (plus the context actions that lead them), and no taller than the
+ * room the keyboard leaves — the conversation keeps the rest. */
+export function skillPickerHeight(viewportHeight: number, keyboardHeight: number, actionCount = 0) {
+  const rows = VISIBLE_SKILL_ROWS + actionCount;
+  const wanted = 2 * PANEL_BORDER + HEADER_HEIGHT + ROW_PITCH * rows;
+  const space = viewportHeight - keyboardHeight - 100;
+  return Math.max(120, Math.min(wanted, space));
+}
+
+/** Mounted only while completing a token. Reopening refreshes installed skills.
+ *
+ * Every row is two stacked lines — the English command, then the description in
+ * the UI language — so the list reads like the desktop ` / ` menu; the info
+ * button opens the rest of the description in its own dialog. */
 export function SkillPicker({ query, supported, load, onSelect, onClose, onShowDetails, detailsName, maxHeight, actions = [], onActionSelect }: {
   query: string;
   supported: boolean;
@@ -79,10 +102,9 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
             ? null
             : <Text style={styles.hint}>{t(skills.length ? "skills.noResults" : "skills.empty")}</Text>)
           : matches.map(skill => {
+            // Line 1 is always the English command (desktop parity); only the
+            // description follows the UI language.
             const description = useZh ? skill.descriptionZh || skill.description : skill.description;
-            // The row names the skill; only a localized name differs from the
-            // command, so only then is the command worth spelling out.
-            const zhName = useZh ? skill.nameZh : undefined;
             const expanded = detailsName === skill.name;
             return (
               <View key={skill.name} style={styles.option}>
@@ -92,7 +114,7 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
                     accessibilityHint={description}
                     onPress={() => onSelect(skill.name)}
                     style={({ pressed }) => [styles.select, pressed && styles.pressed]}>
-                    <Text numberOfLines={1} style={styles.name}>{zhName || skill.name}</Text>
+                    <Text numberOfLines={1} style={styles.name}>{`/${skill.name}`}</Text>
                     <Text numberOfLines={1} style={styles.description}>{description}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button"
@@ -114,16 +136,17 @@ export function SkillPicker({ query, supported, load, onSelect, onClose, onShowD
 const styles = StyleSheet.create({
   panel: { marginBottom: spacing.xs, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg,
     backgroundColor: colors.surface, overflow: "hidden" },
-  header: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.lg },
+  header: { height: HEADER_HEIGHT, flexDirection: "row", alignItems: "center", paddingLeft: spacing.lg },
   title: { flex: 1, fontSize: 13, fontWeight: "600", color: colors.inkSoft },
-  close: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   option: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
   row: { flexDirection: "row", alignItems: "center" },
-  select: { flex: 1, minWidth: 0, minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingLeft: spacing.lg, paddingVertical: spacing.sm },
+  select: { flex: 1, minWidth: 0, minHeight: SKILL_ROW_HEIGHT, flexDirection: "column", alignItems: "stretch",
+    justifyContent: "center", gap: spacing.xs, paddingLeft: spacing.lg, paddingRight: spacing.md, paddingVertical: spacing.sm },
   detailsButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   pressed: { backgroundColor: colors.surfaceSubtle },
-  name: { maxWidth: "50%", flexShrink: 1, fontSize: 14, fontWeight: "600", color: colors.ink },
-  description: { flex: 1, minWidth: 0, fontSize: 12, color: colors.inkSoft },
+  name: { fontSize: 14, fontWeight: "600", color: colors.ink },
+  description: { fontSize: 12, color: colors.inkMuted },
   hint: { fontSize: 13, color: colors.inkSoft, padding: spacing.md, flexShrink: 1 },
   loading: { flexDirection: "row", alignItems: "center", paddingLeft: spacing.md },
   retry: { minHeight: 44, justifyContent: "center", alignItems: "center" },
