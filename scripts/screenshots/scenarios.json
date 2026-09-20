@@ -256,6 +256,22 @@
           }
         ]
       },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（桌面端头部右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 1200 },
+          { "inject": "{variantInject}" },
+          { "shot": "d-usage-icon.png" }
+        ]
+      },
       "custom-model-prices": {
         "steps": [
           { "wait": 900 },
@@ -278,6 +294,7 @@
         ]
       },
       "thread-usage": {
+        "_comment": "The mock answers later state reads with a larger figure (refreshedSessionUsage), so opening the dialog is asserted to show the refreshed total rather than re-displaying the header's cached amount.",
         "steps": [
           {
             "wait": 1200
@@ -289,10 +306,13 @@
             "tap": "Token 用量与金额"
           },
           {
-            "wait": 1200
+            "wait": 1500
           },
           {
             "shot": "d-thread-usage-dialog.png"
+          },
+          {
+            "eval": "(() => { const total = document.querySelector('[data-testid=usage-total]'); if (!total) throw new Error('the dialog did not open'); if (total.textContent !== '¥1.3904') throw new Error('the dialog shows a stale amount: ' + total.textContent); return 'refreshed'; })()"
           }
         ]
       },
@@ -722,7 +742,30 @@
           }
         ]
       },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（手机端顶栏右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "inject": "{variantInject}" },
+          { "shot": "m-usage-icon.png" }
+        ]
+      },
       "usage-sheet": {
+        "_comment": "Asserting ¥1.3904: opening the sheet re-reads the session, and the mock answers with a larger figure (demoRefreshedSessionUsage), so this proves the refreshed amount reached the UI rather than the sheet re-displaying the figure the top bar already had.",
         "steps": [
           {
             "wait": 900
@@ -759,6 +802,21 @@
           },
           {
             "shot": "m-usage-sheet.png"
+          },
+          {
+            "eval": "(() => { if (!document.body.innerText.includes('¥1.3904')) throw new Error('the refreshed amount did not reach the sheet'); return 'refreshed'; })()"
+          },
+          {
+            "eval": "(() => { const close = document.querySelector('[aria-label=\"关闭\"]'); if (!close) throw new Error('no close button in the sheet'); close.click(); return 'closed'; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const bar = document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]'); return bar ? 'bar present' : 'bar missing'; })()"
+          },
+          {
+            "shot": "m-usage-entry-refreshed.png"
           }
         ]
       },

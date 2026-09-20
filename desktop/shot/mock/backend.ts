@@ -18,6 +18,7 @@ import {
   installedSkills,
   models,
   providersView,
+  refreshedSessionUsage,
   reviewFiles,
   runs,
   sessionUsage,
@@ -37,6 +38,8 @@ const log = (...args: unknown[]) => console.log("[mock]", ...args);
 let settings: typeof appSettings = { ...appSettings };
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
+/** How many times each thread's agent state has been read (see the handler). */
+const stateReads = new Map<string, number>();
 
 /** Seed app settings before the app boots (`?settings=` in `main.tsx`). */
 export function patchSettings(patch: Record<string, unknown>) {
@@ -164,6 +167,17 @@ const handlers: Record<string, (args: any) => unknown> = {
     const target = threadList.find(thread => thread.id === args?.threadId) ?? threadList[0];
     if (!target)
       return null;
+    // The first read for a thread answers with the state the header already
+    // shows; later reads (the app re-reads when the usage panel opens) answer
+    // with a larger figure, so a capture can prove the panel refreshed.
+    const reads = (stateReads.get(target.id) ?? 0) + 1;
+    stateReads.set(target.id, reads);
+    const chatMode = target.mode === "chat";
+    const usage = chatMode
+      ? unpricedSessionUsage
+      : reads > 1
+        ? refreshedSessionUsage
+        : sessionUsage;
     return {
       model: "future/deepseek-v4-pro",
       thinkingLevel: "medium",
@@ -174,9 +188,9 @@ const handlers: Record<string, (args: any) => unknown> = {
       isStreaming: false,
       isCompacting: false,
       activeRun: null,
-      // The chat-mode conversations stand in for a model with no prices on
-      // file, so the usage dialog's tokens-only fallback is capturable.
-      usage: target.mode === "chat" ? unpricedSessionUsage : sessionUsage,
+      // Chat-mode conversations stand in for a model with no prices on file, so
+      // the usage dialog's tokens-only fallback is capturable.
+      usage,
     };
   },
   reconcile_thread_workspace: () => null,
