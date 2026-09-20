@@ -76,6 +76,13 @@ describe("MarkdownText layout and fidelity", () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
   });
 
+  test("CJK labels followed by a digit or a Latin name render bold without literal asterisks", () => {
+    const root = render("**复现：**10 轮对话，每轮 assistant 内容 150 KB。\n\n**结论：**FutureOS 侧仍然超限。");
+    const bold = root.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontWeight === "700");
+    expect(bold.map(node => node.props.children.join(""))).toEqual(["复现：", "结论："]);
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");
