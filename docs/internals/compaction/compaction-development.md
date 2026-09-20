@@ -39,7 +39,7 @@ measures them.
 
 ```text
 persist original user/assistant/tool entries
- -> estimate complete input and reserve ordinary output/margin
+ -> estimate complete input and reserve the capped output budget/margin
  -> threshold / manual / provider-limit admission
  -> persistence barrier and receipt claim
  -> protection, tail and coverage plan

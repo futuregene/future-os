@@ -21,14 +21,27 @@ machine.
 ## Trigger and admission
 
 The economic trigger is `floor(W × 0.8)` — 80% of the declared window, with no absolute cap.
-`effective_trigger` clamps it to `W − O − margin`, where `O` is the model's declared output
-ceiling and `margin = min(2048, W/16)`, so a model that reserves a large output is bounded by
-its own limits rather than by a fixed number: a 1M-token window declaring 384 000 output
-tokens triggers at **613 952**; the same window declaring 16 384 triggers at 800 000.
+`effective_trigger` clamps it to `W − O − margin`, where `O` is the output budget this request
+actually sends and admission reserves, and `margin = min(2048, W/16)`.
+
+`O` is not the declared ceiling itself but the value `models::effective_max_tokens` narrows it
+to: `min(declared, 65536, W/4)` (with an unknown window only the absolute ceiling remains). A
+declared ceiling often equals the window — Kimi's `/v1/models` returns
+`context_length == max_tokens`, because input and output share one window — and reserving it
+verbatim drives `W − O − margin` to zero, so not even a session's first request goes out and no
+model call is made. The same function decides both the request's `max_tokens` and the admission
+reserve, so the two cannot disagree.
+
+So a 1M-token window declaring 384 000 output reserves 65 536 and triggers at **800 000** (80%
+of the window; declaring 16 384 triggers there too); Kimi k3 (1 048 576 window, same declared
+value) triggers at **838 860**; a 262 144 window with the same declared value is decided by the
+proportional bound and triggers at **194 560** (74% of the window).
 
 The check runs before every model step, including after tool calls and after a model
-downshift, and reserves ordinary maximum output `O` plus the margin — input must fit
-`W − O − margin`. The estimate covers system text, tool definitions, message framing and
+downshift, and reserves the output budget `O` plus the margin — input must fit
+`W − O − margin`. The reserve is subject to the same bound: even a caller that passes an
+unnarrowed declared value leaves three quarters of the window for input. The estimate covers
+system text, tool definitions, message framing and
 conservative image/reasoning costs, and reported usage is taken into account. Selecting a
 model does not itself compact; its own next request checks its limits. An input that still
 fits is not cut merely for crossing the trigger when no older history is compactable, and
