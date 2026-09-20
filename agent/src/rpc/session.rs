@@ -114,6 +114,10 @@ pub struct ServerSession {
     pub tokens_cache_w: Arc<std::sync::atomic::AtomicI64>,
     /// Cumulative cost as reported by upstream (Future API `credit_cost`).
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
+    /// Cumulative spend per token category, accumulated one request at a time at
+    /// the rates of the model that served it (see [`crate::models::CostSplit`]).
+    /// Persisted alongside the token counters so a restart keeps the split.
+    pub cumulative_cost_split: Arc<parking_lot::Mutex<crate::models::CostSplit>>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Approval gate: holds pending approval requests and their decisions.
@@ -253,6 +257,9 @@ impl ServerSession {
             tokens_cache_r: tcr,
             tokens_cache_w: tcw,
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
+            cumulative_cost_split: Arc::new(parking_lot::Mutex::new(
+                crate::models::CostSplit::default(),
+            )),
             last_prompt_tokens: lpt,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
@@ -693,6 +700,7 @@ impl ServerSession {
             let cache_r = self.tokens_cache_r.clone();
             let cache_w = self.tokens_cache_w.clone();
             let cumulative_cost = self.cumulative_cost.clone();
+            let cumulative_cost_split = self.cumulative_cost_split.clone();
             let registry = self.model_registry.clone();
             let model = self.model.clone();
             move |reported: &crate::types::Usage| {
@@ -712,6 +720,11 @@ impl ServerSession {
                 });
                 if cost > 0.0 {
                     *cumulative_cost.lock() += cost;
+                }
+                // Priced with this request's model, like the run loop does.
+                let parts = crate::agent::usage_cost_split_with(Some(&registry), &model, reported);
+                if parts.iter().any(|amount| *amount > 0.0) {
+                    cumulative_cost_split.lock().add(parts);
                 }
                 *usage.lock() = Some(reported.clone());
             }
@@ -783,6 +796,8 @@ impl ServerSession {
                     "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
                     "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
                     "total_cost": *self.cumulative_cost.lock(),
+                    "cost_split": serde_json::to_value(*self.cumulative_cost_split.lock())
+                        .unwrap_or(serde_json::Value::Null),
                 });
                 if let Err(error) = self.persistence.update_info_fields(
                     fields
@@ -1266,6 +1281,13 @@ impl ServerSession {
                 restore_i64("last_prompt_tokens", &self.last_prompt_tokens);
                 if let Some(cost) = info.get("total_cost").and_then(|v| v.as_f64()) {
                     *self.cumulative_cost.lock() = cost;
+                }
+                if let Some(parts) = info.get("cost_split") {
+                    if let Ok(split) =
+                        serde_json::from_value::<crate::models::CostSplit>(parts.clone())
+                    {
+                        *self.cumulative_cost_split.lock() = split;
+                    }
                 }
             }
             *self.messages.write() = msgs;
@@ -3380,6 +3402,14 @@ mod tests {
             .tokens_out
             .store(20, std::sync::atomic::Ordering::Relaxed);
         *session.cumulative_cost.lock() = 0.125;
+        // A split accumulated by earlier requests: the manual compaction writes it
+        // with the other counters, and a restart must restore it as it was.
+        *session.cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 0.5,
+            output: 0.25,
+            cache_read: 0.125,
+            cache_write: 0.0625,
+        };
         session.set_model("glm-4.5v").unwrap();
         session.agent_loop.try_write().unwrap().provider =
             Arc::new(UsageSummaryProvider(FinishReason::Stop));
@@ -3440,6 +3470,22 @@ mod tests {
         assert_eq!(info["tokens_cache_r"], 80);
         assert_eq!(info["tokens_cache_w"], 10);
         assert_eq!(info["total_cost"], 0.25);
+        let charged = *session.cumulative_cost_split.lock();
+        assert!(
+            charged.input >= 0.5
+                && charged.output >= 0.25
+                && charged.cache_read >= 0.125
+                && charged.cache_write >= 0.0625,
+            "the summary request must add to the accumulated split, not replace it: {charged:?}"
+        );
+        for (field, amount) in [
+            ("input", charged.input),
+            ("output", charged.output),
+            ("cache_read", charged.cache_read),
+            ("cache_write", charged.cache_write),
+        ] {
+            assert_eq!(info["cost_split"][field].as_f64().unwrap(), amount);
+        }
         let mut restarted = ServerSession::new(
             session.session_id.clone(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
@@ -3454,6 +3500,11 @@ mod tests {
         );
         restarted.switch_session(&session.session_id).unwrap();
         assert_eq!(*restarted.cumulative_cost.lock(), 0.25);
+        assert_eq!(
+            *restarted.cumulative_cost_split.lock(),
+            charged,
+            "a restart must keep the accumulated split"
+        );
         assert_eq!(
             restarted
                 .tokens_in

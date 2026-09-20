@@ -496,29 +496,36 @@ fn get_state_internal(
         0.0
     };
 
-    // Per-category split of the amount, priced with the model's per-1M-token
-    // rates (the same rates the estimate above uses). This is always derived —
-    // a provider that bills itself reports one `credit_cost` number with no
-    // breakdown, so this is an estimate of where the money went, not a
-    // re-labelling of the provider's invoice. All-zero rates (an unpriced
-    // model) leave every figure at 0 so clients can show tokens only.
-    let breakdown = registry
-        .resolve(&sess.model)
-        .map(|model_config| {
-            let per_million = |tokens: i64, rate: f64| (tokens.max(0) as f64 / 1_000_000.0) * rate;
-            let cost = &model_config.cost;
-            // `tokens_in` already includes the cached subset; bill the
-            // non-cached remainder at the input rate so the categories do not
-            // double-count (same rule as `Cost::estimate`).
-            let uncached_in = tokens_in.saturating_sub(cache_r).saturating_sub(cache_w);
-            [
-                per_million(uncached_in, cost.input),
-                per_million(tokens_out, cost.output),
-                per_million(cache_r, cost.cache_read),
-                per_million(cache_w, cost.cache_write),
-            ]
-        })
-        .unwrap_or([0.0; 4]);
+    // Per-category split of the amount, accumulated one request at a time with
+    // the rates of the model that served it — so a session that switched models
+    // keeps each request billed at the price in force when it ran. A provider
+    // that bills itself reports one `credit_cost` number with no breakdown, so
+    // the split is always an estimate of where the money went, not a
+    // re-labelling of the provider's invoice. Unpriced models leave every figure
+    // at 0 so clients can show tokens only.
+    //
+    // A session written by an agent too old to have accumulated a split carries
+    // none; fall back to pricing its totals with the current model, which is
+    // what this endpoint always used to do.
+    let accumulated = *sess.cumulative_cost_split.lock();
+    let split = if accumulated.is_unset() {
+        registry
+            .resolve(&sess.model)
+            .map(|model_config| {
+                let parts = model_config
+                    .cost
+                    .parts(tokens_in, tokens_out, cache_r, cache_w);
+                crate::models::CostSplit {
+                    input: parts[0],
+                    output: parts[1],
+                    cache_read: parts[2],
+                    cache_write: parts[3],
+                }
+            })
+            .unwrap_or_default()
+    } else {
+        accumulated
+    };
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
@@ -675,10 +682,10 @@ fn get_state_internal(
             cache_read_tokens: cache_r,
             cache_write_tokens: cache_w,
             cost_cny: total_cost,
-            cost_input_cny: breakdown[0],
-            cost_output_cny: breakdown[1],
-            cost_cache_read_cny: breakdown[2],
-            cost_cache_write_cny: breakdown[3],
+            cost_input_cny: split.input,
+            cost_output_cny: split.output,
+            cost_cache_read_cny: split.cache_read,
+            cost_cache_write_cny: split.cache_write,
         },
         permission_level: sess.permission_level.clone(),
         parent_session_id: if parent_session_id.is_empty() {
@@ -1526,6 +1533,64 @@ mod tests {
         assert_eq!(price("costOutputCny"), 0.0);
         assert_eq!(price("costCacheReadCny"), 0.0);
         assert_eq!(price("costCacheWriteCny"), 0.0);
+    }
+
+    #[test]
+    fn get_state_prefers_the_accumulated_split_over_re_pricing_the_totals() {
+        // A session whose first request ran on a cheap model and whose second ran
+        // on a model priced 100× higher. The accumulated split knows both; any
+        // derivation from the session's totals can only apply the current model's
+        // rate to everything, which would bill the cheap request 100× over.
+        let (_dir, state) = bare_app_state();
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![crate::models::Model {
+                id: "pricey".to_string(),
+                name: "Pricey".to_string(),
+                provider: "test".to_string(),
+                api: "chat".to_string(),
+                base_url: "https://example.test".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                cost: crate::models::Cost {
+                    input: 100.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            r#"{"test":{"type":"api_key","key":"key"}}"#,
+        );
+        let snapshot = crate::session::Session::snapshot(
+            "s-split".to_string(),
+            "/tmp".to_string(),
+            "test/pricey".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "test/pricey"}),
+                "test/pricey".to_string(),
+                "low".to_string(),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+
+        let session = state.get_session("s-split").unwrap();
+        session
+            .read()
+            .tokens_in
+            .store(2_000_000, std::sync::atomic::Ordering::Relaxed);
+        // 1M on the cheap model (1.0/M) + 1M on the pricey one (100.0/M).
+        *session.read().cumulative_cost.lock() = 101.0;
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 101.0,
+            ..Default::default()
+        };
+
+        let value = get_state_internal(&state, "s-split", None).expect("state");
+        let usage = &value["usage"];
+        assert_eq!(usage["costInputCny"].as_f64().unwrap(), 101.0);
+        assert_eq!(usage["costCny"].as_f64().unwrap(), 101.0);
+        // Re-pricing both million-token requests at the current model's rate.
+        assert_ne!(usage["costInputCny"].as_f64().unwrap(), 200.0);
     }
 
     #[tokio::test(flavor = "current_thread")]
