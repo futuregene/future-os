@@ -43,7 +43,10 @@ def main() -> int:
     parser.add_argument("--cdp-port", type=int, default=9333)
     parser.add_argument("--test-binary", required=True)
     parser.add_argument("--agent-binary", help="Standalone future-agent to measure instead of the installed one")
-    parser.add_argument("--timeout", type=int, default=600)
+    # Each pass measures every sample in both open modes, and the harness runs
+    # the plain and gzip passes against one snapshot, so the wall clock is about
+    # twice a single-encoding run.
+    parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
 
     RESULTS.mkdir(parents=True, exist_ok=True)

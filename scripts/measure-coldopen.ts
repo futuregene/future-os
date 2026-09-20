@@ -28,6 +28,13 @@ import type { EntriesData, RemoteCommand, RemoteSessionState } from "../mobile/s
 
 type Sample = { label: string; session: string; run: string; expected_events: number };
 
+/** Which reply encoding the probe should use for the requests of one pass.
+ * Both passes run against the same database snapshot inside one page load, so
+ * a plain/gzip comparison can never be skewed by the agent writing in between
+ * (which it does: these are live sessions). */
+type Encoding = "plain" | "gzip";
+let encoding: Encoding = "plain";
+
 /** Order-independent-free canonical JSON, so a digest comparison is not
  * defeated by key ordering differences between two decoders. */
 function canonical(value: unknown): string {
@@ -123,7 +130,14 @@ function measuredClient(): RemoteClient {
     async requestRetry<T>(command: RemoteCommand) {
       const response = await fetch("/rpc", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Sync-Measurement": "1" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Sync-Measurement": "1",
+          // Models the per-connection capability the desktop negotiates in
+          // production: the same production encoder sees the same flag, only
+          // its source differs.
+          "X-Sync-Measure-Gzip": encoding === "gzip" ? "1" : "0",
+        },
         body: JSON.stringify(command),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -246,6 +260,7 @@ async function measure(sample: Sample, mode: Mode) {
     return {
       sample: sample.label,
       mode,
+      encoding,
       sourceEvents: sample.expected_events,
       syncMs: Math.round(syncMs),
       firstCommitMs: firstCommitMs === null ? null : Math.round(firstCommitMs),
@@ -281,17 +296,23 @@ async function measure(sample: Sample, mode: Mode) {
 
 async function main() {
   const samples: Sample[] = await (await fetch("/samples")).json();
-  for (const sample of samples) {
-    for (const mode of ["idle-open", "active-open"] as Mode[]) {
-      status.textContent = `${sample.label} / ${mode}`;
-      try {
-        const result = await measure(sample, mode);
-        records.push(result);
-        console.info("COLD_OPEN", JSON.stringify(result));
-      } catch (error) {
-        records.push({ sample: sample.label, mode, error: String(error) });
+  // Encoding is the outer loop so both passes for a sample run back to back
+  // against the identical snapshot, with the agent's writes unable to land
+  // between them in a way that changes what is being compared.
+  for (const pass of ["plain", "gzip"] as Encoding[]) {
+    encoding = pass;
+    for (const sample of samples) {
+      for (const mode of ["idle-open", "active-open"] as Mode[]) {
+        status.textContent = `${pass} / ${sample.label} / ${mode}`;
+        try {
+          const result = await measure(sample, mode);
+          records.push(result);
+          console.info("COLD_OPEN", JSON.stringify(result));
+        } catch (error) {
+          records.push({ sample: sample.label, mode, encoding: pass, error: String(error) });
+        }
+        output.textContent = JSON.stringify(records, null, 2);
       }
-      output.textContent = JSON.stringify(records, null, 2);
     }
   }
   const response = await fetch("/result", {
