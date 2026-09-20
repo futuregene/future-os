@@ -292,5 +292,5 @@ mock 是唯一需要跟着产品走的部分，而漏掉的地方会主动报出
 | 点击没有反应 | 在可滚动列表里，react-native-web 会优先响应滚动手势；驱动已经发送触摸序列，请确认没有关掉 `--touch`。 |
 | 手机端界面空白或不全 | 首次请求时 Expo web 还在打包；等第一次截图完成后再跑一次。若页面全白且控制台报 "Incompatible React versions"，说明 mobile workspace 里 react / react-dom 版本不一致——`serve-mobile` 会检查并给出修复命令。 |
 | `cdp: app not ready after … ms` 且界面停在启动态 | 新界面调用了 mock 还没有的命令。mock 会对未知命令返回 null，前端随后在渲染里抛错、整个界面卡住（桌面端表现为停在「请稍候」）。控制台里搜 `[mock] UNHANDLED COMMAND` —— 那就是缺的处理器，补上即可（`get_agent_status` 就是这么缺的）。 |
-| 多指手势场景只能证明「手势到达了组件」 | 浏览器里 `measureInWindow` 给的是**页面**坐标，而派发的 TouchEvent 用**视口**坐标；页面滚动过时两者相差一个固定偏移，所以截图里缩放的**焦点偏移不可信**。断言要写成「缩放值变了」，不要写「某个点留在原位」；焦点锚定的正确性由单元测试保证（`mobile/src/features/chat/__tests__/zoomableImage.test.ts`）。 |
+| 捏合截图拍出来是空白（或画面从手指下漂走） | 缩放锚定在「每次布局只测一次」的窗口原点上：滑入式面板是在**还在屏幕外时**完成布局的，于是那个原点永远差着大半屏，之后每次捏合都会把画面平移 `偏移 × (缩放 − 1)`，直接推出视野。改用**相对视图**的触点坐标（`locationX/locationY`），并在场景里断言「居中捏合的平移量接近 0」——这条断言在旧行为下会直接失败。 |
 | `error: nothing is listening on port …` | dev server 没起：先跑 `capture.py serve-desktop` 或 `serve-mobile`。 |

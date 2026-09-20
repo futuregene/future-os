@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Animated, PanResponder, StyleSheet, View } from "react-native";
 import { colors } from "../../../theme/tokens";
 
@@ -15,13 +15,13 @@ export const DOUBLE_TAP_SCALE = 2.5;
 export const DOUBLE_TAP_MS = 300;
 const TAP_SLOP = 14;
 
-type Touch = { pageX: number; pageY: number };
+type Touch = { locationX: number; locationY: number };
 
 /** Distance between the first two touches, or null when fewer than two are down. */
 export function pinchDistance(touches: Touch[]): number | null {
   const [a, b] = touches;
   if (!a || !b) return null;
-  return Math.hypot(a.pageX - b.pageX, a.pageY - b.pageY);
+  return Math.hypot(a.locationX - b.locationX, a.locationY - b.locationY);
 }
 
 /** Hold a zoom factor inside {@link MIN_SCALE}..{@link MAX_SCALE}. */
@@ -59,7 +59,7 @@ export interface ZoomController {
     | { translateY: Animated.Value }
     | { scale: Animated.Value }
   )[];
-  measure(width: number, height: number, pageX?: number, pageY?: number): void;
+  measure(width: number, height: number): void;
   /**
    * The zoom/pan the controller currently holds. Render never reads it; it exists
    * so a caller can observe where a gesture ended up, including the changes a
@@ -79,6 +79,15 @@ export interface ZoomOptions {
  * only ever run at gesture time, so render never inspects the live values, and
  * React's rules allow neither ref reads nor state mutation during render.
  *
+ * Distances and focal points come from the touches' `locationX`/`locationY` — the
+ * coordinates relative to this view — never from `pageX`/`pageY`. Page
+ * coordinates would have to be compared against a measured window origin, and
+ * that origin is measured once per layout: on a sheet that slides in, the layout
+ * lands while the surface is still below the viewport, so the stored origin is
+ * off by most of a screen and every pinch then drags the picture away from the
+ * fingers. Relative coordinates are recomputed from each event and cannot go
+ * stale.
+ *
  * Both the bounds and responder transitions are covered by tests.
  */
 export function createZoomController({ now = Date.now }: ZoomOptions = {}): ZoomController {
@@ -88,11 +97,12 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
   let current: GestureState = { scale: MIN_SCALE, x: 0, y: 0 };
   let start: GestureStart = { scale: MIN_SCALE, x: 0, y: 0, distance: 0, centerX: 0, centerY: 0 };
   let lastTap: { at: number; x: number; y: number } | null = null;
-  // Set for the duration of one press: where it started, and whether a second
-  // finger was ever down. Release turns these into tap-vs-pinch/pan.
+  // Set for the duration of one press: where it started (relative to this view),
+  // and whether a second finger was ever down. Release turns these into
+  // tap-vs-pinch/pan.
   let press: { x: number; y: number } | null = null;
   let multiFinger = false;
-  const frame = { width: 0, height: 0, pageX: 0, pageY: 0 };
+  const frame = { width: 0, height: 0 };
 
   const settle = (next: GestureState) => {
     current = next;
@@ -124,8 +134,10 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
     [centerX, centerY]: [number, number],
   ): GestureState => {
     const ratio = next / base.scale;
-    const anchorX = base.centerX - frame.pageX - frame.width / 2;
-    const anchorY = base.centerY - frame.pageY - frame.height / 2;
+    // The view's own centre is the transform origin, and the touches are already
+    // relative to the view, so no window origin enters this.
+    const anchorX = base.centerX - frame.width / 2;
+    const anchorY = base.centerY - frame.height / 2;
     const nextX = clampTranslation(
       centerX - base.centerX + anchorX * (1 - ratio) + base.x * ratio, next, frame.width);
     const nextY = clampTranslation(
@@ -148,10 +160,11 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
   };
 
   /**
-   * A tap on the picture: the second one in quick succession zooms in about that
-   * point, a third returns to fit. A single finger is the only way to zoom when
-   * two-finger gestures are unavailable (assistive settings, a stolen gesture) or
-   * simply not obvious, so the surface must not depend on pinch alone.
+   * A tap on the picture, in coordinates relative to this view: the second tap in
+   * quick succession zooms in about that point, a third returns to fit. A single
+   * finger is the only way to zoom when two-finger gestures are unavailable
+   * (assistive settings, a stolen gesture) or simply not obvious, so the surface
+   * must not depend on pinch alone.
    */
   const tap = (x: number, y: number) => {
     const at = now();
@@ -185,9 +198,12 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
       translateY.stopAnimation();
       const touches = event.nativeEvent.touches as Touch[];
       begin(touches);
-      // Where this press started, and whether two fingers were ever involved:
-      // together with the release travel this decides tap vs pinch/pan.
-      press = { x: gesture.x0, y: gesture.y0 };
+      // Where this press started, relative to this view, and whether two fingers
+      // were ever down: together with the release travel this decides
+      // tap-vs-pinch/pan. `gesture.x0/y0` would be page coordinates, which must
+      // not be mixed with the relative ones the rest of the gesture uses.
+      const origin = touches[0] ?? event.nativeEvent;
+      press = { x: origin.locationX, y: origin.locationY };
       multiFinger = touches.length > 1;
     },
     onPanResponderStart: event => begin(event.nativeEvent.touches as Touch[]),
@@ -231,9 +247,9 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
     panHandlers: responder.panHandlers,
     transform: [{ translateX }, { translateY }, { scale }],
     state: () => ({ ...current }),
-    measure(width, height, pageX = 0, pageY = 0) {
+    measure(width, height) {
       const resized = frame.width !== width || frame.height !== height;
-      Object.assign(frame, { width, height, pageX, pageY });
+      Object.assign(frame, { width, height });
       if (resized) {
         // A new frame has different pan bounds; do not animate through the old ones.
         current = { scale: MIN_SCALE, x: 0, y: 0 };
@@ -248,8 +264,8 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
 function centerOf(touches: Touch[]): [number, number] {
   const [a, b] = touches;
   if (!a) return [0, 0];
-  if (!b) return [a.pageX, a.pageY];
-  return [(a.pageX + b.pageX) / 2, (a.pageY + b.pageY) / 2];
+  if (!b) return [a.locationX, a.locationY];
+  return [(a.locationX + b.locationX) / 2, (a.locationY + b.locationY) / 2];
 }
 
 /**
@@ -266,7 +282,6 @@ export function ZoomableImage({ uri, accessibilityLabel }: {
   accessibilityLabel?: string;
 }) {
   const [zoom] = useState(() => createZoomController());
-  const frameRef = useRef<View>(null);
 
   return (
     <View
@@ -274,12 +289,7 @@ export function ZoomableImage({ uri, accessibilityLabel }: {
       onLayout={event => {
         const { width, height } = event.nativeEvent.layout;
         zoom.measure(width, height);
-        // The zoom anchor needs screen coordinates. `event.currentTarget` is not a
-        // measurable instance on every renderer (on web it is undefined, which
-        // threw here), so measure through the ref the way RN documents it.
-        frameRef.current?.measureInWindow?.((x, y) => zoom.measure(width, height, x, y));
       }}
-      ref={frameRef}
       style={styles.frame}
       {...zoom.panHandlers}
     >
