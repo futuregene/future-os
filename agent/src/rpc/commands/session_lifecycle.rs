@@ -579,12 +579,10 @@ pub(crate) fn cmd_fork(
     }
 
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, current_session_id, parent_created_by) = {
+    let (session_manager, current_session_id, parent_created_by) = {
         let sess = session.read();
         (
             sess.session_manager.clone(),
-            sess.broadcaster.clone(),
-            sess.cwd.clone(),
             sess.session_id.clone(),
             sess.created_by.clone(),
         )
@@ -652,7 +650,7 @@ pub(crate) fn cmd_fork(
         agent_loop,
         session_manager,
         &forked.cwd,
-        broadcaster,
+        Arc::new(SseBroadcaster::new()),
         state.approval_gate.clone(),
         state.model_registry.clone(),
         state.queue_budget.clone(),
@@ -699,7 +697,7 @@ pub(crate) fn cmd_clone(
     id: &str,
 ) -> String {
     // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, session_id, parent_created_by) = {
+    let (session_manager, session_id, parent_created_by) = {
         let sess = session.read();
         if sess.messages.read().is_empty() {
             return RpcResponse::build_fail(
@@ -710,8 +708,6 @@ pub(crate) fn cmd_clone(
         }
         (
             sess.session_manager.clone(),
-            sess.broadcaster.clone(),
-            sess.cwd.clone(),
             sess.session_id.clone(),
             sess.created_by.clone(),
         )
@@ -773,7 +769,7 @@ pub(crate) fn cmd_clone(
         agent_loop,
         session_manager,
         &forked.cwd,
-        broadcaster,
+        Arc::new(SseBroadcaster::new()),
         state.approval_gate.clone(),
         state.model_registry.clone(),
         state.queue_budget.clone(),

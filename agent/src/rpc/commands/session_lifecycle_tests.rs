@@ -231,8 +231,8 @@ fn create_session_rebinds_event_journal_to_live_broadcaster() {
     let state = make_app_state();
     let session_id = "journal-rebind".to_string();
 
-    // Mimic fork/clone: construct with a broadcaster that create_session
-    // will discard, so the live one must be (re)configured by it.
+    // Construct with a transient broadcaster that create_session will discard,
+    // so the live one must be (re)configured by it.
     let new_sess = ServerSession::new_with_queue_budget(
         session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(Loop::new(
@@ -1020,6 +1020,32 @@ fn fork_creates_new_session_from_entry_point() {
 }
 
 #[test]
+fn fork_keeps_parent_event_journal_bound_to_parent_session() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork here"));
+    let entry_id = user.id.clone();
+    save_via(&state, "default", "mock", vec![user]);
+    let parent_broadcaster = state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .broadcaster
+        .clone();
+
+    let mut cmd = make_cmd("fork");
+    cmd.entry_id = entry_id;
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true);
+
+    parent_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "session_name_changed",
+        serde_json::json!({"name": "parent renamed"}),
+    ));
+    let events = parent_broadcaster.session_events_since(-1).unwrap();
+    assert_eq!(events.last().unwrap().session_id, "default");
+}
+
+#[test]
 fn fork_from_explicit_parent_session() {
     let state = make_app_state();
     let user = crate::session::SessionEntry::new_user("user", serde_json::json!("parent msg"));
@@ -1123,6 +1149,33 @@ fn clone_propagates_the_parent_created_by() {
         state.get_session(&clone_id).unwrap().read().creator_id,
         "tui-creator"
     );
+}
+
+#[test]
+fn clone_keeps_parent_event_journal_bound_to_parent_session() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
+    save_via(&state, "default", "mock", vec![user]);
+    let parent = state.get_session("default").unwrap();
+    parent
+        .read()
+        .messages
+        .write()
+        .push(crate::types::AgentMessage::new_user(
+            "user",
+            serde_json::json!("clone me"),
+        ));
+    let parent_broadcaster = parent.read().broadcaster.clone();
+
+    let response = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+    assert_eq!(response["success"], true);
+
+    parent_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "session_name_changed",
+        serde_json::json!({"name": "parent renamed"}),
+    ));
+    let events = parent_broadcaster.session_events_since(-1).unwrap();
+    assert_eq!(events.last().unwrap().session_id, "default");
 }
 
 #[test]
