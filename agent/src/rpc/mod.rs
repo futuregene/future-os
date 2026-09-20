@@ -504,28 +504,13 @@ fn get_state_internal(
     // re-labelling of the provider's invoice. Unpriced models leave every figure
     // at 0 so clients can show tokens only.
     //
-    // A session written by an agent too old to have accumulated a split carries
-    // none; fall back to pricing its totals with the current model, which is
-    // what this endpoint always used to do.
-    let accumulated = *sess.cumulative_cost_split.lock();
-    let split = if accumulated.is_unset() {
-        registry
-            .resolve(&sess.model)
-            .map(|model_config| {
-                let parts = model_config
-                    .cost
-                    .parts(tokens_in, tokens_out, cache_r, cache_w);
-                crate::models::CostSplit {
-                    input: parts[0],
-                    output: parts[1],
-                    cache_read: parts[2],
-                    cache_write: parts[3],
-                }
-            })
-            .unwrap_or_default()
-    } else {
-        accumulated
-    };
+    // Never derived from the session's token totals here: pricing the whole
+    // history at whatever model happens to be current re-bills every earlier
+    // request at the wrong rates (a model switched and switched back turns a
+    // ¥8.41 session into a ¥1925 breakdown). Sessions recorded before the split
+    // was accumulated supply one by replaying their journal on load instead —
+    // see `RpcSession::replay_cost_split`.
+    let split = *sess.cumulative_cost_split.lock();
 
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
@@ -1502,13 +1487,11 @@ mod tests {
             .runtime
             .begin(Some("run-live"), Some("request-live"))
             .unwrap();
-        // Token counters make the token×price estimation arm observable.
+        // Token counters drive the context figures and the total's estimate arm.
         session
             .read()
             .tokens_in
             .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
-        // 1M prompt tokens with 200k served from cache: input 1.0/M, cache
-        // read 0.5/M → 0.8 + 0.1 (see the per-category assertions below).
         session
             .read()
             .tokens_cache_r
@@ -1517,6 +1500,12 @@ mod tests {
             .read()
             .tokens_out
             .store(100_000, std::sync::atomic::Ordering::Relaxed);
+        // What the run loop charged this session, request by request.
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 0.8,
+            output: 0.1,
+            ..Default::default()
+        };
 
         let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
         assert_eq!(value["activeRun"]["runId"], "run-live");
@@ -1524,13 +1513,13 @@ mod tests {
         // deepseek-chat is in the catalog with a non-zero price, so the
         // estimate replaces the (zero) API cost.
         assert!(value["usage"]["costCny"].as_f64().unwrap() > 0.0);
-        // The per-category split bills the non-cached input remainder at the
-        // input rate (only `input` is priced on this fixture model), so cached
-        // tokens never double-count and unpriced categories stay at 0.
+        // The per-category split is what the session accumulated — never a
+        // re-pricing of its token totals at the current model (a session that
+        // switched models would have that figure wrong by orders of magnitude).
         let usage = &value["usage"];
         let price = |field: &str| usage[field].as_f64().unwrap();
         assert_eq!(price("costInputCny"), 0.8);
-        assert_eq!(price("costOutputCny"), 0.0);
+        assert_eq!(price("costOutputCny"), 0.1);
         assert_eq!(price("costCacheReadCny"), 0.0);
         assert_eq!(price("costCacheWriteCny"), 0.0);
     }

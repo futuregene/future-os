@@ -67,6 +67,27 @@ impl SqliteStore {
         })
     }
 
+    /// The `usage` and `model_changed` journal payloads of one session, in
+    /// journal order — the inputs for pricing its history request by request
+    /// (see `RpcSession::replay_cost_split`). Every other event kind is skipped
+    /// in SQL: a picture-heavy conversation journals far more text deltas than
+    /// model calls, and decoding those here would multiply the cost of a
+    /// backfill that only needs the two kinds.
+    pub(crate) fn pricing_event_payloads(&self, session: &str) -> Result<Vec<String>> {
+        let session = session.to_owned();
+        self.db.call(move |db| {
+            let mut stmt = db.prepare(
+                "SELECT payload FROM run_events WHERE session_id=?1 \
+                 AND json_extract(payload,'$.event_type') IN ('usage','model_changed') \
+                 ORDER BY sequence",
+            )?;
+            let rows = stmt
+                .query_map([&session], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(rows)
+        })
+    }
+
     pub fn replace(&self, session: &str, entries: Vec<Value>) -> Result<()> {
         let session = session.to_owned();
         self.db.call(move |db| {
