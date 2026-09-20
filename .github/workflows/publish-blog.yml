@@ -1,0 +1,65 @@
+name: Publish Blog
+
+# Build docs/blog/ into a static site and deploy it to GitHub Pages.
+#
+# Pages' source must be set to "GitHub Actions" (Settings → Pages). With
+# "Deploy from a branch" GitHub would Jekyll-render the raw markdown sources
+# instead of serving this build.
+#
+# Triggered by blog changes on main, or manually from the Actions tab with
+# `gh workflow run publish-blog.yml`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/blog/**"
+      - "scripts/blog/**"
+      - "scripts/test-blog-build.py"
+      - ".github/workflows/publish-blog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; never cancel a run that is mid-publish, or Pages can be
+# left serving a half-uploaded artifact.
+concurrency:
+  group: publish-blog
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The generator is stdlib-only Python, so the runner's stock python3 is
+      # the whole toolchain. Tests run first: a broken renderer must not publish.
+      - name: Test the generator
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-blog-build.py
+
+      - name: Build the site
+        run: python3 scripts/blog/build.py --out build/blog
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/blog
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
