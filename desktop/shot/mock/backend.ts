@@ -14,6 +14,7 @@ import {
   availableSkills,
   buildInfo,
   compactResumeEntries,
+  demoFileContents,
   entriesByThread,
   HOME,
   installedSkills,
@@ -309,12 +310,23 @@ const handlers: Record<string, (args: any) => unknown> = {
   // ── Files & artifacts ──────────────────────────────────────────────────
   list_directory: args => workspaceFiles[args?.path] ?? [],
   search_workspace_files: () => [],
-  read_text_file_preview: args => ({
-    path: args?.path ?? "",
-    name: (args?.path ?? "").split("/").pop() ?? "",
-    content: "# 多巴胺与风险决策：结论对比\n\n见下方表格。\n",
-    truncated: false,
-  }),
+  // `validUtf8` and `size` are part of the command's real contract: without
+  // `validUtf8` the text preview classifies every file as binary and bails to
+  // the OS handler. Demo files also preview as themselves — a `.py` shows the
+  // source the reply quotes, not the demo markdown — so the code preview's
+  // syntax highlighting has real input.
+  read_text_file_preview: (args) => {
+    const name = (args?.path ?? "").split("/").pop() ?? "";
+    const content = demoFileContents[name] ?? "# 多巴胺与风险决策：结论对比\n\n见下方表格。\n";
+    return {
+      path: args?.path ?? "",
+      name,
+      content,
+      size: content.length,
+      truncated: false,
+      validUtf8: true,
+    };
+  },
   open_path: () => null,
   open_external_url: () => null,
   open_url: () => null,

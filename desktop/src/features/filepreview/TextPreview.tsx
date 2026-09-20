@@ -1,7 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { readTextFilePreview } from "../../integrations/storage/files";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { HighlightedCode } from "../markdown/HighlightedCode";
+import { MAX_HIGHLIGHTABLE_CODE_LENGTH, useCodeHighlighter } from "../markdown/useCodeHighlighter";
+import { codeLanguageForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
 import { usePreviewLoadingGate } from "./usePreviewLoadingGate";
 
@@ -13,13 +16,20 @@ interface TextPreviewResult {
 }
 
 /**
- * Plain monospace reader for code / config text files (`.py`, `.rs`, `.go`, …).
- * Content comes through the same backend command as `MarkdownPreview` (default
- * 200KB, 1MB cap): the first chunk is shown and a notice marks it truncated.
+ * Monospace reader for code / config text files (`.py`, `.rs`, `.go`, …) with
+ * syntax colors. Content comes through the same backend command as
+ * `MarkdownPreview` (default 200KB, 1MB cap): the first chunk is shown and a
+ * notice marks it truncated.
  *
  * A read failure — unreadable, or bytes that aren't UTF-8 text (a `.c` that is
  * really a binary) — routes to `onError`, so the overlay falls back to the OS
  * default handler instead of showing replacement characters.
+ *
+ * Highlighting is bounded and optional at every step: no grammar for the
+ * extension, a source past {@link MAX_HIGHLIGHTABLE_CODE_LENGTH}, a grammar
+ * still loading, or a tokenizer failure all render the untouched source in the
+ * same monospace, so the reader never waits on the highlighter and never sees
+ * mangled text.
  */
 export function TextPreview({ path, onError }: { path: string; onError: () => void }) {
   const { t } = useTranslation("markdown");
@@ -35,6 +45,15 @@ export function TextPreview({ path, onError }: { path: string; onError: () => vo
   const gate = usePreviewLoadingGate(loading);
   const binary = result !== null && !result.validUtf8;
   const failed = Boolean(error) || binary;
+
+  const language = useMemo(() => codeLanguageForPath(path), [path]);
+  const { highlight } = useCodeHighlighter();
+  const content = result?.content;
+  const highlighted = useMemo(() => {
+    if (!language || content === undefined || content.length > MAX_HIGHLIGHTABLE_CODE_LENGTH)
+      return null;
+    return highlight(content, language);
+  }, [content, highlight, language]);
 
   useEffect(() => {
     if (failed && gate.showContent)
@@ -56,7 +75,16 @@ export function TextPreview({ path, onError }: { path: string; onError: () => vo
             </div>
           )
         : null}
-      <pre className="min-w-full px-4 py-3 text-[11px] leading-4 text-ink-soft whitespace-pre-wrap"><code>{result.content}</code></pre>
+      <pre
+        className="min-w-full px-4 py-3 text-[11px] leading-4 whitespace-pre-wrap text-ink-soft"
+        style={highlighted ? { color: highlighted.fgColor } : undefined}
+      >
+        <code>
+          {highlighted
+            ? <HighlightedCode code={result.content} highlighted={highlighted} />
+            : result.content}
+        </code>
+      </pre>
     </div>
   );
 }
