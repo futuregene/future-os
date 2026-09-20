@@ -25,6 +25,7 @@ describe("incremental single-table projection", () => {
 
   it.each([
     "- **新旧端兼容未完善：**新手机端。\n\n> 前**“重点”**后",
+    "**复现：**10 轮对话，每轮 assistant 内容 150 KB：\n\n- **原逻辑：**返回约 450 KB / 6 条记录。",
     "| 项目 | 说明 |\n|---|---|\n| **注意：**正文 | 前**「重要」**です |\n| **结论：**完成 | 后续 |",
     "| A | B |\n| --- | :---: |\n| first | second |\n| **next** | `a\\|b` |\n| end | done |",
     "A | B\n--- | ---\none | two\nthree | four\n",

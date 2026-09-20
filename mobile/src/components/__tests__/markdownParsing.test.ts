@@ -5,6 +5,10 @@ describe("Markdown syntax fidelity", () => {
     ["迁移失败处理不合适：", "新工作区字段迁移被放进了可选集合。"],
     ["新旧端兼容未完善：", "新手机端连接旧桌面端时仍显示置顶入口。"],
     ["失效工作区校验不足：", "更新条件排除了已删除记录。"],
+    // The body after the label starts with a digit or a Latin name as often as
+    // with a Han character.
+    ["复现：", "10 轮对话，每轮 assistant 内容 150 KB。"],
+    ["结论：", "FutureOS 侧仍然超限。"],
   ])("renders a CJK list label ending in punctuation: %s", (label, body) => {
     expect(parseFutureMarkdown(`- **${label}**${body}`).nodes).toEqual([{
       type: "list", ordered: false, start: undefined,
@@ -19,6 +23,8 @@ describe("Markdown syntax fidelity", () => {
     ["前**“重点”**后", "strong", "“重点”"],
     ["前*（重点）*后", "italic", "（重点）"],
     ["前**注意:**后", "strong", "注意:"],
+    ["前**复现：**10 轮对话", "strong", "复现："],
+    ["前**复现：**FutureOS 是这样的", "strong", "复现："],
     ["前**「重要」**です", "strong", "「重要」"],
     ["앞**중요：**뒤", "strong", "중요："],
   ])("supports punctuation at CJK emphasis boundaries: %s", (source, type, text) => {
@@ -125,6 +131,7 @@ describe("Markdown syntax fidelity", () => {
     "| Left | Right |\n|:---|---:|\n| A<br>B | `x` |\n| missing |\n\nAfter",
     "[reference][r]\n\n> [r]: https://example.com\n\n![alt](https://example.com/a.png)",
     "Equation $x^2$ and \\(y_1\\).\n\n\\[\n\\frac{a}{b}\n\\]\n\n```ts\nconst a = 1;\n```",
+    "**复现：**10 轮对话，每轮 assistant 内容 150 KB：\n\n- **原逻辑：**返回约 450 KB / 6 条记录。",
     "note[^a]\n\n[^a]: body\n\n    more body",
   ])("every streaming prefix matches a fresh parse: %s", source => {
     const project = createStreamingMarkdownParser();
