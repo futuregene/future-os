@@ -34,6 +34,16 @@ describe("MarkdownText layout and fidelity", () => {
     } finally { parse.mockRestore(); }
   });
 
+  test("a file preview carries its gutter on the scrolling content, not a static parent", () => {
+    const text = "# Title\n\n" + "Body paragraph. ".repeat(400);
+    act(() => { renderer = create(createElement(MarkdownText, { text, mode: "file-preview" })); });
+    const list = renderer.root.findByType(FlatList);
+    // Padding on a parent of the list would stay put while the text scrolls,
+    // showing a blank strip under the header and clipping the first line.
+    expect(StyleSheet.flatten(list.props.contentContainerStyle)).toMatchObject({ padding: 16 });
+    expect(StyleSheet.flatten(list.props.style)).toMatchObject({ flex: 1 });
+  });
+
   test("a 5000-row table mounts a bounded internal viewport", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
