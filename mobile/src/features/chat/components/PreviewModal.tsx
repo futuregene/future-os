@@ -99,7 +99,9 @@ export function PreviewModal({
             ) : preview?.info.previewKind === "markdown" ? (
               <View style={styles.previewDocument}>
                 {!!preview?.truncated && (
-                  <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                  <View style={styles.previewNotice}>
+                    <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                  </View>
                 )}
                 <MarkdownText mode="file-preview" imageBasePath={preview?.attachment.path} text={preview?.markdown ?? ""} />
               </View>
@@ -192,7 +194,12 @@ const styles = StyleSheet.create({
   menuAction: { minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm },
   menuLabel: { flexShrink: 1, color: colors.ink, fontSize: 15 },
   previewMarkdown: { padding: spacing.lg },
-  previewDocument: { flex: 1, minHeight: 0, padding: spacing.lg },
+  // No padding here: the document itself scrolls, so its gutter lives in the
+  // markdown list's content container. Padding on this static parent instead
+  // leaves a blank strip under the header, where the list clips scrolled text.
+  // Only the notice above the list sits outside that scrolling surface.
+  previewDocument: { flex: 1, minHeight: 0 },
+  previewNotice: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   previewTruncated: {
     marginBottom: spacing.md,
     padding: spacing.md,

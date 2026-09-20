@@ -154,6 +154,24 @@ describe("preview overflow menu", () => {
     expect(button("common.more").props.disabled).toBe(false);
   });
 
+  test("markdown previews put their gutter on the scrolling list, not on a static parent", () => {
+    const markdown: PreviewState = {
+      ...preview,
+      info: { ...preview.info, previewKind: "markdown" },
+      markdown: "# Title\n\nBody",
+      truncated: true,
+    };
+    act(() => tree.update(createElement(PreviewModal, { ...props, preview: markdown })));
+    // No static parent of the document may apply a uniform gutter: padding there
+    // stays put while the list scrolls, leaving a blank strip under the header.
+    const padded = tree.root.findAllByType(View)
+      .filter(node => StyleSheet.flatten(node.props.style)?.padding !== undefined);
+    expect(padded).toHaveLength(0);
+    // The truncation notice stays outside the scrolling surface, so it keeps its own gutter.
+    const notice = tree.root.findAllByType(Text).find(node => node.props.children === "attachment.markdownTruncated")!;
+    expect(StyleSheet.flatten(notice.parent!.props.style)).toMatchObject({ paddingTop: 16, paddingHorizontal: 16 });
+  });
+
   test("positions the floating menu below the measured header without reflowing content", () => {
     const header = tree.root.findAllByType(View).find(node => typeof node.props.onLayout === "function")!;
     act(() => header.props.onLayout({ nativeEvent: { layout: { height: 72 } } }));

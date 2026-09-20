@@ -429,7 +429,7 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
       maxToRenderPerBatch={8}
       windowSize={5}
       style={styles.previewList}
-      contentContainerStyle={styles.constrained}
+      contentContainerStyle={styles.previewContent}
     />
   </MarkdownImageBasePathContext>;
   return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
@@ -454,6 +454,9 @@ const styles = StyleSheet.create({
   noBottom: { marginBottom: 0 },
   constrained: { minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   previewList: { flex: 1, minWidth: 0, width: "100%" },
+  // The preview's gutter belongs to the scrolling content: padding on a static
+  // parent instead leaves a blank strip under the header once text scrolls.
+  previewContent: { padding: spacing.lg, minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   blockSpacing: { marginBottom: spacing.sm },
   bodyText: { color: colors.ink, ...chatTypography },
   paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },
