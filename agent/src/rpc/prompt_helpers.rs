@@ -139,20 +139,27 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
             ModelStreamEvent::TextDelta { text, .. } => {
                 ("text_chunk", serde_json::json!({"text": text}))
             }
-            ModelStreamEvent::ReasoningStart { .. } => (
+            ModelStreamEvent::ReasoningStart { id } => (
                 "thinking_start",
-                ordered_data([("type", serde_json::json!("thinking_start"))]),
+                ordered_data([
+                    ("type", serde_json::json!("thinking_start")),
+                    ("block_id", serde_json::json!(id)),
+                ]),
             ),
-            ModelStreamEvent::ReasoningDelta { text, .. } => (
+            ModelStreamEvent::ReasoningDelta { id, text } => (
                 "thinking_delta",
                 ordered_data([
                     ("type", serde_json::json!("thinking_delta")),
                     ("text", serde_json::json!(text)),
+                    ("block_id", serde_json::json!(id)),
                 ]),
             ),
-            ModelStreamEvent::ReasoningEnd { .. } => (
+            ModelStreamEvent::ReasoningEnd { id, .. } => (
                 "thinking_end",
-                ordered_data([("type", serde_json::json!("thinking_end"))]),
+                ordered_data([
+                    ("type", serde_json::json!("thinking_end")),
+                    ("block_id", serde_json::json!(id)),
+                ]),
             ),
             ModelStreamEvent::ToolInputStart {
                 index,
@@ -495,12 +502,27 @@ mod tests {
                 r#"{"text":"hello"}"#,
             ),
             (
+                RunEvent::Model(ModelStreamEvent::ReasoningStart {
+                    id: "reasoning".into(),
+                }),
+                "thinking_start",
+                r#"{"type":"thinking_start","block_id":"reasoning"}"#,
+            ),
+            (
                 RunEvent::Model(ModelStreamEvent::ReasoningDelta {
                     id: "reasoning".into(),
                     text: "think".into(),
                 }),
                 "thinking_delta",
-                r#"{"type":"thinking_delta","text":"think"}"#,
+                r#"{"type":"thinking_delta","text":"think","block_id":"reasoning"}"#,
+            ),
+            (
+                RunEvent::Model(ModelStreamEvent::ReasoningEnd {
+                    id: "reasoning".into(),
+                    provider_metadata: Default::default(),
+                }),
+                "thinking_end",
+                r#"{"type":"thinking_end","block_id":"reasoning"}"#,
             ),
             (
                 RunEvent::Model(ModelStreamEvent::ToolInputDelta {
