@@ -38,7 +38,8 @@ pub(crate) struct IncomingCmd {
     pub(crate) provider: serde_json::Value,
     // set_approval_tier
     pub(crate) tier: String,
-    // set_session_name
+    // set_session_name / upload_init (display name) / download_prepare (the
+    // name the phone already shows, so the desktop needn't scan the session)
     pub(crate) name: String,
     pub(crate) transfer_name: String,
     // delete_session / set_session_pinned (thread-scoped, see ThreadRecord)

@@ -1013,11 +1013,15 @@ describe("download & preview cache", () => {
     const history: HistoryAttachment = { path: "/tmp/a.jpg", name: "a.jpg" };
     expect(await prepareDownload(client as unknown as RemoteClient, "s1", history)).toBe(info);
     expect(client.request).toHaveBeenCalledWith(
+      // The name travels with the request: the desktop would otherwise read the
+      // session's whole history to look the attachment up, per file open (and
+      // per inline image), to re-derive a string this phone already displays.
       expect.objectContaining({
         type: "download_prepare",
         sessionId: "s1",
         filePath: "/tmp/a.jpg",
         mode: "preview",
+        name: "a.jpg",
       }),
       "s1",
       10_000,

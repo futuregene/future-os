@@ -488,35 +488,63 @@ fn resolve_local_link(session_id: &str, requested_path: &str) -> Option<PathBuf>
     Path::new(&cwd).join(requested).canonicalize().ok()
 }
 
+/// The file a `download_prepare` request names, canonicalized. Only the path is
+/// needed to *find* it: whether it happens to be a session attachment changes
+/// the display name at most, and `ensure_path_allowed` is the boundary either
+/// way.
+fn download_source(session_id: &str, requested_path: &str) -> Result<PathBuf, crate::AppError> {
+    resolve_local_link(session_id, requested_path).ok_or_else(|| {
+        crate::AppError::Message(
+            "The requested file is not an attachment in this session.".to_string(),
+        )
+    })
+}
+
 #[cfg(test)]
 pub async fn prepare_download(
     session_id: &str,
     requested_path: &str,
 ) -> Result<DownloadInfo, crate::AppError> {
-    prepare_download_variant(session_id, requested_path, "preview").await
+    prepare_download_variant(session_id, requested_path, "preview", None).await
 }
 
+/// Prepare a file for a paired phone to download.
+///
+/// `requested_name` is the name the client is already displaying — the phone
+/// reads it from the message metadata it rendered. When it is present the
+/// session is never consulted: doing so meant fetching *every entry of the
+/// session* (250 per page, megabytes of JSON for a long conversation) just to
+/// re-learn a string the caller had sent, on every file open, and once per
+/// inline image in a Markdown preview. Older clients send only a path, so the
+/// lookup remains as their fallback.
 pub(crate) async fn prepare_download_variant(
     session_id: &str,
     requested_path: &str,
     requested_variant: &str,
+    requested_name: Option<&str>,
 ) -> Result<DownloadInfo, crate::AppError> {
     prune_expired();
-    let entries = crate::agent_bridge::get_session_entries(session_id.to_string()).await?;
-    let (source, display_name) = match session_attachment_name(&entries, requested_path) {
-        Some(name) => (Path::new(requested_path).canonicalize()?, name),
-        // Not a session attachment: treat the request as a markdown local-file
-        // link — absolute targets are used as-is, relative ones resolve against
-        // the session's working directory. A paired phone is a trusted device
-        // (it can already read any file via the agent), matching the desktop
-        // UI, which opens model-written links against the local disk.
+    let (source, display_name) = match requested_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => (
+            download_source(session_id, requested_path)?,
+            name.to_string(),
+        ),
         None => {
-            let source = resolve_local_link(session_id, requested_path).ok_or_else(|| {
-                crate::AppError::Message(
-                    "The requested file is not an attachment in this session.".to_string(),
-                )
-            })?;
-            (source, requested_path.to_string())
+            let entries = crate::agent_bridge::get_session_entries(session_id.to_string()).await?;
+            match session_attachment_name(&entries, requested_path) {
+                Some(name) => (Path::new(requested_path).canonicalize()?, name),
+                // Not a session attachment: treat the request as a markdown
+                // local-file link. A paired phone is a trusted device (it can
+                // already read any file via the agent), matching the desktop
+                // UI, which opens model-written links against the local disk.
+                None => (
+                    download_source(session_id, requested_path)?,
+                    requested_path.to_string(),
+                ),
+            }
         }
     };
     // Markdown links are agent-produced input. Keep the remote-download path
@@ -1873,12 +1901,53 @@ mod flow_tests {
             &session,
             json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
         );
-        let original = prepare_download_variant(&session, &notes.to_string_lossy(), "original")
-            .await
-            .unwrap();
+        let original =
+            prepare_download_variant(&session, &notes.to_string_lossy(), "original", None)
+                .await
+                .unwrap();
         assert_eq!(original.preview_kind, "file");
         assert_eq!(original.variant, "original");
         cancel_download(&original.transfer_id);
+
+        // A named request must not read the session at all: the phone sends the
+        // name it is displaying, so looking it up would mean fetching the whole
+        // conversation (megabytes of JSON, once per file open and once per
+        // inline Markdown image) to re-derive a string the caller already knows.
+        agent.set_session_entries(
+            &session,
+            json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"Session name.txt"}]}}]}),
+        );
+        // Older clients send only a path: the session's own name is kept.
+        let unnamed = prepare_download(&session, &notes.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(unnamed.name, "Session name.txt");
+        assert!(agent.served("get_session_entries", &session));
+        cancel_download(&unnamed.transfer_id);
+
+        // A named request answers with the client's name and asks nobody.
+        agent.clear_requests();
+        let named = prepare_download_variant(
+            &session,
+            &notes.to_string_lossy(),
+            "preview",
+            Some("Pretty notes.txt"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(named.name, "Pretty notes.txt");
+        assert_eq!(named.preview_kind, "text");
+        assert!(!agent.served("get_session_entries", &session));
+        cancel_download(&named.transfer_id);
+
+        // A blank name carries no information, so it takes the lookup path.
+        let blank =
+            prepare_download_variant(&session, &notes.to_string_lossy(), "preview", Some("  "))
+                .await
+                .unwrap();
+        assert_eq!(blank.name, "Session name.txt");
+        assert!(agent.served("get_session_entries", &session));
+        cancel_download(&blank.transfer_id);
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -2333,7 +2402,7 @@ mod flow_tests {
             &session,
             json!({"entries":[{"metadata":{"attachments":[{"path": weird.to_string_lossy(),"name":"archive.zzz"}]}}]}),
         );
-        let error = prepare_download_variant(&session, &weird.to_string_lossy(), "preview")
+        let error = prepare_download_variant(&session, &weird.to_string_lossy(), "preview", None)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("not available on mobile"));
@@ -2345,7 +2414,7 @@ mod flow_tests {
             &session,
             json!({"entries":[{"metadata":{"attachments":[{"path": notes.to_string_lossy(),"name":"notes.txt"}]}}]}),
         );
-        let error = prepare_download_variant(&session, &notes.to_string_lossy(), "weird")
+        let error = prepare_download_variant(&session, &notes.to_string_lossy(), "weird", None)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("Unsupported download variant"));

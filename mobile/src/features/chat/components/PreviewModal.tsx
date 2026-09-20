@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Download, Ellipsis, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
+  FlatList,
   Modal,
   Platform,
   Pressable,
@@ -13,7 +14,8 @@ import {
 import type { TFunction } from "i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CodeTokens } from "../../../components/CodeTokens";
-import { codeLanguageForFile, highlightCode } from "../../../components/codeHighlight";
+import { codePreviewRows, codeRowText } from "../../../components/codePreviewRows";
+import { codeLanguageForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
@@ -54,6 +56,15 @@ export function PreviewModal({
     () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
     [language, previewText],
   );
+  // The body is paged into bounded chunks whether or not there is a grammar.
+  // A single `<Text>` holding the whole file is the one thing that cannot scale
+  // here: the route serves up to 2 MiB, and highlighting can turn a 30 KB file
+  // into thousands of nested spans. Native text layout pays for every mounted
+  // span, so the document opens as a virtualized list of chunks — the same
+  // bounding the chat's code blocks already use (`codePreviewRows`), just
+  // without their collapse, since a preview is meant to be read in full.
+  const rows = useMemo(() => codePreviewRows(previewText ?? ""), [previewText]);
+  const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
   // Do not carry an expanded menu into a new preview or an active download.
   if (menuFor && (menuFor !== preview || activeDownload !== null)) setMenuFor(null);
   const menuOpen = menuFor !== null && menuFor === preview && activeDownload === null;
@@ -130,14 +141,22 @@ export function PreviewModal({
                 truncatedMessage={t("attachment.jsonTruncated")}
               />
             ) : (
-              <ScrollView contentContainerStyle={styles.previewMarkdown}>
-                {!!preview?.truncated && (
-                  <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+              <FlatList
+                contentContainerStyle={styles.previewMarkdown}
+                data={rows}
+                initialNumToRender={12}
+                keyExtractor={(_row, index) => String(index)}
+                ListHeaderComponent={preview?.truncated
+                  ? <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+                  : null}
+                maxToRenderPerBatch={12}
+                renderItem={({ item, index }) => (
+                  <Text selectable style={language ? styles.previewCode : styles.previewText}>
+                    <CodeTokens fallback={codeRowText(item.text)} tokens={rowTokens[index] ?? null} />
+                  </Text>
                 )}
-                <Text selectable style={language ? styles.previewCode : styles.previewText}>
-                  <CodeTokens fallback={preview?.text ?? ""} tokens={tokens} />
-                </Text>
-              </ScrollView>
+                windowSize={5}
+              />
             )}
           </View>
           {menuOpen && (

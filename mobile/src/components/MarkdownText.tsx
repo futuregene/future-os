@@ -13,7 +13,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
 import { CodeTokens } from "./CodeTokens";
-import { codePreviewRows } from "./codePreviewRows";
+import { codePreviewRows, codeRowText } from "./codePreviewRows";
 import { codeTokenRows, highlightCode } from "./codeHighlight";
 import { markdownTableWidths } from "./markdownTableWidths";
 import type { StyleProp, TextStyle } from "react-native";
@@ -183,7 +183,7 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
         <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
           ellipsizeMode={collapsed ? "tail" : undefined}>
           {row.continuation ? "↪ " : ""}
-          <CodeTokens fallback={row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text} tokens={rowTokens[index] ?? null} />
+          <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
         </Text>
       )) : (
         <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>

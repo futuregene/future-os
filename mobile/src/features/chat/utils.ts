@@ -27,7 +27,14 @@ export interface DownloadHandle {
   visible: boolean;
   controller: AbortController;
   handoffPending: boolean;
+  /** Pending "this is taking a while" reveal of the progress dialog. */
+  revealTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** How long a transfer may stay invisible before the progress dialog appears.
+ * Long enough that a cache hit (no dialog at all) stays flicker-free, short
+ * enough that a slow desktop is not a dead screen. */
+export const PREPARE_REVEAL_DELAY_MS = 400;
 
 export type FileOperation = "open" | "save" | "share";
 
