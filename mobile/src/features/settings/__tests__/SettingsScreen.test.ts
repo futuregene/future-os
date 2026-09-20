@@ -8,6 +8,8 @@ import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../re
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
+/** UI language the mocked `useTranslation` reports; flipped by language tests. */
+let mockLanguage = "en";
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
   desktops: [
@@ -34,7 +36,7 @@ jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => moc
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { language: "en" } }) }));
+jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
 let tree: ReactTestRenderer;
 let providers: ProvidersView;
@@ -59,6 +61,7 @@ beforeEach(async () => {
   jest.clearAllMocks();
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: ["one/same", "other/hidden"] };
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
+  mockLanguage = "en";
   mockRemote.desktopOnline = true;
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
   mockRemote.desktopSettingsRevision = 0;
@@ -185,6 +188,30 @@ test("skill operations target desktop and removal needs confirmation", async () 
   await act(async () => button("desktopSettings.available").props.onPress());
   await act(async () => button("desktopSettings.install").props.onPress());
   expect(mockRemote.installSkill).toHaveBeenCalledWith("new", "1.0");
+});
+
+test("skill text follows the system language, borrowing the catalogue's translation", async () => {
+  // Installed skills come from SKILL.md and usually ship English text only, so
+  // the zh row falls back to the catalogue's pair for the same id; a skill that
+  // carries its own zh text (or has no catalogue entry) keeps what it has.
+  installed = [
+    { id: "future-image", name: "future-image", description: "Generate and edit images.", version: "1.2.0" },
+    { id: "side-loaded", name: "side-loaded", description: "Local skill.", descriptionZh: "本地技能", version: null },
+  ];
+  mockRemote.listAvailableSkills.mockImplementation(async () => [
+    { id: "future-image", name: "future-image", description: "Generate and edit images.", nameZh: "图像生成与编辑", descriptionZh: "生成、编辑与分析图像", latestVersion: "1.2.0" },
+  ]);
+  const text = () => tree.root.findAllByType(Text).map(node => node.props.children);
+  mockLanguage = "zh";
+  await act(async () => link("desktopSettings.skills").props.onPress());
+  expect(text()).toEqual(expect.arrayContaining(["图像生成与编辑", "生成、编辑与分析图像", "side-loaded", "本地技能"]));
+  expect(text()).not.toContain("Generate and edit images.");
+  // The page stays open, so a re-render is enough to read the new language.
+  mockLanguage = "en";
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(text()).toEqual(expect.arrayContaining(["future-image", "Generate and edit images.", "Local skill."]));
+  expect(text()).not.toContain("生成、编辑与分析图像");
+  expect(text()).not.toContain("本地技能");
 });
 
 test("failed reads leave mutations disabled instead of inventing mobile defaults", async () => {
