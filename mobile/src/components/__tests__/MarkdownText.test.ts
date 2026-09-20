@@ -1,4 +1,4 @@
-import type { ReactTestRenderer } from "react-test-renderer";
+import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
@@ -12,6 +12,20 @@ import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+
+/** Everything a code row paints, in order: colored token spans interleave with
+ * the raw strings of the unchanged tokens. */
+function paintedText(node: ReactTestInstance | string): string {
+  return typeof node === "string"
+    ? node
+    : node.children.map(child => paintedText(child)).join("");
+}
+
+/** A virtual row's source, without the continuation marker the row prepends. */
+function rowSource(node: ReactTestInstance): string {
+  const text = paintedText(node);
+  return text.startsWith("↪ ") ? text.slice(2) : text;
+}
 
 describe("MarkdownText layout and fidelity", () => {
   let renderer: ReactTestRenderer;
@@ -62,7 +76,7 @@ describe("MarkdownText layout and fidelity", () => {
     const root = render(`\`\`\`ts\n${code}\n\`\`\``);
     const rows = () => root.findAllByType(Text).filter(node => node.props.selectable);
     expect(rows()).toHaveLength(1);
-    const head = rows()[0]!.props.children[1] as string;
+    const head = rowSource(rows()[0]!);
     expect(rows()[0]!.props).toMatchObject({ numberOfLines: 16, ellipsizeMode: "tail" });
     expect(head.length).toBeLessThanOrEqual(2048);
     expect(code.startsWith(head)).toBe(true);
@@ -72,7 +86,7 @@ describe("MarkdownText layout and fidelity", () => {
     expect(expanded.length).toBeGreaterThan(40);
     expect(expanded.every(node => node.props.numberOfLines === undefined && node.props.ellipsizeMode === undefined)).toBe(true);
     // Every chunk is painted: the tail is reachable by scrolling the message, not an inner viewport.
-    const painted = expanded.map(node => node.props.children[1] as string).join("");
+    const painted = expanded.map(rowSource).join("");
     expect(painted.length).toBeGreaterThan(code.length - 500);
     expect(painted.endsWith(code.slice(-200))).toBe(true);
     expect(root.findAll(node => node.props.accessibilityLabel === "chat.collapseCode" && typeof node.props.onPress === "function").length).toBe(1);
