@@ -619,6 +619,11 @@ export async function prepareDownload(
     sessionId,
     filePath: attachment.path,
     mode: variant,
+    // The name this phone is already displaying (from the message metadata).
+    // Without it the desktop has to read the session's whole history to look
+    // the attachment up — megabytes of JSON per open, and once per inline
+    // image in a Markdown preview — to re-derive a string we are sending here.
+    name: attachment.name,
   };
   let attempt = 0;
   let response: RpcResponse<DownloadInfo> | null = null;

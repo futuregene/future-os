@@ -325,6 +325,13 @@ impl MockAgent {
             .iter()
             .any(|(c, s)| c == command && s == session_id)
     }
+
+    /// Forget the request log, so a test can assert what the code under test
+    /// asks for *from here on*. The log is process-global and the mock is
+    /// shared, so a "was this command served" assertion needs a fresh start.
+    pub(crate) fn clear_requests(&self) {
+        self.state.lock().unwrap().requests.clear();
+    }
 }
 
 struct AgentService {
