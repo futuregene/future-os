@@ -785,7 +785,7 @@ export class SyncEngine {
       }
       const event = op.event;
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
-      const verdict = nextEvent(lane.cursor, event.runId, event.idx);
+      const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));

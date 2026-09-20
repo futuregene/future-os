@@ -1,8 +1,10 @@
 import type { Msg, NatsConnection } from "@nats-io/nats-core";
 import { wsconnect } from "@nats-io/nats-core";
+import { gzipSync } from "fflate";
 import { RemoteClient, type RemoteClientCallbacks } from "../client";
 import { RemoteApiError } from "../connectionState";
 import { ensureFreshCredentials } from "../pairing";
+import { decodeRemoteJson } from "../remoteJson";
 import type { RemoteCredentials } from "../types";
 
 jest.mock("@nats-io/nats-core", () => ({
@@ -501,4 +503,42 @@ describe("RemoteClient connection handoff", () => {
       expect(request).toHaveBeenCalledTimes(1);
     },
   );
+
+  // The desktop only gzips replies to a connection that declares it, and only
+  // merges a run's fragments for a connection that can read a coalesced index
+  // range. Dropping a capability here silently loses the optimisation; adding
+  // one this client cannot decode would break every reply it receives.
+  test("declares exactly the capabilities this client can decode", async () => {
+    const open = socket();
+    // A fresh client: the shared one has `activateSecureChannel` stubbed out by
+    // the suite setup, and this test needs the real declaration.
+    const declaring = new RemoteClient(credentials, callbacks);
+    const calls: { command: unknown; sessionId?: string }[] = [];
+    jest
+      .spyOn(declaring as never, "requestWithConnection" as never)
+      .mockImplementation((async (
+        _connection: unknown,
+        command: unknown,
+        sessionId?: string,
+      ) => {
+        calls.push({ command, sessionId });
+        return { success: true, data: undefined };
+      }) as never);
+    await (declaring as unknown as {
+      activateSecureChannel: (connection: unknown) => Promise<void>;
+    }).activateSecureChannel(open.connection);
+    expect(calls).toHaveLength(1);
+    const declaration = calls[0];
+    expect(declaration).toBeDefined();
+    expect(declaration?.sessionId).toBe("handshake");
+    expect(declaration?.command).toEqual({
+      type: "secure_ready",
+      features: ["event_coalescing_v1", "reply_gzip_v1"],
+    });
+    // `reply_gzip_v1` is only truthful while the decoder sniffs the gzip magic.
+    // If this ever stops holding, the declaration above must be removed too.
+    const compressed = gzipSync(new TextEncoder().encode(JSON.stringify({ ok: true })));
+    expect(compressed[0]).toBe(0x1f);
+    expect(decodeRemoteJson<{ ok: boolean }>(compressed)).toEqual({ ok: true });
+  });
 });

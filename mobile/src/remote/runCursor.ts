@@ -48,28 +48,44 @@ export function newCursor(): RunCursor {
  *   A first event with idx > 0 is accepted for live rendering but recorded
  *   prefix-incomplete; the caller must reconcile the prefix.
  * - idx > high-water + 1 → "gap" (fromIdx = current high-water).
+ *
+ * `coalescedCount` marks an event the desktop merged from several source
+ * events: its `idx` is the END of that range and its content covers all of it,
+ * so the jump is declared rather than lost and is applied without a gap.
  */
 export function nextEvent(
   cursor: RunCursor,
   runId: string | undefined | null,
   idx: number | undefined | null,
+  coalescedCount?: number,
 ): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
+  const covered = coveredFrom(idx, coalescedCount);
   const entry = cursor.get(runId);
   if (entry === undefined) {
     // First event for this run — accept and start tracking. A run that begins
     // above idx 0 has an unknown prefix (H3): the caller reconciles from -1.
-    advanceCursor(cursor, runId, idx, idx === 0);
+    advanceCursor(cursor, runId, idx, covered.start === 0);
     return { kind: "apply", idx };
   }
   if (idx <= entry.highWater) return { kind: "dup" };
-  if (idx === entry.highWater + 1) {
+  // A merged range still has to be contiguous with what we already applied;
+  // anything below the high-water was already seen, so only the range matters.
+  if (covered.start <= entry.highWater + 1) {
     cursor.set(runId, { ...entry, highWater: idx });
     return { kind: "apply", idx };
   }
   // idx > high-water + 1 → gap
   return { kind: "gap", fromIdx: entry.highWater };
+}
+
+/** The source-index range an event covers. A plain event covers exactly `idx`. */
+function coveredFrom(idx: number, coalescedCount?: number): { start: number } {
+  const count = Number.isSafeInteger(coalescedCount) && (coalescedCount as number) > 0
+    ? Math.min(coalescedCount as number, idx + 1)
+    : 1;
+  return { start: idx - count + 1 };
 }
 
 /**

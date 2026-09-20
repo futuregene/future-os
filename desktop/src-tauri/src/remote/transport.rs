@@ -26,8 +26,18 @@ pub(super) async fn build_transport(
 ) -> Result<TransportTasks, crate::AppError> {
     let mut candidate_tasks = lifecycle::CandidateTasks::default();
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+    let coalesce = SUPERVISOR.coalesce_events(pair_id);
+    // A live-lane capability belongs to the connection that declared it. Reset
+    // it here so a client that never declares it — an older build on the same
+    // pairing — is served the legacy lane instead of inheriting the previous
+    // client's request.
+    coalesce.store(false, Ordering::Release);
+    // Same rule for the reply encoding: an older client has no gzip magic-byte
+    // detection and would fail to parse a compressed reply, so the permission
+    // must not outlive the connection that asked for it.
+    handshake.gzip_replies.store(false, Ordering::Release);
     let event_task =
-        spawn_secure_event_publisher(client.clone(), event_rx, handshake.secure.clone());
+        spawn_secure_event_publisher(client.clone(), event_rx, handshake.secure.clone(), coalesce);
     candidate_tasks.track(&event_task);
     let (command_ready_tx, command_ready_rx) = tokio::sync::oneshot::channel();
     let cmd_task = tokio::spawn(commands::command_loop_with_ready(

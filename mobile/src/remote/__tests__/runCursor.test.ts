@@ -116,4 +116,54 @@ describe("runCursor", () => {
     expect(cursorHighWater(cursor, undefined)).toBe(-1);
     expect(isPrefixComplete(cursor, undefined)).toBe(true);
   });
+
+  // The desktop may merge a run's text fragments into one event
+  // (`event_coalescing_v1`). That event carries the newest index and declares
+  // how many sources it stands for, so the jump is covered content rather than
+  // a gap — treating it as a gap would send the client into a backfill loop
+  // that re-downloads exactly what was just merged.
+  describe("coalesced ranges", () => {
+    test("a declared range is applied, not treated as a gap", () => {
+      const cursor = newCursor();
+      for (const idx of [0, 1, 2]) nextEvent(cursor, "run1", idx);
+      // Covers 3..5 exactly where the raw fragments would have landed.
+      const verdict = nextEvent(cursor, "run1", 5, 3);
+      expect(verdict.kind).toBe("apply");
+      expect(cursorHighWater(cursor, "run1")).toBe(5);
+    });
+
+    test("an undeclared jump is still a gap", () => {
+      const cursor = newCursor();
+      nextEvent(cursor, "run1", 0);
+      expect(nextEvent(cursor, "run1", 5).kind).toBe("gap");
+      // And a range that starts beyond the high-water is a gap too.
+      expect(nextEvent(cursor, "run1", 9, 2).kind).toBe("gap");
+    });
+
+    test("a range overlapping what we applied stays contiguous", () => {
+      const cursor = newCursor();
+      for (const idx of [0, 1, 2, 3]) nextEvent(cursor, "run1", idx);
+      // Covers 2..5: indices 2 and 3 were already applied, so the range is
+      // contiguous with the high-water and must not read as a gap.
+      expect(nextEvent(cursor, "run1", 5, 4).kind).toBe("apply");
+      expect(cursorHighWater(cursor, "run1")).toBe(5);
+      // A range that leaves a hole is still a gap.
+      expect(nextEvent(cursor, "run1", 12, 3).kind).toBe("gap");
+    });
+
+    test("a nonsensical count cannot invent a range past the run start", () => {
+      const cursor = newCursor();
+      nextEvent(cursor, "run1", 0);
+      // count larger than idx+1 clamps to covering from index 0.
+      expect(nextEvent(cursor, "run1", 4, 99).kind).toBe("apply");
+      const fresh = newCursor();
+      // A first coalesced event still records the run as prefix-incomplete
+      // unless it begins at zero.
+      nextEvent(fresh, "run2", 4, 2);
+      expect(fresh.get("run2")?.prefixComplete).toBe(false);
+      const fromStart = newCursor();
+      nextEvent(fromStart, "run3", 3, 4);
+      expect(fromStart.get("run3")).toEqual({ highWater: 3, prefixComplete: true });
+    });
+  });
 });
