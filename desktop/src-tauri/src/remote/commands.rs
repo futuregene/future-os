@@ -735,7 +735,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -1888,7 +1888,8 @@ mod bridge_tests {
                 "workspace_pinning_v1",
                 "desktop_settings_v1",
                 "skill_management_v1",
-                "compaction_v1"
+                "compaction_v1",
+                "provider_management_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -2959,6 +2960,119 @@ mod bridge_tests {
             .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
             .await;
         assert_eq!(reply["data"]["removed"], false);
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn provider_management_reuses_desktop_validation_and_agent_writes() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-provider-management").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+
+        // The phone reads the same snapshot the Settings dialog does, with no
+        // API key material in it.
+        let reply = bridge.call(json!({ "type": "list_providers" })).await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert_eq!(reply["data"]["builtin"][0]["id"], "future");
+        assert_eq!(reply["data"]["builtin"][0]["hasApiKey"], false);
+        assert!(reply["data"]["custom"].is_array());
+        assert!(!serde_json::to_string(&reply["data"])
+            .unwrap()
+            .to_lowercase()
+            .contains("\"key\""));
+
+        // The account provider's credential is not writable from a phone.
+        let reply = bridge
+            .call(json!({ "type": "update_builtin_provider", "provider": { "id": "future", "apiKey": "sk-x", "updateApiKey": true } }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        assert!(!agent.served("set_auth", ""));
+
+        // An unknown built-in is rejected before the agent is called.
+        let reply = bridge
+            .call(json!({ "type": "update_builtin_provider", "provider": { "id": "nope", "baseUrl": "https://x.example.com" } }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        let reply = bridge
+            .call(json!({ "type": "update_builtin_provider", "provider": { "id": "azure-openai-responses", "baseUrl": "not a url" } }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        // Neither an empty provider id nor a payload that is not an object may
+        // reach the agent.
+        for invalid in [json!({}), json!([]), Value::Null] {
+            let reply = bridge
+                .call(json!({ "type": "update_builtin_provider", "provider": invalid }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+        }
+        assert!(!agent.served("upsert_provider", ""));
+
+        // An accepted built-in write reaches the agent as its own config write,
+        // with the key and Base URL applied in one atomic upsert.
+        let reply = bridge
+            .call(json!({
+                "type": "update_builtin_provider",
+                "provider": { "id": "deepseek", "apiKey": "sk-live", "updateApiKey": true }
+            }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert!(agent.served("upsert_provider", ""));
+
+        // A malformed custom provider payload never reaches the agent…
+        for invalid in [
+            json!({ "id": "acme", "name": "Acme", "api": "openai-completions", "baseUrl": "", "create": true }),
+            json!({ "id": "Acme!", "baseUrl": "https://api.example.com", "create": true }),
+            json!({ "id": "acme", "baseUrl": "https://api.example.com", "models": [{ "id": "m", "contextWindow": 10, "maxTokens": 99 }] }),
+            json!({ "id": "acme", "baseUrl": "https://api.example.com", "models": [{ "id": "m", "inputCost": -1, "contextWindow": 100, "maxTokens": 10 }] }),
+            json!([]),
+        ] {
+            let reply = bridge
+                .call(json!({ "type": "upsert_custom_provider", "provider": invalid }))
+                .await;
+            assert_eq!(reply["success"], false, "{reply}");
+        }
+
+        // …while a valid one is applied through the shared upsert path.
+        let reply = bridge
+            .call(json!({
+                "type": "upsert_custom_provider",
+                "provider": {
+                    "id": "acme",
+                    "name": "Acme",
+                    "api": "openai-completions",
+                    "baseUrl": "https://api.example.com/v1",
+                    "apiKey": "sk-acme",
+                    "create": true,
+                    "models": [{
+                        "id": "acme-large",
+                        "name": "Acme Large",
+                        "supportsImages": true,
+                        "reasoning": true,
+                        "contextWindow": 128000,
+                        "maxTokens": 16384,
+                        "inputCost": 1.5,
+                        "outputCost": 6,
+                        "cacheReadCost": 0.15,
+                        "cacheWriteCost": 0
+                    }]
+                }
+            }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert!(agent.served("upsert_provider", ""));
+
+        // Built-in providers stay undeletable from a phone, while a custom one
+        // is removed through the shared delete path.
+        let reply = bridge
+            .call(json!({ "type": "delete_custom_provider", "providerId": "deepseek" }))
+            .await;
+        assert_eq!(reply["success"], false, "{reply}");
+        let reply = bridge
+            .call(json!({ "type": "delete_custom_provider", "providerId": "acme" }))
+            .await;
+        assert_eq!(reply["success"], true, "{reply}");
+        assert!(agent.served("delete_provider", ""));
         bridge.stop().await;
     }
 

@@ -39,6 +39,7 @@ import {
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
+  demoProviders,
   demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
@@ -80,6 +81,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
+  const [providers, setProviders] = useState(demoProviders);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
@@ -194,6 +196,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "skills_v1",
       "desktop_settings_v1",
       "skill_management_v1",
+      "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
     ]),
@@ -228,6 +231,32 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       return { ...desktopSettings, ...patch };
     },
     listSettingsModels: async (): Promise<RemoteModel[]> => demoModels,
+    // Providers and models, as the desktop reports them. Mutations are applied
+    // locally so the harness shows the same list a real write would produce.
+    listProviders: async () => providers,
+    updateBuiltinProvider: async (provider: any) => {
+      setProviders(current => ({
+        ...current,
+        builtin: current.builtin.map(item => item.id === provider.id
+          ? { ...item, hasApiKey: provider.updateApiKey ? !!provider.apiKey : item.hasApiKey, baseUrl: provider.baseUrl ?? item.baseUrl }
+          : item),
+      }));
+      return providers;
+    },
+    upsertCustomProvider: async (provider: any) => {
+      const entry = { id: provider.id, name: provider.name || provider.id, api: provider.api, baseUrl: provider.baseUrl, hasApiKey: providers.custom.find(item => item.id === provider.id)?.hasApiKey ?? false, models: provider.models };
+      setProviders(current => ({
+        ...current,
+        custom: current.custom.some(item => item.id === provider.id)
+          ? current.custom.map(item => (item.id === provider.id ? entry : item))
+          : [...current.custom, entry],
+      }));
+      return providers;
+    },
+    deleteCustomProvider: async (providerId: string) => {
+      setProviders(current => ({ ...current, custom: current.custom.filter(item => item.id !== providerId) }));
+      return providers;
+    },
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,
