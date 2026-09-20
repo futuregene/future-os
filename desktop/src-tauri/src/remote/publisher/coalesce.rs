@@ -41,9 +41,6 @@ const FRAGMENT_TYPES: &[&str] = &[
 /// How long a fragment waits for company before being published alone. A
 /// display frame is ~16ms and the client's own commit coalescing is ~80ms, so
 /// this stays below what a reader can perceive while still merging the burst.
-/// How long a fragment waits for company before being published alone. A
-/// display frame is ~16ms and the client's own commit coalescing is ~80ms, so
-/// this stays below what a reader can perceive while still merging the burst.
 /// One value for every build: a test-only window would make the real-traffic
 /// measurement describe something other than production.
 pub(super) const COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
@@ -66,6 +63,10 @@ pub(super) struct Coalescer {
 }
 
 impl Coalescer {
+    /// Test-only override of the window; production always uses
+    /// `COALESCE_WINDOW`. The real-journal measurement picks this up by running
+    /// in the crate's test binary, so it needs no non-test caller.
+    #[cfg(test)]
     pub(super) fn with_window(window: std::time::Duration) -> Self {
         Self {
             pending: None,
