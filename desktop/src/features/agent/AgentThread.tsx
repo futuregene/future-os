@@ -31,6 +31,7 @@ import {
   previousUserForRun,
 } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
+import { persistedUserMessageIndex } from "./forkPoint";
 import { MessageList } from "./MessageList";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
@@ -289,9 +290,10 @@ export function AgentThread({
         // Fork explicitly needs the full history. Never pass a page-local ordinal
         // as the global fork point (repeated prompts make text matching unsafe).
         const allEntries = await getSessionEntries(thread.id);
-        const userMessageIndex = allEntries.entries
-          .filter(entry => entry.role === "user")
-          .findIndex(entry => `m_${entry.id}` === userMessage.id);
+        const userMessageIndex = persistedUserMessageIndex(
+          allEntries.entries,
+          userMessage,
+        );
         if (userMessageIndex < 0)
           throw new Error("The selected message is not yet persisted.");
         const newThreadId = await forkThread(
