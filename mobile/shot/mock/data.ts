@@ -326,6 +326,33 @@ export const demoInstalledSkills = [
 /** Skills the agent reports as loaded (the composer's "/" picker source). */
 export const demoSkills = demoInstalledSkills;
 
+/**
+ * Provider configuration as the desktop reports it: built-in catalog providers
+ * plus one custom provider with its models. `hasApiKey` is only ever a boolean
+ * — the phone never receives key material.
+ */
+export const demoProviders = {
+  builtin: [
+    { id: "future", name: "Future", baseUrl: "https://future-os.cn/api/v1", hasApiKey: true, modelCount: 9, requiresBaseUrl: false },
+    { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", hasApiKey: true, modelCount: 3, requiresBaseUrl: false },
+    { id: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", hasApiKey: false, modelCount: 4, requiresBaseUrl: false },
+    { id: "azure-openai-responses", name: "Azure OpenAI Responses", baseUrl: "https://YOUR_RESOURCE.openai.azure.com/openai", hasApiKey: false, modelCount: 1, requiresBaseUrl: true },
+  ],
+  custom: [
+    {
+      id: "acme",
+      name: "Acme Gateway",
+      api: "openai-completions",
+      baseUrl: "https://gateway.acme.example.com/v1",
+      hasApiKey: true,
+      models: [
+        { id: "acme-large", name: "Acme Large", supportsImages: true, reasoning: true, contextWindow: 128000, maxTokens: 16384, inputCost: 1.5, outputCost: 6, cacheReadCost: 0.15, cacheWriteCost: 0 },
+        { id: "acme-mini", name: "Acme Mini", supportsImages: false, reasoning: false, contextWindow: 32000, maxTokens: 4096, inputCost: 0, outputCost: 0, cacheReadCost: 0, cacheWriteCost: 0 },
+      ],
+    },
+  ],
+};
+
 /** The platform catalogue (the skills page's "available" tab). */
 export const demoAvailableSkills = [
   { id: "future-slides", name: "Slides", nameZh: "演示文稿", description: "Turn a report into a deck of slides.", descriptionZh: "把报告做成一整套幻灯片", latestVersion: "1.4.0" },

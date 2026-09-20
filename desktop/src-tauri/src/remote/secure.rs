@@ -355,7 +355,7 @@ fn confirmation(
     channel: &SharedChannel,
 ) -> Result<String, crate::AppError> {
     let body = json!({ "confirmed": true, "pairId": pair_id, "bridgeInstanceId": bridge,
-        "features": ["e2ee_v2", "file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1"],
+        "features": ["e2ee_v2", "file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1"],
         "presence": super::build_presence_payload(pair_id, bridge) });
     let payload = serde_json::to_vec(&body).map_err(error)?;
     Ok(URL_SAFE_NO_PAD.encode(

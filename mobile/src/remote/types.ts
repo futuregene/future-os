@@ -119,6 +119,77 @@ export interface DesktopSettings {
   hiddenModels: string[];
 }
 
+/**
+ * A catalog provider on the desktop. `hasApiKey` is all the phone ever learns
+ * about the credential: keys are write-only from here (set or cleared, never
+ * read back).
+ */
+export interface RemoteBuiltinProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  modelCount: number;
+  /** The catalog base URL is a placeholder; the user must supply their own. */
+  requiresBaseUrl: boolean;
+}
+
+/** One model of a custom provider. Absent fields mean the desktop default. */
+export interface RemoteProviderModel {
+  id: string;
+  name?: string;
+  supportsImages?: boolean;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  /** Per-1M-token prices; 0 means unpriced (adds nothing to the amount). */
+  inputCost?: number;
+  outputCost?: number;
+  cacheReadCost?: number;
+  cacheWriteCost?: number;
+}
+
+export interface RemoteCustomProvider {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  models: RemoteProviderModel[];
+}
+
+/** API shapes a custom provider may speak (mirrors the desktop's choices). */
+export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses", "anthropic"] as const;
+
+export interface ProvidersView {
+  builtin: RemoteBuiltinProvider[];
+  custom: RemoteCustomProvider[];
+}
+
+/** The write payload of one custom provider (mirrors UpsertCustomProviderInput). */
+export interface CustomProviderUpsert {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  /** Absent keeps the stored key; the desktop writes it only when non-empty. */
+  apiKey?: string | null;
+  models: RemoteProviderModel[];
+  create: boolean;
+}
+
+/**
+ * One atomic built-in provider write (mirrors UpdateBuiltinProviderInput):
+ * `updateApiKey` decides whether `apiKey` is applied at all, and a null/empty
+ * `apiKey` then clears the stored credential.
+ */
+export interface BuiltinProviderUpdate {
+  id: string;
+  baseUrl?: string;
+  apiKey?: string | null;
+  updateApiKey: boolean;
+}
+
 export interface InstalledSkill extends RemoteSkill {
   id: string;
   version?: string | null;
@@ -426,6 +497,8 @@ export interface RemoteCommand {
   level?: string;
   tier?: string;
   settings?: Partial<DesktopSettings>;
+  /** Provider configuration (see `list_providers` in the desktop bridge). */
+  provider?: CustomProviderUpsert | BuiltinProviderUpdate;
   skillId?: string;
   version?: string;
   name?: string;

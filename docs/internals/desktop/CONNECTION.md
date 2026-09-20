@@ -645,17 +645,17 @@ records to every interface for abstraction's sake.
 
 **Mobile settings manage the selected Desktop, not a second preference store.**
 The phone uses a full-screen, scrollable Settings page with separate Model
-visibility and Skill management subpages. The Current desktop section exposes
-`autoUpgradeSkills`, `autoTitleFirstTurn`, and `autoConnectRemote` (explicitly
-labelled **Connect to phone when desktop starts**). Model visibility edits the
-same Desktop `hiddenModels` list, using provider-qualified identifiers; the
-management catalogue includes hidden entries so they can be enabled again.
-The phone's language, update check and pairing management remain in a separate
-This phone section.
+visibility, Provider, and Skill management subpages. The Current desktop
+section exposes `autoUpgradeSkills`, `autoTitleFirstTurn`, and
+`autoConnectRemote` (explicitly labelled **Connect to phone when desktop
+starts**). Model visibility edits the same Desktop `hiddenModels` list, using
+provider-qualified identifiers; the management catalogue includes hidden
+entries so they can be enabled again. The phone's language, update check and
+pairing management remain in a separate This phone section.
 
-- Handshakes advertise `desktop_settings_v1` and `skill_management_v1`. Older
-  hosts leave these controls disabled with an upgrade hint; existing approval
-  mode controls keep their original protocol.
+- Handshakes advertise `desktop_settings_v1`, `skill_management_v1` and
+  `provider_management_v1`. Older hosts leave these controls disabled with an
+  upgrade hint; existing approval mode controls keep their original protocol.
 - Handshakes advertise `compaction_v1`, and the phone's `/` menu offers the
   same Compact context tool as the Desktop input box. `compact_context` is a
   session-scoped write: the host forwards the standalone `compact` RPC and
@@ -666,17 +666,28 @@ This phone section.
   above. Writes are partial, allowlisted, and committed by the existing Desktop
   settings store, never persisted or queued on the phone. `list_settings_models`
   reads the unfiltered Agent catalogue.
+- `list_providers`, `update_builtin_provider`, `upsert_custom_provider` and
+  `delete_custom_provider` are the Provider page: one Desktop write per
+  submission, through the same `agent_providers` paths the Desktop Settings
+  dialog uses, so identical validation and catalog-collision rules apply. A key
+  travels one way only — the view reports `hasApiKey`, never key material — and
+  the account provider (`future`) stays uneditable, built-in providers
+  undeletable, and a custom provider's id immutable after creation. Custom
+  providers carry their models (id, modalities, token limits, per-1M prices)
+  in the same payload, so a phone and a Desktop can never hold half of one
+  provider. `list_providers` participates in the oversized-read paging path.
 - `list_skills`, `list_available_skills`, `install_skill`, and `uninstall_skill`
   operate on Desktop/Agent skills. Desktop and phone install/remove calls share
   a serialized management path and refresh Agent discovery before completion.
   All-upgrade runs sequentially, stops on error or leaving the page, and reports
   that earlier items may already have completed. Removal requires confirmation.
-- Post-commit `app_settings_changed` and post-refresh `skills_changed`
-  invalidations reach the Desktop webview and the remote low-rate catalogue
-  event lane. Both views reread authoritative data; the phone also reloads on
-  opening/foreground/reconnect. Closed pages discard their temporary view state,
-  and connection identity fencing prevents late responses crossing desktops.
-  No offline writes or automatic mutation retries are introduced.
+- Post-commit `app_settings_changed`, post-refresh `skills_changed`, and
+  Agent-committed `provider_config_changed` invalidations reach the Desktop
+  webview and the remote low-rate catalogue event lane. Both views reread
+  authoritative data; the phone also reloads on opening/foreground/reconnect.
+  Closed pages discard their temporary view state, and connection identity
+  fencing prevents late responses crossing desktops. No offline writes or
+  automatic mutation retries are introduced.
 
 **Connection state and sync state are separate.** Internally at least
 distinguish pairing validity, relay reachability, peer authentication/liveness,

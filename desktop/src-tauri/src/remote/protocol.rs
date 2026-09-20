@@ -33,6 +33,9 @@ pub(crate) struct IncomingCmd {
     pub(crate) settings: serde_json::Value,
     pub(crate) skill_id: String,
     pub(crate) version: String,
+    // Provider configuration: one whole provider write (see `list_providers`
+    // in `remote_host::business`).
+    pub(crate) provider: serde_json::Value,
     // set_approval_tier
     pub(crate) tier: String,
     // set_session_name
@@ -94,6 +97,7 @@ impl Default for IncomingCmd {
             settings: serde_json::Value::Null,
             skill_id: String::new(),
             version: String::new(),
+            provider: serde_json::Value::Null,
             name: String::new(),
             transfer_name: String::new(),
             thread_id: String::new(),

@@ -147,6 +147,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
 
 /// A deliberately narrow write surface. A paired phone cannot change debug
 /// environment, billing, language, credentials, or arbitrary stored keys here.
+///
+/// Provider credentials are the one exception, and they live in their own
+/// module ([`super::providers`]) behind that module's own write-only contract
+/// (`hasApiKey` is the only key state a phone ever sees).
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SettingsPatch {

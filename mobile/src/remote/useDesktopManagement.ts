@@ -1,7 +1,16 @@
 import { useCallback, useMemo, type RefObject } from "react";
 import type { RemoteClient } from "./client";
 import { requestReadPage } from "./readPages";
-import type { AvailableSkill, DesktopSettings, InstalledSkill, ModelsData, RemoteCommand } from "./types";
+import type {
+  AvailableSkill,
+  BuiltinProviderUpdate,
+  CustomProviderUpsert,
+  DesktopSettings,
+  InstalledSkill,
+  ModelsData,
+  ProvidersView,
+  RemoteCommand,
+} from "./types";
 
 /** Commands act on one connected desktop. No local preference storage or offline
  * write queue; a result from a replaced connection is never applied to the UI. */
@@ -27,5 +36,14 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
     listAvailableSkills: async () => (await request<{ skills: AvailableSkill[] }>({ type: "list_available_skills" })).skills,
     installSkill: (skillId: string, version: string) => request<void>({ type: "install_skill", skillId, version }, true),
     uninstallSkill: async (skillId: string) => (await request<{ removed: boolean }>({ type: "uninstall_skill", skillId }, true)).removed,
+    listProviders: () => request<ProvidersView>({ type: "list_providers" }),
+    // One atomic built-in write: the key (set or cleared) and the Base URL
+    // override are applied together, exactly like the desktop dialog.
+    updateBuiltinProvider: (provider: BuiltinProviderUpdate) =>
+      request<ProvidersView>({ type: "update_builtin_provider", provider }, true),
+    upsertCustomProvider: (provider: CustomProviderUpsert) =>
+      request<ProvidersView>({ type: "upsert_custom_provider", provider }, true),
+    deleteCustomProvider: (providerId: string) =>
+      request<ProvidersView>({ type: "delete_custom_provider", providerId }, true),
   }), [request]);
 }

@@ -7,6 +7,7 @@ mod catalog;
 mod compaction;
 mod history;
 mod prompt;
+mod providers;
 mod settings;
 mod transfers;
 mod wire_limits;
@@ -53,6 +54,12 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         | "set_workspace_pinned"
         | "delete_workspace" => {
             catalog::execute(&cmd, sink).await;
+        }
+        "list_providers"
+        | "update_builtin_provider"
+        | "upsert_custom_provider"
+        | "delete_custom_provider" => {
+            providers::execute(&cmd, sink).await;
         }
         other => {
             reply(
