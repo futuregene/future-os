@@ -270,10 +270,13 @@ pub(super) fn fork_command(
     entry_id: String,
     parent_session: String,
     creator_id: String,
+    request_id: String,
 ) -> RpcCommand {
     RpcCommand {
         entry_id,
         parent_session,
+        mode: "through_turn".to_string(),
+        client_request_id: request_id,
         // Declare the GUI as the forking client: the agent propagates this to
         // the forked session's provenance, so the session_created push skips
         // it (the GUI creates its own thread row for the fork).
@@ -715,11 +718,14 @@ mod tests {
             "entry-1".to_string(),
             "parent".to_string(),
             "desktop-test".to_string(),
+            "fork-request".to_string(),
         );
         assert_eq!(cmd.r#type, "fork");
         assert_eq!(cmd.entry_id, "entry-1");
         assert_eq!(cmd.parent_session, "parent");
         assert_eq!(cmd.creator_id, "desktop-test");
+        assert_eq!(cmd.mode, "through_turn");
+        assert_eq!(cmd.client_request_id, "fork-request");
 
         assert_eq!(
             delete_session_command("sess".to_string()).r#type,

@@ -180,20 +180,14 @@ pub(crate) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate
 
 /// Fork a session at the given user message. Returns the new GUI thread id.
 ///
-/// Creates a dedicated chat workspace named after the forked session id, copies
-/// thread metadata from the parent, and creates per-reply completed run records
-/// so the right panel is populated immediately.  Messages are served from the
+/// The Agent owns fork-point resolution and idempotent child creation. Desktop
+/// projects that child through its unique session binding, so retrying any
+/// post-commit failure reuses the same thread and run rows. Messages are served from the
 /// agent JSONL (no SQLite `messages` table), so no message import is needed.
 pub async fn fork_agent_session(
     thread_id: &str,
-    user_message_content: &str,
-    // 0-based ordinal of the user message among all user messages. The GUI
-    // renders exactly one message per user entry in order, so the Nth user
-    // message maps to the Nth user entry — matching by ordinal instead of
-    // content means two identical prompts ("continue", "run the tests") fork the
-    // intended run, not the first occurrence. `< 0` (unknown) falls back to
-    // content matching.
-    user_message_index: i64,
+    source_entry_id: &str,
+    request_id: &str,
 ) -> Result<String, crate::AppError> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
@@ -203,64 +197,22 @@ pub async fn fork_agent_session(
 
     let mut client = super::client::connect_agent().await?;
 
-    // ── find the fork point ────────────────────────────────────────────
-
-    let entries: Vec<serde_json::Value> =
-        super::fetch_all_session_entries_with_client(&mut client, &session_id)
-            .await
-            .map_err(|error| format!("Unable to list session entries: {error}"))?
-            .into_iter()
-            .filter_map(|entry| serde_json::to_value(entry).ok())
-            .collect();
-
-    let is_user = |e: &serde_json::Value| e.get("role").and_then(|r| r.as_str()) == Some("user");
-
-    // Prefer the user-message ordinal; fall back to content when it's unknown
-    // (< 0) or out of range.
-    let match_idx = usize::try_from(user_message_index)
-        .ok()
-        .and_then(|nth| {
-            entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| is_user(e))
-                .nth(nth)
-                .map(|(i, _)| i)
-        })
-        .or_else(|| {
-            entries.iter().position(|e| {
-                is_user(e)
-                    && e.get("blocks")
-                        .and_then(|c| c.as_array())
-                        .and_then(|blocks| blocks.iter().find(|b| b["kind"] == "text"))
-                        .and_then(|b| b["text"].as_str())
-                        .is_some_and(|c| c.trim() == user_message_content.trim())
-            })
-        })
-        .ok_or_else(|| "No matching user message found in agent session.".to_string())?;
-
-    let mut fork_idx = match_idx;
-    for (i, entry) in entries.iter().enumerate().skip(match_idx + 1) {
-        let role = entry.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        fork_idx = i;
-        if role == "user" {
-            fork_idx = i - 1;
-            break;
-        }
-    }
-    let entry_id = entries[fork_idx]
-        .get("id")
-        .and_then(|id| id.as_str())
-        .ok_or_else(|| "No fork entry found.".to_string())?;
-
     // ── call agent fork RPC ────────────────────────────────────────────
+
+    if source_entry_id.trim().is_empty() {
+        return Err("The selected message is not yet persisted.".into());
+    }
+    if request_id.trim().is_empty() {
+        return Err("Fork request identity is missing.".into());
+    }
 
     let fork_response = client
         .execute_command(fork_command(
             session_id.clone(),
-            entry_id.to_string(),
+            source_entry_id.to_string(),
             session_id.clone(),
             crate::device_identity::device_id_or_empty(),
+            request_id.to_string(),
         ))
         .await
         .map_err(|error| format!("Unable to fork session: {error}"))?
@@ -329,20 +281,22 @@ pub async fn fork_agent_session(
 
     // ── create workspace + thread ──────────────────────────────────────
 
-    let new_thread = store::create_thread(store::CreateThreadInput {
-        mode: thread.mode.clone(),
-        title: Some(session_name),
-        workspace_id: if thread.mode == "chat" {
-            None
-        } else {
-            Some(thread.workspace_id.clone())
-        },
-        workspace_path: None,
-        workspace_name: None,
-        agent_session_id: Some(new_session_id.clone()),
-    })?;
+    let (new_thread, _) =
+        store::get_or_create_thread_for_agent_session(store::CreateThreadInput {
+            mode: thread.mode.clone(),
+            title: Some(session_name),
+            workspace_id: if thread.mode == "chat" {
+                None
+            } else {
+                Some(thread.workspace_id.clone())
+            },
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(new_session_id.clone()),
+        })?;
 
     store::sync_thread_parent_session(&new_session_id, &session_id)?;
+    store::inherit_thread_asset_root(&new_thread.id, &thread.id)?;
 
     // Now that the thread (and its workspace) exist, set the forked
     // session's cwd to match so ensure_agent_session can find it
@@ -366,18 +320,59 @@ pub async fn fork_agent_session(
             .filter_map(|index| fork_entries.get(*index))
             .find_map(|entry| entry["runId"].as_str())
             .ok_or_else(|| "Fork history has no canonical run identity".to_string())?;
-        let run = store::create_run(store::CreateRunInput {
-            id: Some(canonical_id.to_owned()),
-            thread_id: new_thread.id.clone(),
-            trigger_message_id: None,
-            model_provider: provider.clone(),
-            model_id: model_id.clone(),
-        })?;
+        let run = match store::get_run(canonical_id)? {
+            Some(run) if run.thread_id == new_thread.id => run,
+            Some(_) => {
+                return Err(format!(
+                    "Fork history run identity {canonical_id} belongs to another thread"
+                )
+                .into());
+            }
+            None => store::create_run(store::CreateRunInput {
+                id: Some(canonical_id.to_owned()),
+                thread_id: new_thread.id.clone(),
+                trigger_message_id: None,
+                model_provider: provider.clone(),
+                model_id: model_id.clone(),
+            })?,
+        };
+        let outcome = group
+            .iter()
+            .filter_map(|index| fork_entries.get(*index))
+            .filter_map(|entry| entry.get("run"))
+            .find(|run| {
+                run.get("status")
+                    .and_then(|status| status.as_str())
+                    .is_some()
+            });
+        let outcome_status = outcome
+            .and_then(|run| run.get("status"))
+            .and_then(|status| status.as_str())
+            .unwrap_or("completed");
+        let inherited_error = outcome
+            .and_then(|run| run.get("error"))
+            .and_then(|error| error.as_str())
+            .filter(|error| !error.trim().is_empty())
+            .map(str::to_string);
+        let (status, error_message, error_type) = match outcome_status {
+            "failed" => (
+                "failed",
+                inherited_error.or_else(|| Some("Inherited run failed".to_string())),
+                Some("model_failed".to_string()),
+            ),
+            "interrupted" => (
+                "failed",
+                inherited_error.or_else(|| Some("Inherited run was interrupted".to_string())),
+                Some("unknown".to_string()),
+            ),
+            "cancelled" => ("cancelled", None, None),
+            _ => ("completed", None, None),
+        };
         let _ = store::update_run_status_if_active(store::UpdateRunStatusInput {
             run_id: run.id.clone(),
-            status: "completed".to_string(),
-            error_message: None,
-            error_type: None,
+            status: status.to_string(),
+            error_message,
+            error_type,
         });
         run_ids.push(run.id);
     }
@@ -877,36 +872,22 @@ mod tests {
         serde_json::json!({"entries": entries})
     }
 
-    fn conversation_entries() -> serde_json::Value {
-        serde_json::json!([
-            {"id":"e1","role":"user","blocks":[{"kind":"text","text":"first question"}]},
-            {"id":"e2","role":"assistant","blocks":[{"kind":"text","text":"first answer"}]},
-            {"id":"e3","role":"user","blocks":[{"kind":"text","text":"second question"}]},
-            {"id":"e4","role":"assistant","blocks":[{"kind":"text","text":"second answer"}]},
-            {"id":"e5","role":"user","blocks":[{"kind":"text","text":"third question"}]}
-        ])
-    }
-
     fn forked_entries() -> serde_json::Value {
         serde_json::json!([
             {"id":"f0","role":"system","kind":"session_info","session":{"sessionName":"Forked Chat","model":"future/k3"},"blocks":[]},
-            {"id":"f1","role":"user","blocks":[{"kind":"text","text":"first question"}]},
-            {"id":"f2","role":"assistant","blocks":[{"kind":"text","text":"first answer"},{"kind":"tool_call","toolCallId":"tc-1","name":"shell","arguments":{"command":"ls"}}]},
-            {"id":"f3","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"tc-1","text":"file.txt","isError":false}]}
+            {"id":"f1","role":"user","runId":"fork-run-1","blocks":[{"kind":"text","text":"first question"}]},
+            {"id":"f2","role":"assistant","runId":"fork-run-1","run":{"status":"completed"},"blocks":[{"kind":"text","text":"first answer"},{"kind":"tool_call","toolCallId":"tc-1","name":"shell","arguments":{"command":"ls"}}]},
+            {"id":"f3","role":"tool","runId":"fork-run-1","blocks":[{"kind":"tool_result","toolCallId":"tc-1","text":"file.txt","isError":false}]}
         ])
     }
 
     #[tokio::test]
-    async fn fork_by_ordinal_creates_thread_runs_and_events() {
+    async fn fork_by_source_identity_creates_thread_runs_and_events() {
         let home = TestHome::new("session-fork");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork"}));
         mock.push_typed_data("get_session_entries", entries_payload(forked_entries()));
         let mut fork_state = get_state_payload("sess-fork", false);
@@ -914,14 +895,16 @@ mod tests {
         mock.push_state_for_session("sess-fork", Reply::TypedData(fork_state));
         mock.push("set_cwd", Reply::Data("{}".to_string()));
 
-        let new_thread_id = fork_agent_session(&thread.id, "ignored", 1)
+        let new_thread_id = fork_agent_session(&thread.id, "e3", "request-1")
             .await
             .expect("fork");
 
-        // Fork point: the second user message (ordinal 1) → entry e3; the
-        // following user message e5 bounds the fork at e4.
+        // Desktop sends the persisted user identity; the Agent owns resolving
+        // the complete settled turn boundary.
         let fork_request = &mock.requests_of("fork")[0];
-        assert_eq!(fork_request.entry_id, "e4");
+        assert_eq!(fork_request.entry_id, "e3");
+        assert_eq!(fork_request.mode, "through_turn");
+        assert_eq!(fork_request.client_request_id, "request-1");
         assert_eq!(fork_request.session_id, "sess-1");
         assert_eq!(fork_request.parent_session, "sess-1");
 
@@ -950,31 +933,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fork_falls_back_to_content_matching_and_title_defaults() {
+    async fn fork_retry_reuses_the_same_thread_and_historical_run_projection() {
+        let home = TestHome::new("session-fork-idempotent");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+
+        for _ in 0..2 {
+            mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork"}));
+            mock.push_typed_data("get_session_entries", entries_payload(forked_entries()));
+            let mut state = get_state_payload("sess-fork", false);
+            state["model"] = serde_json::json!("future/k3");
+            mock.push_state_for_session("sess-fork", Reply::TypedData(state));
+            mock.push("set_cwd", Reply::Data("{}".to_string()));
+        }
+
+        let first = fork_agent_session(&thread.id, "e1", "stable-request")
+            .await
+            .expect("first fork projection");
+        let second = fork_agent_session(&thread.id, "e1", "stable-request")
+            .await
+            .expect("retry projection");
+
+        assert_eq!(first, second);
+        assert_eq!(crate::store::list_runs(&first).unwrap().len(), 1);
+        assert_eq!(
+            crate::store::list_threads()
+                .unwrap()
+                .iter()
+                .filter(|candidate| candidate.agent_session_id.as_deref() == Some("sess-fork"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_without_session_metadata_uses_parent_title() {
         let home = TestHome::new("session-fork-content");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        // Unknown ordinal (-1) → content match on "second question".
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
+        // The persisted entry id is forwarded unchanged; Desktop does not
+        // reinterpret the fork point from rendered content.
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-2"}));
         // No session_info entry → title defaults to "<parent> (fork)", no model.
         mock.push_data(
             "get_session_entries",
             entries_payload(serde_json::json!([
-                {"id": "f1", "role": "user", "blocks": [{"kind":"text","text":"first question"}]}
+                {"id": "f1", "role": "user", "runId": "fork-run-only", "blocks": [{"kind":"text","text":"first question"}]}
             ])),
         );
         mock.push("set_cwd", Reply::Data("{}".to_string()));
 
-        let new_thread_id = fork_agent_session(&thread.id, " second question ", -1)
+        let new_thread_id = fork_agent_session(&thread.id, "e3", "request-2")
             .await
             .expect("fork");
-        assert_eq!(mock.requests_of("fork")[0].entry_id, "e4");
+        assert_eq!(mock.requests_of("fork")[0].entry_id, "e3");
         let new_thread = crate::store::get_thread(&new_thread_id)
             .expect("thread")
             .expect("exists");
@@ -991,10 +1006,6 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-3"}));
         mock.push_data(
             "get_session_entries",
@@ -1002,7 +1013,7 @@ mod tests {
         );
         mock.push("set_cwd", Reply::Data("{}".to_string()));
 
-        fork_agent_session(&thread.id, "ignored", 2)
+        fork_agent_session(&thread.id, "e5", "request-3")
             .await
             .expect("fork");
         // The last user message is the tail entry itself.
@@ -1017,56 +1028,33 @@ mod tests {
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
         // Unknown thread.
-        let error = fork_agent_session("no-such-thread", "x", 0)
+        let error = fork_agent_session("no-such-thread", "x", "request")
             .await
             .expect_err("missing thread");
         assert_eq!(error.to_string(), "Thread could not be loaded.");
 
         // Thread without an agent session.
         let no_session = seed_thread(&workspace.id, None);
-        let error = fork_agent_session(&no_session.id, "x", 0)
+        let error = fork_agent_session(&no_session.id, "x", "request")
             .await
             .expect_err("no session");
         assert_eq!(error.to_string(), "No agent session for this thread.");
 
-        // Entries transport failure / rejection.
-        mock.push(
-            "get_session_entries",
-            Reply::Status(tonic::Code::Unavailable, "down"),
-        );
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "", "request")
             .await
-            .expect_err("entries transport");
-        assert!(
-            error.to_string().contains("Unable to list session entries"),
-            "{error}"
-        );
-        mock.push("get_session_entries", Reply::Reject("bad".to_string()));
-        let error = fork_agent_session(&thread.id, "x", 0)
-            .await
-            .expect_err("entries reject");
-        assert_eq!(error.to_string(), "Unable to list session entries: bad");
-
-        // No matching user message.
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(serde_json::json!([])),
-        );
-        let error = fork_agent_session(&thread.id, "x", 0)
-            .await
-            .expect_err("no match");
+            .expect_err("missing persisted source identity");
         assert_eq!(
             error.to_string(),
-            "No matching user message found in agent session."
+            "The selected message is not yet persisted."
         );
+        let error = fork_agent_session(&thread.id, "entry", "")
+            .await
+            .expect_err("missing request identity");
+        assert_eq!(error.to_string(), "Fork request identity is missing.");
 
         // Fork transport failure / rejection / missing sessionId.
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push("fork", Reply::Status(tonic::Code::Internal, "boom"));
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("fork transport");
         assert!(
@@ -1074,37 +1062,25 @@ mod tests {
             "{error}"
         );
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push("fork", Reply::Reject("cannot fork".to_string()));
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("fork reject");
         assert_eq!(error.to_string(), "cannot fork");
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"ok": true}));
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("no session id");
         assert_eq!(error.to_string(), "Fork did not return a session.");
 
         // Forked-entries transport failure / rejection.
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
         mock.push(
             "get_session_entries",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("fork entries transport");
         assert!(
@@ -1114,13 +1090,9 @@ mod tests {
             "{error}"
         );
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-e"}));
         mock.push("get_session_entries", Reply::Reject("bad".to_string()));
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("fork entries reject");
         assert_eq!(
@@ -1136,10 +1108,6 @@ mod tests {
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-1"));
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-4"}));
         // session_name "(fork)" is a placeholder → default title.
         mock.push_data(
@@ -1152,7 +1120,9 @@ mod tests {
             "set_cwd",
             Reply::Status(tonic::Code::Internal, "best effort"),
         );
-        let new_thread_id = fork_agent_session(&thread.id, "x", 0).await.expect("fork");
+        let new_thread_id = fork_agent_session(&thread.id, "x", "request")
+            .await
+            .expect("fork");
         let new_thread = crate::store::get_thread(&new_thread_id)
             .expect("thread")
             .expect("exists");
@@ -1176,10 +1146,6 @@ mod tests {
         })
         .expect("create chat thread");
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-chat"}));
         // No session_info entry → title defaults, no model.
         mock.push_data(
@@ -1187,7 +1153,9 @@ mod tests {
             entries_payload(serde_json::json!([])),
         );
 
-        let new_thread_id = fork_agent_session(&thread.id, "x", 0).await.expect("fork");
+        let new_thread_id = fork_agent_session(&thread.id, "x", "request")
+            .await
+            .expect("fork");
         let new_thread = crate::store::get_thread(&new_thread_id)
             .expect("thread")
             .expect("exists");
@@ -1217,14 +1185,10 @@ mod tests {
             .expect("delete workspace row");
         drop(conn);
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-cf"}));
         mock.push_data("get_session_entries", entries_payload(forked_entries()));
 
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("create thread");
         assert!(error.to_string().contains("Workspace"), "{error}");
@@ -1246,14 +1210,10 @@ mod tests {
         std::fs::remove_dir_all(&workspace.path).expect("rm workspace dir");
         std::fs::write(&workspace.path, "not a directory").expect("write file");
 
-        mock.push_data(
-            "get_session_entries",
-            entries_payload(conversation_entries()),
-        );
         mock.push_data("fork", serde_json::json!({"sessionId": "sess-fork-md"}));
         mock.push_data("get_session_entries", entries_payload(forked_entries()));
 
-        let error = fork_agent_session(&thread.id, "x", 0)
+        let error = fork_agent_session(&thread.id, "x", "request")
             .await
             .expect_err("create_dir_all");
         assert!(!error.to_string().is_empty());

@@ -75,6 +75,8 @@ export interface StreamRetryState {
 
 export interface AgentMessage {
   id: string;
+  /** Canonical persisted Agent journal identity; never replaced by optimistic UI ids. */
+  sourceEntryId?: string | null;
   runId?: string | null;
   role: MessageRole;
   /**

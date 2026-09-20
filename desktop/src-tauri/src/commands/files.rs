@@ -350,7 +350,7 @@ fn safe_file_name(name: &str) -> String {
 }
 
 /// Decode an image and write a downscaled PNG thumbnail under
-/// `~/.future/app/images/<thread_id>/thumb/<stamp>.png`, returning its path.
+/// `~/.future/app/images/<asset_root_id>/thumb/<stamp>.png`, returning its path.
 /// Done entirely in Rust so the full-size image (up to tens of MB) never crosses
 /// the IPC bridge to a webview canvas — only the tiny thumbnail is produced. The
 /// decoder's allocation is capped to reject decompression bombs. Returns an error
@@ -401,7 +401,8 @@ pub fn generate_image_thumbnail(
     )
     .map_err(|error| format!("thumbnail encode failed: {error}"))?;
 
-    let dir = crate::store::thread_images_dir(&thread_id)?.join("thumb");
+    let asset_root_id = crate::store::thread_asset_root_id(&thread_id)?;
+    let dir = crate::store::thread_images_dir(&asset_root_id)?.join("thumb");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.png", unique_stamp()));
     std::fs::write(&path, &buf)?;
@@ -409,7 +410,7 @@ pub fn generate_image_thumbnail(
 }
 
 /// Copy an ephemeral clipboard attachment into
-/// `~/.future/app/images/<thread_id>/origin/<stamp>_<name>` and return the new
+/// `~/.future/app/images/<asset_root_id>/origin/<stamp>_<name>` and return the new
 /// path. Conversations don't save attachments into the workspace/project dir,
 /// so the durable copy lives here (persistent, in the asset-protocol scope)
 /// instead of the temp dir, which the OS may purge.
@@ -431,7 +432,8 @@ pub fn import_ephemeral_attachment(
     // auth.json) would otherwise defeat `ensure_path_allowed` — the copy lands
     // under a non-credential name/dir and becomes readable via the asset protocol.
     ensure_path_allowed(Path::new(source))?;
-    let dir = crate::store::thread_images_dir(&thread_id)?.join("origin");
+    let asset_root_id = crate::store::thread_asset_root_id(&thread_id)?;
+    let dir = crate::store::thread_images_dir(&asset_root_id)?.join("origin");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}_{}", unique_stamp(), safe_file_name(&name)));
     std::fs::copy(source, &path)?;
@@ -786,6 +788,20 @@ fn open_path_with_system(path: &str) -> Result<(), crate::AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn initialize_thread_store() -> String {
+        crate::store::initialize_app_store().expect("initialize app store");
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".into(),
+            title: Some("Attachment test".into()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create attachment test thread")
+        .id
+    }
     use std::fs;
 
     #[cfg(target_os = "macos")]
@@ -1055,12 +1071,13 @@ mod tests {
     #[test]
     fn thumbnail_generates_a_png_and_preserves_alpha() {
         let home = crate::auth_store::test_support::HomeGuard::new("files_thumb_ok");
+        let thread_id = initialize_thread_store();
         let root = future_root("thumb_src2");
         let src = root.join("in.png");
         image::RgbaImage::from_pixel(8, 8, image::Rgba([7, 8, 9, 0]))
             .save(&src)
             .unwrap();
-        let thumb = generate_image_thumbnail("thread_x".into(), src.display().to_string()).unwrap();
+        let thumb = generate_image_thumbnail(thread_id, src.display().to_string()).unwrap();
         assert!(thumb.ends_with(".png"));
         assert!(Path::new(&thumb).is_file());
         assert_eq!(
@@ -1073,6 +1090,7 @@ mod tests {
     #[test]
     fn import_ephemeral_attachment_covers_edges() {
         let home = crate::auth_store::test_support::HomeGuard::new("files_import");
+        let thread_id = initialize_thread_store();
         assert!(
             import_ephemeral_attachment("!!!".into(), "/x.png".into(), "x.png".into()).is_err()
         );
@@ -1083,12 +1101,9 @@ mod tests {
         image::RgbImage::from_pixel(1, 1, image::Rgb([1, 1, 1]))
             .save(&src)
             .unwrap();
-        let dest = import_ephemeral_attachment(
-            "thread_x".into(),
-            src.display().to_string(),
-            "name.png".into(),
-        )
-        .unwrap();
+        let dest =
+            import_ephemeral_attachment(thread_id, src.display().to_string(), "name.png".into())
+                .unwrap();
         assert!(Path::new(&dest).is_file());
         drop(home);
     }

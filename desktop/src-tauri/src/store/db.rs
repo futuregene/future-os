@@ -52,18 +52,19 @@ pub(super) fn review_repos_root() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("review"))
 }
 
-/// Root of the per-thread attachment tree (`~/.future/app/images`). Holds image
-/// thumbnails plus originals that have no stable desktop path (pastes and
-/// mobile uploads) — a persistent location, unlike the OS app cache dir which
-/// macOS may purge. Reclaimed by `reconcile_orphan_images` and `clear_all_data`.
+/// Root of the attachment tree (`~/.future/app/images`). Holds image thumbnails
+/// plus originals that have no stable desktop path (pastes and mobile uploads),
+/// keyed by stable asset-root id. Reclaimed by `reconcile_orphan_images` and
+/// `clear_all_data`.
 pub fn app_images_root() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("images"))
 }
 
-/// Per-thread attachment directory: `~/.future/app/images/<thread_id>` (with
-/// `thumb/` and `origin/` subdirs).
-pub fn thread_images_dir(thread_id: &str) -> Result<PathBuf, crate::AppError> {
-    Ok(app_images_root()?.join(thread_id))
+/// Attachment-root directory: `~/.future/app/images/<asset_root_id>` (with
+/// `thumb/` and `origin/` subdirs). A normal thread owns its own root; fork
+/// descendants retain the same root through `threads.asset_root_id`.
+pub fn thread_images_dir(asset_root_id: &str) -> Result<PathBuf, crate::AppError> {
+    Ok(app_images_root()?.join(asset_root_id))
 }
 
 pub(super) fn ensure_app_dirs() -> Result<(), crate::AppError> {

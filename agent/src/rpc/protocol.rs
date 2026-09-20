@@ -31,7 +31,7 @@ pub struct RpcCommand {
     #[serde(default)]
     pub level: String,
 
-    // Generic decision/rule mode (approval_result, add_session_rule).
+    // Generic decision/rule/fork-point mode.
     #[serde(default)]
     pub mode: String,
 
@@ -643,6 +643,16 @@ impl SseBroadcaster {
         manager: &crate::session::Manager,
     ) -> anyhow::Result<()> {
         let session_id = session_id.into();
+        {
+            let journal = self.journal.lock();
+            if !journal.session_id.is_empty() && journal.session_id != session_id {
+                anyhow::bail!(
+                    "event journal is permanently owned by session {}; cannot rebind to {}",
+                    journal.session_id,
+                    session_id
+                );
+            }
+        }
         let result = (|| {
             let store = manager.storage()?.clone();
             store.bind_events(&session_id)?;
@@ -656,6 +666,13 @@ impl SseBroadcaster {
         })();
         let mut run = self.run.lock();
         let mut journal = self.journal.lock();
+        if !journal.session_id.is_empty() && journal.session_id != session_id {
+            anyhow::bail!(
+                "event journal is permanently owned by session {}; cannot rebind to {}",
+                journal.session_id,
+                session_id
+            );
+        }
         journal.session_id = session_id;
         match result {
             Ok((store, writer, session_idx, loose_idx)) => {
@@ -686,6 +703,10 @@ impl SseBroadcaster {
 
     pub fn persistence_error(&self) -> Option<String> {
         self.journal_health.error()
+    }
+
+    pub(crate) fn journal_session_id(&self) -> String {
+        self.journal.lock().session_id.clone()
     }
 
     /// Fence the event journal before session deletion. The journal mutex is
@@ -2174,6 +2195,22 @@ mod tests {
         let events = second.session_events_since(-1).unwrap();
         let idxs: Vec<i64> = events.iter().map(|e| e.session_idx).collect();
         assert_eq!(idxs, vec![0, 1, 2], "resumed after the on-disk sequence");
+    }
+
+    #[test]
+    fn configured_journal_cannot_be_rebound_to_another_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(dir.path().to_path_buf());
+        let broadcaster = SseBroadcaster::new();
+        broadcaster.configure_journal("parent", &manager).unwrap();
+
+        let error = broadcaster
+            .configure_journal("child", &manager)
+            .expect_err("journal ownership must be immutable");
+        assert!(error.to_string().contains("cannot rebind"));
+        broadcaster.broadcast(SseEvent::new("model_changed", serde_json::json!({})));
+        let event = broadcaster.session_events_since(-1).unwrap().pop().unwrap();
+        assert_eq!(event.session_id, "parent");
     }
 
     #[test]
