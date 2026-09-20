@@ -1252,16 +1252,19 @@
             "wait": 1200
           },
           {
-            "tapText": "整理两篇文献的结论对比表"
+            "tap": "管理「整理两篇文献的结论对比表」"
           },
           {
-            "wait": 2500
+            "wait": 1200
           },
           {
-            "tap": "重命名"
+            "tapText": "重命名"
           },
           {
-            "wait": 1800
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const dialog = document.querySelector('input, textarea'); const generate = [...document.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === '自动生成'); const hint = [...document.querySelectorAll('div,span,p')].filter(el => el.children.length === 0 && (el.textContent || '').includes('使用本会话模型和最多前三组问答生成')).pop(); if (!dialog || !generate || !hint) throw new Error('rename dialog is missing the input, generate action or its explanation'); const box = generate.getBoundingClientRect(), input = dialog.parentElement.getBoundingClientRect(); if (Math.abs(box.width - input.width) > 2 || Math.abs(box.x - input.x) > 2) throw new Error('the generate action is not a full-width row of its own'); if (hint.getBoundingClientRect().height <= 0 || hint.getBoundingClientRect().top - box.bottom < 4) throw new Error('the generate explanation is not shown under the action'); return 'rename dialog layout ok'; })()"
           },
           {
             "tap": "自动生成"
