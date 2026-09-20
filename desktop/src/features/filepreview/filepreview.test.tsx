@@ -8,8 +8,9 @@ import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
 import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { imageMimeForPath, previewKindForPath } from "./previewKind";
+import { imageMimeForPath, isTextReadablePath, previewKindForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
+import { TextPreview } from "./TextPreview";
 import {
   PREVIEW_LOADING_DELAY_MS,
   PREVIEW_LOADING_MIN_VISIBLE_MS,
@@ -57,9 +58,30 @@ describe("previewKind", () => {
     expect(previewKindForPath("/a/b.md")).toBe("markdown");
     expect(previewKindForPath("/a/b.markdown")).toBe("markdown");
     expect(previewKindForPath("/a/b.JSON")).toBe("json");
-    expect(previewKindForPath("/a/b.jsonl")).toBeNull();
     expect(previewKindForPath("/a/b.pdf")).toBeNull();
     expect(previewKindForPath("/a/b")).toBeNull();
+  });
+
+  it("classifies code and config files as text", () => {
+    expect(previewKindForPath("/a/b.py")).toBe("text");
+    expect(previewKindForPath("/a/b.RS")).toBe("text");
+    expect(previewKindForPath("/a/b.go")).toBe("text");
+    expect(previewKindForPath("/a/b.tsx")).toBe("text");
+    expect(previewKindForPath("/a/b.toml")).toBe("text");
+    expect(previewKindForPath("/a/b.sh")).toBe("text");
+    expect(previewKindForPath("/a/b.jsonl")).toBe("text");
+    // Unsupported or ambiguous types keep the OS-handler path.
+    expect(previewKindForPath("/a/b.bin")).toBeNull();
+    expect(previewKindForPath("/a/b.h5")).toBeNull();
+    expect(previewKindForPath("/a/Makefile")).toBeNull();
+  });
+
+  it("detects text-readable paths for the artifact preview", () => {
+    expect(isTextReadablePath("/a/b.rs")).toBe(true);
+    expect(isTextReadablePath("/a/b.md")).toBe(true);
+    expect(isTextReadablePath("/a/b.json")).toBe(true);
+    expect(isTextReadablePath("/a/b.pdf")).toBe(false);
+    expect(isTextReadablePath("/a/b.png")).toBe(false);
   });
 
   it("maps extensions to MIME types with a fallback", () => {
@@ -204,6 +226,69 @@ describe("markdownPreview", () => {
     invokeMock.mockImplementation(() => new Promise(() => {}));
     const { container, cleanup } = mount(createElement(MarkdownPreview, {
       path: "/w/doc.md",
+      onError: vi.fn(),
+    }));
+    act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
+    await flushAsync();
+    expect(container.textContent).toContain("Loading preview");
+    cleanup();
+  });
+});
+
+describe("textPreview", () => {
+  it("renders code as monospace text", async () => {
+    invokeMock.mockResolvedValue({
+      content: "fn main() {}\n",
+      size: 13,
+      truncated: false,
+      validUtf8: true,
+    });
+    const { container, cleanup } = mount(createElement(TextPreview, {
+      path: "/w/main.rs",
+      onError: vi.fn(),
+    }));
+    expect(container.textContent).not.toContain("Loading");
+    await flushAsync();
+    expect(container.querySelector("pre")?.textContent).toBe("fn main() {}\n");
+    expect(container.textContent).not.toContain("Large file");
+    cleanup();
+  });
+
+  it("marks a truncated read", async () => {
+    invokeMock.mockResolvedValue({ content: "a", size: 900_000, truncated: true, validUtf8: true });
+    const { container, cleanup } = mount(createElement(TextPreview, {
+      path: "/w/big.py",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.textContent).toContain("Large file");
+    cleanup();
+  });
+
+  it("routes read failures and non-UTF-8 bytes to onError", async () => {
+    const onError = vi.fn();
+    invokeMock.mockRejectedValue(new Error("gone"));
+    const failed = mount(createElement(TextPreview, { path: "/w/gone.rs", onError }));
+    await flushAsync();
+    expect(onError).toHaveBeenCalledTimes(1);
+    failed.cleanup();
+
+    // A code extension over a binary file must not render replacement chars.
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue({ content: "\uFFFD\uFFFD", size: 4, truncated: false, validUtf8: false });
+    const binary = mount(createElement(TextPreview, { path: "/w/bin.c", onError }));
+    await flushAsync();
+    expect(onError).toHaveBeenCalledTimes(2);
+    // Nothing was rendered for the failed read.
+    expect(binary.container.querySelector("pre")).toBeNull();
+    binary.cleanup();
+  });
+
+  it("shows a loading notice while a slow read is in flight", async () => {
+    vi.useFakeTimers();
+    invokeMock.mockImplementation(() => new Promise(() => {}));
+    const { container, cleanup } = mount(createElement(TextPreview, {
+      path: "/w/main.go",
       onError: vi.fn(),
     }));
     act(() => vi.advanceTimersByTime(PREVIEW_LOADING_DELAY_MS));
@@ -365,6 +450,20 @@ describe("filePreviewOverlay", () => {
     }));
     await flushAsync();
     expect(container.textContent).toContain("\"ok\"");
+    cleanup();
+  });
+
+  it("renders the text preview", async () => {
+    invokeMock.mockResolvedValue({ content: "print('hi')", size: 11, truncated: false, validUtf8: true });
+    const { container, cleanup } = mount(createElement(FilePreviewOverlay, {
+      path: "/w/train.py",
+      name: "train.py",
+      kind: "text",
+      open: true,
+      onClose: vi.fn(),
+    }));
+    await flushAsync();
+    expect(container.querySelector("pre")?.textContent).toContain("print('hi')");
     cleanup();
   });
 

@@ -651,8 +651,98 @@ fn mime_type_for_name(name: &str) -> &'static str {
         "webm" => "video/webm",
         "md" | "markdown" => "text/markdown",
         "txt" | "log" => "text/plain",
+        other if is_code_text_extension(other) => "text/plain",
         _ => "application/octet-stream",
     }
+}
+
+/// Code / config / script extensions the phone may read in-app as plain text.
+/// The phone's allow-list (`mobile/src/remote/fileTypes.ts`, `route: "text"`)
+/// must cover exactly this set — a suffix missing here is refused before the
+/// transfer, and one accepted here must be previewable there. (`.txt` / `.log`
+/// are handled by the `text/plain` arm above, `.md` / `.json` by theirs.)
+/// The desktop overlay's list (`desktop/src/features/filepreview/previewKind.ts`)
+/// is deliberately wider: it has no transfer budget and reads whatever the OS
+/// hands it.
+const CODE_TEXT_EXTENSIONS: &[&str] = &[
+    "asm",
+    "bash",
+    "bat",
+    "c",
+    "cc",
+    "cfg",
+    "clj",
+    "cljs",
+    "cjs",
+    "cmd",
+    "conf",
+    "cpp",
+    "cs",
+    "csh",
+    "css",
+    "cxx",
+    "dart",
+    "el",
+    "env",
+    "erl",
+    "ex",
+    "exs",
+    "f90",
+    "f95",
+    "fish",
+    "go",
+    "gradle",
+    "groovy",
+    "h",
+    "hh",
+    "hpp",
+    "hs",
+    "hxx",
+    "ini",
+    "java",
+    "jl",
+    "js",
+    "jsx",
+    "kt",
+    "kts",
+    "less",
+    "lisp",
+    "lua",
+    "m",
+    "mjs",
+    "nim",
+    "pas",
+    "php",
+    "pl",
+    "pm",
+    "properties",
+    "ps1",
+    "py",
+    "pyi",
+    "r",
+    "rb",
+    "rs",
+    "sass",
+    "scala",
+    "scm",
+    "scss",
+    "sh",
+    "sol",
+    "sql",
+    "svelte",
+    "swift",
+    "tf",
+    "toml",
+    "ts",
+    "tsx",
+    "vb",
+    "vue",
+    "zig",
+    "zsh",
+];
+
+fn is_code_text_extension(ext: &str) -> bool {
+    CODE_TEXT_EXTENSIONS.contains(&ext)
 }
 
 fn is_mobile_download_allowed(name: &str) -> bool {
@@ -822,7 +912,7 @@ fn prepare_preview(
     let markdown = matches!(ext.as_str(), "md" | "markdown");
     let json = ext == "json";
     let rich_json = json && size < MAX_JSON_RICH_PREVIEW_BYTES;
-    let plain_text = matches!(ext.as_str(), "txt" | "log");
+    let plain_text = matches!(ext.as_str(), "txt" | "log") || is_code_text_extension(&ext);
     if !markdown && !json && !plain_text {
         return Err("This file type must be opened by a mobile app."
             .to_string()
@@ -1229,6 +1319,21 @@ mod tests {
             .expect_err("CSV must be delegated to an installed mobile app");
         assert!(error.to_string().contains("mobile app"));
 
+        // Code / config files are read in-app as plain text.
+        for (file_name, body) in [
+            ("main.rs", "fn main() {}\n"),
+            ("train.py", "print('hi')\n"),
+            ("server.go", "package main\n"),
+            ("config.toml", "[a]\nb = 1\n"),
+        ] {
+            let code = dir.join(file_name);
+            std::fs::write(&code, body).unwrap();
+            let preview = prepare_preview(&code, file_name).unwrap();
+            assert_eq!(preview.preview_kind, "text");
+            assert_eq!(preview.mime_type, "text/plain");
+            std::fs::remove_file(preview.path).unwrap();
+        }
+
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, b"%PDF-1.7\0binary").unwrap();
         let error =
@@ -1243,8 +1348,12 @@ mod tests {
         assert_eq!(mime_type_for_name("table.csv"), "text/csv");
         assert_eq!(mime_type_for_name("book.epub"), "application/epub+zip");
         assert_eq!(mime_type_for_name("drawing.svg"), "image/svg+xml");
+        assert_eq!(mime_type_for_name("MAIN.RS"), "text/plain");
+        assert_eq!(mime_type_for_name("train.py"), "text/x-python");
         assert!(is_mobile_download_allowed("archive.7z"));
         assert!(is_mobile_download_allowed("analysis.jsonl"));
+        assert!(is_mobile_download_allowed("main.rs"));
+        assert!(is_mobile_download_allowed("config.toml"));
         assert!(!is_mobile_download_allowed("dataset.h5"));
         assert!(!is_mobile_download_allowed("unknown"));
     }
