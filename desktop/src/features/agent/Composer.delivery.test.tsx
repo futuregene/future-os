@@ -30,6 +30,10 @@ it("blocks button and Enter submission during external compaction, preserving th
   try {
     await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress />));
     const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
+    // The disabled send button alone reads as "broken" — compaction runs for
+    // minutes, so the composer must say what it is waiting for.
+    expect(host.querySelector("[role=status]")?.textContent).toBe("Compacting context…");
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.title).toBe("Compacting context…");
     act(() => {
       editor.textContent = "keep my next message";
       editor.dispatchEvent(new Event("input", { bubbles: true }));
@@ -42,6 +46,7 @@ it("blocks button and Enter submission during external compaction, preserving th
     expect(onSend).not.toHaveBeenCalled();
     expect(editor.textContent).toBe("keep my next message");
     await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress={false} />));
+    expect(host.querySelector("[role=status]")).toBeNull();
     expect(editor.textContent).toBe("keep my next message");
     expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
     await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));

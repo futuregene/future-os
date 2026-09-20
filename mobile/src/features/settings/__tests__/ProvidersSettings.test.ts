@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
-import { SettingsLink } from "../SettingsPrimitives";
+import { SettingsLink, SettingsSection } from "../SettingsPrimitives";
 import { SettingsScreen } from "../SettingsScreen";
 import type { ProvidersView } from "../../../remote/types";
 
@@ -59,6 +59,12 @@ const button = (label: string) => tree.root.findAllByType(Button).find(node => n
 const input = (label: string) => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
 const pressable = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
 const back = () => tree.root.findAll(node => node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function")[0]!;
+const section = (title: string) => tree.root.findAllByType(SettingsSection).find(node => node.props.title === title)!;
+const sectionTitles = () => tree.root.findAllByType(SettingsSection).map(node => node.props.title);
+/** Row names of the built-in section, in render order (descriptions are i18n keys). */
+const builtinNames = () => section("desktopSettings.builtinProviders").findAllByType(Text)
+  .map(node => node.props.children)
+  .filter((text): text is string => typeof text === "string" && !text.startsWith("desktopSettings."));
 const rendered = () => tree.root.findAllByType(Text).map(node => node.props.children);
 const type = async (label: string, text: string) => act(async () => input(label).props.onChangeText(text));
 
@@ -98,6 +104,45 @@ test("lists the desktop's built-in and custom providers, with the account provid
   // The sign-in provider has no editor: it renders as a plain, unpressable row.
   expect(link("Future")).toBeUndefined();
   expect(rendered()).toContain("desktopSettings.providerManaged");
+});
+
+test("leads with custom providers, puts keyed built-ins first, and folds the tail", async () => {
+  const provider = (id: string, name: string, hasApiKey: boolean) =>
+    ({ id, name, baseUrl: `https://${id}.example.com/v1`, hasApiKey, modelCount: 2, requiresBaseUrl: false });
+  providers = {
+    // Catalog order deliberately unlike the expected render order.
+    builtin: [
+      provider("anthropic", "Anthropic", false),
+      provider("deepseek", "DeepSeek", true),
+      provider("google", "Google", false),
+      provider("future", "Future", true),
+      provider("kimi-coding", "Kimi", true),
+      provider("moonshotai", "Moonshot", false),
+      provider("openai", "OpenAI", false),
+      provider("zhipuai", "Zhipu", false),
+    ],
+    custom: [{ id: "acme", name: "Acme Gateway", api: "openai-completions", baseUrl: "https://gateway.acme.example.com/v1", hasApiKey: true, models: [] }],
+  };
+  await openProviders();
+
+  expect(sectionTitles()).toEqual(["desktopSettings.customProviders", "desktopSettings.builtinProviders"]);
+  // Future first, then the keyed providers, then the rest in catalog order.
+  expect(builtinNames()).toEqual(["Future", "DeepSeek", "Kimi", "Anthropic", "Google"]);
+  expect(button("desktopSettings.showMoreBuiltin")).toBeDefined();
+
+  await act(async () => button("desktopSettings.showMoreBuiltin").props.onPress());
+  expect(builtinNames()).toEqual(["Future", "DeepSeek", "Kimi", "Anthropic", "Google", "Moonshot", "OpenAI", "Zhipu"]);
+  expect(button("desktopSettings.showMoreBuiltin")).toBeUndefined();
+
+  await act(async () => button("desktopSettings.hideMoreBuiltin").props.onPress());
+  expect(builtinNames()).toEqual(["Future", "DeepSeek", "Kimi", "Anthropic", "Google"]);
+});
+
+test("a short built-in list has nothing to fold", async () => {
+  await openProviders();
+  expect(builtinNames()).toEqual(["Future", "DeepSeek", "Azure OpenAI"]);
+  expect(button("desktopSettings.showMoreBuiltin")).toBeUndefined();
+  expect(button("desktopSettings.hideMoreBuiltin")).toBeUndefined();
 });
 
 test("writes a built-in key atomically and returns to the list", async () => {
