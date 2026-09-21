@@ -25,6 +25,9 @@ Rules
    That list is temporary debt: an entry is a warning in a normal run and a
    failure under --strict-pending, which additionally requires the list to be
    empty — i.e. bilingualization fully complete.
+   The blog (docs/blog/) is exempt: it is published as an English-only site
+   (ENGLISH_ONLY), so pairing does not apply there — placement, link and fence
+   checks still do.
 3. Structure: local markdown links resolve, wiki [[...]] targets resolve,
    code fences are closed (kept from the original checker).
 
@@ -109,6 +112,12 @@ EXTRA_PAIR_SCOPED = {
 # docs/ subtrees that enforce bilingual coverage by a different rule and are
 # therefore excluded from the name.md <-> name.zh-CN.md check.
 PAIR_BY_OTHER_RULE = ("docs/wiki/", "docs/dist/")
+
+# docs/ subtrees that are published in one language only and are therefore
+# outside the bilingual rule entirely. The engineering blog is an English-only
+# site (scripts/blog/build.py renders docs/blog/ into a static site); a Chinese
+# edition would be its own site, not a .zh-CN.md suffix on these files.
+ENGLISH_ONLY = ("docs/blog/",)
 
 # Docs whose missing language pair is scheduled for the bilingualization PR.
 # Each entry is the path of the existing file (relative to the repo root,
@@ -211,7 +220,8 @@ def in_pair_scope(relative):
 
     Deliberately "all of docs/" rather than an allowlist of directories: a new
     docs/ subdirectory must inherit the requirement. An allowlist let
-    docs/verification/ escape the check entirely.
+    docs/verification/ escape the check entirely. The only exemption is a
+    subtree explicitly declared single-language (ENGLISH_ONLY).
     """
     if not relative.endswith(".md"):
         return False
@@ -219,7 +229,7 @@ def in_pair_scope(relative):
         return True
     if not relative.startswith("docs/"):
         return False
-    return not relative.startswith(PAIR_BY_OTHER_RULE)
+    return not relative.startswith(PAIR_BY_OTHER_RULE + ENGLISH_ONLY)
 
 
 def check_packaging_pairs(docs):

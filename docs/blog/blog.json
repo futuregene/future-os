@@ -1,0 +1,10 @@
+{
+  "title": "FutureOS Engineering",
+  "tagline": "Notes from building one agent everywhere",
+  "description": "Engineering notes from the FutureOS team: agent internals, the RPC wire contract, loop orchestration, and the desktop/mobile/terminal surfaces built on top of them.",
+  "base_url": "https://futuregene.github.io/future-os",
+  "author": "FutureOS",
+  "repo_url": "https://github.com/futuregene/future-os",
+  "repo_branch": "main",
+  "feed_size": 20
+}

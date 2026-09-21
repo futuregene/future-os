@@ -9,6 +9,13 @@
 > bilingual pairing, links and fences. Historical archives under
 > `archives/` keep their original dates and commit boundaries.
 
+## Engineering blog (`blog/`)
+
+The public engineering blog is authored here and generated into a static site by
+[`scripts/blog/build.py`](../scripts/blog/build.py); it is the one `docs/`
+subtree published in English only (see [blog/README.md](blog/README.md) for the
+layout, the front-matter fields, the markdown subset and the Pages deployment).
+
 ## Guides (`guide/`)
 
 | Doc | What it covers |
@@ -120,8 +127,9 @@ Reserved for future doc↔code audit reports.
     paths, for working on one slice at a time. Findings are filtered by the
     file they are about, not by their wording.
 - Every `.md` under `docs/` needs both languages (any new `docs/` subdirectory
-  inherits this; `docs/wiki/` pairs by `en/`+`zh/` and `docs/dist/` by the `-en`
-  suffix). Exceptions are the files listed in `WHITELIST`/`EXTRA_PAIR_SCOPED`.
+  inherits this; `docs/wiki/` pairs by `en/`+`zh/`, `docs/dist/` by the `-en`
+  suffix and `docs/blog/` is English-only by design, via `ENGLISH_ONLY`).
+  Exceptions are the files listed in `WHITELIST`/`EXTRA_PAIR_SCOPED`.
 - `make test-docs-check` runs the gate's own regression tests, including
   negative controls (they fail if the checker stops detecting violations).
 - Nothing runs the checker automatically: it is not wired into CI or

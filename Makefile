@@ -3,7 +3,7 @@
 	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
-	check-docs test-docs-check \
+	check-docs test-docs-check blog-build blog-serve blog-test \
 	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-loop \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
@@ -375,6 +375,22 @@ check-docs:
 test-docs-check:
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-check-docs.py
 
+# ─── Blog ───────────────────────────────────────────────────────────────────
+# Static site generated from docs/blog/ (scripts/blog/build.py — stdlib-only
+# Python, no npm/pip). Output build/blog/ is gitignored: the publish workflow
+# builds it on the runner and uploads it as a Pages artifact.
+blog-build:
+	python3 scripts/blog/build.py
+
+# Local preview: drafts included, because this is the review loop.
+blog-serve:
+	python3 scripts/blog/build.py --include-drafts
+	@echo "Serving build/blog on http://127.0.0.1:4321/"
+	python3 -m http.server 4321 --directory build/blog
+
+blog-test:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-blog-build.py
+
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:
 	cd packages/rpc && REGENERATE_PROTO=1 cargo build
@@ -412,6 +428,7 @@ help:
 	@echo "  lint                                Rust (CI flags) + desktop + mobile lints"
 	@echo "  check-desktop / check-mobile        Lint + typecheck + tests without building apps"
 	@echo "  check-docs / test-docs-check        Docs placement/pairing/links gate + its regression tests"
+	@echo "  blog-build / blog-serve / blog-test Build, preview (127.0.0.1:4321) and test the engineering blog"
 	@echo "  fmt                                 Format Rust code"
 	@echo "  run-agent / -tui / -cli / -channels / -loop   Run a component (debug build)"
 	@echo "  run-desktop / run-mobile-android / run-mobile-ios   Run an app in dev mode"
