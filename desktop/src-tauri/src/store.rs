@@ -73,6 +73,7 @@ pub use threads::{
     sync_thread_title, thread_asset_root_id, update_thread_model, update_thread_session_id,
     update_thread_thinking_level, ThreadRecord,
 };
+pub(crate) use util::strip_verbatim_prefix;
 pub use util::{create_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{

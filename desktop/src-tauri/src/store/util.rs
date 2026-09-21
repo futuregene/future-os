@@ -69,7 +69,7 @@ pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {
 /// (`\\?\D:\...`), which no other tool prints; store the ordinary form instead
 /// (`\\?\UNC\server\share` → `\\server\share`). A canonical POSIX path never
 /// carries the prefix, so this is purely textual and a no-op off Windows.
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
@@ -181,6 +181,27 @@ fn count_files_under(mut stack: Vec<PathBuf>) -> Result<i64, crate::AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_verbatim_prefix_handles_windows_spellings() {
+        // Windows canonicalize produces the extended-length form; the child
+        // shell must receive the ordinary spelling instead (see terminal::cwd).
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\ace\Docs")),
+            PathBuf::from(r"C:\Users\ace\Docs")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_keeps_ordinary_paths() {
+        // A POSIX path never carries the prefix — textual no-op.
+        let path = PathBuf::from("/home/ace/docs");
+        assert_eq!(strip_verbatim_prefix(path.clone()), path);
+    }
 
     #[test]
     fn qualify_columns_prefixes_each_column() {
