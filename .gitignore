@@ -81,9 +81,6 @@ coverage-tauri/
 
 # Screenshot harness output (make screenshots-capture-*)
 /.screenshots/
-# Engineering blog static site (make blog-build / scripts/blog/build.py). The
-# publish workflow builds it on the runner — generated HTML is never committed.
-/build/
 # Demo figures the screenshot harness serves into conversations — generated
 # (scripts/screenshots/gen-demo-assets.py), never committed.
 /desktop/shot/assets/
