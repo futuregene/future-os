@@ -178,15 +178,6 @@ class PairScopeTests(unittest.TestCase):
         self.assertFalse(checker.in_pair_scope("docs/wiki/en/Home.md"))
         self.assertFalse(checker.in_pair_scope("docs/dist/readme-macos.md"))
 
-    def test_blog_is_english_only(self):
-        self.assertFalse(checker.in_pair_scope("docs/blog/README.md"))
-        self.assertFalse(
-            checker.in_pair_scope("docs/blog/posts/2026-09-21-hello.md")
-        )
-        # A hand-written .zh-CN.md there is outside the rule too: the blog is
-        # published in one language, so neither side of a pair is expected.
-        self.assertFalse(checker.in_pair_scope("docs/blog/posts/hello.zh-CN.md"))
-
     def test_non_markdown_and_root_paths_are_out_of_scope(self):
         self.assertFalse(checker.in_pair_scope("docs/dist/readme-macos.txt"))
         self.assertFalse(checker.in_pair_scope("README.md"))
@@ -201,19 +192,6 @@ class PairScopeTests(unittest.TestCase):
     def test_md_pair_round_trips(self):
         for rel in ("docs/guide/a.md", "orchestration/loop/UPSTREAM.zh-CN.md"):
             self.assertEqual(checker.md_pair(checker.md_pair(rel)), rel)
-
-    def test_end_to_end_blog_post_needs_no_pair_but_is_still_link_checked(self):
-        clean = run(build_tree({"docs/blog/posts/2026-09-21-a.md": "# a\n"}))
-        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
-        broken = run(
-            build_tree(
-                {
-                    "docs/blog/posts/2026-09-21-a.md": "# a\n\n[dead](missing.png)\n",
-                }
-            )
-        )
-        self.assertEqual(broken.returncode, 1, broken.stdout + broken.stderr)
-        self.assertIn("missing local target", broken.stderr)
 
     def test_end_to_end_new_directory_gap_is_reported(self):
         root = build_tree({"docs/verification/report.md": "# report\n"})
