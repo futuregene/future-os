@@ -41,6 +41,7 @@ import {
   createStreamEventBatch,
   applyReplayEvents,
   dropSupersededCompactionDividers,
+  foldLiveCompactionPlaceholdersIntoHistory,
   emptyTimeline,
   normalizeReplayEvents,
   stripRunItems,
@@ -806,6 +807,19 @@ export class SyncEngine {
         continue;
       }
       const event = op.event;
+      // The broadcaster keeps the settled run's run_id + idx until the next
+      // run starts, so a standalone compaction emitted between runs arrives
+      // stamped inside that run at an idx past its end. It is session fan-out,
+      // not run content (desktop parity: #750's is_run_stamped_fanout): apply
+      // it without cursor bookkeeping. Treating it as run content either
+      // replays a settled run on every compaction (its frames never enter the
+      // run's replay, so the "gap" can never heal) or, once the cursor moved
+      // past the stamped idx, drops the compaction's only terminal event.
+      if (isRunStampedCompaction(event)) {
+        lane.bufferedBytes -= op.bytes;
+        append(event);
+        continue;
+      }
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
       const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
       if (verdict.kind === "overlap") {
@@ -930,6 +944,15 @@ export class SyncEngine {
   }
 }
 
+/** A compaction lifecycle frame the broadcaster stamped with the surrounding
+ * run's identity because it was emitted between runs. Only run-stamped frames
+ * are exempted: cursor-less frames were never tracked anyway, and a run's own
+ * pre_turn/mid_turn compaction IS run content (it sits inside the reply's
+ * segment stream, journaled and replayable with the run). */
+function isRunStampedCompaction(event: StreamEvent): boolean {
+  return event.type.startsWith("compaction_") && event.runId != null;
+}
+
 function freshRunBase(base: TimelineState, runId: string): TimelineState {
   return {
     ...stripRunItems(base, runId),
@@ -973,9 +996,15 @@ function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: stri
  */
 function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
-  const historyIds = new Set(history.items.map((item) => item.id));
+  // A durable checkpoint supersedes the live placeholder of the same
+  // compaction wherever the placeholder landed (its frames never enter any
+  // replay, so nothing else can settle it).
+  const compactionFold = foldLiveCompactionPlaceholdersIntoHistory(history.items, live.items);
+  const historyItems = compactionFold.history;
+  const liveItems = compactionFold.live;
+  const historyIds = new Set(historyItems.map((item) => item.id));
   const historyMessageRuns = new Set(
-    history.items.flatMap((item) =>
+    historyItems.flatMap((item) =>
       item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
     ),
   );
@@ -987,7 +1016,7 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
   // The active run's *assistant* items are dropped by fullReconcile's stripRunItems
   // (the replay rebuilds them). Cached durable rows outside the new window
   // remain reachable through paging and must not be appended after its tail.
-  const folded = live.items.filter((item) => {
+  const folded = liveItems.filter((item) => {
     if (live.durableItemIds?.has(item.id)) return false;
     if (historyIds.has(item.id)) return false;
     if (
@@ -999,11 +1028,11 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     }
     return true;
   });
-  const settledReplies = new Map(live.items.flatMap(item =>
+  const settledReplies = new Map(liveItems.flatMap(item =>
     item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
       ? [[item.runId, item] as const] : [],
   ));
-  const items = dropSupersededCompactionDividers(history.items, live.items).map(item => {
+  const items = dropSupersededCompactionDividers(historyItems, liveItems).map(item => {
     if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
     const cached = settledReplies.get(item.runId);
     if (!cached) return item;

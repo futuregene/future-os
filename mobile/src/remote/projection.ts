@@ -285,6 +285,42 @@ export function dropSupersededCompactionDividers(
   ));
 }
 
+/** Durable history is the truth for settled standalone markers. When a merge
+ * puts a checkpoint divider and a live placeholder for the same compaction
+ * side by side — in either order — the placeholder must go: a running one
+ * whose terminal was lost would otherwise sit below the completed divider
+ * forever, and a settled one (folded late-start alias) is the same marker
+ * under its operation id. */
+export function foldLiveCompactionPlaceholdersIntoHistory(
+  history: TimelineItem[],
+  live: TimelineItem[],
+): { history: TimelineItem[]; live: TimelineItem[] } {
+  const checkpoints = new Set(
+    history.flatMap(item =>
+      item.kind === "message"
+        ? (item.segments ?? []).flatMap((segment): string[] =>
+          segment.kind === "compaction" && segment.checkpointId ? [segment.checkpointId] : [])
+        : []),
+  );
+  if (checkpoints.size === 0) return { history, live };
+  const dividerOnly = (item: TimelineItem) => item.kind === "message" && isCompactionDividerRow(item);
+  const compactionSegments = (item: TimelineItem) =>
+    item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : [];
+  const placeholder = (item: TimelineItem) =>
+    dividerOnly(item)
+    && item.id.startsWith("compaction:")
+    && compactionSegments(item).every(segment =>
+      !segment.checkpointId || checkpoints.has(segment.checkpointId));
+  const startAliases = live.filter(item =>
+    placeholder(item)
+    && compactionSegments(item).every(segment => segment.status !== "running"));
+  const aliasIds = new Set(startAliases.map(item => item.id));
+  return {
+    history: history.filter(item => !(dividerOnly(item) && aliasIds.has(item.id))),
+    live: live.filter(item => !placeholder(item)),
+  };
+}
+
 /** A row that renders nothing but a compaction divider (no reply text yet). */
 function isCompactionDividerRow(item: TimelineItem): boolean {
   return item.kind === "message"
@@ -628,6 +664,29 @@ function applyStandaloneCompaction(
   // A replayed start must not undo a failed/settled marker for this operation.
   if (status === "running" && existing?.kind === "message"
     && existing.segments?.some(segment => segment.kind === "compaction" && segment.status !== "running")) return items;
+  // A start delivered after its operation already settled (a replayed frame,
+  // or a live frame that raced the history reload carrying the checkpoint)
+  // must not append a second, permanently-running divider below the settled
+  // one. Fold it into a trailing settled standalone marker: the durable
+  // identity keeps its position, the pending id becomes an alias of it.
+  // Standalone compactions are serialized by the agent (compaction_in_progress
+  // fences the next one), so a settled divider that is still the LAST item
+  // can only be this operation's — the durable copy never carries the
+  // operation id, but no message could follow it before this start. Anything
+  // after the divider (a prompt, a reply) means this start is a genuinely
+  // new compaction and gets its own placeholder.
+  if (status === "running" && !existing) {
+    const last = items[items.length - 1];
+    // A durable divider's segment carries no status (history rows omit it);
+    // anything but an explicit "running" segment is settled.
+    if (last?.kind === "message" && isCompactionDividerRow(last)
+      && last.segments?.[0]?.kind === "compaction" && last.segments[0].status !== "running") {
+      const segment = last.segments[0];
+      return items.map((entry, index) => index === items.length - 1
+        ? { ...last, id: pendingId, segments: [{ ...segment, status: segment.status ?? "completed" }] }
+        : entry);
+    }
+  }
   const item: TimelineItem = {
     id, kind: "message", role: "assistant", text: "", streaming: false,
     segments: [{

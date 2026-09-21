@@ -10,6 +10,7 @@ export {
   applyReplayEvents,
   commitAcknowledgedUserMessage,
   dropSupersededCompactionDividers,
+  foldLiveCompactionPlaceholdersIntoHistory,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,
