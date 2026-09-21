@@ -40,9 +40,10 @@ formats. Conversations can be pinned, renamed or deleted individually — or in
 bulk from multi-select — and a workspace can be deleted with everything in it.
 Workspace groups remember whether you folded them. Attachments come from the
 system camera, the system photo picker or the system file picker, and text,
-images or files can be **shared** into FutureOS from another app: that opens a
-new conversation with the content in the composer, which you review before
-sending.
+images or files can be **shared** into FutureOS from another app: choose a new
+conversation (or one of your workspaces) or an existing one — grouped by
+workspace and searchable — and the content lands in that composer, which you
+review before sending.
 
 Reconnection can refill missed events, but a sleeping/offline desktop cannot
 execute new work until it is reachable again.
