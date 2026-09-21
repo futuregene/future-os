@@ -4,6 +4,8 @@
 
 状态：开发设计草案；本文描述目标实现，不代表现有功能已经实现或经过验证。
 
+前置工程：[CLI 授权与 Loop 工具化改造](CLI_REFACTOR.zh-CN.md)（[English](CLI_REFACTOR.md)）。先完成本地 CLI 受限授权、恢复 auth.json 沙盒保护和 Loop 内置工具；远程 CLI 复用同一 runtime，仅由 runner 转发授权请求。原始账户/模型 Key 不下发。Browser 在远端执行，缺少浏览器或启动失败直接报错；远端技能库安装/更新一期可明确不支持。本文继续负责 SSH、执行器与资源生命周期，CLI/Loop 职责以该前置方案为准。
+
 一期范围：Windows / macOS 控制端连接普通 Linux 服务器；Linux 控制端沿用相同接口。
 
 下一期：超算、Slurm / PBS、计算节点调度与作业恢复，以及远端开发服务的端口转发，不进入一期实现和验收。端口转发规划见第 17 节。
@@ -146,7 +148,7 @@ sequenceDiagram
 | `1.2.3` | `1.2.4` / `1.3.0` / `2.0.0` | 拒绝 |
 | `0.0.2-a+dev` | `0.0.2-b+dev` | 通过；开发者协调并测试实际兼容性 |
 
-版本规则可参考现有 [版本脚本](../scripts/version.mjs) 的数字核心提取逻辑，运行版本注入见 [agent/build.rs](../agent/build.rs)。开发版保留上述规则，不另加“每次协议修改必须升数字版本”、提交 hash 一致或开发构建兼容矩阵要求；开发期间允许通过新旧构建联调发现不匹配。版本准入通过后仍需正常握手、能力检查和有界协议错误处理，不能把不认识的消息当作成功。
+版本规则可参考现有 [版本脚本](../../scripts/version.mjs) 的数字核心提取逻辑，运行版本注入见 [agent/build.rs](../../agent/build.rs)。开发版保留上述规则，不另加“每次协议修改必须升数字版本”、提交 hash 一致或开发构建兼容矩阵要求；开发期间允许通过新旧构建联调发现不匹配。版本准入通过后仍需正常握手、能力检查和有界协议错误处理，不能把不认识的消息当作成功。
 
 数字版本不一致返回 `RUNNER_VERSION_MISMATCH`，阻止新执行；控制端提供匹配版本的 runner 包。更新仅影响对应 `target_id` 的二进制，保留其 Skill 缓存和普通对话目录。发布替换也要取得同一 home 锁并保持到安装完成，避免检查空闲后与 Local/serve 启动竞争；不覆盖运行文件，不为升级启动第二个 serve。已有任务先由原实例完成或明确取消，释放占用后再更新。
 
@@ -240,7 +242,7 @@ runtime 记录不包含凭据。发现端点必须验证 owner、mode、非 syml
 - serve 只接受当前 owner；按 runner/workspace/操作绑定句柄，禁止请求自由指定另一 runner 或 workspace 的内部路径。
 - 占用锁覆盖整个 Local Agent/runner 生命周期与仍存活的受管工作负载；control epoch 只用于拒绝旧连接发来的新命令，不替代进程生命周期管理。
 - 不再做跨控制端逐项目调度；同根其他控制端和 Local 即使选择不同项目也返回占用。同一控制端内部仍可按现有调度执行多个项目。不同 home、外部 shell/编辑器和不遵守锁的旧程序不由该锁协调，保留文件版本冲突检查。
-- 文件工具和 shell 同样受权限策略约束。默认只允许工作区、已绑定 Skill/input、该操作临时目录以及必要系统运行时资源；不能通过 read/list/search 绕过 shell 沙盒读取控制资源。
+- 文件工具和 shell 同样受权限策略约束。默认只允许工作区、已绑定 Skill/input、该操作临时目录以及必要系统运行时资源；不能通过 read 工具或面板的目录列表、文件搜索入口绕过权限边界读取控制资源。
 - 沙盒内屏蔽 runtime、控制 socket、安装根、其他 workspace 资源、账号凭据目录；仅把当前 Skill/input 视图显式只读挂载。不得把父目录全部可见后仅依赖 chmod。
 - 不继承控制连接、日志或审批 FD；隔离 `/proc`/进程可见性，防止从 FD 或其他进程重新取得控制通道。沙盒能力验收需包含这些路径。
 - Skill 内容对象不直接给工具写入；工作区视图通过只读挂载呈现。需要写出的 Skill 应使用项目输出目录或 operation tmp。
@@ -265,9 +267,9 @@ runtime 记录不包含凭据。发现端点必须验证 owner、mode、非 syml
 | `ExecutionEnvironment` | Linux aarch64，bash 5.x，POSIX 路径 | 模型 shell 指令、远端工具、项目与沙盒 |
 | `ToolExecutionSite` | `workspace_backend` / `controller_service` | 决定每个工具在哪里运行 |
 
-远程会话的 shell/read/write/edit/search/Git/项目上下文必须走 workspace backend。模型服务、带凭据的连接器等控制端服务可保留本地。工具注册必须声明 `ToolExecutionSite`，缺失声明的工具不得进入远程会话的可用工具集；调度器按注册信息及固定 ExecutionContext 强制路由，不由模型指定或改写执行位置。远端失败不能回退本地执行。
+远程会话的现有 Agent 工具 shell/read/write/edit 必须走 workspace backend；Git 面板操作和项目上下文读取也必须绑定同一执行目标，但不因此成为新的模型工具。当前没有独立的 Agent `search` 工具，本期不新增；模型需要检索项目内容时使用目标端 shell 中实际可用的命令，缺少命令时明确报告。Files 面板的文件搜索属于第 19 节的受限资源接口，不能与模型工具混淆。模型服务、Loop 和带凭据的连接器等控制端服务保留在控制端。工具注册必须声明 `ToolExecutionSite`，缺失声明的工具不得进入远程会话的可用工具集；调度器按注册信息及固定 ExecutionContext 强制路由，不由模型指定或改写执行位置。远端失败不能回退本地执行。
 
-文件打开、附件上传、产物下载和浏览器入口使用带 target/workspace 身份的资源引用，分别交给受控资源服务或控制端 UI，不能将远端绝对路径交给本机文件 API。普通网页可以按工具声明在控制端打开；远端返回的 `localhost`/回环 URL 不能直接当作本机 URL 打开。本期不实现端口转发，也不承诺通过本地浏览器访问仅监听远端回环地址的测试服务，需明确显示能力限制；下一期规划见第 17 节。
+文件打开、附件上传、产物下载和浏览器入口使用带 target/workspace 身份的资源引用，分别交给受控资源服务或控制端 UI，不能将远端绝对路径交给本机文件 API。远程会话中的 `future-browser` 在远端执行，用于查看远端开发页面；其 `localhost`、文件与截图均属于远端。缺少浏览器或启动失败时直接报错，不回退控制端。用户在控制端 UI 打开链接是另一种行为，不能把远端 `localhost`/回环 URL 当作本机 URL 打开。本期不实现端口转发，也不承诺通过本地浏览器访问仅监听远端回环地址的测试服务；下一期规划见第 17 节。
 
 VS Code 对 UI/工作区扩展及浏览器执行位置的划分可作为参考：[扩展执行位置与 API 路由](https://code.visualstudio.com/api/advanced-topics/remote-extensions)。本项目只落实工具注册与调度约束，不引入完整远程扩展宿主。
 
@@ -319,7 +321,6 @@ trait ExecutionBackend {
     async fn prepare_context(&self, req: ContextSpec) -> ExecutionContext;
     async fn prepare_resources(&self, req: ResourceSpec) -> ResourceBinding;
     async fn read_batch(&self, ctx: ContextId, req: ReadBatch) -> ReadBatchResult;
-    async fn search(&self, ctx: ContextId, req: SearchRequest) -> SearchResult;
     async fn mutate_file(&self, ctx: ContextId, req: FileMutation) -> OperationHandle;
     async fn start_process(&self, ctx: ContextId, req: ProcessSpec) -> OperationHandle;
     async fn query_operations(&self, req: OperationQuery) -> OperationStates;
@@ -333,7 +334,7 @@ trait ExecutionBackend {
 
 SSH 内部由 runner client 管理 Hello/attach、control epoch、admission epoch、帧、分块上传/finalize、恢复游标和 DurableAck。LocalBackend 不实现模拟上传或网络 ACK。高层 `prepare_resources` 在 Local 准备本地固定只读快照，在 SSH 通过分块协议准备同一语义资源。控制端事件存储提交成功后通知 SSH 内部确认，不能在工具适配器刚收到事件时提前 ACK。
 
-审批由控制端判断；执行端验证当前连接资格、context 与操作授权。占用在 Local/serve 启动时取得，无逐目录租约接口。文件/read/search 和 shell 共同经过 backend；runner 自身实现基础目录、读取、搜索与 hash，不隐含依赖 rg/find/Python。
+审批由控制端判断；执行端验证当前连接资格、context 与操作授权。占用在 Local/serve 启动时取得，无逐目录租约接口。read/write/edit 和 shell 共同经过 backend。runner 自身实现基础目录、读取、hash 以及第 19 节面板需要的文件搜索，不隐含依赖 rg/find/Python；这些内部资源能力不注册为新的 Agent `search` 工具。
 
 `ProcessSpec` 用 shell script 或 executable+argv 二选一，包含执行所在地 cwd、受控环境增量、运行时限、输出/断线策略及授权引用；具体命令摘要以规范化请求计算。Windows 控制端不套 PowerShell；平台分支只出现在实际执行所在地的实现内。
 
@@ -369,7 +370,7 @@ Windows 桌面连接 Linux 时，模型得到的示例：
 工作目录：/home/alice/project
 shell：/bin/bash，5.2，非交互 bash -c
 路径语义：POSIX，区分大小写
-shell/read/write/edit/search 在该远程工作区执行。
+shell/read/write/edit 在该远程工作区执行。
 控制端 Windows 仅承载界面和服务工具，不决定上述工具语法。
 Skills：下列 location 均为当前执行目标绑定的只读路径。
 ```
@@ -595,7 +596,7 @@ Terminal 创建/关闭等控制请求复用实例、操作 ID、摘要和去重�
 
 | 操作 | 网络失败后的策略 |
 | --- | --- |
-| describe/stat/list/read/search | 在原总预算内有限重试；结果可能更新，保留版本信息 |
+| 环境描述、stat、目录列表、read、面板文件搜索等只读接口 | 在原总预算内有限重试；结果可能更新，保留版本信息；不代表新增同名模型工具 |
 | 查询任务、查询 chunk 范围 | 允许重试，仍校验实例和资源归属 |
 | 同内容 chunk 上传 | 用同 transfer/offset/hash 重试，先核对已确认范围 |
 | 文件 finalize / 原子替换 | 用原 ID 查询状态；必要时核对期望版本及内容，不盲目覆盖 |
@@ -755,18 +756,18 @@ stdout/stderr 各自有单调 byte offset，生命周期事件有单调 seq；�
 
 | 代码位置 | 当前行为 | 目标改造 |
 | --- | --- | --- |
-| [prompt/mod.rs](../agent/src/prompt/mod.rs) 的 `os_hint()` | 从控制端编译平台与本地 shell 生成提示 | 注入 ExecutionEnvironment，平台/路径/Skill 说明统一来源 |
-| [tools/mod.rs](../agent/src/tools/mod.rs) 的 `shell_tool()` | 工具描述有 Windows/Unix 编译分支 | 按 backend 描述生成工具定义，远程 Linux 不走本机 PowerShell 描述 |
-| [tools/mod.rs](../agent/src/tools/mod.rs) 的 `run_read/write/edit`、进程启动 | 直接访问当前机器文件和进程 | 提取 backend 接口；文件与 shell 一起迁移 |
-| [sandbox/mod.rs](../agent/src/sandbox/mod.rs) | 本地平台选择 shell 与探测沙盒 | 本地 backend 保持现状；远程使用 runner 的能力及 receipt |
-| [sandbox/linux/probe.rs](../agent/src/sandbox/linux/probe.rs) | bwrap 版本、安全路径、root owner 与运行探测 | 复用契约并补控制资源隔离，不能绕过信任要求 |
-| [prompt/project_context.rs](../agent/src/prompt/project_context.rs) | 直接读 cwd 内项目说明文件 | 从所绑定 backend 获取，保持项目规则优先级 |
-| [skills/mod.rs](../agent/src/skills/mod.rs) | 全局目录发现，Skill.location 为本机路径 | 保留发现规则，另建 SkillBundle/ResourceBinding 与远端 location |
-| [rpc/session_prompt.rs](../agent/src/rpc/session_prompt.rs) | 注入本地 ScopeOptions、沙盒与权限 | 为 run 固定 ExecutionContext，审批绑定远端身份 |
-| [session/database.rs](../agent/src/session/database.rs) | Agent 持有 SQLite 与提交语义 | 保持控制端权威；新增执行请求/游标/绑定记录，不搬到远端 |
-| [rpc/command_policy.rs](../packages/rpc/src/command_policy.rs) | 已区分 SafeRead / SameRequestId / Never | 借鉴分类，但新增 runner epoch/instance 契约，不能直接等同已有 Agent RPC 去重 |
-| [grpc/mod.rs](../agent/src/grpc/mod.rs) | 当前 TCP 启动路径未配置 TLS | 不把此入口作为公网远程执行协议；使用 SSH/stdio 私有协议 |
-| [agent/Cargo.toml](../agent/Cargo.toml) | 完整 Agent 依赖模型 HTTP、SQLite、图像等 | 独立 runner crate + 小型 execution/protocol 库，避免依赖整个 Agent |
+| [prompt/mod.rs](../../agent/src/prompt/mod.rs) 的 `os_hint()` | 从控制端编译平台与本地 shell 生成提示 | 注入 ExecutionEnvironment，平台/路径/Skill 说明统一来源 |
+| [tools/mod.rs](../../agent/src/tools/mod.rs) 的 `shell_tool()` | 工具描述有 Windows/Unix 编译分支 | 按 backend 描述生成工具定义，远程 Linux 不走本机 PowerShell 描述 |
+| [tools/mod.rs](../../agent/src/tools/mod.rs) 的 `run_read/write/edit`、进程启动 | 直接访问当前机器文件和进程 | 提取 backend 接口；文件与 shell 一起迁移 |
+| [sandbox/mod.rs](../../agent/src/sandbox/mod.rs) | 本地平台选择 shell 与探测沙盒 | 本地 backend 保持现状；远程使用 runner 的能力及 receipt |
+| [sandbox/linux/probe.rs](../../agent/src/sandbox/linux/probe.rs) | bwrap 版本、安全路径、root owner 与运行探测 | 复用契约并补控制资源隔离，不能绕过信任要求 |
+| [prompt/project_context.rs](../../agent/src/prompt/project_context.rs) | 直接读 cwd 内项目说明文件 | 从所绑定 backend 获取，保持项目规则优先级 |
+| [skills/mod.rs](../../agent/src/skills/mod.rs) | 全局目录发现，Skill.location 为本机路径 | 保留发现规则，另建 SkillBundle/ResourceBinding 与远端 location |
+| [rpc/session_prompt.rs](../../agent/src/rpc/session_prompt.rs) | 注入本地 ScopeOptions、沙盒与权限 | 为 run 固定 ExecutionContext，审批绑定远端身份 |
+| [session/database.rs](../../agent/src/session/database.rs) | Agent 持有 SQLite 与提交语义 | 保持控制端权威；新增执行请求/游标/绑定记录，不搬到远端 |
+| [rpc/command_policy.rs](../../packages/rpc/src/command_policy.rs) | 已区分 SafeRead / SameRequestId / Never | 借鉴分类，但新增 runner epoch/instance 契约，不能直接等同已有 Agent RPC 去重 |
+| [grpc/mod.rs](../../agent/src/grpc/mod.rs) | 当前 TCP 启动路径未配置 TLS | 不把此入口作为公网远程执行协议；使用 SSH/stdio 私有协议 |
+| [agent/Cargo.toml](../../agent/Cargo.toml) | 完整 Agent 依赖模型 HTTP、SQLite、图像等 | 独立 runner crate + 小型 execution/protocol 库，避免依赖整个 Agent |
 
 还需审计 Desktop/TUI/Mobile 的工作区选择、远程文件打开、附件、diff、审批与任务恢复消费者。backend 放在控制端 Agent 内，前端通过既有 Agent 通道操作，不让每个平台分别实现 SSH 任务状态机。
 
@@ -784,12 +785,12 @@ agent/skills/resources  # 快照、manifest、绑定与同步
 
 单占用模型还需覆盖以下现有入口：
 
-- [agent/src/cli.rs](../agent/src/cli.rs)：提取现有全生命周期锁，统一 Local/runner 和维护入口；不能只检查 PID。
-- [packages/rpc/src/home.rs](../packages/rpc/src/home.rs)：复用有效 FUTURE_HOME 解析，远端路径在远端解析。
-- [Desktop 存储](../desktop/src-tauri/src/store/db.rs) 与 [清理](../desktop/src-tauri/src/store/cleanup.rs)：保留现有 Local 布局，远程 chat 使用独立 runner 根，避免 orphan GC 误删。
-- [scripts/version.mjs](../scripts/version.mjs) 与 [agent/build.rs](../agent/build.rs)：使用实际 FUTURE_VERSION 的完整数字核心判定，不读 Cargo 占位版本。
+- [agent/src/cli.rs](../../agent/src/cli.rs)：提取现有全生命周期锁，统一 Local/runner 和维护入口；不能只检查 PID。
+- [packages/rpc/src/home.rs](../../packages/rpc/src/home.rs)：复用有效 FUTURE_HOME 解析，远端路径在远端解析。
+- [Desktop 存储](../../desktop/src-tauri/src/store/db.rs) 与 [清理](../../desktop/src-tauri/src/store/cleanup.rs)：保留现有 Local 布局，远程 chat 使用独立 runner 根，避免 orphan GC 误删。
+- [scripts/version.mjs](../../scripts/version.mjs) 与 [agent/build.rs](../../agent/build.rs)：使用实际 FUTURE_VERSION 的完整数字核心判定，不读 Cargo 占位版本。
 
-会话执行接入还需覆盖 [ServerSession](../agent/src/rpc/session.rs)、[session_prompt](../agent/src/rpc/session_prompt.rs)、[Agent session 持久化](../agent/src/session/database.rs)、[Desktop session 桥接](../desktop/src-tauri/src/agent_bridge/session.rs)、[cwd reconcile](../desktop/src-tauri/src/agent_bridge/reconciliation.rs) 和 [导入](../desktop/src-tauri/src/agent_bridge/import.rs)。加强的职责划分、既有快照复用及路径兼容按第 18 节实施，不只替换 shell 启动函数。
+会话执行接入还需覆盖 [ServerSession](../../agent/src/rpc/session.rs)、[session_prompt](../../agent/src/rpc/session_prompt.rs)、[Agent session 持久化](../../agent/src/session/database.rs)、[Desktop session 桥接](../../desktop/src-tauri/src/agent_bridge/session.rs)、[cwd reconcile](../../desktop/src-tauri/src/agent_bridge/reconciliation.rs) 和 [导入](../../desktop/src-tauri/src/agent_bridge/import.rs)。加强的职责划分、既有快照复用及路径兼容按第 18 节实施，不只替换 shell 启动函数。
 
 Desktop 专项还需拆分 Files 的资源访问、Git Review 的目标端计算和 Terminal 的 PTY/传输边界，见第 19—22 节。Shadow Review 一期仅增加 target 分流，禁止本地采集/恢复/清理逻辑处理远程 workspace，不做完整远程化。轻量共用模块不得依赖 Desktop store/Tauri 或完整 Agent；只提取实际共用的实现，不预先建立通用插件框架。
 
@@ -809,7 +810,7 @@ Desktop 专项还需拆分 Files 的资源访问、Git Review 的目标端计算
 - 交付可独立构建的 Linux runner，以及安装、认证、stdio bridge、私有 UDS、协议协商。
 - 分离首次准备与连接快路径，实现控制端发布包缓存；每 target 一个 RemoteConnection，跨 workspace 复用并合并并发连接请求。
 - Local/SSH 统一读取固定占用记录，校验实际 socket 与实例，不依赖各登录会话的 XDG 路径一致。
-- 打通远端 shell/read/write/edit/search，工作区身份与审批绑定。
+- 打通远端现有 shell/read/write/edit 工具，工作区身份与审批绑定；Files 面板搜索按第 19 节单独接入。
 - 验证独立 Linux 账号之间的 socket、workspace 和资源隔离；同 UID 的限制明确呈现。
 - 明确二进制和 sandbox 的实际依赖，不引入现场编译或后台系统服务。
 - Linux Local 与所有 runner 使用同一有效 FUTURE_HOME 下的占用锁；实现单 owner、断线恢复和残留进程检查，数字版本严格匹配。
@@ -867,7 +868,7 @@ M1–M4 全部属于一期；不能只完成“远程 shell 可执行”就宣�
 
 ### 15.1 设置：远程执行主机
 
-建议独立列出“远程执行主机”，与现有“手机等设备远程连接 FutureOS”的设置区分，避免把控制端入站连接与连接 Linux 执行器混在一起。现有 [RemotePage](../desktop/src/features/settings/RemotePage.tsx) 管理自动连接偏好，不能直接把该开关等同于 SSH 主机管理。
+建议独立列出“远程执行主机”，与现有“手机等设备远程连接 FutureOS”的设置区分，避免把控制端入站连接与连接 Linux 执行器混在一起。现有 [RemotePage](../../desktop/src/features/settings/RemotePage.tsx) 管理自动连接偏好，不能直接把该开关等同于 SSH 主机管理。
 
 主机列表提供：名称、地址/端口、SSH 用户、连接验证状态、执行环境状态、最后检查时间、被多少个 workspace 使用，以及编辑/验证/停用操作。Local 为固定内置目标，无需 SSH，不可删除。
 
@@ -1072,7 +1073,7 @@ SSH 指纹指**服务器主机公钥的 SHA256 指纹**，不是 SSH 用户登�
 | U47 | TUI/CLI/Mobile 不经过 Desktop 发起/恢复执行 | 从 Agent 配置与会话绑定解析目标，不依赖 Desktop DB，不复制密码或改绑 |
 | U48 | 同一 Skill 同时用于 Local/SSH run | 原始 location 不被覆盖，各 context 使用自己的内容绑定和路径 |
 
-实现入口除第 12 节外，还需覆盖 [workspace commands](../desktop/src-tauri/src/commands/workspaces.rs)、[workspace store](../desktop/src-tauri/src/store/workspaces.rs)、[thread commands](../desktop/src-tauri/src/commands/threads.rs) 及其创建、fork、cwd reconcile 和文件清理消费者。上述为设计增补，本次未修改这些实现。
+实现入口除第 12 节外，还需覆盖 [workspace commands](../../desktop/src-tauri/src/commands/workspaces.rs)、[workspace store](../../desktop/src-tauri/src/store/workspaces.rs)、[thread commands](../../desktop/src-tauri/src/commands/threads.rs) 及其创建、fork、cwd reconcile 和文件清理消费者。上述为设计增补，本次未修改这些实现。
 
 ## 16. 单控制端占用、独立 runner 目录与 Local 兼容
 
@@ -1094,11 +1095,11 @@ Linux UID 1000，FUTURE_HOME=/home/alice/.future
 
 允许不同 FUTURE_HOME 独立运行，不增加跨 home、跨账号或跨主机锁。两个 home 若主动选择同一用户项目，仍可能互相修改；由使用者负责避免冲突，一期不重新引入目录协调器。符号链接别名解析到同一有效 home 时仍须落到同一锁文件，不能仅凭字符串不同建立两把锁。
 
-FUTURE_HOME 隔离的是归属该实例的资源，不会自动改变用户选定项目和共享 `~/.agents/skills`。当前 Desktop 的数据库/chat 根还直接使用真实 HOME，见 [Desktop 存储路径](../desktop/src-tauri/src/store/db.rs)；本文不为此迁移全部 Local 数据，也不将“设置不同 FUTURE_HOME”宣传为多个 Desktop 的所有数据都已隔离。
+FUTURE_HOME 隔离的是归属该实例的资源，不会自动改变用户选定项目和共享 `~/.agents/skills`。当前 Desktop 的数据库/chat 根还直接使用真实 HOME，见 [Desktop 存储路径](../../desktop/src-tauri/src/store/db.rs)；本文不为此迁移全部 Local 数据，也不将“设置不同 FUTURE_HOME”宣传为多个 Desktop 的所有数据都已隔离。
 
 ### 16.2 一把共享锁，覆盖执行生命周期
 
-优先复用现有 `<FUTURE_HOME>/agent/agent-instance.lock`。当前 Local 完整 Agent 已在正常服务启动时持有该锁，见 [Agent CLI](../agent/src/cli.rs)；有效 home 解析见 [RPC home](../packages/rpc/src/home.rs)。将这段依赖很少的锁逻辑提取供 runner 复用，不让 runner 为了取锁加载完整 Agent 或初始化数据库。
+优先复用现有 `<FUTURE_HOME>/agent/agent-instance.lock`。当前 Local 完整 Agent 已在正常服务启动时持有该锁，见 [Agent CLI](../../agent/src/cli.rs)；有效 home 解析见 [RPC home](../../packages/rpc/src/home.rs)。将这段依赖很少的锁逻辑提取供 runner 复用，不让 runner 为了取锁加载完整 Agent 或初始化数据库。
 
 - Local 已启动：远程最小 SSH 验证可成功，执行启动返回 `EXECUTION_HOME_BUSY`。
 - runner 已启动：本地执行引擎启动返回占用，不自动杀 runner。仅浏览已有本地历史可以不启动执行引擎；需要适配 Desktop 的自动拉起流程，不能将占用误判为崩溃后反复重启。
@@ -1143,7 +1144,7 @@ serve 启动时生成 `instance_id`；首次取得锁并 attach 后，本次占�
 | socket/占用提示 | socket 使用私有短路径；占用提示和共享锁固定在 agent 根，跨登录一致发现 |
 | 数据库/长期模型凭据 | 保留在各控制端，runner 不同步、不新建 |
 
-远程普通对话不放入现有 Local chat 根，避免 [Local orphan chat 清理](../desktop/src-tauri/src/store/cleanup.rs) 因本地数据库没有对应会话而误删。runner 的 chat 是用户产物，不纳入 Skill/tmp GC；删除主机注册、退出或升级也不能自动删除这些目录。独立 runner 缓存可能重复占用磁盘，这是本期接受的成本。
+远程普通对话不放入现有 Local chat 根，避免 [Local orphan chat 清理](../../desktop/src-tauri/src/store/cleanup.rs) 因本地数据库没有对应会话而误删。runner 的 chat 是用户产物，不纳入 Skill/tmp GC；删除主机注册、退出或升级也不能自动删除这些目录。独立 runner 缓存可能重复占用磁盘，这是本期接受的成本。
 
 Linux 本机若启动完整 FutureOS 使用 Local，该机器此时也承担控制端职责，会产生自身的本地数据库和配置；远程控制端 A/B 的数据库和密钥仍不传过去。同一项目目录不意味着不同控制端之间合并聊天历史或自动接管模型上下文。
 
@@ -1260,20 +1261,20 @@ Workspace.path 是唯一持久目录值；ExecutionPath/运行时 context 是它
 
 保留 workspace/thread 的原子本地创建关系。涉及远端准备时：短事务写稳定引用及 provisioning 进度 → 事务外执行网络准备 → 短事务更新结果；不能把 SSH 等待放进 SQLite 写事务。失败重试使用原记录，导入/fork/清理/附件/diff 同样必须保留目标身份。
 
-代码依据：[Skill](../agent/src/skills/mod.rs)、[Workspace store](../desktop/src-tauri/src/store/workspaces.rs)、[Thread store](../desktop/src-tauri/src/store/threads.rs)、[Local chat 路径](../desktop/src-tauri/src/store/db.rs)、[清理](../desktop/src-tauri/src/store/cleanup.rs)。
+代码依据：[Skill](../../agent/src/skills/mod.rs)、[Workspace store](../../desktop/src-tauri/src/store/workspaces.rs)、[Thread store](../../desktop/src-tauri/src/store/threads.rs)、[Local chat 路径](../../desktop/src-tauri/src/store/db.rs)、[清理](../../desktop/src-tauri/src/store/cleanup.rs)。
 
 ### 18.3 类型与路径分开，优先兼容既有 chat 规则
 
 Local 不迁移既有目录，不更换历史目录 ID。远程根使用 `runner/<target_id>/workspaces/chat/`；末级 ID 由现有入口的 thread/session 规则决定。没有明确重大隐患或无法兼容的证据，不为格式统一改用 workspace ID 或批量搬目录。
 
-当前 [get_or_create_chat_workspace_in](../desktop/src-tauri/src/store/workspaces.rs) 先登记 thread ID 路径并延迟实际建目录；[update_chat_workspace_path](../desktop/src-tauri/src/store/workspaces.rs) 更新记录，本身不执行目录 rename。因此“路径记录从 thread ID 转为 session ID”不能直接等同于已有文件需要迁移。
+当前 [get_or_create_chat_workspace_in](../../desktop/src-tauri/src/store/workspaces.rs) 先登记 thread ID 路径并延迟实际建目录；[update_chat_workspace_path](../../desktop/src-tauri/src/store/workspaces.rs) 更新记录，本身不执行目录 rename。因此“路径记录从 thread ID 转为 session ID”不能直接等同于已有文件需要迁移。
 
 兼容实施规则：
 
 1. 新会话沿现有时机确定最终路径；目录尚未创建且无产物时，可按原逻辑更新记录。远端仍必须经过 provisioning 验证才能执行。
 2. 一旦目录已存在并使用，Workspace.path 为权威；重连、升级、session 恢复/替换或导入不凭新 ID 重新推导目录，也不自动改名/搬文件。真正迁移文件需要单独明确的流程。
 3. 创建回包丢失时用固定请求 ID 恢复原 Agent session 和目录结果；不重新生成 session/chat-dir-id 后创建第二份。若入口尚不支持该幂等契约，在接入中补齐，不能以改名规则掩盖重复创建。
-4. 类型由已登记 workspace.kind 与会话绑定决定。当前 [reconcile_thread_workspace](../desktop/src-tauri/src/agent_bridge/reconciliation.rs) 根据本机 HOME/chat 前缀分类，远程不能复用该判定；应按 target/workspace 引用更新。旧 Local 导入的路径识别只保留为明确的兼容处理，不对新远程记录猜类型。
+4. 类型由已登记 workspace.kind 与会话绑定决定。当前 [reconcile_thread_workspace](../../desktop/src-tauri/src/agent_bridge/reconciliation.rs) 根据本机 HOME/chat 前缀分类，远程不能复用该判定；应按 target/workspace 引用更新。旧 Local 导入的路径识别只保留为明确的兼容处理，不对新远程记录猜类型。
 5. path 更新按 workspace/target 身份定位并带旧值校验，不只按旧 path 字符串全局更新；同路径不同目标不能互相影响。远程 chat 永不交给 Local orphan GC。
 6. fork/import 等需要新目录时继续遵守现有隔离/复制语义，在对应 backend 执行；保留源目录不等于把本应隔离的子会话强行共用目录。
 
@@ -1281,9 +1282,9 @@ Local 不迁移既有目录，不更换历史目录 ID。远程根使用 `runner
 
 ### 18.4 加强 Agent 会话执行职责，避免只在 Desktop 加远程分支
 
-当前代码已有可复用基础：[ServerSession](../agent/src/rpc/session.rs) 管理会话；[session_prompt.rs](../agent/src/rpc/session_prompt.rs) 有 ScheduledSettingsSnapshot/AcceptedRunSnapshot、SessionRuntime 和持久化提交顺序。本期在这些边界上优化，不另建调度队列或会话数据库。
+当前代码已有可复用基础：[ServerSession](../../agent/src/rpc/session.rs) 管理会话；[session_prompt.rs](../../agent/src/rpc/session_prompt.rs) 有 ScheduledSettingsSnapshot/AcceptedRunSnapshot、SessionRuntime 和持久化提交顺序。本期在这些边界上优化，不另建调度队列或会话数据库。
 
-当前耦合点：prompt_internal 根据 cwd 在控制端检查目录、构建项目上下文、解析本机沙盒，再把 cwd/sandbox 分散捕获进审批和工具闭包；[ScopeOptions](../agent/src/tools/mod.rs) 直接把 workspace 字符串转为本机 PathBuf。Desktop 的 [ensure_agent_session](../desktop/src-tauri/src/agent_bridge/session.rs) 主要用 session ID/cwd 判断复用，不包含执行 target。这些边界需要一起改，不能只让 shell 走 SSH。
+当前耦合点：prompt_internal 根据 cwd 在控制端检查目录、构建项目上下文、解析本机沙盒，再把 cwd/sandbox 分散捕获进审批和工具闭包；[ScopeOptions](../../agent/src/tools/mod.rs) 直接把 workspace 字符串转为本机 PathBuf。Desktop 的 [ensure_agent_session](../../desktop/src-tauri/src/agent_bridge/session.rs) 主要用 session ID/cwd 判断复用，不包含执行 target。这些边界需要一起改，不能只让 shell 走 SSH。
 
 建议按职责在 Agent 内组织以下流程；是模块边界，不要求每项一个 service/trait/crate：
 
@@ -1342,7 +1343,7 @@ session/state/summary、fork/恢复/导入和 cwd reconcile 的 RPC 携带结构
 | Git Review | git_review.rs 读取 Desktop store、启动本机 Git、统计本机文件 | 将纯 Git 计算与 store 查询分离，在目标端一次请求完成；前端 diff 展示复用 |
 | 上次运行 Review | Desktop Shadow 仓库、运行前后回调、SQLite 投影、启动维护 | 仅 Local 保留；远程一期明确不支持，不能继续执行本地回调 |
 
-依据：[Files API](../desktop/src/integrations/storage/files.ts)、[文件树](../desktop/src/features/filetree/useFileTree.ts)、[Files 面板](../desktop/src/features/filetree/FileTreePanel.tsx)、[文件命令](../desktop/src-tauri/src/commands/files.rs)、[Git Review](../desktop/src-tauri/src/git_review.rs)、[Review 面板](../desktop/src/features/review/ReviewPanel.tsx)、[文件搜索](../desktop/src-tauri/src/store/workspace_files.rs)。
+依据：[Files API](../../desktop/src/integrations/storage/files.ts)、[文件树](../../desktop/src/features/filetree/useFileTree.ts)、[Files 面板](../../desktop/src/features/filetree/FileTreePanel.tsx)、[文件命令](../../desktop/src-tauri/src/commands/files.rs)、[Git Review](../../desktop/src-tauri/src/git_review.rs)、[Review 面板](../../desktop/src/features/review/ReviewPanel.tsx)、[文件搜索](../../desktop/src-tauri/src/store/workspace_files.rs)。
 
 ### 19.2 无 run 的工作区读取作用域
 
@@ -1380,7 +1381,7 @@ UI 请求通过可信 workspace 绑定解析 target，不能用任意 path 字�
 
 Git 查询必须只读真实仓库，不隐式 init、fetch、checkout、add、reset 或写真实 index。固定 argv、防止 ref/path 参数成为选项；禁用外部 diff/textconv 等可执行扩展，清理无关 Git 环境、禁用不必要的锁写与自动维护，并验证 worktree/submodule 与实际 Git 目录边界。Git 读取涉及的仓库元数据路径须由执行端解析并授权，不能为支持 worktree 而开放任意文件读取。
 
-[ensure_workspace_git](../desktop/src-tauri/src/commands/workspaces.rs) 实际已经只是检测；旧函数名和前端注释仍像初始化，应整理调用或并入能力查询，不恢复自动初始化行为。
+[ensure_workspace_git](../../desktop/src-tauri/src/commands/workspaces.rs) 实际已经只是检测；旧函数名和前端注释仍像初始化，应整理调用或并入能力查询，不恢复自动初始化行为。
 
 能力与网络状态分别表达：
 
@@ -1396,7 +1397,7 @@ Git 查询必须只读真实仓库，不隐式 init、fetch、checkout、add、r
 
 ### 19.5 弱网与面板状态
 
-[useContextData](../desktop/src/components/layout/hooks/useContextData.ts) 目前在同组 Promise.all 中加载运行记录、两种 Git diff 和能力，catch 会清空多组数据；活动时 1.5 秒、空闲时 5 秒刷新。远程版拆开请求及失败边界，但每份已显示数据仍与自己的 workspace/target 身份原子提交，不能显示新目标标题配旧目标内容。
+[useContextData](../../desktop/src/components/layout/hooks/useContextData.ts) 目前在同组 Promise.all 中加载运行记录、两种 Git diff 和能力，catch 会清空多组数据；活动时 1.5 秒、空闲时 5 秒刷新。远程版拆开请求及失败边界，但每份已显示数据仍与自己的 workspace/target 身份原子提交，不能显示新目标标题配旧目标内容。
 
 只在 Review 可见时加载当前视图，切换时复用仍有效缓存；用事件失效、合并刷新、退避及手动刷新，保留低频校验以覆盖外部修改。文件/Git 刷新不能挤占取消、心跳或 Terminal 输入。离线保留旧数据并显示过期时间；读取失败不是空目录/无改动。SSH 查询有期限和取消，旧返回丢弃，恢复成功再重验证。
 
@@ -1421,7 +1422,7 @@ Git 查询必须只读真实仓库，不隐式 init、fetch、checkout、add、r
 | get_last_run_changeset 从已有 changeset JOIN runs 查找 | 最新结束 run 尚未生成 changeset 时可能仍选旧轮；必须从最新结束 run 驱动 pending/不可用状态 |
 | verify_consistency 检查 snapshot commit 存在，build_last_run_review 按 snapshot 状态展示 | 历史 diff 已落盘后，远端缓存清理不能使其变不可用；结果与缓存可恢复性须分离 |
 
-依据：[运行桥接](../desktop/src-tauri/src/agent_bridge/prompt.rs)、[停止检查](../desktop/src-tauri/src/agent_bridge/run_control.rs)、[采集](../desktop/src-tauri/src/shadow_review/snapshot.rs)、[Shadow 仓库](../desktop/src-tauri/src/shadow_review/repository.rs)、[启动维护](../desktop/src-tauri/src/shadow_review/maintenance.rs)、[物化桥接](../desktop/src-tauri/src/agent_bridge/review.rs)、[读取投影](../desktop/src-tauri/src/shadow_review/last_run.rs)、[changeset 查询](../desktop/src-tauri/src/store/review_snapshots.rs)。以上是源码路径核查，未做故障注入，不将风险列表宣称为已复现的所有 Local 故障。
+依据：[运行桥接](../../desktop/src-tauri/src/agent_bridge/prompt.rs)、[停止检查](../../desktop/src-tauri/src/agent_bridge/run_control.rs)、[采集](../../desktop/src-tauri/src/shadow_review/snapshot.rs)、[Shadow 仓库](../../desktop/src-tauri/src/shadow_review/repository.rs)、[启动维护](../../desktop/src-tauri/src/shadow_review/maintenance.rs)、[物化桥接](../../desktop/src-tauri/src/agent_bridge/review.rs)、[读取投影](../../desktop/src-tauri/src/shadow_review/last_run.rs)、[changeset 查询](../../desktop/src-tauri/src/store/review_snapshots.rs)。以上是源码路径核查，未做故障注入，不将风险列表宣称为已复现的所有 Local 故障。
 
 ### 20.3 一期必须实现的隔离
 
@@ -1452,7 +1453,7 @@ Git 查询必须只读真实仓库，不隐式 init、fetch、checkout、add、r
 
 现有 Terminal 已把 xterm 展示、控制端回环 HTTP/WebSocket、会话注册、PTY 和进程清理分层；输出有字节游标和有界尾部，适合扩展。当前 Manager 仍从 Desktop store 解析本机 cwd、选择本机 shell，再用 portable-pty 启动本机进程，因此尚不能直接操作 Linux 目标。
 
-代码依据：[现有终端设计](../docs/internals/desktop/embedded-terminal.md)、[Manager](../desktop/src-tauri/src/terminal/manager.rs)、[PTY](../desktop/src-tauri/src/terminal/pty.rs)、[输出会话](../desktop/src-tauri/src/terminal/session.rs)、[回环服务](../desktop/src-tauri/src/terminal/server.rs)、[前端终端](../desktop/src/features/terminal/TerminalView.tsx)、[cwd](../desktop/src-tauri/src/terminal/cwd.rs)、[shell](../desktop/src-tauri/src/terminal/shell.rs)。现有设计文档中的平台测试结论属于历史记录，不算本方案的远程验证。
+代码依据：[现有终端设计](../internals/desktop/embedded-terminal.md)、[Manager](../../desktop/src-tauri/src/terminal/manager.rs)、[PTY](../../desktop/src-tauri/src/terminal/pty.rs)、[输出会话](../../desktop/src-tauri/src/terminal/session.rs)、[回环服务](../../desktop/src-tauri/src/terminal/server.rs)、[前端终端](../../desktop/src/features/terminal/TerminalView.tsx)、[cwd](../../desktop/src-tauri/src/terminal/cwd.rs)、[shell](../../desktop/src-tauri/src/terminal/shell.rs)。现有设计文档中的平台测试结论属于历史记录，不算本方案的远程验证。
 
 一期保留现有终端 UI、快捷键、输入法处理、tab 与回环 listener；PTY/会话尾部放在 Linux runner 中，Local 继续使用现有实现。提取轻量 PTY/字节缓冲公共代码即可，不需要远端 Node、tmux、完整 Agent 或单独终端守护服务。
 
