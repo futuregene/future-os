@@ -1484,7 +1484,45 @@
             "wait": 2000
           },
           {
+            "eval": "(() => { const sheet = [...document.querySelectorAll('[aria-modal=true]')][0] || document.body; const headings = [...sheet.querySelectorAll('[role=heading]')].map(el => el.innerText); if (!headings.includes('多巴胺与决策')) throw new Error('workspace headings missing: ' + headings.join(' / ')); const rows = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label')); if (!rows.includes('整理两篇文献的结论对比表')) throw new Error('workspace sessions are not listed under their heading'); return headings.join(' / '); })()"
+          },
+          {
             "shot": "m-share-existing.png"
+          }
+        ]
+      },
+      "share-existing-search": {
+        "url": "http://localhost:8099/?share=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "已有会话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "document.querySelector('input[aria-label=\"搜索会话\"]').focus()"
+          },
+          {
+            "type": "marker"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const results = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label') || '').filter(label => label.startsWith('已有会话 · ')); if (results.length !== 1) throw new Error('the search should leave exactly one flattened result, got ' + results.length); if (!results[0].includes('marker 基因')) throw new Error('wrong search result: ' + results[0]); return results[0]; })()"
+          },
+          {
+            "shot": "m-share-search.png"
           }
         ]
       },
