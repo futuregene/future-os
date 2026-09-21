@@ -150,6 +150,68 @@ describe("SyncEngine", () => {
       expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", streaming: false, segments: [{ status: "completed" }] });
       expect(h.timelineOf("s").streaming).toBe(false);
       expect(h.timelineOf("s").compacting).toBe(false);
+      // The compaction frames are session fan-out stamped with the settled
+      // run's identity: they must apply without ever re-reading that run.
+      expect(h.replayCalls.filter(call => call.run === "r")).toHaveLength(1);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a compaction frame with no cursor for its stamped run is not a gap", async () => {
+    // The lane never witnessed run "r" (fresh open, or its cursor was evicted
+    // by newer runs). The broadcaster still stamps between-runs compaction
+    // with it; dropping those frames would lose the compaction's only signal.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      const callsBefore = h.replayCalls.length;
+      h.active("");
+      h.engine.event("s", evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ segments: [{ status: "running" }] });
+      expect(h.timelineOf("s").compacting).toBe(true);
+      h.engine.event("s", evt("compaction_committed", "r", 4, JSON.stringify({ operation_id: "cmp", checkpoint_id: "cp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", segments: [{ status: "completed" }] });
+      expect(h.timelineOf("s").compacting).toBe(false);
+      // No gap replay for a run the lane never tracked — nothing was lost.
+      expect(h.replayCalls.length).toBe(callsBefore);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a history refresh clears a settled compaction start-alias left by a lost terminal", async () => {
+    // The terminal frame never arrived, but a late queued start folded into
+    // the durable checkpoint (see the projection test): the settled divider
+    // still wears its `compaction:<op>` id. The next history merge must drop
+    // that alias — the durable `m_<checkpoint>` row is the same marker.
+    // History is paged by user exchange, so the window needs a prompt to
+    // cover both the reply and the checkpoint.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.history = timelineFromEntries([
+        { id: "u", kind: "user", role: "user", createdAtMs: 0, runId: "r", blocks: [{ kind: "text", text: "question" }] },
+        { id: "a", kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r", blocks: [{ kind: "text", text: "reply" }] },
+        { id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+          checkpoint: { checkpointId: "cp", trigger: "manual", phase: "standalone" } },
+      ]);
+      h.engine.event("s", evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      // The start beat the history preview to the commit: a running
+      // placeholder sits below where the durable divider will land, and its
+      // terminal frame is never coming.
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "compaction:cmp", segments: [{ status: "running" }] });
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+      const dividers = h.timelineOf("s").items.filter(item =>
+        item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction"));
+      expect(dividers).toEqual([expect.objectContaining({ id: "m_cp" })]);
     } finally { h.engine.clear(); }
   });
 
