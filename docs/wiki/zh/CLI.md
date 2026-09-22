@@ -171,10 +171,16 @@ future loop status        # loop 控制面：goal/todo/gate
 
 ```bash
 future session list
+future session new [--parent <id>] [--title <name>] [--cwd <dir>]
+                   [--model <id>] [--thinking <level>]
 future session info <id>
 future session rename <id> <name>
 future session delete <id>
 ```
+
+`future session new` 创建会话并打印新会话 ID（可交给 `future run --session <id>`
+使用）。`--parent` 记录会话谱系，父会话必须是已存在的会话（创建前会校验），
+但不复制其历史。
 
 会话数据保存在 `~/.future/agent/sessions/`。
 

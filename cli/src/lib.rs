@@ -407,6 +407,14 @@ mod tests {
             (&["models", "-h"], help::MODELS_HELP),
             (&["session", "--help"], commands::session::SESSION_HELP),
             (&["session", "-h"], commands::session::SESSION_HELP),
+            (
+                &["session", "new", "--help"],
+                commands::session::SESSION_NEW_HELP,
+            ),
+            (
+                &["session", "new", "-h"],
+                commands::session::SESSION_NEW_HELP,
+            ),
         ];
         for (args, expected) in cases {
             let (code, stdout, stderr) = run(args).await;

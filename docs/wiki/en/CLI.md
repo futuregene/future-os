@@ -174,10 +174,16 @@ future loop status        # loop control plane: goals/todos/gates
 
 ```bash
 future session list
+future session new [--parent <id>] [--title <name>] [--cwd <dir>]
+                   [--model <id>] [--thinking <level>]
 future session info <id>
 future session rename <id> <name>
 future session delete <id>
 ```
+
+`future session new` creates a session and prints its ID (usable with
+`future run --session <id>`). `--parent` records lineage — the parent must be an
+existing session (checked before creating) and its history is not copied.
 
 Session data lives in `~/.future/agent/sessions/`.
 
