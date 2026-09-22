@@ -369,6 +369,7 @@ generate-models:
 check-docs:
 	python3 scripts/check-docs.py
 	python3 scripts/check-docs.py --strict-pending
+	python3 scripts/check-channel-matrix.py
 
 # Regression tests for the documentation gate itself (includes negative
 # controls, so a checker that stopped detecting violations would fail here).
