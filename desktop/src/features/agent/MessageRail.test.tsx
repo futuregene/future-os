@@ -40,21 +40,25 @@ const message: AgentMessage = {
   outputTokens: 590,
 };
 
-function messageRow(patch: Partial<AgentMessage> = {}) {
-  return <MessageBlock message={{ ...message, ...patch }} hovered={false} onHover={vi.fn()} onLeave={vi.fn()} />;
+function messageRow(patch: Partial<AgentMessage> = {}, hovered = false) {
+  return <MessageBlock message={{ ...message, ...patch }} hovered={hovered} onHover={vi.fn()} onLeave={vi.fn()} />;
 }
 
-it("keeps settled stats and assistant copy visible on the right without hovering", async () => {
+it("keeps settled stats visible but hides assistant copy until hover", async () => {
   await render(messageRow());
   const copy = container.querySelector(`button[aria-label="${i18n.t("common:copy")}"]`)!;
   const footer = copy.parentElement!;
   expect(footer.classList.contains("justify-end")).toBe(true);
-  expect(copy.classList.contains("opacity-100")).toBe(true);
-  expect(copy.classList.contains("pointer-events-none")).toBe(false);
+  expect(copy.classList.contains("opacity-0")).toBe(true);
+  expect(copy.classList.contains("pointer-events-none")).toBe(true);
   expect(footer.textContent).toContain("20s · 590 tokens");
   const stats = footer.lastElementChild!;
   expect(stats.classList.contains("text-ink-muted")).toBe(true);
   expect(stats.classList.contains("opacity-0")).toBe(false);
+
+  await render(messageRow({}, true));
+  expect(copy.classList.contains("opacity-100")).toBe(true);
+  expect(copy.classList.contains("pointer-events-none")).toBe(false);
 });
 
 it("keeps the live dot and ticking timer on the same right rail until completion", async () => {

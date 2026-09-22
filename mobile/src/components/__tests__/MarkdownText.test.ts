@@ -10,7 +10,8 @@ import { SvgXml } from "react-native-svg";
 import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
 jest.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string, options?: { count?: number }) =>
+    options?.count === undefined ? key : `${key}:${options.count}` }),
 }));
 
 /** Everything a code row paints, in order: colored token spans interleave with
@@ -56,6 +57,25 @@ describe("MarkdownText layout and fidelity", () => {
     // showing a blank strip under the header and clipping the first line.
     expect(StyleSheet.flatten(list.props.contentContainerStyle)).toMatchObject({ padding: 16 });
     expect(StyleSheet.flatten(list.props.style)).toMatchObject({ flex: 1 });
+  });
+
+  test("a ten-row table paints its full body instead of a clipped eight-row viewport", () => {
+    const text = "| # | project | ★ |\n|---:|---|---:|\n" +
+      Array.from({ length: 10 }, (_, i) => `| ${i + 1} | repo-${i + 1} | ${100 - i} |\n`).join("");
+    const root = render(text);
+    expect(root.findAllByType(FlatList)).toHaveLength(0);
+    const output = JSON.stringify(renderer.toJSON());
+    expect(output).toContain("repo-9");
+    expect(output).toContain("repo-10");
+  });
+
+  test("a table past the inline limit keeps its bounded viewport and says how many rows it holds", () => {
+    const text = "| A | B |\n|---|---|\n" + Array.from({ length: 25 }, (_, i) => `| ${i} | value |\n`).join("");
+    const root = render(text);
+    const list = root.findByType(FlatList);
+    expect(list.props.data).toHaveLength(25);
+    // Rows past the viewport are still reachable, but only if the reader is told.
+    expect(root.findAllByType(Text).map(node => node.props.children)).toContain("chat.tableRowsScrolled:25");
   });
 
   test("a 5000-row table mounts a bounded internal viewport", () => {

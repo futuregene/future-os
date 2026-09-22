@@ -11,13 +11,8 @@ pub struct AgentPromptResponse {
     pub complete: bool,
     /// Stable user-facing failure category when `complete` is false.
     pub termination_kind: Option<String>,
-    /// The agent session id (newly-created or existing). The frontend persists
-    /// this on the thread so subsequent prompts reuse the same session.
+    /// The stable Agent session id for this conversation.
     pub session_id: String,
-    /// True when the thread already had a session but the agent no longer had
-    /// it (or its cwd drifted), so a fresh empty session replaced it. The
-    /// frontend must warn the user that prior agent-side context was lost.
-    pub session_recreated: bool,
 }
 
 /// Complete input for one prompt crossing the desktop-to-agent boundary.
@@ -74,11 +69,6 @@ pub(crate) async fn agent_prompt_with_acceptance(
     request: AgentPromptRequest,
     accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<AgentPromptResponse, crate::AppError> {
-    let effective_session_id = request
-        .session_id
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| request.thread_id.clone());
     let result = agent_prompt_inner(request.clone(), accepted).await;
 
     // Settle the run row HERE, in the backend, not only in the frontend
@@ -110,6 +100,15 @@ pub(crate) async fn agent_prompt_with_acceptance(
         // §6.2: a normal `agent_end` means the Agent has stopped writing. On an
         // abnormal return wait for the Agent to confirm idle before snapshotting.
         if result.is_err() {
+            // Resolve after prompt admission: a previously-unbound thread may
+            // have committed its first identity before a later stream error.
+            // Never poll a client-supplied stale session.
+            let effective_session_id = crate::store::get_thread(&request.thread_id)
+                .ok()
+                .flatten()
+                .and_then(|thread| thread.agent_session_id)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| request.thread_id.clone());
             wait_for_agent_idle(&effective_session_id).await;
         }
         // §6.1: capture the after snapshot before the guard drops, so the next
@@ -154,20 +153,29 @@ pub(super) async fn agent_prompt_inner(
         model_id,
         thinking_level,
     } = request;
-    // The frontend may pass None when it doesn't know the session id yet
-    // (e.g. first prompt after the thread was created).  Fall back to the
-    // thread's persisted agent_session_id so we don't create a new session
-    // on every prompt.
-    let stored_session_id = session_id
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            crate::store::get_thread(&thread_id)
-                .ok()
-                .flatten()
-                .and_then(|t| t.agent_session_id)
-                .filter(|id| !id.trim().is_empty())
-        })
-        .unwrap_or_default();
+    // The persisted thread binding is the identity authority. The webview's
+    // session id is only an optimistic assertion and may be stale for one
+    // render during fork/switch reconciliation; it must never reroute a prompt
+    // to another conversation.
+    let thread = crate::store::get_thread(&thread_id)?
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let stored_session_id = thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let requested_session_id = session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if requested_session_id.is_some_and(|requested| requested != stored_session_id) {
+        return Err(format!(
+            "Conversation session changed before this prompt was sent; expected {stored_session_id:?}, received {requested_session_id:?}. Reload the conversation and retry."
+        )
+        .into());
+    }
     let mut command_client = connect_agent().await?;
 
     // Create (or reuse) the agent session.
@@ -181,22 +189,18 @@ pub(super) async fn agent_prompt_inner(
     )
     .await?;
     let session_id = ensured.session_id;
-    if ensured.recreated {
-        // The thread's previous agent session was unusable (data gone or cwd
-        // drift) and a fresh empty session replaced it. The GUI still shows
-        // the old history, so without a visible signal the next reply looks
-        // like the agent suddenly "forgot" the conversation.
-        eprintln!(
-            "FutureOS: thread {thread_id} agent session {stored_session_id} was recreated as {session_id} — prior agent-side context is unavailable"
-        );
+    let session_was_created = ensured.created;
+
+    // Identity is assigned exactly once. A bound conversation is never
+    // rebound by the prompt path; losing an Agent session is surfaced as an
+    // error above instead of silently replacing durable context. Commit the
+    // first binding before secondary setup, so a permission/config failure can
+    // retry the same session instead of leaking an unbound replacement.
+    if session_was_created {
+        crate::store::bind_thread_session_id(&thread_id, &session_id)?;
     }
     set_agent_permission_level(&mut command_client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut command_client, &session_id, &thread_id).await?;
-
-    // Persist the agent-generated session id for new threads.
-    if session_id != stored_session_id {
-        let _ = crate::store::update_thread_session_id(&thread_id, &session_id);
-    }
 
     // Apply the prompt's model / thinking level ONLY when this call created a
     // fresh session (its generated id differs from the stored one). For an
@@ -205,8 +209,6 @@ pub(super) async fn agent_prompt_inner(
     // `set_model`. Re-applying the caller-supplied value on every prompt let a
     // cold/expired agent-state cache silently switch an existing thread's model
     // to the global last-picked one (the composer's fallback value).
-    let session_was_created = session_id != stored_session_id;
-
     if session_was_created {
         if let Some(model_id) = model_id.filter(|value| !value.trim().is_empty()) {
             command_client
@@ -297,7 +299,6 @@ pub(super) async fn agent_prompt_inner(
                 complete: response.complete,
                 termination_kind: response.termination_kind,
                 session_id,
-                session_recreated: ensured.recreated,
             })
         }
         Err(stream::CollectError::RunGone(reason)) => {

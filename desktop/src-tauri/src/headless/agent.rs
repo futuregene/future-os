@@ -1,7 +1,15 @@
 //! Agent ownership for the terminal entry point. No Tauri shell plugin needed.
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Cold or network-mounted storage (HPC home directories) can push the
+/// Agent's first launch far past a local disk's timing. This is the outer
+/// bound, not the expectation.
+const AGENT_STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long to wait in silence before telling the user the Agent is not
+/// frozen.
+const SLOW_STARTUP_NOTICE_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(super) struct Agent {
@@ -37,17 +45,31 @@ impl Agent {
         eprintln!(
             "Started the bundled Agent. Ctrl+C will also stop this Agent and its active runs."
         );
-        tokio::time::timeout(Duration::from_secs(30), async {
+        let started_at = Instant::now();
+        let mut slow_start_noted = false;
+        tokio::time::timeout(AGENT_STARTUP_TIMEOUT, async {
             loop {
                 self.check_running()?;
                 if reachable(&address).await {
                     return Ok::<_, crate::AppError>(());
                 }
+                if !slow_start_noted && started_at.elapsed() >= SLOW_STARTUP_NOTICE_AFTER {
+                    slow_start_noted = true;
+                    eprintln!(
+                        "The Agent is still starting; the first launch can be slow on cold \
+                         or network-mounted storage. Waiting for it to finish..."
+                    );
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         })
         .await
-        .map_err(|_| crate::AppError::from("Agent startup timed out."))?
+        .map_err(|_| {
+            crate::AppError::from(
+                "Agent startup timed out. Start `future agent` in a separate terminal, then \
+                 restart headless Desktop; it will connect to the running Agent.",
+            )
+        })?
     }
 
     pub(super) fn check_running(&mut self) -> Result<(), crate::AppError> {

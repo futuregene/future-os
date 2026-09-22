@@ -13,7 +13,8 @@ futureos、futureos-headless 与 future 必须同目录。没有可连接的兼�
 发布的 GUI 包需要 glibc >= 2.39（约 Ubuntu 24.04+）与 WebKitGTK：
     Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0
     Fedora:        sudo dnf install webkit2gtk4.1
-官方 Linux CI 使用静态 musl 构建 future CLI，不需要 GUI 运行库。
+官方 Linux CI 使用静态 musl 构建 future CLI 与 futureos-headless，
+不需要 GUI 运行库，也没有 glibc 版本要求（CentOS 7 / Rocky 8 级别的老系统可运行）。
 本地源码构建使用所选 host target，不一定静态链接。
 无桌面主机可下载对应架构的官方 CLI-only 包，运行 ./future config 和 ./future tui，
 或运行 ./future agent 供其他 CLI 客户端使用。

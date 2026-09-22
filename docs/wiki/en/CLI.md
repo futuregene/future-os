@@ -174,10 +174,19 @@ future loop status        # loop control plane: goals/todos/gates
 
 ```bash
 future session list
+future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
+                        [--model <id>] [--thinking <level>]
 future session info <id>
 future session rename <id> <name>
 future session delete <id>
 ```
+
+`set` changes those settings on an existing session — only the options you pass are
+touched (`--parent ""` detaches). A parent records lineage only: no history is
+copied (that is `fork`), and the parent must be an existing session.
+
+Title and cwd are written to the session record immediately; the model and thinking
+level apply to the running session at once and reach the session record with the next run.
 
 Session data lives in `~/.future/agent/sessions/`.
 

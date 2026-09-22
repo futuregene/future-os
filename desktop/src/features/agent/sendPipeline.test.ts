@@ -112,7 +112,6 @@ describe("runSendPipeline terminal-status handling", () => {
       content: "final answer",
       complete: true,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     vi.mocked(buildReferenceContext).mockResolvedValue("");
   });
@@ -185,7 +184,6 @@ describe("runSendPipeline terminal-status handling", () => {
       content: "partial answer",
       complete: false,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     const setMessages = vi.fn<(value: SetStateAction<AgentMessage[]>) => void>();
 
@@ -236,29 +234,12 @@ describe("runSendPipeline stream/failure edges", () => {
     vi.mocked(listRunEvents).mockResolvedValue([]);
   });
 
-  it("toasts when the agent recreated the session", async () => {
-    vi.mocked(getRun).mockResolvedValue(storedRun({ status: "completed", endedAt: 2_000 }));
-    vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
-      content: "answer",
-      complete: true,
-      sessionId: "session-2",
-      sessionRecreated: true,
-    });
-    const setMessages = vi.fn();
-    await runSendPipeline(makeDeps(setMessages), {
-      content: "hello",
-      attachments: [],
-    });
-    expect(emitFutureEvent).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "info" }));
-  });
-
   it("marks the run failed when the stream closes incomplete and the row is still active", async () => {
     vi.mocked(getRun).mockResolvedValue(storedRun());
     vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
       content: "truncated",
       complete: false,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     const setMessages = vi.fn();
     await runSendPipeline(makeDeps(setMessages), {
@@ -274,7 +255,6 @@ describe("runSendPipeline stream/failure edges", () => {
       content: "",
       complete: false,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     const setMessages = vi.fn();
     const deps = makeDeps(setMessages);
@@ -364,7 +344,6 @@ describe("runSendPipeline stream/failure edges", () => {
       content: string;
       complete: boolean;
       sessionId: string;
-      sessionRecreated: boolean;
     }) => void;
     vi.mocked(sendPromptToFutureAgent).mockImplementation(
       () =>
@@ -403,7 +382,6 @@ describe("runSendPipeline stream/failure edges", () => {
       content: "answer",
       complete: true,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     await send;
   });
@@ -420,7 +398,6 @@ describe("runSendPipeline stream/failure edges", () => {
       content: string;
       complete: boolean;
       sessionId: string;
-      sessionRecreated: boolean;
     }) => void;
     vi.mocked(sendPromptToFutureAgent).mockImplementation(
       () =>
@@ -483,7 +460,6 @@ describe("runSendPipeline stream/failure edges", () => {
       content: "answer",
       complete: true,
       sessionId: "session-1",
-      sessionRecreated: false,
     });
     await send;
   });
@@ -506,7 +482,7 @@ describe("send acceptance timing", () => {
       .then(() => { finished = true; });
     await vi.waitFor(() => expect(onAccepted).toHaveBeenCalledTimes(1));
     expect(finished).toBe(false);
-    finish({ content: "answer", complete: true, sessionId: "session-1", sessionRecreated: false });
+    finish({ content: "answer", complete: true, sessionId: "session-1" });
     await send;
     expect(onAccepted).toHaveBeenCalledTimes(1);
   });

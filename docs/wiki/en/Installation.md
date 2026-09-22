@@ -83,8 +83,9 @@ redownload before overriding security controls.
 The published GUI packages require a recent glibc-based distribution (glibc ≥ 2.39,
 roughly Ubuntu 24.04+) and WebKitGTK 4.1. Portable users may need
 `sudo apt install libwebkit2gtk-4.1-0` or `sudo dnf install webkit2gtk4.1`.
-Official Linux CI builds the CLI with static musl, so the CLI does not require
-those GUI libraries. Local source builds depend on their selected target.
+Official Linux CI builds the CLI and `futureos-headless` with static musl, so
+neither requires those GUI libraries or any particular glibc version. Local
+source builds depend on their selected target.
 
 For sandbox mode, install **system Bubblewrap ≥ 0.9.0**, restart the app and run
 `future agent --probe-sandbox` / `future doctor`. It is not bundled, and an older

@@ -65,14 +65,15 @@ pub use runs::{
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use threads::{
-    archive_thread, create_thread, delete_thread, delete_thread_with_files,
+    archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_with_files,
     find_thread_by_agent_session, get_or_create_thread_for_agent_session, get_recent_thread,
     get_thread, inherit_thread_asset_root, list_threads, mark_thread_opened,
     move_thread_to_workspace, pin_thread, purge_soft_deleted_threads,
     record_thread_message_activity, rename_thread, restore_thread, sync_thread_parent_session,
-    sync_thread_title, thread_asset_root_id, update_thread_model, update_thread_session_id,
-    update_thread_thinking_level, ThreadRecord,
+    sync_thread_title, thread_asset_root_id, update_thread_model, update_thread_thinking_level,
+    ThreadRecord,
 };
+pub(crate) use util::strip_verbatim_prefix;
 pub use util::{create_id, now_millis, take_catalog_dirty};
 pub use workspace_files::{search_workspace_files, WorkspaceFileResult, WorkspaceFileSearchInput};
 pub use workspaces::{

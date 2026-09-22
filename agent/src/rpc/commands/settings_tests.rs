@@ -712,6 +712,113 @@ fn set_session_name_survives_persist_error() {
 }
 
 #[test]
+fn set_parent_session_persists_to_disk_session_info() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+    // A parent must exist: register a second persisted session.
+    save_via(
+        &state,
+        "parent-1",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "low".to_string(),
+        )],
+    );
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "parent-1".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["parentSessionId"], "parent-1");
+    let session = state.get_session("default").unwrap();
+    assert_eq!(session.read().parent_session_id, "parent-1");
+    assert_eq!(
+        state
+            .session_manager
+            .load("default")
+            .unwrap()
+            .parent_session_id,
+        "parent-1"
+    );
+
+    // An empty id detaches again (the store treats "" as NULL).
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = String::new();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["parentSessionId"], "");
+    assert!(state
+        .session_manager
+        .load("default")
+        .unwrap()
+        .parent_session_id
+        .is_empty());
+}
+
+#[test]
+fn set_parent_session_rejects_self_and_unknown_parent() {
+    let state = make_app_state();
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "default".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false);
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be its own parent"),
+        "resp: {resp}"
+    );
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "ghost".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false);
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("parent session not found: ghost"),
+        "resp: {resp}"
+    );
+    // Nothing was recorded.
+    assert!(state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .parent_session_id
+        .is_empty());
+}
+
+#[test]
+fn set_parent_session_accepts_a_live_session_without_entries() {
+    let state = make_app_state();
+    // A sibling that exists only in memory (created but never prompted).
+    let mut created = make_cmd("new_session");
+    created.session_id = "live-parent".to_string();
+    let resp = parse_response(&handle_command_internal(&state, created));
+    assert_eq!(resp["success"], true);
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "live-parent".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["parentSessionId"], "live-parent");
+}
+
+#[test]
 fn set_cwd_survives_persist_error() {
     let state = make_app_state();
     save_via(

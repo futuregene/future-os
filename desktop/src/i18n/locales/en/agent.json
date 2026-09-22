@@ -53,7 +53,6 @@
     "noFinalReplyDetail": "Generated content has been kept. You can send another request.",
     "messagesLoadFailed": "Couldn't load this conversation. Please try again — if it keeps happening, restart FutureOS.",
     "alreadyRunning": "A response is already in progress for this conversation.",
-    "sessionRecreated": "The previous background record of this conversation was lost, so a fresh one was started. The history above is kept, but the assistant can no longer see it.",
     "sessionChanged": "This conversation's background session changed. The new session will appear once loaded; the assistant will not inherit the previous context.",
     "responseInterrupted": "The response was interrupted before it finished.",
     "responseIncomplete": "Response not completed",

@@ -1210,7 +1210,6 @@ mod pipeline_tests {
         assert!(response.complete);
         assert_eq!(response.content, "hi there");
         assert_eq!(response.session_id, "sess-p1");
-        assert!(!response.session_recreated);
 
         // Session id persisted; thread auto-named from the first message.
         let thread = crate::store::get_thread(&thread_id)
@@ -1297,7 +1296,6 @@ mod pipeline_tests {
 
         assert!(!response.complete, "incomplete agent_end is not clean");
         assert_eq!(response.session_id, "sess-existing");
-        assert!(!response.session_recreated);
         assert!(
             mock.requests_of("new_session").is_empty(),
             "the stored session was reused"
@@ -1319,19 +1317,20 @@ mod pipeline_tests {
     }
 
     #[tokio::test]
-    async fn agent_prompt_recreated_session_reports_context_loss() {
-        let home = TestHome::new("pipe-recreated");
+    async fn agent_prompt_repairs_cwd_without_replacing_the_session() {
+        let home = TestHome::new("pipe-cwd-repair");
         let mock = mock_agent();
         let workspace = seed_workspace(home.path(), "ws");
         let thread = seed_thread(&workspace.id, Some("sess-old"));
         let run = seed_run(&thread.id);
 
-        // The agent lost the session's cwd → ensure recreates.
+        // A fork/workspace transition may leave the session metadata pointed at
+        // another cwd. The live session and its history remain authoritative.
         mock.push_data(
             "get_state",
             serde_json::json!({"sessionId": "sess-old", "cwd": "/moved/elsewhere"}),
         );
-        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-p3"}));
+        mock.push_data("set_cwd", serde_json::json!({"cwd": workspace.path}));
         mock.push_stream(StreamScript::Events(
             vec![stream_event(
                 &run.id,
@@ -1354,18 +1353,91 @@ mod pipeline_tests {
         .await
         .expect("prompt");
 
-        assert!(response.session_recreated);
-        assert_eq!(response.session_id, "sess-p3");
+        assert_eq!(response.session_id, "sess-old");
         assert_eq!(
             crate::store::get_thread(&thread.id)
                 .expect("thread")
                 .expect("exists")
                 .agent_session_id
                 .as_deref(),
-            Some("sess-p3")
+            Some("sess-old")
         );
-        // A recreated session is a fresh session: the model is applied.
-        assert_eq!(mock.requests_of("set_model").len(), 1);
+        assert!(mock.requests_of("new_session").is_empty());
+        assert_eq!(mock.requests_of("set_cwd").len(), 1);
+        // An existing session keeps its own authoritative model and context.
+        assert!(mock.requests_of("set_model").is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_missing_session_preserves_the_thread_binding() {
+        let home = TestHome::new("pipe-missing-session");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-missing"));
+        let run = seed_run(&thread.id);
+
+        mock.push("get_state", Reply::Reject("session not found".to_string()));
+
+        let error = agent_prompt(
+            "keep my history".to_string(),
+            None,
+            thread.id.clone(),
+            Some("sess-missing".to_string()),
+            Some(run.id),
+            Some("future/k3".to_string()),
+            None,
+        )
+        .await
+        .expect_err("a missing bound session must be explicit");
+
+        assert!(error.to_string().contains("binding was preserved"));
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .agent_session_id
+                .as_deref(),
+            Some("sess-missing")
+        );
+        assert!(mock.requests_of("new_session").is_empty());
+        assert!(mock.requests_of("prompt").is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_rejects_a_stale_client_session_identity() {
+        let home = TestHome::new("pipe-stale-session");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-parent"));
+        let run = seed_run(&thread.id);
+
+        let error = agent_prompt(
+            "must stay on parent".to_string(),
+            None,
+            thread.id.clone(),
+            Some("sess-child".to_string()),
+            Some(run.id),
+            None,
+            None,
+        )
+        .await
+        .expect_err("stale client identity must not route the prompt");
+
+        assert!(error.to_string().contains("session changed"));
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("thread")
+                .expect("exists")
+                .agent_session_id
+                .as_deref(),
+            Some("sess-parent")
+        );
+        assert!(mock.requests_of("new_session").is_empty());
+        assert!(mock.requests_of("prompt").is_empty());
+        assert!(mock
+            .requests_of("get_state")
+            .iter()
+            .all(|request| request.session_id == "sess-parent"));
     }
 
     #[tokio::test]

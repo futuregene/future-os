@@ -37,14 +37,8 @@ interface AgentPromptResponse {
   complete?: boolean;
   /** Stable failure category when `complete` is false. */
   terminationKind?: "upstream_disconnected" | "model_response_error";
-  /** The agent session id — persisted on the thread for subsequent prompts. */
+  /** The stable Agent session id bound to this conversation. */
   sessionId?: string;
-  /**
-   * True when the thread's previous agent session was gone (data lost or cwd
-   * drift) and a fresh empty session replaced it — prior agent-side context
-   * is unavailable even though the GUI still shows the history.
-   */
-  sessionRecreated?: boolean;
 }
 
 export const defaultAgentModelId = "";
@@ -92,7 +86,6 @@ export async function sendPromptToFutureAgent({
     complete: response.complete !== false,
     ...(response.terminationKind ? { terminationKind: response.terminationKind } : {}),
     sessionId: response.sessionId,
-    sessionRecreated: response.sessionRecreated === true,
   };
 }
 
