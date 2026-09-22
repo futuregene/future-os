@@ -212,10 +212,9 @@ mod tests {
     /// The (version, deleted) registry row for `id` in the isolated home's
     /// agent.db, or `None` when the skill has no row.
     fn registry_row(id: &str) -> Option<(Option<String>, bool)> {
-        let connection = rusqlite::Connection::open(
-            crate::auth_store::agent_dir().unwrap().join("agent.db"),
-        )
-        .expect("open agent.db");
+        let connection =
+            rusqlite::Connection::open(crate::auth_store::agent_dir().unwrap().join("agent.db"))
+                .expect("open agent.db");
         connection
             .query_row(
                 "SELECT version, deleted FROM skills WHERE name = ?1",
