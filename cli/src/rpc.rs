@@ -241,6 +241,22 @@ impl RunClient {
         .await
     }
 
+    /// `setParentSession(sessionId, parentId)` — `set_parent_session`. An
+    /// empty parent detaches the session from its current parent.
+    pub async fn set_parent_session(
+        &self,
+        session_id: &str,
+        parent_id: &str,
+    ) -> Result<(), String> {
+        let cmd = RpcCommand {
+            parent_session: parent_id.to_string(),
+            ..Default::default()
+        };
+        self.execute_command("set_parent_session", cmd, Some(session_id), 5)
+            .await?;
+        Ok(())
+    }
+
     /// `renameSession(sessionId, name)` — `set_session_name`; errors on failure.
     pub async fn rename_session(&self, session_id: &str, name: &str) -> Result<(), String> {
         let cmd = RpcCommand {
@@ -1243,6 +1259,29 @@ mod tests {
         assert!(seen[1].model_id.is_empty());
         assert!(seen[1].level.is_empty());
         assert_eq!(seen[1].created_by, "cli");
+    }
+
+    #[tokio::test]
+    async fn set_parent_session_reaches_the_wire() {
+        let agent = MockAgent::default();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+
+        client
+            .set_parent_session("s1", "parent-1")
+            .await
+            .expect("set_parent_session");
+        // An empty parent is the detach signal — it must still be sent.
+        client
+            .set_parent_session("s1", "")
+            .await
+            .expect("set_parent_session");
+
+        let seen = agent.seen_of("set_parent_session");
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].parent_session, "parent-1");
+        assert_eq!(seen[0].session_id, "s1");
+        assert_eq!(seen[1].parent_session, "");
     }
 
     #[tokio::test]

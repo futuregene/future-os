@@ -112,6 +112,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "set_enabled_models",
     "set_ephemeral",
     "set_model",
+    "set_parent_session",
     "set_permission_level",
     "set_sandbox_policy",
     "set_session_name",
@@ -213,6 +214,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "set_enabled_models"
         | "set_ephemeral"
         | "set_model"
+        | "set_parent_session"
         | "set_permission_level"
         | "set_sandbox_policy"
         | "set_session_name"
