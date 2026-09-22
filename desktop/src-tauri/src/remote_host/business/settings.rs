@@ -34,11 +34,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Ok(removed) => reply(sink, true, json!({ "removed": removed }), None).await,
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
-        "get_state" => match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
-            Ok(data) => reply(sink, true, data, None).await,
-            Err(error) if missing_session(&error) => reply(sink, true, json!({}), None).await,
-            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
-        },
+        "get_state" => {
+            // A remote state request is an active view of this conversation,
+            // not a background catalog check.
+            let _ = crate::agent_bridge::ensure_observer_for_session(&cmd.session_id);
+            match crate::agent_bridge::get_session_state(cmd.session_id.clone()).await {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) if missing_session(&error) => reply(sink, true, json!({}), None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "list_models" | "get_available_models" => {
             match crate::agent_bridge::get_available_models().await {
                 Ok(mut data) => match crate::store::get_app_settings() {

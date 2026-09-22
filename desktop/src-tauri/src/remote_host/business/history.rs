@@ -30,6 +30,10 @@ fn enforce_backward_page_bytes(chunked_read: bool, before: Option<i64>) -> bool 
 }
 
 pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
+    // A remote history/event request means this conversation is actively open
+    // on a client. Arm exactly its observer; discovery-only paths deliberately
+    // never call this helper.
+    let _ = crate::agent_bridge::ensure_observer_for_session(&cmd.session_id);
     match cmd.cmd_type.as_str() {
         "get_messages" => {
             // Serve history from the agent (source of truth for all sessions).

@@ -247,52 +247,17 @@ pub(crate) fn close_thread_terminals(thread_id: &str) {
     }
 }
 
-/// Bulk streaming-status query: ONE agent RPC (`list_streaming_sessions`,
-/// which only scans the agent's in-memory session map — no hydration, no
-/// disk I/O) mapped back to GUI thread ids via the stored agent_session_id.
-/// Replaces the old per-thread get_state fan-out, which hydrated every
-/// polled session on the agent at startup.
+/// Bulk streaming-status reconciliation: ONE agent RPC
+/// (`list_streaming_sessions`, which only scans the agent's in-memory session
+/// map — no cold hydration or disk I/O) mapped back to GUI thread ids. The
+/// active subset gets observers so work started by another client is projected;
+/// idle historical sessions remain cold.
 ///
 /// Agent unreachable → empty list. The process-level compatibility monitor
 /// retries, while React uses this command only for its initial snapshot.
 #[tauri::command]
 pub async fn list_streaming_thread_ids() -> Result<Vec<String>, crate::AppError> {
-    let mut client = match crate::agent_bridge::connect_agent().await {
-        Ok(client) => client,
-        Err(_) => return Ok(vec![]),
-    };
-    let resp = client
-        .execute_command(crate::agent_bridge::list_streaming_sessions_command())
-        .await;
-    let streaming_session_ids: std::collections::HashSet<String> = match resp {
-        Ok(resp) => {
-            let inner = resp.into_inner();
-            if !inner.success {
-                return Ok(vec![]);
-            }
-            serde_json::from_str::<serde_json::Value>(&inner.data)
-                .ok()
-                .and_then(|v| v.get("sessionIds")?.as_array().cloned())
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        }
-        Err(_) => return Ok(vec![]),
-    };
-    if streaming_session_ids.is_empty() {
-        return Ok(vec![]);
-    }
-    let threads = store::list_threads()?;
-    Ok(threads
-        .into_iter()
-        .filter(|t| {
-            t.agent_session_id
-                .as_deref()
-                .is_some_and(|sid| streaming_session_ids.contains(sid))
-        })
-        .map(|t| t.id)
-        .collect())
+    crate::agent_bridge::reconcile_streaming_observers().await
 }
 
 /// Fetch a thread's session state from the agent (model, thinking, name, cwd).
@@ -719,6 +684,7 @@ mod tests {
         let _lock = mock_agent_lock();
         let _home = init("cmd_streaming");
         let thread = make_thread(&_home, Some("sess_live"));
+        let _idle_thread = make_thread(&_home, Some("sess_idle"));
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
             streaming_ids: vec!["sess_live".to_string()],
@@ -726,6 +692,15 @@ mod tests {
         });
         let ids = list_streaming_thread_ids().await.expect("streaming");
         assert_eq!(ids, vec![thread.id]);
+        assert!(
+            crate::agent_bridge::has_observer("sess_live"),
+            "only the reported active session gains an observer"
+        );
+        assert!(
+            !crate::agent_bridge::has_observer("sess_idle"),
+            "an idle historical session stays cold"
+        );
+        crate::agent_bridge::drop_observer("sess_live");
         script_mock_agent(MockScript::default());
     }
 
