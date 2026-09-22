@@ -1,5 +1,7 @@
 //! Skills discovery — 1:1 compatible with Go internal/skills/
 
+pub mod registry;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

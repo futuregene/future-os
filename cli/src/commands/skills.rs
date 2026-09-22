@@ -429,6 +429,17 @@ async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
         out.log(&format!("Skill \"{skill_id}\" is not installed."));
         return Ok(());
     }
+    // Tombstone before removing the directory: once the files are gone nothing
+    // on disk proves the skill was ever installed, so this write must not be
+    // lost to a crash between the two steps. A failure aborts the uninstall
+    // with the files untouched, ready for a retry.
+    if let Err(error) = future_agent::skills::registry::record_skill_uninstalled(skill_id) {
+        out.log_err(&format!("Failed to record the uninstall: {error}"));
+        out.set_exit_code(1);
+        return Err(format!(
+            "Failed to record uninstall of \"{skill_id}\": {error}"
+        ));
+    }
     tokio::fs::remove_dir_all(&dest)
         .await
         .map_err(|e| e.to_string())?;
@@ -572,9 +583,15 @@ pub async fn install_builtin_skills(out: &Output) {
     }
 
     let installed = get_installed_skill_ids().await;
+    // Tombstoned skills (uninstalled but recorded in agent.db) must not be
+    // auto-installed again; an explicit `future skills install` still can.
+    let deleted = future_agent::skills::registry::deleted_skill_names().unwrap_or_else(|error| {
+        out.log_err(&format!("Failed to read the skill registry: {error}"));
+        HashSet::new()
+    });
     let to_install: Vec<&SkillInfo> = skills
         .iter()
-        .filter(|s| !installed.contains(&s.id))
+        .filter(|s| !installed.contains(&s.id) && !deleted.contains(&s.id))
         .collect();
 
     if to_install.is_empty() {
@@ -712,6 +729,18 @@ async fn install_skill(skill_id: &str, version: Option<&str>, out: &Output) -> R
     // `finally { rm(tmpZip, { force: true }) }`
     let _ = tokio::fs::remove_file(&tmp_zip).await;
     result?;
+
+    // Registry bookkeeping after the filesystem transaction committed — an
+    // explicit install also clears any uninstall tombstone.
+    if let Err(error) =
+        future_agent::skills::registry::record_skill_installed(skill_id, Some(version.as_str()))
+    {
+        out.log_err(&format!("Failed to record skill in the registry: {error}"));
+        out.set_exit_code(1);
+        return Err(format!(
+            "Failed to record skill \"{skill_id}\" in the registry: {error}"
+        ));
+    }
 
     out.log(&format!(
         "{} skill \"{skill_id}\" v{version} → {}",
@@ -2052,7 +2081,19 @@ mod tests {
             "previous"
         );
         drop(lock);
-        replace_skill_dir(&candidate, &dest).unwrap();
+        // The flock release can lag `drop` for the instant a concurrently
+        // spawned child process (unzip in parallel tests) still holds a
+        // forked copy of the locked description — retry the commit briefly
+        // instead of mistaking that transient window for a competing installer.
+        let mut committed = false;
+        for _ in 0..80 {
+            if replace_skill_dir(&candidate, &dest).is_ok() {
+                committed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(committed, "commit failed although the lock was released");
         assert_eq!(
             std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
             "new"
@@ -2241,6 +2282,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uninstall_tombstones_the_registry() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Planted straight onto the filesystem — no recorded install, so the
+        // tombstone carries no version (only installs record one).
+        plant_skill("future-x", "1.0").await;
+        let (out, _) = Output::memory();
+        uninstall_skill("future-x", &out).await.unwrap();
+
+        let records = future_agent::skills::registry::list_skill_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "future-x");
+        assert_eq!(records[0].version, None);
+        assert!(records[0].deleted);
+    }
+
+    #[tokio::test]
+    async fn install_records_and_reinstalls_clear_the_tombstone() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let zip = make_zip(&[("SKILL.md", "---\nversion: 1.0\n---\n")]);
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::binary(
+            "/client/v1/skills/future-x/versions/1.0/download",
+            200,
+            zip,
+        )])
+        .await;
+        point_platform_at(&base).await;
+
+        future_agent::skills::registry::record_skill_uninstalled("future-x").unwrap();
+        let (out, _) = Output::memory();
+        install_skill("future-x", Some("1.0"), &out).await.unwrap();
+
+        let records = future_agent::skills::registry::list_skill_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].version.as_deref(), Some("1.0"));
+        assert!(!records[0].deleted, "explicit install clears the tombstone");
+        assert!(future_agent::skills::registry::deleted_skill_names()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn get_installed_skill_ids_scans_skill_md() {
         let _guard = crate::test_env::lock_env().await;
         let _home = crate::test_env::EnvGuard::temp_home();
@@ -2339,6 +2423,36 @@ mod tests {
             .join("future-explore")
             .join("SKILL.md")
             .exists());
+    }
+
+    #[tokio::test]
+    async fn install_builtin_skips_tombstoned_skills() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        // Catalogue only: no download route — an attempted install would 404
+        // and fail the command, proving the tombstone filters it out.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            r#"{"skills":[{"id":"future-x","latest_version":"1.0","builtin":true}]}"#,
+        )])
+        .await;
+        point_platform_at(&base).await;
+        future_agent::skills::registry::record_skill_uninstalled("future-x").unwrap();
+
+        let (out, cap) = Output::memory();
+        install_builtin_skills(&out).await;
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("All 1 builtin skills are already installed."),
+            "stdout: {stdout}"
+        );
+        assert!(!skills_dir().join("future-x").exists());
+        // The tombstone survives — bootstrap keeps skipping it next time too.
+        assert!(future_agent::skills::registry::deleted_skill_names()
+            .unwrap()
+            .contains("future-x"));
     }
 
     #[tokio::test]
