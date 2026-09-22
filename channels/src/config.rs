@@ -12,6 +12,82 @@ pub struct ChannelConfig {
     pub feishu: Option<FeishuChannelConfig>,
     #[serde(default)]
     pub dingtalk: Option<DingtalkChannelConfig>,
+    /// Configuration for every other channel, keyed by channel id.
+    ///
+    /// One block per channel keeps this file open-ended: a new channel is a new
+    /// key, not a new field in a schema every version has to agree on. Each
+    /// channel deserializes its own block and reports a precise error if it does
+    /// not fit.
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl ChannelConfig {
+    /// The config block for one channel.
+    ///
+    /// A channel with a legacy top-level block (`feishu`, `dingtalk`) gets that
+    /// unless an explicit `providers.<id>` block exists, which wins — so users
+    /// can migrate one channel at a time without a flag day.
+    pub fn provider_config(&self, id: &str) -> Option<serde_json::Value> {
+        if let Some(block) = self.providers.get(id) {
+            return Some(block.clone());
+        }
+        match id {
+            "feishu" => self
+                .feishu
+                .as_ref()
+                .and_then(|block| serde_json::to_value(block).ok()),
+            "dingtalk" => self
+                .dingtalk
+                .as_ref()
+                .and_then(|block| serde_json::to_value(block).ok()),
+            _ => None,
+        }
+    }
+
+    /// Whether a channel's block asks to be started.
+    pub fn provider_enabled(block: &serde_json::Value) -> bool {
+        block
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// Read configuration for a read-only command.
+    ///
+    /// Unlike [`Self::load`] this has no first-run side effect and never fails:
+    /// `future channel list` and `status` must work on a machine that has never
+    /// started the bridge, and a broken file must not stop them from reporting
+    /// what they can. The note explains anything the caller should tell the user.
+    pub fn load_for_read() -> (Self, Option<String>) {
+        let path = Self::default_path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<Self>(&content) {
+                Ok(config) => (config, None),
+                Err(error) => (
+                    Self::default(),
+                    Some(format!(
+                        "cannot parse {}: {error}; reporting defaults",
+                        path.display()
+                    )),
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                Self::default(),
+                Some(format!(
+                    "no configuration at {}; every channel is unconfigured",
+                    path.display()
+                )),
+            ),
+            Err(error) => (
+                Self::default(),
+                Some(format!(
+                    "cannot read {}: {error}; reporting defaults",
+                    path.display()
+                )),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -339,6 +415,137 @@ mod tests {
         assert!(feishu.streaming); // default true
     }
 
+    // ─── Provider blocks ─────────────────────────────────────────────────────
+
+    #[test]
+    fn a_provider_block_is_read_from_the_providers_map() {
+        let mut config = ChannelConfig::default();
+        config.providers.insert(
+            "telegram".to_string(),
+            serde_json::json!({"enabled": true, "bot_token": "x"}),
+        );
+        let block = config.provider_config("telegram").expect("block");
+        assert_eq!(block["bot_token"], "x");
+        assert!(ChannelConfig::provider_enabled(&block));
+        assert!(config.provider_config("missing").is_none());
+    }
+
+    #[test]
+    fn the_legacy_top_level_blocks_still_resolve() {
+        // Feishu and DingTalk predate the `providers` map; both shapes must work
+        // so users can migrate one channel at a time.
+        let config = ChannelConfig {
+            feishu: Some(FeishuChannelConfig {
+                enabled: true,
+                app_id: "app".into(),
+                ..Default::default()
+            }),
+            dingtalk: Some(DingtalkChannelConfig {
+                enabled: true,
+                client_id: "id".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(ChannelConfig::provider_enabled(
+            &config.provider_config("feishu").expect("feishu")
+        ));
+        assert!(ChannelConfig::provider_enabled(
+            &config.provider_config("dingtalk").expect("dingtalk")
+        ));
+        // A channel with neither shape configured has no block at all.
+        assert!(config.provider_config("cli").is_none());
+    }
+
+    #[test]
+    fn an_explicit_provider_block_wins_over_the_legacy_one() {
+        let mut config = ChannelConfig {
+            feishu: Some(FeishuChannelConfig {
+                enabled: false,
+                app_id: "legacy".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        config.providers.insert(
+            "feishu".to_string(),
+            serde_json::json!({"enabled": true, "app_id": "new"}),
+        );
+        let block = config.provider_config("feishu").expect("block");
+        assert_eq!(block["app_id"], "new");
+        assert!(ChannelConfig::provider_enabled(&block));
+    }
+
+    #[test]
+    fn an_enabled_flag_requires_a_boolean() {
+        assert!(!ChannelConfig::provider_enabled(&serde_json::json!({})));
+        assert!(!ChannelConfig::provider_enabled(&serde_json::json!({
+            "enabled": "yes"
+        })));
+        assert!(ChannelConfig::provider_enabled(&serde_json::json!({
+            "enabled": true
+        })));
+    }
+
+    // ─── load_for_read ───────────────────────────────────────────────────────
+
+    #[test]
+    fn reading_a_missing_config_yields_defaults_with_a_note() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("config-read-missing");
+        let (config, note) = ChannelConfig::load_for_read();
+        let note = note.expect("a missing file must be explained");
+        assert!(note.contains("no configuration"), "{note}");
+        assert!(config.providers.is_empty());
+        // Crucially: no side effect. The template is only written by `load`.
+        assert!(!home.path.join(".future/channels/config.json").exists());
+    }
+
+    #[test]
+    fn reading_a_broken_config_reports_it_instead_of_failing() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("config-read-broken");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), "{not json").unwrap();
+        let (config, note) = ChannelConfig::load_for_read();
+        assert!(config.providers.is_empty());
+        let note = note.expect("a note");
+        assert!(note.contains("cannot parse"), "{note}");
+    }
+
+    #[test]
+    fn reading_an_unreadable_config_reports_it_instead_of_failing() {
+        // A directory where the file should be: reading fails with an error that
+        // is neither "missing" nor "malformed", and must still be reported.
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("config-read-unreadable");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(dir.join("config.json")).unwrap();
+        let (config, note) = ChannelConfig::load_for_read();
+        assert!(config.providers.is_empty());
+        let note = note.expect("a note");
+        assert!(note.contains("cannot read"), "{note}");
+    }
+
+    #[test]
+    fn reading_a_valid_config_returns_it_without_a_note() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("config-read-ok");
+        let dir = home.path.join(".future").join("channels");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"providers": {"cli": {"enabled": true}}}"#,
+        )
+        .unwrap();
+        let (config, note) = ChannelConfig::load_for_read();
+        assert!(note.is_none(), "{note:?}");
+        assert!(ChannelConfig::provider_enabled(
+            &config.provider_config("cli").expect("cli")
+        ));
+    }
+
     // ─── Roundtrip ───────────────────────────────────────────────────────────
 
     #[test]
@@ -358,6 +565,7 @@ mod tests {
                 ..Default::default()
             }),
             dingtalk: None,
+            providers: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let restored: ChannelConfig = serde_json::from_str(&json).unwrap();

@@ -314,6 +314,9 @@ pub struct HttpResponse {
     pub content_type: String,
     pub body: Vec<u8>,
     pub delay: Duration,
+    /// Extra response headers (rate-limit metadata a platform reports outside
+    /// the body).
+    pub extra_headers: Vec<(String, String)>,
 }
 
 pub struct HttpRoute {
@@ -331,16 +334,29 @@ impl HttpRoute {
         }
     }
 
+    fn response(status: u16, body: &str) -> HttpResponse {
+        HttpResponse {
+            status,
+            content_type: "application/json".to_string(),
+            body: body.as_bytes().to_vec(),
+            delay: Duration::ZERO,
+            extra_headers: Vec::new(),
+        }
+    }
+
     pub fn json(path: &str, status: u16, body: &str) -> Self {
-        HttpRoute::single(
-            path,
-            HttpResponse {
-                status,
-                content_type: "application/json".to_string(),
-                body: body.as_bytes().to_vec(),
-                delay: Duration::ZERO,
-            },
-        )
+        HttpRoute::single(path, Self::response(status, body))
+    }
+
+    /// A stateful 429 route: each call answers `retry_after` plus the
+    /// `X-RateLimit-*` headers platforms use to mark global and bucket limits.
+    pub fn rate_limited(path: &str, body: &str, extra_headers: &[(&str, &str)]) -> Self {
+        let mut response = Self::response(429, body);
+        response.extra_headers = extra_headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        HttpRoute::single(path, response)
     }
 
     pub fn binary(path: &str, status: u16, body: Vec<u8>) -> Self {
@@ -351,6 +367,7 @@ impl HttpRoute {
                 content_type: "application/octet-stream".to_string(),
                 body,
                 delay: Duration::ZERO,
+                extra_headers: Vec::new(),
             },
         )
     }
@@ -362,12 +379,7 @@ impl HttpRoute {
             path: path.to_string(),
             responses: responses
                 .into_iter()
-                .map(|(s, b)| HttpResponse {
-                    status: s,
-                    content_type: "application/json".to_string(),
-                    body: b.as_bytes().to_vec(),
-                    delay: Duration::ZERO,
-                })
+                .map(|(s, b)| Self::response(s, b))
                 .collect(),
             index: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -496,7 +508,7 @@ async fn spawn_http_inner(
                 });
                 let path = target.split('?').next().unwrap_or("/");
                 let route = routes.iter().find(|r| r.path == path);
-                let (status, content_type, body, delay) = match route {
+                let (status, content_type, body, delay, extra_headers) = match route {
                     Some(r) => {
                         let i = r
                             .index
@@ -508,6 +520,7 @@ async fn spawn_http_inner(
                             resp.content_type.clone(),
                             resp.body.clone(),
                             resp.delay,
+                            resp.extra_headers.clone(),
                         )
                     }
                     None => (
@@ -515,6 +528,7 @@ async fn spawn_http_inner(
                         "application/json".to_string(),
                         b"{}".to_vec(),
                         Duration::ZERO,
+                        Vec::new(),
                     ),
                 };
                 if !delay.is_zero() {
@@ -526,14 +540,19 @@ async fn spawn_http_inner(
                     400 => "Bad Request",
                     401 => "Unauthorized",
                     404 => "Not Found",
+                    429 => "Too Many Requests",
                     500 => "Internal Server Error",
                     502 => "Bad Gateway",
                     _ => "Status",
                 };
-                let head = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                let mut head = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n",
                     body.len()
                 );
+                for (name, value) in &extra_headers {
+                    head.push_str(&format!("{name}: {value}\r\n"));
+                }
+                head.push_str("\r\n");
                 let mut response = head.into_bytes();
                 response.extend_from_slice(&body);
                 let _ = socket.write_all(&response).await;
@@ -779,12 +798,39 @@ mod tests {
             HttpRoute::json("/made", 201, r#"{"ok":true}"#),
             HttpRoute::json("/bad", 502, "{}"),
             HttpRoute::json("/weird", 499, "{}"), // unmapped reason arm
+            HttpRoute::json("/denied", 401, "{}"),
+            // A rate-limit response with the header a provider must honour.
+            HttpRoute::rate_limited(
+                "/limited",
+                r#"{"error":"slow down"}"#,
+                &[("Retry-After", "7"), ("X-RateLimit-Bucket", "b1")],
+            ),
             HttpRoute::sequence("/seq", vec![(200, r#"{"n":1}"#), (200, r#"{"n":2}"#)]),
             HttpRoute::binary("/bin", 200, b"\x00\x01".to_vec()),
             HttpRoute::slow("/slow", Duration::from_millis(50)),
         ];
         let (base, recorded) = spawn_http(routes).await;
         let client = reqwest::Client::new();
+        // The 401 reason phrase and the extra headers a rate-limit response
+        // carries are part of what the mock must emulate.
+        let denied = client.get(format!("{base}/denied")).send().await.unwrap();
+        assert_eq!(denied.status().as_u16(), 401);
+        let limited = client.get(format!("{base}/limited")).send().await.unwrap();
+        assert_eq!(limited.status().as_u16(), 429);
+        assert_eq!(
+            limited
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
+        assert_eq!(
+            limited
+                .headers()
+                .get("x-ratelimit-bucket")
+                .and_then(|value| value.to_str().ok()),
+            Some("b1")
+        );
         assert_eq!(
             client
                 .get(format!("{base}/made"))

@@ -12,6 +12,7 @@ pub mod policy;
 pub mod prompt_loop;
 pub mod session_store;
 
+use crate::bridge::Shutdown;
 use crate::config::AgentConfig;
 use anyhow::Result;
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use tracing::{info, warn};
 const AGENT_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 const WEBSOCKET_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-async fn wait_or_shutdown(delay: std::time::Duration, shutdown: &tokio::sync::Notify) -> bool {
+async fn wait_or_shutdown(delay: std::time::Duration, shutdown: &Shutdown) -> bool {
     tokio::select! {
         _ = tokio::time::sleep(delay) => false,
         _ = shutdown.notified() => true,
@@ -35,7 +36,7 @@ impl FeishuChannel {
     pub async fn run(
         agent_cfg: Arc<AgentConfig>,
         ch_cfg: crate::config::FeishuChannelConfig,
-        shutdown: Arc<tokio::sync::Notify>,
+        shutdown: std::sync::Arc<crate::bridge::Shutdown>,
     ) -> Result<()> {
         let feishu_cfg = config::FeishuConfig::from_channel_config(&ch_cfg);
 
@@ -162,7 +163,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn run_keeps_retrying_without_agent_until_shutdown() {
         ts::ensure_crypto_provider();
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let handle = tokio::spawn(FeishuChannel::run(
             agent_cfg("127.0.0.1:1"),
             ch_cfg("http://127.0.0.1:1"),
@@ -173,7 +174,7 @@ mod tests {
             !handle.is_finished(),
             "channel must keep retrying the Agent"
         );
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(2), handle)
             .await
             .expect("shutdown must interrupt Agent retry backoff")
@@ -188,12 +189,12 @@ mod tests {
         let (ws_url, _) = ts::spawn_ws(vec![WsAction::Delay(Duration::from_secs(30))]).await;
         let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
         let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let sd = shutdown.clone();
         let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
         // Give it a moment to connect, then shut down.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("run must return after shutdown")
@@ -213,11 +214,11 @@ mod tests {
         .await;
         let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
         let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let sd = shutdown.clone();
         let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
         tokio::time::sleep(Duration::from_millis(500)).await;
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("run must return after shutdown")
@@ -234,11 +235,11 @@ mod tests {
         routes.push(HttpRoute::json("/callback/ws/endpoint", 500, "{}"));
         let (base, _) = ts::spawn_http(routes).await;
         let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let sd = shutdown.clone();
         let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
         tokio::time::sleep(Duration::from_millis(300)).await;
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("shutdown cancels the backoff sleep")
@@ -256,7 +257,7 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let handle = tokio::spawn(FeishuChannel::run(
             agent_cfg(&addr),
             ch_cfg(&base),
@@ -267,7 +268,7 @@ mod tests {
             !handle.is_finished(),
             "channel must stay alive during Agent reconnect backoff"
         );
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(2), handle)
             .await
             .expect("shutdown must interrupt Agent reconnect backoff")
@@ -353,12 +354,12 @@ mod tests {
         .await;
         let (base, _) = ts::spawn_http(http_routes(&ws_url)).await;
         let (addr, _) = ts::spawn_mock_grpc(MockState::default()).await;
-        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown = crate::bridge::Shutdown::new();
         let sd = shutdown.clone();
         let handle = tokio::spawn(FeishuChannel::run(agent_cfg(&addr), ch_cfg(&base), sd));
         // Let the event flow through, then shut down.
         tokio::time::sleep(Duration::from_millis(800)).await;
-        shutdown.notify_waiters();
+        shutdown.trigger();
         let result = tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .expect("run must return after shutdown")

@@ -12,15 +12,12 @@ pub struct FeishuConfig {
     pub behavior: BehaviorConfig,
 }
 
-#[derive(Debug, Clone)]
-pub struct PolicyConfig {
-    pub dm_policy: String,
-    pub dm_allowlist: Vec<String>,
-    pub group_policy: String,
-    pub group_allowlist: Vec<String>,
-    pub require_mention: bool,
-}
-
+/// The access policy block, shared with every other channel.
+///
+/// Feishu keeps the historical type name so its config plumbing (and the
+/// `dm_policy` / `group_policy` JSON keys) stay unchanged; the engine itself is
+/// [`crate::policy::PolicyEngine`].
+pub use crate::policy::AccessPolicyConfig as PolicyConfig;
 #[derive(Debug, Clone)]
 pub struct BehaviorConfig {
     pub typing_indicator: bool,
