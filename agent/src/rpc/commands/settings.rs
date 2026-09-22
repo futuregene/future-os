@@ -595,6 +595,64 @@ pub(crate) fn handle_set_session_name(
     RpcResponse::ok(id, "set_session_name", serde_json::json!({}))
 }
 
+/// `set_parent_session` — record (or clear, with an empty id) the session's
+/// parent for lineage. The parent is metadata only: unlike `fork`, the parent's
+/// history is never copied into this session.
+pub(crate) fn handle_set_parent_session(
+    state: &AppState,
+    session: &Arc<parking_lot::RwLock<ServerSession>>,
+    cmd: &RpcCommand,
+    id: &str,
+) -> String {
+    let parent = cmd.parent_session.trim().to_string();
+    let (session_manager, session_id, persistence) = {
+        let sess = session.read();
+        if !parent.is_empty() && parent == sess.session_id {
+            return RpcResponse::build_fail(
+                id,
+                "set_parent_session",
+                "a session cannot be its own parent",
+            );
+        }
+        // A parent may be a live session that has no entries yet, so check the
+        // in-memory map before the session store. An empty id detaches.
+        let known = if parent.is_empty() {
+            true
+        } else {
+            state.sessions.read().contains_key(&parent)
+                || state.session_manager.contains(&parent).unwrap_or(false)
+        };
+        if !known {
+            return RpcResponse::build_fail(
+                id,
+                "set_parent_session",
+                &format!("parent session not found: {parent}"),
+            );
+        }
+        (
+            sess.session_manager.clone(),
+            sess.session_id.clone(),
+            sess.persistence.clone(),
+        )
+    };
+    session.write().parent_session_id = parent.clone();
+    // Persist to the session record so both `list_sessions` and the next run's
+    // session_info rewrite (which re-reads the parent from disk) see it.
+    if !matches!(session_manager.contains(&session_id), Ok(false)) {
+        if let Err(error) = persistence.update_info(
+            "parent_session_id",
+            serde_json::Value::String(parent.clone()),
+        ) {
+            tracing::error!("Failed to persist parent session: {error:#}");
+        }
+    }
+    RpcResponse::ok(
+        id,
+        "set_parent_session",
+        serde_json::json!({"parentSessionId": parent}),
+    )
+}
+
 pub(crate) fn cmd_reload_config(
     state: &AppState,
     session: &Arc<parking_lot::RwLock<ServerSession>>,

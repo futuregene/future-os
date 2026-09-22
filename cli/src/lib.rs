@@ -415,6 +415,14 @@ mod tests {
                 &["session", "new", "-h"],
                 commands::session::SESSION_NEW_HELP,
             ),
+            (
+                &["session", "set", "--help"],
+                commands::session::SESSION_SET_HELP,
+            ),
+            (
+                &["session", "set", "sess-1", "-h"],
+                commands::session::SESSION_SET_HELP,
+            ),
         ];
         for (args, expected) in cases {
             let (code, stdout, stderr) = run(args).await;
