@@ -57,7 +57,7 @@ fn get_state_fixture() -> Value {
             "contextWindow": 200000,
             "contextTokens": 1234,
             "contextPercent": 0.62,
-            "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5,"costCny":0.01},
+            "usage":{"inputTokens":100,"outputTokens":50,"cacheReadTokens":10,"cacheWriteTokens":5,"costCny":0.01,"costInputCny":0.002,"costOutputCny":0.004,"costCacheReadCny":0.003,"costCacheWriteCny":0.001},
             "permissionLevel": "workspace",
             "createdBy": "desktop",
             "sourceMeta": {"threadId": "t1"},
@@ -745,11 +745,16 @@ fn agent_end_event_parity() {
 fn thinking_event_parity() {
     assert_event_parity(
         "thinking_delta",
-        json!({"type": "thinking_delta", "text": "Let me consider..."}),
+        json!({"type": "thinking_delta", "text": "Let me consider...", "block_id": "r1"}),
     );
-    // Lifecycle markers carry no payload.
-    assert_event_parity("thinking_start", json!({"type": "thinking_start"}));
-    assert_event_parity("thinking_end", json!({"type": "thinking_end"}));
+    assert_event_parity(
+        "thinking_start",
+        json!({"type": "thinking_start", "block_id": "r1"}),
+    );
+    assert_event_parity(
+        "thinking_end",
+        json!({"type": "thinking_end", "block_id": "r1"}),
+    );
 }
 
 #[test]

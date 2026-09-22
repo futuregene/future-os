@@ -78,11 +78,35 @@ pub struct Cost {
 }
 
 impl Cost {
-    /// Estimate the cost (in yuan) of a request's token usage. Prices are per
-    /// 1M tokens. `prompt_tokens` already includes the cached subset, so the
-    /// non-cached remainder is billed at the input rate and the cached tokens
-    /// at their own (usually cheaper or zero) rate — billing both would
-    /// double-count cached input.
+    /// Per-category amounts (in yuan) for one request's token usage, in the order
+    /// input / output / cache read / cache write. Prices are per 1M tokens.
+    ///
+    /// `prompt_tokens` already includes the cached subset, so the non-cached
+    /// remainder is billed at the input rate and the cached tokens at their own
+    /// (usually cheaper or zero) rate — billing both would double-count cached
+    /// input. This is the single definition of that rule: [`Cost::estimate`] sums
+    /// it, and the session's accumulated split charges it.
+    pub fn parts(
+        &self,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cache_read_tokens: i64,
+        cache_write_tokens: i64,
+    ) -> [f64; 4] {
+        let prompt = prompt_tokens.max(0) as f64;
+        let completion = completion_tokens.max(0) as f64;
+        let cache_read = cache_read_tokens.max(0) as f64;
+        let cache_write = cache_write_tokens.max(0) as f64;
+        let uncached_input = (prompt - cache_read - cache_write).max(0.0);
+        [
+            (uncached_input / 1_000_000.0) * self.input,
+            (completion / 1_000_000.0) * self.output,
+            (cache_read / 1_000_000.0) * self.cache_read,
+            (cache_write / 1_000_000.0) * self.cache_write,
+        ]
+    }
+
+    /// Estimate the cost (in yuan) of a request's token usage.
     pub fn estimate(
         &self,
         prompt_tokens: i64,
@@ -90,15 +114,49 @@ impl Cost {
         cache_read_tokens: i64,
         cache_write_tokens: i64,
     ) -> f64 {
-        let prompt = prompt_tokens.max(0) as f64;
-        let completion = completion_tokens.max(0) as f64;
-        let cache_read = cache_read_tokens.max(0) as f64;
-        let cache_write = cache_write_tokens.max(0) as f64;
-        let uncached_input = (prompt - cache_read - cache_write).max(0.0);
-        (uncached_input / 1_000_000.0) * self.input
-            + (completion / 1_000_000.0) * self.output
-            + (cache_read / 1_000_000.0) * self.cache_read
-            + (cache_write / 1_000_000.0) * self.cache_write
+        self.parts(
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+        .iter()
+        .sum()
+    }
+}
+
+/// A session's spend, split by token category and accumulated one request at a
+/// time — each request priced with the rates of the model that served it.
+///
+/// Deriving the split from the session's token totals and its *current* model
+/// would re-price everything a session ever spent at the last model's rates,
+/// which is wrong as soon as one conversation switches models (a cheap model's
+/// tokens billed at an expensive one's rates, or the reverse). The total is
+/// accumulated per request for the same reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CostSplit {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    #[serde(default)]
+    pub cache_read: f64,
+    #[serde(default)]
+    pub cache_write: f64,
+}
+
+impl CostSplit {
+    pub fn add(&mut self, parts: [f64; 4]) {
+        self.input += parts[0];
+        self.output += parts[1];
+        self.cache_read += parts[2];
+        self.cache_write += parts[3];
+    }
+
+    /// True when nothing has been priced yet — an agent too old to have
+    /// accumulated a split, or a session whose models have no prices on file.
+    pub fn is_unset(&self) -> bool {
+        self.input == 0.0 && self.output == 0.0 && self.cache_read == 0.0 && self.cache_write == 0.0
     }
 }
 
@@ -236,16 +294,53 @@ pub fn model_accepts_images_with(registry: &Registry, model: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the output token budget advertised by a model. Catalog values are
-/// used as-is; only models without a configured limit receive a fallback.
+/// Absolute ceiling on the output budget this agent requests or reserves.
+///
+/// Providers advertise theoretical maxima that say nothing about what one
+/// response should spend. Measured over 12 599 real calls in this repo's own
+/// Agent database, the largest single call produced 16 384 completion tokens
+/// (twice, both times hitting `length`), and only 28 exceeded 8 192, so this
+/// ceiling is four times the observed peak and does not truncate ordinary work.
+pub const MAX_OUTPUT_TOKENS: i32 = 65_536;
+
+/// Shape a declared output limit into the budget this agent will actually use,
+/// for both the request it sends and the capacity it reserves.
+///
+/// A declared limit is not a reserve. Providers may report a limit that equals
+/// the context window — Kimi's `/v1/models` returns
+/// `{"context_length": 1048576, "max_tokens": 1048576}`, because input and
+/// output share one window — and reserving that leaves no room for input at
+/// all (`window - reserve - margin <= 0`), which fails every request including
+/// the first. The provider itself accepts the oversized `max_tokens` and
+/// trims, so the hazard is purely local arithmetic.
+///
+/// Bound it by a quarter of the window (the same proportional rule the retired
+/// summary budget used: a 4K model cannot reserve 32K) and by
+/// [`MAX_OUTPUT_TOKENS`]. An unknown window (`<= 0`) keeps only the absolute
+/// ceiling: zero is "not configured", not "no room".
+pub fn capped_output_tokens(declared: i32, context_window: i32) -> i32 {
+    let capped = declared.clamp(0, MAX_OUTPUT_TOKENS);
+    if context_window > 0 {
+        capped.min(context_window / 4)
+    } else {
+        capped
+    }
+}
+
+/// Resolve the output token budget for a model: the catalog limit (bounded by
+/// [`capped_output_tokens`]), or the reasoning/non-reasoning fallback when the
+/// model declares none. This is the single source of truth for both the
+/// `max_tokens` this agent sends and the output space its compaction budget
+/// reserves, so the two cannot drift apart.
 pub fn effective_max_tokens(model: &Model) -> i32 {
-    if model.max_tokens > 0 {
+    let declared = if model.max_tokens > 0 {
         model.max_tokens
     } else if model.reasoning {
         32000
     } else {
         16384
-    }
+    };
+    capped_output_tokens(declared, model.context_window)
 }
 
 /// UserModelsPath returns ~/.future/agent/models.json.
@@ -1210,12 +1305,66 @@ mod tests {
     }
 
     #[test]
-    fn effective_max_tokens_preserves_catalog_limit() {
-        let model = Model {
-            max_tokens: 384000,
+    fn effective_max_tokens_caps_a_catalog_limit_that_equals_the_window() {
+        // Kimi's `/v1/models` reports `max_tokens == context_length` because
+        // input and output share one window. Reserving that used to leave the
+        // whole window unavailable for input (`window - reserve - margin <= 0`),
+        // failing every request of the session, including the first.
+        let kimi = Model {
+            id: "kimi-k3".into(),
+            context_window: 1_048_576,
+            max_tokens: 1_048_576,
+            reasoning: true,
             ..Default::default()
         };
-        assert_eq!(super::effective_max_tokens(&model), 384000);
+        assert_eq!(super::effective_max_tokens(&kimi), super::MAX_OUTPUT_TOKENS);
+        assert_eq!(
+            super::effective_max_tokens(&Model {
+                context_window: 262_144,
+                max_tokens: 262_144,
+                ..Default::default()
+            }),
+            super::MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn effective_max_tokens_caps_at_a_quarter_of_a_small_window() {
+        // The absolute ceiling is far above a small model's window, so the
+        // proportional bound is what applies: a 131 072-token model cannot
+        // reserve 100 000 of it for one response.
+        let model = Model {
+            context_window: 131_072,
+            max_tokens: 100_000,
+            reasoning: true,
+            ..Default::default()
+        };
+        assert_eq!(super::effective_max_tokens(&model), 32_768);
+    }
+
+    #[test]
+    fn effective_max_tokens_leaves_a_limit_under_both_caps_alone() {
+        for (window, declared) in [
+            (262_144, 32_768),   // doubao-seed: unchanged
+            (1_000_000, 65_500), // qwen3.7: just under the absolute ceiling
+        ] {
+            let model = Model {
+                context_window: window,
+                max_tokens: declared,
+                reasoning: true,
+                ..Default::default()
+            };
+            assert_eq!(super::effective_max_tokens(&model), declared);
+        }
+    }
+
+    #[test]
+    fn capped_output_tokens_without_a_window_keeps_only_the_absolute_ceiling() {
+        // An unknown window is "not configured", never "no room": a user model
+        // without `contextWindow` must keep working.
+        assert_eq!(super::capped_output_tokens(1_048_576, 0), 65_536);
+        assert_eq!(super::capped_output_tokens(-1, 0), 0);
+        assert_eq!(super::capped_output_tokens(8_192, -5), 8_192);
     }
 
     #[test]
@@ -1227,6 +1376,18 @@ mod tests {
         let plain = Model::default();
         assert_eq!(super::effective_max_tokens(&reasoning), 32000);
         assert_eq!(super::effective_max_tokens(&plain), 16384);
+    }
+
+    #[test]
+    fn effective_max_tokens_bounds_the_fallback_by_the_window_too() {
+        // The fallback is a declared limit like any other: on a 32K model it
+        // would otherwise reserve the entire window.
+        let small = Model {
+            context_window: 32_000,
+            reasoning: true,
+            ..Default::default()
+        };
+        assert_eq!(super::effective_max_tokens(&small), 8_000);
     }
 
     #[test]

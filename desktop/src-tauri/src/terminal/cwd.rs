@@ -135,7 +135,17 @@ pub fn validate_dir(path: &Path) -> Result<PathBuf, CwdError> {
             reason: error.kind().to_string(),
         });
     }
-    Ok(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+    // Windows `Path::canonicalize` returns the extended-length spelling
+    // (`\\?\C:\...`). That form is fine for the filesystem API but breaks
+    // shells: cmd.exe and Windows PowerShell fail to resolve relative paths
+    // from a verbatim working directory ("The filename, directory name, or
+    // volume label syntax is incorrect"), so the child must get the ordinary
+    // spelling. The store already strips the same prefix for the same reason
+    // (`store::strip_verbatim_prefix`); POSIX paths never carry it, so this is
+    // a no-op off Windows.
+    Ok(store::strip_verbatim_prefix(
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+    ))
 }
 
 fn home_dir() -> Option<PathBuf> {

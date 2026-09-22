@@ -1,4 +1,4 @@
-import { ArrowLeft, FolderOpen, Pencil } from "lucide-react-native";
+import { ArrowLeft, FolderOpen, ReceiptText } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
 
@@ -7,9 +7,9 @@ export function ChatTopBar({
   contextLabel,
   draft,
   backLabel,
-  renameLabel,
+  usageLabel,
   onBack,
-  onRename,
+  onUsage,
   filesLabel,
   filesOpen,
   onFiles,
@@ -18,9 +18,16 @@ export function ChatTopBar({
   contextLabel: string;
   draft: boolean;
   backLabel: string;
-  renameLabel: string;
+  /**
+   * Opens the conversation's token/amount breakdown. An icon rather than the
+   * amount: the bar belongs to the conversation, and a number that changes
+   * every turn competes with the title for attention. Renaming is not here
+   * either — the session list already owns that, so repeating it in the
+   * conversation only lengthens the row.
+   */
+  usageLabel: string;
   onBack: () => void;
-  onRename: () => void;
+  onUsage: () => void;
   filesLabel: string;
   filesOpen: boolean;
   onFiles: () => void;
@@ -56,14 +63,18 @@ export function ChatTopBar({
       )}
       {!draft && (
         <Pressable
-          accessibilityLabel={renameLabel}
+          accessibilityLabel={usageLabel}
           accessibilityRole="button"
-          onPress={onRename}
+          onPress={onUsage}
           style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
         >
-          <Pencil color={colors.ink} size={18} />
+          <ReceiptText color={colors.ink} size={20} />
         </Pressable>
       )}
+      {/* A draft has no session, so neither icon applies; the two spacers keep
+          the centered title from jumping sideways when the first message is
+          sent and they appear. */}
+      {draft && <View style={styles.iconButton} />}
       {draft && <View style={styles.iconButton} />}
     </View>
   );

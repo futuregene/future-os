@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Download, Ellipsis, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
+  FlatList,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +13,9 @@ import {
 } from "react-native";
 import type { TFunction } from "i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { CodeTokens } from "../../../components/CodeTokens";
+import { codePreviewRows, codeRowText } from "../../../components/codePreviewRows";
+import { codeLanguageForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
@@ -38,6 +43,28 @@ export function PreviewModal({
 }) {
   const [menuFor, setMenuFor] = useState<PreviewState | null>(null);
   const [headerHeight, setHeaderHeight] = useState(60);
+  // Highlight here rather than in `useFileDownload`: the plain-text route serves
+  // both code files and prose (`.txt`, `.log`), so only the file name knows
+  // whether this is source. Tokenizing is bounded — `highlightCode` refuses
+  // oversized files and grammars it does not ship — and the fallback is the
+  // untouched source, never mangled text. Recognized code keeps the monospace
+  // metrics even when it is too large to color.
+  const fileName = preview?.attachment.name ?? "";
+  const previewText = preview?.text;
+  const language = useMemo(() => codeLanguageForFile(fileName), [fileName]);
+  const tokens = useMemo(
+    () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
+    [language, previewText],
+  );
+  // The body is paged into bounded chunks whether or not there is a grammar.
+  // A single `<Text>` holding the whole file is the one thing that cannot scale
+  // here: the route serves up to 2 MiB, and highlighting can turn a 30 KB file
+  // into thousands of nested spans. Native text layout pays for every mounted
+  // span, so the document opens as a virtualized list of chunks — the same
+  // bounding the chat's code blocks already use (`codePreviewRows`), just
+  // without their collapse, since a preview is meant to be read in full.
+  const rows = useMemo(() => codePreviewRows(previewText ?? ""), [previewText]);
+  const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
   // Do not carry an expanded menu into a new preview or an active download.
   if (menuFor && (menuFor !== preview || activeDownload !== null)) setMenuFor(null);
   const menuOpen = menuFor !== null && menuFor === preview && activeDownload === null;
@@ -99,7 +126,9 @@ export function PreviewModal({
             ) : preview?.info.previewKind === "markdown" ? (
               <View style={styles.previewDocument}>
                 {!!preview?.truncated && (
-                  <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                  <View style={styles.previewNotice}>
+                    <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                  </View>
                 )}
                 <MarkdownText mode="file-preview" imageBasePath={preview?.attachment.path} text={preview?.markdown ?? ""} />
               </View>
@@ -112,14 +141,22 @@ export function PreviewModal({
                 truncatedMessage={t("attachment.jsonTruncated")}
               />
             ) : (
-              <ScrollView contentContainerStyle={styles.previewMarkdown}>
-                {!!preview?.truncated && (
-                  <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+              <FlatList
+                contentContainerStyle={styles.previewMarkdown}
+                data={rows}
+                initialNumToRender={12}
+                keyExtractor={(_row, index) => String(index)}
+                ListHeaderComponent={preview?.truncated
+                  ? <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+                  : null}
+                maxToRenderPerBatch={12}
+                renderItem={({ item, index }) => (
+                  <Text selectable style={language ? styles.previewCode : styles.previewText}>
+                    <CodeTokens fallback={codeRowText(item.text)} tokens={rowTokens[index] ?? null} />
+                  </Text>
                 )}
-                <Text selectable style={styles.previewText}>
-                  {preview?.text ?? ""}
-                </Text>
-              </ScrollView>
+                windowSize={5}
+              />
             )}
           </View>
           {menuOpen && (
@@ -160,6 +197,9 @@ export function PreviewModal({
   );
 }
 
+// Matches the chat's code blocks (`MarkdownText`).
+const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
+
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
   previewBody: { flex: 1, minHeight: 0 },
@@ -192,7 +232,12 @@ const styles = StyleSheet.create({
   menuAction: { minHeight: layout.touchTarget, flexDirection: "row", alignItems: "center", gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.sm },
   menuLabel: { flexShrink: 1, color: colors.ink, fontSize: 15 },
   previewMarkdown: { padding: spacing.lg },
-  previewDocument: { flex: 1, minHeight: 0, padding: spacing.lg },
+  // No padding here: the document itself scrolls, so its gutter lives in the
+  // markdown list's content container. Padding on this static parent instead
+  // leaves a blank strip under the header, where the list clips scrolled text.
+  // Only the notice above the list sits outside that scrolling surface.
+  previewDocument: { flex: 1, minHeight: 0 },
+  previewNotice: { paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   previewTruncated: {
     marginBottom: spacing.md,
     padding: spacing.md,
@@ -202,4 +247,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   previewText: { color: colors.ink, fontSize: 14, lineHeight: 21 },
+  // Code files get the monospace metrics the chat's code blocks use, so columns
+  // line up in the colored spans; prose (`.txt`, `.log`) keeps the proportional
+  // `previewText` it had before.
+  previewCode: { color: colors.ink, fontFamily: monospace, fontSize: 13, lineHeight: 20 },
 });

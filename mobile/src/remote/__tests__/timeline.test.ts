@@ -2,6 +2,7 @@ import {
   applyStreamEvent,
   appendUserMessage,
   commitAcknowledgedUserMessage,
+  dropSupersededCompactionDividers,
   emptyTimeline,
   markApprovalDecision,
   mergeHistoryAttachments,
@@ -195,9 +196,18 @@ describe("entry reducer", () => {
     });
   });
 
-  test.each([undefined, "pre_turn", "mid_turn"])(
-    "preserves a reply across an in-turn checkpoint (phase=%s)",
-    phase => {
+  test.each([
+    [2, undefined],
+    [2, "pre_turn"],
+    [2, "mid_turn"],
+    // v3 is the schema the agent writes today; a literal `=== 2` gate here
+    // dropped every entry after an in-turn checkpoint.
+    [3, undefined],
+    [3, "pre_turn"],
+    [3, "mid_turn"],
+  ])(
+    "preserves a reply across an in-turn checkpoint (schema=%s phase=%s)",
+    (schemaVersion, phase) => {
       const entries: HistoryEntry[] = [
         {
           id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r1",
@@ -212,7 +222,7 @@ describe("entry reducer", () => {
         },
         {
           id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
-          checkpoint: { schemaVersion: 2, checkpointId: "cp1", tokensBefore: 903_386, trigger: "automatic", phase },
+          checkpoint: { schemaVersion, checkpointId: "cp1", tokensBefore: 903_386, trigger: "automatic", phase },
         },
         {
           id: "t1", kind: "tool", role: "tool", createdAtMs: 3,
@@ -318,6 +328,20 @@ describe("entry reducer", () => {
       expect(state.items.map(item => item.id)).toEqual(["m_u1", "m_a1", "m_cp1", "m_u2", "m_a2"]);
     },
   );
+
+  test("keeps a v3 manual checkpoint between turns standalone", () => {
+    const state = timelineFromEntries([
+      { id: "u1", kind: "user", role: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "first" }] },
+      { id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, blocks: [{ kind: "text", text: "reply" }] },
+      {
+        id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+        checkpoint: { schemaVersion: 3, checkpointId: "cp1", trigger: "manual", phase: "standalone" },
+      },
+      { id: "u2", kind: "user", role: "user", createdAtMs: 3, blocks: [{ kind: "text", text: "next" }] },
+      { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 4, blocks: [{ kind: "text", text: "next reply" }] },
+    ]);
+    expect(state.items.map(item => item.id)).toEqual(["m_u1", "m_a1", "m_cp1", "m_u2", "m_a2"]);
+  });
 
   test("keeps attachment-only user entries and drops malformed attachments", () => {
     const timeline = timelineFromEntries([
@@ -511,6 +535,34 @@ describe("projection reducer", () => {
     };
     const stripped = stripRunItems(base, "run-1");
     expect(stripped.items.map(item => item.id)).toEqual(["u1", "a2"]);
+  });
+
+  test("dropSupersededCompactionDividers drops only the durable copy of a shared checkpoint", () => {
+    const divider = (id: string, checkpointId?: string) => ({
+      id,
+      kind: "message" as const,
+      role: "assistant" as const,
+      text: "",
+      ...(checkpointId
+        ? { segments: [{ id: `seg_${checkpointId}_compaction`, kind: "compaction" as const, checkpointId }] }
+        : { segments: [{ id: "seg", kind: "compaction" as const }] }),
+    });
+    const live = divider("assistant:live", "cp-1");
+    const history = [
+      divider("m_cp-1", "cp-1"),
+      divider("m_cp-old", "cp-old"),
+      divider("m_cp-anonymous"),
+      { id: "u1", kind: "message" as const, role: "user" as const, text: "hi" },
+    ];
+
+    expect(dropSupersededCompactionDividers(history, [live]).map(item => item.id))
+      .toEqual(["m_cp-old", "m_cp-anonymous", "u1"]);
+    // No identity to compare on either side — nothing is superseded.
+    expect(dropSupersededCompactionDividers(history, [divider("assistant:live")]))
+      .toEqual(history);
+    // The live row is a divider-only row too; it must never drop itself.
+    expect(dropSupersededCompactionDividers([live], [live]).map(item => item.id))
+      .toEqual(["assistant:live"]);
   });
 });
 
@@ -1212,7 +1264,7 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments?.filter(segment => segment.kind === "compaction")).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 190_000 },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 190_000 },
     ]);
   });
 
@@ -1340,7 +1392,7 @@ describe("shared-projection semantic flags", () => {
     reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     let failedState = applyStreamEvent(emptyTimeline(), {

@@ -195,6 +195,34 @@
           }
         ]
       },
+      "code-preview": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "展开上下文面板"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "figures"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "plot-effect-size.py"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-code-preview.png"
+          }
+        ]
+      },
       "terminal": {
         "url": "http://localhost:5299/shot/?press=meta%2Bj",
         "steps": [
@@ -253,6 +281,88 @@
           },
           {
             "shot": "d-settings-providers.png"
+          }
+        ]
+      },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（桌面端头部右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 1200 },
+          { "inject": "{variantInject}" },
+          { "shot": "d-usage-icon.png" }
+        ]
+      },
+      "custom-model-prices": {
+        "steps": [
+          { "wait": 900 },
+          { "tapText": "lixin" },
+          { "wait": 1500 },
+          { "tapText": "设置" },
+          { "wait": 2000 },
+          { "tapText": "提供商" },
+          { "wait": 2000 },
+          { "tap": "编辑" },
+          { "wait": 2000 },
+          {
+            "eval": "(() => { const sc = [...document.querySelectorAll('div')].find(n => n.className.toString().includes('overflow-y-auto') && n.scrollHeight > n.clientHeight + 4); if (!sc) throw new Error('no scrollable dialog body'); sc.scrollTop = sc.scrollHeight; return sc.scrollTop; })()"
+          },
+          { "wait": 600 },
+          {
+            "eval": "{ if (!document.body.innerText.includes('价格（每 100 万 Token）')) throw new Error('price fields not in the DOM'); }"
+          },
+          { "shot": "d-custom-model-prices.png" }
+        ]
+      },
+      "thread-usage": {
+        "_comment": "The mock answers later state reads with a larger figure (refreshedSessionUsage), so opening the dialog is asserted to show the refreshed total rather than re-displaying the header's cached amount.",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "shot": "d-thread-usage.png"
+          },
+          {
+            "tap": "Token 用量与金额"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "shot": "d-thread-usage-dialog.png"
+          },
+          {
+            "eval": "(() => { const total = document.querySelector('[data-testid=usage-total]'); if (!total) throw new Error('the dialog did not open'); if (total.textContent !== '¥1.3904') throw new Error('the dialog shows a stale amount: ' + total.textContent); return 'refreshed'; })()"
+          }
+        ]
+      },
+      "thread-usage-unpriced": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "解释一下 p 值的常见误用"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "Token 用量与金额"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "shot": "d-thread-usage-unpriced.png"
           }
         ]
       },
@@ -455,6 +565,30 @@
             "shot": "d-compare-baseline.png"
           }
         ]
+      },
+      "compact-resume": {
+        "url": "http://localhost:5299/shot/?compactHistory=1",
+        "note": "Durable history with a schemaVersion 3 mid-turn checkpoint. The reply written after the divider must still be in the transcript: a `=== 2` version gate in the projector treated every newer in-turn checkpoint as an exchange boundary and dropped everything after it.",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "scroll": [
+              0,
+              -760
+            ]
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+          },
+          {
+            "shot": "d-compact-resume.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -632,6 +766,48 @@
         ],
         "note": "Folds the real manual-compaction wire sequence through the real reducer: the divider must appear without leaving the composer on 'generating'."
       },
+      "compact-resume": {
+        "url": "http://localhost:8099/?compactHistory=1",
+        "note": "Durable history with a schemaVersion 3 mid-turn checkpoint. The reply written after the divider must still be in the transcript: a `=== 2` version gate in the projector treated every newer in-turn checkpoint as an exchange boundary and dropped everything after it.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -700
+            ]
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+          },
+          {
+            "shot": "m-compact-resume.png"
+          }
+        ]
+      },
       "chat": {
         "steps": [
           {
@@ -658,6 +834,101 @@
           {
             "shot": "m-chat.png"
           }
+        ]
+      },
+      "usage-icon-variants": {
+        "variantsTitle": "会话花费入口 · 图标候选（手机端顶栏右侧）",
+        "variants": [
+          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
+          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
+          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
+          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
+          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
+          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "inject": "{variantInject}" },
+          { "shot": "m-usage-icon.png" }
+        ]
+      },
+      "usage-sheet": {
+        "_comment": "Asserting ¥1.3904: opening the sheet re-reads the session, and the mock answers with a larger figure (demoRefreshedSessionUsage), so this proves the refreshed amount reached the UI rather than the sheet re-displaying the figure the top bar already had.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-usage-entry.png"
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]').click()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "{ if (!document.body.innerText.includes('缓存读取')) throw new Error('usage sheet did not open'); }"
+          },
+          {
+            "shot": "m-usage-sheet.png"
+          },
+          {
+            "eval": "(() => { if (!document.body.innerText.includes('¥1.3904')) throw new Error('the refreshed amount did not reach the sheet'); return 'refreshed'; })()"
+          },
+          {
+            "eval": "(() => { const close = document.querySelector('[aria-label=\"关闭\"]'); if (!close) throw new Error('no close button in the sheet'); close.click(); return 'closed'; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const bar = document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]'); return bar ? 'bar present' : 'bar missing'; })()"
+          },
+          {
+            "shot": "m-usage-entry-refreshed.png"
+          }
+        ]
+      },
+      "usage-sheet-unpriced": {
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tapText": "解释一下 p 值的常见误用" },
+          { "wait": 2500 },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]').click()"
+          },
+          { "wait": 1200 },
+          {
+            "eval": "{ if (!document.body.innerText.includes('该模型未配置价格')) throw new Error('unpriced hint missing'); }"
+          },
+          { "shot": "m-usage-sheet-unpriced.png" }
         ]
       },
       "steps-folded": {
@@ -792,6 +1063,74 @@
           }
         ]
       },
+      "image-zoom": {
+        "_comment": "Pinch and double-tap the preview with real TouchEvents and assert what RN applied, so a regression fails the run. The controller works in coordinates relative to the picture, so a centred pinch must leave the picture in place, which is asserted too (an earlier version anchored on a window origin measured once per layout, which a sliding-in sheet made stale — the pinch then threw the picture off screen). Absolute focal offsets are not asserted: the browser's measureInWindow is in page space while the dispatched touches are in viewport space, so in the harness only 'did the scale change' is meaningful (the anchor math is covered by zoomableImage.test.ts).",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -270
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "tap": "效应量对比"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const img = [...document.querySelectorAll('img')].filter(n => n.getBoundingClientRect().width > 100).sort((a, b) => b.getBoundingClientRect().width - a.getBoundingClientRect().width)[0]; if (!img) throw new Error('no preview image'); const touch = (x, y, id) => new Touch({ identifier: id, target: img, clientX: x, clientY: y, pageX: x, pageY: y }); const fire = (type, points, changed) => img.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, composed: true, touches: points, targetTouches: points, changedTouches: changed ?? points })); window.__zoomScale = () => { let node = img, t = 'none'; while (node && t === 'none') { t = getComputedStyle(node).transform; node = node.parentElement; } if (t === 'none') return 1; const parts = t.match(/matrix\\(([^)]+)\\)/); return parts ? parseFloat(parts[1].split(',')[0]) : 1; }; window.__zoomTranslate = () => { let node = img, t = 'none'; while (node && t === 'none') { t = getComputedStyle(node).transform; node = node.parentElement; } const parts = t === 'none' ? null : t.match(/matrix\\(([^)]+)\\)/); return parts ? { x: Number(parts[1].split(',')[4]), y: Number(parts[1].split(',')[5]) } : { x: 0, y: 0 }; }; window.__zoomPinch = () => { const r = img.getBoundingClientRect(); const cx = r.x + r.width / 2, cy = r.y + r.height / 2; const pair = (s) => [touch(cx - s, cy, 1), touch(cx + s, cy, 2)]; fire('touchstart', pair(30)); for (const s of [45, 60, 80, 100]) fire('touchmove', pair(s)); fire('touchend', [], pair(100)); }; window.__zoomDoubleTap = () => { const r = img.getBoundingClientRect(); const x = r.x + r.width * 0.3, y = r.y + r.height * 0.3; for (let i = 0; i < 2; i++) { const one = [touch(x, y, 1)]; fire('touchstart', one); fire('touchend', [], one); } }; return 1; })()"
+          },
+          {
+            "eval": "(() => { window.__zoomPinch(); return window.__zoomScale(); })()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const s = window.__zoomScale(); const t = window.__zoomTranslate(); if (!(s > 1.5)) throw new Error('pinch did not zoom, scale=' + s); if (Math.abs(t.x) > 40 || Math.abs(t.y) > 40) throw new Error('the pinched picture left its focal point: ' + JSON.stringify(t)); return { scale: s, translate: t }; })()"
+          },
+          {
+            "shot": "m-image-pinched.png"
+          },
+          {
+            "eval": "(() => { window.__zoomDoubleTap(); return 'tapped'; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const s = window.__zoomScale(); if (!(s < 1.5)) throw new Error('double-tap did not return to fit, scale=' + s); return s; })()"
+          },
+          {
+            "shot": "m-image-double-tap.png"
+          }
+        ]
+      },
       "slash-skills": {
         "steps": [
           {
@@ -832,6 +1171,68 @@
           }
         ],
         "note": "Composer focus via eval: a touch tap on the textarea opens the thinking-level sheet first."
+      },
+      "slash-skill-description": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const input = document.querySelector('[aria-label=\"给 FutureOS 发消息\"]'); const proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ''); input.dispatchEvent(new Event('input', { bubbles: true })); return input.value; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "type": "/software"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "const panel = [...document.querySelectorAll('[role=\"button\"]')].filter(el => /^\\//.test(el.getAttribute('aria-label') || ''))[0].closest('div').parentElement.parentElement.parentElement; const box = panel.getBoundingClientRect(); if (box.bottom > window.innerHeight + 0.5) throw new Error('the skill menu runs off the bottom of the screen'); 'ok'"
+          },
+          {
+            "shot": "m-slash-skill-row.png"
+          },
+          {
+            "eval": "const info = [...document.querySelectorAll('[role=\"button\"]')].find(el => /详情/.test(el.getAttribute('aria-label') || '')); if (!info) throw new Error('the skills menu has no description button'); info.click(); 'opened'"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "if (!document.body.innerText.includes('轻量软件安装与镜像配置')) throw new Error('the description dialog did not open'); if (!document.body.innerText.includes('跨 Windows、macOS 和 Linux 安装轻量命令行工具')) throw new Error('the dialog did not show the full description'); 'ok'"
+          },
+          {
+            "shot": "m-skill-description.png"
+          }
+        ],
+        "note": "Clears the restored draft first (scenarios share one tab), then opens the description by eval click: the button sits in a row the emulated tap offset would miss."
       },
       "compact-context": {
         "steps": [
@@ -941,16 +1342,19 @@
             "wait": 1200
           },
           {
-            "tapText": "整理两篇文献的结论对比表"
+            "tap": "管理「整理两篇文献的结论对比表」"
           },
           {
-            "wait": 2500
+            "wait": 1200
           },
           {
-            "tap": "重命名"
+            "tapText": "重命名"
           },
           {
-            "wait": 1800
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const dialog = document.querySelector('input, textarea'); const generate = [...document.querySelectorAll('[aria-label]')].find(el => el.getAttribute('aria-label') === '自动生成'); const hint = [...document.querySelectorAll('div,span,p')].filter(el => el.children.length === 0 && (el.textContent || '').includes('使用本会话模型和最多前三组问答生成')).pop(); if (!dialog || !generate || !hint) throw new Error('rename dialog is missing the input, generate action or its explanation'); const box = generate.getBoundingClientRect(), input = dialog.parentElement.getBoundingClientRect(); if (Math.abs(box.width - input.width) > 2 || Math.abs(box.x - input.x) > 2) throw new Error('the generate action is not a full-width row of its own'); if (hint.getBoundingClientRect().height <= 0 || hint.getBoundingClientRect().top - box.bottom < 4) throw new Error('the generate explanation is not shown under the action'); return 'rename dialog layout ok'; })()"
           },
           {
             "tap": "自动生成"
@@ -1080,7 +1484,45 @@
             "wait": 2000
           },
           {
+            "eval": "(() => { const sheet = [...document.querySelectorAll('[aria-modal=true]')][0] || document.body; const headings = [...sheet.querySelectorAll('[role=heading]')].map(el => el.innerText); if (!headings.includes('多巴胺与决策')) throw new Error('workspace headings missing: ' + headings.join(' / ')); const rows = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label')); if (!rows.includes('整理两篇文献的结论对比表')) throw new Error('workspace sessions are not listed under their heading'); return headings.join(' / '); })()"
+          },
+          {
             "shot": "m-share-existing.png"
+          }
+        ]
+      },
+      "share-existing-search": {
+        "url": "http://localhost:8099/?share=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "已有会话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "document.querySelector('input[aria-label=\"搜索会话\"]').focus()"
+          },
+          {
+            "type": "marker"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const results = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label') || '').filter(label => label.startsWith('已有会话 · ')); if (results.length !== 1) throw new Error('the search should leave exactly one flattened result, got ' + results.length); if (!results[0].includes('marker 基因')) throw new Error('wrong search result: ' + results[0]); return results[0]; })()"
+          },
+          {
+            "shot": "m-share-search.png"
           }
         ]
       },

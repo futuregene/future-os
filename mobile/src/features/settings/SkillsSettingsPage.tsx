@@ -27,8 +27,15 @@ export function SkillsSettingsPage() {
   const upgrades = (available.data ?? []).filter(skill => isSkillUpgrade(installedById.get(skill.id)?.version, skill.latestVersion));
   const disabled = busy || !remote.desktopOnline || installed.loading || installed.failed || !installed.data;
   const chinese = i18n.language.startsWith("zh");
-  const label = (skill: AvailableSkill | InstalledSkill) => (chinese && skill.nameZh) || skill.name || skill.id;
-  const description = (skill: AvailableSkill | InstalledSkill) => (chinese && skill.descriptionZh) || skill.description;
+  // An installed skill is listed from its own SKILL.md, which usually carries
+  // English text only; the catalogue always has the zh pair, so lend it to the
+  // installed row (desktop does the same). Rows read in the system language.
+  const zhText = (skill: AvailableSkill | InstalledSkill) => {
+    const catalogue = availableById.get(skill.id);
+    return { name: skill.nameZh || catalogue?.nameZh, description: skill.descriptionZh || catalogue?.descriptionZh };
+  };
+  const label = (skill: AvailableSkill | InstalledSkill) => (chinese && zhText(skill).name) || skill.name || skill.id;
+  const description = (skill: AvailableSkill | InstalledSkill) => (chinese && zhText(skill).description) || skill.description;
   const needle = query.trim().toLowerCase();
   const rows = (tab === "installed" ? installed.data ?? [] : available.data ?? []).filter(skill =>
     `${skill.id} ${label(skill)} ${description(skill)}`.toLowerCase().includes(needle));

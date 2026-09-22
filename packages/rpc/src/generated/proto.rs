@@ -31,7 +31,8 @@ pub struct RpcCommand {
     /// Thinking level: "off", "minimal", "low", "medium", "high", "xhigh".
     #[prost(string, tag = "40")]
     pub level: ::prost::alloc::string::String,
-    /// Generic decision/rule mode (approval_result, add_session_rule).
+    /// Generic decision/rule mode. Fork accepts through_entry (legacy default),
+    /// through_turn, or latest_settled.
     #[prost(string, tag = "50")]
     pub mode: ::prost::alloc::string::String,
     /// Optional custom instructions for the compaction summariser.
@@ -109,7 +110,8 @@ pub struct RpcCommand {
     /// canonical id in the prompt acknowledgement.
     #[prost(string, tag = "142")]
     pub requested_run_id: ::prost::alloc::string::String,
-    /// Idempotency key for retrying StartRun independently of run identity.
+    /// Idempotency key for retrying StartRun or fork/clone independently of
+    /// transport command correlation identity.
     #[prost(string, tag = "143")]
     pub client_request_id: ::prost::alloc::string::String,
     /// Atomic behavior when the session already has an active run:
@@ -271,6 +273,19 @@ pub struct ProviderModel {
     /// Omitted by older clients: custom models default to true.
     #[prost(bool, optional, tag = "6")]
     pub reasoning: ::core::option::Option<bool>,
+    /// Per-1M-token prices used to estimate the cost of a request for providers
+    /// that do not report an authoritative `credit_cost` (everything except the
+    /// Future platform). Same currency as the displayed amount (CNY). 0 means
+    /// "unpriced": the agent falls back to the built-in catalog price when the
+    /// model id matches one, and the request then prices at zero.
+    #[prost(double, tag = "7")]
+    pub cost_input: f64,
+    #[prost(double, tag = "8")]
+    pub cost_output: f64,
+    #[prost(double, tag = "9")]
+    pub cost_cache_read: f64,
+    #[prost(double, tag = "10")]
+    pub cost_cache_write: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ImageContent {
@@ -682,17 +697,26 @@ pub struct TextChunk {
     #[prost(string, tag = "1")]
     pub text: ::prost::alloc::string::String,
 }
-/// No payload fields today; the message exists so the event type is typed.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ThinkingStart {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingStart {
+    /// Provider block identity, used to join late deltas back to this block.
+    #[prost(string, tag = "1")]
+    pub block_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ThinkingDelta {
     #[prost(string, tag = "1")]
     pub text: ::prost::alloc::string::String,
+    /// Provider block identity, used to preserve reasoning/text interleaving.
+    #[prost(string, tag = "2")]
+    pub block_id: ::prost::alloc::string::String,
 }
-/// No payload fields today.
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct ThinkingEnd {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThinkingEnd {
+    /// Provider block identity, used to close the matching block.
+    #[prost(string, tag = "1")]
+    pub block_id: ::prost::alloc::string::String,
+}
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct AgentStart {
     /// Wall-clock run start (ms since epoch) for anchoring elapsed timers.
@@ -941,8 +965,24 @@ pub struct SessionUsage {
     pub cache_read_tokens: i64,
     #[prost(int64, tag = "4")]
     pub cache_write_tokens: i64,
+    /// Amount this session has spent (¥). Authoritative when the provider bills
+    /// itself (the Future platform reports `credit_cost`); otherwise the sum of
+    /// the per-category estimates below.
     #[prost(double, tag = "5")]
     pub cost_cny: f64,
+    /// Per-category estimates from the model's per-1M-token prices, so a client
+    /// can show where the amount came from. All zero when the model has no
+    /// prices on file — the client then shows tokens only. A provider that bills
+    /// itself need not report these, in which case the client must not assume
+    /// they sum to `cost_cny`.
+    #[prost(double, tag = "6")]
+    pub cost_input_cny: f64,
+    #[prost(double, tag = "7")]
+    pub cost_output_cny: f64,
+    #[prost(double, tag = "8")]
+    pub cost_cache_read_cny: f64,
+    #[prost(double, tag = "9")]
+    pub cost_cache_write_cny: f64,
 }
 /// ── get_state sub-objects ───────────────────────────────────────────────────
 /// These typed sub-messages map to the canonical camelCase JSON contract.

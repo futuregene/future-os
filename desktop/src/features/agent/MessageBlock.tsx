@@ -306,8 +306,8 @@ function MessageBlockImpl({
                   // promoted layer's opacity — must never depend on a repaint. Do not
                   // remove the will-change without re-testing stale-paint ghosts.
                     className={cn(
-                      "will-change-[opacity] transition-opacity duration-200",
-                      !isUser || hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                      "will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                      hovered ? "opacity-100" : "pointer-events-none opacity-0",
                     )}
                     copied={copiedKey === "default"}
                     onCopy={() => void copy(copyableText)}
@@ -318,7 +318,7 @@ function MessageBlockImpl({
             ? (
                 <button
                   className={cn(
-                    "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200",
+                    "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
                     hovered ? "opacity-100" : "pointer-events-none opacity-0",
                   )}
                   onClick={() => onFork(message)}

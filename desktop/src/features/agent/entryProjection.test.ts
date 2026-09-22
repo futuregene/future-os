@@ -29,6 +29,8 @@ describe("entriesToMessages", () => {
     const messages = entriesToMessages(entries);
 
     expect(messages).toHaveLength(2);
+    expect(messages[0]?.sourceEntryId).toBe("u1");
+    expect(messages[1]?.sourceEntryId).toBe("a1");
     expect(messages[0]?.createdAt).toBe(new Date(userTs).toISOString());
     expect(messages[1]?.createdAt).toBe(new Date(asstTs).toISOString());
   });
@@ -600,12 +602,75 @@ describe("entriesToMessages", () => {
           {
             id: "seg_cp-1_compaction",
             kind: "compaction",
+            checkpointId: "cp-1",
             tokensBefore: 190_000,
             trigger: "manual",
           },
         ],
       }),
     ]);
+  });
+
+  it("keeps the reply that follows a v3 mid-turn checkpoint in one turn", () => {
+    // The agent writes schemaVersion 3 checkpoints today. A literal `=== 2`
+    // gate in the projector treated them as exchange boundaries and dropped
+    // every entry between the checkpoint and the next user message.
+    const messages = entriesToMessages([
+      {
+        id: "u1",
+        kind: "user",
+        role: "user",
+        createdAtMs: 0,
+        runId: "run-1",
+        blocks: [{ kind: "text", text: "keep going" }],
+      },
+      {
+        id: "a1",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 1,
+        runId: "run-1",
+        blocks: [{ kind: "text", text: "before compaction" }],
+      },
+      {
+        id: "cp-entry",
+        kind: "compaction",
+        role: "system",
+        createdAtMs: 2,
+        blocks: [],
+        checkpoint: {
+          schemaVersion: 3,
+          checkpointId: "cp-v3",
+          tokensBefore: 613_994,
+          trigger: "automatic",
+          phase: "mid_turn",
+        },
+      },
+      {
+        id: "a2",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 3,
+        runId: "run-1",
+        blocks: [{ kind: "text", text: "after compaction" }],
+        run: { status: "completed", durationMs: 12_000 },
+      },
+    ]);
+
+    expect(messages.map(message => message.id)).toEqual(["m_u1", "m_a2"]);
+    // `content` is the reply's final text; the ordered segments are what the
+    // transcript renders, so assert the pre-checkpoint text is still there and
+    // the divider sits between the two halves.
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      runId: "run-1",
+      durationMs: 12_000,
+      segments: [
+        { kind: "text", text: "before compaction" },
+        { kind: "compaction", tokensBefore: 613_994 },
+        { kind: "text", text: "after compaction" },
+      ],
+    });
   });
 
   it("groups entries positionally — a user entry opens a new exchange", () => {

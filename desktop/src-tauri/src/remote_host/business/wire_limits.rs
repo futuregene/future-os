@@ -38,18 +38,25 @@ pub(crate) fn paginate_messages(messages: Vec<Value>, offset: usize, limit: usiz
 /// cursor. If ten unusually large exchanges exceed the NATS page budget, drop
 /// complete oldest exchanges until the page fits and advance the returned
 /// cursor past those omitted rows; they remain reachable on the next pull.
+///
+/// `cap_item_content` truncates a single oversized body: only the non-chunked
+/// path needs that, because it must fit one reply. `enforce_page_bytes` drops
+/// whole oldest exchanges until the page fits [`BACKWARD_HISTORY_PAGE_BYTES`],
+/// which is what keeps a page inside one reply at all — a chunked reader is the
+/// only caller that may turn it off, and only for a page nobody is waiting for.
 #[cfg(test)]
 pub(crate) fn prepare_backward_entries_page(_session_id: &str, data: Value) -> Value {
-    prepare_backward_entries_page_with_cap(_session_id, data, true)
+    prepare_backward_entries_page_with_cap(_session_id, data, true, true)
 }
 
 pub(crate) fn prepare_backward_entries_page_with_cap(
     _session_id: &str,
     data: Value,
-    cap_items: bool,
+    cap_item_content: bool,
+    enforce_page_bytes: bool,
 ) -> Value {
     let mut entries = entries_vec(data.clone());
-    if cap_items {
+    if cap_item_content {
         for entry in &mut entries {
             cap_remote_item(entry, MESSAGE_CONTENT_CAP_BYTES);
         }
@@ -65,7 +72,7 @@ pub(crate) fn prepare_backward_entries_page_with_cap(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let mut removed = 0usize;
-    while cap_items
+    while enforce_page_bytes
         && serde_json::to_vec(&entries).map_or(0, |bytes| bytes.len()) > BACKWARD_HISTORY_PAGE_BYTES
     {
         let Some(next_user) = entries
@@ -357,4 +364,58 @@ pub(crate) fn byte_cut(text: &str, max_bytes: usize) -> (usize, bool) {
         end -= 1;
     }
     (end, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Fixture: `exchanges` user/assistant pairs whose assistant body is
+    /// `bytes` long. Backward pages page in *exchanges*, never inside one.
+    fn exchanges(count: usize, bytes: usize) -> Value {
+        let entries: Vec<Value> = (0..count)
+            .flat_map(|index| {
+                [
+                    json!({"id": format!("u{index}"), "role": "user",
+                           "blocks": [{"kind": "text", "text": "q"}]}),
+                    json!({"id": format!("a{index}"), "role": "assistant",
+                           "blocks": [{"kind": "text", "text": "x".repeat(bytes)}]}),
+                ]
+            })
+            .collect();
+        json!({"entries": entries, "nextOffset": 100, "hasMore": true})
+    }
+
+    fn size(page: &Value) -> usize {
+        serde_json::to_vec(&page["entries"]).unwrap().len()
+    }
+
+    #[test]
+    fn the_byte_budget_is_what_keeps_a_page_inside_one_reply() {
+        let source = exchanges(6, 150_000);
+        let bounded = prepare_backward_entries_page_with_cap("s", source.clone(), true, true);
+        let unbounded = prepare_backward_entries_page_with_cap("s", source, true, false);
+        assert!(
+            size(&bounded) <= BACKWARD_HISTORY_PAGE_BYTES,
+            "a page that pays the budget must fit it"
+        );
+        // This is the case a non-chunked client cannot survive: the entries are
+        // capped individually (`cap_remote_item`) and the page is still larger
+        // than the reply it has to fit in, because the cap bounds one *item*,
+        // not the page.
+        assert!(
+            size(&unbounded) > BACKWARD_HISTORY_PAGE_BYTES,
+            "without the budget the page is unbounded"
+        );
+        // Paying the budget defers whole exchanges and keeps them reachable: the
+        // page still starts at a user turn, so no user/assistant pair is split,
+        // and the advanced cursor still points at the first deferred row.
+        let kept = bounded["entries"].as_array().unwrap();
+        assert!(kept.len() < 12);
+        assert_eq!(kept[0]["role"], "user");
+        assert_eq!(kept.len() % 2, 0);
+        assert_eq!(bounded["nextOffset"], 100 + 12 - kept.len());
+        assert_eq!(bounded["hasMore"], true);
+    }
 }

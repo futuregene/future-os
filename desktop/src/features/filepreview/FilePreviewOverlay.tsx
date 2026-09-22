@@ -8,9 +8,10 @@ import { emitFutureEvent } from "../../lib/futureEvents";
 import { ImagePreview } from "./ImagePreview";
 import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { TextPreview } from "./TextPreview";
 
 /**
- * Fullscreen preview for a local image / markdown / JSON file: a dimmed backdrop
+ * Fullscreen preview for a local image / markdown / JSON / code-or-text file: a dimmed backdrop
  * (click or Esc dismisses, via `Overlay`) with a close button pinned top-right,
  * and the auto-sized content centered. When a preview can't load (missing,
  * too large, unreadable) it toasts and closes; if `onOpenExternal` is given it
@@ -75,6 +76,13 @@ export function FilePreviewOverlay({
         ? (
             <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-lg bg-surface shadow-panel">
               <JsonPreview key={path} onError={handleError} path={path} />
+            </div>
+          )
+        : null}
+      {kind === "text"
+        ? (
+            <div className="relative z-10 w-full max-w-5xl overflow-hidden rounded-lg bg-surface shadow-panel">
+              <TextPreview key={path} onError={handleError} path={path} />
             </div>
           )
         : null}

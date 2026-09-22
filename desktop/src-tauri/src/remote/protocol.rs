@@ -33,9 +33,13 @@ pub(crate) struct IncomingCmd {
     pub(crate) settings: serde_json::Value,
     pub(crate) skill_id: String,
     pub(crate) version: String,
+    // Provider configuration: one whole provider write (see `list_providers`
+    // in `remote_host::business`).
+    pub(crate) provider: serde_json::Value,
     // set_approval_tier
     pub(crate) tier: String,
-    // set_session_name
+    // set_session_name / upload_init (display name) / download_prepare (the
+    // name the phone already shows, so the desktop needn't scan the session)
     pub(crate) name: String,
     pub(crate) transfer_name: String,
     // delete_session / set_session_pinned (thread-scoped, see ThreadRecord)
@@ -61,6 +65,10 @@ pub(crate) struct IncomingCmd {
     pub(crate) expected_desktop_id: String,
     pub(crate) expected_desktop_public_key: String,
     pub(crate) client_signature: String,
+    /// Client capabilities declared once per connection (currently on
+    /// `secure_ready`). Additive: a client that sends none gets the legacy
+    /// per-event lane, and an unknown name is ignored.
+    pub(crate) features: Vec<String>,
 }
 
 impl Default for IncomingCmd {
@@ -90,6 +98,7 @@ impl Default for IncomingCmd {
             settings: serde_json::Value::Null,
             skill_id: String::new(),
             version: String::new(),
+            provider: serde_json::Value::Null,
             name: String::new(),
             transfer_name: String::new(),
             thread_id: String::new(),
@@ -111,6 +120,7 @@ impl Default for IncomingCmd {
             expected_desktop_id: String::new(),
             expected_desktop_public_key: String::new(),
             client_signature: String::new(),
+            features: Vec::new(),
         }
     }
 }

@@ -1,5 +1,5 @@
 import Prism from "prismjs";
-import { codeTokenRows, highlightCode } from "../codeHighlight";
+import { CODE_LANGUAGE_BY_SUFFIX, codeLanguageForFile, codeTokenRows, highlightCode } from "../codeHighlight";
 import { codePreviewRows } from "../codePreviewRows";
 import { codeColors } from "../../theme/tokens";
 
@@ -78,5 +78,52 @@ describe("native code highlighting", () => {
     }
     expect(result[1]!.every(token => token.color === codeColors.comment)).toBe(true);
     expect(codeTokenRows(null, rows)).toEqual(rows.map(() => null));
+  });
+});
+
+describe("previewed file names pick a grammar", () => {
+  test.each([
+    ["main.py", "python"],
+    ["lib.rs", "rust"],
+    ["App.tsx", "tsx"],
+    ["types.d.ts", "typescript"],
+    ["index.mjs", "javascript"],
+    ["main.go", "go"],
+    ["deploy.sh", "bash"],
+    ["setup.ps1", "powershell"],
+    ["schema.sql", "sql"],
+    ["Cargo.toml", "toml"],
+    ["analysis.R", "r"],
+    ["labels.scm", "scheme"],
+    ["init.el", "lisp"],
+    ["build.gradle", "groovy"],
+    ["main.tf", "hcl"],
+    ["style.scss", "scss"],
+    ["server.conf", "ini"],
+    ["run.bat", "batch"],
+    ["Program.vb", "vbnet"],
+  ])("maps %s to %s", (name, language) => {
+    expect(codeLanguageForFile(name)).toBe(language);
+  });
+
+  test.each(["notes.txt", "server.log", "a.out", "Makefile", "boot.asm", "Widget.vue", "App.svelte", "report.xlsx", ".bashrc"])(
+    "leaves non-source %s as plain text",
+    name => expect(codeLanguageForFile(name)).toBeNull(),
+  );
+
+  test("ignores case and surrounding whitespace, and prefers the longest suffix", () => {
+    expect(codeLanguageForFile("  MAIN.PY ")).toBe("python");
+    expect(codeLanguageForFile("app.test.tsx")).toBe("tsx");
+    expect(codeLanguageForFile("a.tar.gz.ts")).toBe("typescript");
+  });
+
+  test("every mapped suffix has a loaded grammar that colors its source", () => {
+    for (const [suffix, language] of Object.entries(CODE_LANGUAGE_BY_SUFFIX)) {
+      const tokens = highlightCode("const x = 1; # comment\ndef main(): pass\n", language);
+      expect([suffix, language, tokens !== null]).toEqual([suffix, language, true]);
+      expect(tokens!.map(token => token.text).join(""))
+        .toBe("const x = 1; # comment\ndef main(): pass\n");
+      expect(tokens!.some(token => token.color)).toBe(true);
+    }
   });
 });

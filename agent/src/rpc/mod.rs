@@ -67,10 +67,10 @@ pub fn publish_provider_config_changed(
 }
 
 /// Announce a newly minted session on the global control-plane stream. Fired
-/// by `AppState::create_session` (new_session / fork / clone — never disk
-/// hydration) so other clients (e.g. the desktop) can surface the session
-/// immediately instead of waiting for their discovery polls. An idempotent
-/// hint: consumers reconcile against their own state, so no revision counter.
+/// after a new session is durably created and activated (never during ordinary
+/// disk hydration) so other clients can surface it without waiting for their
+/// discovery polls. An idempotent hint: consumers reconcile against their own
+/// state, so no revision counter.
 pub fn publish_session_created(session_id: &str, created_by: &str, cwd: &str) {
     publish_session_created_with_creator(session_id, created_by, "", cwd);
 }
@@ -297,23 +297,27 @@ impl AppState {
     }
 
     /// Create a new session and return its ID.
-    /// Each session gets its own private SseBroadcaster so events are only
-    /// delivered to subscribers of that specific session (not globally) —
-    /// fork/clone pass the parent's broadcaster in and must not keep sharing
-    /// it. The journal is (re)bound to the broadcaster that will actually
-    /// broadcast: construction configured one that may be discarded here, and
-    /// an unbound broadcaster silently holds events in memory only.
+    /// A normal session arrives with its final, privately-owned broadcaster
+    /// already bound by construction. Registration never rebinds a journal;
+    /// it retains the owner, or replaces a foreign broadcaster with a fresh
+    /// private one as a defensive boundary.
     pub fn create_session(&self, mut session: ServerSession) -> String {
         let id = session.session_id.clone();
         let created_by = session.created_by.clone();
         let creator_id = session.creator_id.clone();
         let cwd = session.cwd.clone();
-        session.broadcaster = Arc::new(SseBroadcaster::new());
-        if let Err(error) = session
-            .broadcaster
-            .configure_journal(id.clone(), &session.session_manager)
-        {
-            tracing::error!(session_id = %id, "failed to configure event journal: {error:#}");
+        if session.broadcaster.journal_session_id() != id {
+            tracing::error!(
+                session_id = %id,
+                broadcaster_owner = %session.broadcaster.journal_session_id(),
+                "session arrived with a foreign event journal; installing a private broadcaster"
+            );
+            let broadcaster = Arc::new(SseBroadcaster::new());
+            if let Err(error) = broadcaster.configure_journal(id.clone(), &session.session_manager)
+            {
+                tracing::error!(session_id = %id, "failed to configure replacement event journal: {error:#}");
+            }
+            session.broadcaster = broadcaster;
         }
         let session = Arc::new(RwLock::new(session));
         self.sessions.write().insert(id.clone(), session.clone());
@@ -322,6 +326,31 @@ impl AppState {
         // session (e.g. get_state) the moment they see the event.
         publish_session_created_with_creator(&id, &created_by, &creator_id, &cwd);
         id
+    }
+
+    /// Activate a session that has already crossed its SQLite commit boundary.
+    /// Fork/clone use this instead of hand-building a second runtime shape, so
+    /// a fresh child and a child restored after process restart have identical
+    /// model, thinking, scheduler, provenance, history-loading, and journal
+    /// behavior.
+    pub fn activate_persisted_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Arc<RwLock<ServerSession>>> {
+        let was_resident = self.sessions.read().contains_key(session_id);
+        let session = self
+            .try_get_session(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("persisted session disappeared before activation"))?;
+        if !was_resident {
+            let session = session.read();
+            publish_session_created_with_creator(
+                session_id,
+                &session.created_by,
+                &session.creator_id,
+                &session.cwd,
+            );
+        }
+        Ok(session)
     }
 
     /// Reconcile live sessions after the Agent atomically replaces its
@@ -496,6 +525,22 @@ fn get_state_internal(
         0.0
     };
 
+    // Per-category split of the amount, accumulated one request at a time with
+    // the rates of the model that served it — so a session that switched models
+    // keeps each request billed at the price in force when it ran. A provider
+    // that bills itself reports one `credit_cost` number with no breakdown, so
+    // the split is always an estimate of where the money went, not a
+    // re-labelling of the provider's invoice. Unpriced models leave every figure
+    // at 0 so clients can show tokens only.
+    //
+    // Never derived from the session's token totals here: pricing the whole
+    // history at whatever model happens to be current re-bills every earlier
+    // request at the wrong rates (a model switched and switched back turns a
+    // ¥8.41 session into a ¥1925 breakdown). Sessions recorded before the split
+    // was accumulated supply one by replaying their journal on load instead —
+    // see `RpcSession::replay_cost_split`.
+    let split = *sess.cumulative_cost_split.lock();
+
     // Use API-reported prompt_tokens from the last request as actual context usage
     let context_tokens = sess.last_prompt_tokens.load(Ordering::Relaxed);
     // Query count: number of user messages (prompts and follow-ups).
@@ -651,6 +696,10 @@ fn get_state_internal(
             cache_read_tokens: cache_r,
             cache_write_tokens: cache_w,
             cost_cny: total_cost,
+            cost_input_cny: split.input,
+            cost_output_cny: split.output,
+            cost_cache_read_cny: split.cache_read,
+            cost_cache_write_cny: split.cache_write,
         },
         permission_level: sess.permission_level.clone(),
         parent_session_id: if parent_session_id.is_empty() {
@@ -1467,11 +1516,25 @@ mod tests {
             .runtime
             .begin(Some("run-live"), Some("request-live"))
             .unwrap();
-        // Token counters make the token×price estimation arm observable.
+        // Token counters drive the context figures and the total's estimate arm.
         session
             .read()
             .tokens_in
             .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
+        session
+            .read()
+            .tokens_cache_r
+            .store(200_000, std::sync::atomic::Ordering::Relaxed);
+        session
+            .read()
+            .tokens_out
+            .store(100_000, std::sync::atomic::Ordering::Relaxed);
+        // What the run loop charged this session, request by request.
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 0.8,
+            output: 0.1,
+            ..Default::default()
+        };
 
         let value = get_state_internal(&state, "s-run", Some("run-done")).expect("state");
         assert_eq!(value["activeRun"]["runId"], "run-live");
@@ -1479,6 +1542,73 @@ mod tests {
         // deepseek-chat is in the catalog with a non-zero price, so the
         // estimate replaces the (zero) API cost.
         assert!(value["usage"]["costCny"].as_f64().unwrap() > 0.0);
+        // The per-category split is what the session accumulated — never a
+        // re-pricing of its token totals at the current model (a session that
+        // switched models would have that figure wrong by orders of magnitude).
+        let usage = &value["usage"];
+        let price = |field: &str| usage[field].as_f64().unwrap();
+        assert_eq!(price("costInputCny"), 0.8);
+        assert_eq!(price("costOutputCny"), 0.1);
+        assert_eq!(price("costCacheReadCny"), 0.0);
+        assert_eq!(price("costCacheWriteCny"), 0.0);
+    }
+
+    #[test]
+    fn get_state_prefers_the_accumulated_split_over_re_pricing_the_totals() {
+        // A session whose first request ran on a cheap model and whose second ran
+        // on a model priced 100× higher. The accumulated split knows both; any
+        // derivation from the session's totals can only apply the current model's
+        // rate to everything, which would bill the cheap request 100× over.
+        let (_dir, state) = bare_app_state();
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![crate::models::Model {
+                id: "pricey".to_string(),
+                name: "Pricey".to_string(),
+                provider: "test".to_string(),
+                api: "chat".to_string(),
+                base_url: "https://example.test".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                cost: crate::models::Cost {
+                    input: 100.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            r#"{"test":{"type":"api_key","key":"key"}}"#,
+        );
+        let snapshot = crate::session::Session::snapshot(
+            "s-split".to_string(),
+            "/tmp".to_string(),
+            "test/pricey".to_string(),
+            String::new(),
+            String::new(),
+            vec![crate::session::SessionEntry::session_info(
+                serde_json::json!({"cwd": "/tmp", "model": "test/pricey"}),
+                "test/pricey".to_string(),
+                "low".to_string(),
+            )],
+        );
+        state.session_manager.save(&snapshot).unwrap();
+
+        let session = state.get_session("s-split").unwrap();
+        session
+            .read()
+            .tokens_in
+            .store(2_000_000, std::sync::atomic::Ordering::Relaxed);
+        // 1M on the cheap model (1.0/M) + 1M on the pricey one (100.0/M).
+        *session.read().cumulative_cost.lock() = 101.0;
+        *session.read().cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 101.0,
+            ..Default::default()
+        };
+
+        let value = get_state_internal(&state, "s-split", None).expect("state");
+        let usage = &value["usage"];
+        assert_eq!(usage["costInputCny"].as_f64().unwrap(), 101.0);
+        assert_eq!(usage["costCny"].as_f64().unwrap(), 101.0);
+        // Re-pricing both million-token requests at the current model's rate.
+        assert_ne!(usage["costInputCny"].as_f64().unwrap(), 200.0);
     }
 
     #[tokio::test(flavor = "current_thread")]

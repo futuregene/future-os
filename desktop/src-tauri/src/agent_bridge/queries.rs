@@ -531,9 +531,9 @@ pub(crate) async fn provision_agent_session(
     )
     .await?;
     let session_id = ensured.session_id;
+    crate::store::bind_thread_session_id(thread_id, &session_id)?;
     set_agent_permission_level(&mut client, &session_id, "workspace").await?;
     set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
-    crate::store::update_thread_session_id(thread_id, &session_id)?;
     Ok(session_id)
 }
 

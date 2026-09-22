@@ -8,7 +8,7 @@ FutureOS 是一个本地优先（local-first）的 AI agent。本文档描述其
 
 - **本地持久化，而非仅离线处理。** 会话与配置存储在本地 `~/.future/` 下；loop 状态默认随项目本地存放。纳入上下文的提示词、选定的附件与工具结果会发送给所配置的模型提供方。FutureOS 托管的模型与在线工具使用 FutureOS 服务；其他提供方/工具使用各自端点。
 - **可选的远程通道。** 启用 Remote 后，命令、会话事件与所请求的文件会经由所配置的 NATS 中继传输。移动端要求 TLS WebSocket（`wss://`）；桌面端到 NATS 的传输遵循部署配置，并非无条件强制 TLS。飞书/钉钉的消息与回复同样经由这些平台。本地存储并不意味着端到端加密，也不意味着没有任何数据离开设备。
-- **按用户的本地后端。** agent 默认使用 macOS/Linux 上的 Unix 域套接字（私有目录与对端 UID 校验）或仅当前用户可用的 Windows 命名管道。Unix 遵循 `FUTURE_AGENT_SOCKET`；Linux 否则在设置时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，以 `~/.future/run/agent.sock` 作为回退/macOS 默认。`--grpc-addr` 显式启用 TCP。切勿把 agent 的明文 TCP 服务暴露给不可信网络；如需远程访问，请使用经认证的安全隧道。
+- **按用户的本地后端。** agent 默认使用 macOS/Linux 上的 Unix 域套接字（私有目录与对端 UID 校验）或仅当前用户可用的 Windows 命名管道。Unix 遵循 `FUTURE_AGENT_SOCKET`；拥有自己 FutureOS home 的实例（`FUTURE_HOME` / `future agent --home`）使用 `<home>/run/agent.sock`，而不是共享的 XDG 运行时目录；Linux 否则在设置时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，以 `~/.future/run/agent.sock` 作为回退/macOS 默认。`--grpc-addr` 显式启用 TCP。切勿把 agent 的明文 TCP 服务暴露给不可信网络；如需远程访问，请使用经认证的安全隧道。
 - **凭据。** 提供方密钥本地存储，通常位于 `~/.future/agent/auth.json`；旧版 `agent-app/auth.json` 位置同样会被读取。提供方配置中也可能含有密钥。请将这些文件、备份、日志以及 `future auth credential` 的输出视为敏感信息。本地存储并非加密凭据保险库。
 
 ## 工具执行安全

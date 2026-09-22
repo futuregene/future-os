@@ -1,4 +1,4 @@
-import type { ReactTestRenderer } from "react-test-renderer";
+import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { AccessibilityInfo, Animated, FlatList, Image, Linking, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
@@ -10,8 +10,23 @@ import { SvgXml } from "react-native-svg";
 import * as parser from "../../../../packages/markdown/src/parseFutureMarkdown";
 
 jest.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string, options?: { count?: number }) =>
+    options?.count === undefined ? key : `${key}:${options.count}` }),
 }));
+
+/** Everything a code row paints, in order: colored token spans interleave with
+ * the raw strings of the unchanged tokens. */
+function paintedText(node: ReactTestInstance | string): string {
+  return typeof node === "string"
+    ? node
+    : node.children.map(child => paintedText(child)).join("");
+}
+
+/** A virtual row's source, without the continuation marker the row prepends. */
+function rowSource(node: ReactTestInstance): string {
+  const text = paintedText(node);
+  return text.startsWith("↪ ") ? text.slice(2) : text;
+}
 
 describe("MarkdownText layout and fidelity", () => {
   let renderer: ReactTestRenderer;
@@ -34,6 +49,35 @@ describe("MarkdownText layout and fidelity", () => {
     } finally { parse.mockRestore(); }
   });
 
+  test("a file preview carries its gutter on the scrolling content, not a static parent", () => {
+    const text = "# Title\n\n" + "Body paragraph. ".repeat(400);
+    act(() => { renderer = create(createElement(MarkdownText, { text, mode: "file-preview" })); });
+    const list = renderer.root.findByType(FlatList);
+    // Padding on a parent of the list would stay put while the text scrolls,
+    // showing a blank strip under the header and clipping the first line.
+    expect(StyleSheet.flatten(list.props.contentContainerStyle)).toMatchObject({ padding: 16 });
+    expect(StyleSheet.flatten(list.props.style)).toMatchObject({ flex: 1 });
+  });
+
+  test("a ten-row table paints its full body instead of a clipped eight-row viewport", () => {
+    const text = "| # | project | ★ |\n|---:|---|---:|\n" +
+      Array.from({ length: 10 }, (_, i) => `| ${i + 1} | repo-${i + 1} | ${100 - i} |\n`).join("");
+    const root = render(text);
+    expect(root.findAllByType(FlatList)).toHaveLength(0);
+    const output = JSON.stringify(renderer.toJSON());
+    expect(output).toContain("repo-9");
+    expect(output).toContain("repo-10");
+  });
+
+  test("a table past the inline limit keeps its bounded viewport and says how many rows it holds", () => {
+    const text = "| A | B |\n|---|---|\n" + Array.from({ length: 25 }, (_, i) => `| ${i} | value |\n`).join("");
+    const root = render(text);
+    const list = root.findByType(FlatList);
+    expect(list.props.data).toHaveLength(25);
+    // Rows past the viewport are still reachable, but only if the reader is told.
+    expect(root.findAllByType(Text).map(node => node.props.children)).toContain("chat.tableRowsScrolled:25");
+  });
+
   test("a 5000-row table mounts a bounded internal viewport", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
@@ -52,7 +96,7 @@ describe("MarkdownText layout and fidelity", () => {
     const root = render(`\`\`\`ts\n${code}\n\`\`\``);
     const rows = () => root.findAllByType(Text).filter(node => node.props.selectable);
     expect(rows()).toHaveLength(1);
-    const head = rows()[0]!.props.children[1] as string;
+    const head = rowSource(rows()[0]!);
     expect(rows()[0]!.props).toMatchObject({ numberOfLines: 16, ellipsizeMode: "tail" });
     expect(head.length).toBeLessThanOrEqual(2048);
     expect(code.startsWith(head)).toBe(true);
@@ -62,7 +106,7 @@ describe("MarkdownText layout and fidelity", () => {
     expect(expanded.length).toBeGreaterThan(40);
     expect(expanded.every(node => node.props.numberOfLines === undefined && node.props.ellipsizeMode === undefined)).toBe(true);
     // Every chunk is painted: the tail is reachable by scrolling the message, not an inner viewport.
-    const painted = expanded.map(node => node.props.children[1] as string).join("");
+    const painted = expanded.map(rowSource).join("");
     expect(painted.length).toBeGreaterThan(code.length - 500);
     expect(painted.endsWith(code.slice(-200))).toBe(true);
     expect(root.findAll(node => node.props.accessibilityLabel === "chat.collapseCode" && typeof node.props.onPress === "function").length).toBe(1);
@@ -73,6 +117,13 @@ describe("MarkdownText layout and fidelity", () => {
     const root = render(labels.map(label => `- **${label}**正文继续。`).join("\n"));
     const bold = root.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontWeight === "700");
     expect(bold.map(node => node.props.children.join(""))).toEqual(labels);
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
+  });
+
+  test("CJK labels followed by a digit or a Latin name render bold without literal asterisks", () => {
+    const root = render("**复现：**10 轮对话，每轮 assistant 内容 150 KB。\n\n**结论：**FutureOS 侧仍然超限。");
+    const bold = root.findAllByType(Text).filter(node => StyleSheet.flatten(node.props.style)?.fontWeight === "700");
+    expect(bold.map(node => node.props.children.join(""))).toEqual(["复现：", "结论："]);
     expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
   });
 
@@ -332,6 +383,22 @@ describe("MarkdownText", () => {
     act(() => chip?.props.onPress());
     expect(alert).toHaveBeenCalledTimes(1);
     alert.mockRestore();
+  });
+
+  test("a file preview reflows the source's soft-wrapped lines while a message keeps them", () => {
+    const text = "投影最小（1 706 tok）、回本最快\n基础指令，压缩只要 0.42 元。";
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(createElement(MarkdownText, { mode: "file-preview", text }));
+    });
+    // A document's own wrap column is a soft break: CommonMark renders it as a space.
+    expect(renderer?.root.findByType(FlatList).props.data).toEqual([{
+      type: "paragraph",
+      children: [{ type: "text", text: "投影最小（1 706 tok）、回本最快 基础指令，压缩只要 0.42 元。" }],
+    }]);
+    // A chat bubble keeps the newline its author typed.
+    act(() => renderer?.update(createElement(MarkdownText, { text })));
+    expect(JSON.stringify(renderer?.toJSON())).toContain("回本最快\\n基础指令");
   });
 
   test("renders only http(s) Markdown images as remote images", () => {

@@ -6,6 +6,7 @@ export {
 } from "./localPath";
 export type { MarkdownTarget } from "./localPath";
 export { parseFutureMarkdown } from "./parseFutureMarkdown";
+export { joinSoftBreaks } from "./softBreaks";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { remarkLatexMath } from "./remarkLatexMath";
 export { remarkCjkEmphasis } from "./remarkCjkEmphasis";

@@ -808,6 +808,11 @@ export function useTimelineController({
       const run = !streaming
         ? engine.timelineFor(sessionId)?.currentRunId
         : undefined;
+      // When the terminal already arrived over a complete prefix the run is
+      // whole, and re-reading it would show a sync notice for content that is
+      // already rendered. The heal stays for the case it exists for: the
+      // terminal never made it, so the timeline still reports streaming.
+      if (run && engine.runCompleteLocally(sessionId, run)) return;
       engine.reconcile(sessionId, "snapshot-flip", run ?? undefined);
     },
     [],

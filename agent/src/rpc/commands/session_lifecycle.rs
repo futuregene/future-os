@@ -5,16 +5,6 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseBroadcaster};
 
-/// Test-only hook fired inside `fork`/`clone` after the forked session is
-/// built but before its model is synced into the fresh agent loop, keyed on
-/// the parent session id. Lets a test force the model-sync failure warn.
-#[cfg(test)]
-pub(crate) type ModelSyncHook = Option<(String, Box<dyn Fn(&mut ServerSession) + Send>)>;
-
-#[cfg(test)]
-pub(crate) static MODEL_SYNC_FAIL_HOOK: parking_lot::Mutex<ModelSyncHook> =
-    parking_lot::Mutex::new(None);
-
 pub(crate) fn cmd_shutdown(state: &AppState, id: &str) -> String {
     state
         .shutting_down
@@ -569,127 +559,59 @@ pub(crate) fn cmd_fork(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    let entry_id = &cmd.entry_id;
-    if entry_id.is_empty() {
-        return RpcResponse::build_fail(
-            id,
-            "fork",
-            "No message selected to fork from. Choose a user message to fork at.",
-        );
-    }
-
-    // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, current_session_id, parent_created_by) = {
+    let (session_manager, current_session_id, parent_created_by) = {
         let sess = session.read();
         (
             sess.session_manager.clone(),
-            sess.broadcaster.clone(),
-            sess.cwd.clone(),
             sess.session_id.clone(),
             sess.created_by.clone(),
         )
     };
-    // The fork gets its own agent loop — sharing the parent's loop would let
-    // a run in one session block (or be aborted by) the other.
-    let agent_loop = Arc::new(tokio::sync::RwLock::new(
-        state.loop_template.independent_copy(),
-    ));
-
-    // Resolve parent session: use cmd.parent_session if provided,
-    // otherwise fork from the current session.
     let parent_id = if !cmd.parent_session.is_empty() {
         cmd.parent_session.clone()
     } else {
         current_session_id.clone()
     };
 
-    // Get parent session from manager
-    let parent = match session_manager.load(&parent_id) {
-        Ok(s) => s,
-        Err(_) => {
-            return RpcResponse::build_fail(
-                id,
-                "fork",
-                "Session not found on disk — it may have been deleted or moved.",
-            );
-        }
-    };
-
-    if !parent.entries.iter().any(|entry| entry.id == *entry_id) {
-        return RpcResponse::build_fail(
-            id,
-            "fork",
-            "Fork point not found in the parent session; reload history and choose a message.",
-        );
-    }
-
-    // Fork a new session
     let child_created_by = if cmd.created_by.is_empty() {
         parent_created_by.as_str()
     } else {
         cmd.created_by.as_str()
     };
-    let mut forked = crate::session::fork_session(&parent, entry_id);
-    crate::session::set_creation_provenance(&mut forked, child_created_by, &cmd.creator_id);
-    let forked_id = forked.id.clone();
-
-    // Save the forked session
-    if let Err(e) = session_manager.save(&forked) {
+    let point = match crate::session::ForkPoint::from_rpc(&cmd.mode, &cmd.entry_id) {
+        Ok(point) => point,
+        Err(error) => return RpcResponse::build_fail(id, "fork", &error.to_string()),
+    };
+    let request_key = if cmd.client_request_id.trim().is_empty() {
+        id.to_string()
+    } else {
+        cmd.client_request_id.clone()
+    };
+    let request_id = format!("fork:{request_key}");
+    let result = match session_manager.create_fork(crate::session::ForkRequest {
+        request_id,
+        parent_session_id: parent_id,
+        point,
+        created_by: child_created_by.to_string(),
+        creator_id: cmd.creator_id.clone(),
+    }) {
+        Ok(result) => result,
+        Err(error) => return RpcResponse::build_fail(id, "fork", &error.to_string()),
+    };
+    let forked_id = result.session.id.clone();
+    if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,
             "fork",
-            &format!("failed to save forked session: {}", e),
+            &format!("fork committed but could not be activated: {error}"),
         );
     }
 
-    // Add to sessions map.  Load the forked entries into
-    // in-memory messages so the first prompt doesn't overwrite
-    // the saved history on disk — session_prompt.rs saves
-    // self.messages back to disk (via File::create), truncating
-    // anything not held in memory.
-    let mut new_sess = ServerSession::new_with_queue_budget(
-        forked_id.clone(),
-        agent_loop,
-        session_manager,
-        &forked.cwd,
-        broadcaster,
-        state.approval_gate.clone(),
-        state.model_registry.clone(),
-        state.queue_budget.clone(),
-    );
-    // Category provenance may fall back for legacy callers; creator_id never
-    // inherits because it identifies the client that performed this fork.
-    new_sess.created_by = child_created_by.to_string();
-    // creator_id identifies the client that performed this fork. Never inherit
-    // it from the parent: a TUI/CLI fork of a Desktop session is not owned by
-    // the original Desktop installation.
-    new_sess.creator_id = cmd.creator_id.clone();
-    let supports_images = state
-        .model_registry
-        .read()
-        .request_model_accepts_images(&forked.model);
-    let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-    *new_sess.messages.write() = msgs;
-    if !forked.model.is_empty() {
-        new_sess.model = forked.model.clone();
-        #[cfg(test)]
-        {
-            let mut slot = MODEL_SYNC_FAIL_HOOK.lock();
-            if matches!(slot.as_ref(), Some((sid, _)) if sid == &parent_id) {
-                if let Some((_, hook)) = slot.take() {
-                    hook(&mut new_sess);
-                }
-            }
-        }
-        // Sync the fork's own agent loop so the first prompt uses the
-        // forked model, not whatever the template seeded.
-        if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
-            tracing::warn!("[fork] could not sync agent loop model: {e}");
-        }
-    }
-    state.create_session(new_sess);
-
-    RpcResponse::ok(id, "fork", serde_json::json!({"sessionId": forked_id}))
+    RpcResponse::ok(
+        id,
+        "fork",
+        serde_json::json!({"sessionId": forked_id, "created": result.created}),
+    )
 }
 
 pub(crate) fn cmd_clone(
@@ -698,112 +620,50 @@ pub(crate) fn cmd_clone(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    // Extract needed data from session
-    let (session_manager, broadcaster, _cwd, session_id, parent_created_by) = {
+    let (session_manager, session_id, parent_created_by) = {
         let sess = session.read();
-        if sess.messages.read().is_empty() {
-            return RpcResponse::build_fail(
-                id,
-                "clone",
-                "Nothing to clone — the current session has no messages yet.",
-            );
-        }
         (
             sess.session_manager.clone(),
-            sess.broadcaster.clone(),
-            sess.cwd.clone(),
             sess.session_id.clone(),
             sess.created_by.clone(),
         )
     };
-    // Own agent loop for the clone (same reasoning as fork).
-    let agent_loop = Arc::new(tokio::sync::RwLock::new(
-        state.loop_template.independent_copy(),
-    ));
-
-    // Get parent session from manager
-    let parent = match session_manager.load(&session_id) {
-        Ok(s) => s,
-        Err(_) => {
-            return RpcResponse::build_fail(
-                id,
-                "clone",
-                "Session not found on disk — it may have been deleted or moved.",
-            );
-        }
-    };
-
-    let leaf_id = parent
-        .entries
-        .last()
-        .map(|e| e.id.clone())
-        .unwrap_or_default();
-    if leaf_id.is_empty() {
-        return RpcResponse::build_fail(
-            id,
-            "clone",
-            "Nothing to clone — no messages found in session.",
-        );
-    }
-
-    // Fork from leaf
     let child_created_by = if cmd.created_by.is_empty() {
         parent_created_by.as_str()
     } else {
         cmd.created_by.as_str()
     };
-    let mut forked = crate::session::fork_session(&parent, &leaf_id);
-    crate::session::set_creation_provenance(&mut forked, child_created_by, &cmd.creator_id);
-    let forked_id = forked.id.clone();
-
-    // Save the forked session
-    if let Err(e) = session_manager.save(&forked) {
+    let request_key = if cmd.client_request_id.trim().is_empty() {
+        id.to_string()
+    } else {
+        cmd.client_request_id.clone()
+    };
+    let request_id = format!("clone:{request_key}");
+    let result = match session_manager.create_fork(crate::session::ForkRequest {
+        request_id,
+        parent_session_id: session_id,
+        point: crate::session::ForkPoint::LatestSettled,
+        created_by: child_created_by.to_string(),
+        creator_id: cmd.creator_id.clone(),
+    }) {
+        Ok(result) => result,
+        Err(error) => return RpcResponse::build_fail(id, "clone", &error.to_string()),
+    };
+    let forked_id = result.session.id.clone();
+    if let Err(error) = state.activate_persisted_session(&forked_id) {
         return RpcResponse::build_fail(
             id,
             "clone",
-            &format!("failed to save cloned session: {}", e),
+            &format!("clone committed but could not be activated: {error}"),
         );
     }
-
-    // Add to sessions map.  Load the cloned entries into
-    // in-memory messages (same reason as fork — prevents
-    // the first prompt from truncating history on disk).
-    let mut new_sess = ServerSession::new_with_queue_budget(
-        forked_id.clone(),
-        agent_loop,
-        session_manager,
-        &forked.cwd,
-        broadcaster,
-        state.approval_gate.clone(),
-        state.model_registry.clone(),
-        state.queue_budget.clone(),
-    );
-    // Match fork provenance: category fallback is legacy compatibility while
-    // creator_id identifies only the client performing this clone.
-    new_sess.created_by = child_created_by.to_string();
-    new_sess.creator_id = cmd.creator_id.clone();
-    let supports_images = state
-        .model_registry
-        .read()
-        .request_model_accepts_images(&forked.model);
-    let msgs = crate::session::entries_to_agent_messages(&forked.entries, supports_images);
-    *new_sess.messages.write() = msgs;
-    if !forked.model.is_empty() {
-        new_sess.model = forked.model.clone();
-        #[cfg(test)]
-        {
-            let mut slot = MODEL_SYNC_FAIL_HOOK.lock();
-            if matches!(slot.as_ref(), Some((sid, _)) if sid == &session_id) {
-                if let Some((_, hook)) = slot.take() {
-                    hook(&mut new_sess);
-                }
-            }
-        }
-        if let Err(e) = new_sess.set_model(&new_sess.model.clone()) {
-            tracing::warn!("[clone] could not sync agent loop model: {e}");
-        }
-    }
-    state.create_session(new_sess);
-
-    RpcResponse::ok(id, "clone", serde_json::json!({"cancelled": false}))
+    RpcResponse::ok(
+        id,
+        "clone",
+        serde_json::json!({
+            "cancelled": false,
+            "sessionId": forked_id,
+            "created": result.created,
+        }),
+    )
 }

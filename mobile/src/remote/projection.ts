@@ -1,4 +1,5 @@
 import {
+  compactionCheckpoints,
   createRunProjector,
   entriesToMessages,
   userMessageFromEvent,
@@ -226,6 +227,107 @@ export function stripRunItems(timeline: TimelineState, runId: string): TimelineS
     ),
     ...(liveRuns ? { liveRuns } : {}),
   };
+}
+
+/**
+ * Upsert a run's live bubble, then drop the durable divider rows it supersedes.
+ *
+ * A checkpoint that opened the exchange is committed before that exchange has
+ * any reply entry, so durable history renders it as a divider-only row; the
+ * bubble renders the same checkpoint from the run's journal. Every path that
+ * (re)builds the bubble must drop that row, so both the per-event and the
+ * batched folding go through here.
+ */
+function upsertLiveAssistantItem(
+  items: TimelineItem[],
+  assistantId: string,
+  item: TimelineItem,
+): TimelineItem[] {
+  const next = upsertItem(items, assistantId, () => item, () => item);
+  // Hot path: this runs per event (and per batch flush). Only scan for the
+  // checkpoint identity when a divider-only row is actually present.
+  return next.some(isCompactionDividerRow)
+    ? dropSupersededCompactionDividers(next, [item])
+    : next;
+}
+
+/**
+ * Drop durable rows the live render supersedes: a compaction must be drawn once.
+ *
+ * Until a run's exchange has its first reply entry, a checkpoint that opened
+ * that exchange is all the durable history has — it projects as a message that
+ * IS the divider. The live bubble carries the same checkpoint (see
+ * `compactionCheckpoints`), so both would draw it. The durable row is the copy
+ * to drop: the bubble re-renders it from the run's own journal.
+ */
+export function dropSupersededCompactionDividers(
+  history: TimelineItem[],
+  live: TimelineItem[],
+): TimelineItem[] {
+  // Only message rows render segments; the union's other members (notices,
+  // approval cards) can never carry a divider.
+  const liveCheckpoints = compactionCheckpoints(
+    live.flatMap(item => (item.kind === "message" ? [item] : [])),
+  );
+  if (liveCheckpoints.size === 0) return history;
+  // The live render never supersedes itself: the bubble is a divider-only row
+  // too whenever the checkpoint is all the run has produced so far.
+  const liveIds = new Set(live.map(item => item.id));
+  return history.filter(item => !(
+    item.kind === "message"
+    && !liveIds.has(item.id)
+    && isCompactionDividerRow(item)
+    && (item.segments ?? []).some(segment =>
+      segment.kind === "compaction"
+      && !!segment.checkpointId
+      && liveCheckpoints.has(segment.checkpointId),
+    )
+  ));
+}
+
+/** Durable history is the truth for settled standalone markers. When a merge
+ * puts a checkpoint divider and a live placeholder for the same compaction
+ * side by side — in either order — the placeholder must go: a running one
+ * whose terminal was lost would otherwise sit below the completed divider
+ * forever, and a settled one (folded late-start alias) is the same marker
+ * under its operation id. */
+export function foldLiveCompactionPlaceholdersIntoHistory(
+  history: TimelineItem[],
+  live: TimelineItem[],
+): { history: TimelineItem[]; live: TimelineItem[] } {
+  const checkpoints = new Set(
+    history.flatMap(item =>
+      item.kind === "message"
+        ? (item.segments ?? []).flatMap((segment): string[] =>
+          segment.kind === "compaction" && segment.checkpointId ? [segment.checkpointId] : [])
+        : []),
+  );
+  if (checkpoints.size === 0) return { history, live };
+  const dividerOnly = (item: TimelineItem) => item.kind === "message" && isCompactionDividerRow(item);
+  const compactionSegments = (item: TimelineItem) =>
+    item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : [];
+  const placeholder = (item: TimelineItem) =>
+    dividerOnly(item)
+    && item.id.startsWith("compaction:")
+    && compactionSegments(item).every(segment =>
+      !segment.checkpointId || checkpoints.has(segment.checkpointId));
+  const startAliases = live.filter(item =>
+    placeholder(item)
+    && compactionSegments(item).every(segment => segment.status !== "running"));
+  const aliasIds = new Set(startAliases.map(item => item.id));
+  return {
+    history: history.filter(item => !(dividerOnly(item) && aliasIds.has(item.id))),
+    live: live.filter(item => !placeholder(item)),
+  };
+}
+
+/** A row that renders nothing but a compaction divider (no reply text yet). */
+function isCompactionDividerRow(item: TimelineItem): boolean {
+  return item.kind === "message"
+    && item.role === "assistant"
+    && !item.text
+    && item.segments?.length === 1
+    && item.segments[0]?.kind === "compaction";
 }
 
 /** A raw replay event as the agent's `get_events_since` returns it (snake_case). */
@@ -459,7 +561,7 @@ export function createStreamEventBatch(initial: TimelineState) {
     const run = state.liveRuns?.get(pending.runId ?? "__norun__");
     if (run) {
       const item = buildLiveAssistantItem(run, pending.runId, run.projector.snapshot(), run.durationMs);
-      state = { ...state, items: upsertItem(state.items, run.assistantId, () => item, () => item) };
+      state = { ...state, items: upsertLiveAssistantItem(state.items, run.assistantId, item) };
     }
     pending = null;
   };
@@ -562,11 +664,35 @@ function applyStandaloneCompaction(
   // A replayed start must not undo a failed/settled marker for this operation.
   if (status === "running" && existing?.kind === "message"
     && existing.segments?.some(segment => segment.kind === "compaction" && segment.status !== "running")) return items;
+  // A start delivered after its operation already settled (a replayed frame,
+  // or a live frame that raced the history reload carrying the checkpoint)
+  // must not append a second, permanently-running divider below the settled
+  // one. Fold it into a trailing settled standalone marker: the durable
+  // identity keeps its position, the pending id becomes an alias of it.
+  // Standalone compactions are serialized by the agent (compaction_in_progress
+  // fences the next one), so a settled divider that is still the LAST item
+  // can only be this operation's — the durable copy never carries the
+  // operation id, but no message could follow it before this start. Anything
+  // after the divider (a prompt, a reply) means this start is a genuinely
+  // new compaction and gets its own placeholder.
+  if (status === "running" && !existing) {
+    const last = items[items.length - 1];
+    // A durable divider's segment carries no status (history rows omit it);
+    // anything but an explicit "running" segment is settled.
+    if (last?.kind === "message" && isCompactionDividerRow(last)
+      && last.segments?.[0]?.kind === "compaction" && last.segments[0].status !== "running") {
+      const segment = last.segments[0];
+      return items.map((entry, index) => index === items.length - 1
+        ? { ...last, id: pendingId, segments: [{ ...segment, status: segment.status ?? "completed" }] }
+        : entry);
+    }
+  }
   const item: TimelineItem = {
     id, kind: "message", role: "assistant", text: "", streaming: false,
     segments: [{
       id: checkpointId ? `seg_${checkpointId}_compaction` : operationId,
       kind: "compaction", status,
+      ...(checkpointId ? { checkpointId } : {}),
       ...(typeof data.tokens_before === "number" ? { tokensBefore: data.tokens_before } : {}),
       ...(typeof data.trigger === "string" ? { trigger: data.trigger } : {}),
       ...(typeof data.error === "string" ? { error: data.error } : {}),
@@ -636,7 +762,7 @@ function applyLiveEvent(
   let items = state.items;
   if (projection) {
     const assistantItem = buildLiveAssistantItem(acc, runId, projection, durationMs);
-    items = upsertItem(items, acc.assistantId, () => assistantItem, () => assistantItem);
+    items = upsertLiveAssistantItem(items, acc.assistantId, assistantItem);
   }
   return { items, streaming: compactionEvent ? state.streaming : acc.streaming, liveRuns };
 }
@@ -780,6 +906,7 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
       return {
         id: segment.id,
         kind: "compaction",
+        ...(segment.checkpointId ? { checkpointId: segment.checkpointId } : {}),
         ...(segment.tokensBefore ? { tokensBefore: segment.tokensBefore } : {}),
         ...(segment.trigger ? { trigger: segment.trigger } : {}),
         ...(segment.status ? { status: segment.status } : {}),

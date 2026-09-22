@@ -55,11 +55,13 @@ export interface AssistantRunProjection {
  */
 type Slot
   = | { type: "text"; text: string }
-    | { type: "thinking"; text: string }
+    | { type: "thinking"; text: string; blockId?: string }
     | { type: "tool"; id: string }
     | {
         type: "compaction";
         id: string;
+        /** Checkpoint the committed divider renders (absent while it is pending). */
+        checkpointId?: string;
         tokensBefore: number;
         trigger?: string;
         status: "running" | "completed" | "failed";
@@ -107,6 +109,7 @@ interface ProjectorCheckpoint {
   slottedToolIds: Set<string>;
   openTextIndex: number;
   openThinkingIndex: number;
+  activeThinkingIndices: Array<[string, number]>;
   content: string;
   thinking: boolean;
   sawVisibleWork: boolean;
@@ -134,6 +137,10 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
   // The currently-open reasoning block; thinking_delta text appends here so each
   // block keeps its own position in the timeline (interleaved with text/tools).
   let openThinking: Extract<Slot, { type: "thinking" }> | null = null;
+  // A provider can emit a trailing delta for a reasoning block after it has
+  // already started answer text. Keep lifecycle identity separate from the
+  // currently rendered tail so that late delta rejoins its original block.
+  const activeThinking = new Map<string, Extract<Slot, { type: "thinking" }>>();
   let content = "";
   let thinking = false;
   let sawVisibleWork = false;
@@ -161,6 +168,10 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     const thinkingSlot = slots[initial.openThinkingIndex];
     openText = textSlot?.type === "text" ? textSlot : null;
     openThinking = thinkingSlot?.type === "thinking" ? thinkingSlot : null;
+    for (const [id, index] of initial.activeThinkingIndices) {
+      const slot = slots[index];
+      if (slot?.type === "thinking") activeThinking.set(id, slot);
+    }
     content = initial.content;
     thinking = initial.thinking;
     sawVisibleWork = initial.sawVisibleWork;
@@ -219,8 +230,9 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     if (event.eventType === "text_chunk") {
       const text = textFromPayload(payload);
       content += text;
-      // Visible text ends any open reasoning block; later thinking opens a new one.
-      openThinking = null;
+      // Text does not implicitly close reasoning. Some providers send the first
+      // answer token before the final reasoning delta; only thinking_end (or a
+      // new thinking_start) establishes the reasoning block boundary.
       if (!openText) {
         openText = { type: "text", text: "" };
         slots.push(openText);
@@ -234,10 +246,12 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
 
     if (event.eventType === "thinking_start") {
       thinking = true;
+      const blockId = blockIdFromPayload(payload);
       // Open a new reasoning slot at this point in the timeline. A text run ends
       // here so the block sits between the surrounding text/tools, not hoisted.
-      openThinking = { type: "thinking", text: "" };
+      openThinking = { type: "thinking", text: "", ...(blockId ? { blockId } : {}) };
       slots.push(openThinking);
+      if (blockId) activeThinking.set(blockId, openThinking);
       openText = null;
       return;
     }
@@ -245,10 +259,18 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     if (event.eventType === "thinking_delta") {
       const text = textFromPayload(payload);
       if (text) {
+        const blockId = blockIdFromPayload(payload);
+        const identifiedBlock = blockId ? activeThinking.get(blockId) : undefined;
+        if (identifiedBlock) {
+          identifiedBlock.text += text;
+          openThinking = identifiedBlock;
+          return;
+        }
         // Tolerate a delta without a preceding start by opening a block lazily.
         if (!openThinking) {
-          openThinking = { type: "thinking", text: "" };
+          openThinking = { type: "thinking", text: "", ...(blockId ? { blockId } : {}) };
           slots.push(openThinking);
+          if (blockId) activeThinking.set(blockId, openThinking);
           openText = null;
         }
         openThinking.text += text;
@@ -257,8 +279,11 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     }
 
     if (event.eventType === "thinking_end") {
-      thinking = false;
-      openThinking = null;
+      const blockId = blockIdFromPayload(payload);
+      if (blockId) activeThinking.delete(blockId);
+      else activeThinking.clear();
+      thinking = activeThinking.size > 0;
+      if (!blockId || openThinking?.blockId === blockId) openThinking = null;
       return;
     }
 
@@ -294,6 +319,8 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           : undefined;
         if (pending?.type === "compaction") {
           pending.id = id;
+          if (record && typeof record.checkpoint_id === "string")
+            pending.checkpointId = record.checkpoint_id;
           pending.tokensBefore = numberFromPayload(payload, ["tokens_before", "tokensBefore"]);
           if (record && typeof record.trigger === "string")
             pending.trigger = record.trigger;
@@ -303,6 +330,9 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           slots.push({
             type: "compaction",
             id,
+            ...(record && typeof record.checkpoint_id === "string"
+              ? { checkpointId: record.checkpoint_id }
+              : {}),
             tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
             ...(record && typeof record.trigger === "string" ? { trigger: record.trigger } : {}),
             status: "completed",
@@ -507,6 +537,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
       toolActivities, slots, slottedToolIds,
       openTextIndex: openText ? slots.indexOf(openText) : -1,
       openThinkingIndex: openThinking ? slots.indexOf(openThinking) : -1,
+      activeThinkingIndices: [...activeThinking].map(([id, slot]) => [id, slots.indexOf(slot)]),
       content, thinking, sawVisibleWork, activeToolCallId,
       usageOutputSum, sawUsageEvent, agentEndOutput, truncated, stopped,
       reconnecting, lastSequence,
@@ -546,6 +577,11 @@ function numberFromPayload(payload: unknown, keys: string[]): number {
       return value;
   }
   return 0;
+}
+
+function blockIdFromPayload(payload: unknown): string | undefined {
+  if (!isRecord(payload)) return undefined;
+  return stringValue(payload.block_id) ?? stringValue(payload.blockId);
 }
 
 /**
@@ -598,6 +634,7 @@ function buildSegments(
       segments.push({
         kind: "compaction",
         id: slot.id,
+        ...(slot.checkpointId ? { checkpointId: slot.checkpointId } : {}),
         ...(slot.tokensBefore > 0 ? { tokensBefore: slot.tokensBefore } : {}),
         ...(slot.trigger ? { trigger: slot.trigger } : {}),
         ...(slot.status !== "completed" ? { status: slot.status } : {}),

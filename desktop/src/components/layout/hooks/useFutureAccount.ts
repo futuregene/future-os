@@ -1,4 +1,4 @@
-import type { FutureAuthStatus } from "../../../integrations/agent/providers";
+import type { FutureAuthState, FutureAuthStatus } from "../../../integrations/agent/providers";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearFutureBalanceCache,
@@ -30,13 +30,13 @@ export interface FutureAccount {
  * Request generations prevent a response from an old credential restoring stale
  * email or balance after logout, environment change, or reauthentication.
  */
-export function useFutureAccount(): FutureAccount {
-  const [status, setStatus] = useState<FutureSessionStatus>("checking");
+export function useFutureAccount(initialAuth?: FutureAuthState): FutureAccount {
+  const [status, setStatus] = useState<FutureSessionStatus>(initialAuth?.status ?? "checking");
   const [balanceStatus, setBalanceStatus] = useState<FutureBalanceStatus>(
     () => peekFutureBalance() ? "available" : "idle",
   );
   const [balance, setBalance] = useState<number | null>(() => peekFutureBalance()?.credits ?? null);
-  const [email, setEmail] = useState<string | null>(() => peekFutureProfile()?.email ?? null);
+  const [email, setEmail] = useState<string | null>(() => initialAuth?.profile?.email ?? peekFutureProfile()?.email ?? null);
   const generationRef = useRef(0);
 
   const refreshAuth = useCallback(() => {

@@ -30,9 +30,8 @@ import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
 import { MarkdownImageLoaderContext } from "../../components/MarkdownImage";
 import { useChatScroll } from "./useChatScroll";
 import { useTimelinePaging } from "./useTimelinePaging";
-import { useRename } from "./useRename";
-import { useSendMessage } from "./useSendMessage";
 import { useCompactContext } from "./useCompactContext";
+import { useSendMessage } from "./useSendMessage";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
@@ -40,7 +39,7 @@ import { FloatingTimelineButton } from "./components/FloatingTimelineButton";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
-import { RenameModal } from "./components/RenameModal";
+import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
 import { COMPOSER_FADE_CLEARANCE } from "./utils";
 import { newestFirst } from "./timelineListModel";
@@ -96,7 +95,7 @@ function TimelineFlexSpacer() {
 }
 
 export function ChatScreen() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
   const connection = controls.connectionPresentation;
@@ -106,6 +105,8 @@ export function ChatScreen() {
   const [transferProgress, setTransferProgress] = useState<number | null>(null);
   const [selector, setSelector] = useState<"model" | "thinking" | null>(null);
   const [filesSession, setFilesSession] = useState<string | null>(null);
+  // The spend icon in the top bar opens the conversation's account book.
+  const [usageOpen, setUsageOpen] = useState(false);
   const conversationKey = `${remote.credentials?.expectedDesktopId ?? ""}:${remote.selectedSessionId}`;
   const filesOpen = !remote.draft && filesSession === conversationKey;
   const goBack = useCallback(() => {
@@ -177,7 +178,6 @@ export function ChatScreen() {
     setTransferProgress,
     compactContext.pending,
   );
-  const rename = useRename(remote, t);
 
   // Approvals live docked above the composer (not inline in the transcript), and
   // only while undecided — once a decision lands the card disappears.
@@ -391,9 +391,16 @@ export function ChatScreen() {
             contextLabel={contextLabel}
             draft={remote.draft}
             backLabel={t("common.back")}
-            renameLabel={t("chat.rename")}
+            usageLabel={t("chat.usageOpen")}
             onBack={goBack}
-            onRename={rename.openRename}
+            onUsage={() => {
+              Keyboard.dismiss();
+              // The sheet shows the session's spend, so read it as it opens: the
+              // figure is only as fresh as the last get_state, and this is the
+              // moment it is being looked at.
+              void remote.refreshSessionUsage();
+              setUsageOpen(true);
+            }}
             filesLabel={t("files.title")}
             filesOpen={filesOpen}
             onFiles={() => {
@@ -662,16 +669,11 @@ export function ChatScreen() {
             t={t}
           />
 
-          <RenameModal
-            renameOpen={rename.renameOpen}
-            generationKey={remote.selectedSessionId}
-            onGenerate={remote.selectedSessionId && remote.desktopOnline
-              ? () => remote.generateTitle(remote.selectedSessionId, i18n.language.startsWith("zh") ? "zh" : "en")
-              : undefined}
-            renameValue={rename.renameValue}
-            setRenameValue={rename.setRenameValue}
-            submitRename={rename.submitRename}
-            onClose={() => rename.setRenameOpen(false)}
+          <SessionUsageSheet
+            title={title}
+            usage={remote.sessionUsage}
+            visible={usageOpen}
+            onClose={() => setUsageOpen(false)}
             t={t}
           />
         </KeyboardAvoidingView>

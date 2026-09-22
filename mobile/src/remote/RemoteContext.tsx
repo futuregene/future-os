@@ -32,6 +32,7 @@ import type {
   RemoteModel,
   RemoteSession,
   RemoteSessionState,
+  RemoteSessionUsage,
   RemoteSkill,
   RemoteWorkspace,
   SessionFileListing,
@@ -71,6 +72,14 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   loadingOlderTimeline: boolean;
   modelId: string;
   thinkingLevel: ThinkingLevel;
+  /** Token usage + amount for the open conversation (null until reported). */
+  sessionUsage: RemoteSessionUsage | null;
+  /**
+   * Re-read the open conversation's state, so an amount is current when it is
+   * about to be shown. Resolves once the read settles; a failure leaves the
+   * last known figures in place.
+   */
+  refreshSessionUsage: () => Promise<void>;
   approvalTier: string;
   sandboxAvailable: boolean;
   busy: boolean;
@@ -200,6 +209,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     settingsSink.current?.applySessionSettings(sessionId, {
       model: state.model ?? "",
       thinkingLevel: state.thinkingLevel ?? "off",
+      usage: state.usage,
     });
   }, []);
   useEffect(() => {
@@ -315,6 +325,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const {
     modelId,
     thinkingLevel,
+    sessionUsage,
+    refreshSessionUsage,
     applySessionSettings,
     handleSessionSettingsEvent,
     openingSession,
@@ -439,6 +451,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       compacting,
       modelId,
       thinkingLevel,
+      sessionUsage,
+      refreshSessionUsage,
       approvalTier,
       sandboxAvailable,
       busy: sending || openingSession,
@@ -508,6 +522,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       error,
       agentAvailable,
       modelId,
+      sessionUsage,
+      refreshSessionUsage,
       models,
       newConversation,
       pair,

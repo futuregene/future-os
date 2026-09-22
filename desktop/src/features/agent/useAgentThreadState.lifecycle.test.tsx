@@ -39,7 +39,7 @@ function deferred<T>() {
 function noop() {}
 const time = Date.parse("2026-09-12T00:00:00Z");
 const running = { id: "lifecycle-run", threadId: "lifecycle-thread", status: "running", createdAt: time, updatedAt: time, startedAt: time } as StoredRun;
-const success = { content: "final", complete: true, sessionId: "session-a", sessionRecreated: false };
+const success = { content: "final", complete: true, sessionId: "session-a" };
 let latest: StoredRun | null;
 let sessionId: string | null;
 let reply: ReturnType<typeof deferred<typeof success>>;

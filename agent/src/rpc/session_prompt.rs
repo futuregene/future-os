@@ -495,6 +495,7 @@ impl ServerSession {
         run_loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
         run_loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
         run_loop.cumulative_cost = self.cumulative_cost.clone();
+        run_loop.cumulative_cost_split = self.cumulative_cost_split.clone();
         run_loop.last_prompt_tokens = self.last_prompt_tokens.clone();
 
         // Whether the active model accepts image input (catalog modalities).
@@ -674,6 +675,8 @@ impl ServerSession {
         let run_cache_read_baseline = tokens_cache_r.load(std::sync::atomic::Ordering::Relaxed);
         let run_cache_write_baseline = tokens_cache_w.load(std::sync::atomic::Ordering::Relaxed);
         let cumulative_cost = self.cumulative_cost.clone();
+        let cumulative_cost_split = self.cumulative_cost_split.clone();
+        let cost_split_complete = self.cost_split_complete.clone();
         let last_prompt = self.last_prompt_tokens.clone();
         let session_name = self.session_name.clone();
         let created_by = self.created_by.clone();
@@ -990,6 +993,12 @@ impl ServerSession {
                     "tokens_cache_w": tokens_cache_w.load(Ordering::Relaxed),
                     "last_prompt_tokens": last_prompt.load(Ordering::Relaxed),
                     "total_cost": total_cost,
+                    "cost_split": serde_json::to_value(*cumulative_cost_split.lock())
+                        .unwrap_or(serde_json::Value::Null),
+                    // Written only when the split covers the session's whole
+                    // history; a load re-prices the journal otherwise.
+                    "cost_split_complete": cost_split_complete
+                        .load(std::sync::atomic::Ordering::Relaxed),
                     "session_name": resolved_name,
                     "auto_compaction": auto_compaction,
                     "parent_session_id": parent_session_id,
@@ -1215,6 +1224,7 @@ impl ServerSession {
         r#loop.cumulative_cache_read_tokens = self.tokens_cache_r.clone();
         r#loop.cumulative_cache_write_tokens = self.tokens_cache_w.clone();
         r#loop.cumulative_cost = self.cumulative_cost.clone();
+        r#loop.cumulative_cost_split = self.cumulative_cost_split.clone();
         r#loop.last_prompt_tokens = self.last_prompt_tokens.clone();
     }
 
@@ -1389,6 +1399,13 @@ impl ServerSession {
                 "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
                 "last_prompt_tokens": self.last_prompt_tokens.load(Ordering::Relaxed),
                 "total_cost": *self.cumulative_cost.lock(),
+                "cost_split": serde_json::to_value(*self.cumulative_cost_split.lock())
+                    .unwrap_or(serde_json::Value::Null),
+                // Only true when it covers the whole history; see the run-end
+                // write above.
+                "cost_split_complete": self
+                    .cost_split_complete
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 "session_name": session_name,
                 "auto_compaction": self.auto_compaction,
                 "parent_session_id": parent_session_id,

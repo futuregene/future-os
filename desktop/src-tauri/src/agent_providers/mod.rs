@@ -104,6 +104,19 @@ pub struct CustomProviderModel {
     /// Maximum tokens generated in one response.
     #[serde(default = "default_max_tokens")]
     pub max_tokens: i32,
+    /// Per-1M-token prices (same currency as the displayed amount, CNY) used to
+    /// estimate what a request costs on providers that report no authoritative
+    /// billing (everything but the Future platform). 0 = unpriced: the agent
+    /// then inherits the built-in catalog price for a matching model id, and
+    /// the model simply contributes nothing to the displayed amount.
+    #[serde(default)]
+    pub input_cost: f64,
+    #[serde(default)]
+    pub output_cost: f64,
+    #[serde(default)]
+    pub cache_read_cost: f64,
+    #[serde(default)]
+    pub cache_write_cost: f64,
 }
 
 const fn default_reasoning() -> bool {
@@ -291,6 +304,12 @@ fn build_providers_view(
                                     items.iter().any(|item| item.as_str() == Some("image"))
                                 })
                                 .unwrap_or(false);
+                            let cost = model.get("cost");
+                            let price = |field: &str| {
+                                cost.and_then(|cost| cost.get(field))
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(0.0)
+                            };
                             Some(CustomProviderModel {
                                 reasoning: model
                                     .get("reasoning")
@@ -309,6 +328,10 @@ fn build_providers_view(
                                     .and_then(Value::as_i64)
                                     .and_then(|value| i32::try_from(value).ok())
                                     .unwrap_or_else(default_max_tokens),
+                                input_cost: price("input"),
+                                output_cost: price("output"),
+                                cache_read_cost: price("cache_read"),
+                                cache_write_cost: price("cache_write"),
                             })
                         })
                         .collect()

@@ -121,6 +121,51 @@ describe("agentStateCache fetch/cache", () => {
     });
   });
 
+  it("parses session usage and degrades an older agent honestly", async () => {
+    invokeMock.mockResolvedValue(statePayload({
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 5,
+        cacheWriteTokens: 1,
+        costCny: 0.01,
+        costInputCny: 0.002,
+        costOutputCny: 0.004,
+        costCacheReadCny: 0.003,
+        costCacheWriteCny: 0.001,
+      },
+    }));
+    expect((await getAgentState("t-usage")).usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 1,
+      costCny: 0.01,
+      costInputCny: 0.002,
+      costOutputCny: 0.004,
+      costCacheReadCny: 0.003,
+      costCacheWriteCny: 0.001,
+    });
+
+    // A field the agent does not report (per-category costs from an older
+    // build) reads as 0; a non-numeric one cannot poison the amount with NaN.
+    invokeMock.mockResolvedValue(statePayload({
+      usage: { inputTokens: "many", costCny: 0.5 },
+    }));
+    expect((await getAgentState("t-usage-partial")).usage).toMatchObject({
+      inputTokens: 0,
+      costCny: 0.5,
+      costOutputCny: 0,
+    });
+
+    // No usage object at all: undefined, so the header shows no figure rather
+    // than a fabricated ¥0 session.
+    invokeMock.mockResolvedValue(statePayload());
+    expect((await getAgentState("t-usage-none")).usage).toBeUndefined();
+    invokeMock.mockResolvedValue(statePayload({ usage: 7 }));
+    expect((await getAgentState("t-usage-scalar")).usage).toBeUndefined();
+  });
+
   it("parses missing fields as null", async () => {
     invokeMock.mockResolvedValue({});
     const state = await getAgentState("t-empty");
@@ -319,6 +364,45 @@ describe("agentStateCache event listener", () => {
     expect(getCachedAgentState("t-conf")).toMatchObject({
       model: "m-reloaded",
     });
+  });
+
+  it("re-reads the session when a run ends, so the amount is not a run behind", async () => {
+    // `agent_end` needs a thread that already has a cached entry, otherwise the
+    // event only forwards and the read happens through the compaction path.
+    invokeMock.mockResolvedValue(statePayload({
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costCny: 0.01,
+        costInputCny: 0.01,
+        costOutputCny: 0,
+        costCacheReadCny: 0,
+        costCacheWriteCny: 0,
+      },
+    }));
+    await getAgentState("t-run-end");
+    const readsBefore = invokeMock.mock.calls.filter(([cmd]) => cmd === "get_thread_agent_state").length;
+    invokeMock.mockResolvedValue(statePayload({
+      usage: {
+        inputTokens: 900,
+        outputTokens: 220,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costCny: 0.42,
+        costInputCny: 0.3,
+        costOutputCny: 0.12,
+        costCacheReadCny: 0,
+        costCacheWriteCny: 0,
+      },
+    }));
+    emit({ _eventType: "agent_end", sessionId: "s1", threadId: "t-run-end" });
+    await flushAsync();
+    await flushAsync();
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "get_thread_agent_state").length)
+      .toBeGreaterThan(readsBefore);
+    expect(getCachedAgentState("t-run-end")?.usage?.costCny).toBe(0.42);
   });
 
   it("forwards content events as window CustomEvents", () => {

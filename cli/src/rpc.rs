@@ -1249,6 +1249,7 @@ mod tests {
                         context_window: 128_000,
                         max_tokens: 16_384,
                         reasoning: Some(true),
+                        ..Default::default()
                     }],
                     ..Default::default()
                 })

@@ -50,6 +50,9 @@ class Harness {
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
   replayFailures = 0;
+  /** Every replay the engine asked for, so a test can assert that a settled
+   * run was not re-read from the journal. */
+  replayCalls: { run: string; since: number }[] = [];
   timeline: Record<string, ReturnType<typeof emptyTimeline>> = {};
   engine: SyncEngine;
 
@@ -63,6 +66,7 @@ class Harness {
       },
       requestHistory: async () => this.history,
       fetchReplay: async (_sessionId, run, since) => {
+        this.replayCalls.push({ run, since });
         if (this.replayFailures > 0) {
           this.replayFailures -= 1;
           throw new Error("temporary replay failure");
@@ -146,6 +150,68 @@ describe("SyncEngine", () => {
       expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", streaming: false, segments: [{ status: "completed" }] });
       expect(h.timelineOf("s").streaming).toBe(false);
       expect(h.timelineOf("s").compacting).toBe(false);
+      // The compaction frames are session fan-out stamped with the settled
+      // run's identity: they must apply without ever re-reading that run.
+      expect(h.replayCalls.filter(call => call.run === "r")).toHaveLength(1);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a compaction frame with no cursor for its stamped run is not a gap", async () => {
+    // The lane never witnessed run "r" (fresh open, or its cursor was evicted
+    // by newer runs). The broadcaster still stamps between-runs compaction
+    // with it; dropping those frames would lose the compaction's only signal.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      const callsBefore = h.replayCalls.length;
+      h.active("");
+      h.engine.event("s", evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ segments: [{ status: "running" }] });
+      expect(h.timelineOf("s").compacting).toBe(true);
+      h.engine.event("s", evt("compaction_committed", "r", 4, JSON.stringify({ operation_id: "cmp", checkpoint_id: "cp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "m_cp", segments: [{ status: "completed" }] });
+      expect(h.timelineOf("s").compacting).toBe(false);
+      // No gap replay for a run the lane never tracked — nothing was lost.
+      expect(h.replayCalls.length).toBe(callsBefore);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a history refresh clears a settled compaction start-alias left by a lost terminal", async () => {
+    // The terminal frame never arrived, but a late queued start folded into
+    // the durable checkpoint (see the projection test): the settled divider
+    // still wears its `compaction:<op>` id. The next history merge must drop
+    // that alias — the durable `m_<checkpoint>` row is the same marker.
+    // History is paged by user exchange, so the window needs a prompt to
+    // cover both the reply and the checkpoint.
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "reply"));
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.active("");
+      h.history = timelineFromEntries([
+        { id: "u", kind: "user", role: "user", createdAtMs: 0, runId: "r", blocks: [{ kind: "text", text: "question" }] },
+        { id: "a", kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r", blocks: [{ kind: "text", text: "reply" }] },
+        { id: "cp-entry", kind: "compaction", role: "system", createdAtMs: 2, blocks: [],
+          checkpoint: { checkpointId: "cp", trigger: "manual", phase: "standalone" } },
+      ]);
+      h.engine.event("s", evt("compaction_started", "r", 3, JSON.stringify({ operation_id: "cmp", phase: "standalone", trigger: "manual" })));
+      await h.settle();
+      // The start beat the history preview to the commit: a running
+      // placeholder sits below where the durable divider will land, and its
+      // terminal frame is never coming.
+      expect(h.timelineOf("s").items.at(-1)).toMatchObject({ id: "compaction:cmp", segments: [{ status: "running" }] });
+      h.engine.reconcile("s", "resend");
+      await h.settle();
+      const dividers = h.timelineOf("s").items.filter(item =>
+        item.kind === "message" && item.segments?.some(segment => segment.kind === "compaction"));
+      expect(dividers).toEqual([expect.objectContaining({ id: "m_cp" })]);
     } finally { h.engine.clear(); }
   });
 
@@ -728,7 +794,7 @@ describe("SyncEngine", () => {
     expect(h.textOf("s1")).toBe("hi");
   });
 
-  test("a run settling in a batch triggers an internal snapshot-flip reconcile (M11)", async () => {
+  test("a run settling in a batch is not re-read when it arrived whole", async () => {
     const run = nextRunId();
     const h = new Harness(run);
     h.journal.add(agentStart(run, 0));
@@ -739,11 +805,61 @@ describe("SyncEngine", () => {
     await h.settle();
     expect(h.timelineOf("s1").streaming).toBe(true);
 
+    const reads = h.replayCalls.length;
     h.journal.add(agentEnd(run, 2));
     h.engine.event("s1", agentEnd(run, 2));
     await h.settle();
     expect(h.timelineOf("s1").streaming).toBe(false);
     expect(h.textOf("s1")).toBe("reply");
+    // The terminal arrived over a contiguous prefix, so the run is whole here:
+    // re-reading it would download what is on screen and show the sync notice
+    // for it. `agent_end` is a finished run's last event.
+    expect(h.replayCalls.length).toBe(reads);
+  });
+
+  test("a settle still reconciles when the prefix is incomplete", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    // The journal's head is no longer readable (only 0 and 5 survive), so a
+    // replay cannot establish a contiguous prefix even though the run is live.
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 5, "tail"));
+
+    h.engine.event("s1", textChunk(run, 5, "tail"));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(true);
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(false);
+
+    const reads = h.replayCalls.length;
+    h.journal.add(agentEnd(run, 6));
+    h.engine.event("s1", agentEnd(run, 6));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    // The terminal proves the end, not the beginning: the run is still read
+    // back so the unreadable prefix can be recovered.
+    expect(h.replayCalls.length).toBeGreaterThan(reads);
+  });
+
+  test("a dropped terminal is still healed by the catalog's snapshot flip (M11)", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.journal.add(agentStart(run, 0));
+    h.journal.add(textChunk(run, 1, "full reply"));
+
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "full reply"));
+    await h.settle();
+
+    // The journal grows to include the end; the live relay dropped it, so this
+    // client still believes the run is generating — the state that must keep
+    // healing rather than being skipped as complete.
+    h.journal.add(agentEnd(run, 2));
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(false);
+    h.engine.reconcile("s1", "snapshot-flip", run);
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    expect(h.textOf("s1")).toBe("full reply");
+    expect(h.engine.runCompleteLocally("s1", run)).toBe(true);
   });
 
   test("projection replay without an explicit cursor derives it from event idx", async () => {

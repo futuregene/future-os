@@ -14,15 +14,36 @@ import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from
 import { markApprovalDecision } from "./timeline";
 import { modelProviderFromReference, modelReference } from "./types";
 import type {
+  AvailableSkill,
   DownloadInfo,
   HistoryAttachment,
   RemoteModel,
   RemoteSessionState,
+  RemoteSessionUsage,
   RemoteSkill,
   SessionFileListing,
   StreamEvent,
   ThinkingLevel,
 } from "./types";
+
+/** The platform catalogue's zh text, fetched once per connection. Installed
+ * skills carry name_zh/description_zh only when their frontmatter has them
+ * (builtins do not), so a Chinese UI falls back to this — and the `/` menu
+ * opens often enough that it must not wait on the platform every time. */
+const skillCatalogues = new WeakMap<RemoteClient, Promise<AvailableSkill[]>>();
+function skillCatalogue(client: RemoteClient): Promise<AvailableSkill[]> {
+  let catalogue = skillCatalogues.get(client);
+  if (!catalogue) {
+    // Best-effort: offline, or an old desktop without the command, only costs
+    // the localization.
+    catalogue = requestReadPage<{ skills: AvailableSkill[] }>(
+      client, { type: "list_available_skills" }, "settings",
+    ).then(response => Array.isArray(response.data.skills) ? response.data.skills : [])
+      .catch(() => []);
+    skillCatalogues.set(client, catalogue);
+  }
+  return catalogue;
+}
 
 interface ConversationControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -65,14 +86,18 @@ export function useConversationController({
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>("off");
+  // Session token usage + amount, refreshed by every get_state read (open,
+  // run settle, reconnect). Null until the first read for this session.
+  const [sessionUsage, setSessionUsage] = useState<RemoteSessionUsage | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
   const settingsRevision = useRef(0);
 
-  const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel">) => {
+  const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel" | "usage">) => {
     if (!sessionId || sessionId !== selectedRef.current) return;
     settingsRevision.current += 1;
     if (typeof state.model === "string") setModelId(state.model);
     if (state.thinkingLevel !== undefined) setThinkingLevelState(state.thinkingLevel);
+    if (state.usage !== undefined) setSessionUsage(state.usage ?? null);
   }, [selectedRef]);
 
   const handleSessionSettingsEvent = useCallback((event: StreamEvent, sessionId: string) => {
@@ -88,6 +113,28 @@ export function useConversationController({
       }
     } catch { /* Ignore malformed notifications; the next state read recovers. */ }
   }, [applySessionSettings]);
+
+  /**
+   * Re-read the open conversation's state.
+   *
+   * The amount is only as fresh as the last `get_state` (open, run settle,
+   * reconnect), so a session that spent tokens while this phone was idle — or
+   * whose settle event was missed — would otherwise show the old figure. Called
+   * when the amount is about to be shown, where being right matters. Failures
+   * are swallowed: the previously known figures stay on screen.
+   */
+  const refreshSessionUsage = useCallback(async () => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) return;
+    try {
+      const { data } = await client.requestRetry<RemoteSessionState>(
+        { type: "get_state", sessionId },
+        sessionId,
+      );
+      applySessionSettings(sessionId, { usage: data.usage });
+    } catch { /* Keep the last known figures rather than blanking the sheet. */ }
+  }, [applySessionSettings, clientRef, selectedRef]);
 
   const selectSession = useCallback(
     async (sessionId: string) => {
@@ -119,6 +166,9 @@ export function useConversationController({
         const matchingModel = models.find(model => modelReference(model) === currentModel);
         setModelId(matchingModel ? modelReference(matchingModel) : currentModel);
         setThinkingLevelState(state.thinkingLevel ?? "off");
+        // A conversation opened from the list shows its running amount right
+        // away, before any stream event arrives.
+        setSessionUsage(state.usage ?? null);
       } catch (nextError) {
         if (isCurrent()) recordError(nextError);
       } finally {
@@ -179,12 +229,24 @@ export function useConversationController({
     const client = clientRef.current;
     const epoch = conversationEpochRef.current;
     if (!client) throw new Error("skills_not_connected");
-    const response = await client.request<{ skills: RemoteSkill[] }>({ type: "list_skills" });
+    const [response, catalogue] = await Promise.all([
+      client.request<{ skills: RemoteSkill[] }>({ type: "list_skills" }),
+      skillCatalogue(client),
+    ]);
     if (clientRef.current !== client || conversationEpochRef.current !== epoch) {
       throw new Error("skills_context_changed");
     }
     if (!Array.isArray(response.data.skills)) throw new Error("skills_invalid_response");
-    return response.data.skills;
+    const zhById = new Map(catalogue.map(entry => [entry.id, entry]));
+    return response.data.skills.map(skill => {
+      const zh = zhById.get(skill.name);
+      if (!zh || (skill.nameZh && skill.descriptionZh)) return skill;
+      return {
+        ...skill,
+        nameZh: skill.nameZh || zh.nameZh || null,
+        descriptionZh: skill.descriptionZh || zh.descriptionZh || null,
+      };
+    });
   }, [clientRef, conversationEpochRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {
@@ -366,8 +428,10 @@ export function useConversationController({
   return {
     modelId,
     thinkingLevel,
+    sessionUsage,
     applySessionSettings,
     handleSessionSettingsEvent,
+    refreshSessionUsage,
     openingSession,
     selectSession,
     newConversation,

@@ -42,8 +42,10 @@ IM bots are all interfaces that connect to it.
 
 The GUI does not compile the Agent into the desktop process as a Tauri crate
 dependency. At runtime the GUI connects to the Agent gRPC service over
-per-user local IPC by default: on Unix `FUTURE_AGENT_SOCKET` is preferred,
-Linux otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock`, then falls back to
+per-user local IPC by default: on Unix `FUTURE_AGENT_SOCKET` is preferred, a
+redirected `FUTURE_HOME` (`future agent --home`) owns
+`<FUTURE_HOME>/run/agent.sock`, Linux otherwise uses
+`$XDG_RUNTIME_DIR/future/agent.sock`, then falls back to
 `~/.future/run/agent.sock` (the macOS default); Windows uses a current-user
 named pipe. `FUTURE_AGENT_GRPC_ADDR` can explicitly specify TCP, which requires
 the Agent to be started with `--grpc-addr`. With no reachable Agent, the

@@ -62,8 +62,11 @@ vars:
 - `run-events/<session_id>/` — retained legacy event sources; custom legacy
   directories use `.run-events/`. New events are stored only in SQLite.
   Queued prompts are in memory, not durable here.
-- `agent-instance.lock` — per-user singleton lock. Tests must isolate HOME (and
-  USERPROFILE on Windows); changing only the TCP port does not bypass the lock.
+- `agent-instance.lock` — singleton lock for this FutureOS home. Tests isolate
+  HOME (and USERPROFILE on Windows), or point the Agent at another FutureOS
+  home (`FUTURE_HOME` / `future agent --home`, see
+  [Running several isolated instances](#running-several-isolated-instances-future_home));
+  changing only the TCP port does not bypass the lock.
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.
@@ -75,10 +78,13 @@ vars:
 
 ## IPC, approval rules and Windows cleanup
 
-Unix socket selection: explicit `FUTURE_AGENT_SOCKET`, otherwise on Linux
-`$XDG_RUNTIME_DIR/future/agent.sock` when set, otherwise
-`~/.future/run/agent.sock` (also the macOS default). Windows uses a per-user named
-pipe, not a socket file. `future agent --grpc-addr <host:port>` explicitly selects
+Unix socket selection: explicit `FUTURE_AGENT_SOCKET`, otherwise the FutureOS
+home's own `<home>/run/agent.sock` when `FUTURE_HOME` is set (the XDG runtime
+directory is per-user, not per-instance, so a redirected instance must not bind
+there), otherwise on Linux `$XDG_RUNTIME_DIR/future/agent.sock` when set,
+otherwise `~/.future/run/agent.sock` (also the macOS default). Windows uses a
+per-user named pipe, not a socket file — tagged with the FutureOS home when one
+is redirected. `future agent --grpc-addr <host:port>` explicitly selects
 TCP; clients may override with `FUTURE_AGENT_GRPC_ADDR` (channels use
 `agent.grpc_addr`). An explicit client TCP address is authoritative — connection
 failures are reported, never redirected to local IPC.
@@ -89,6 +95,38 @@ Windows persists sandbox capability/ACL cleanup metadata in
 `~/.future/windows-capabilities.json`; use `future agent --reset-windows-sandbox`
 for supported cleanup, not manual deletion of metadata while ACLs remain.
 The reset refuses cleanup while sandbox permissions are in use.
+
+## Running several isolated instances (`FUTURE_HOME`)
+
+`FUTURE_HOME` replaces the whole FutureOS home — the `~/.future` root itself —
+for the process that sets it. `future agent --home DIR` is the same switch at
+startup (the flag defaults to `$FUTURE_HOME`), and it is what makes a second,
+fully isolated Agent possible:
+
+```bash
+# Instance A: the default home
+future agent
+
+# Instance B: its own lock, database, sessions, logs, skills and IPC endpoint
+future agent --home /tmp/futureos-b
+
+# A client joins instance B by resolving the same home
+FUTURE_HOME=/tmp/futureos-b future tui
+```
+
+Everything FutureOS owns moves with the override: `<home>/agent` (settings,
+models, `auth.json`, `agent.db`, sessions, `agent-instance.lock`, skills,
+images, logs), `<home>/run/agent.sock`, `<home>/approval_rule.json` and
+`<home>/windows-capabilities.json`. Two instances therefore never share a lock,
+a database or an endpoint, and neither has to be stopped for the other.
+
+What does **not** move is the operating-system home: sandbox guards over
+`~/.ssh` and the shared `~/.agents/skills` scope still refer to the real user
+home. The override must be an absolute path — a relative or empty `FUTURE_HOME`
+is ignored, and `future agent --home` rejects it — and the directory is created
+if missing. Clients select the instance by setting the same `FUTURE_HOME`; their
+own UI state (`~/.future/tui/`, the desktop app's `~/.future/app/`) stays in
+the real home.
 
 ## `~/.future/agent-app/` — legacy credential directory
 

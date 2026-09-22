@@ -201,6 +201,12 @@
     "modalityLabel": "Modality",
     "modalityText": "Text",
     "modalityImage": "Image",
+    "priceHeading": "Prices (per 1M tokens)",
+    "priceInput": "Input",
+    "priceOutput": "Output",
+    "priceCacheRead": "Cache read",
+    "priceCacheWrite": "Cache write",
+    "priceHint": "Leave a price at 0 to skip it. Prices only affect the amount shown for models whose provider does not report its own billing (everything except Future).",
     "errors": {
       "idRequired": "Please enter a provider ID.",
       "idLength": "Provider ID must be between {{min}} and {{max}} characters.",
@@ -217,6 +223,7 @@
       "modelNameLength": "Model name \"{{name}}\" is too long.",
       "tokenLimitsPositive": "Token limits for model \"{{id}}\" must be positive integers.",
       "maxTokensExceedContext": "Maximum output tokens for model \"{{id}}\" cannot exceed its context window.",
+      "priceInvalid": "Prices for model \"{{id}}\" must be non-negative numbers.",
       "modelsMax": "The number of models cannot exceed {{max}}."
     }
   },

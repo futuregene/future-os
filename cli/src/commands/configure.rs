@@ -386,6 +386,9 @@ fn provider_spec(input: &CustomProviderInput) -> ProviderUpsertSpec {
             context_window: input.context_window,
             max_tokens: input.max_tokens,
             reasoning: true,
+            // The interactive flow does not ask for prices; a model added here
+            // prices at zero until the GUI's custom-provider form sets rates.
+            ..Default::default()
         }],
         replace_models: true,
         api_key: input.api_key.clone(),
@@ -411,6 +414,7 @@ fn provider_rpc(input: &CustomProviderInput) -> ProviderUpsert {
             context_window: input.context_window,
             max_tokens: input.max_tokens,
             reasoning: Some(true),
+            ..Default::default()
         }],
         api_key: input.api_key.clone().unwrap_or_default(),
         replace_models: true,

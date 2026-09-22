@@ -16,7 +16,7 @@ const mockIntake = {
 };
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../useShareIntake", () => ({ useShareIntake: () => mockIntake }));
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowLeft", "Folder", "MessageCircle", "X"].map(name => [name, name])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowLeft", "Folder", "MessageCircle", "Search", "X"].map(name => [name, name])));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -75,7 +75,7 @@ test("a new non-workspace chat remains available", () => {
   expect(mockIntake.chooseDestination).toHaveBeenCalledWith("chat");
 });
 
-test("existing mode lists only existing chat and workspace sessions, including untitled sessions", () => {
+test("existing mode files workspace sessions under their workspace, chats as roots", () => {
   mockRemote.sessions = [
     { sessionId: "chat", threadId: "t1", title: "Recent chat", streaming: false },
     { sessionId: "work", threadId: "t2", title: "Task", mode: "workspace", workspaceId: "w", streaming: true },
@@ -83,13 +83,47 @@ test("existing mode lists only existing chat and workspace sessions, including u
   ];
   update();
   press("share.existingConversation");
-  expect(labels()).toEqual([
-    "common.back", "share.existing:Recent chat", "share.existingWorkspace:Project:Task", "share.existing:sessions.unnamed",
-  ]);
+  expect(labels()).toEqual(["common.back", "Recent chat", "sessions.unnamed", "Project", "Task"]);
+  expect(menu().props.actions[3].heading).toBe(true);
+  expect(menu().props.actions[4].nested).toBe(true);
   expect(mockIntake.dismiss).not.toHaveBeenCalled();
+  press("Task");
+  act(() => tree.root.findByType(Modal).props.onDismiss());
+  expect(mockIntake.chooseDestination).toHaveBeenCalledWith("session", "work");
+});
+
+test("searching flattens the tree into results that name their workspace", () => {
+  mockRemote.sessions = [
+    { sessionId: "chat", threadId: "t1", title: "Recent chat", streaming: false },
+    { sessionId: "work", threadId: "t2", title: "Task", mode: "workspace", workspaceId: "w", streaming: true },
+  ];
+  update();
+  press("share.existingConversation");
+  act(() => menu().props.search.onChangeText("task"));
+  expect(labels()).toEqual(["common.back", "share.existingWorkspace:Project:Task"]);
+  expect(menu().props.actions.some((action: { heading?: boolean }) => action.heading)).toBe(false);
   press("share.existingWorkspace:Project:Task");
   act(() => tree.root.findByType(Modal).props.onDismiss());
   expect(mockIntake.chooseDestination).toHaveBeenCalledWith("session", "work");
+});
+
+test("a query that matches nothing says so instead of showing an empty sheet", () => {
+  mockRemote.sessions = [{ sessionId: "work", threadId: "t2", title: "Task", mode: "workspace", workspaceId: "w", streaming: false }];
+  update();
+  press("share.existingConversation");
+  act(() => menu().props.search.onChangeText("zzz"));
+  expect(labels()).toEqual(["common.back", "sessions.noResults"]);
+});
+
+test("system back clears a search before it leaves the picker", () => {
+  mockRemote.sessions = [{ sessionId: "work", threadId: "t2", title: "Task", mode: "workspace", workspaceId: "w", streaming: false }];
+  update();
+  press("share.existingConversation");
+  act(() => menu().props.search.onChangeText("task"));
+  act(() => tree.root.findByType(Modal).props.onRequestClose());
+  expect(menu().props.search.value).toBe("");
+  expect(labels()).toEqual(["common.back", "Project", "Task"]);
+  expect(mockIntake.dismiss).not.toHaveBeenCalled();
 });
 
 test("back changes mode without losing the pending content", () => {

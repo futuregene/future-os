@@ -13,16 +13,21 @@ import {
   appSettings,
   availableSkills,
   buildInfo,
+  compactResumeEntries,
+  demoFileContents,
   entriesByThread,
   HOME,
   installedSkills,
   models,
   providersView,
+  refreshedSessionUsage,
   reviewFiles,
   runs,
+  sessionUsage,
   threads,
   toolCalls,
   toolOutputs,
+  unpricedSessionUsage,
   workspaceFiles,
   workspaces,
 } from "./data";
@@ -35,6 +40,8 @@ const log = (...args: unknown[]) => console.log("[mock]", ...args);
 let settings: typeof appSettings = { ...appSettings };
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
+/** How many times each thread's agent state has been read (see the handler). */
+const stateReads = new Map<string, number>();
 
 /** Seed app settings before the app boots (`?settings=` in `main.tsx`). */
 export function patchSettings(patch: Record<string, unknown>) {
@@ -43,6 +50,15 @@ export function patchSettings(patch: Record<string, unknown>) {
 }
 
 export function entriesForThread(threadId: string): MockEntry[] {
+  // `?compactHistory=1` swaps in the history of a run that compacted mid-turn,
+  // so a capture can assert the reply after the divider survives the durable
+  // projection (the schemaVersion 3 path).
+  if (
+    typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("compactHistory") === "1"
+  ) {
+    return compactResumeEntries;
+  }
   return entriesByThread[threadId] ?? [];
 }
 
@@ -84,6 +100,13 @@ const handlers: Record<string, (args: any) => unknown> = {
   get_future_environment: () => ({ environment: "production", platformUrl: "https://api.future-os.cn" }),
   set_future_environment: () => ({ environment: "production", platformUrl: "https://api.future-os.cn" }),
   probe_sandbox: () => ({ available: true, tier: "sandbox", platform: "macos" }),
+  // The desktop gates all account/provider work behind this handshake; without
+  // it the app never leaves its splash ("请稍候").
+  get_agent_status: () => ({
+    phase: "ready",
+    desktopVersion: buildInfo.version,
+    agentVersion: buildInfo.version,
+  }),
   list_streaming_thread_ids: () => [],
   check_app_update: () => ({ available: false, version: null, notes: null }),
   get_skill_guide: () => ({
@@ -155,6 +178,17 @@ const handlers: Record<string, (args: any) => unknown> = {
     const target = threadList.find(thread => thread.id === args?.threadId) ?? threadList[0];
     if (!target)
       return null;
+    // The first read for a thread answers with the state the header already
+    // shows; later reads (the app re-reads when the usage panel opens) answer
+    // with a larger figure, so a capture can prove the panel refreshed.
+    const reads = (stateReads.get(target.id) ?? 0) + 1;
+    stateReads.set(target.id, reads);
+    const chatMode = target.mode === "chat";
+    const usage = chatMode
+      ? unpricedSessionUsage
+      : reads > 1
+        ? refreshedSessionUsage
+        : sessionUsage;
     return {
       model: "future/deepseek-v4-pro",
       thinkingLevel: "medium",
@@ -165,6 +199,9 @@ const handlers: Record<string, (args: any) => unknown> = {
       isStreaming: false,
       isCompacting: false,
       activeRun: null,
+      // Chat-mode conversations stand in for a model with no prices on file, so
+      // the usage dialog's tokens-only fallback is capturable.
+      usage,
     };
   },
   reconcile_thread_workspace: () => null,
@@ -273,12 +310,23 @@ const handlers: Record<string, (args: any) => unknown> = {
   // ── Files & artifacts ──────────────────────────────────────────────────
   list_directory: args => workspaceFiles[args?.path] ?? [],
   search_workspace_files: () => [],
-  read_text_file_preview: args => ({
-    path: args?.path ?? "",
-    name: (args?.path ?? "").split("/").pop() ?? "",
-    content: "# 多巴胺与风险决策：结论对比\n\n见下方表格。\n",
-    truncated: false,
-  }),
+  // `validUtf8` and `size` are part of the command's real contract: without
+  // `validUtf8` the text preview classifies every file as binary and bails to
+  // the OS handler. Demo files also preview as themselves — a `.py` shows the
+  // source the reply quotes, not the demo markdown — so the code preview's
+  // syntax highlighting has real input.
+  read_text_file_preview: (args) => {
+    const name = (args?.path ?? "").split("/").pop() ?? "";
+    const content = demoFileContents[name] ?? "# 多巴胺与风险决策：结论对比\n\n见下方表格。\n";
+    return {
+      path: args?.path ?? "",
+      name,
+      content,
+      size: content.length,
+      truncated: false,
+      validUtf8: true,
+    };
+  },
   open_path: () => null,
   open_external_url: () => null,
   open_url: () => null,

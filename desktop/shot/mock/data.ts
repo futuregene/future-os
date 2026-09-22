@@ -141,6 +141,63 @@ export const threads: MockThread[] = [
 /** The conversation rendered in the chat screenshots. */
 export const MAIN_THREAD_ID = "th_review";
 
+/**
+ * Session-level token usage + amount for the conversation the screenshots open
+ * on. The per-category figures are the agent's estimate from the model's
+ * per-1M-token rates (input 4 / output 16 / cache read 0.4 / cache write 5 CNY),
+ * billing only the non-cached input remainder; the total is what the provider
+ * actually charged. So the rows are an estimate and sum to it here because this
+ * demo model reports no billing of its own — the token counts are chosen so
+ * every row is exact at the four decimals the dialog shows, and they add up to
+ * the total rather than looking like an off-by-rounding bug.
+ */
+export const sessionUsage = {
+  inputTokens: 600_050,
+  outputTokens: 9_825,
+  cacheReadTokens: 412_750,
+  cacheWriteTokens: 18_900,
+  costCny: 1.0904,
+  costInputCny: 0.6736,
+  costOutputCny: 0.1572,
+  costCacheReadCny: 0.1651,
+  costCacheWriteCny: 0.0945,
+};
+
+/**
+ * What the same conversation reports once a later run has been paid for — the
+ * answer to a *second* read, so a capture can show the panel moving to fresh
+ * figures when it opens instead of re-displaying what the header already had.
+ * Each category grows by whole tokens, so the rows still add up to the total.
+ */
+export const refreshedSessionUsage = {
+  inputTokens: 677_050,
+  outputTokens: 14_825,
+  cacheReadTokens: 437_750,
+  cacheWriteTokens: 20_900,
+  costCny: 1.3904,
+  costInputCny: 0.8736,
+  costOutputCny: 0.2372,
+  costCacheReadCny: 0.1751,
+  costCacheWriteCny: 0.1045,
+};
+
+/**
+ * The honest degraded case: a model with no prices on file. The agent reports
+ * zeros per category, so the client shows tokens only and must not invent a
+ * ¥0 breakdown — the billed total is still a real figure.
+ */
+export const unpricedSessionUsage = {
+  inputTokens: 84_600,
+  outputTokens: 2_140,
+  cacheReadTokens: 51_300,
+  cacheWriteTokens: 0,
+  costCny: 0.32,
+  costInputCny: 0,
+  costOutputCny: 0,
+  costCacheReadCny: 0,
+  costCacheWriteCny: 0,
+};
+
 export interface MockBlock {
   kind: string;
   text?: string;
@@ -160,6 +217,8 @@ export interface MockEntry {
   metadata?: Record<string, unknown> | null;
   usage?: Record<string, unknown> | null;
   run?: Record<string, unknown> | null;
+  /** Present on `kind: "compaction"` entries, same shape the agent serves. */
+  checkpoint?: Record<string, unknown> | null;
 }
 
 const ANSWER = `两篇文献结论并不冲突，只是结论的**适用条件**不同：Frank 等人看的是「收益不确定」时的选择，Dreher 等人看的是「已经知道结果范围」时的选择。
@@ -402,6 +461,102 @@ export const entriesByThread: Record<string, MockEntry[]> = {
   th_fig: figureEntries,
 };
 
+/**
+ * `?compactHistory=1` history: one run that compacted mid-turn (the
+ * schemaVersion 3 checkpoint the agent writes today) and then kept writing.
+ * The text after the divider exists so a capture can prove it still reaches the
+ * transcript — a version-gated projector used to treat the divider as an
+ * exchange boundary and drop everything after it.
+ */
+export const compactResumeEntries: MockEntry[] = [
+  {
+    id: "c1",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 22 * minute,
+    runId: "run_compact",
+    blocks: [{
+      kind: "text",
+      text: "接着上一轮：把三个方案的实测代价和收益整理成一个表格，最后给出结论。",
+    }],
+  },
+  {
+    id: "c2",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 21 * minute,
+    runId: "run_compact",
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "这一轮已经很长了，先把前三步的实测数字固定下来，再决定第四步怎么写。",
+      },
+      { kind: "tool_call", toolCallId: "cc_1", name: "read", arguments: { path: "notes/stream-traffic.md" } },
+      { kind: "tool_call", toolCallId: "cc_2", name: "shell", arguments: { command: "wc -c results/*.json" } },
+      { kind: "tool_call", toolCallId: "cc_3", name: "read", arguments: { path: "notes/gzip-bench.md" } },
+      {
+        kind: "text",
+        text: "前三步已经跑完，先把中间结论记一下：gzip 协商把冷开流量压到 2.55×，服务端只多花 35 ms。",
+      },
+    ],
+  },
+  {
+    id: "c3",
+    kind: "compaction",
+    role: "system",
+    createdAtMs: now - 20.5 * minute,
+    blocks: [],
+    checkpoint: {
+      schemaVersion: 3,
+      checkpointId: "cp_shot_v3",
+      coveredFromEntryId: "c1",
+      cutoffEntryId: "c2",
+      tokensBefore: 613_994,
+      tokensAfter: 51_081,
+      trigger: "automatic",
+      phase: "mid_turn",
+      algorithmVersion: "deterministic-evidence-v1",
+    },
+  },
+  {
+    id: "c4",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 20 * minute,
+    runId: "run_compact",
+    usage: { inputTokens: 131_997, outputTokens: 1_450, cacheReadTokens: 131_840 },
+    run: { status: "completed", durationMs: 1_182_754 },
+    blocks: [
+      { kind: "tool_call", toolCallId: "cc_4", name: "write", arguments: { path: "notes/stream-summary.md" } },
+      {
+        kind: "text",
+        text: `## 结论
+
+压缩之后我把最后一步做完了：
+
+- **流量**：一次冷开从 15.03 MB 降到 5.89 MB（2.55×），弱网路径上省 18 秒；
+- **代价**：服务端多 35 ms，客户端解压 74 ms，任何真实链路都净赚；
+- **建议**：先上 gzip 协商，再考虑先压缩后分片。
+
+要不要我把这四步写成一份设计文档？`,
+      },
+    ],
+  },
+  {
+    id: "c5",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 19.9 * minute,
+    runId: "run_compact",
+    blocks: [
+      { kind: "tool_result", toolCallId: "cc_1" },
+      { kind: "tool_result", toolCallId: "cc_2" },
+      { kind: "tool_result", toolCallId: "cc_3" },
+      { kind: "tool_result", toolCallId: "cc_4" },
+    ],
+  },
+];
+
 // ─── Runs / tools (Runs panel + right context rail) ──────────────────────
 
 export const runs = [
@@ -506,7 +661,20 @@ export const providersView = {
       baseUrl: "http://10.0.12.7:8000/v1",
       hasApiKey: true,
       models: [
-        { id: "qwen3-32b", name: "Qwen3 32B", supportsImages: false, reasoning: true, contextWindow: 32_768, maxTokens: 4_096 },
+        {
+          id: "qwen3-32b",
+          name: "Qwen3 32B",
+          supportsImages: false,
+          reasoning: true,
+          contextWindow: 32_768,
+          maxTokens: 4_096,
+          // Filled in so the edit form shows the price fields populated. The
+          // rates are the ones the demo session's breakdown is priced with.
+          inputCost: 4,
+          outputCost: 16,
+          cacheReadCost: 0.4,
+          cacheWriteCost: 5,
+        },
       ],
     },
   ],
@@ -545,12 +713,39 @@ export const workspaceFiles: Record<string, Array<{ name: string; path: string; 
     { name: "draft-v3.md", path: `${HOME}/Research/dopamine-decision/draft-v3.md`, isDir: false, size: 24_800, modified: now - 22 * minute },
     { name: "README.md", path: `${HOME}/Research/dopamine-decision/README.md`, isDir: false, size: 1_240, modified: now - 5 * hour },
   ],
+  [`${HOME}/Research/dopamine-decision/figures`]: [
+    { name: "plot-effect-size.py", path: `${HOME}/Research/dopamine-decision/figures/plot-effect-size.py`, isDir: false, size: 486, modified: now - 40 * minute },
+  ],
   [`${HOME}/Research/dopamine-decision/notes`]: [
     { name: "compare.md", path: `${HOME}/Research/dopamine-decision/notes/compare.md`, isDir: false, size: 4_180, modified: now - 3 * minute },
     { name: "dreher-summary.md", path: `${HOME}/Research/dopamine-decision/notes/dreher-summary.md`, isDir: false, size: 2_960, modified: now - 2 * hour },
     { name: "frank-summary.md", path: `${HOME}/Research/dopamine-decision/notes/frank-summary.md`, isDir: false, size: 3_120, modified: now - 2 * hour },
     { name: "effect-size.png", path: `${HOME}/Research/dopamine-decision/notes/effect-size.png`, isDir: false, size: 62_400, modified: now - 4 * minute },
   ],
+};
+
+/**
+ * Source the text preview shows for a demo file, keyed by file name. Files
+ * without an entry fall back to the markdown sample. `plot-effect-size.py` is
+ * the script the agent's reply quotes, so the file preview and the chat code
+ * block show the same code.
+ */
+export const demoFileContents: Record<string, string> = {
+  "plot-effect-size.py": `# 复现图 3b 的效应量对比
+import matplotlib.pyplot as plt
+import numpy as np
+
+studies = ["Frank 2024", "Dreher 2025"]
+effects = [0.41, -0.33]
+
+fig, ax = plt.subplots(figsize=(6, 3))
+ax.barh(studies, effects, color=["#4f7cff", "#e2685f"])
+ax.axvline(0, color="#888", lw=1, label="no effect")
+ax.set_xlabel("效应量 r")
+ax.legend(loc="lower right", frameon=False)
+fig.tight_layout()
+fig.savefig("figures/effect-size.pdf", dpi=300)  # 论文里用的是矢量图
+`,
 };
 
 export const reviewFiles = [

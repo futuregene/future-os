@@ -9,12 +9,13 @@ use crate::browser::types::{BrowserConfig, BrowserConnectionConfig, CURRENT_CONF
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
-/// `~/.future/agent/browser` (honors `FUTURE_HOME`).
+/// `<future home>/agent/browser` — the default `~/.future` root, or the
+/// `FUTURE_HOME` one an isolated instance runs with (see
+/// `future_agent::utils::future_home`).
 pub fn browser_dir() -> PathBuf {
-    let future_home = std::env::var("FUTURE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".future"));
-    future_home.join("agent").join("browser")
+    future_agent::utils::future_home()
+        .join("agent")
+        .join("browser")
 }
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9222";

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use crate::rpc::{ServerSession, SseBroadcaster};
 use crate::{agent::Loop, rpc::ApprovalGate};
 
-use crate::rpc::commands::session_lifecycle::MODEL_SYNC_FAIL_HOOK;
 use crate::rpc::commands::test_support::*;
 use crate::rpc::handle_command_internal;
 
@@ -227,12 +226,11 @@ fn shutdown_sets_flag() {
 }
 
 #[test]
-fn create_session_rebinds_event_journal_to_live_broadcaster() {
+fn create_session_retains_the_constructor_owned_broadcaster() {
     let state = make_app_state();
     let session_id = "journal-rebind".to_string();
 
-    // Mimic fork/clone: construct with a broadcaster that create_session
-    // will discard, so the live one must be (re)configured by it.
+    let broadcaster = Arc::new(SseBroadcaster::new());
     let new_sess = ServerSession::new_with_queue_budget(
         session_id.clone(),
         Arc::new(tokio::sync::RwLock::new(Loop::new(
@@ -241,7 +239,7 @@ fn create_session_rebinds_event_journal_to_live_broadcaster() {
         ))),
         state.session_manager.clone(),
         &test_workspace(),
-        Arc::new(SseBroadcaster::new()),
+        broadcaster.clone(),
         ApprovalGate::default(),
         state.model_registry.clone(),
         state.queue_budget.clone(),
@@ -253,6 +251,7 @@ fn create_session_rebinds_event_journal_to_live_broadcaster() {
         sessions.get(&session_id).unwrap().clone()
     };
     let live_broadcaster = session_arc.read().broadcaster.clone();
+    assert!(Arc::ptr_eq(&broadcaster, &live_broadcaster));
     live_broadcaster.start_run("run-j".to_string(), 1);
     live_broadcaster.broadcast(crate::rpc::SseEvent::new(
         "text_chunk",
@@ -269,6 +268,52 @@ fn create_session_rebinds_event_journal_to_live_broadcaster() {
         .unwrap()
         .has_events(&session_id, "run-j")
         .unwrap());
+}
+
+#[test]
+fn create_session_rejects_a_foreign_broadcaster_without_rebinding_it() {
+    let state = make_app_state();
+    let parent_broadcaster = state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .broadcaster
+        .clone();
+    let child = ServerSession::new_with_queue_budget(
+        "foreign-child".to_string(),
+        Arc::new(tokio::sync::RwLock::new(Loop::new(
+            Arc::new(EmptyProvider),
+            "mock",
+        ))),
+        state.session_manager.clone(),
+        &test_workspace(),
+        parent_broadcaster.clone(),
+        ApprovalGate::default(),
+        state.model_registry.clone(),
+        state.queue_budget.clone(),
+    );
+    state.create_session(child);
+
+    let child_broadcaster = state
+        .get_session("foreign-child")
+        .unwrap()
+        .read()
+        .broadcaster
+        .clone();
+    assert!(!Arc::ptr_eq(&parent_broadcaster, &child_broadcaster));
+    parent_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "session_name_changed",
+        serde_json::json!({"name": "parent"}),
+    ));
+    assert_eq!(
+        parent_broadcaster
+            .session_events_since(-1)
+            .unwrap()
+            .last()
+            .unwrap()
+            .session_id,
+        "default"
+    );
 }
 
 #[test]
@@ -1013,10 +1058,60 @@ fn fork_creates_new_session_from_entry_point() {
     let fork_id = resp["data"]["sessionId"].as_str().unwrap().to_string();
     assert!(!fork_id.is_empty());
     assert!(state.get_session(&fork_id).is_some());
-    // Forked history was loaded into memory so a later save cannot
-    // truncate it.
+    // Fork activation follows the same lazy hydration path as restart.
     let session = state.get_session(&fork_id).unwrap();
+    assert!(!session.read().history_loaded);
+    session.write().ensure_history_loaded().unwrap();
     assert!(!session.read().messages.read().is_empty());
+}
+
+#[test]
+fn fork_rpc_retry_returns_the_committed_child() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork once"));
+    let entry_id = user.id.clone();
+    save_via(&state, "default", "mock", vec![user]);
+
+    let request = || {
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = entry_id.clone();
+        cmd.client_request_id = "stable-fork-request".to_string();
+        cmd
+    };
+    let first = parse_response(&handle_command_internal(&state, request()));
+    let repeated = parse_response(&handle_command_internal(&state, request()));
+
+    assert_eq!(first["success"], true);
+    assert_eq!(repeated["success"], true);
+    assert_eq!(first["data"]["sessionId"], repeated["data"]["sessionId"]);
+    assert_eq!(first["data"]["created"], true);
+    assert_eq!(repeated["data"]["created"], false);
+}
+
+#[test]
+fn fork_keeps_parent_event_journal_bound_to_parent_session() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork here"));
+    let entry_id = user.id.clone();
+    save_via(&state, "default", "mock", vec![user]);
+    let parent_broadcaster = state
+        .get_session("default")
+        .unwrap()
+        .read()
+        .broadcaster
+        .clone();
+
+    let mut cmd = make_cmd("fork");
+    cmd.entry_id = entry_id;
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true);
+
+    parent_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "session_name_changed",
+        serde_json::json!({"name": "parent renamed"}),
+    ));
+    let events = parent_broadcaster.session_events_since(-1).unwrap();
+    assert_eq!(events.last().unwrap().session_id, "default");
 }
 
 #[test]
@@ -1049,6 +1144,7 @@ fn fork_propagates_created_by_from_the_forking_client() {
     // Inheritance when the command carries no provenance.
     let mut cmd = make_cmd("fork");
     cmd.entry_id = entry_id.clone();
+    cmd.client_request_id = "inherit-provenance".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     let fork_id = resp["data"]["sessionId"].as_str().unwrap();
@@ -1068,6 +1164,7 @@ fn fork_propagates_created_by_from_the_forking_client() {
     cmd.entry_id = entry_id;
     cmd.created_by = "cli".to_string();
     cmd.creator_id = "cli-creator".to_string();
+    cmd.client_request_id = "explicit-provenance".to_string();
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     let fork_id = resp["data"]["sessionId"].as_str().unwrap();
@@ -1126,8 +1223,45 @@ fn clone_propagates_the_parent_created_by() {
 }
 
 #[test]
+fn clone_keeps_parent_event_journal_bound_to_parent_session() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
+    save_via(&state, "default", "mock", vec![user]);
+    let parent = state.get_session("default").unwrap();
+    parent
+        .read()
+        .messages
+        .write()
+        .push(crate::types::AgentMessage::new_user(
+            "user",
+            serde_json::json!("clone me"),
+        ));
+    let parent_broadcaster = parent.read().broadcaster.clone();
+
+    let response = parse_response(&handle_command_internal(&state, make_cmd("clone")));
+    assert_eq!(response["success"], true);
+
+    parent_broadcaster.broadcast(crate::rpc::SseEvent::new(
+        "session_name_changed",
+        serde_json::json!({"name": "parent renamed"}),
+    ));
+    let events = parent_broadcaster.session_events_since(-1).unwrap();
+    assert_eq!(events.last().unwrap().session_id, "default");
+}
+
+#[test]
 fn clone_rejects_empty_session() {
     let state = make_app_state();
+    save_via(
+        &state,
+        "default",
+        "mock",
+        vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
+            "mock".to_string(),
+            "high".to_string(),
+        )],
+    );
     let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("Nothing to clone"));
@@ -1182,7 +1316,7 @@ fn clone_rejects_disk_session_with_idless_last_entry() {
     assert!(resp["error"]
         .as_str()
         .unwrap()
-        .contains("no messages found"));
+        .contains("without a persisted identity"));
 }
 
 #[test]
@@ -1219,6 +1353,7 @@ fn clone_succeeds_from_leaf_entry() {
     let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["cancelled"], false);
+    assert!(!resp["data"]["sessionId"].as_str().unwrap().is_empty());
 }
 
 // ── coverage batch 1: reload_config ─────────────────────────────────────
@@ -1354,6 +1489,20 @@ fn get_session_entries_handles_empty_tool_and_rich_meta() {
 
 #[test]
 fn fork_inherits_parent_disk_model() {
+    // The fork resolves its model through the registry, and `replacement_model`
+    // needs an available model to fall back to: the on-disk catalog plus a
+    // credential. Supply both instead of inheriting whatever the developer
+    // machine has — a parallel test that redirects HOME process-wide (TestHome
+    // holds that lock) otherwise leaves this one with no usable model and the
+    // unwrap below fails.
+    let home = crate::test_support::TestHome::new();
+    let auth_path = home.auth_path();
+    std::fs::create_dir_all(auth_path.parent().expect("auth dir")).expect("create auth dir");
+    std::fs::write(
+        &auth_path,
+        r#"{"deepseek": {"type": "api_key", "key": "sk-x"}}"#,
+    )
+    .expect("write auth");
     let state = make_app_state();
     let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork me"));
     let entry_id = user.id.clone();
@@ -1377,7 +1526,14 @@ fn fork_inherits_parent_disk_model() {
     assert_eq!(resp["success"], true);
     let fork_id = resp["data"]["sessionId"].as_str().unwrap();
     let fork = state.get_session(fork_id).unwrap();
-    assert_eq!(fork.read().model, "disk/model-y");
+    assert_eq!(
+        fork.read().model,
+        state
+            .model_registry
+            .read()
+            .replacement_model("disk/model-y")
+            .unwrap()
+    );
 }
 
 #[cfg(unix)]
@@ -1409,14 +1565,14 @@ fn fork_and_clone_report_save_errors() {
     assert!(resp["error"]
         .as_str()
         .unwrap()
-        .contains("failed to save forked"));
+        .contains("injected insert failure"));
 
     let resp = parse_response(&handle_command_internal(&state, make_cmd("clone")));
     assert_eq!(resp["success"], false);
     assert!(resp["error"]
         .as_str()
         .unwrap()
-        .contains("failed to save cloned"));
+        .contains("injected insert failure"));
 }
 
 #[test]
@@ -1479,92 +1635,6 @@ fn get_session_entries_skips_orphan_terminal_marker() {
     let resp = parse_response(&handle_command_internal(
         &state,
         make_cmd("get_session_entries"),
-    ));
-    assert_eq!(resp["success"], true);
-}
-
-#[test]
-fn fork_warns_when_model_sync_fails() {
-    let state = make_app_state();
-    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork here"));
-    let entry_id = user.id.clone();
-    // A unique parent id gates the hook against parallel tests that fork
-    // the "default" session. A session_info entry makes the forked model
-    // non-empty, so the fork reaches the model-sync block (and consumes
-    // the hook).
-    save_via(
-        &state,
-        "fork-warn-parent",
-        "mock",
-        vec![
-            crate::session::SessionEntry::session_info(
-                serde_json::json!({"cwd": state.welcome_cwd, "model": "mock"}),
-                "mock".to_string(),
-                "high".to_string(),
-            ),
-            user,
-        ],
-    );
-    *MODEL_SYNC_FAIL_HOOK.lock() = Some((
-        "fork-warn-parent".to_string(),
-        Box::new(|sess: &mut ServerSession| {
-            // Closing persistence makes the subsequent model-sync
-            // `update_info` fail, exercising the warn arm.
-            let _ = sess.persistence.close();
-        }),
-    ));
-
-    let mut cmd = make_cmd("fork");
-    cmd.entry_id = entry_id;
-    cmd.parent_session = "fork-warn-parent".to_string();
-    let resp = parse_response(&handle_command_internal(&state, cmd));
-    assert_eq!(resp["success"], true);
-}
-
-#[test]
-fn clone_warns_when_model_sync_fails() {
-    let state = make_app_state();
-    // A dedicated session id gates the hook against parallel tests that
-    // clone the "default" session.
-    let _ = parse_response(&handle_command_internal(
-        &state,
-        make_cmd_for("new_session", "clone-warn"),
-    ));
-    {
-        let session = state.get_session("clone-warn").unwrap();
-        session
-            .read()
-            .messages
-            .write()
-            .push(crate::types::AgentMessage::new_user(
-                "user",
-                serde_json::json!("clone me"),
-            ));
-    }
-    save_via(
-        &state,
-        "clone-warn",
-        "mock",
-        vec![
-            crate::session::SessionEntry::session_info(
-                serde_json::json!({"cwd": "/tmp", "model": "mock"}),
-                "mock".to_string(),
-                "high".to_string(),
-            ),
-            crate::session::SessionEntry::new_user("user", serde_json::json!("clone me")),
-            crate::session::SessionEntry::new_assistant(serde_json::json!("reply"), vec![]),
-        ],
-    );
-    *MODEL_SYNC_FAIL_HOOK.lock() = Some((
-        "clone-warn".to_string(),
-        Box::new(|sess: &mut ServerSession| {
-            let _ = sess.persistence.close();
-        }),
-    ));
-
-    let resp = parse_response(&handle_command_internal(
-        &state,
-        make_cmd_for("clone", "clone-warn"),
     ));
     assert_eq!(resp["success"], true);
 }

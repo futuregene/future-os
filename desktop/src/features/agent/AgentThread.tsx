@@ -17,10 +17,7 @@ import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { compactThreadContext } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
-import {
-  forkThread,
-  getSessionEntries,
-} from "../../integrations/storage/threadStore";
+import { forkThread } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -140,6 +137,10 @@ export function AgentThread({
   // whole visible window (and re-subscribing the recover-run effect).
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // One idempotency key belongs to one user intent, not permanently to a fork
+  // point. Keep it across failed retries, then release it after success so the
+  // user may deliberately create another branch from the same message later.
+  const pendingForkRequestsRef = useRef(new Map<string, string>());
   const searchRootRef = useRef<HTMLDivElement>(null);
   const { composerRef, composerHeight } = useComposerInset();
   const compactionWaitCleanupRef = useRef<(() => void) | null>(null);
@@ -286,19 +287,21 @@ export function AgentThread({
       if (!userMessage)
         return;
       try {
-        // Fork explicitly needs the full history. Never pass a page-local ordinal
-        // as the global fork point (repeated prompts make text matching unsafe).
-        const allEntries = await getSessionEntries(thread.id);
-        const userMessageIndex = allEntries.entries
-          .filter(entry => entry.role === "user")
-          .findIndex(entry => `m_${entry.id}` === userMessage.id);
-        if (userMessageIndex < 0)
+        const sourceEntryId = userMessage.sourceEntryId?.trim();
+        if (!sourceEntryId)
           throw new Error("The selected message is not yet persisted.");
+        const intentKey = `${thread.id}:${sourceEntryId}`;
+        let requestId = pendingForkRequestsRef.current.get(intentKey);
+        if (!requestId) {
+          requestId = `desktop-fork:${crypto.randomUUID()}`;
+          pendingForkRequestsRef.current.set(intentKey, requestId);
+        }
         const newThreadId = await forkThread(
           thread.id,
-          userMessage.content,
-          userMessageIndex,
+          sourceEntryId,
+          requestId,
         );
+        pendingForkRequestsRef.current.delete(intentKey);
         onForked(newThreadId);
       }
       catch (error) {
@@ -449,6 +452,7 @@ export function AgentThread({
         action={headerAction}
         leftPanelExpanded={leftPanelExpanded}
         thread={thread}
+        usage={agentState?.usage}
         onToggleLeftPanel={onToggleLeftPanel}
       />
       <div className="group relative min-h-0 flex-1 overflow-hidden">

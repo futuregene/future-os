@@ -1,13 +1,15 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { ScrollView, SectionList, StyleSheet, Text } from "react-native";
+import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsScreen } from "../SettingsScreen";
 import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
-import type { DesktopSettings, InstalledSkill } from "../../../remote/types";
+import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
+/** UI language the mocked `useTranslation` reports; flipped by language tests. */
+let mockLanguage = "en";
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
   desktops: [
@@ -24,6 +26,7 @@ const mockRemote = {
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
   listSettingsModels: jest.fn(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]),
+  listProviders: jest.fn(async () => providers),
   listInstalledSkills: jest.fn(async () => [...installed]),
   listAvailableSkills: jest.fn(async () => [{ id: "skill", name: "Skill", description: "", latestVersion: "1.2.0" }, { id: "new", name: "New", description: "", latestVersion: "1.0" }]),
   installSkill: jest.fn(async () => {}),
@@ -31,15 +34,26 @@ const mockRemote = {
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
-jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronRight: "ChevronRight" }));
+jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { language: "en" } }) }));
+jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
 let tree: ReactTestRenderer;
+let providers: ProvidersView;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const toggle = (label: string) => tree.root.findAllByType(SettingsSwitch).find(node => node.props.label === label)!;
+const input = (label: string) => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
+const type = async (label: string, text: string) => act(async () => input(label).props.onChangeText(text));
+/** Provider headings on the model-visibility page, in render order (the
+ * Pressable and the view it renders both carry the props, so de-duplicate). */
+const headings = () => [...new Set(tree.root
+  .findAll(node => node.props.accessibilityRole === "button" && node.props.accessibilityState?.expanded !== undefined)
+  .map(node => node.props.accessibilityLabel as string))];
+/** A provider heading: the pressable that folds its models. */
+const group = (title: string) => tree.root.findAll(node => node.props.accessibilityLabel === title && node.props.accessibilityRole === "button")[0]!;
+const modelSwitches = () => tree.root.findAllByType(SettingsSwitch).filter(node => node.props.description === "same");
 async function openPreferences() { await act(async () => link("desktopSettings.preferences").props.onPress()); }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
@@ -47,11 +61,22 @@ beforeEach(async () => {
   jest.clearAllMocks();
   stored = { autoTitleFirstTurn: true, autoUpgradeSkills: true, autoConnectRemote: false, hiddenModels: ["one/same", "other/hidden"] };
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
+  mockLanguage = "en";
   mockRemote.desktopOnline = true;
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
   mockRemote.desktopSettingsRevision = 0;
   mockRemote.skillsRevision = 0;
   mockRemote.getDesktopSettings.mockImplementation(async () => ({ ...stored }));
+  mockRemote.listSettingsModels.mockImplementation(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]);
+  mockRemote.listProviders.mockImplementation(async () => providers);
+  providers = {
+    // `one` is deliberately keyless: the page must list it anyway.
+    builtin: [
+      { id: "one", name: "One", baseUrl: "https://one.example.com/v1", hasApiKey: false, modelCount: 1, requiresBaseUrl: false },
+      { id: "two", name: "Two", baseUrl: "https://two.example.com/v1", hasApiKey: true, modelCount: 1, requiresBaseUrl: false },
+    ],
+    custom: [],
+  };
   await act(async () => { tree = create(createElement(SettingsScreen, props)); });
 });
 afterEach(() => act(() => tree.unmount()));
@@ -92,14 +117,63 @@ test("offline and old desktops cannot write new preferences", async () => {
   expect(mockRemote.updateDesktopSettings).not.toHaveBeenCalled();
 });
 
-test("visibility uses a separate virtualized all-models page and provider-qualified ids", async () => {
+test("visibility groups models under a foldable provider heading", async () => {
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
   await act(async () => link("desktopSettings.models").props.onPress());
   expect(tree.root.findAllByType(SectionList)).toHaveLength(1);
   expect(mockRemote.listSettingsModels).toHaveBeenCalled();
-  const models = tree.root.findAllByType(SettingsSwitch).filter(node => node.props.description === "same");
-  expect(models.map(node => node.props.value)).toEqual([false, true]);
-  await act(async () => models[0]!.props.onChange(true));
-  expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ hiddenModels: ["other/hidden"] });
+  expect(mockRemote.listProviders).toHaveBeenCalled();
+  // Every provider the desktop offers is grouped, key or no key, under the
+  // desktop's display name — the models are already the desktop's scoped list.
+  expect(headings()).toEqual(["One", "Two"]);
+  expect(group("Two").props.accessibilityState.expanded).toBe(true);
+  expect(modelSwitches().map(node => node.props.value)).toEqual([false, true]);
+
+  await act(async () => group("Two").props.onPress());
+  expect(group("Two").props.accessibilityState.expanded).toBe(false);
+  expect(modelSwitches().map(node => node.props.value)).toEqual([false]);
+  expect(group("One").props.accessibilityState.expanded).toBe(true);
+  // The bulk switch stays on the heading and hides every model it covers.
+  const bulk = tree.root.findAllByType(Switch).find(node => node.props.accessibilityLabel === "desktopSettings.toggleProvider: Two")!;
+  await act(async () => bulk.props.onValueChange(false));
+  expect(mockRemote.updateDesktopSettings).toHaveBeenCalledWith({ hiddenModels: ["one/same", "other/hidden", "two/same"] });
+});
+
+test("a keyless provider stays listed: the desktop already scoped the model list", async () => {
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
+  // A local endpoint the agent can call without a key is reported as-is, and a
+  // keyless built-in stays whatever the desktop decided to report.
+  providers = {
+    builtin: [{ id: "one", name: "One", baseUrl: "https://one.example.com/v1", hasApiKey: false, modelCount: 2, requiresBaseUrl: false }],
+    custom: [{ id: "local", name: "Local Ollama", api: "openai-completions", baseUrl: "http://127.0.0.1:11434/v1", hasApiKey: false, models: [] }],
+  };
+  mockRemote.listSettingsModels.mockImplementation(async () => [
+    { id: "same", provider: "one" },
+    { id: "llama", provider: "local" },
+  ]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => link("desktopSettings.models").props.onPress());
+  await flush();
+  expect(headings()).toEqual(["Local Ollama", "One"]);
+  // Both groups are open and both models are switchable, with the stored
+  // visibility applied per provider-qualified reference.
+  expect(tree.root.findAllByType(SettingsSwitch).map(node => [node.props.description, node.props.value]))
+    .toEqual([["llama", true], ["same", false]]);
+});
+
+test("a search narrows to matching providers, opens them, and reports no match", async () => {
+  await act(async () => link("desktopSettings.models").props.onPress());
+  // Without the capability the names fall back to provider ids.
+  expect(headings()).toEqual(["one", "two"]);
+  await type("desktopSettings.searchModels", "one");
+  // Only matching providers are left, and a match is always shown: folding is
+  // suspended while a query is active.
+  expect(headings()).toEqual(["one"]);
+  expect(group("one").props.accessibilityState).toMatchObject({ disabled: true, expanded: true });
+  expect(modelSwitches()).toHaveLength(1);
+  await type("desktopSettings.searchModels", "nothing-matches");
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.noModels");
 });
 
 test("skill operations target desktop and removal needs confirmation", async () => {
@@ -114,6 +188,30 @@ test("skill operations target desktop and removal needs confirmation", async () 
   await act(async () => button("desktopSettings.available").props.onPress());
   await act(async () => button("desktopSettings.install").props.onPress());
   expect(mockRemote.installSkill).toHaveBeenCalledWith("new", "1.0");
+});
+
+test("skill text follows the system language, borrowing the catalogue's translation", async () => {
+  // Installed skills come from SKILL.md and usually ship English text only, so
+  // the zh row falls back to the catalogue's pair for the same id; a skill that
+  // carries its own zh text (or has no catalogue entry) keeps what it has.
+  installed = [
+    { id: "future-image", name: "future-image", description: "Generate and edit images.", version: "1.2.0" },
+    { id: "side-loaded", name: "side-loaded", description: "Local skill.", descriptionZh: "本地技能", version: null },
+  ];
+  mockRemote.listAvailableSkills.mockImplementation(async () => [
+    { id: "future-image", name: "future-image", description: "Generate and edit images.", nameZh: "图像生成与编辑", descriptionZh: "生成、编辑与分析图像", latestVersion: "1.2.0" },
+  ]);
+  const text = () => tree.root.findAllByType(Text).map(node => node.props.children);
+  mockLanguage = "zh";
+  await act(async () => link("desktopSettings.skills").props.onPress());
+  expect(text()).toEqual(expect.arrayContaining(["图像生成与编辑", "生成、编辑与分析图像", "side-loaded", "本地技能"]));
+  expect(text()).not.toContain("Generate and edit images.");
+  // The page stays open, so a re-render is enough to read the new language.
+  mockLanguage = "en";
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(text()).toEqual(expect.arrayContaining(["future-image", "Generate and edit images.", "Local skill."]));
+  expect(text()).not.toContain("生成、编辑与分析图像");
+  expect(text()).not.toContain("本地技能");
 });
 
 test("failed reads leave mutations disabled instead of inventing mobile defaults", async () => {

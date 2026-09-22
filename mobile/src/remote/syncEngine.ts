@@ -40,6 +40,8 @@
 import {
   createStreamEventBatch,
   applyReplayEvents,
+  dropSupersededCompactionDividers,
+  foldLiveCompactionPlaceholdersIntoHistory,
   emptyTimeline,
   normalizeReplayEvents,
   stripRunItems,
@@ -314,6 +316,27 @@ export class SyncEngine {
   /** The committed snapshot's streaming flag — the send guard's source. */
   streamingFor(sessionId: string): boolean {
     return this.lanes.get(sessionId)?.timeline?.streaming ?? false;
+  }
+
+  /**
+   * Whether a run is already whole on this device.
+   *
+   * `agent_end` is the last event a finished run writes (119 of 119 completed
+   * and cancelled runs), and the cursor only ever advances over contiguous
+   * ranges, so a settled timeline whose prefix is complete holds every event of
+   * that run. Re-reading it from the journal would download what is already
+   * rendered — which a reader sees as the sync notice appearing at the end of
+   * every reply, for no new content.
+   *
+   * False when the terminal never arrived (the timeline still says streaming),
+   * when the prefix is incomplete (a mid-run join), or when the run is unknown —
+   * those are exactly the cases the settle reconcile exists to heal.
+   */
+  runCompleteLocally(sessionId: string, runId: string): boolean {
+    if (!runId) return false;
+    const lane = this.lanes.get(sessionId);
+    if (!lane || lane.timeline?.streaming !== false) return false;
+    return isPrefixComplete(lane.cursor, runId);
   }
 
   /** Evict inactive cached conversations as a unit (timeline, cursor, queued
@@ -784,8 +807,34 @@ export class SyncEngine {
         continue;
       }
       const event = op.event;
+      // The broadcaster keeps the settled run's run_id + idx until the next
+      // run starts, so a standalone compaction emitted between runs arrives
+      // stamped inside that run at an idx past its end. It is session fan-out,
+      // not run content (desktop parity: #750's is_run_stamped_fanout): apply
+      // it without cursor bookkeeping. Treating it as run content either
+      // replays a settled run on every compaction (its frames never enter the
+      // run's replay, so the "gap" can never heal) or, once the cursor moved
+      // past the stamped idx, drops the compaction's only terminal event.
+      if (isRunStampedCompaction(event)) {
+        lane.bufferedBytes -= op.bytes;
+        append(event);
+        continue;
+      }
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
-      const verdict = nextEvent(lane.cursor, event.runId, event.idx);
+      const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
+      if (verdict.kind === "overlap") {
+        // A merged event whose range starts below the high-water: a reconcile
+        // landed while the desktop was still holding its merge window open, so
+        // the merge covers source events this session already applied. Its text
+        // cannot be trimmed (the merge hides where the already-seen head ends),
+        // and appending it wholesale would render that overlap twice — the
+        // reader sees the reply's tail again with a code fence reopened inside
+        // it. Drop the merge and take the range from durable replay, which
+        // carries every source event exactly once.
+        lane.bufferedBytes -= op.bytes;
+        if (event.runId) this.enqueueReplay(lane, { reason: "gap", runId: event.runId });
+        continue;
+      }
       if (verdict.kind === "gap") {
         // Preserve the entire suffix, including mutations and terminal events.
         lane.ops.unshift(...ops.slice(index));
@@ -833,7 +882,15 @@ export class SyncEngine {
     }
     // A run settling in this batch may have lost its tail (M11) — reconcile
     // the settled run so the durable journal supersedes the partial replay.
-    if (beforeStreaming && !timeline.streaming && flipRunId) {
+    // Only when it might have: a terminal applied over a contiguous prefix
+    // means the run is already whole here, and re-reading it would show a sync
+    // notice for content that is on screen.
+    if (
+      beforeStreaming &&
+      !timeline.streaming &&
+      flipRunId &&
+      !this.runCompleteLocally(lane.sessionId, flipRunId)
+    ) {
       this.enqueueReplay(lane, { reason: "snapshot-flip", runId: flipRunId });
     }
   }
@@ -887,6 +944,15 @@ export class SyncEngine {
   }
 }
 
+/** A compaction lifecycle frame the broadcaster stamped with the surrounding
+ * run's identity because it was emitted between runs. Only run-stamped frames
+ * are exempted: cursor-less frames were never tracked anyway, and a run's own
+ * pre_turn/mid_turn compaction IS run content (it sits inside the reply's
+ * segment stream, journaled and replayable with the run). */
+function isRunStampedCompaction(event: StreamEvent): boolean {
+  return event.type.startsWith("compaction_") && event.runId != null;
+}
+
 function freshRunBase(base: TimelineState, runId: string): TimelineState {
   return {
     ...stripRunItems(base, runId),
@@ -902,7 +968,14 @@ function requiresFreshPrefix(reason: ReconcileReason): boolean {
  * History may already contain a partial assistant entry with a different id;
  * replace that mirror, while retaining authoritative user attachments. */
 function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: string): TimelineState {
-  const stripped = stripRunItems(base, runId);
+  const strippedBase = stripRunItems(base, runId);
+  // The durable copy of a checkpoint the retained prefix already renders (the
+  // prefix outranks a freshly loaded history row — see the compaction identity
+  // note in projection.ts).
+  const stripped: TimelineState = {
+    ...strippedBase,
+    items: dropSupersededCompactionDividers(strippedBase.items, cached.items),
+  };
   return {
     ...stripped,
     items: [...stripped.items, ...cached.items.filter(item =>
@@ -923,9 +996,15 @@ function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: stri
  */
 function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
-  const historyIds = new Set(history.items.map((item) => item.id));
+  // A durable checkpoint supersedes the live placeholder of the same
+  // compaction wherever the placeholder landed (its frames never enter any
+  // replay, so nothing else can settle it).
+  const compactionFold = foldLiveCompactionPlaceholdersIntoHistory(history.items, live.items);
+  const historyItems = compactionFold.history;
+  const liveItems = compactionFold.live;
+  const historyIds = new Set(historyItems.map((item) => item.id));
   const historyMessageRuns = new Set(
-    history.items.flatMap((item) =>
+    historyItems.flatMap((item) =>
       item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
     ),
   );
@@ -937,7 +1016,7 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
   // The active run's *assistant* items are dropped by fullReconcile's stripRunItems
   // (the replay rebuilds them). Cached durable rows outside the new window
   // remain reachable through paging and must not be appended after its tail.
-  const folded = live.items.filter((item) => {
+  const folded = liveItems.filter((item) => {
     if (live.durableItemIds?.has(item.id)) return false;
     if (historyIds.has(item.id)) return false;
     if (
@@ -949,11 +1028,11 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     }
     return true;
   });
-  const settledReplies = new Map(live.items.flatMap(item =>
+  const settledReplies = new Map(liveItems.flatMap(item =>
     item.kind === "message" && item.role === "assistant" && item.runId && !item.streaming
       ? [[item.runId, item] as const] : [],
   ));
-  const items = history.items.map(item => {
+  const items = dropSupersededCompactionDividers(historyItems, liveItems).map(item => {
     if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return item;
     const cached = settledReplies.get(item.runId);
     if (!cached) return item;

@@ -125,23 +125,10 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             .cloned()
             .unwrap_or(Value::Null);
 
-        if let Some(text) = delta
-            .get("content")
-            .or_else(|| delta.get("text"))
-            .filter(|value| value.is_string() && value.as_str() != Some(""))
-            .or_else(|| delta.get("refusal"))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-        {
-            if !state.text_open {
-                state.text_open = true;
-                events.push(ModelStreamEvent::TextStart { id: "text".into() });
-            }
-            events.push(ModelStreamEvent::TextDelta {
-                id: "text".into(),
-                text: text.to_string(),
-            });
-        }
+        // Some compatible providers put the final reasoning tail and the first
+        // answer token in one delta. Reasoning semantically precedes content,
+        // regardless of JSON field order, so emit it first and avoid rendering
+        // a thought block in the middle of the answer.
         if let Some(text) = delta
             .get("reasoning_content")
             .or_else(|| delta.get("thinking"))
@@ -156,6 +143,23 @@ impl ProtocolAdapter for OpenAiChatAdapter {
             }
             events.push(ModelStreamEvent::ReasoningDelta {
                 id: "reasoning".into(),
+                text: text.to_string(),
+            });
+        }
+        if let Some(text) = delta
+            .get("content")
+            .or_else(|| delta.get("text"))
+            .filter(|value| value.is_string() && value.as_str() != Some(""))
+            .or_else(|| delta.get("refusal"))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            if !state.text_open {
+                state.text_open = true;
+                events.push(ModelStreamEvent::TextStart { id: "text".into() });
+            }
+            events.push(ModelStreamEvent::TextDelta {
+                id: "text".into(),
                 text: text.to_string(),
             });
         }
@@ -725,6 +729,30 @@ mod tests {
         assert!(
             matches!(events.as_slice(), [ModelStreamEvent::Error { message }] if message == "provider boom")
         );
+    }
+
+    #[test]
+    fn emits_reasoning_before_text_when_they_share_a_frame() {
+        let adapter = OpenAiChatAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(json!({
+                    "choices": [{"delta": {
+                        "content": "不",
+                        "reasoning_content": "final thought"
+                    }}]
+                })),
+                state.as_mut(),
+            )
+            .unwrap();
+
+        assert!(matches!(events.as_slice(), [
+            ModelStreamEvent::ReasoningStart { .. },
+            ModelStreamEvent::ReasoningDelta { text, .. },
+            ModelStreamEvent::TextStart { .. },
+            ModelStreamEvent::TextDelta { .. },
+        ] if text == "final thought"));
     }
 
     #[test]

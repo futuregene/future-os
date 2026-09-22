@@ -21,6 +21,23 @@ function edit(id: string, path: string) {
 }
 
 describe("buildAssistantRunProjection segments", () => {
+  it("rejoins a late reasoning delta instead of splitting answer text", () => {
+    const projection = buildAssistantRunProjection(events([
+      ["thinking_start", {}],
+      ["thinking_delta", { text: "Initial thought. " }],
+      ["text_chunk", { text: "不" }],
+      ["thinking_delta", { text: "Trailing thought." }],
+      ["text_chunk", { text: "完全是，它是登录账户的后缀。" }],
+      ["thinking_end", {}],
+    ]));
+
+    expect(projection.content).toBe("不完全是，它是登录账户的后缀。");
+    expect(projection.segments).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Initial thought. Trailing thought." }),
+      expect.objectContaining({ kind: "text", text: "不完全是，它是登录账户的后缀。" }),
+    ]);
+  });
+
   it("interleaves text and tool activity in chronological order", () => {
     const projection = buildAssistantRunProjection(
       events([
@@ -59,7 +76,9 @@ describe("buildAssistantRunProjection segments", () => {
       ["compaction_started", { operation_id: "cmp", trigger: "manual" }],
       ["compaction_unchanged", { operation_id: "cmp", reused: true }],
     ]));
-    expect(projection.segments).toEqual([{ id: "cp-old", kind: "compaction", tokensBefore: 100 }]);
+    expect(projection.segments).toEqual([
+      { id: "cp-old", kind: "compaction", checkpointId: "cp-old", tokensBefore: 100 },
+    ]);
   });
 
   it("projects compaction started, committed, and failed as correlated UI messages", () => {
@@ -70,7 +89,7 @@ describe("buildAssistantRunProjection segments", () => {
       ]),
     );
     expect(completed.segments).toEqual([
-      { id: "cp-1", kind: "compaction", tokensBefore: 42_000, trigger: "automatic" },
+      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 42_000, trigger: "automatic" },
     ]);
 
     const failed = buildAssistantRunProjection(

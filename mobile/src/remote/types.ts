@@ -119,6 +119,77 @@ export interface DesktopSettings {
   hiddenModels: string[];
 }
 
+/**
+ * A catalog provider on the desktop. `hasApiKey` is all the phone ever learns
+ * about the credential: keys are write-only from here (set or cleared, never
+ * read back).
+ */
+export interface RemoteBuiltinProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  modelCount: number;
+  /** The catalog base URL is a placeholder; the user must supply their own. */
+  requiresBaseUrl: boolean;
+}
+
+/** One model of a custom provider. Absent fields mean the desktop default. */
+export interface RemoteProviderModel {
+  id: string;
+  name?: string;
+  supportsImages?: boolean;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  /** Per-1M-token prices; 0 means unpriced (adds nothing to the amount). */
+  inputCost?: number;
+  outputCost?: number;
+  cacheReadCost?: number;
+  cacheWriteCost?: number;
+}
+
+export interface RemoteCustomProvider {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  models: RemoteProviderModel[];
+}
+
+/** API shapes a custom provider may speak (mirrors the desktop's choices). */
+export const CUSTOM_PROVIDER_APIS = ["openai-completions", "openai-responses", "anthropic"] as const;
+
+export interface ProvidersView {
+  builtin: RemoteBuiltinProvider[];
+  custom: RemoteCustomProvider[];
+}
+
+/** The write payload of one custom provider (mirrors UpsertCustomProviderInput). */
+export interface CustomProviderUpsert {
+  id: string;
+  name: string;
+  api: string;
+  baseUrl: string;
+  /** Absent keeps the stored key; the desktop writes it only when non-empty. */
+  apiKey?: string | null;
+  models: RemoteProviderModel[];
+  create: boolean;
+}
+
+/**
+ * One atomic built-in provider write (mirrors UpdateBuiltinProviderInput):
+ * `updateApiKey` decides whether `apiKey` is applied at all, and a null/empty
+ * `apiKey` then clears the stored credential.
+ */
+export interface BuiltinProviderUpdate {
+  id: string;
+  baseUrl?: string;
+  apiKey?: string | null;
+  updateApiKey: boolean;
+}
+
 export interface InstalledSkill extends RemoteSkill {
   id: string;
   version?: string | null;
@@ -154,10 +225,30 @@ export function modelProviderFromReference(modelReference: string): string | und
   return separator > 0 ? modelReference.slice(0, separator) : undefined;
 }
 
+/**
+ * Session-level token usage and the amount it represents, mirroring the
+ * agent's get_state `usage` object. The per-category amounts are priced by the
+ * agent from the model's rates; a model with no rates on file reports zeros.
+ */
+export interface RemoteSessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** Total spent (¥): the provider's own billing, or the priced estimate. */
+  costCny: number;
+  costInputCny: number;
+  costOutputCny: number;
+  costCacheReadCny: number;
+  costCacheWriteCny: number;
+}
+
 export interface RemoteSessionState {
   isCompacting?: boolean;
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  /** Token usage + amount for the session; absent until the agent reports it. */
+  usage?: RemoteSessionUsage | null;
   /** The session's active (in-flight) run, if any — the tail of its events
    *  can be backfilled from `get_events_since` to resync on open/reconnect. */
   activeRun?: { runId?: string } | null;
@@ -253,6 +344,13 @@ export interface StreamEvent {
   data: string;
   runId?: string;
   idx?: number;
+  /**
+   * How many source events this one carries, when the desktop merged a run's
+   * text fragments (see `event_coalescing_v1`). The merged event occupies the
+   * newest source index and its text is the concatenation of all of them, so a
+   * client must treat `idx` as the end of a range instead of a single step.
+   */
+  coalescedCount?: number;
 }
 
 export interface ApprovalPayload {
@@ -299,6 +397,8 @@ export type TimelineSegment =
   | {
       id: string;
       kind: "compaction";
+      /** Durable checkpoint this divider renders — see the shared model. */
+      checkpointId?: string;
       tokensBefore?: number;
       trigger?: string;
       status?: "running" | "completed" | "failed";
@@ -374,6 +474,8 @@ export interface RemoteCommand {
   chunkedRead?: boolean;
   /** Cold run bootstrap from a resumable semantic snapshot, when supported. */
   preferSnapshot?: boolean;
+  /** Client capabilities declared on `secure_ready` (additive, opt-in). */
+  features?: string[];
   replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;
@@ -395,6 +497,8 @@ export interface RemoteCommand {
   level?: string;
   tier?: string;
   settings?: Partial<DesktopSettings>;
+  /** Provider configuration (see `list_providers` in the desktop bridge). */
+  provider?: CustomProviderUpsert | BuiltinProviderUpdate;
   skillId?: string;
   version?: string;
   name?: string;

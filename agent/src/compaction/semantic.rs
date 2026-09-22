@@ -1728,6 +1728,54 @@ mod tests {
         }
     }
 
+    /// The regression this bounds: Kimi's catalog declares an output limit equal
+    /// to its context window (`max_tokens == context_length`, because input and
+    /// output share one window). While that limit was reserved verbatim, the
+    /// admission check rejected *every* request of such a session — the first
+    /// one included — with "system/tools and output reservation leave no input
+    /// room", without ever calling a provider.
+    #[tokio::test]
+    async fn a_declared_output_limit_equal_to_the_window_admits_the_first_turn() {
+        let model = crate::models::Model {
+            id: "kimi-k3".into(),
+            context_window: 1_048_576,
+            max_tokens: 1_048_576,
+            reasoning: true,
+            ..Default::default()
+        };
+        let mut prompt = PromptContext {
+            messages: vec![projected("user", "hi", "e1")],
+            usage: ContextUsage::default(),
+        };
+        super::super::set_request_budget(
+            &mut prompt,
+            &"s".repeat(120_000),
+            &[],
+            crate::models::effective_max_tokens(&model),
+        );
+        let (reserve_tokens, keep_recent_tokens) =
+            crate::compaction::context_token_budgets(model.context_window);
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens,
+            keep_recent_tokens,
+            context_window: model.context_window,
+            model: model.id.clone(),
+        };
+        let prepared = manager
+            .prepare_evidence(
+                prompt.clone(),
+                &raw_of(&prompt),
+                CompactionTrigger::ModelContextDownshift,
+                CompactionPhase::PreTurn,
+                None,
+                &AtomicBool::new(false),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
+    }
+
     // ─── stream/event scripting for call_summary_model arms ────────────────
 
     enum StreamScript {

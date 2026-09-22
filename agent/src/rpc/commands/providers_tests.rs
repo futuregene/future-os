@@ -75,6 +75,12 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
             context_window: 128000,
             max_tokens: 16384,
             reasoning: false,
+            cost: crate::config::providers::ModelCostSpec {
+                input: 1.5,
+                output: 6.0,
+                cache_read: 0.15,
+                cache_write: 2.0,
+            },
         }],
         ..Default::default()
     });
@@ -88,8 +94,38 @@ fn upsert_provider_writes_both_files_and_delete_removes_them() {
         models["providers"]["myprov"]["models"][0]["reasoning"],
         false
     );
+    // Prices are persisted under the loader's snake_case `cost` object.
+    assert_eq!(
+        models["providers"]["myprov"]["models"][0]["cost"],
+        serde_json::json!({"input": 1.5, "output": 6.0, "cache_read": 0.15, "cache_write": 2.0})
+    );
     let view = parse_response(&handle_command_internal(&state, make_cmd("list_providers")));
     assert_eq!(view["data"]["custom"][0]["models"][0]["reasoning"], false);
+    assert_eq!(view["data"]["custom"][0]["models"][0]["inputCost"], 1.5);
+    assert_eq!(view["data"]["custom"][0]["models"][0]["outputCost"], 6.0);
+    assert_eq!(
+        view["data"]["custom"][0]["models"][0]["cacheReadCost"],
+        0.15
+    );
+    assert_eq!(
+        view["data"]["custom"][0]["models"][0]["cacheWriteCost"],
+        2.0
+    );
+    // The registry prices a request with the stored rates (non-Future
+    // providers report no authoritative credit_cost).
+    let priced = state
+        .model_registry
+        .read()
+        .resolve("myprov/m1")
+        .expect("upserted provider is resolvable");
+    assert_eq!(priced.cost.input, 1.5);
+    assert_eq!(priced.cost.output, 6.0);
+    assert_eq!(priced.cost.cache_read, 0.15);
+    assert_eq!(priced.cost.cache_write, 2.0);
+    assert!(
+        (priced.cost.estimate(1_000_000, 1_000_000, 0, 0) - 7.5).abs() < 1e-9,
+        "1M input + 1M output prices at 1.5 + 6.0"
+    );
     let list = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
     let model = list["data"]["models"]
         .as_array()
@@ -154,7 +190,7 @@ fn get_agent_info_returns_version() {
     let cmd = make_cmd("get_agent_info");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
-    assert!(resp["data"]["version"].is_string());
+    assert_eq!(resp["data"]["version"], crate::utils::VERSION);
     assert_eq!(resp["data"]["agentInstanceId"], "agent-test-instance");
 }
 
@@ -589,7 +625,8 @@ fn list_providers_reports_builtin_and_custom_providers() {
                     "api": "anthropic",
                     "baseUrl": "https://api.example.com",
                     "models": [
-                        {"id": "m1", "name": "Model One", "modalities": ["text"], "contextWindow": 128001, "maxTokens": 16001},
+                        {"id": "m1", "name": "Model One", "modalities": ["text"], "contextWindow": 128001, "maxTokens": 16001,
+                         "cost": {"input": 2.5, "output": 10, "cache_read": 0.25, "cache_write": 3}},
                         {"id": "m2", "modalities": ["text", "image"]}
                     ]
                 },
@@ -666,9 +703,16 @@ fn list_providers_reports_builtin_and_custom_providers() {
     assert_eq!(m1["supportsImages"], false);
     assert_eq!(m1["contextWindow"], 128001);
     assert_eq!(m1["maxTokens"], 16001);
+    assert_eq!(m1["inputCost"], 2.5);
+    assert_eq!(m1["outputCost"], 10.0);
+    assert_eq!(m1["cacheReadCost"], 0.25);
+    assert_eq!(m1["cacheWriteCost"], 3.0);
     let m2 = myprov_models.iter().find(|m| m["id"] == "m2").unwrap();
     assert_eq!(m2["name"], "m2");
     assert_eq!(m2["supportsImages"], true);
+    // A model without a `cost` object reports zero prices, not null.
+    assert_eq!(m2["inputCost"], 0.0);
+    assert_eq!(m2["cacheWriteCost"], 0.0);
 
     let noname = custom.iter().find(|p| p["id"] == "noname").unwrap();
     assert_eq!(noname["name"], "noname");

@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS threads (
     -- model_provider, model_id, thinking_level removed — now from agent get_state
     agent_session_id TEXT,
     parent_session_id TEXT,
+    -- Stable owner of shared attachment originals/thumbnails. Forks inherit
+    -- this root so deleting an ancestor cannot invalidate child history.
+    asset_root_id TEXT,
     last_message_at INTEGER,
     last_opened_at INTEGER,
     created_at INTEGER NOT NULL,
@@ -317,12 +320,20 @@ pub(super) const ADDED_COLUMNS: &[(&str, &str)] = &[
 /// Optional run-archive migrations, whose failures do not block startup.
 /// Required migrations belong in `db::apply_schema` with error propagation.
 /// Existing entries are immutable once released.
-pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[(
-    "v1.1.3-runs-archived-at",
-    "runs",
-    "archived_at",
-    "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
-)];
+pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "v1.1.3-runs-archived-at",
+        "runs",
+        "archived_at",
+        "ALTER TABLE runs ADD COLUMN archived_at INTEGER",
+    ),
+    (
+        "v1.1.9-thread-asset-root",
+        "threads",
+        "asset_root_id",
+        "ALTER TABLE threads ADD COLUMN asset_root_id TEXT",
+    ),
+];
 
 /// A Desktop thread is a projection owner for at most one Agent session, and
 /// an Agent session has at most one Desktop projection owner. This index is

@@ -20,8 +20,10 @@ current controls and limitations, and vulnerability reporting.
   encryption or that no data leaves the device.
 - **Per-user local backend.** The agent defaults to Unix-domain sockets on
   macOS/Linux (private directory and peer-UID checks) or a current-user-only
-  Windows named pipe. Unix honors `FUTURE_AGENT_SOCKET`; Linux otherwise uses
-  `$XDG_RUNTIME_DIR/future/agent.sock` when set, with
+  Windows named pipe. Unix honors `FUTURE_AGENT_SOCKET`; an instance with its own
+  FutureOS home (`FUTURE_HOME` / `future agent --home`) owns
+  `<home>/run/agent.sock` instead of the shared XDG runtime directory; Linux
+  otherwise uses `$XDG_RUNTIME_DIR/future/agent.sock` when set, with
   `~/.future/run/agent.sock` as fallback/macOS default. `--grpc-addr` explicitly
   enables TCP. Do not expose the agent's plain TCP service to an untrusted network;
   use an authenticated secure tunnel if remote access is needed.

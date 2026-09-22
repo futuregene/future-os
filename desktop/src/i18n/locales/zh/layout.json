@@ -132,6 +132,13 @@
     "chooseModelHint": "你可以在对话过程中随时切换",
     "start": "开始"
   },
+  "agentStatus": {
+    "wait": "请稍候",
+    "failed": "Future Agent 启动失败",
+    "fixFailed": "请重启 FutureOS；如果仍无法恢复，请重新安装 FutureOS。",
+    "incompatible": "Future Agent 与当前 FutureOS 版本不一致",
+    "fixIncompatible": "请重启 FutureOS 完成更新；如果仍无法恢复，请重新安装 FutureOS。"
+  },
   "userMenu": {
     "balance": "账户余额：{{credits}}",
     "recharge": "充值",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatNumber } from "./format";
+import { formatBytes, formatCostCny, formatNumber } from "./format";
 
 describe("formatBytes", () => {
   it("renders null/undefined as an em dash", () => {
@@ -25,5 +25,24 @@ describe("formatNumber", () => {
     expect(formatNumber(1234567, "en-US")).toBe("1,234,567");
     // Second call with the same locale hits the cache path.
     expect(formatNumber(42, "en-US")).toBe("42");
+  });
+});
+
+describe("formatCostCny", () => {
+  it("keeps the sub-fen precision a session actually reaches", () => {
+    expect(formatCostCny(0.0234)).toBe("¥0.0234");
+    expect(formatCostCny(0.02)).toBe("¥0.02");
+    expect(formatCostCny(12.5)).toBe("¥12.5");
+    expect(formatCostCny(1234.56789)).toBe("¥1,234.5679");
+  });
+
+  it("never renders a negative or non-finite amount", () => {
+    expect(formatCostCny(0)).toBe("¥0");
+    expect(formatCostCny(-1)).toBe("¥0");
+    expect(formatCostCny(Number.NaN)).toBe("¥0");
+  });
+
+  it("does not round a real amount down to nothing", () => {
+    expect(formatCostCny(0.00001)).toBe("¥<0.0001");
   });
 });

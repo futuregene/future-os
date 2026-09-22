@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../../components/ui/CopyButton";
 import { useCopyState } from "../../../components/ui/useCopyState";
+import { HighlightedCode } from "../HighlightedCode";
 import { useLiveMarkdown } from "../LiveMarkdownContext";
 import { useCodeHighlighter } from "../useCodeHighlighter";
 
@@ -42,7 +43,6 @@ export function CodeBlock({
     );
   }
 
-  const lineEndings = code.match(/\r\n|\r|\n/g) ?? [];
   return (
     <div className="relative">
       <CopyButton
@@ -58,23 +58,7 @@ export function CodeBlock({
       >
         {language ? <div className="mb-2 text-[11px] opacity-60">{language}</div> : null}
         <code>
-          {highlighted.lines.map((line, lineIndex) => (
-            // eslint-disable-next-line react/no-array-index-key -- static positional render of highlighted code; lines never reorder
-            <span key={lineIndex}>
-              {line.tokens.map((token, tokenIndex) => (
-                <span
-                  key={tokenIndex} // eslint-disable-line react/no-array-index-key -- static positional render of highlighted tokens; index key is fine
-                  style={{
-                    color: token.color,
-                    fontStyle: token.fontStyle ? (token.fontStyle & 1 ? "italic" : "normal") : undefined,
-                  }}
-                >
-                  {token.content}
-                </span>
-              ))}
-              {lineEndings[lineIndex] ?? ""}
-            </span>
-          ))}
+          <HighlightedCode code={code} highlighted={highlighted} />
         </code>
       </pre>
     </div>

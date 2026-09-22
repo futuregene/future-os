@@ -68,6 +68,55 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
     expect(after.streaming).toBe(false);
   });
 
+  test("a start delivered after its checkpoint is durable does not draw a second, running divider", async () => {
+    // The screenshot bug: the committed divider arrived via durable history
+    // (the terminal frame was lost), then the operation's own started frame
+    // landed — it appended a "compacting…" divider BELOW the completed one,
+    // where no terminal would ever settle it. Fold the late start into the
+    // settled marker instead; its id aliases the pending identity so a late
+    // terminal can still find it.
+    const history = timelineFromEntries([
+      { id: "cp-entry", role: "system", kind: "compaction", createdAtMs: 0, blocks: [],
+        checkpoint: { checkpointId: "cp-one", trigger: "manual", phase: "standalone", tokensBefore: 13_225 } },
+    ]);
+    const after = await apply(history, [compact("compaction_started", "one", "old", 3)]);
+    expect(after.items).toHaveLength(1);
+    expect(after.items[0]).toMatchObject({
+      id: "compaction:one",
+      segments: [{ kind: "compaction", status: "completed", checkpointId: "cp-one", tokensBefore: 13_225 }],
+    });
+    // A late terminal for the same operation still settles the alias.
+    const settled = await apply(after, [compact("compaction_committed", "one", "old", 4)]);
+    expect(settled.items).toHaveLength(1);
+    expect(settled.items[0]).toMatchObject({ id: "m_cp-one", segments: [{ status: "completed" }] });
+    expect(settled.compacting).toBe(false);
+  });
+
+  test("a late start folds into a settled divider even when its terminal never arrives", async () => {
+    const history = timelineFromEntries([
+      { id: "cp-entry", role: "system", kind: "compaction", createdAtMs: 0, blocks: [],
+        checkpoint: { checkpointId: "cp-one", trigger: "manual", phase: "standalone" } },
+    ]);
+    const after = await apply(history, [compact("compaction_started", "one", "old", 3)]);
+    expect(after.items).toHaveLength(1);
+    expect(after.items[0]).toMatchObject({ id: "compaction:one", segments: [{ status: "completed", checkpointId: "cp-one" }] });
+  });
+
+  test("a genuine new compaction still draws its running divider", async () => {
+    // A committed divider for an EARLIER operation must not swallow the next
+    // compaction's start: the earlier divider is not the last item, so the
+    // new operation's placeholder still materializes.
+    const before = await apply(emptyTimeline(), [
+      ...oldRun,
+      compact("compaction_started", "one", "old", 3),
+      compact("compaction_committed", "one", "old", 4),
+      event("user_message", "new", 0, { text: "next" }),
+    ]);
+    const after = await apply(before, [compact("compaction_started", "two", "new", 1)]);
+    expect(after.items.map(item => item.id)).toEqual(["assistant:old", "m_cp-one", "user:new", "compaction:two"]);
+    expect(after.items[3]).toMatchObject({ segments: [{ status: "running" }] });
+  });
+
   test("automatic mid-turn compaction remains inside the active reply", async () => {
     const after = await apply(emptyTimeline(), [event("agent_start", "live", 0),
       event("compaction_started", "live", 1, { operation_id: "auto", phase: "mid_turn" }),
@@ -77,5 +126,75 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
     expect(after.items).toHaveLength(1);
     expect(after.items[0]).toMatchObject({ streaming: true, segments: [{ kind: "compaction" }, { kind: "text", text: "continued" }] });
     expect(after.streaming).toBe(true);
+  });
+
+  test("a checkpoint that opened the turn is drawn once, not also from durable history", async () => {
+    // The checkpoint commits before any reply entry of that exchange is saved,
+    // so durable history renders the turn as a divider-only row. The run's own
+    // replay carries the same checkpoint — both drew it, one after the other.
+    const history = timelineFromEntries([
+      { id: "u1", role: "user", kind: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "go" }] },
+      {
+        id: "cp-entry",
+        role: "system",
+        kind: "compaction",
+        createdAtMs: 1,
+        blocks: [],
+        checkpoint: {
+          schemaVersion: 3,
+          checkpointId: "cp-auto",
+          phase: "pre_turn",
+          trigger: "automatic",
+          tokensBefore: 903_386,
+        },
+      },
+    ]);
+    expect(history.items).toHaveLength(2);
+
+    const after = await apply(history, [
+      event("agent_start", "live", 0),
+      event("compaction_started", "live", 1, { operation_id: "auto", phase: "pre_turn" }),
+      event("compaction_committed", "live", 2, {
+        operation_id: "auto",
+        checkpoint_id: "cp-auto",
+        phase: "pre_turn",
+        tokens_before: 903_386,
+      }),
+      event("text_chunk", "live", 3, { text: "continued" }),
+    ]);
+
+    const dividers = after.items.flatMap(item =>
+      item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : []);
+    expect(dividers).toHaveLength(1);
+    expect(after.items.map(item => item.id)).toEqual(["m_u1", "assistant:live"]);
+  });
+
+  test("a durable divider for another checkpoint is not superseded by this run", async () => {
+    const history = timelineFromEntries([
+      { id: "u1", role: "user", kind: "user", createdAtMs: 0, blocks: [{ kind: "text", text: "go" }] },
+      {
+        id: "cp-old",
+        role: "system",
+        kind: "compaction",
+        createdAtMs: 1,
+        blocks: [],
+        checkpoint: { schemaVersion: 3, checkpointId: "cp-other", phase: "pre_turn", trigger: "automatic" },
+      },
+    ]);
+
+    const after = await apply(history, [
+      event("agent_start", "live", 0),
+      event("compaction_started", "live", 1, { operation_id: "auto", phase: "pre_turn" }),
+      event("compaction_committed", "live", 2, {
+        operation_id: "auto",
+        checkpoint_id: "cp-auto",
+        phase: "pre_turn",
+        tokens_before: 903_386,
+      }),
+    ]);
+
+    expect(after.items.flatMap(item =>
+      item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : [],
+    )).toHaveLength(2);
   });
 });

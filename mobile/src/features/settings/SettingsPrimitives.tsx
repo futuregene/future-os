@@ -12,8 +12,8 @@ export function SettingsSection({ title, children }: { title: string; children: 
   </View>;
 }
 
-export function SettingsSwitch({ label, description, value, disabled, onChange }: {
-  label: string; description?: string; value: boolean; disabled: boolean; onChange(value: boolean): void;
+export function SettingsSwitch({ label, description, value, disabled = false, onChange }: {
+  label: string; description?: string; value: boolean; disabled?: boolean; onChange(value: boolean): void;
 }) {
   return <View style={settingsStyles.row}>
     <View style={settingsStyles.labelContainer}>
@@ -25,14 +25,28 @@ export function SettingsSwitch({ label, description, value, disabled, onChange }
   </View>;
 }
 
-export function SettingsLink({ label, disabled = false, loading = false, onPress }: {
-  label: string; disabled?: boolean; loading?: boolean; onPress(): void;
+export function SettingsLink({ label, description, disabled = false, loading = false, onPress }: {
+  label: string; description?: string; disabled?: boolean; loading?: boolean; onPress(): void;
 }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: disabled || loading, busy: loading }}
     disabled={disabled || loading} onPress={onPress} style={({ pressed }) => [settingsStyles.row, pressed && settingsStyles.pressed, disabled && { opacity: 0.5 }]}>
-    <Text style={settingsStyles.label}>{label}</Text>
+    <View style={settingsStyles.labelContainer}>
+      <Text style={settingsStyles.label}>{label}</Text>
+      {description ? <Text style={settingsStyles.description}>{description}</Text> : null}
+    </View>
     {loading ? <ActivityIndicator size="small" color={colors.accent} /> : <ChevronRight size={18} color={colors.inkMuted} />}
   </Pressable>;
+}
+
+/** A labeled form control on the settings surface (label, hint, then the input). */
+export function SettingsField({ label, hint, error, children }: {
+  label: string; hint?: string; error?: string; children: ReactNode;
+}) {
+  return <View style={settingsStyles.field}>
+    <Text style={settingsStyles.fieldLabel}>{label}</Text>
+    {children}
+    {error ? <Text accessibilityRole="alert" style={settingsStyles.error}>{error}</Text> : hint ? <Text style={settingsStyles.description}>{hint}</Text> : null}
+  </View>;
 }
 
 export function ResourceStatus({ loading, failed, onReload }: { loading: boolean; failed: boolean; onReload(): void }) {
@@ -61,5 +75,9 @@ export const settingsStyles = StyleSheet.create({
   error: { color: colors.danger, fontSize: 13 },
   status: { gap: spacing.sm, alignItems: "flex-start" },
   search: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface, color: colors.ink, fontSize: 15, padding: spacing.md, minHeight: layout.touchTarget },
+  input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface, color: colors.ink, fontSize: 15, padding: spacing.md, minHeight: layout.touchTarget },
+  inputDisabled: { backgroundColor: colors.surfaceSubtle, color: colors.inkMuted },
+  field: { gap: spacing.sm },
+  fieldLabel: { color: colors.inkMuted, fontSize: 13, fontWeight: "600" },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
 });

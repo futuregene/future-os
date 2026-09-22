@@ -24,6 +24,7 @@ import {
   confirmDownload,
   deferPresentation,
   formatBytes,
+  PREPARE_REVEAL_DELAY_MS,
   showToast,
   type ActiveDownload,
   type DownloadHandle,
@@ -88,15 +89,36 @@ export function useFileDownload(
     ? Math.min(1, activeDownload.completedBytes / activeDownload.totalBytes)
     : 0;
 
+  const showDownload = useCallback(
+    (handle: DownloadHandle, patch: Partial<Omit<ActiveDownload, "id" | "fileName">> = {}) => {
+      if (activeDownloadRef.current?.id !== handle.id) return;
+      handle.visible = true;
+      if (handle.revealTimer !== null) {
+        clearTimeout(handle.revealTimer);
+        handle.revealTimer = null;
+      }
+      setActiveDownload({
+        id: handle.id,
+        fileName: handle.fileName,
+        phase: "preparing",
+        completedBytes: 0,
+        totalBytes: 0,
+        ...patch,
+      });
+    },
+    [],
+  );
+
   const beginDownload = useCallback(
     (key: string, fileName: string, totalBytes = 0, visible = true): DownloadHandle | null => {
       if (activeDownloadRef.current) return null;
-      const handle = {
+      const handle: DownloadHandle = {
         id: `${key}:${Date.now().toString(36)}`,
         fileName,
         visible,
         controller: new AbortController(),
         handoffPending: false,
+        revealTimer: null,
       };
       activeDownloadRef.current = handle;
       if (visible) {
@@ -108,25 +130,22 @@ export function useFileDownload(
           totalBytes,
         });
       }
+      else {
+        // A transfer stays invisible until its size is known, so a cached file
+        // never flashes a dialog. Preparing asks the desktop to prepare and
+        // hash the file first, though, and that round trip is otherwise a dead
+        // screen: an unreachable or busy desktop leaves the user staring at
+        // nothing until the 10s/20s retry ladder gives up. Reveal the dialog —
+        // it already renders "preparing" and "waiting for network" — once the
+        // wait stops looking instant.
+        handle.revealTimer = setTimeout(() => {
+          if (activeDownloadRef.current?.id !== handle.id || handle.visible) return;
+          showDownload(handle);
+        }, PREPARE_REVEAL_DELAY_MS);
+      }
       return handle;
     },
-    [],
-  );
-
-  const showDownload = useCallback(
-    (handle: DownloadHandle, patch: Partial<Omit<ActiveDownload, "id" | "fileName">> = {}) => {
-      if (activeDownloadRef.current?.id !== handle.id) return;
-      handle.visible = true;
-      setActiveDownload({
-        id: handle.id,
-        fileName: handle.fileName,
-        phase: "preparing",
-        completedBytes: 0,
-        totalBytes: 0,
-        ...patch,
-      });
-    },
-    [],
+    [showDownload],
   );
 
   const updateDownload = useCallback(
@@ -145,6 +164,10 @@ export function useFileDownload(
     // state clear, and only onDismiss is allowed to present the next surface.
     if (handle.handoffPending && !force) return;
     if (activeDownloadRef.current?.id !== handle.id) return;
+    if (handle.revealTimer !== null) {
+      clearTimeout(handle.revealTimer);
+      handle.revealTimer = null;
+    }
     activeDownloadRef.current = null;
     setActiveDownload(null);
   }, []);

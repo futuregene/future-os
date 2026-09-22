@@ -23,7 +23,146 @@ import "prismjs/components/prism-markdown";
 import "prismjs/components/prism-diff";
 import "prismjs/components/prism-powershell";
 import "prismjs/components/prism-docker";
+// Grammars for the file suffixes the phone previews as text (see
+// `CODE_LANGUAGE_BY_SUFFIX`). Static imports for the same reason as above:
+// Metro bundles only these grammars, with no DOM, WebView or network.
+// Dependency order matters: a grammar that `extend`s another must load after
+// it (`basic` → vbnet, markup-templating → php).
+import "prismjs/components/prism-ruby";
+import "prismjs/components/prism-perl";
+import "prismjs/components/prism-lua";
+import "prismjs/components/prism-r";
+import "prismjs/components/prism-julia";
+import "prismjs/components/prism-matlab";
+import "prismjs/components/prism-fortran";
+import "prismjs/components/prism-haskell";
+import "prismjs/components/prism-elixir";
+import "prismjs/components/prism-erlang";
+import "prismjs/components/prism-clojure";
+import "prismjs/components/prism-lisp";
+import "prismjs/components/prism-scheme";
+import "prismjs/components/prism-pascal";
+import "prismjs/components/prism-nim";
+import "prismjs/components/prism-zig";
+import "prismjs/components/prism-dart";
+import "prismjs/components/prism-scala";
+import "prismjs/components/prism-groovy";
+import "prismjs/components/prism-solidity";
+import "prismjs/components/prism-basic";
+import "prismjs/components/prism-vbnet";
+import "prismjs/components/prism-less";
+import "prismjs/components/prism-scss";
+import "prismjs/components/prism-sass";
+import "prismjs/components/prism-ini";
+import "prismjs/components/prism-properties";
+import "prismjs/components/prism-hcl";
+import "prismjs/components/prism-batch";
+import "prismjs/components/prism-markup-templating";
+import "prismjs/components/prism-php";
 import { codeColors } from "../theme/tokens";
+
+/** Prism grammar per file suffix for in-app code previews. This mirrors the
+ * phone's text route (`remote/fileTypes.ts`): every code-ish suffix the phone
+ * can open in-app has a grammar here. Suffixes without one (`.asm` mixes NASM
+ * and GAS dialects, and the bundled Prism build ships no grammar for the
+ * `.vue` / `.svelte` single-file components) deliberately stay plain text.
+ * Longest suffix wins, so `.d.ts` beats `.ts` and `.mjs` beats `.js`.
+ *
+ * Markdown and JSON are absent on purpose — they have richer preview kinds of
+ * their own. Dialects share a grammar where Prism ships no dedicated one
+ * (`.fish`/`.csh` → bash, MATLAB `.m` → matlab).
+ */
+export const CODE_LANGUAGE_BY_SUFFIX: Readonly<Record<string, string>> = {
+  ".c": "c",
+  ".h": "c",
+  ".cc": "cpp",
+  ".cpp": "cpp",
+  ".cxx": "cpp",
+  ".hh": "cpp",
+  ".hpp": "cpp",
+  ".hxx": "cpp",
+  ".cs": "csharp",
+  ".java": "java",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".scala": "scala",
+  ".groovy": "groovy",
+  ".gradle": "groovy",
+  ".swift": "swift",
+  ".go": "go",
+  ".rs": "rust",
+  ".dart": "dart",
+  ".pas": "pascal",
+  ".nim": "nim",
+  ".zig": "zig",
+  ".sol": "solidity",
+  ".vb": "vbnet",
+
+  ".py": "python",
+  ".pyi": "python",
+  ".rb": "ruby",
+  ".php": "php",
+  ".pl": "perl",
+  ".pm": "perl",
+  ".lua": "lua",
+  ".r": "r",
+  ".jl": "julia",
+  ".m": "matlab",
+  ".f90": "fortran",
+  ".f95": "fortran",
+  ".hs": "haskell",
+  ".ex": "elixir",
+  ".exs": "elixir",
+  ".erl": "erlang",
+  ".clj": "clojure",
+  ".cljs": "clojure",
+  ".lisp": "lisp",
+  ".el": "lisp",
+  ".scm": "scheme",
+
+  ".js": "javascript",
+  ".mjs": "javascript",
+  ".cjs": "javascript",
+  ".jsx": "jsx",
+  ".ts": "typescript",
+  ".d.ts": "typescript",
+  ".tsx": "tsx",
+  ".css": "css",
+  ".less": "less",
+  ".scss": "scss",
+  ".sass": "sass",
+
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".fish": "bash",
+  ".csh": "bash",
+  ".bat": "batch",
+  ".cmd": "batch",
+  ".ps1": "powershell",
+
+  ".sql": "sql",
+  ".ini": "ini",
+  ".cfg": "ini",
+  ".conf": "ini",
+  ".env": "ini",
+  ".properties": "properties",
+  ".toml": "toml",
+  ".tf": "hcl",
+};
+
+const CODE_LANGUAGE_SUFFIXES = Object.keys(CODE_LANGUAGE_BY_SUFFIX)
+  .sort((left, right) => right.length - left.length);
+
+/** Prism language for a previewed file name. Null means "read it as plain
+ * text": not a code file at all (`.txt`, `.log`), or no grammar shipped for it.
+ * `highlightCode` validates the name against the loaded grammars anyway, so an
+ * unknown or misspelled entry degrades to plain text instead of throwing. */
+export function codeLanguageForFile(name: string): string | null {
+  const normalized = name.trim().toLowerCase();
+  const suffix = CODE_LANGUAGE_SUFFIXES.find(candidate => normalized.endsWith(candidate));
+  return suffix ? CODE_LANGUAGE_BY_SUFFIX[suffix]! : null;
+}
 
 export interface CodeToken { text: string; color?: string }
 
@@ -40,6 +179,13 @@ const tokenColors: Record<string, string> = {
   "attr-value": codeColors.string, inserted: codeColors.string,
   function: codeColors.function, "class-name": codeColors.function,
   property: codeColors.property, "attr-name": codeColors.property, variable: codeColors.property,
+  // Types Prism emits for the config / template languages the previews add
+  // (CSS-family selectors, ini / .properties keys, batch commands, HCL types,
+  // Ruby's string-literal, PHP's `<?php` delimiter). Without them those files
+  // tokenize into spans that all render uncolored.
+  selector: codeColors.keyword, section: codeColors.keyword, "section-name": codeColors.keyword,
+  key: codeColors.property, value: codeColors.string, "string-literal": codeColors.string,
+  command: codeColors.function, type: codeColors.keyword, delimiter: codeColors.operator,
   operator: codeColors.operator, punctuation: codeColors.operator,
   deleted: codeColors.keyword,
 };

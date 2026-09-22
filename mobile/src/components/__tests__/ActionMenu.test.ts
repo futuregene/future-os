@@ -1,8 +1,8 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform, ScrollView, StyleSheet, Text } from "react-native";
+import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput } from "react-native";
 import { ActionMenu } from "../ActionMenu";
-jest.mock("lucide-react-native", () => ({ X: "X" }));
+jest.mock("lucide-react-native", () => ({ Search: "Search", X: "X" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 let tree: ReactTestRenderer;
@@ -57,6 +57,39 @@ test("long titles stay in one header line and expand only inside the scrolling l
   expect(action).not.toHaveBeenCalled();
   act(() => button(title).props.onPress());
   expect(fullTitles()).toHaveLength(0);
+});
+
+test("group headings label what follows without being choices of their own", () => {
+  act(() => tree.update(createElement(ActionMenu, {
+    title: "Actions",
+    visible: true,
+    onClose: close,
+    actions: [
+      { label: "New", onPress: action },
+      { label: "Project", heading: true },
+      { label: "Task", nested: true, onPress: action },
+    ],
+  })));
+  expect(button("Project")).toBeUndefined();
+  const flat = (label: string) => StyleSheet.flatten(button(label).props.style({ pressed: false }));
+  expect(flat("Task").paddingLeft).toBeGreaterThan(flat("New").paddingHorizontal);
+  act(() => button("Task").props.onPress());
+  act(() => tree.root.findByType(Modal).props.onDismiss());
+  expect(action).toHaveBeenCalledTimes(1);
+});
+
+test("a long list can be filtered from the sheet's own search field", () => {
+  const onChangeText = jest.fn();
+  const props = { title: "Actions", visible: true, onClose: close, actions: [{ label: "New", onPress: action }] };
+  const search = { value: "", label: "share.search", placeholder: "share.search", onChangeText };
+  act(() => tree.update(createElement(ActionMenu, { ...props, search })));
+  expect(tree.root.findByType(TextInput).props.placeholder).toBe("share.search");
+  act(() => tree.root.findByType(TextInput).props.onChangeText("task"));
+  expect(onChangeText).toHaveBeenCalledWith("task");
+  act(() => tree.update(createElement(ActionMenu, { ...props, search: { ...search, value: "task" } })));
+  act(() => button("sessions.clearSearch").props.onPress());
+  expect(onChangeText).toHaveBeenLastCalledWith("");
+  expect(close).not.toHaveBeenCalled();
 });
 
 test("expanded titles reset when the menu closes or switches to a different target", () => {

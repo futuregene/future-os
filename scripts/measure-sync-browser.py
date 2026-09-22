@@ -39,10 +39,10 @@ def wait_port(port, process):
     raise TimeoutError(f"child did not open loopback port {port}")
 
 
-def serve(binary, agent_binary=None):
+def serve(binary, agent_binary=None, count=3, html="measure-sync-browser.html"):
     os.umask(0o077)
     OUT.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ROOT / "scripts" / "measure-sync-browser.html", OUT / "index.html")
+    shutil.copyfile(ROOT / "scripts" / html, OUT / "index.html")
     if not (OUT / "bundle.js").is_file():
         raise RuntimeError("build measure-sync-browser.ts with esbuild before starting")
     children = []
@@ -62,7 +62,13 @@ def serve(binary, agent_binary=None):
             runs = dst.execute("""SELECT e.session_id,e.run_id,count(*) n FROM run_events e
                 JOIN runs r ON r.session_id=e.session_id AND r.run_id=e.run_id
                 WHERE r.status='completed' GROUP BY e.session_id,e.run_id ORDER BY n DESC""").fetchall()
-        chosen = [("largest", runs[0]), ("second", runs[1]), ("median_completed", runs[len(runs)//2])]
+        # Default keeps the historical largest/second/median selection so earlier
+        # reports stay reproducible; a larger count takes the heaviest runs in
+        # order, which is what a cold-open sweep wants.
+        if count == 3:
+            chosen = [("largest", runs[0]), ("second", runs[1]), ("median_completed", runs[len(runs)//2])]
+        else:
+            chosen = [(f"top{i+1}", row) for i, row in enumerate(runs[:count])]
         samples = [{"label": label, "session": row[0], "run": row[1], "expected_events": row[2]} for label,row in chosen]
         (home / "MEASUREMENT_ISOLATED_HOME").touch()
         agent_port, web_port = free_port(), free_port()
@@ -106,16 +112,21 @@ if __name__ == "__main__":
     parser.add_argument("--test-binary", required=True)
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--agent-binary", help="Standalone future-agent to measure (default: installed future agent)")
+    parser.add_argument("--sample-count", type=int, default=3,
+                        help="3 keeps largest/second/median (historical default); N>3 takes the N heaviest runs")
+    parser.add_argument("--html", default="measure-sync-browser.html",
+                        help="browser shell served as index.html (must load /bundle.js)")
     args = parser.parse_args()
     if args.serve:
         try:
-            serve(args.test_binary, args.agent_binary)
+            serve(args.test_binary, args.agent_binary, args.sample_count, args.html)
         except KeyboardInterrupt:
             pass
     else:
         OUT.mkdir(parents=True, exist_ok=True)
         with (OUT / "runner.log").open("w") as log:
-            command = [sys.executable, __file__, "--serve", "--test-binary", args.test_binary]
+            command = [sys.executable, __file__, "--serve", "--test-binary", args.test_binary,
+                       "--sample-count", str(args.sample_count), "--html", args.html]
             if args.agent_binary:
                 command.extend(["--agent-binary", str(Path(args.agent_binary).resolve())])
             process = subprocess.Popen(command,

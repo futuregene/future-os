@@ -21,6 +21,7 @@ pub struct ThreadRecord {
     // model_provider, model_id, thinking_level — dropped, now from agent
     pub agent_session_id: Option<String>,
     pub parent_session_id: Option<String>,
+    pub asset_root_id: Option<String>,
     pub last_message_at: Option<i64>,
     pub last_opened_at: Option<i64>,
     pub created_at: i64,
@@ -33,7 +34,7 @@ pub struct ThreadRecord {
 // stored 0/1 integers (same as the prior explicit `i64 != 0`).
 sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     id, workspace_id, mode, title, status, pinned, readonly,
-    agent_session_id, parent_session_id, last_message_at, last_opened_at,
+    agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
     created_at, updated_at, archived_at, deleted_at,
 });
 
@@ -91,7 +92,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let thread_id = create_id("thread");
     // Only use a pre-existing agent session ID (e.g. from fork). For normal
     // threads leave it empty — the agent generates the ID on first prompt
-    // and it's persisted back via update_thread_session_id.
+    // and it's persisted back via bind_thread_session_id.
     let agent_session_id = input
         .agent_session_id
         .map(|id| id.trim().to_string())
@@ -132,8 +133,8 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     tx.execute(
         "INSERT INTO threads (
              id, workspace_id, mode, title, status, pinned, readonly,
-             agent_session_id, last_opened_at, created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?6, ?6, ?6)",
+             agent_session_id, asset_root_id, last_opened_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, 'active', 0, 0, ?5, ?1, ?6, ?6, ?6)",
         params![thread_id, workspace.id, mode, title, agent_session_id, now],
     )?;
 
@@ -176,6 +177,40 @@ pub fn get_or_create_thread_for_agent_session(
 pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
     let conn = connect()?;
     get_thread_in(&conn, thread_id)
+}
+
+/// Make a fork share the ancestor's durable attachment root. The root id is
+/// independent of the ancestor row's lifetime; cleanup retains the directory
+/// while any live descendant references it.
+pub fn inherit_thread_asset_root(
+    thread_id: &str,
+    parent_thread_id: &str,
+) -> Result<(), crate::AppError> {
+    let conn = connect()?;
+    if conn.execute(
+        "UPDATE threads
+             SET asset_root_id = COALESCE(
+                 (SELECT NULLIF(asset_root_id, '') FROM threads WHERE id = ?2),
+                 ?2
+             ), updated_at = ?3
+         WHERE id = ?1",
+        params![thread_id, parent_thread_id, now_millis()],
+    )? == 0
+    {
+        return Err("Thread could not be loaded.".to_string().into());
+    }
+    Ok(())
+}
+
+pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::AppError> {
+    let conn = connect()?;
+    conn.query_row(
+        "SELECT COALESCE(NULLIF(asset_root_id, ''), id) FROM threads WHERE id = ?1",
+        [thread_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| "Thread could not be loaded.".to_string().into())
 }
 
 pub(super) fn get_thread_in(
@@ -251,21 +286,35 @@ pub fn update_thread_thinking_level(
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
-/// Persist the agent-generated session id after the first prompt creates it.
-pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
+/// Bind the agent-generated identity to a thread exactly once.
+///
+/// Conversation identity is immutable after the first successful bind. A
+/// caller may idempotently repeat the same bind, but it may never replace a
+/// non-empty identity: doing so would make the UI thread point at a different
+/// transcript and strand the original history.
+pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err("agentSessionId cannot be empty.".to_string().into());
     }
     let now = now_millis();
-    const SQL: &str = "UPDATE threads SET
-         parent_session_id = CASE WHEN agent_session_id = ?1 THEN parent_session_id ELSE NULL END,
-         agent_session_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'";
+    const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'
+           AND (agent_session_id IS NULL OR TRIM(agent_session_id) = '')";
     let conn = connect()?;
-    conn.execute(SQL, params![session_id, now, thread_id])?;
-    mark_catalog_dirty();
-    Ok(())
+    if conn.execute(SQL, params![session_id, now, thread_id])? > 0 {
+        mark_catalog_dirty();
+        return Ok(());
+    }
+    let thread = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    match thread.agent_session_id.as_deref().map(str::trim) {
+        Some(existing) if existing == session_id => Ok(()),
+        Some(existing) if !existing.is_empty() => Err(format!(
+            "Thread is already bound to agent session {existing}; refusing to replace it with {session_id}."
+        )
+        .into()),
+        _ => Err("Thread is not available for session binding.".into()),
+    }
 }
 
 /// Project Agent lineage by session id, not local thread id: parents may be
@@ -793,23 +842,16 @@ mod tests {
             list_threads().unwrap()[0].parent_session_id,
             thread.parent_session_id
         );
-        update_thread_session_id("t1", "sess1").unwrap();
+        bind_thread_session_id("t1", "sess1").unwrap();
         assert_eq!(
             get_thread("t1").unwrap().unwrap().parent_session_id,
             thread.parent_session_id
         );
-        update_thread_session_id("t1", "replacement").unwrap();
-        assert!(get_thread("t1")
-            .unwrap()
-            .unwrap()
-            .parent_session_id
-            .is_none());
-        sync_thread_parent_session("replacement", "replacement").unwrap();
-        assert!(get_thread("t1")
-            .unwrap()
-            .unwrap()
-            .parent_session_id
-            .is_none());
+        assert!(bind_thread_session_id("t1", "replacement").is_err());
+        assert_eq!(
+            get_thread("t1").unwrap().unwrap().parent_session_id,
+            thread.parent_session_id
+        );
     }
 
     #[test]
@@ -986,8 +1028,33 @@ mod tests {
         assert_eq!(existing.id, created.id);
 
         let other = create_thread(chat_input()).expect("create unbound thread");
-        assert!(update_thread_session_id(&other.id, "sess-one").is_err());
-        assert!(update_thread_session_id(&other.id, "   ").is_err());
+        assert!(bind_thread_session_id(&other.id, "sess-one").is_err());
+        assert!(bind_thread_session_id(&other.id, "   ").is_err());
+    }
+
+    #[test]
+    fn fork_asset_root_is_reference_counted_by_live_descendants() {
+        let (_home, _conn) = guarded_conn("thread_asset_root");
+        let parent = create_thread(chat_input()).expect("parent");
+        let child = create_thread(chat_input()).expect("child");
+        inherit_thread_asset_root(&child.id, &parent.id).expect("inherit root");
+        assert_eq!(thread_asset_root_id(&parent.id).unwrap(), parent.id);
+        assert_eq!(thread_asset_root_id(&child.id).unwrap(), parent.id);
+
+        let root = crate::store::thread_images_dir(&parent.id).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("kept.png"), b"image").unwrap();
+
+        delete_thread(&parent.id).expect("delete parent");
+        crate::store::reconcile_orphan_images().expect("reconcile with child");
+        assert!(root.exists(), "live descendant must retain the shared root");
+
+        delete_thread(&child.id).expect("delete child");
+        crate::store::reconcile_orphan_images().expect("reconcile without owners");
+        assert!(
+            !root.exists(),
+            "last owner deletion releases the shared root"
+        );
     }
 
     #[test]
@@ -1042,8 +1109,8 @@ mod tests {
         })
         .is_err());
 
-        // update_thread_session_id + find_by_session round trip.
-        update_thread_session_id("t2", "sess_new").expect("session id");
+        // bind_thread_session_id + find_by_session round trip.
+        bind_thread_session_id("t2", "sess_new").expect("session id");
         let found = find_thread_by_agent_session("sess_new")
             .expect("find")
             .expect("some");

@@ -5,15 +5,16 @@ import {
   classifyMarkdownTarget,
   localFilePath,
   createStreamingMarkdownParser,
+  joinSoftBreaks,
   parseFutureMarkdown,
   remoteMarkdownImageUrl,
 } from "@future-os/markdown";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as Clipboard from "expo-clipboard";
-import { codePreviewRows } from "./codePreviewRows";
+import { CodeTokens } from "./CodeTokens";
+import { codePreviewRows, codeRowText } from "./codePreviewRows";
 import { codeTokenRows, highlightCode } from "./codeHighlight";
-import type { CodeToken } from "./codeHighlight";
 import { markdownTableWidths } from "./markdownTableWidths";
 import type { StyleProp, TextStyle } from "react-native";
 import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -35,6 +36,11 @@ interface MarkdownTextProps {
 }
 
 type OpenTarget = (target: string) => void;
+
+/** Rows a table paints inline in the message. Past this it gets a bounded
+ * viewport, which shows about eight rows at a time — so the cutoff must stay
+ * above the tables a reply usually carries, or they silently lose their tail. */
+const TABLE_INLINE_ROW_LIMIT = 20;
 
 function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
   return nodes.map((node, index) => {
@@ -148,12 +154,6 @@ function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
   });
 }
 
-function renderCodeTokens(tokens: CodeToken[] | null, fallback: string): ReactNode {
-  return tokens ? tokens.map((token, index) => token.color
-    ? <Text key={index} style={{ color: token.color }}>{token.text}</Text>
-    : token.text) : fallback;
-}
-
 /** Collapsed height of a long block, in wrapped lines. The source chunks bound
  * the mounted characters; this bounds the painted height, which one long CJK
  * paragraph can otherwise blow past. 16 keeps the previous fixed viewport's
@@ -188,10 +188,10 @@ function CodeSource({ code, language }: { code: string; language?: string }) {
         <Text key={index} selectable style={styles.code} numberOfLines={collapsed ? collapsedCodeLines : undefined}
           ellipsizeMode={collapsed ? "tail" : undefined}>
           {row.continuation ? "↪ " : ""}
-          {renderCodeTokens(rowTokens[index] ?? null, row.text.endsWith("\n") ? row.text.slice(0, -1) : row.text)}
+          <CodeTokens fallback={codeRowText(row.text)} tokens={rowTokens[index] ?? null} />
         </Text>
       )) : (
-        <Text selectable style={styles.code}>{renderCodeTokens(tokens, code)}</Text>
+        <Text selectable style={styles.code}><CodeTokens fallback={code} tokens={tokens} /></Text>
       )}
       {large ? (
         <Pressable accessibilityRole="button"
@@ -313,6 +313,7 @@ function renderBlocks(
 }
 
 function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
+  const { t } = useTranslation();
   const [width, setWidth] = useState(0);
   const { fontScale } = useWindowDimensions();
   const cellWidths = useMemo(() => markdownTableWidths(node, width, fontScale), [node, width, fontScale]);
@@ -320,12 +321,13 @@ function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: Open
   const renderRow = useCallback(({ item, index }: { item: InlineNode[][]; index: number }) => (
     <MarkdownTableRow cells={item} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={index % 2 === 1} />
   ), [cellWidths, node.alignments, openTarget]);
+  const bounded = node.rows.length > TABLE_INLINE_ROW_LIMIT;
   return (
     <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
       <ScrollView horizontal nestedScrollEnabled>
         <View style={styles.table}>
           <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} header />
-          {node.rows.length > 8 ? (
+          {bounded ? (
             <FlatList data={node.rows} renderItem={renderRow} nestedScrollEnabled
               initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
               style={{ height: 360, width: tableWidth }}
@@ -335,6 +337,10 @@ function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: Open
           ))}
         </View>
       </ScrollView>
+      {/* A bounded viewport clips rows: say so, or the table looks complete. */}
+      {bounded ? (
+        <Text style={styles.tableRowsHint}>{t("chat.tableRowsScrolled", { count: node.rows.length })}</Text>
+      ) : null}
     </View>
   );
 }
@@ -396,11 +402,15 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
   const reveal = useStreamingText(text, mode === "message" && streaming);
   const displayedText = mode === "message" ? reveal.text : text;
   const projectingStream = streaming || displayedText !== text;
-  const document = useMemo(() => mode === "file-preview"
+  const document = useMemo(() => {
+    if (mode !== "file-preview") return project(displayedText, projectingStream);
+    // A previewed document reflows to the reader's width: its source soft breaks
+    // join into spaces instead of showing the wrap column of the file. Chat
+    // keeps the author's newlines.
     // Large file ASTs should die with the preview, not occupy the shared
     // 512-entry message cache after the modal closes.
-    ? parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024)
-    : project(displayedText, projectingStream), [mode, project, displayedText, projectingStream]);
+    return joinSoftBreaks(parseFutureMarkdown(displayedText, undefined, displayedText.length <= 128 * 1024));
+  }, [mode, project, displayedText, projectingStream]);
   const [initialBlockCount] = useState(document.nodes.length);
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
@@ -429,7 +439,7 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
       maxToRenderPerBatch={8}
       windowSize={5}
       style={styles.previewList}
-      contentContainerStyle={styles.constrained}
+      contentContainerStyle={styles.previewContent}
     />
   </MarkdownImageBasePathContext>;
   return <MarkdownImageBasePathContext value={imageBasePath}><View style={styles.constrained}>{document.nodes.map((node, index) => (
@@ -454,6 +464,9 @@ const styles = StyleSheet.create({
   noBottom: { marginBottom: 0 },
   constrained: { minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   previewList: { flex: 1, minWidth: 0, width: "100%" },
+  // The preview's gutter belongs to the scrolling content: padding on a static
+  // parent instead leaves a blank strip under the header once text scrolls.
+  previewContent: { padding: spacing.lg, minWidth: 0, maxWidth: "100%", alignSelf: "stretch" },
   blockSpacing: { marginBottom: spacing.sm },
   bodyText: { color: colors.ink, ...chatTypography },
   paragraph: { color: colors.ink, ...chatTypography, marginBottom: spacing.sm },
@@ -543,6 +556,7 @@ const styles = StyleSheet.create({
   tableHead: { backgroundColor: colors.surfaceSubtle },
   tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   tableRowZebra: { backgroundColor: colors.surfaceSubtle },
+  tableRowsHint: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, color: colors.inkMuted, fontSize: 12 },
   tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
     color: colors.inkStrong,

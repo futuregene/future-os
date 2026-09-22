@@ -108,6 +108,19 @@ impl Supervisor {
             done.store(true, Ordering::Release);
         });
     }
+    /// The live-lane capabilities declared for `pair_id`. An unknown pairing
+    /// gets a fresh, off flag: capability is always per connection, never
+    /// inherited from whoever connected before.
+    pub(in crate::remote) fn coalesce_events(&self, pair_id: &str) -> Arc<AtomicBool> {
+        self.bridge_shared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|shared| shared.pair_id == pair_id)
+            .map(|shared| shared.coalesce_events.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+    }
+
     pub(in crate::remote) fn cancel_tasks(&self) {
         for (task, _) in self.tasks.lock().unwrap().drain(..) {
             task.abort();
@@ -129,6 +142,7 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     pub(in crate::remote) pair_id: String,
     pub(in crate::remote) reply_slots: commands::ReplySlots,
     pub(in crate::remote) pairing_confirmed: Arc<AtomicBool>,
+    pub(in crate::remote) coalesce_events: Arc<AtomicBool>,
     pub(in crate::remote) bridge_instance_id: String,
     pub(in crate::remote) drop_counters: Arc<DropCounters>,
     pub(in crate::remote) next_generation_id: Arc<AtomicU64>,
@@ -157,6 +171,7 @@ pub(in crate::remote) fn shared_runtime(
         pairing_confirmed: Arc::new(AtomicBool::new(pairing_confirmed)),
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
         drop_counters: Arc::new(DropCounters::new()),
+        coalesce_events: Arc::new(AtomicBool::new(false)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),
     };

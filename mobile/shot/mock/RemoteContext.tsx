@@ -24,12 +24,14 @@ import type {
   MobileAttachment,
   RemoteCredentials,
   RemoteModel,
+  RemoteSessionUsage,
   SessionFileListing,
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
 import {
+  compactResumeEntries,
   demoCredentials,
   demoDesktops,
   demoEntries,
@@ -37,7 +39,11 @@ import {
   demoInstalledSkills,
   demoAvailableSkills,
   demoModels,
+  demoProviders,
+  demoRefreshedSessionUsage,
+  demoSessionUsage,
   demoSkills,
+  demoUnpricedSessionUsage,
   demoWorkspaces,
   sessions,
 } from "./data";
@@ -74,6 +80,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
+  const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
+  const [providers, setProviders] = useState(demoProviders);
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
@@ -91,7 +99,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   const baseTimeline = useMemo(() => {
-    const history = timelineFromEntries(demoEntries as unknown as HistoryEntry[]);
+    // `?compactHistory=1` swaps in the history of a run that compacted
+    // mid-turn, so a capture can assert the reply after the divider survives
+    // the durable projection (the schemaVersion 3 path).
+    const historyEntries = new URLSearchParams(window.location.search).get("compactHistory") === "1"
+      ? compactResumeEntries
+      : demoEntries;
+    const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     if (!scriptedCompaction) return history;
     const manualRun = "run_1";
     return applyStreamEvents(history, [
@@ -168,6 +182,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // Composer settings
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "medium",
+    // The amount in the top bar, refreshed by every state read in the app.
+    sessionUsage: usageOverride ?? (selectedSessionId === "sess_chat_pvalue" ? demoUnpricedSessionUsage : demoSessionUsage),
     approvalTier: "off",
     sandboxAvailable: true,
     busy: false,
@@ -180,6 +196,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "skills_v1",
       "desktop_settings_v1",
       "skill_management_v1",
+      "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
     ]),
@@ -188,6 +205,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectSession: async (sessionId: string) => {
       setDraft(false);
       setSelectedSessionId(sessionId);
+    },
+    // The app re-reads the session when the usage sheet opens. Answer with a
+    // larger figure, the way a session that spent more since the last read
+    // would — the top bar and the sheet share this state, so a capture shows
+    // both moving to the refreshed amount.
+    refreshSessionUsage: async () => {
+      setUsageOverride(demoRefreshedSessionUsage);
     },
     newConversation: async () => setDraft(true),
     closeConversation: () => {
@@ -207,6 +231,32 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       return { ...desktopSettings, ...patch };
     },
     listSettingsModels: async (): Promise<RemoteModel[]> => demoModels,
+    // Providers and models, as the desktop reports them. Mutations are applied
+    // locally so the harness shows the same list a real write would produce.
+    listProviders: async () => providers,
+    updateBuiltinProvider: async (provider: any) => {
+      setProviders(current => ({
+        ...current,
+        builtin: current.builtin.map(item => item.id === provider.id
+          ? { ...item, hasApiKey: provider.updateApiKey ? !!provider.apiKey : item.hasApiKey, baseUrl: provider.baseUrl ?? item.baseUrl }
+          : item),
+      }));
+      return providers;
+    },
+    upsertCustomProvider: async (provider: any) => {
+      const entry = { id: provider.id, name: provider.name || provider.id, api: provider.api, baseUrl: provider.baseUrl, hasApiKey: providers.custom.find(item => item.id === provider.id)?.hasApiKey ?? false, models: provider.models };
+      setProviders(current => ({
+        ...current,
+        custom: current.custom.some(item => item.id === provider.id)
+          ? current.custom.map(item => (item.id === provider.id ? entry : item))
+          : [...current.custom, entry],
+      }));
+      return providers;
+    },
+    deleteCustomProvider: async (providerId: string) => {
+      setProviders(current => ({ ...current, custom: current.custom.filter(item => item.id !== providerId) }));
+      return providers;
+    },
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,

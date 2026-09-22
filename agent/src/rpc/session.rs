@@ -114,6 +114,22 @@ pub struct ServerSession {
     pub tokens_cache_w: Arc<std::sync::atomic::AtomicI64>,
     /// Cumulative cost as reported by upstream (Future API `credit_cost`).
     pub cumulative_cost: Arc<parking_lot::Mutex<f64>>,
+    /// Cumulative spend per token category, accumulated one request at a time at
+    /// the rates of the model that served it (see [`crate::models::CostSplit`]).
+    /// Persisted alongside the token counters so a restart keeps the split.
+    pub cumulative_cost_split: Arc<parking_lot::Mutex<crate::models::CostSplit>>,
+    /// Whether `cumulative_cost_split` accounts for the session's *whole*
+    /// history. A split that only covers requests made since this code shipped
+    /// (an older agent accumulated nothing, and the first build to accumulate
+    /// started mid-session) understates the session, so a load replaces it by
+    /// replaying the journal rather than trusting it. Rides in `session_info`
+    /// next to the split itself.
+    ///
+    /// True by default: a session built in this process starts from zero
+    /// counters, so everything it accumulates is its whole history, and a
+    /// session loaded from disk goes through the check below (trust a complete
+    /// split, replay otherwise) — either way it is complete afterwards.
+    pub cost_split_complete: Arc<std::sync::atomic::AtomicBool>,
     /// Last API call's prompt_tokens (actual context size, reset each call)
     pub last_prompt_tokens: Arc<std::sync::atomic::AtomicI64>,
     /// Approval gate: holds pending approval requests and their decisions.
@@ -140,8 +156,7 @@ pub struct ServerSession {
 
 /// Default workspace directory for new sessions.
 pub fn default_workspace() -> String {
-    crate::utils::home_dir()
-        .join(".future")
+    crate::utils::future_home()
         .join("agent")
         .join("workspace")
         .to_string_lossy()
@@ -253,6 +268,10 @@ impl ServerSession {
             tokens_cache_r: tcr,
             tokens_cache_w: tcw,
             cumulative_cost: Arc::new(parking_lot::Mutex::new(0.0)),
+            cumulative_cost_split: Arc::new(parking_lot::Mutex::new(
+                crate::models::CostSplit::default(),
+            )),
+            cost_split_complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             last_prompt_tokens: lpt,
             approval_gate,
             permission_level: DEFAULT_PERMISSION_LEVEL.to_string(),
@@ -693,6 +712,7 @@ impl ServerSession {
             let cache_r = self.tokens_cache_r.clone();
             let cache_w = self.tokens_cache_w.clone();
             let cumulative_cost = self.cumulative_cost.clone();
+            let cumulative_cost_split = self.cumulative_cost_split.clone();
             let registry = self.model_registry.clone();
             let model = self.model.clone();
             move |reported: &crate::types::Usage| {
@@ -712,6 +732,11 @@ impl ServerSession {
                 });
                 if cost > 0.0 {
                     *cumulative_cost.lock() += cost;
+                }
+                // Priced with this request's model, like the run loop does.
+                let parts = crate::agent::usage_cost_split_with(Some(&registry), &model, reported);
+                if parts.iter().any(|amount| *amount > 0.0) {
+                    cumulative_cost_split.lock().add(parts);
                 }
                 *usage.lock() = Some(reported.clone());
             }
@@ -783,6 +808,13 @@ impl ServerSession {
                     "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
                     "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
                     "total_cost": *self.cumulative_cost.lock(),
+                    "cost_split": serde_json::to_value(*self.cumulative_cost_split.lock())
+                        .unwrap_or(serde_json::Value::Null),
+                    // Only true when it covers the whole history; a load
+                    // re-prices the journal otherwise.
+                    "cost_split_complete": self
+                        .cost_split_complete
+                        .load(Ordering::Relaxed),
                 });
                 if let Err(error) = self.persistence.update_info_fields(
                     fields
@@ -1165,6 +1197,66 @@ impl ServerSession {
         self.restore_session(id, true)
     }
 
+    /// Price this session's journal request by request, each at the rates of the
+    /// model that served it, for a session recorded before the split was
+    /// accumulated live.
+    ///
+    /// The journal records model *changes*, not the model on each request, so
+    /// requests before the first change are billed at the session's current
+    /// model — the same assumption the old derive-from-totals fallback made for
+    /// everything, but here it only covers the span before the first switch.
+    /// Requests served by a model with no prices on file contribute nothing.
+    fn replay_cost_split(&self) -> crate::models::CostSplit {
+        let mut split = crate::models::CostSplit::default();
+        let Ok(payloads) = self
+            .session_manager
+            .pricing_event_payloads(&self.session_id)
+        else {
+            return split;
+        };
+        let registry = self.model_registry.read();
+        let mut model_ref = self.model.clone();
+        for payload in payloads {
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                continue;
+            };
+            // `data` is a JSON string on the wire and an object in older rows.
+            let data = match event.get("data") {
+                Some(serde_json::Value::String(text)) => serde_json::from_str(text).ok(),
+                Some(value) => Some(value.clone()),
+                None => None,
+            };
+            let Some(data) = data else { continue };
+            match event.get("event_type").and_then(|v| v.as_str()) {
+                Some("model_changed") => {
+                    if let Some(next) = data.get("model").and_then(|v| v.as_str()) {
+                        model_ref = next.to_string();
+                    }
+                }
+                Some("usage") => {
+                    let Some(usage) = data.get("usage") else {
+                        continue;
+                    };
+                    let Some(model) = registry.resolve(&model_ref) else {
+                        continue;
+                    };
+                    let count = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let parts = model.cost.parts(
+                        count("prompt_tokens"),
+                        count("completion_tokens"),
+                        count("cache_read_tokens"),
+                        count("cache_write_tokens"),
+                    );
+                    if parts.iter().any(|amount| *amount > 0.0) {
+                        split.add(parts);
+                    }
+                }
+                _ => {}
+            }
+        }
+        split
+    }
+
     pub(crate) fn switch_session_metadata(&mut self, id: &str) -> Result<()> {
         self.restore_session(id, false)
     }
@@ -1228,6 +1320,7 @@ impl ServerSession {
             if !session.name.is_empty() {
                 self.session_name = session.name.clone();
             }
+            self.parent_session_id = session.parent_session_id.clone();
             // Restore metadata from session_info entry
             if let Some(info) = session.get_session_info() {
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
@@ -1266,6 +1359,54 @@ impl ServerSession {
                 restore_i64("last_prompt_tokens", &self.last_prompt_tokens);
                 if let Some(cost) = info.get("total_cost").and_then(|v| v.as_f64()) {
                     *self.cumulative_cost.lock() = cost;
+                }
+                match (
+                    info.get("cost_split"),
+                    info.get("cost_split_complete").and_then(|v| v.as_bool()),
+                ) {
+                    // Accumulated from the session's first request, so it covers
+                    // the whole history: authoritative.
+                    (Some(parts), Some(true)) => {
+                        if let Ok(split) =
+                            serde_json::from_value::<crate::models::CostSplit>(parts.clone())
+                        {
+                            *self.cumulative_cost_split.lock() = split;
+                            self.cost_split_complete
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    // Either no split at all (recorded before the split was
+                    // accumulated per request) or one that began mid-session and
+                    // therefore understates it. Price the journal instead of
+                    // deriving the split from this session's totals at whatever
+                    // model is current now: a session that switched models would
+                    // have its whole history billed at the wrong rates, which is
+                    // exactly the mismatch this split exists to avoid.
+                    _ => {
+                        let split = self.replay_cost_split();
+                        *self.cumulative_cost_split.lock() = split;
+                        self.cost_split_complete
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Cache it so the replay happens once per session, not on
+                        // every load. Later runs write it back with the rest of
+                        // the counters (see the run-end `session_info`).
+                        let _ = self
+                            .persistence
+                            .update_info_fields(
+                                serde_json::json!({
+                                    "cost_split": split,
+                                    "cost_split_complete": true,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                            )
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    "[session] could not persist the replayed cost split: {error}"
+                                );
+                            });
+                    }
                 }
             }
             *self.messages.write() = msgs;
@@ -3370,6 +3511,199 @@ mod tests {
         );
     }
 
+    /// A journal with two requests on a cheap model and one on one priced 100×
+    /// higher, plus the model switch between them.
+    fn seed_switching_cost_journal(session: &ServerSession) {
+        let storage = session.session_manager.storage().unwrap();
+        let usage = |prompt: i64, idx: i64| {
+            serde_json::json!({
+                "run_id": "run-1",
+                "epoch": 1,
+                "idx": idx,
+                "event_type": "usage",
+                "data": serde_json::json!({
+                    "type": "usage",
+                    "usage": { "prompt_tokens": prompt, "completion_tokens": 0 }
+                })
+                .to_string(),
+            })
+        };
+        storage
+            .append_event(&session.session_id, usage(1_000_000, 0))
+            .unwrap();
+        storage
+            .append_event(
+                &session.session_id,
+                serde_json::json!({
+                    "run_id": "run-1",
+                    "epoch": 1,
+                    "idx": 1,
+                    "event_type": "model_changed",
+                    "data": serde_json::json!({"model": "test/pricey"}).to_string(),
+                }),
+            )
+            .unwrap();
+        storage
+            .append_event(&session.session_id, usage(1_000_000, 2))
+            .unwrap();
+    }
+
+    fn two_priced_models() -> Arc<parking_lot::RwLock<crate::models::Registry>> {
+        let model = |id: &str, input: f64| crate::models::Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: "test".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://example.test".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            cost: crate::models::Cost {
+                input,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![model("cheap", 1.0), model("pricey", 100.0)],
+                r#"{"test":{"type":"api_key","key":"key"}}"#,
+            ),
+        ))
+    }
+
+    #[test]
+    fn a_legacy_session_prices_its_journal_instead_of_its_totals() {
+        // A session recorded before the split was accumulated carries token
+        // totals but no per-category amounts. Pricing those totals at the model
+        // it happens to run now would bill the cheap request's million tokens at
+        // the expensive model's rate; the journal says which model served each
+        // request, so replaying it costs ¥101 rather than ¥200.
+        let mut session = make_test_session("legacy-cost-split");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        seed_switching_cost_journal(&session);
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        let split = *session.cumulative_cost_split.lock();
+        assert!((split.input - 101.0).abs() < 1e-9, "{split:?}");
+        assert!(
+            (split.input - 200.0).abs() > 1.0,
+            "the second model's rate must not apply to the first request: {split:?}"
+        );
+
+        // Cached on disk: a reload must not have to replay again, and must keep
+        // the same figures.
+        let stored = session.session_manager.load(&id).unwrap();
+        let reloaded = stored.get_session_info().unwrap();
+        assert!((reloaded["cost_split"]["input"].as_f64().unwrap() - 101.0).abs() < 1e-9);
+        session.switch_session(&id).unwrap();
+        assert!((session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_partial_split_is_replaced_by_the_journal() {
+        // A split that began mid-session — the first build to accumulate one
+        // started counting wherever a session happened to be at the time, so the
+        // session's earlier spend is missing from it. Trusting it understates the
+        // session (a real one reported ¥0.91 of rows against a ¥9.32 total), so
+        // the journal decides instead.
+        let mut session = make_test_session("partial-cost-split");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({
+                        "cwd": session.cwd,
+                        "model": session.model,
+                        // Covers only the tail of the session.
+                        "cost_split": {"input": 3.0, "output": 0.0,
+                                       "cache_read": 0.0, "cache_write": 0.0},
+                    }),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        seed_switching_cost_journal(&session);
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        assert!(
+            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
+            "the journal covers the whole session: {:?}",
+            *session.cumulative_cost_split.lock()
+        );
+        // Marked complete, so the next load keeps it instead of replaying again.
+        let stored = session.session_manager.load(&id).unwrap();
+        assert_eq!(
+            stored.get_session_info().unwrap()["cost_split_complete"],
+            serde_json::Value::Bool(true)
+        );
+        session.switch_session(&id).unwrap();
+        assert!((session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_recorded_cost_split_is_kept_as_is() {
+        // Sessions written by the current agent carry their own split; loading
+        // one must not overwrite it with a replay.
+        let mut session = make_test_session("recorded-cost-split");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({
+                        "cwd": session.cwd,
+                        "model": session.model,
+                        "cost_split": {"input": 7.5, "output": 0.25,
+                                       "cache_read": 0.0, "cache_write": 0.0},
+                        "cost_split_complete": true,
+                    }),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        // A journal that would replay to something else entirely.
+        seed_switching_cost_journal(&session);
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        let split = *session.cumulative_cost_split.lock();
+        assert!((split.input - 7.5).abs() < 1e-9, "{split:?}");
+        assert!((split.output - 0.25).abs() < 1e-9, "{split:?}");
+    }
+
     #[test]
     fn manual_compaction_charges_the_summary_to_the_session() {
         let mut session = make_test_session("manual-summary-usage");
@@ -3380,6 +3714,14 @@ mod tests {
             .tokens_out
             .store(20, std::sync::atomic::Ordering::Relaxed);
         *session.cumulative_cost.lock() = 0.125;
+        // A split accumulated by earlier requests: the manual compaction writes it
+        // with the other counters, and a restart must restore it as it was.
+        *session.cumulative_cost_split.lock() = crate::models::CostSplit {
+            input: 0.5,
+            output: 0.25,
+            cache_read: 0.125,
+            cache_write: 0.0625,
+        };
         session.set_model("glm-4.5v").unwrap();
         session.agent_loop.try_write().unwrap().provider =
             Arc::new(UsageSummaryProvider(FinishReason::Stop));
@@ -3391,7 +3733,7 @@ mod tests {
             message.ensure_journal_entry_id();
         }
         let mut entries = vec![crate::session::SessionEntry::session_info(
-            serde_json::json!({"cwd":session.cwd,"model":session.model,"tokens_in":100,"tokens_out":20,"total_cost":0.125}),
+            serde_json::json!({"cwd":session.cwd,"model":session.model,"tokens_in":100,"tokens_out":20,"total_cost":0.125,"cost_split_complete":true}),
             session.model.clone(),
             session.thinking_level.clone(),
         )];
@@ -3440,6 +3782,22 @@ mod tests {
         assert_eq!(info["tokens_cache_r"], 80);
         assert_eq!(info["tokens_cache_w"], 10);
         assert_eq!(info["total_cost"], 0.25);
+        let charged = *session.cumulative_cost_split.lock();
+        assert!(
+            charged.input >= 0.5
+                && charged.output >= 0.25
+                && charged.cache_read >= 0.125
+                && charged.cache_write >= 0.0625,
+            "the summary request must add to the accumulated split, not replace it: {charged:?}"
+        );
+        for (field, amount) in [
+            ("input", charged.input),
+            ("output", charged.output),
+            ("cache_read", charged.cache_read),
+            ("cache_write", charged.cache_write),
+        ] {
+            assert_eq!(info["cost_split"][field].as_f64().unwrap(), amount);
+        }
         let mut restarted = ServerSession::new(
             session.session_id.clone(),
             Arc::new(tokio::sync::RwLock::new(Loop::new(
@@ -3454,6 +3812,11 @@ mod tests {
         );
         restarted.switch_session(&session.session_id).unwrap();
         assert_eq!(*restarted.cumulative_cost.lock(), 0.25);
+        assert_eq!(
+            *restarted.cumulative_cost_split.lock(),
+            charged,
+            "a restart must keep the accumulated split"
+        );
         assert_eq!(
             restarted
                 .tokens_in

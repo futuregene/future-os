@@ -1,5 +1,14 @@
 export interface CodePreviewRow { text: string; continuation: boolean }
 
+/** The text one row paints. Row *data* stays byte-exact; the painted row drops
+ * a trailing newline, because each row is its own native `Text` and the layout
+ * already ends the line — painting it too opens a blank line at every chunk
+ * boundary. `codeTokenRows` drops the same newline from the token stream, so
+ * a highlighted row and a plain one render identically. */
+export function codeRowText(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
 /** Bounded visual chunks, not one object per source line (a minified file or a
  * million empty lines must both remain bounded). Joining text reproduces the
  * source exactly; full-source copying never includes the continuation marker. */

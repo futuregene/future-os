@@ -11,6 +11,7 @@ import { File } from "expo-file-system";
 import { findSupportedMimeType, openFile, saveFile, shareFile, supportsNativeFileActions } from "future-file-handler";
 import { nativePresentationInFlight } from "../../../remote/nativePresentation";
 import { useFileDownload } from "../useFileDownload";
+import { PREPARE_REVEAL_DELAY_MS } from "../utils";
 import { namedExternalFile, TransferCancelledError } from "../../../remote/files";
 import type { DownloadInfo } from "../../../remote/types";
 
@@ -470,6 +471,65 @@ test.each([true, undefined])("opening a mutable file revalidates metadata (expli
   expect(remote.downloadAttachment).not.toHaveBeenCalled();
   expect(h.api.preview).toMatchObject({ text: "new", info: { contentHash: "new-content" } });
   act(() => h.tree.unmount());
+});
+
+describe("progress while preparing", () => {
+  const platform = Platform.OS;
+  beforeEach(() => { Platform.OS = "android"; });
+  afterEach(() => {
+    Platform.OS = platform;
+    jest.useRealTimers();
+  });
+
+  test("a prepare slower than the delay shows the dialog instead of a dead screen", async () => {
+    jest.useFakeTimers();
+    const prepare = deferred<DownloadInfo>();
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(() => prepare.promise),
+      downloadAttachment: jest.fn(async () => file as File),
+    };
+    const h = await mount(remote);
+    let opening!: Promise<void>;
+    await act(async () => { opening = h.api.openAttachment({ path: "/notes.txt", name: "notes.txt" }); });
+    // Still invisible: an instant answer must not flash a dialog.
+    expect(h.api.activeDownload).toBeNull();
+
+    await act(async () => { jest.advanceTimersByTime(PREPARE_REVEAL_DELAY_MS); });
+    expect(h.api.activeDownload).toMatchObject({
+      fileName: "notes.txt",
+      phase: "preparing",
+      completedBytes: 0,
+      totalBytes: 0,
+    });
+
+    // The reply then drives the same dialog the fast path uses, and the
+    // deferred handoff (setTimeout 0 off iOS) closes it onto the preview.
+    await act(async () => {
+      prepare.resolve({ ...info, size: 2048 });
+      await opening;
+    });
+    act(() => jest.runOnlyPendingTimers());
+    expect(h.api.activeDownload).toBeNull();
+    expect(h.api.preview).toMatchObject({ text: "new" });
+    act(() => h.tree.unmount());
+  });
+
+  test("a prepare that finishes in time never reveals the dialog", async () => {
+    jest.useFakeTimers();
+    const remote = {
+      cachedAttachment: jest.fn(() => ({ info, file })),
+      prepareAttachment: jest.fn(async () => info),
+      downloadAttachment: jest.fn(),
+    };
+    const h = await mount(remote);
+    await act(async () => { await h.api.openFileLink("/notes.txt"); });
+    expect(h.api.preview).toMatchObject({ text: "new" });
+    // A leaked reveal timer would surface here.
+    act(() => jest.runOnlyPendingTimers());
+    expect(h.api.activeDownload).toBeNull();
+    act(() => h.tree.unmount());
+  });
 });
 
 test.each(["preview", "original"])("a cancelled %s preparation releases the download lane", async variant => {

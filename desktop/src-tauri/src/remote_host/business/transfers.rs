@@ -64,6 +64,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 &cmd.session_id,
                 &cmd.file_path,
                 &cmd.mode,
+                Some(&cmd.name),
             )
             .await
             {

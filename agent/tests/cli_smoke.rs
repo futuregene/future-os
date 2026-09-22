@@ -73,6 +73,85 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
     );
 }
 
+/// A second Agent launched with its own FutureOS home (`--home`, the supported
+/// form of `FUTURE_HOME`) must run beside the default instance: separate
+/// singleton lock, state root and local IPC endpoint. Regression guard for
+/// multi-instance isolation — before the override, the second instance shared
+/// the per-user socket and could take over the default instance's endpoint.
+#[cfg(unix)]
+#[test]
+fn home_flag_runs_a_second_isolated_instance() {
+    fn wait_for(what: &str, child: &mut std::process::Child, ready: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready() {
+            assert!(
+                child.try_wait().expect("poll agent").is_none(),
+                "agent exited before {what}"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    // The default instance keeps the user home; the isolated one gets its own
+    // state root that is not derived from that home at all.
+    let home = isolated_home();
+    let isolated = isolated_home();
+    let mut default_agent = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--profile-seconds", "60"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env_remove("FUTURE_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .spawn()
+        .expect("spawn default agent");
+    let default_socket = home.path().join(".future/run/agent.sock");
+    wait_for(
+        "the default instance's endpoint",
+        &mut default_agent,
+        || default_socket.exists(),
+    );
+
+    let mut isolated_agent = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--home", isolated.path().to_str().unwrap()])
+        .args(["--profile-seconds", "60"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env_remove("FUTURE_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
+        .env_remove("FUTURE_AGENT_SOCKET")
+        .spawn()
+        .expect("spawn isolated agent");
+    let isolated_socket = isolated.path().join("run/agent.sock");
+    wait_for(
+        "the isolated instance's endpoint",
+        &mut isolated_agent,
+        || isolated_socket.exists(),
+    );
+
+    assert!(
+        isolated.path().join("agent/agent-instance.lock").exists(),
+        "the isolated instance must own a lock under its own home"
+    );
+    assert!(
+        default_socket.exists(),
+        "the default instance's endpoint must survive the second instance"
+    );
+    assert!(
+        !isolated.path().join(".future").exists(),
+        "--home sets the FutureOS root itself, not a home above it"
+    );
+
+    isolated_agent.kill().expect("force-stop isolated agent");
+    isolated_agent.wait().expect("reap isolated agent");
+    default_agent.kill().expect("force-stop default agent");
+    default_agent.wait().expect("reap default agent");
+}
+
 #[cfg(unix)]
 #[test]
 fn agent_default_mode_binds_per_user_local_socket() {

@@ -5,10 +5,10 @@ use crate::{agent_bridge, store};
 #[tauri::command]
 pub async fn fork_thread(
     thread_id: String,
-    user_message_content: String,
-    user_message_index: i64,
+    source_entry_id: String,
+    request_id: String,
 ) -> Result<String, crate::AppError> {
-    agent_bridge::fork_agent_session(&thread_id, &user_message_content, user_message_index).await
+    agent_bridge::fork_agent_session(&thread_id, &source_entry_id, &request_id).await
 }
 
 #[tauri::command]
@@ -578,7 +578,7 @@ mod tests {
             tauri::generate_handler![fork_thread],
             &[(
                 "fork_thread",
-                serde_json::json!({ "threadId": "t", "userMessageContent": "c" }),
+                serde_json::json!({ "threadId": "t", "sourceEntryId": "e" }),
             )],
         );
     }
@@ -601,9 +601,11 @@ mod tests {
     #[tokio::test]
     async fn fork_thread_errors_for_an_unknown_thread() {
         let _home = init("cmd_fork_ghost");
-        assert!(fork_thread("no-such-thread".into(), "x".into(), 0)
-            .await
-            .is_err());
+        assert!(
+            fork_thread("no-such-thread".into(), "x".into(), "request".into())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

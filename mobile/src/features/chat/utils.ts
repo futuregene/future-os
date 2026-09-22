@@ -27,7 +27,14 @@ export interface DownloadHandle {
   visible: boolean;
   controller: AbortController;
   handoffPending: boolean;
+  /** Pending "this is taking a while" reveal of the progress dialog. */
+  revealTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** How long a transfer may stay invisible before the progress dialog appears.
+ * Long enough that a cache hit (no dialog at all) stays flicker-free, short
+ * enough that a slow desktop is not a dead screen. */
+export const PREPARE_REVEAL_DELAY_MS = 400;
 
 export type FileOperation = "open" | "save" | "share";
 
@@ -66,6 +73,23 @@ export function deferPresentation(action: () => void): void {
 export function formatBytes(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
+}
+
+/**
+ * A spent amount in yuan, matching the desktop header/dialog formatting: up to
+ * four decimals with trailing zeros dropped, thousands grouped with Latin
+ * digits in both UI languages (a currency figure reads the same either way).
+ */
+export function formatCostCny(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "¥0";
+  // A single request can cost ¥0.0004; the fourth decimal is the one that
+  // moves, so `toFixed` rather than a 3-digit default.
+  const rounded = value.toFixed(4);
+  if (Number(rounded) === 0) return "¥<0.0001";
+  const trimmed = rounded.replace(/0+$/, "").replace(/\.$/, "");
+  const [whole, fraction] = trimmed.split(".");
+  const grouped = new Intl.NumberFormat("en-US").format(Number(whole));
+  return fraction ? `¥${grouped}.${fraction}` : `¥${grouped}`;
 }
 
 export function plainText(bytes: Uint8Array, truncated = false): string | null {

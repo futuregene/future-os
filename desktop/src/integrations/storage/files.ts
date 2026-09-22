@@ -109,8 +109,8 @@ export async function generateImageThumbnail(input: { threadId: string; sourcePa
 }
 
 /**
- * Copy an ephemeral pasted-image original into the thread's persistent image dir
- * (`~/.future/app/images/<threadId>/origin`) and return the durable path.
+ * Copy an ephemeral pasted-image original into the thread's persistent image
+ * asset root (`~/.future/app/images/<assetRootId>/origin`) and return its path.
  */
 export async function importEphemeralAttachment(input: { threadId: string; path: string; name: string }) {
   return invokeCommand<string>("import_ephemeral_attachment", {

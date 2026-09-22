@@ -7,19 +7,134 @@
 //! attach to that one instead of spawning a duplicate that would just fail to
 //! bind the port.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+struct OwnedAgentChild {
+    generation: u64,
+    child: CommandChild,
+}
+
 /// The sidecar child, kept so we can kill it on app exit. `None` when we
 /// attached to an externally-managed agent (or failed to spawn).
-static AGENT_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
+static AGENT_CHILD: Mutex<Option<OwnedAgentChild>> = Mutex::new(None);
 static AGENT_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static AGENT_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static NEXT_AGENT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Default)]
+struct AgentRecovery {
+    attempted: bool,
+    stage: RecoveryStage,
+    ready_since: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RecoveryStage {
+    #[default]
+    Idle,
+    Grace,
+    Restarting,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecoveryDecision {
+    None,
+    InProgress,
+    Schedule,
+}
+
+impl AgentRecovery {
+    fn observe(&mut self, phase: &str, owns_agent: bool, now: Instant) -> RecoveryDecision {
+        if phase == "ready" {
+            if self.stage == RecoveryStage::Grace {
+                // The Agent recovered during the one-second grace period. Do
+                // not tear down a process that is answering business RPCs.
+                self.stage = RecoveryStage::Idle;
+                self.attempted = false;
+                self.ready_since = Some(now);
+                return RecoveryDecision::None;
+            }
+            if self.stage == RecoveryStage::Restarting {
+                self.stage = RecoveryStage::Idle;
+                self.ready_since = Some(now);
+                return RecoveryDecision::None;
+            }
+            let stable = now.duration_since(*self.ready_since.get_or_insert(now))
+                >= AGENT_RECOVERY_STABLE_READY;
+            if stable {
+                self.attempted = false;
+            }
+            return RecoveryDecision::None;
+        }
+
+        self.ready_since = None;
+        match self.stage {
+            RecoveryStage::Grace => return RecoveryDecision::InProgress,
+            RecoveryStage::Restarting
+                if matches!(phase, "checking" | "starting" | "recovering") =>
+            {
+                return RecoveryDecision::InProgress;
+            }
+            RecoveryStage::Restarting => {
+                // The one allowed replacement reached a terminal failure.
+                self.stage = RecoveryStage::Idle;
+                return RecoveryDecision::None;
+            }
+            RecoveryStage::Idle => {}
+        }
+        if self.attempted || !recovery_is_safe(phase, owns_agent) {
+            return RecoveryDecision::None;
+        }
+
+        self.attempted = true;
+        self.stage = RecoveryStage::Grace;
+        RecoveryDecision::Schedule
+    }
+}
+
+static AGENT_RECOVERY: Mutex<AgentRecovery> = Mutex::new(AgentRecovery {
+    attempted: false,
+    stage: RecoveryStage::Idle,
+    ready_since: None,
+});
+
+const AGENT_RECOVERY_DELAY: Duration = Duration::from_secs(1);
+const AGENT_RECOVERY_STABLE_READY: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug)]
+enum AgentLifecycle {
+    NotStarted,
+    Spawning { since: Instant },
+    Running { since: Instant },
+    Attached,
+    SpawnFailed,
+    Exited,
+}
+
+static AGENT_LIFECYCLE: Mutex<AgentLifecycle> = Mutex::new(AgentLifecycle::NotStarted);
+
+/// The process may legitimately spend several seconds opening its database and
+/// importing records before binding the local endpoint. Past this boundary an
+/// alive child is no longer described as indefinitely "starting".
+const AGENT_STARTUP_GRACE: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatus {
+    /// checking | starting | recovering | ready | spawn_failed | exited |
+    /// startup_timeout | unavailable | incompatible
+    pub phase: String,
+    pub desktop_version: String,
+    pub agent_version: Option<String>,
+}
 
 /// Set once the user has confirmed a force-quit, so the follow-up programmatic
 /// `app.exit()` closes the window without the `CloseRequested` guard re-prompting.
@@ -72,11 +187,18 @@ pub fn ensure_agent_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     ensure_agent_running_with(app, agent_reachable);
 }
 
+/// Begin supervision for this Desktop process. A restarted application gets a
+/// fresh process, while this flag prevents a delayed recovery from racing exit.
+pub fn start_agent_supervision<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    AGENT_SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    ensure_agent_running(app);
+}
+
 /// Ensure the Agent is reachable before device authorization begins. The token
 /// exchange can return a one-time credential, so discovering a dead Agent only
 /// after that exchange risks losing the credential before it is durably saved.
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
-    tokio::task::spawn_blocking(move || {
+    let reachable = tokio::task::spawn_blocking(move || {
         ensure_agent_running(&app);
         wait_for_agent_ready_with(
             LOGIN_AGENT_READY_ATTEMPTS,
@@ -85,7 +207,8 @@ pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHand
         )
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or(false);
+    reachable && agent_status().await.phase == "ready"
 }
 
 fn wait_for_agent_ready_with(
@@ -112,6 +235,9 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
 ) {
     let configured = crate::agent_bridge::raw_agent_addr();
     if reachable(&configured) {
+        if AGENT_CHILD.lock().unwrap().is_none() {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Attached;
+        }
         eprintln!("FutureOS: agent already reachable via {configured}; not spawning bundled agent");
         return;
     }
@@ -123,6 +249,9 @@ fn ensure_agent_running_with<R: tauri::Runtime>(
         return;
     }
 
+    *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Spawning {
+        since: Instant::now(),
+    };
     spawn_bundled_agent(app, &configured);
     AGENT_SPAWN_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
@@ -143,6 +272,7 @@ fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured:
                 .trim_start_matches("https://"),
         ]),
         Err(error) => {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
             eprintln!(
                 "FutureOS: bundled CLI sidecar unavailable ({error}); run it manually in dev"
             );
@@ -152,27 +282,34 @@ fn spawn_bundled_agent<R: tauri::Runtime>(app: &tauri::AppHandle<R>, configured:
 
     match command.spawn() {
         Ok((rx, child)) => {
-            *AGENT_CHILD.lock().unwrap() = Some(child);
+            let generation = NEXT_AGENT_GENERATION.fetch_add(1, Ordering::Relaxed);
+            *AGENT_CHILD.lock().unwrap() = Some(OwnedAgentChild { generation, child });
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Running {
+                since: Instant::now(),
+            };
             eprintln!("FutureOS: started bundled agent via {configured}");
             // Drain the event channel on a background thread so agent stdout/stderr
             // surfaces in logs and the pipe never backs up.
-            std::thread::spawn(move || drain_agent_events(rx));
+            std::thread::spawn(move || drain_agent_events(rx, generation));
         }
-        Err(error) => eprintln!("FutureOS: failed to start bundled agent: {error}"),
+        Err(error) => {
+            *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::SpawnFailed;
+            eprintln!("FutureOS: failed to start bundled agent: {error}");
+        }
     }
 }
 
 /// Drain a sidecar event channel to the logs. Extracted so the drain loop is
 /// testable without a real `AppHandle`/sidecar child.
-fn drain_agent_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>) {
+fn drain_agent_events(mut rx: tokio::sync::mpsc::Receiver<CommandEvent>, generation: u64) {
     while let Some(event) = rx.blocking_recv() {
-        handle_agent_event(event);
+        handle_agent_event(event, generation);
     }
 }
 
 /// Route a single sidecar event to the logs. Extracted so the match arms are
 /// testable without a real `AppHandle`/sidecar child.
-fn handle_agent_event(event: CommandEvent) {
+fn handle_agent_event(event: CommandEvent, generation: u64) {
     match event {
         CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
             eprint!("[agent] {}", String::from_utf8_lossy(&bytes));
@@ -181,8 +318,19 @@ fn handle_agent_event(event: CommandEvent) {
             eprintln!("FutureOS: bundled agent error: {error}");
         }
         CommandEvent::Terminated(payload) => {
-            AGENT_CHILD.lock().unwrap().take();
-            eprintln!("FutureOS: bundled agent exited: {payload:?}");
+            let mut child = AGENT_CHILD.lock().unwrap();
+            let current =
+                is_current_generation(child.as_ref().map(|owned| owned.generation), generation);
+            if current {
+                child.take();
+                drop(child);
+                *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::Exited;
+                eprintln!("FutureOS: bundled agent exited: {payload:?}");
+            } else {
+                eprintln!(
+                    "FutureOS: ignored termination from superseded agent generation {generation}: {payload:?}"
+                );
+            }
         }
         // `CommandEvent` is `#[non_exhaustive]` — the wildcard arm is required
         // for compilation and covers any future variants (currently none).
@@ -190,10 +338,152 @@ fn handle_agent_event(event: CommandEvent) {
     }
 }
 
+fn is_current_generation(active_generation: Option<u64>, event_generation: u64) -> bool {
+    active_generation == Some(event_generation)
+}
+
+/// Return the Agent lifecycle without consulting account or provider state.
+/// Readiness requires a successful business-RPC round trip. Only after that
+/// succeeds do we compare the two numeric release versions. Local build
+/// identity after the first `-` (commit hash / dirty marker) is deliberately
+/// ignored because Agent and Desktop use independent Cargo target caches.
+pub async fn agent_status() -> AgentStatus {
+    let desktop_version = crate::build_info::VERSION.to_string();
+    match crate::agent_bridge::get_agent_info().await {
+        Ok(info) => status_from_version(info.version, desktop_version),
+        Err(_) => status_from_lifecycle(AGENT_LIFECYCLE.lock().unwrap().clone(), desktop_version),
+    }
+}
+
+/// Return status and schedule one bounded restart when a Desktop-owned Agent
+/// cannot recover on its own. External Agents are deliberately observation-only.
+pub async fn agent_status_with_recovery<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> AgentStatus {
+    let mut status = agent_status().await;
+    if schedule_agent_recovery(app, &status.phase) {
+        status.phase = "recovering".to_string();
+    }
+    status
+}
+
+fn recovery_is_safe(phase: &str, owns_agent: bool) -> bool {
+    match phase {
+        "exited" | "spawn_failed" => true,
+        "startup_timeout" | "incompatible" => owns_agent,
+        _ => false,
+    }
+}
+
+fn schedule_agent_recovery<R: tauri::Runtime>(app: tauri::AppHandle<R>, phase: &str) -> bool {
+    if AGENT_SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return false;
+    }
+    let owns_agent = AGENT_CHILD.lock().unwrap().is_some();
+    let mut recovery = AGENT_RECOVERY.lock().unwrap();
+    match recovery.observe(phase, owns_agent, Instant::now()) {
+        RecoveryDecision::None => return false,
+        RecoveryDecision::InProgress => return true,
+        RecoveryDecision::Schedule => {}
+    }
+    eprintln!("FutureOS: scheduling bundled Agent recovery after {phase}");
+    let recovery_phase = phase.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(AGENT_RECOVERY_DELAY);
+        let still_scheduled = AGENT_RECOVERY.lock().unwrap().stage == RecoveryStage::Grace;
+        let recovered = still_scheduled && agent_is_ready_now();
+        if recovered {
+            let mut recovery = AGENT_RECOVERY.lock().unwrap();
+            recovery.attempted = false;
+            recovery.stage = RecoveryStage::Idle;
+            recovery.ready_since = Some(Instant::now());
+            return;
+        }
+        if still_scheduled && !AGENT_SHUTTING_DOWN.load(Ordering::SeqCst) {
+            AGENT_RECOVERY.lock().unwrap().stage = RecoveryStage::Restarting;
+            recover_agent_once(&app, &recovery_phase);
+        } else if still_scheduled {
+            AGENT_RECOVERY.lock().unwrap().stage = RecoveryStage::Idle;
+        }
+    });
+    true
+}
+
+fn agent_is_ready_now() -> bool {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()
+        .is_some_and(|runtime| runtime.block_on(agent_status()).phase == "ready")
+}
+
+fn recover_agent_once<R: tauri::Runtime>(app: &tauri::AppHandle<R>, phase: &str) {
+    let owned = AGENT_CHILD.lock().unwrap().take();
+    if matches!(phase, "startup_timeout" | "incompatible") {
+        let Some(owned) = owned else {
+            eprintln!(
+                "FutureOS: skipped automatic Agent recovery because it is externally managed"
+            );
+            return;
+        };
+        eprintln!(
+            "FutureOS: restarting bundled agent generation {} after {phase}",
+            owned.generation
+        );
+        kill_bundled_agent(owned.child);
+    } else if let Some(owned) = owned {
+        // A terminal event normally clears the handle. If it raced with this
+        // recovery task, make sure the old process cannot overlap the retry.
+        kill_bundled_agent(owned.child);
+    }
+
+    *AGENT_LIFECYCLE.lock().unwrap() = AgentLifecycle::NotStarted;
+    ensure_agent_running(app);
+}
+
+fn status_from_version(agent_version: String, desktop_version: String) -> AgentStatus {
+    AgentStatus {
+        phase: if numeric_version(&agent_version) == numeric_version(&desktop_version) {
+            "ready"
+        } else {
+            "incompatible"
+        }
+        .to_string(),
+        desktop_version,
+        agent_version: Some(agent_version),
+    }
+}
+
+fn numeric_version(version: &str) -> &str {
+    version
+        .split_once('-')
+        .map_or(version, |(numeric, _)| numeric)
+}
+
+fn status_from_lifecycle(lifecycle: AgentLifecycle, desktop_version: String) -> AgentStatus {
+    let phase = match lifecycle {
+        AgentLifecycle::NotStarted => "checking",
+        AgentLifecycle::Spawning { since } | AgentLifecycle::Running { since }
+            if since.elapsed() < AGENT_STARTUP_GRACE =>
+        {
+            "starting"
+        }
+        AgentLifecycle::Spawning { .. } | AgentLifecycle::Running { .. } => "startup_timeout",
+        AgentLifecycle::Attached => "unavailable",
+        AgentLifecycle::SpawnFailed => "spawn_failed",
+        AgentLifecycle::Exited => "exited",
+    };
+    AgentStatus {
+        phase: phase.to_string(),
+        desktop_version,
+        agent_version: None,
+    }
+}
+
 #[cfg(test)]
 fn shutdown_agent() {
     shutdown_owned_agent_with(
-        AGENT_CHILD.lock().unwrap().take(),
+        AGENT_CHILD.lock().unwrap().take().map(|owned| owned.child),
         || {},
         kill_bundled_agent,
     );
@@ -213,7 +503,8 @@ fn shutdown_agent() {
 /// the child dies its listening socket closes immediately, so the relaunched
 /// GUI sees a free port and starts a fresh Agent.
 pub fn shutdown_agent_gracefully() {
-    let child = AGENT_CHILD.lock().unwrap().take();
+    AGENT_SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    let child = AGENT_CHILD.lock().unwrap().take().map(|owned| owned.child);
     shutdown_owned_agent_with(
         child,
         cleanup_windows_sandbox_permissions,
@@ -480,13 +771,16 @@ mod tests {
 
     #[test]
     fn handle_agent_event_routes_all_variants() {
-        handle_agent_event(CommandEvent::Stdout(b"hello\n".to_vec()));
-        handle_agent_event(CommandEvent::Stderr(b"warn\n".to_vec()));
-        handle_agent_event(CommandEvent::Error("boom".to_string()));
-        handle_agent_event(CommandEvent::Terminated(TerminatedPayload {
-            code: Some(0),
-            signal: None,
-        }));
+        handle_agent_event(CommandEvent::Stdout(b"hello\n".to_vec()), 0);
+        handle_agent_event(CommandEvent::Stderr(b"warn\n".to_vec()), 0);
+        handle_agent_event(CommandEvent::Error("boom".to_string()), 0);
+        handle_agent_event(
+            CommandEvent::Terminated(TerminatedPayload {
+                code: Some(0),
+                signal: None,
+            }),
+            0,
+        );
     }
 
     #[test]
@@ -498,7 +792,7 @@ mod tests {
         }))
         .unwrap();
         drop(tx);
-        drain_agent_events(rx);
+        drain_agent_events(rx, 0);
     }
 
     #[test]
@@ -686,6 +980,164 @@ mod tests {
         ));
         assert_eq!(probes, 3);
         assert_eq!(waits, 2);
+    }
+
+    #[test]
+    fn lifecycle_distinguishes_starting_timeout_and_terminal_failures() {
+        let version = "1.2.3".to_string();
+        let starting = status_from_lifecycle(
+            AgentLifecycle::Running {
+                since: Instant::now(),
+            },
+            version.clone(),
+        );
+        assert_eq!(starting.phase, "starting");
+
+        let timed_out = status_from_lifecycle(
+            AgentLifecycle::Running {
+                since: Instant::now() - AGENT_STARTUP_GRACE - Duration::from_secs(1),
+            },
+            version.clone(),
+        );
+        assert_eq!(timed_out.phase, "startup_timeout");
+        assert_eq!(
+            status_from_lifecycle(AgentLifecycle::SpawnFailed, version.clone()).phase,
+            "spawn_failed"
+        );
+        assert_eq!(
+            status_from_lifecycle(AgentLifecycle::Exited, version).phase,
+            "exited"
+        );
+    }
+
+    #[test]
+    fn recovery_policy_only_restarts_safe_owned_agent_states() {
+        assert!(recovery_is_safe("exited", false));
+        assert!(recovery_is_safe("spawn_failed", false));
+        assert!(recovery_is_safe("startup_timeout", true));
+        assert!(recovery_is_safe("incompatible", true));
+
+        assert!(!recovery_is_safe("startup_timeout", false));
+        assert!(!recovery_is_safe("incompatible", false));
+        assert!(!recovery_is_safe("unavailable", false));
+        assert!(!recovery_is_safe("ready", true));
+    }
+
+    #[test]
+    fn superseded_agent_exit_cannot_clear_the_current_generation() {
+        assert!(is_current_generation(Some(2), 2));
+        assert!(!is_current_generation(Some(2), 1));
+        assert!(!is_current_generation(None, 1));
+    }
+
+    #[test]
+    fn recovery_budget_prevents_loops_until_agent_is_stably_ready() {
+        let started = Instant::now();
+        let mut recovery = AgentRecovery::default();
+
+        assert_eq!(
+            recovery.observe("spawn_failed", false, started),
+            RecoveryDecision::Schedule
+        );
+        assert_eq!(
+            recovery.observe("spawn_failed", false, started),
+            RecoveryDecision::InProgress
+        );
+
+        recovery.stage = RecoveryStage::Idle;
+        assert_eq!(
+            recovery.observe("spawn_failed", false, started),
+            RecoveryDecision::None
+        );
+        assert_eq!(
+            recovery.observe("ready", true, started),
+            RecoveryDecision::None
+        );
+        assert_eq!(
+            recovery.observe(
+                "ready",
+                true,
+                started + AGENT_RECOVERY_STABLE_READY - Duration::from_millis(1),
+            ),
+            RecoveryDecision::None
+        );
+        assert!(recovery.attempted);
+        assert_eq!(
+            recovery.observe("ready", true, started + AGENT_RECOVERY_STABLE_READY),
+            RecoveryDecision::None
+        );
+        assert!(!recovery.attempted);
+        assert_eq!(
+            recovery.observe("exited", false, started + AGENT_RECOVERY_STABLE_READY),
+            RecoveryDecision::Schedule
+        );
+    }
+
+    #[test]
+    fn ready_during_recovery_grace_cancels_the_restart() {
+        let now = Instant::now();
+        let mut recovery = AgentRecovery::default();
+        assert_eq!(
+            recovery.observe("startup_timeout", true, now),
+            RecoveryDecision::Schedule
+        );
+        assert_eq!(
+            recovery.observe("ready", true, now + Duration::from_millis(500)),
+            RecoveryDecision::None
+        );
+        assert!(!recovery.attempted);
+        assert_eq!(recovery.stage, RecoveryStage::Idle);
+    }
+
+    #[test]
+    fn replacement_stays_recovering_until_ready_or_terminal_failure() {
+        let now = Instant::now();
+        let mut recovery = AgentRecovery {
+            attempted: true,
+            stage: RecoveryStage::Restarting,
+            ready_since: None,
+        };
+        assert_eq!(
+            recovery.observe("starting", true, now),
+            RecoveryDecision::InProgress
+        );
+        assert_eq!(
+            recovery.observe("startup_timeout", true, now),
+            RecoveryDecision::None
+        );
+        assert_eq!(recovery.stage, RecoveryStage::Idle);
+        assert_eq!(
+            recovery.observe("startup_timeout", true, now),
+            RecoveryDecision::None
+        );
+    }
+
+    #[test]
+    fn readiness_compares_only_the_numeric_agent_desktop_version() {
+        assert_eq!(
+            status_from_version("1.1.8".to_string(), "1.1.8".to_string()).phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version(
+                "0.0.0-6b7717e5+local".to_string(),
+                "0.0.0-fb53a3f5+local.dirty".to_string(),
+            )
+            .phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version(
+                "1.1.8-agent-build".to_string(),
+                "1.1.8-desktop-build".to_string(),
+            )
+            .phase,
+            "ready"
+        );
+        assert_eq!(
+            status_from_version("1.1.7-old".to_string(), "1.1.8-new".to_string()).phase,
+            "incompatible"
+        );
     }
 
     fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {

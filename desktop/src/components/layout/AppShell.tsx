@@ -1,4 +1,5 @@
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
+import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
@@ -32,13 +33,16 @@ import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
 import { ActivityRail } from "./ActivityRail";
+import { AgentStatusGate } from "./AgentStatusGate";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
 import { canShowLeftPanel, canShowRightPanel, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
+import { useAgentStatus } from "./hooks/useAgentStatus";
 import { useApprovals } from "./hooks/useApprovals";
 import { useAppSettings } from "./hooks/useAppSettings";
+import { useAppStartup } from "./hooks/useAppStartup";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useFutureAccount } from "./hooks/useFutureAccount";
 import { useHasProviders } from "./hooks/useHasProviders";
@@ -65,6 +69,28 @@ interface WorkspaceCreateRequest {
 }
 
 export function AppShell() {
+  const agentStatus = useAgentStatus();
+  if (agentStatus.phase !== "ready")
+    return <AgentStatusGate showWait={agentStatus.showWait} status={agentStatus} />;
+  return <StartingAppShell agentStatus={agentStatus} />;
+}
+
+function StartingAppShell({ agentStatus }: { agentStatus: ReturnType<typeof useAgentStatus> }) {
+  const startup = useAppStartup(true);
+  if (startup.phase === "pending")
+    return <AgentStatusGate showWait={agentStatus.showWait} status={{ ...agentStatus, phase: "starting" }} />;
+  if (startup.phase === "failed")
+    return <AgentStatusGate status={{ ...agentStatus, phase: "unavailable" }} />;
+  return <ReadyAppShell initialAuth={startup.auth} initialProviders={startup.providers} />;
+}
+
+function ReadyAppShell({
+  initialAuth,
+  initialProviders,
+}: {
+  initialAuth: FutureAuthState;
+  initialProviders: ProvidersView;
+}) {
   const { t } = useTranslation("layout");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
@@ -98,8 +124,8 @@ export function AppShell() {
     refreshAuth: refreshFutureAuth,
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
-  } = useFutureAccount();
-  const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending, initialLoading } = useHasProviders(futureSessionStatus);
+  } = useFutureAccount(initialAuth);
+  const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
   // Side panels yield to the conversation: when the window is too narrow to
@@ -574,15 +600,8 @@ export function AppShell() {
     onDismissSkillIntro: () => void changeSettings({ skillIntroDismissed: true }),
   };
 
-  // Onboarding gate: show during the initial probe, when no provider is
-  // usable yet, or during post-login initialization (models + skills + agent).
-  if (initialLoading) {
-    return (
-      <div className="flex h-full items-center justify-center bg-canvas">
-        <span className="size-6 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
-      </div>
-    );
-  }
+  // The startup coordinator has already settled the first account/provider
+  // snapshot, so this branch can choose its first visible page atomically.
   if (showGate)
     return <OnboardingGate autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} initPending={initPending} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
 

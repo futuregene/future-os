@@ -3,6 +3,13 @@
 use crate::agent_bridge;
 
 #[tauri::command]
+pub async fn get_agent_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> crate::agent_supervisor::AgentStatus {
+    crate::agent_supervisor::agent_status_with_recovery(app).await
+}
+
+#[tauri::command]
 pub async fn list_agent_models() -> Result<Vec<agent_bridge::AgentModelOption>, crate::AppError> {
     agent_bridge::list_agent_models().await
 }
@@ -107,6 +114,38 @@ mod tests {
         });
         let models = list_agent_models().await.expect("models");
         assert!(models.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn agent_status_requires_the_running_agent_version_to_match() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_agent_info".to_string(),
+                serde_json::json!({
+                    "version": crate::build_info::VERSION,
+                    "agentInstanceId": "matching-agent",
+                    "skillsCount": 0,
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        assert_eq!(crate::agent_supervisor::agent_status().await.phase, "ready");
+
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_agent_info".to_string(),
+                r#"{"version":"older","agentInstanceId":"old-agent","skillsCount":0}"#.to_string(),
+            )]),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::agent_supervisor::agent_status().await.phase,
+            "incompatible"
+        );
         script_mock_agent(MockScript::default());
     }
 
