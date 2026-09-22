@@ -87,9 +87,9 @@
 | WhatsApp | `whatsapp` | preview | Cloud API webhook | 否 | 否 | 否 | 是 | 是 | 否 | 4096 字符 | Meta WhatsApp Business 应用 + 公网可达的 webhook |
 | Linq | `linq` | preview | 签名 webhook | 否 | 否 | 否 | 否 | 是 | 是 | 4000 字符 | 已分配发送线的 Linq 账号 |
 | IRC | `irc` | preview | TCP 或 TLS | 否 | 否 | 否 | 否 | 否 | 是 | 400 字节 | — |
-| QQ | `qq` | planned | 网关 WebSocket | 否 | 否 | 否 | 否 | 否 | 是 | 4000 字符 | QQ 开放平台机器人 |
-| iMessage | `imessage` | planned | 仅 macOS | 否 | 否 | 否 | 否 | 否 | 否 | 20000 字符 | macOS，且运行桥的终端具备「完全磁盘访问权限」 |
-| Email | `email` | planned | IMAP + SMTP | 否 | 否 | 否 | 否 | 否 | 否 | 100000 字节 | 支持密码或应用专用密码的 IMAP/SMTP 邮箱 |
+| QQ | `qq` | preview | 网关 WebSocket | 否 | 否 | 否 | 否 | 否 | 是 | 4000 字符 | QQ 开放平台机器人 |
+| iMessage | `imessage` | preview | 仅 macOS | 否 | 否 | 否 | 否 | 否 | 否 | 20000 字符 | macOS，且运行桥的终端具备「完全磁盘访问权限」 |
+| Email | `email` | preview | IMAP + SMTP | 否 | 是 | 否 | 否 | 否 | 否 | 100000 字节 | 支持密码或应用专用密码的 IMAP/SMTP 邮箱 |
 | Terminal | `cli` | live | 标准输入输出 | 否 | 否 | 是 | 否 | 否 | 否 | 100000 字符 | — |
 
 飞书与钉钉不在本表中，因为它们不是框架通道；两者都是 `live`，见
@@ -99,7 +99,8 @@
 
 每个通道声明三档之一，`future channel list` 会显示：
 
-- **live**：已在真实平台上跑通，可以依赖。目前只有终端通道符合。
+- **live**：已在真实平台上跑通，可以依赖。终端通道天然符合（它不依赖任何第三方）；
+  飞书与钉钉在走各自桥的前提下同样是 live。
 - **preview**：按平台公开 API 文档实现，但尚未在真实部署上验证。请自行验证安装，
   并反馈问题。
 - **planned**：已声明但未实现，启用时启动日志报 `unsupported`，`future channel test <id>`
@@ -315,7 +316,7 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 正文可用的 400 字节而不是 512；控制字符会被替换，避免消息注入命令。昵称冲突会改名处理，
 表示「该目标永远不会成功」的数值回复会被记住，投递队列因此不再反复重试。
 
-### QQ（planned）
+### QQ
 
 ```jsonc
 {
@@ -328,10 +329,13 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 }
 ```
 
-本构建未实现：启用会被报为 `unsupported`，`future channel test qq` 也会给出同样结论。
-接受该配置块是为了让配置可以先于实现写好。
+使用开放平台 v2 机器人：先取 app access token 并在过期前留出余量刷新；接入 WebSocket 网关
+（`op 10` hello、`op 2` identify、`op 1` 心跳、`op 11` ack、`op 0` dispatch）；回复带上原始
+`msg_id` 与逐条 `msg_seq`，因此被分片的一条回答仍属于同一条回复。网关下发 `op 7`/`op 9` 时
+是重新 identify 而不是退避重试。仅支持文本；群里 `require_mention` 生效，因为群事件只有被
+@ 时才会下发。`sandbox` 用于切换平台的沙箱网关。
 
-### iMessage（planned，仅 macOS）
+### iMessage（仅 macOS）
 
 ```jsonc
 {
@@ -343,25 +347,34 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 }
 ```
 
-本构建未实现。预定形态是用 `osascript` 驱动 Messages.app 发送、只读轮询本地 Messages
-数据库接收，因此仅限 macOS，且运行桥的进程需要「完全磁盘访问权限」。其他平台报
-`unsupported`。
+发送通过 `osascript` 驱动 Messages.app；接收只读读取本地 Messages 数据库，并把 Apple 纪元
+（2001-01-01，纳秒）换算成 Unix 毫秒。`db_path` 默认指向标准位置，存在的意义是让测试指向
+夹具。运行桥的进程需要「完全磁盘访问权限」，且该通道只在 macOS 存在——其他平台上每个入口都
+报 `unsupported`，不会假装可用。访问规则是 `sender_allowlist`；这里的 iMessage 会话都是私聊，
+因此没有提及门。
 
-### Email（planned）
+### Email
 
 ```jsonc
 {
   "enabled": true,
-  "imap": { "host": "", "port": 993, "username": "", "password": "", "mailbox": "INBOX" },
-  "smtp": { "host": "", "port": 587, "username": "", "password": "", "from": "" },
+  "imap": { "host": "imap.example.com", "port": 993, "username": "", "password": "", "mailbox": "INBOX", "security": "implicit", "timeout_seconds": 60 },
+  "smtp": { "host": "smtp.example.com", "port": 587, "username": "", "password": "", "from": "", "security": "starttls", "timeout_seconds": 60 },
   "poll_seconds": 30,
   "sender_allowlist": [],
   "subject_prefix": ""
 }
 ```
 
-本构建未实现。预定形态使用密码或应用专用密码（不支持 OAuth），会识别附件但不下载，
-并且绝不回复邮箱自身的地址。
+直接实现两个协议而不引入邮件库：聊天桥需要的子集很小且稳定。发送走 SMTP 提交（`EHLO`、
+`STARTTLS` 或隐式 TLS、`AUTH PLAIN`/`AUTH LOGIN`、点转义）；接收走 IMAP 轮询
+（`UID SEARCH UNSEEN` 后 `UID FETCH BODY.PEEK[]`，并标记为已读）。正文解析
+`multipart/alternative` 与 `mixed`，支持 quoted-printable、base64 与 RFC 2047 头，优先
+`text/plain`，回退到去标签的 `text/html`。回复通过 `In-Reply-To`/`References` 串线程，
+因此能力里 `threads` 为是。附件只被**列出**而不下载，桥也绝不回复邮箱自身的地址。
+`security` 取 `implicit`（连上即 TLS，993/465 端口）或 `starttls`（587/25 端口）；
+`timeout_seconds` 限制每一次协议读取，因此「接受连接后不再应答」的服务器会被判为可重试错误，
+而不是把轮询循环挂死。不支持 OAuth——请用密码或应用专用密码。
 
 ### Terminal
 
@@ -451,8 +464,10 @@ Linq 列出账号线路、IRC 真正建立连接并完成注册、Signal 用账�
 
 - **只有终端通道经过了真实验证。** 其他框架通道都是 `preview`：按平台公开 API 编写，
   对解析、分片、策略与错误分类有单测，但尚未在真实部署上跑过。请把第一次运行当成一次验证。
-- **QQ、iMessage、Email 尚未实现。** 它们被声明出来，是为了让 CLI、配置文件和本页能够描述
-  它们；启用其中之一会被报为 `unsupported`。
+- **QQ、iMessage、Email 是 preview，且各有平台形状的限制。** QQ 仅支持文本，其 `sandbox`
+  网关与生产网关的差异由平台文档界定而非代码；iMessage 需要 macOS 与「完全磁盘访问权限」，
+  且 `osascript` 发送路径在 Messages.app 不存在时会明确失败，因此无图形的服务器无法发送；
+  Email 是轮询而非 IDLE，因此一条消息最多晚 `poll_seconds` 才被发现，并且只列出附件而不下载。
 - **没有任何通道发送附件。** 入站图片是模型输入；provider 契约里根本没有出站媒体路径。
 - **Signal 可能丢消息。** `signal-cli` 守护进程在把消息交给客户端时就将其从队列移除，
   因此轮询中途停下的桥不会再拿到那条消息。它的 typing 与 reaction 调用是针对守护进程响应

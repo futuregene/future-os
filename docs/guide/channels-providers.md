@@ -106,9 +106,9 @@ columns are what the bridge can rely on:
 | WhatsApp | `whatsapp` | preview | Cloud API webhook | no | no | no | yes | yes | no | 4096 chars | a Meta WhatsApp Business app and a publicly reachable webhook URL |
 | Linq | `linq` | preview | signed webhook | no | no | no | no | yes | yes | 4000 chars | a Linq account with a provisioned sender |
 | IRC | `irc` | preview | TCP or TLS | no | no | no | no | no | yes | 400 bytes | — |
-| QQ | `qq` | planned | gateway websocket | no | no | no | no | no | yes | 4000 chars | a QQ open-platform bot |
-| iMessage | `imessage` | planned | macOS only | no | no | no | no | no | no | 20000 chars | macOS, and Full Disk Access for the terminal running the bridge |
-| Email | `email` | planned | IMAP + SMTP | no | no | no | no | no | no | 100000 bytes | a mailbox that allows IMAP and SMTP with a password or app password |
+| QQ | `qq` | preview | gateway websocket | no | no | no | no | no | yes | 4000 chars | a QQ open-platform bot |
+| iMessage | `imessage` | preview | macOS only | no | no | no | no | no | no | 20000 chars | macOS, and Full Disk Access for the terminal running the bridge |
+| Email | `email` | preview | IMAP + SMTP | no | yes | no | no | no | no | 100000 bytes | a mailbox that allows IMAP and SMTP with a password or app password |
 | Terminal | `cli` | live | stdin/stdout | no | no | yes | no | no | no | 100000 chars | — |
 
 Feishu and DingTalk are not in this table because they are not framework
@@ -119,8 +119,9 @@ channels; both are `live` and are described in
 
 Each channel declares one of three levels, and `future channel list` shows it:
 
-- **live** — exercised against the real platform; safe to rely on. Only the
-  terminal channel qualifies today.
+- **live** — exercised against the real platform; safe to rely on. The terminal
+  channel qualifies on its own terms (it needs no third party), and Feishu and
+  DingTalk are live in the same sense while running their own bridge.
 - **preview** — implemented against the platform's public API, but not yet
   exercised against a live deployment. Expect to verify your own setup; report
   what breaks.
@@ -372,7 +373,7 @@ are neutralised so a message cannot inject a command. A nickname collision is
 handled by renaming, and the numeric replies that mean "this target will never
 work" are remembered so the delivery queue stops retrying it.
 
-### QQ (planned)
+### QQ
 
 ```jsonc
 {
@@ -385,11 +386,15 @@ work" are remembered so the delivery queue stops retrying it.
 }
 ```
 
-Not implemented in this build: enabling it is reported as `unsupported`, and
-`future channel test qq` says the same. The block is accepted so configuration can
-be written ahead of the implementation.
+Uses the open-platform v2 bot: an app access token that is refreshed with margin
+before it expires, a websocket gateway (`op 10` hello, `op 2` identify, `op 1`
+heartbeat, `op 11` ack, `op 0` dispatch), and replies that carry the originating
+`msg_id` with a per-message `msg_seq` so a split answer stays one reply. A
+gateway `op 7`/`op 9` re-identifies rather than backing off. Text only, and
+`require_mention` applies in groups because group events arrive only when the bot
+is addressed. `sandbox` selects the platform's sandbox gateway.
 
-### iMessage (planned, macOS)
+### iMessage (macOS)
 
 ```jsonc
 {
@@ -401,27 +406,40 @@ be written ahead of the implementation.
 }
 ```
 
-Not implemented in this build. The intended shape is `osascript` driving
-Messages.app for sending and a read-only poll of the local Messages database for
-receiving, which is why it is macOS-only and why the process running the bridge
-needs Full Disk Access. On other platforms it reports `unsupported`.
+Sending drives Messages.app through `osascript`; receiving reads the local
+Messages database read-only and converts Apple's epoch (2001-01-01, nanoseconds)
+into Unix milliseconds. `db_path` defaults to the standard location and exists so
+a test can point at a fixture. The process running the bridge needs Full Disk
+Access, and the channel only exists on macOS — elsewhere every entry point
+reports `unsupported` rather than pretending. `sender_allowlist` is the access
+rule; there is no mention gate because iMessage conversations here are direct.
 
-### Email (planned)
+### Email
 
 ```jsonc
 {
   "enabled": true,
-  "imap": { "host": "", "port": 993, "username": "", "password": "", "mailbox": "INBOX" },
-  "smtp": { "host": "", "port": 587, "username": "", "password": "", "from": "" },
+  "imap": { "host": "imap.example.com", "port": 993, "username": "", "password": "", "mailbox": "INBOX", "security": "implicit", "timeout_seconds": 60 },
+  "smtp": { "host": "smtp.example.com", "port": 587, "username": "", "password": "", "from": "", "security": "starttls", "timeout_seconds": 60 },
   "poll_seconds": 30,
   "sender_allowlist": [],
   "subject_prefix": ""
 }
 ```
 
-Not implemented in this build. The intended shape uses a password or app
-password (no OAuth), recognizes attachments without downloading them, and never
-answers the mailbox's own address.
+Speaks the two protocols directly rather than through a mail crate, because the
+subset a chat bridge needs is small and stable. Sending is SMTP submission
+(`EHLO`, `STARTTLS` or implicit TLS, `AUTH PLAIN`/`AUTH LOGIN`, dot-stuffing);
+receiving is IMAP polling (`UID SEARCH UNSEEN` then `UID FETCH BODY.PEEK[]`,
+marked seen). Bodies are parsed from `multipart/alternative` and `mixed`, with
+quoted-printable, base64 and RFC 2047 headers, preferring `text/plain` and
+falling back to `text/html` with tags stripped. Replies thread through
+`In-Reply-To`/`References`, so `threads` is advertised. Attachments are *listed*
+but not downloaded, and the bridge never answers the mailbox's own address.
+`security` is `implicit` (TLS on connect, port 993/465) or `starttls`
+(port 587/25); `timeout_seconds` bounds every protocol read, so a server that
+accepts the connection and then stalls fails as a transient error instead of
+hanging the poll loop. OAuth is not supported — use a password or app password.
 
 ### Terminal
 
@@ -543,9 +561,13 @@ These are the things this page would otherwise imply work better than they do:
   is `preview`: written against the platform's public API, with unit tests for
   parsing, splitting, policy and error classification, but not yet run against a
   real deployment. Treat the first run as a verification exercise.
-- **QQ, iMessage and Email are not implemented.** They are declared so the CLI,
-  the configuration file and this page can describe them, and enabling one is
-  reported as `unsupported`.
+- **QQ, iMessage and Email are previews with platform-shaped gaps.** QQ is text
+  only and its `sandbox` gateway differs from production in ways the platform
+  documents rather than the code; iMessage needs macOS and Full Disk Access, and
+  its `osascript` send path fails loudly when Messages.app is absent, so a
+  headless server cannot send; Email polls rather than idles, so a message is
+  noticed up to `poll_seconds` late, and it lists attachments without fetching
+  them.
 - **Nothing sends attachments.** Inbound images are model input; there is no
   outbound media path in the provider contract at all.
 - **Signal can lose a message.** The `signal-cli` daemon removes a message from
