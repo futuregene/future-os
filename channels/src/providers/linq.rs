@@ -52,7 +52,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "linq",
     display_name: "Linq (iMessage / RCS)",
     description: "Hosted iMessage and RCS messaging: signed webhook inbound, REST outbound.",
-    docs: "docs/guide/channels-linq.md",
+    docs: "docs/guide/channels-providers.md#linq",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

@@ -14,7 +14,7 @@ pub static FEISHU: ChannelDefinition = ChannelDefinition {
     display_name: "Feishu / Lark",
     description:
         "Bidirectional Feishu (Lark) bot with streaming interactive cards and approval buttons.",
-    docs: "docs/guide/channels-feishu.md",
+    docs: "docs/guide/channels-config.md#feishu",
     maturity: Maturity::Live,
     capabilities: Capabilities {
         receive: true,
@@ -42,7 +42,7 @@ pub static DINGTALK: ChannelDefinition = ChannelDefinition {
     id: "dingtalk",
     display_name: "DingTalk",
     description: "DingTalk Stream-mode bot with markdown replies.",
-    docs: "docs/guide/channels-dingtalk.md",
+    docs: "docs/guide/channels-config.md#dingtalk",
     maturity: Maturity::Live,
     capabilities: Capabilities {
         receive: true,

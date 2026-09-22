@@ -111,7 +111,12 @@ same block. Declare your own struct with `#[serde(default)]` on every field and
 do **not** add `#[serde(deny_unknown_fields)]` — the policy keys are not yours.
 Read it with `ctx.config::<MyConfig>()?`, which names the channel when a field is
 malformed. Keep `DEFINITION.config_example` in step with what you read, and
-document the block in [Channel providers](channels-providers.md).
+document the block in [Channel providers](channels-providers.md): add a section
+for the channel there and point `DEFINITION.docs` at it, including the anchor
+(`docs/guide/channels-providers.md#my-channel`). `docs` is what
+`future channel list --json` reports, so a path that resolves nowhere reads as
+documentation without being any — `every_channel_documents_itself_somewhere_that_exists`
+fails the build unless every channel's target, anchor included, exists.
 
 ## Errors
 

@@ -37,7 +37,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "discord",
     display_name: "Discord",
     description: "Discord bot: gateway websocket, streamed replies, guild mention gate.",
-    docs: "docs/guide/channels-discord.md",
+    docs: "docs/guide/channels-providers.md#discord",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

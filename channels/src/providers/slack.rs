@@ -43,7 +43,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "slack",
     display_name: "Slack",
     description: "Slack app: Socket Mode or Events API, threaded replies, progress reactions.",
-    docs: "docs/guide/channels-slack.md",
+    docs: "docs/guide/channels-providers.md#slack",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,
