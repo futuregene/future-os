@@ -463,14 +463,15 @@ mod tests {
         started.status.flush().unwrap();
 
         let snapshot = StatusSnapshot::load(&root.join("status.json"));
-        for row in cli_cmd::ListReport::build(&config).channels {
-            let Some(entry) = snapshot.channels.get(row.id) else {
-                panic!(
-                    "{} was never published ({} channels reported)",
-                    row.id,
-                    snapshot.channels.len()
-                )
-            };
+        let report = cli_cmd::ListReport::build(&config);
+        let published = snapshot.channels.len();
+        assert_eq!(
+            published,
+            report.channels.len(),
+            "every registered channel must be published"
+        );
+        for row in &report.channels {
+            let entry = snapshot.channels.get(row.id).expect("published above");
             match row.configured {
                 // Enabled but not built: reported, never silently skipped.
                 "unsupported" => assert_eq!(
@@ -555,6 +556,39 @@ mod tests {
         // The periodic flush reports rather than panics.
         let shutdown = Shutdown::new();
         let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+        shutdown.trigger();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), flusher).await;
+        assert!(stopped.is_ok(), "the flusher must stop on shutdown");
+    }
+
+    #[tokio::test]
+    async fn a_data_directory_that_cannot_be_created_is_reported_not_fatal() {
+        // A file where the channel's data directory should be: the provider
+        // still starts (it reports the problem) instead of taking the process
+        // down before it can say anything.
+        let config = config_with(&[("cli", true)]);
+        let root = crate::test_support::temp_dir("lib-start-wedged-dir");
+        std::fs::write(root.join("cli"), b"not a directory").unwrap();
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let started = start_all(&config, root, status).expect("start");
+        assert_eq!(started.started_providers, 1);
+        started.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_flusher_survives_an_unwritable_snapshot() {
+        // The flusher ticks on a timer: a write failure is reported and the task
+        // keeps running, because losing diagnostics must not stop the bridge.
+        let root = crate::test_support::temp_dir("lib-flusher-unwritable");
+        std::fs::write(root.join("blocked"), b"not a directory").unwrap();
+        let status = Arc::new(StatusBoard::new(root.join("blocked").join("status.json")));
+        // A counter change is written by the periodic check rather than a state
+        // transition, so the flusher's own error path runs.
+        status.count_inbound("cli", crate::status::now_unix());
+        let shutdown = Shutdown::new();
+        let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+        // Long enough for one tick (the interval is two seconds).
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
         shutdown.trigger();
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), flusher).await;
         assert!(stopped.is_ok(), "the flusher must stop on shutdown");

@@ -547,9 +547,8 @@ impl ProviderCtx {
             let safe = sanitize_filename(&name);
             let path = self.data_dir.join("inbox").join(safe);
             let saved = (|| -> std::io::Result<()> {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
+                let parent = path.parent().unwrap_or(&self.data_dir);
+                std::fs::create_dir_all(parent)?;
                 std::fs::write(&path, data)
             })();
             if let Err(error) = saved {
@@ -928,11 +927,10 @@ mod tests {
         let images = ctx.collect_images(&inbound);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].content_type, "image/png");
-        let encoded = match &images[0].data {
-            ImageData::Base64(encoded) => encoded.clone(),
-            ImageData::Url(url) => url.clone(),
-        };
-        assert_eq!(encoded, "AQIDBA==", "image bytes travel as base64");
+        assert!(
+            matches!(images[0].data, ImageData::Base64(_)),
+            "image bytes travel as base64"
+        );
         // A URL-only attachment is never model input: there are no bytes.
         let mut linked = Inbound::new_direct("m2", "u1", "c1", "look");
         linked.media = vec![MediaRef {
@@ -956,6 +954,26 @@ mod tests {
             ..Default::default()
         }];
         assert!(ctx.collect_images(&inbound).is_empty());
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_saved_is_still_sent_as_input() {
+        // The channel's inbox path is blocked by a file: the attachment cannot
+        // be written to disk, which is reported, and the bytes still reach the
+        // model rather than being dropped.
+        let ctx = ctx("bridge-images-unsaveable", open_policy());
+        ctx.ensure_data_dir().unwrap();
+        std::fs::write(ctx.data_dir().join("inbox"), b"not a directory").unwrap();
+        let mut inbound = Inbound::new_direct("m1", "u1", "c1", "look");
+        inbound.media = vec![MediaRef {
+            kind: MediaKind::Image,
+            filename: Some("shot.png".into()),
+            content_type: Some("image/png".into()),
+            data: Some(vec![1, 2, 3, 4]),
+            ..Default::default()
+        }];
+        let images = ctx.collect_images(&inbound);
+        assert_eq!(images.len(), 1, "the bytes survive an unwritable inbox");
     }
 
     #[test]

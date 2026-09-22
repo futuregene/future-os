@@ -1614,6 +1614,106 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .expect("shutdown is a clean end");
 }
 
+// ── Remaining session/dispatch/webhook arms ────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dispatch_skips_events_that_are_not_prompts_and_survives_attachment_failures() {
+    let (base, _) = crate::test_support::spawn_http(vec![
+        // The private file URL answers with a platform error: the download
+        // fails, the reference survives, and the event is still handled.
+        crate::test_support::HttpRoute::json("/files/private.png", 500, "{}"),
+    ])
+    .await;
+    let dir = crate::test_support::temp_dir("slack-dispatch-edges");
+    let ctx = dispatch_ctx(config_value(&test_config(&base)), &dir);
+    let recording: Arc<RecordingSender> = Arc::new(RecordingSender::new());
+    let sender: Arc<dyn ChannelSender> = recording.clone();
+
+    // An event whose shape cannot become an inbound message is dropped
+    // without ever reaching the bridge pipeline.
+    let malformed = json!({ "type": "message", "text": null });
+    dispatch_event(&ctx, &sender, &malformed, "UBOT").await;
+
+    // A file_share with no text is still a prompt; its image attachment
+    // cannot be fetched (HTTP 500 above), which is logged and tolerated.
+    let event = message_event(json!({
+        "subtype": "file_share",
+        "text": "",
+        "channel_type": "im",
+        "channel": "D999",
+        "ts": format!("{}.000100", crate::bridge::dedup::now_ms() / 1000),
+        "client_msg_id": format!("dispatch-{}", crate::bridge::dedup::now_ms()),
+        "files": [{
+            "mimetype": "image/png",
+            "url_private": format!("{base}/files/private.png")
+        }],
+    }));
+    dispatch_event(&ctx, &sender, &event, "UBOT").await;
+
+    assert!(
+        recording.taken().is_empty(),
+        "neither dispatch sends anything visible"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_events_webhook_binds_the_configured_port_without_the_test_hook() {
+    let _hook = super::webhook_test_hook::lock();
+    // No hook armed: `run_events_webhook` must bind the configured port.
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        drop(listener);
+        port
+    };
+    let dir = crate::test_support::temp_dir("slack-webhook-configured-port");
+    let mut config = test_config("http://127.0.0.1:1");
+    config.signing_secret = "signing-secret".to_string();
+    config.webhook_port = port;
+    config.webhook_path = "/events".to_string();
+    let ctx = dispatch_ctx(config_value(&config), &dir);
+    let webhook_config = ctx.config::<SlackConfig>().unwrap();
+    let shutdown = ctx.shutdown().clone();
+    let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
+    let serving = tokio::spawn(async move {
+        run_events_webhook(&ctx, sender, &webhook_config, "UBOT".into()).await
+    });
+
+    // The challenge answered over the configured port proves the bind.
+    let url = format!("http://127.0.0.1:{port}/events");
+    let client = reqwest::Client::new();
+    let mut answered = false;
+    for _ in 0..50 {
+        let body =
+            json!({ "type": "url_verification", "challenge": "configured-port" }).to_string();
+        let timestamp = slack_now();
+        let signature = slack_signature("signing-secret", &timestamp, body.as_bytes());
+        match client
+            .post(&url)
+            .header("x-slack-request-timestamp", &timestamp)
+            .header("x-slack-signature", &signature)
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(response) if response.status() == 200 => {
+                assert_eq!(response.text().await.unwrap(), "configured-port");
+                answered = true;
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    assert!(answered, "the webhook must answer on the configured port");
+
+    shutdown.trigger();
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("the webhook must stop promptly after shutdown")
+        .expect("the webhook task must not panic")
+        .expect("shutdown is a clean end");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_events_webhook_normalizes_an_already_slash_prefixed_path() {
     let _hook = super::webhook_test_hook::lock();

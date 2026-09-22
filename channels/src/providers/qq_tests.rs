@@ -594,6 +594,162 @@ async fn malformed_and_unknown_frames_are_ignored() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_second_hello_after_identify_is_not_reanswered() {
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::Delay(Duration::from_millis(200)),
+        // A duplicate hello (some gateways re-announce on reconnect hints)
+        // must not trigger a second identify.
+        WsAction::SendText(hello.to_string()),
+        WsAction::Delay(Duration::from_millis(200)),
+        WsAction::SendClose,
+    ])
+    .await;
+    let ctx = ctx_with_config(valid_config_json());
+    let config: QqConfig = serde_json::from_value(json!({
+        "app_id": "app-1",
+        "app_secret": "secret-1",
+        "gateway_url": url,
+    }))
+    .unwrap();
+    let api = gateway_test_api(&ctx, &config);
+    let sender = Qq.sender(&ctx).unwrap();
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_gateway(&ctx, &config, &api, sender),
+    )
+    .await;
+    let frames = received_gateway_frames(&received);
+    let identifies: Vec<&Value> = frames.iter().filter(|f| f["op"] == OP_IDENTIFY).collect();
+    assert_eq!(identifies.len(), 1, "{frames:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_c2c_dispatch_is_ignored_but_the_connection_lives() {
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    // Missing author: `parse_message_create` returns None, so nothing is
+    // answered — but the loop must not treat it as an error.
+    let empty_dispatch = json!({"op": 0, "s": 12, "t": "C2C_MESSAGE_CREATE", "d": {"id": "m-x"}});
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(empty_dispatch.to_string()),
+        WsAction::Delay(Duration::from_millis(150)),
+        // A valid dispatch right after proves the loop kept reading.
+        WsAction::SendText(
+            json!({
+                "op": 0, "s": 13, "t": "C2C_MESSAGE_CREATE",
+                "d": {"id": "m-ok", "content": "still alive", "author": {"user_openid": "u-9"}}
+            })
+            .to_string(),
+        ),
+        WsAction::Delay(Duration::from_millis(300)),
+        WsAction::SendClose,
+    ])
+    .await;
+    let ctx = ctx_with_open_dm("qq-c2c-empty");
+    let config: QqConfig = serde_json::from_value(json!({
+        "app_id": "app-1",
+        "app_secret": "secret-1",
+        "gateway_url": url,
+    }))
+    .unwrap();
+    let api = gateway_test_api(&ctx, &config);
+    let sender = Arc::new(RecordingSender::default());
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_gateway(&ctx, &config, &api, sender.clone()),
+    )
+    .await;
+    // The empty dispatch was skipped; the valid one after it was handled.
+    let sent = sender.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("Cannot reach the agent"), "{sent:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_group_dispatch_is_ignored_but_the_connection_lives() {
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    // No `group_openid`: the group shape cannot be built, so the dispatch is
+    // skipped and the loop carries on to the READY that follows.
+    let empty_dispatch = json!({
+        "op": 0, "s": 14, "t": "GROUP_AT_MESSAGE_CREATE",
+        "d": {"id": "m-y", "content": "ping"}
+    });
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(empty_dispatch.to_string()),
+        WsAction::Delay(Duration::from_millis(150)),
+        // A valid group dispatch right after proves the loop kept reading.
+        WsAction::SendText(
+            json!({
+                "op": 0, "s": 15, "t": "GROUP_AT_MESSAGE_CREATE",
+                "d": {
+                    "id": "m-g2", "content": "still alive",
+                    "group_openid": "g-2", "author": {"member_openid": "u-8"}
+                }
+            })
+            .to_string(),
+        ),
+        WsAction::Delay(Duration::from_millis(300)),
+        WsAction::SendClose,
+    ])
+    .await;
+    let ctx = ctx_with_open_dm("qq-group-empty");
+    let config: QqConfig = serde_json::from_value(json!({
+        "app_id": "app-1",
+        "app_secret": "secret-1",
+        "gateway_url": url,
+    }))
+    .unwrap();
+    let api = gateway_test_api(&ctx, &config);
+    let sender = Arc::new(RecordingSender::default());
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_gateway(&ctx, &config, &api, sender.clone()),
+    )
+    .await;
+    // The empty dispatch was skipped; the valid one after it was handled.
+    let sent = sender.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("Cannot reach the agent"), "{sent:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_ping_frame_is_ponged_and_the_connection_lives() {
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        // A transport-level ping hits the `_ => {}` message arm; tungstenite
+        // pongs it automatically and the loop must keep reading.
+        WsAction::SendPing(b"are you there".to_vec()),
+        WsAction::Delay(Duration::from_millis(150)),
+        WsAction::SendText(json!({"op": 0, "s": 16, "t": "READY", "d": {}}).to_string()),
+        WsAction::Delay(Duration::from_millis(150)),
+        WsAction::SendClose,
+    ])
+    .await;
+    let ctx = ctx_with_config(valid_config_json());
+    let config: QqConfig = serde_json::from_value(json!({
+        "app_id": "app-1",
+        "app_secret": "secret-1",
+        "gateway_url": url,
+    }))
+    .unwrap();
+    let api = gateway_test_api(&ctx, &config);
+    let sender = Qq.sender(&ctx).unwrap();
+    let _ = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_gateway(&ctx, &config, &api, sender),
+    )
+    .await;
+    let frames = received_gateway_frames(&received);
+    // The identify went out before the ping, and the READY frame after it
+    // was still processed — the ping never disturbed the loop.
+    assert_eq!(frames[0]["op"], OP_IDENTIFY);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_server_heartbeat_frame_is_echoed_immediately() {
     let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
     let (url, received) = spawn_ws(vec![

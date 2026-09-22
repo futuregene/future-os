@@ -650,6 +650,98 @@ async fn a_server_close_frame_is_an_error_so_the_supervisor_reconnects() {
     );
 }
 
+#[tokio::test]
+async fn a_reset_socket_fails_the_auth_challenge_send() {
+    // The platform can reset the connection between the upgrade and the first
+    // write. The session must report that as an unwritable socket instead of
+    // hanging.
+    let (url, _) = spawn_ws(vec![WsAction::ResetTcp]).await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let result = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await;
+    let error = result.expect_err("a reset socket is not a clean exit");
+    assert!(error.to_string().contains("not writable"), "{error}");
+}
+
+#[tokio::test]
+async fn a_reset_socket_fails_the_pong_reply() {
+    // A ping arrives while the socket is already dead: answering it must
+    // fail, and the session must surface that as an unwritable socket.
+    let (url, _) = spawn_ws(vec![
+        WsAction::SendPing(b"keepalive".to_vec()),
+        WsAction::ResetTcp,
+    ])
+    .await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let result = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await;
+    let error = result.expect_err("a pong on a dead socket must fail");
+    assert!(error.to_string().contains("not writable"), "{error}");
+}
+
+#[tokio::test]
+async fn a_binary_frame_is_ignored_and_the_session_continues() {
+    // Mattermost speaks JSON text; a binary frame is unexpected but must not
+    // end the session — the next text frame is still handled.
+    let hello = json!({"event": "hello", "data": {"server_version": "9.0"}});
+    let posted = posted_event(&channel_post(""), &["bot-id"], "O");
+    let (url, _) = spawn_ws(vec![
+        WsAction::SendBinary(vec![0x01, 0x02, 0x03]),
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(posted.to_string()),
+        WsAction::Delay(std::time::Duration::from_millis(150)),
+    ])
+    .await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let session = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket);
+    tokio::time::timeout(std::time::Duration::from_secs(5), session)
+        .await
+        .expect("the session must end when the server drops the socket")
+        .expect_err("a dropped socket asks for a reconnect");
+}
+
+#[test]
+fn an_unparseable_post_is_dropped_by_the_gate() {
+    // A malformed `posted` payload must be dropped without reaching the
+    // bridge. The gate is `parse_ws_event`: an unparseable post string must
+    // be rejected before any dispatch happens.
+    let event = json!({
+        "event": "posted",
+        "data": {
+            // `post` is a JSON string on the wire; an unparseable string
+            // must be rejected before any dispatch happens.
+            "post": "not valid json",
+            "mentions": "[]",
+            "channel_type": "O",
+        }
+    });
+    assert!(
+        parse_ws_event(&event).is_none(),
+        "an unparseable post must never normalize"
+    );
+}
+
+#[test]
+fn a_post_without_a_message_is_dropped() {
+    let mut post = channel_post("");
+    post["message"] = json!("   ");
+    let event = posted_event(&post, &["bot-id"], "O");
+    let posted = parse_ws_event(&event).unwrap();
+    assert!(
+        parse_posted(&posted, "bot-id", &HashSet::new())
+            .unwrap()
+            .is_none(),
+        "a whitespace-only message must be dropped"
+    );
+}
+
 // ─── Dispatch through the bridge ────────────────────────────────────────────
 
 /// A sender that records reactions; delivery itself never happens in these

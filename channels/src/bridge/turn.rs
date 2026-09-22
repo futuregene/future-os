@@ -288,6 +288,7 @@ mod tests {
     use crate::providers::traits::{Capabilities, ChannelDefinition, ChannelSender, Maturity};
     use crate::test_support as ts;
     use crate::transport::LengthUnit;
+    use std::sync::atomic::Ordering;
     use std::sync::Mutex as StdMutex;
 
     static DEFINITION: ChannelDefinition = ChannelDefinition {
@@ -731,6 +732,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_updates_are_throttled_to_the_sink_interval() {
+        // Two thinking deltas inside one interval: only the first is pushed, so
+        // a fast model cannot flood a slow platform.
+        // Events are paced so the two deltas land inside one throttle window.
+        let fixture = fixture_with(ts::MockState {
+            stream_event_delay: Some(Duration::from_millis(20)),
+            events: vec![
+                ts::ev(run_id(), 1, "thinking_start", "{}"),
+                ts::ev(run_id(), 2, "thinking_delta", r#"{"text":"one"}"#),
+                ts::ev(run_id(), 3, "thinking_delta", r#"{"text":" two"}"#),
+                ts::ev(run_id(), 4, "text_chunk", r#"{"text":"answer"}"#),
+                ts::ev(run_id(), 5, "agent_end", r#"{"state":"completed"}"#),
+            ],
+            ..Default::default()
+        })
+        .await;
+        // A 100ms window: the first delta is due (the sink starts "stale"), the
+        // second arrives 20ms later and must be skipped.
+        let slow =
+            Arc::new(RecordingProgressiveSink::default().with_throttle(Duration::from_millis(100)));
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let outcome = run_turn(
+            &fixture.client,
+            request(&fixture, "hi", slow.clone(), generation, 1),
+        )
+        .await
+        .expect("turn returns");
+        assert_eq!(outcome.thinking, "one two");
+        assert_eq!(slow.thinking_pushes(), 1, "the second delta is throttled");
+    }
+
+    #[tokio::test]
     async fn an_approval_is_advertised_and_its_route_is_kept_while_parked() {
         let fixture = fixture(vec![
             ts::ev(
@@ -790,9 +823,17 @@ mod tests {
         finishes: StdMutex<usize>,
         supersedes: StdMutex<usize>,
         thinking: StdMutex<Vec<String>>,
+        /// Milliseconds, so the struct stays `Default`.
+        throttle: std::sync::atomic::AtomicU64,
     }
 
     impl RecordingProgressiveSink {
+        fn with_throttle(self, throttle: Duration) -> Self {
+            self.throttle
+                .store(throttle.as_millis() as u64, Ordering::SeqCst);
+            self
+        }
+
         fn updates(&self) -> Vec<String> {
             self.updates.lock().unwrap().clone()
         }
@@ -826,6 +867,10 @@ mod tests {
     impl ReplySink for RecordingProgressiveSink {
         fn progressive(&self) -> bool {
             true
+        }
+
+        fn throttle(&self) -> Duration {
+            Duration::from_millis(self.throttle.load(Ordering::SeqCst))
         }
 
         async fn text(&self, update: TextUpdate<'_>) -> Result<()> {

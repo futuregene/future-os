@@ -532,6 +532,59 @@ mod tests {
         assert!(response.ends_with("hello"), "{response}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_client_that_vanishes_mid_response_is_not_fatal() {
+        // A reset connection makes the server's write fail. That is an ordinary
+        // client going away, so the connection task reports it and the listener
+        // stays up for the next request.
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+            "POST",
+            "/hook",
+            |_request| async move { WebhookResponse::text(200, "x".repeat(4096)) },
+        );
+        let (addr, shutdown, serving) = serve(server).await;
+
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        // SO_LINGER 0: closing sends an RST instead of a FIN.
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&stream);
+        let set = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &linger as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            )
+        };
+        assert_eq!(set, 0, "SO_LINGER must be settable");
+        stream.set_nonblocking(true).unwrap();
+        {
+            use std::io::Write as _;
+            let mut stream = tokio::net::TcpStream::from_std(stream).unwrap();
+            let _ = stream
+                .write_all(b"POST /hook HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+        // Dropping the socket with SO_LINGER 0 resets it while the server writes.
+
+        // The listener must still answer a normal request afterwards.
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+        let ok = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.post(format!("http://{addr}/hook")).send(),
+        )
+        .await
+        .expect("the server must still be listening")
+        .expect("request");
+        assert_eq!(ok.status().as_u16(), 200);
+        stop(shutdown, serving).await;
+    }
+
     #[tokio::test]
     async fn a_client_that_stops_mid_body_ends_the_connection_quietly() {
         // Content-Length promises more than the client sends: the server must

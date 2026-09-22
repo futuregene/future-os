@@ -284,11 +284,74 @@ mod provider_macos {
     }
 
     #[tokio::test]
+    async fn send_via_applescript_round_trips_or_fails_honestly() {
+        // macos::send(): build the script, run osascript, map the outcome.
+        match macos::send("+15551234567", "hello from the test suite").await {
+            Ok(()) => {
+                // Messages.app is running and accepted the send.
+            }
+            Err(error) => {
+                // Headless CI has no Messages.app: the refusal names the
+                // send path rather than a bare spawn error.
+                let text = error.to_string();
+                assert!(
+                    text.contains("Messages") || text.contains("osascript"),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_malformed_config_is_rejected_everywhere() {
         let ctx = ctx_with_config(json!({"poll_seconds": "five"}));
         assert!(IMessage.sender(&ctx).is_err());
         assert!(IMessage.probe(&ctx).await.is_err());
         assert!(IMessage.run(ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_constructs_its_sender_and_enters_the_poll_loop() {
+        // The provider-level run(): config parse, sender construction, then
+        // the poll loop — which here fails its queries against an absent
+        // database, marks the status, and keeps waiting until shutdown.
+        let data_dir = crate::test_support::temp_dir("imsg-run-ctx");
+        let ctx = ProviderCtx::new(
+            &DEFINITION,
+            json!({
+                "enabled": true,
+                "db_path": "/nonexistent/chat.db",
+                "poll_seconds": 1,
+            }),
+            crate::bridge::Bridge::new(
+                std::sync::Arc::new(crate::config::AgentConfig {
+                    grpc_addr: "http://127.0.0.1:1".into(),
+                    cwd: data_dir.to_string_lossy().into_owned(),
+                    ..crate::config::AgentConfig::default()
+                }),
+                crate::policy::AccessPolicyConfig::default(),
+                data_dir.clone(),
+                std::sync::Arc::new(crate::status::StatusBoard::new(
+                    data_dir.join("status.json"),
+                )),
+            ),
+            data_dir.clone(),
+            std::sync::Arc::new(crate::session_store::SessionStore::new(
+                data_dir.join("sessions.json"),
+            )),
+            crate::bridge::Shutdown::new(),
+        );
+        let run = {
+            let ctx = ctx.clone();
+            tokio::spawn(async move { IMessage.run(ctx).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+        ctx.shutdown().trigger();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("run must stop on shutdown")
+            .expect("the task must not panic");
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]
@@ -511,6 +574,30 @@ mod supported {
         }
     }
 
+    #[tokio::test]
+    async fn probe_reports_the_app_version_and_the_database_path() {
+        let db = fixture_db("imsg-probe");
+        let config: IMessageConfig =
+            serde_json::from_value(json!({"db_path": db.to_string_lossy()})).unwrap();
+        match macos::probe(&config).await {
+            Ok(summary) => {
+                // Messages.app answered: the summary names the database.
+                assert!(summary.contains("database readable at"), "{summary}");
+                assert!(summary.contains("chat.db"), "{summary}");
+            }
+            Err(error) => {
+                // Headless CI has no Messages.app: the chat.db query already
+                // succeeded, so the failure must come from the osascript
+                // half of the probe.
+                let text = error.to_string();
+                assert!(
+                    text.contains("Messages") || text.contains("osascript"),
+                    "{text}"
+                );
+            }
+        }
+    }
+
     // ─── The poll loop ───────────────────────────────────────────────────
 
     #[tokio::test]
@@ -628,6 +715,141 @@ mod supported {
         let sent = sender.sent();
         // Only the allowlisted handle's row became a prompt; row 102
         // (buddy@example.com) was filtered by the allowlist.
+        assert_eq!(sent.len(), 1, "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn the_poll_loop_marks_a_query_failure_and_keeps_polling() {
+        // chat.db is absent: every query fails, the poll marks the status
+        // and continues; shutdown still stops the loop cleanly.
+        let data_dir = crate::test_support::temp_dir("imsg-fail-ctx");
+        let status = std::sync::Arc::new(crate::status::StatusBoard::new(
+            data_dir.join("status.json"),
+        ));
+        let bridge = crate::bridge::Bridge::new(
+            std::sync::Arc::new(crate::config::AgentConfig {
+                grpc_addr: "http://127.0.0.1:1".into(),
+                cwd: data_dir.to_string_lossy().into_owned(),
+                ..crate::config::AgentConfig::default()
+            }),
+            crate::policy::AccessPolicyConfig {
+                dm_policy: "open".into(),
+                ..Default::default()
+            },
+            data_dir.clone(),
+            status.clone(),
+        );
+        let ctx = ProviderCtx::new(
+            &DEFINITION,
+            json!({
+                "enabled": true,
+                "db_path": "/nonexistent/chat.db",
+                "poll_seconds": 1,
+            }),
+            bridge,
+            data_dir.clone(),
+            std::sync::Arc::new(crate::session_store::SessionStore::new(
+                data_dir.join("sessions.json"),
+            )),
+            crate::bridge::Shutdown::new(),
+        );
+        let sender = std::sync::Arc::new(PollRecordingSender::default());
+        let run = {
+            let ctx = ctx.clone();
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                let config: IMessageConfig = ctx.config().unwrap();
+                macos::run_polling(&ctx, &config, sender).await
+            })
+        };
+        // Two poll intervals so the failed-query arm runs, then shutdown.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        ctx.shutdown().trigger();
+        let result = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .expect("the loop must stop on shutdown")
+            .expect("the task must not panic");
+        assert!(result.is_ok(), "{result:?}");
+        // Nothing was ever delivered, and the failure was published.
+        assert!(sender.sent().is_empty());
+        let snapshot = crate::status::StatusSnapshot::load(status.path());
+        let entry = snapshot
+            .channels
+            .get("imessage")
+            .expect("the poll must publish a status");
+        assert_eq!(entry.state, Some(crate::status::ChannelState::Error));
+        let last_error = entry.last_error.as_deref().unwrap_or_default();
+        assert!(last_error.contains("Full Disk Access"), "{last_error}");
+    }
+
+    #[tokio::test]
+    async fn the_poll_loop_skips_rows_without_a_handle() {
+        // A row whose JOIN finds no handle must be skipped, not answered.
+        let dir = crate::test_support::temp_dir("imsg-nohandle");
+        let db = dir.join("chat.db");
+        let apple_ns: i64 = 812_464_800_000_000_000;
+        let sql = format!(
+            "CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);\
+             CREATE TABLE message (ROWID INTEGER PRIMARY KEY, handle_id INTEGER, text TEXT, date INTEGER, is_from_me INTEGER);\
+             INSERT INTO handle VALUES (1, '+15551234567');\
+             INSERT INTO message VALUES (201, 1, 'from a known handle', {apple_ns}, 0);\
+             INSERT INTO message VALUES (202, 99, 'from a handle nobody knows', {apple_ns}, 0);"
+        );
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db)
+            .arg(&sql)
+            .status()
+            .expect("sqlite3 must exist on macOS");
+        assert!(status.success());
+        let data_dir = crate::test_support::temp_dir("imsg-nohandle-ctx");
+        let bridge = crate::bridge::Bridge::new(
+            std::sync::Arc::new(crate::config::AgentConfig {
+                grpc_addr: "http://127.0.0.1:1".into(),
+                cwd: data_dir.to_string_lossy().into_owned(),
+                ..crate::config::AgentConfig::default()
+            }),
+            crate::policy::AccessPolicyConfig {
+                dm_policy: "open".into(),
+                ..Default::default()
+            },
+            data_dir.clone(),
+            std::sync::Arc::new(crate::status::StatusBoard::new(
+                data_dir.join("status.json"),
+            )),
+        );
+        let ctx = ProviderCtx::new(
+            &DEFINITION,
+            json!({
+                "enabled": true,
+                "db_path": db.to_string_lossy(),
+                "poll_seconds": 1,
+            }),
+            bridge,
+            data_dir.clone(),
+            std::sync::Arc::new(crate::session_store::SessionStore::new(
+                data_dir.join("sessions.json"),
+            )),
+            crate::bridge::Shutdown::new(),
+        );
+        let sender = std::sync::Arc::new(PollRecordingSender::default());
+        let run = {
+            let ctx = ctx.clone();
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                let config: IMessageConfig = ctx.config().unwrap();
+                macos::run_polling(&ctx, &config, sender).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        ctx.shutdown().trigger();
+        tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .expect("the loop must stop")
+            .expect("no panic")
+            .expect("clean exit");
+        let sent = sender.sent();
+        // Only the known handle's row became a prompt; the dangling row was
+        // skipped at the empty-handle guard.
         assert_eq!(sent.len(), 1, "{sent:?}");
     }
 
