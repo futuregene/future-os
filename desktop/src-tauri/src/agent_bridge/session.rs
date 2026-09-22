@@ -14,12 +14,10 @@ use crate::store;
 #[derive(Debug)]
 pub(super) struct EnsuredSession {
     pub session_id: String,
-    /// True when the thread ALREADY had a session id but it was unusable
-    /// (agent lost the session data, or its cwd no longer matches the
-    /// thread's workspace), so a fresh empty session silently replaced it.
-    /// The agent-side context is gone even though the GUI still shows the
-    /// history — callers must surface this instead of rebinding quietly.
-    pub recreated: bool,
+    /// True only when the caller supplied no identity and this function minted
+    /// the first session for an unbound thread. Existing thread/session
+    /// identity is immutable here: metadata may converge, identity may not.
+    pub created: bool,
 }
 
 /// Ensure an agent session exists for the given thread. Returns the session
@@ -51,13 +49,37 @@ pub(super) async fn ensure_agent_session(
                 .get("cwd")
                 .and_then(|cwd| cwd.as_str())
                 .unwrap_or_default();
-            if active_id == session_id && active_cwd == cwd {
-                return Ok(EnsuredSession {
-                    session_id: session_id.to_string(),
-                    recreated: false,
-                });
+            if active_id != session_id {
+                return Err(format!(
+                    "Future Agent returned session {active_id:?} while inspecting {session_id:?}."
+                )
+                .into());
             }
-        } else if !is_missing_session_error(&response.error) {
+            if active_cwd != cwd {
+                // The Desktop thread owns the workspace binding. A cwd drift is
+                // metadata that can be repaired in place; it is not evidence
+                // that the Agent lost the conversation. Replacing this live
+                // session used to discard its complete history (most visibly
+                // when returning to the parent after a fork).
+                client
+                    .execute_command(set_cwd_command(cwd.to_string(), session_id.to_string()))
+                    .await
+                    .map_err(|error| {
+                        format!("Unable to restore Future Agent session workspace: {error}")
+                    })?
+                    .into_inner()
+                    .ok_or_rpc_error("Future Agent rejected the session workspace repair.")?;
+            }
+            return Ok(EnsuredSession {
+                session_id: session_id.to_string(),
+                created: false,
+            });
+        } else if is_missing_session_error(&response.error) {
+            return Err(format!(
+                "Future Agent session {session_id:?} is missing. The conversation binding was preserved instead of replacing its history with an empty session."
+            )
+            .into());
+        } else {
             return Err(format!(
                 "Future Agent could not load the existing session: {}",
                 response.error
@@ -87,12 +109,13 @@ pub(super) async fn ensure_agent_session(
         .and_then(|v| v.get("sessionId").cloned())
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
+    if new_id.is_empty() {
+        return Err("Future Agent created a session without returning its identity.".into());
+    }
 
     Ok(EnsuredSession {
         session_id: new_id,
-        // A non-empty incoming session id means this new session REPLACES one
-        // the agent no longer has — the previous context is lost.
-        recreated: !session_id.is_empty(),
+        created: true,
     })
 }
 
@@ -575,20 +598,19 @@ mod tests {
             .await
             .expect("ensured");
         assert_eq!(ensured.session_id, "sess-1");
-        assert!(!ensured.recreated);
+        assert!(!ensured.created);
         assert!(mock.requests_of("new_session").is_empty());
     }
 
     #[tokio::test]
-    async fn ensure_recreates_when_the_agent_lost_or_moved_the_session() {
+    async fn ensure_repairs_a_moved_session_without_losing_context() {
         let (mock, mut client) = mock_client().await;
 
-        // cwd drift → recreate.
         mock.push_data(
             "get_state",
             serde_json::json!({"sessionId": "sess-1", "cwd": "/elsewhere"}),
         );
-        mock.push_data("new_session", serde_json::json!({"sessionId": "sess-new"}));
+        mock.push_data("set_cwd", serde_json::json!({"cwd": "/tmp/ws"}));
         let ensured = ensure_agent_session(
             &mut client,
             "sess-1",
@@ -598,26 +620,24 @@ mod tests {
         )
         .await
         .expect("ensured");
-        assert_eq!(ensured.session_id, "sess-new");
-        assert!(ensured.recreated, "a replaced session reports context loss");
-        let created = &mock.requests_of("new_session")[0];
-        assert_eq!(created.session_id, "", "the agent generates the id");
-        assert_eq!(created.cwd, "/tmp/ws");
-        assert_eq!(created.created_by, "desktop");
-        assert_eq!(created.model_id, "future/k3");
-        assert_eq!(created.level, "high");
+        assert_eq!(ensured.session_id, "sess-1");
+        assert!(!ensured.created, "cwd repair preserves the session history");
+        assert!(mock.requests_of("new_session").is_empty());
+        let repaired = &mock.requests_of("set_cwd")[0];
+        assert_eq!(repaired.session_id, "sess-1");
+        assert_eq!(repaired.cwd, "/tmp/ws");
+    }
 
-        // get_state rejected (session gone) → recreate too.
+    #[tokio::test]
+    async fn ensure_preserves_the_binding_when_the_agent_lost_the_session() {
+        let (mock, mut client) = mock_client().await;
+
         mock.push("get_state", Reply::Reject("no such session".to_string()));
-        mock.push_data(
-            "new_session",
-            serde_json::json!({"sessionId": "sess-newer"}),
-        );
-        let ensured = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
+        let error = ensure_agent_session(&mut client, "sess-1", "/tmp/ws", None, None)
             .await
-            .expect("ensured");
-        assert_eq!(ensured.session_id, "sess-newer");
-        assert!(ensured.recreated);
+            .expect_err("missing session must not be replaced");
+        assert!(error.to_string().contains("binding was preserved"));
+        assert!(mock.requests_of("new_session").is_empty());
     }
 
     #[tokio::test]
@@ -631,7 +651,7 @@ mod tests {
             .await
             .expect("ensured");
         assert_eq!(ensured.session_id, "sess-fresh");
-        assert!(!ensured.recreated, "nothing was replaced");
+        assert!(ensured.created);
         assert!(
             mock.requests_of("get_state").is_empty(),
             "no probe for an empty stored id"
@@ -685,12 +705,12 @@ mod tests {
             .expect_err("reject");
         assert_eq!(error.to_string(), "quota");
 
-        // new_session success without a sessionId → empty id.
+        // An identity-less session can never be bound safely.
         mock.push_data("new_session", serde_json::json!({"ok": true}));
-        let ensured = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
+        let error = ensure_agent_session(&mut client, "", "/tmp/ws", None, None)
             .await
-            .expect("ensured");
-        assert_eq!(ensured.session_id, "");
+            .expect_err("missing identity");
+        assert!(error.to_string().contains("without returning its identity"));
     }
 
     #[tokio::test]

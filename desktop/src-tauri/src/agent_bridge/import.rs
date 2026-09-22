@@ -462,9 +462,9 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // If the session had no cwd, write the assigned chat workspace path back to
     // the agent so its session_info cwd matches what a later resume compares
     // against. Use the *created thread's* actual workspace path (thread-id
-    // based), not the summary-id path from `thread_mode` — otherwise
-    // `ensure_agent_session` sees a cwd mismatch on resume and forks a fresh,
-    // empty session, orphaning the imported history.
+    // based), not the summary-id path from `thread_mode`. The prompt path can
+    // repair a later drift in place, but eager write-back keeps the imported
+    // session metadata and workspace projection converged immediately.
     if summary.cwd.is_empty() {
         let cwd = super::session::workspace_path_for_thread(&thread.id)
             .expect("invariant: thread workspace exists immediately after create_thread");

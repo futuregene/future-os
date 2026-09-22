@@ -5,11 +5,9 @@ import type { StoredRun, StoredThread } from "../../integrations/storage/threadS
 import type { ComposerSendPayload } from "./Composer";
 import type { LiveTick } from "./liveStreamTick";
 import { listen } from "@tauri-apps/api/event";
-import i18n from "../../i18n";
 import { sendPromptToFutureAgent } from "../../integrations/agent/agentClient";
 import { createRun, storedTimeToIso } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
-import { emitFutureEvent } from "../../lib/futureEvents";
 import {
   buildAgentFailureContent,
   buildAgentFailureTitle,
@@ -179,17 +177,6 @@ export async function runSendPipeline(
     acknowledge();
     await finalizeTemporaryAttachmentSources(preparedAttachments.temporarySources);
     clearStreamUpdates();
-
-    if (reply.sessionRecreated) {
-      // The agent lost this thread's session (data gone or cwd drift) and a
-      // fresh empty session replaced it. The visible history is intact, but
-      // the agent starts this run with zero context — say so explicitly,
-      // otherwise the next reply reads like sudden amnesia.
-      emitFutureEvent("toast", {
-        message: i18n.t("agent:thread.sessionRecreated"),
-        tone: "info",
-      });
-    }
 
     // Non-image files remain live references. Pasted/downloaded images now use
     // their promoted thread-owned path, and their temp source was deleted only
