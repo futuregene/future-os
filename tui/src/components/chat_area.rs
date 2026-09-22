@@ -10,12 +10,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use regex::Regex;
 
-use crate::components::markdown::{MarkdownRenderer, MarkdownThemePartial};
+use crate::components::diff::{self, DiffTheme};
+use crate::components::markdown::{MarkdownRenderer, MarkdownTheme, MarkdownThemePartial};
 use crate::theme::{bold, dim, fg, italic, Theme, DARK_THEME};
 use crate::tui::{Component, RESET};
 use crate::utils::{
-    apply_background_to_line, truncate_to_width, wrap_text_with_ansi, TruncateOptions,
+    apply_background_to_line, strip_ansi_codes, truncate_to_width, wrap_text_with_ansi,
+    TruncateOptions,
 };
+
+/// Tool-output body rows shown while collapsed (`ctrl+g` expands).
+const COLLAPSED_TOOL_OUTPUT_ROWS: usize = 4;
+/// Hard cap for an expanded tool-output body — a `cat` of a huge file must not
+/// make the diff renderer walk megabytes on every frame.
+const EXPANDED_TOOL_OUTPUT_ROWS: usize = 200;
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -218,6 +226,169 @@ fn random_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+// ─── Tool output body ──────────────────────────────────────────────────────
+
+/// Two columns of left indent for a tool-output body row.
+const TOOL_OUTPUT_INDENT: usize = 2;
+
+/// The body of a tool result: a parsed unified diff when there is one,
+/// otherwise the remaining plain text.
+///
+/// The body is parsed once per render and both the `+N -M` badge and the rows
+/// come from the same parse, so they can never disagree. ANSI is stripped
+/// first: raw escape sequences from a command (cursor moves, OSC titles) would
+/// otherwise corrupt the diff-based renderer. The diff renderer re-adds the
+/// only colour the body needs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ToolOutput {
+    diff: Vec<diff::DiffLine>,
+    text_lines: Vec<String>,
+}
+
+impl ToolOutput {
+    fn parse(content: &str) -> Self {
+        if content.trim().is_empty() {
+            return Self::default();
+        }
+        let cleaned = strip_ansi_codes(content);
+        let trimmed = cleaned.trim_end();
+        if looks_like_diff(trimmed) {
+            return Self {
+                diff: diff::parse_any_diff(trimmed),
+                text_lines: Vec::new(),
+            };
+        }
+        Self {
+            diff: Vec::new(),
+            text_lines: cleaned
+                .lines()
+                .map(|line| line.trim_end().to_string())
+                .collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.diff.is_empty() && self.text_lines.iter().all(|line| line.is_empty())
+    }
+
+    /// `+N -M` badge for the tool row (nothing when the body is not a diff).
+    fn summary_ansi(&self, theme: &Theme) -> Option<String> {
+        if self.diff.is_empty() {
+            return None;
+        }
+        let stats = diff::diff_stats(&self.diff);
+        if stats.added == 0 && stats.removed == 0 {
+            return None;
+        }
+        Some(format!(
+            "{} {}",
+            fg(theme.success as u8, &format!("+{}", stats.added)),
+            fg(theme.error as u8, &format!("-{}", stats.removed))
+        ))
+    }
+
+    /// Body rows plus the number of rows left out.
+    fn rows(
+        &self,
+        width: usize,
+        expanded: bool,
+        error: bool,
+        theme: &Theme,
+    ) -> (Vec<String>, usize) {
+        if self.is_empty() || width <= TOOL_OUTPUT_INDENT {
+            return (Vec::new(), 0);
+        }
+        let inner = width - TOOL_OUTPUT_INDENT;
+        let limit = if expanded {
+            EXPANDED_TOOL_OUTPUT_ROWS
+        } else {
+            COLLAPSED_TOOL_OUTPUT_ROWS
+        };
+
+        if !self.diff.is_empty() {
+            // `render_diff` reserves a row for its own `… N more lines` marker
+            // whenever it truncates, so ask for one more row than the budget
+            // and drop the marker (the caller owns the marker text).
+            let mut rows = diff::render_diff(
+                &self.diff,
+                inner,
+                &diff_theme(theme),
+                limit.saturating_add(1),
+            );
+            let hidden = self.diff.len().saturating_sub(limit);
+            if hidden > 0 {
+                rows.pop();
+            }
+            let rows = rows
+                .into_iter()
+                .map(|row| {
+                    format!(
+                        "  {}",
+                        truncate_to_width(&row, inner, &TruncateOptions::default())
+                    )
+                })
+                .collect();
+            return (rows, hidden);
+        }
+
+        let total = self.text_lines.len();
+        let colour = if error {
+            theme.error as u8
+        } else {
+            theme.tool_output as u8
+        };
+        let rows = self
+            .text_lines
+            .iter()
+            .take(limit)
+            .map(|line| {
+                format!(
+                    "  {}",
+                    fg(
+                        colour,
+                        &truncate_to_width(line, inner, &TruncateOptions::default())
+                    )
+                )
+            })
+            .collect();
+        (rows, total.saturating_sub(limit))
+    }
+}
+
+/// True when a tool body really is a diff, rather than plain text that
+/// [`diff::parse_unified_diff`] would happily classify as context/meta lines
+/// (it does not reject arbitrary text). An `apply_patch` envelope, a hunk
+/// header or a `---`/`+++` header pair is required.
+fn looks_like_diff(text: &str) -> bool {
+    if diff::is_apply_patch(text) {
+        return true;
+    }
+    let mut minus_header = false;
+    let mut plus_header = false;
+    for line in text.lines() {
+        if line.starts_with("@@") || line.starts_with("@@ ") {
+            return true;
+        }
+        if line.starts_with("--- ") {
+            minus_header = true;
+        } else if line.starts_with("+++ ") {
+            plus_header = true;
+        }
+    }
+    minus_header && plus_header
+}
+
+/// The diff palette derived from the active [`Theme`].
+fn diff_theme(theme: &Theme) -> DiffTheme {
+    DiffTheme {
+        add_fg: theme.success as u8,
+        remove_fg: theme.error as u8,
+        hunk_fg: theme.accent as u8,
+        meta_fg: theme.dim as u8,
+        ..DiffTheme::default()
+    }
+}
+
 // ─── ChatArea ─────────────────────────────────────────────────────────────
 
 pub struct ChatArea {
@@ -237,6 +408,8 @@ pub struct ChatArea {
     md: MarkdownRenderer,
     md_thinking: MarkdownRenderer,
     theme: Theme,
+    /// `ctrl+g`: show full tool-output bodies instead of the collapsed preview.
+    tool_output_expanded: bool,
     on_change: Option<Box<dyn FnMut()>>,
     message_line_ranges: Vec<(usize, i64)>,
 }
@@ -244,27 +417,7 @@ pub struct ChatArea {
 impl ChatArea {
     pub fn new(max_width: usize, theme: Option<Theme>) -> Self {
         let theme = theme.unwrap_or(DARK_THEME);
-        // Thinking renders entirely in the thinking gray: every markdown
-        // element that would normally get an accent color is mapped to
-        // thinkingText (bold/italic/underline stay attribute-only; the
-        // reset-reapply pass in renderAssistantMessage restores the gray).
-        let tc = theme.thinking_text as u8;
-        let think_fg = move |s: &str| fg(tc, s);
-        let md_thinking = MarkdownRenderer::with_theme(MarkdownThemePartial {
-            heading: Some(std::rc::Rc::new(think_fg)),
-            link: Some(std::rc::Rc::new(think_fg)),
-            link_url: Some(std::rc::Rc::new(think_fg)),
-            code: Some(std::rc::Rc::new(think_fg)),
-            code_block: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
-            code_block_border: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
-            // (No quote/quote_border override: the renderer never invokes
-            // those style fns — they exist for TS shape parity only.)
-            quote_border: Some(std::rc::Rc::new(think_fg)),
-            hr: Some(std::rc::Rc::new(think_fg)),
-            list_bullet: Some(std::rc::Rc::new(think_fg)),
-            strikethrough: Some(std::rc::Rc::new(think_fg)),
-            ..Default::default()
-        });
+        let (md, md_thinking) = build_markdown(theme);
 
         ChatArea {
             messages: Vec::new(),
@@ -279,16 +432,62 @@ impl ChatArea {
             pending_rerender: BTreeSet::new(),
             flushing: false,
             stream_caches: std::collections::HashMap::new(),
-            md: MarkdownRenderer::new(),
+            md,
             md_thinking,
             theme,
+            tool_output_expanded: false,
             on_change: None,
             message_line_ranges: Vec::new(),
         }
     }
 
+    /// Swap the palette (the `/theme` command) and rebuild the markdown
+    /// renderers, which bake the colours in at construction time.
+    pub fn set_theme(&mut self, theme: Theme) {
+        if self.theme == theme {
+            return;
+        }
+        let (md, md_thinking) = build_markdown(theme);
+        self.md = md;
+        self.md_thinking = md_thinking;
+        self.theme = theme;
+        self.rerender();
+    }
+
+    pub fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    pub fn tool_output_expanded(&self) -> bool {
+        self.tool_output_expanded
+    }
+
+    pub fn set_tool_output_expanded(&mut self, expanded: bool) {
+        if self.tool_output_expanded != expanded {
+            self.tool_output_expanded = expanded;
+            self.rerender();
+        }
+    }
+
+    /// Flip tool-output expansion (`ctrl+g`); returns the new state.
+    pub fn toggle_tool_output_expanded(&mut self) -> bool {
+        self.set_tool_output_expanded(!self.tool_output_expanded);
+        self.tool_output_expanded
+    }
+
     pub fn last_message(&self) -> Option<&ChatMessage> {
         self.messages.last()
+    }
+
+    /// The content of the most recent assistant message (thinking excluded) —
+    /// what `/copy` and `ctrl+x` put on the clipboard. `None` when the
+    /// transcript has no assistant text yet.
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|msg| msg.role == ChatRole::Assistant && !msg.content.trim().is_empty())
+            .map(|msg| msg.content.trim_end().to_string())
     }
 
     // ─── Public API ─────────────────────────────────────────────────────
@@ -521,8 +720,17 @@ impl ChatArea {
         }
     }
 
-    pub fn finish_tool(&mut self, tool_id: &str, _output: Option<&str>) {
+    pub fn finish_tool(&mut self, tool_id: &str, output: Option<&str>) {
         if let Some(idx) = self.find_tool_index(tool_id) {
+            // `tool_delta` already streamed the body in the common case; a
+            // `tool_end` payload that carries text and an empty body means the
+            // agent never streamed it, so keep it (history replay does the
+            // same via `apply_messages`).
+            if let Some(text) = output {
+                if self.messages[idx].content.trim().is_empty() && !text.trim().is_empty() {
+                    self.messages[idx].content = text.to_string();
+                }
+            }
             self.messages[idx].tool_status = Some(ToolStatus::Complete);
             self.rerender_message(idx);
         }
@@ -1097,12 +1305,49 @@ impl ChatArea {
         };
 
         let tool_args = msg.tool_args.as_deref();
-        let line = format!(" {}", self.format_tool_call(tool_name, tool_args));
+        let body = ToolOutput::parse(&msg.content);
+        let mut line = format!(" {}", self.format_tool_call(tool_name, tool_args));
+        if let Some(summary) = body.summary_ansi(&self.theme) {
+            line.push(' ');
+            line.push_str(&summary);
+        }
 
         self.rendered_lines.push(RenderedLine {
             text: apply_background_to_line(&line, self.width, bg_color),
             dim: status == ToolStatus::Complete,
         });
+
+        let (rows, hidden) = body.rows(
+            self.width,
+            self.tool_output_expanded,
+            status == ToolStatus::Error,
+            &self.theme,
+        );
+        self.rendered_lines.extend(
+            rows.into_iter()
+                .map(|text| RenderedLine { text, dim: false }),
+        );
+        if hidden > 0 {
+            self.rendered_lines.push(RenderedLine {
+                text: fg(
+                    self.theme.dim as u8,
+                    &truncate_to_width(
+                        &format!(
+                            "  … {hidden} more line{plural} · {hint}",
+                            plural = if hidden == 1 { "" } else { "s" },
+                            hint = if self.tool_output_expanded {
+                                "truncated"
+                            } else {
+                                "ctrl+g to expand"
+                            }
+                        ),
+                        self.width,
+                        &TruncateOptions::default(),
+                    ),
+                ),
+                dim: true,
+            });
+        }
     }
 
     /// Format tool call display per tool type.
@@ -1301,6 +1546,42 @@ impl Component for ChatArea {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/// Build the assistant and thinking markdown renderers for `theme`.
+///
+/// The assistant renderer takes the palette's markdown roles
+/// ([`MarkdownTheme::from_theme`]), so `/theme` repaints the transcript instead
+/// of leaving it on the dark constants baked into `MarkdownTheme::default`.
+///
+/// Thinking renders entirely in the thinking gray: every markdown element that
+/// would normally get an accent color is mapped to thinkingText (bold/italic/
+/// underline stay attribute-only; the reset-reapply pass in
+/// renderAssistantMessage restores the gray).
+fn build_markdown(theme: Theme) -> (MarkdownRenderer, MarkdownRenderer) {
+    let md_theme = MarkdownTheme::from_theme(&theme);
+    let tc = theme.thinking_text as u8;
+    let think_fg = move |s: &str| fg(tc, s);
+    let md_thinking = MarkdownRenderer::with_markdown_theme(md_theme.clone().with_partial(
+        MarkdownThemePartial {
+            heading: Some(std::rc::Rc::new(think_fg)),
+            link: Some(std::rc::Rc::new(think_fg)),
+            link_url: Some(std::rc::Rc::new(think_fg)),
+            code: Some(std::rc::Rc::new(think_fg)),
+            code_block: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
+            code_block_border: Some(std::rc::Rc::new(move |s: &str| fg(tc, &dim(s)))),
+            // `quote` is the field the blockquote arm actually reads (raw
+            // fg+italic for both the text and its `│ ` border); the palette's
+            // `md_quote` is overridden so a quote inside thinking keeps the
+            // thinking gray, exactly as when the arm hardcoded 244.
+            quote: Some(std::rc::Rc::new(think_fg)),
+            hr: Some(std::rc::Rc::new(think_fg)),
+            list_bullet: Some(std::rc::Rc::new(think_fg)),
+            strikethrough: Some(std::rc::Rc::new(think_fg)),
+            ..Default::default()
+        },
+    ));
+    (MarkdownRenderer::with_markdown_theme(md_theme), md_thinking)
+}
 
 /// `/\x1b\[0?m/g` replace with `\x1b[0m{prefix}` (reapply style after resets).
 fn reapply_style(line: &str, prefix: &str) -> String {
@@ -1949,6 +2230,343 @@ mod tests {
         let plain = crate::utils::strip_ansi_codes(&lines[0]);
         assert!(plain.contains("weird"));
         assert!(plain.contains("not json"));
+    }
+
+    // ─── Tool output body + diff rendering ─────────────────────────────
+
+    /// A tool call plus its streamed output, rendered once.
+    fn tool_lines(chat: &mut ChatArea, tool: &str, args: &str, output: &str) -> Vec<String> {
+        chat.render(W);
+        chat.add_tool_start("c1", tool, Some(args.to_string()));
+        chat.append_tool_delta("c1", output);
+        chat.finish_tool("c1", None);
+        render_trimmed(chat)
+    }
+
+    /// `render_all` with the blank separator rows dropped.
+    fn render_trimmed(chat: &mut ChatArea) -> Vec<String> {
+        let mut lines = chat.render_all(W);
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        lines
+    }
+
+    fn diff_output() -> &'static str {
+        "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,4 @@\n context\n-removed\n+added\n+also added\n context\n"
+    }
+
+    #[test]
+    fn tool_output_body_is_rendered_under_the_tool_row() {
+        let mut chat = new_chat();
+        let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, "alpha\nbeta\n");
+        assert_eq!(lines.len(), 3, "row + 2 output lines: {lines:?}");
+        assert!(strip(&lines[0]).contains("$ ls"));
+        assert!(strip(&lines[1]).contains("alpha"));
+        assert!(strip(&lines[2]).contains("beta"));
+    }
+    #[test]
+    fn tool_output_rows_keep_the_exact_width_and_indent() {
+        let mut chat = new_chat();
+        let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &"x".repeat(200));
+        assert_eq!(visible_width_of(&lines[0]), W);
+        assert!(strip(&lines[1]).starts_with("  x"));
+        assert!(
+            visible_width_of(&lines[1]) <= W,
+            "never wider than the terminal"
+        );
+    }
+
+    #[test]
+    fn collapsed_tool_output_is_truncated_with_an_expand_hint() {
+        let mut chat = new_chat();
+        let output: String = (0..12)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
+        // row + COLLAPSED_TOOL_OUTPUT_ROWS + marker
+        assert_eq!(lines.len(), 1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
+        assert!(strip(&lines[1]).contains("line 0"));
+        let marker = strip(lines.last().unwrap());
+        assert!(marker.contains("8 more lines"), "{marker:?}");
+        assert!(marker.contains("ctrl+g to expand"), "{marker:?}");
+        assert!(!chat.tool_output_expanded());
+    }
+
+    #[test]
+    fn ctrl_g_expands_every_tool_output_body() {
+        let mut chat = new_chat();
+        let output: String = (0..12)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
+        assert!(chat.toggle_tool_output_expanded());
+        let lines = render_trimmed(&mut chat);
+        assert_eq!(lines.len(), 13, "row + 12 output lines");
+        assert!(strip(&lines[12]).contains("line 11"));
+        assert!(!lines.iter().any(|l| strip(l).contains("more lines")));
+        // Toggling back collapses again.
+        assert!(!chat.toggle_tool_output_expanded());
+        assert_eq!(
+            render_trimmed(&mut chat).len(),
+            1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1
+        );
+        // Setting the same value is a no-op.
+        chat.set_tool_output_expanded(false);
+        assert!(!chat.tool_output_expanded());
+    }
+
+    #[test]
+    fn a_unified_diff_body_is_parsed_and_summarised() {
+        let mut chat = new_chat();
+        let lines = tool_lines(&mut chat, "edit", r#"{"path":"src/a.rs"}"#, diff_output());
+        // The tool row carries the +N -M badge.
+        let row = strip(&lines[0]);
+        assert!(row.contains("+2 -1"), "{row:?}");
+        // Collapsed: file headers, hunk header and the first context line.
+        let body: Vec<String> = lines[1..lines.len() - 1].iter().map(|l| strip(l)).collect();
+        assert!(body[0].contains("--- a/src/a.rs"), "{body:?}");
+        assert!(body[1].contains("+++ b/src/a.rs"), "{body:?}");
+        assert!(body[2].contains("@@ -1,3 +1,4 @@"), "{body:?}");
+        assert!(
+            strip(lines.last().unwrap()).contains("ctrl+g to expand"),
+            "{lines:?}"
+        );
+
+        // Expanded: every add/remove row is rendered and coloured.
+        chat.set_tool_output_expanded(true);
+        let expanded = render_trimmed(&mut chat);
+        let body: Vec<String> = expanded.iter().map(|l| strip(l)).collect();
+        assert!(body.iter().any(|l| l.contains("+added")), "{body:?}");
+        assert!(body.iter().any(|l| l.contains("+also added")), "{body:?}");
+        assert!(body.iter().any(|l| l.contains("-removed")), "{body:?}");
+        assert!(!body.iter().any(|l| l.contains("more lines")), "{body:?}");
+        assert!(expanded
+            .iter()
+            .any(|l| l.contains(&format!("\x1b[38;5;{}m", DARK_THEME.success))));
+        assert!(expanded
+            .iter()
+            .any(|l| l.contains(&format!("\x1b[38;5;{}m", DARK_THEME.error))));
+    }
+
+    #[test]
+    fn a_long_diff_is_collapsed_and_expands_on_ctrl_g() {
+        let mut chat = new_chat();
+        let mut diff = String::from("--- a/f\n+++ b/f\n@@ -1,60 +1,60 @@\n");
+        for i in 0..60 {
+            diff.push_str(&format!("-old {i}\n+new {i}\n"));
+        }
+        let lines = tool_lines(&mut chat, "write", r#"{"path":"f"}"#, &diff);
+        assert_eq!(
+            lines.len(),
+            1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1,
+            "collapsed diff: {lines:?}"
+        );
+        let marker = strip(lines.last().unwrap());
+        assert!(marker.contains("ctrl+g to expand"), "{marker:?}");
+        assert!(marker.contains("more lines"), "{marker:?}");
+        // Expanded shows the whole (123-line) diff — no marker left.
+        chat.set_tool_output_expanded(true);
+        let expanded = render_trimmed(&mut chat);
+        assert_eq!(expanded.len(), 1 + 123, "every diff line is shown");
+        assert!(!expanded.iter().any(|l| strip(l).contains("more lines")));
+
+        // A diff bigger than the expanded cap is cut with a "truncated" marker.
+        let mut chat = new_chat();
+        let mut huge = String::from("--- a/f\n+++ b/f\n@@ -1,400 +1,400 @@\n");
+        for i in 0..400 {
+            huge.push_str(&format!("-old {i}\n+new {i}\n"));
+        }
+        tool_lines(&mut chat, "write", r#"{"path":"f"}"#, &huge);
+        chat.set_tool_output_expanded(true);
+        let expanded = render_trimmed(&mut chat);
+        assert_eq!(expanded.len(), 1 + EXPANDED_TOOL_OUTPUT_ROWS + 1);
+        let marker = strip(expanded.last().unwrap());
+        assert!(marker.contains("truncated"), "{marker:?}");
+        assert!(marker.contains("more lines"), "{marker:?}");
+    }
+
+    #[test]
+    fn an_error_tool_body_is_coloured_with_the_error_palette() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
+        chat.append_tool_delta("c1", "boom\n");
+        chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
+        let lines = render_trimmed(&mut chat);
+        assert!(lines[1].contains(&format!("\x1b[38;5;{}m", DARK_THEME.error)));
+        assert!(lines[0].contains(&format!("\x1b[48;5;{}m", DARK_THEME.tool_error_bg)));
+    }
+
+    #[test]
+    fn finish_tool_keeps_a_body_that_never_streamed() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_tool_start("c9", "read", None);
+        chat.finish_tool("c9", Some("from tool_end\n"));
+        let lines = render_trimmed(&mut chat);
+        assert!(strip(&lines[1]).contains("from tool_end"));
+        // A streamed body wins over the tool_end text.
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_tool_start("c9", "read", None);
+        chat.append_tool_delta("c9", "streamed\n");
+        chat.finish_tool("c9", Some("late\n"));
+        let lines = render_trimmed(&mut chat);
+        assert!(strip(&lines[1]).contains("streamed"));
+        assert!(!lines.iter().any(|l| strip(l).contains("late")));
+        // An unknown tool id is a no-op.
+        chat.finish_tool("nope", Some("x"));
+    }
+
+    #[test]
+    fn tool_output_ansi_is_stripped_but_the_layout_survives() {
+        let mut chat = new_chat();
+        let lines = tool_lines(
+            &mut chat,
+            "shell",
+            r#"{"command":"ls --color"}"#,
+            "\x1b[31mred\x1b[0m and \x1b]0;title\x07plain\n",
+        );
+        assert!(strip(&lines[1]).contains("red and plain"), "{:?}", lines[1]);
+        assert!(!lines[1].contains("\x1b[31m"));
+        assert!(visible_width_of(&lines[1]) <= W);
+    }
+
+    #[test]
+    fn an_empty_tool_body_adds_no_rows() {
+        let mut chat = new_chat();
+        let lines = tool_lines(&mut chat, "shell", r#"{"command":"true"}"#, "   \n");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(render_trimmed(&mut chat).len(), 1);
+    }
+
+    #[test]
+    fn tool_output_parsing_handles_the_edge_shapes() {
+        assert!(ToolOutput::parse("").is_empty());
+        assert!(ToolOutput::parse("  \n\t\n").is_empty());
+        let text = ToolOutput::parse("a\nb\n");
+        assert_eq!(text.text_lines, vec!["a", "b"]);
+        assert!(text.diff.is_empty());
+        assert!(text.summary_ansi(&DARK_THEME).is_none());
+        // A diff is sniffed, and only counted lines produce a badge.
+        let unified = ToolOutput::parse(diff_output());
+        assert!(!unified.diff.is_empty());
+        assert!(unified.text_lines.is_empty());
+        let badge = unified.summary_ansi(&DARK_THEME).unwrap();
+        assert!(badge.contains("+2") && badge.contains("-1"), "{badge:?}");
+        // apply_patch bodies are sniffed too.
+        let patch = ToolOutput::parse(
+            "*** Begin Patch\n*** Update File: a.rs\n@@\n-old\n+new\n*** End Patch\n",
+        );
+        assert!(!patch.diff.is_empty(), "{patch:?}");
+        // A body with no added/removed lines has no badge.
+        let context_only = ToolOutput::parse("--- a/f\n+++ b/f\n@@ -1 +1 @@\n same\n");
+        assert!(!context_only.diff.is_empty());
+        assert!(context_only.summary_ansi(&DARK_THEME).is_none());
+        // Plain text is NOT sniffed as a diff (parse_unified_diff would call
+        // every line a context/meta line).
+        for plain in [
+            "total 4\ndrwxr-xr-x  a\n",
+            "hello world\n",
+            "+not a diff\n",
+            "--- only a dashes line\n",
+        ] {
+            let parsed = ToolOutput::parse(plain);
+            assert!(
+                parsed.diff.is_empty(),
+                "{plain:?} is not a diff: {parsed:?}"
+            );
+            assert!(!parsed.text_lines.is_empty());
+            assert!(parsed.summary_ansi(&DARK_THEME).is_none());
+        }
+        // Narrow widths produce no body rows rather than a panic.
+        assert_eq!(unified.rows(0, false, false, &DARK_THEME), (vec![], 0));
+        assert_eq!(unified.rows(2, false, false, &DARK_THEME), (vec![], 0));
+        let (narrow, hidden) = text.rows(3, false, false, &DARK_THEME);
+        assert_eq!(hidden, 0);
+        assert_eq!(narrow.len(), 2);
+        assert_eq!(crate::utils::visible_width(&narrow[0]), 3);
+    }
+
+    #[test]
+    fn tool_output_rows_are_bounded_when_expanded() {
+        let big: String = (0..EXPANDED_TOOL_OUTPUT_ROWS + 50)
+            .map(|i| format!("line {i}\n"))
+            .collect();
+        let body = ToolOutput::parse(&big);
+        let (rows, hidden) = body.rows(W, true, false, &DARK_THEME);
+        assert_eq!(rows.len(), EXPANDED_TOOL_OUTPUT_ROWS);
+        assert_eq!(hidden, 50);
+        let (collapsed, hidden) = body.rows(W, false, false, &DARK_THEME);
+        assert_eq!(collapsed.len(), COLLAPSED_TOOL_OUTPUT_ROWS);
+        assert_eq!(
+            hidden,
+            EXPANDED_TOOL_OUTPUT_ROWS + 50 - COLLAPSED_TOOL_OUTPUT_ROWS
+        );
+    }
+
+    /// `/theme light` must repaint markdown that is *already* on screen, not
+    /// just content rendered after the switch: `set_theme` rebuilds both
+    /// renderers from the new palette, so the same message text re-renders in
+    /// the new colors (a cache-flag-only fix would leave the dark indices).
+    #[test]
+    fn set_theme_recolors_markdown_rendered_before_the_switch() {
+        let mut chat = new_chat();
+        chat.render(W);
+        set_messages(
+            &mut chat,
+            vec![ChatMessage {
+                id: "m".into(),
+                role: ChatRole::Assistant,
+                content: "# Title\n\ntext with `code` and [link](https://example.com)\n\n> quote\n"
+                    .into(),
+                ..ChatMessage::new(String::new(), ChatRole::Assistant, "")
+            }],
+        );
+        let dark = render_trimmed(&mut chat).join("\n");
+        assert!(dark.contains("38;5;221m"), "dark heading: {dark}");
+        assert!(dark.contains("38;5;151m"), "dark code: {dark}");
+        assert!(dark.contains("38;5;117m"), "dark link: {dark}");
+
+        chat.set_theme(crate::themes::theme_by_id("light").expect("light palette"));
+        let light = render_trimmed(&mut chat).join("\n");
+        assert!(light.contains("38;5;130m"), "light heading: {light}");
+        assert!(light.contains("38;5;30m"), "light code: {light}");
+        assert!(light.contains("38;5;25m"), "light link: {light}");
+        for gone in ["38;5;221m", "38;5;151m", "38;5;117m", "38;5;244m"] {
+            assert!(!light.contains(gone), "still dark-themed ({gone}): {light}");
+        }
+        // The same text is still there — this is a repaint, not an empty render.
+        assert!(strip(&light).contains("text with code and link"));
+        assert!(strip(&light).contains("Title"));
+    }
+
+    #[test]
+    fn set_theme_repaints_the_chat_and_rebuilds_the_markdown() {
+        let mut chat = new_chat();
+        let light = Theme {
+            error: 9,
+            tool_output: 10,
+            ..DARK_THEME
+        };
+        assert_eq!(chat.theme(), DARK_THEME);
+        chat.set_theme(light);
+        assert_eq!(chat.theme(), light);
+        chat.set_theme(light); // no-op, must not invalidate
+        let mut chat2 = new_chat();
+        chat2.render(W);
+        chat2.add_tool_start("c1", "shell", Some(r#"{"command":"ls"}"#.into()));
+        chat2.append_tool_delta("c1", "out\n");
+        chat2.set_theme(light);
+        let lines = render_trimmed(&mut chat2);
+        assert!(lines[1].contains("\x1b[38;5;10m"), "{:?}", lines[1]);
+    }
+
+    fn visible_width_of(line: &str) -> usize {
+        crate::utils::visible_width(line)
     }
 
     #[test]

@@ -1,0 +1,36 @@
+Output of call_mock_1 (ok):
+--- a/src/greeting.rs
++++ b/src/greeting.rs
+@@ -1,4 +1,5 @@
+ pub fn greeting() -> &'static str {
+-    "Hello, world!"
++    "Hello from the mock agent!"
+ }
++
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

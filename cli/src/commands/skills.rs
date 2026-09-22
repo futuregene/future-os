@@ -58,6 +58,10 @@ pub struct SkillInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Chinese description, when the catalogue carries one (`description_zh`).
+    /// Emitted as `descriptionZh` by `skills list --json`; the table ignores it.
+    #[serde(default)]
+    pub description_zh: String,
     #[serde(default)]
     pub category: String,
     #[serde(default)]
@@ -86,7 +90,14 @@ pub fn is_skills_command(command: Option<&str>) -> bool {
 pub async fn skills(command: &str, args: &[String], out: &Output) -> Result<(), String> {
     match command {
         "list" => {
-            list_skills(out).await;
+            // `future skills list --json` — the machine-readable catalogue the
+            // TUI parses (it shells out to this binary; see the module docs of
+            // tui/src/skills_cli.rs). Flags are scanned anywhere after `list`.
+            if args.iter().any(|a| a == "--json") {
+                list_skills_json(out).await;
+            } else {
+                list_skills(out).await;
+            }
         }
         "install-builtin" => {
             install_builtin_skills(out).await;
@@ -154,18 +165,7 @@ async fn list_skills(out: &Output) {
 
     // Check which skills are installed (a missing skills dir just means
     // nothing is installed).
-    let mut installed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let entries = tokio::fs::read_dir(skills_dir()).await;
-    if let Ok(mut entries) = entries {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let ver = read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await;
-            if let Some(ver) = ver {
-                installed.insert(name, ver);
-            }
-        }
-    }
-
+    let installed = installed_skill_versions().await;
     let id_width = skills
         .iter()
         .map(|s| s.id.chars().count())
@@ -246,6 +246,93 @@ async fn list_skills(out: &Output) {
         "\n{} skills available. Use \"future skills install <name>\" to install.",
         skills.len()
     ));
+}
+
+/// id → version for every installed skill, shared by the table and the `--json`
+/// path. A missing skills dir just means nothing is installed; a directory
+/// whose `SKILL.md` has no readable version is skipped (side-loaded skills stay
+/// invisible to the catalogue, exactly like the TS implementation).
+async fn installed_skill_versions() -> std::collections::HashMap<String, String> {
+    let mut installed: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let entries = tokio::fs::read_dir(skills_dir()).await;
+    if let Ok(mut entries) = entries {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let ver = read_skill_md_version(&skills_dir().join(&name).join("SKILL.md")).await;
+            if let Some(ver) = ver {
+                installed.insert(name, ver);
+            }
+        }
+    }
+    installed
+}
+
+/// One catalogue row of `future skills list --json`. The wire names are
+/// camelCase — that is the contract the TUI parses, and `installedVersion` is
+/// what it uses to flag an upgradable skill. The CLI's own [`SkillInfo`] mirrors
+/// the platform's snake_case instead, hence the explicit renames.
+#[derive(serde::Serialize)]
+struct SkillRowJson {
+    id: String,
+    name: String,
+    #[serde(rename = "latestVersion")]
+    latest_version: Option<String>,
+    #[serde(rename = "installedVersion")]
+    installed_version: Option<String>,
+    description: String,
+    #[serde(rename = "descriptionZh")]
+    description_zh: String,
+}
+
+/// The whole `future skills list --json` document: `{skills, count}` in that
+/// order.
+#[derive(serde::Serialize)]
+struct SkillCatalogueJson {
+    skills: Vec<SkillRowJson>,
+    count: usize,
+}
+
+/// `listSkills()` with `--json` — same catalogue and installed scan as the
+/// table, emitted as a single JSON document on stdout (the TUI cannot link this
+/// crate: `future-cli` embeds `future-tui`). Nothing else goes to stdout — no
+/// table, no separator, no progress text — and failures follow the table path's
+/// contract: empty stdout, message on stderr, exit code 1.
+async fn list_skills_json(out: &Output) {
+    let platform_url = get_platform_url(None).await;
+
+    let skills: Vec<SkillInfo> = match fetch_skills(&platform_url).await {
+        Ok(skills) => skills,
+        Err(err) => {
+            out.log_err(&format!(
+                "Failed to fetch skills from {platform_url}/client/v1/skills"
+            ));
+            out.log_err(&err);
+            out.set_exit_code(1);
+            return;
+        }
+    };
+
+    let installed = installed_skill_versions().await;
+    let rows: Vec<SkillRowJson> = skills
+        .into_iter()
+        .map(|skill| SkillRowJson {
+            // Computed first: `installed.get` borrows `skill.id`, which the
+            // struct literal below moves.
+            installed_version: installed.get(&skill.id).cloned(),
+            id: skill.id,
+            name: skill.name,
+            latest_version: skill.latest_version,
+            description: skill.description,
+            description_zh: skill.description_zh,
+        })
+        .collect();
+    let count = rows.len();
+    let catalogue = SkillCatalogueJson {
+        skills: rows,
+        count,
+    };
+    let json = serde_json::to_string(&catalogue).expect("catalogue rows are plain data");
+    out.log(&json);
 }
 
 /// `padEnd(s, width)` — JS padEnd (pad only when shorter; count chars).
@@ -1388,6 +1475,155 @@ mod tests {
         assert_eq!(out.exit_code(), 0);
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert!(stdout.contains("future-alpha"), "stdout: {stdout}");
+    }
+
+    // ── list --json (the TUI's catalogue contract) ──────────────────
+
+    #[tokio::test]
+    async fn list_json_round_trips_with_and_without_installed_version() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            r#"{"skills":[
+                {"id":"future-alpha","name":"Alpha","description":"Does alpha.","description_zh":"做甲。","latest_version":"1.2"},
+                {"id":"future-beta","name":"Beta","description":"Does beta.","latest_version":"2.0"}
+            ]}"#,
+        )])
+        .await;
+        point_platform_at(&base).await;
+        // Alpha is installed at an older version → upgradable; beta is not
+        // installed at all → null.
+        plant_skill("future-alpha", "1.1").await;
+
+        let (out, cap) = Output::memory();
+        skills("list", &["--json".to_string()], &out)
+            .await
+            .expect("list --json");
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // Exactly one JSON line: no table header, no separator, no footer.
+        assert_eq!(stdout.lines().count(), 1, "stdout: {stdout}");
+        assert!(!stdout.contains("NAME"), "stdout: {stdout}");
+        assert!(!stdout.contains("skills available"), "stdout: {stdout}");
+
+        let doc: Value = serde_json::from_str(stdout.trim_end()).expect("one JSON document");
+        assert_eq!(doc["count"], 2, "doc: {doc}");
+        let rows = doc["skills"].as_array().expect("skills array");
+        assert_eq!(rows[0]["id"], "future-alpha");
+        assert_eq!(rows[0]["name"], "Alpha");
+        assert_eq!(rows[0]["latestVersion"], "1.2");
+        assert_eq!(rows[0]["installedVersion"], "1.1");
+        assert_eq!(rows[0]["description"], "Does alpha.");
+        assert_eq!(rows[0]["descriptionZh"], "做甲。");
+        // Missing installedVersion / descriptionZh are null / empty, never absent.
+        assert_eq!(rows[1]["id"], "future-beta");
+        assert_eq!(rows[1]["installedVersion"], Value::Null);
+        assert_eq!(rows[1]["latestVersion"], "2.0");
+        assert_eq!(rows[1]["description"], "Does beta.");
+        assert_eq!(rows[1]["descriptionZh"], "");
+        // A catalogue row without latest_version stays null too.
+        assert!(rows[1].get("installedVersion").is_some());
+    }
+
+    #[tokio::test]
+    async fn list_json_empty_and_unversioned_installs() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+
+        // Empty catalogue → the empty document, not "No skills available.".
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            "{\"skills\":[]}",
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let (out, cap) = Output::memory();
+        skills("list", &["--json".to_string()], &out)
+            .await
+            .expect("list --json");
+        assert_eq!(out.exit_code(), 0);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "{\"skills\":[],\"count\":0}\n");
+
+        // A skill installed without a readable version is skipped by the scan.
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-gamma", None, "Gamma")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        let dir = skills_dir().join("future-gamma");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("SKILL.md"), "# no frontmatter\n")
+            .await
+            .unwrap();
+        let (out, cap) = Output::memory();
+        skills("list", &["--json".to_string()], &out)
+            .await
+            .expect("list --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let doc: Value = serde_json::from_str(stdout.trim_end()).expect("one JSON document");
+        assert_eq!(doc["count"], 1, "doc: {doc}");
+        assert_eq!(doc["skills"][0]["id"], "future-gamma");
+        assert_eq!(doc["skills"][0]["installedVersion"], Value::Null);
+        assert_eq!(doc["skills"][0]["latestVersion"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn list_json_fetch_failure_keeps_stdout_empty() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        point_platform_at("http://127.0.0.1:1").await;
+        let (out, cap) = Output::memory();
+        skills("list", &["--json".to_string()], &out)
+            .await
+            .expect("list --json never bubbles the fetch error");
+        assert_eq!(out.exit_code(), 1);
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        // No half-written JSON document on stdout.
+        assert_eq!(stdout, "");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("Failed to fetch skills from http://127.0.0.1:1/client/v1/skills"),
+            "stderr: {stderr}"
+        );
+    }
+
+    /// Byte-level regression for the human table: `--json` must not have moved
+    /// a single space of the default path (the TS parity goldens compare this
+    /// output byte-for-byte).
+    #[tokio::test]
+    async fn list_default_output_without_json_is_byte_stable() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/skills",
+            200,
+            &catalog(&[("future-alpha", Some("1.0"), "Alpha skill")]),
+        )])
+        .await;
+        point_platform_at(&base).await;
+        plant_skill("future-alpha", "1.0").await;
+
+        let (out, cap) = Output::memory();
+        skills("list", &[], &out).await.expect("list");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let rule = |width: usize| "—".repeat(width);
+        let expected = format!(
+            "  NAME         LATEST     INSTALLED DESCRIPTION\n\
+             \x20 {sep12} {sep10} {sep9} {sep12}\n\
+             \x20 future-alpha v1.0       v1.0      Alpha skill \n\
+             \n\
+             1 skills available. Use \"future skills install <name>\" to install.\n",
+            sep12 = rule(12),
+            sep10 = rule(10),
+            sep9 = rule(9),
+        );
+        assert_eq!(stdout, expected);
     }
 
     // ── install / download / unzip ──────────────────────────────────

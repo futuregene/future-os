@@ -1,0 +1,36 @@
+Agent information:
+  version: 0.0.0-mock
+  instance id: mock-agent-instance
+  skills discovered: 3
+  session: mock-session-1
+  model: mock-model
+  cwd: /mock
+  skills loaded: 3
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

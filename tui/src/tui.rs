@@ -55,6 +55,19 @@ pub trait Component: std::any::Any {
         false
     }
 
+    /// True when this component wants `escape` delivered to it *before* the app
+    /// layer closes its overlay — an active incremental search owns the first
+    /// escape (it clears the query) and the second one closes the panel.
+    ///
+    /// Mirrors [`Component::wants_key_release`]: optional, default `false`, and
+    /// only consulted by the app layer. A component that repaints itself from
+    /// `escape` (rather than cancelling) must flip this, or the app's
+    /// close-the-overlay fallback swallows the key before `handle_input` ever
+    /// sees it.
+    fn wants_escape(&self) -> bool {
+        false
+    }
+
     /// Downcast support (mirrors TS duck-typing like `"focused" in component`).
     fn as_any(&self) -> &dyn std::any::Any;
 
@@ -94,6 +107,63 @@ pub fn is_focusable(component: &dyn Component) -> bool {
         || component
             .as_any()
             .is::<crate::components::scoped_models_selector::ScopedModelsSelector>()
+}
+
+/// Apply a palette to every component that can repaint itself (`/theme`).
+///
+/// Every chrome widget is theme-aware now: the chat area, the popup menus
+/// (including the provider list and the scoped-model selector), the footer,
+/// the input, the select list, the pager and the usage panel. Each keeps
+/// [`crate::theme::Chrome::LEGACY`] for the default palette, so `/theme dark`
+/// cannot change a byte of output; any other palette repaints the whole frame.
+/// A component that is not theme-aware is left untouched.
+pub fn apply_theme_to_component(component: &mut dyn Component, theme: crate::theme::Theme) {
+    if let Some(chat) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::chat_area::ChatArea>()
+    {
+        chat.set_theme(theme);
+    } else if let Some(menu) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::menu::MenuOverlay>()
+    {
+        menu.set_theme(theme);
+    } else if let Some(list) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::provider_dialogs::ProviderListOverlay>(
+    ) {
+        list.set_theme(theme);
+    } else if let Some(footer) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::footer::Footer>()
+    {
+        footer.set_theme(&theme);
+    } else if let Some(input) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::input::Input>()
+    {
+        input.set_theme(&theme);
+    } else if let Some(list) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::select_list::SelectList>()
+    {
+        list.set_theme(&theme);
+    } else if let Some(pager) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::pager::PagerOverlay>()
+    {
+        pager.set_theme(&theme);
+    } else if let Some(usage) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::usage_view::UsageOverlay>()
+    {
+        usage.set_theme(&theme);
+    } else if let Some(selector) = component
+        .as_any_mut()
+        .downcast_mut::<crate::components::scoped_models_selector::ScopedModelsSelector>(
+    ) {
+        selector.set_theme(&theme);
+    }
 }
 
 /// Simple container that renders children top-to-bottom (port of `Container`).
@@ -457,6 +527,162 @@ mod tests {
     }
 
     #[test]
+    fn apply_theme_to_component_repaints_the_theme_aware_components_only() {
+        use crate::components::chat_area::ChatArea;
+        use crate::components::menu::{MenuOptions, MenuOverlay, MenuState};
+        use crate::theme::Theme;
+
+        let light = Theme {
+            selected_bg: 99,
+            ..crate::theme::DARK_THEME
+        };
+
+        let mut chat: Box<dyn Component> = Box::new(ChatArea::new(40, None));
+        apply_theme_to_component(chat.as_mut(), light);
+        assert_eq!(
+            chat.as_any().downcast_ref::<ChatArea>().unwrap().theme(),
+            light
+        );
+
+        let mut menu: Box<dyn Component> = Box::new(MenuOverlay::new(
+            MenuState::new(MenuOptions::new("T", vec![])),
+            Box::new(|_| {}),
+        ));
+        apply_theme_to_component(menu.as_mut(), light);
+        assert_eq!(
+            menu.as_any()
+                .downcast_ref::<MenuOverlay>()
+                .unwrap()
+                .state()
+                .theme(),
+            light
+        );
+
+        // A component that is not theme-aware is left alone (no panic).
+        struct Bare;
+        impl Component for Bare {
+            fn render(&mut self, _width: usize) -> Vec<String> {
+                vec![]
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+        }
+        let mut bare: Box<dyn Component> = Box::new(Bare);
+        apply_theme_to_component(bare.as_mut(), light);
+        assert!(bare.render(10).is_empty());
+        // The non-theme-aware component answers the downcast contract too.
+        assert!(bare.as_any().downcast_ref::<Bare>().is_some());
+    }
+
+    /// `/theme` must reach *every* chrome widget, not just the chat area and the
+    /// menus: the whitelist is the whole point of [`apply_theme_to_component`].
+    #[test]
+    fn apply_theme_reaches_every_chrome_widget() {
+        use crate::components::footer::Footer;
+        use crate::components::input::Input;
+        use crate::components::pager::{Pager, PagerOverlay};
+        use crate::components::provider_dialogs::{ProviderListOverlay, ProviderListState};
+        use crate::components::scoped_models_selector::{
+            ScopedModelsSelector, ScopedModelsSelectorOptions,
+        };
+        use crate::components::select_list::{SelectItem, SelectList, SelectListOptions};
+        use crate::components::usage_view::{UsageOverlay, UsageView};
+        use std::collections::HashSet;
+
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+
+        let mut footer: Box<dyn Component> = Box::new(Footer::new(80));
+        apply_theme_to_component(footer.as_mut(), light);
+        assert_eq!(
+            footer.as_any().downcast_ref::<Footer>().unwrap().theme(),
+            light
+        );
+
+        let mut input: Box<dyn Component> = Box::<Input>::default();
+        apply_theme_to_component(input.as_mut(), light);
+        assert_eq!(
+            input.as_any().downcast_ref::<Input>().unwrap().theme(),
+            light
+        );
+
+        let mut list: Box<dyn Component> = Box::new(SelectList::new(SelectListOptions {
+            title: "T".into(),
+            items: vec![SelectItem {
+                value: "v".into(),
+                label: "L".into(),
+                description: None,
+            }],
+            max_visible: None,
+            theme: None,
+            on_select: None,
+            on_cancel: None,
+            on_selection_change: None,
+            on_key: None,
+        }));
+        apply_theme_to_component(list.as_mut(), light);
+        assert_eq!(
+            list.as_any().downcast_ref::<SelectList>().unwrap().theme(),
+            light
+        );
+
+        let mut pager: Box<dyn Component> =
+            Box::new(PagerOverlay::new(Pager::new(), 5, Box::new(|_| {})));
+        apply_theme_to_component(pager.as_mut(), light);
+        assert_eq!(
+            pager
+                .as_any()
+                .downcast_ref::<PagerOverlay>()
+                .unwrap()
+                .theme(),
+            light
+        );
+
+        let mut usage: Box<dyn Component> = Box::new(UsageOverlay::new(UsageView::default()));
+        apply_theme_to_component(usage.as_mut(), light);
+        assert_eq!(
+            usage
+                .as_any()
+                .downcast_ref::<UsageOverlay>()
+                .unwrap()
+                .theme(),
+            light
+        );
+
+        let mut selector: Box<dyn Component> =
+            Box::new(ScopedModelsSelector::new(ScopedModelsSelectorOptions {
+                all_models: vec![],
+                enabled_model_ids: HashSet::new(),
+                on_save: Box::new(|_| {}),
+                on_cancel: Box::new(|| {}),
+                max_visible: None,
+            }));
+        apply_theme_to_component(selector.as_mut(), light);
+        assert_eq!(
+            selector
+                .as_any()
+                .downcast_ref::<ScopedModelsSelector>()
+                .unwrap()
+                .theme(),
+            light
+        );
+
+        // The provider list wraps a menu, so the palette is observable through
+        // what it renders rather than through an accessor.
+        let mut providers: Box<dyn Component> = Box::new(ProviderListOverlay::new(
+            ProviderListState::new(vec![]),
+            Box::new(|_| {}),
+        ));
+        let before = providers.render(70);
+        apply_theme_to_component(providers.as_mut(), light);
+        let after = providers.render(70);
+        assert_ne!(before, after, "the provider list must repaint");
+    }
+
+    #[test]
     fn component_default_methods_are_noops() {
         struct Bare;
         impl Component for Bare {
@@ -474,6 +700,10 @@ mod tests {
         c.handle_input("anything"); // default: ignored
         c.invalidate(); // default: no cache to drop
         assert!(!c.wants_key_release());
+        assert!(
+            !c.wants_escape(),
+            "escape is the app layer's by default; a component opts in"
+        );
         assert_eq!(c.render(80), vec!["x"]);
         assert!(c.as_any().downcast_ref::<Bare>().is_some());
         assert!(c.as_any_mut().downcast_mut::<Bare>().is_some());

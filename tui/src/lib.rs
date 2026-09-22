@@ -33,26 +33,37 @@
 //!     interactive wiring (`main.rs` calls `index::run`)
 //!   - `rpc`              — full types + tonic `GrpcClient` (wire types via
 //!     the future-rpc crate — the single proto codegen owner, PR #112)
+//!   - `insert_history`   — finished transcript rows → the terminal's own
+//!     scrollback (leave the alternate screen, append, come back)
 
 pub mod agent_supervisor;
 pub mod app;
+pub mod clipboard;
 pub mod components;
 pub mod crash;
+pub mod external_editor;
 pub mod help;
 pub mod help_screen;
 pub mod home;
 pub mod index;
+pub mod insert_history;
 pub mod keybindings;
 pub mod keys;
+pub mod notifications;
+pub mod paste;
+pub mod paste_burst;
 pub mod rpc;
+pub mod skills_cli;
 pub mod stdin_buffer;
 pub mod terminal;
 pub mod terminal_image;
 pub mod theme;
+pub mod themes;
 pub mod tui;
 mod update;
 pub mod utils;
 pub mod version;
+pub mod worktree;
 
 /// Shared lock for tests that mutate process-global state (env vars), so
 /// parallel `cargo test` threads cannot race each other. Same pattern as

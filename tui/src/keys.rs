@@ -170,6 +170,16 @@ fn legacy_sequence_key_id(data: &str) -> Option<&'static str> {
         "\x1b[D" => "left",
         "\x1bOH" => "home",
         "\x1bOF" => "end",
+        // The other two spellings of Home/End that real terminals send and
+        // that `matches_key` already claims: xterm's `\x1b[H`/`\x1b[F` (its
+        // normal cursor mode, also what iTerm2 sends) and `\x1b[1~`/`\x1b[4~`
+        // from the `screen`/`linux` terminfo entries — i.e. *inside tmux by
+        // default*. Without them `parse_key` returned `None`, the app's key
+        // dispatch never saw the key, and Home/End were dead in the pager, the
+        // menus and `/help` unless the terminal happened to be in application
+        // cursor mode.
+        "\x1b[H" => "home",
+        "\x1b[F" => "end",
         "\x1b[E" => "clear",
         "\x1bOE" => "clear",
         "\x1bOe" => "ctrl+clear",
@@ -352,8 +362,13 @@ fn parse_kitty_sequence(data: &str) -> Option<ParsedKittySequence> {
             .unwrap_or(1);
         let event_type = parse_event_type(caps.get(3).map(|m| m.as_str()));
         let codepoint = match key_num {
+            // 1/4 are Home/End in the `screen` and `linux` terminfo entries,
+            // i.e. what tmux hands a pane by default (`khome=\E[1~`,
+            // `kend=\E[4~`). Leaving them out made the key vanish.
+            1 => FUNC_HOME,
             2 => FUNC_INSERT,
             3 => FUNC_DELETE,
+            4 => FUNC_END,
             5 => FUNC_PAGE_UP,
             6 => FUNC_PAGE_DOWN,
             7 => FUNC_HOME,
@@ -1344,6 +1359,40 @@ mod tests {
         assert_eq!(parse_key("\x7f").as_deref(), Some("backspace"));
     }
 
+    /// Home/End in every spelling a real terminal uses, through the path the
+    /// app actually drives (`parse_key`, not `matches_key`).
+    ///
+    /// `matches_key` had claimed `\x1b[H`/`\x1b[F` all along, but `parse_key`
+    /// returned `None` for them *and* for the `\x1b[1~`/`\x1b[4~` pair that the
+    /// `screen`/`linux` terminfo entries define — i.e. what tmux hands a pane by
+    /// default. The app parses the raw bytes with `parse_key` before anything
+    /// else sees them, so both spellings were dead keys in the pager, the menus
+    /// and `/help`, while the unit tests that called `matches_key` said they
+    /// worked. Seen in tmux: `tmux send-keys Home` (which sends `\x1b[1~`)
+    /// ignored, `\x1bOH` scrolling to the top.
+    #[test]
+    fn home_end_sequences_survive_the_parse_key_path() {
+        let _g = reset_kitty();
+        for (seq, id) in [
+            ("\x1bOH", "home"),
+            ("\x1b[H", "home"),
+            ("\x1b[1~", "home"),
+            ("\x1b[7~", "home"),
+            ("\x1bOF", "end"),
+            ("\x1b[F", "end"),
+            ("\x1b[4~", "end"),
+            ("\x1b[8~", "end"),
+        ] {
+            assert_eq!(parse_key(seq).as_deref(), Some(id), "parse_key({seq:?})");
+            assert!(matches_key(seq, id), "matches_key({seq:?}, {id:?})");
+            let other = if id == "home" { "end" } else { "home" };
+            assert!(!matches_key(seq, other), "{seq:?} must not be {other}");
+        }
+        // Shift/ctrl variants of the terminfo spellings keep their modifier.
+        assert_eq!(parse_key("\x1b[1;2~").as_deref(), Some("shift+home"));
+        assert_eq!(parse_key("\x1b[4;5~").as_deref(), Some("ctrl+end"));
+    }
+
     #[test]
     fn legacy_arrow_and_function_keys_via_csi_ss3() {
         let _g = reset_kitty();
@@ -1623,8 +1672,10 @@ mod tests {
         assert_eq!(p.codepoint, FUNC_END);
         // Functional keys with ~.
         for (seq, cp) in [
+            ("\x1b[1~", FUNC_HOME),
             ("\x1b[2~", FUNC_INSERT),
             ("\x1b[3~", FUNC_DELETE),
+            ("\x1b[4~", FUNC_END),
             ("\x1b[5~", FUNC_PAGE_UP),
             ("\x1b[6~", FUNC_PAGE_DOWN),
             ("\x1b[7~", FUNC_HOME),
@@ -1633,7 +1684,7 @@ mod tests {
             assert_eq!(parse_kitty_sequence(seq).unwrap().codepoint, cp);
         }
         // Unknown functional number / non-matching input → None.
-        assert!(parse_kitty_sequence("\x1b[4~").is_none());
+        assert!(parse_kitty_sequence("\x1b[9~").is_none());
         assert!(parse_kitty_sequence("hello").is_none());
         // Home/End and functional keys with an explicit :event suffix.
         let p = parse_kitty_sequence("\x1b[1;1:3H").unwrap();
@@ -1647,6 +1698,13 @@ mod tests {
         assert_eq!(p.event_type, KeyEventType::Release);
         let p = parse_kitty_sequence("\x1b[2;1:1~").unwrap();
         assert_eq!(p.codepoint, FUNC_INSERT);
+        // The `screen`/`linux` Home/End spellings carry modifiers too.
+        let p = parse_kitty_sequence("\x1b[1;2~").unwrap();
+        assert_eq!(p.codepoint, FUNC_HOME);
+        assert_eq!(p.modifier, MOD_SHIFT);
+        let p = parse_kitty_sequence("\x1b[4;5~").unwrap();
+        assert_eq!(p.codepoint, FUNC_END);
+        assert_eq!(p.modifier, MOD_CTRL);
         // Shifted/base key fields parse.
         let p = parse_kitty_sequence("\x1b[97:65:98;2u").unwrap();
         assert_eq!(p.shifted_key, Some(65));

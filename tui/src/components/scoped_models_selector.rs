@@ -6,19 +6,9 @@
 use std::collections::HashSet;
 
 use crate::rpc::types::ModelInfo;
+use crate::theme::{Chrome, Theme};
 use crate::tui::{Component, BOLD, CSI, RESET};
 use crate::utils::{truncate_to_width, TruncateOptions};
-
-const THEME: SelectorTheme = SelectorTheme {
-    accent: 39,
-    fg: 252,
-    dim_fg: 245,
-    selected_fg: 255,
-    selected_bg: 38,
-    bg: 235,
-    success: 40,
-    error: 196,
-};
 
 struct SelectorTheme {
     accent: u8,
@@ -33,6 +23,23 @@ struct SelectorTheme {
     success: u8,
     #[allow(dead_code)]
     error: u8,
+}
+
+impl SelectorTheme {
+    /// The selector palette for a [`Chrome`]; `Chrome::LEGACY` reproduces the
+    /// ported TS table index for index.
+    fn from_chrome(chrome: &Chrome) -> SelectorTheme {
+        SelectorTheme {
+            accent: chrome.accent,
+            fg: chrome.text,
+            dim_fg: chrome.base,
+            selected_fg: chrome.selected_fg,
+            selected_bg: chrome.selected_bg,
+            bg: chrome.list_bg,
+            success: chrome.mark_ok,
+            error: chrome.mark_no,
+        }
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -57,6 +64,8 @@ pub struct ScopedModelsSelector {
     #[allow(clippy::type_complexity)]
     on_cancel: Box<dyn FnMut()>,
     scroll_offset: usize,
+    /// App palette (`/theme`).
+    theme: Theme,
     /// For discard on cancel.
     original_enabled: HashSet<String>,
 }
@@ -86,10 +95,26 @@ impl ScopedModelsSelector {
             on_save,
             on_cancel,
             scroll_offset: 0,
+            theme: Theme::default(),
             original_enabled,
         };
         sel.apply_filter();
         sel
+    }
+
+    /// Adopt a palette (`/theme`).
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    /// The palette this selector paints with.
+    pub fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    /// The colors `render` uses, resolved from the app palette.
+    fn palette(&self) -> SelectorTheme {
+        SelectorTheme::from_chrome(&Chrome::from_theme(&self.theme))
     }
 
     pub fn handle_key(&mut self, key: &str) -> bool {
@@ -187,14 +212,15 @@ impl Component for ScopedModelsSelector {
         let inner_w = 20.max(width);
         let max_label_w = 10.max(inner_w - 35);
         let max_desc_w = 5.max(inner_w - max_label_w - 8);
+        let theme = self.palette();
 
         lines.push(format!(
             "{CSI}38;5;{}m{BOLD} Model Scope {RESET}",
-            THEME.accent
+            theme.accent
         ));
         lines.push(format!(
             "{CSI}38;5;{}m{CSI}2m Session-only. Enter to save to settings. {RESET}",
-            THEME.dim_fg
+            theme.dim_fg
         ));
         lines.push(format!("{CSI}2mFilter: {}_ {RESET}", self.filter));
 
@@ -204,7 +230,7 @@ impl Component for ScopedModelsSelector {
         if self.scroll_offset > 0 {
             lines.push(format!(
                 "{CSI}38;5;{}m↑ {} more{RESET}",
-                THEME.dim_fg, self.scroll_offset
+                theme.dim_fg, self.scroll_offset
             ));
         }
 
@@ -218,9 +244,9 @@ impl Component for ScopedModelsSelector {
             let full_id = item.full_id();
             let is_enabled = self.enabled_set.contains(&full_id);
             let status = if is_enabled {
-                format!("{CSI}38;5;{}m ✓{RESET}", THEME.success)
+                format!("{CSI}38;5;{}m ✓{RESET}", theme.success)
             } else {
-                format!("{CSI}38;5;{}m ✗{RESET}", THEME.dim_fg)
+                format!("{CSI}38;5;{}m ✗{RESET}", theme.dim_fg)
             };
             let label_part = truncate_to_width(&full_id, max_label_w, &TruncateOptions::default());
             let desc_part = truncate_to_width(&item.label, max_desc_w, &TruncateOptions::default());
@@ -228,7 +254,7 @@ impl Component for ScopedModelsSelector {
             if selected {
                 let prefix = format!(
                     "{CSI}38;5;{}m{CSI}48;5;{}m ▶ {status} ",
-                    THEME.selected_fg, THEME.selected_bg
+                    theme.selected_fg, theme.selected_bg
                 );
                 let label = format!("{label_part}{RESET}");
                 let suffix = if desc_part.is_empty() {
@@ -236,16 +262,16 @@ impl Component for ScopedModelsSelector {
                 } else {
                     format!(
                         "{CSI}38;5;{}m{CSI}48;5;{}m {CSI}2m{desc_part}{RESET}",
-                        THEME.selected_fg, THEME.selected_bg
+                        theme.selected_fg, theme.selected_bg
                     )
                 };
                 lines.push(format!("{prefix}{label}{suffix}"));
             } else {
-                let label = format!("{CSI}38;5;{}m  {status} {label_part}{RESET}", THEME.fg);
+                let label = format!("{CSI}38;5;{}m  {status} {label_part}{RESET}", theme.fg);
                 let suffix = if desc_part.is_empty() {
                     String::new()
                 } else {
-                    format!(" {CSI}38;5;{}m{CSI}2m{desc_part}{RESET}", THEME.dim_fg)
+                    format!(" {CSI}38;5;{}m{CSI}2m{desc_part}{RESET}", theme.dim_fg)
                 };
                 lines.push(format!("{label}{suffix}"));
             }
@@ -255,7 +281,7 @@ impl Component for ScopedModelsSelector {
             let remaining = total - self.scroll_offset - max_items;
             lines.push(format!(
                 "{CSI}38;5;{}m↓ {} more{RESET}",
-                THEME.dim_fg, remaining
+                theme.dim_fg, remaining
             ));
         }
 
@@ -272,10 +298,10 @@ impl Component for ScopedModelsSelector {
         if dirty {
             lines.push(format!(
                 "{CSI}38;5;{}m{footer}{RESET} {CSI}38;5;11m(unsaved){RESET}",
-                THEME.dim_fg
+                theme.dim_fg
             ));
         } else {
-            lines.push(format!("{CSI}38;5;{}m{footer}{RESET}", THEME.dim_fg));
+            lines.push(format!("{CSI}38;5;{}m{footer}{RESET}", theme.dim_fg));
         }
 
         lines
@@ -666,5 +692,41 @@ mod tests {
             .as_any_mut()
             .downcast_mut::<ScopedModelsSelector>()
             .is_some());
+    }
+
+    #[test]
+    fn the_legacy_chrome_maps_to_the_ported_selector_table() {
+        let theme = SelectorTheme::from_chrome(&Chrome::LEGACY);
+        assert_eq!(theme.accent, 39);
+        assert_eq!(theme.fg, 252);
+        assert_eq!(theme.dim_fg, 245);
+        assert_eq!(theme.selected_fg, 255);
+        assert_eq!(theme.selected_bg, 38);
+        assert_eq!(theme.bg, 235);
+        assert_eq!(theme.success, 40);
+        assert_eq!(theme.error, 196);
+    }
+
+    #[test]
+    fn theme_round_trips_and_recolors_the_selector() {
+        let mut sel = make_selector(noop_save(), noop_cancel());
+        let default_lines = sel.render(60);
+        assert_eq!(sel.theme(), crate::theme::DARK_THEME);
+
+        sel.set_theme(&crate::theme::DARK_THEME);
+        assert_eq!(sel.render(60), default_lines);
+
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        sel.set_theme(&light);
+        assert_eq!(sel.theme(), light);
+        let themed = sel.render(60);
+        assert_ne!(themed, default_lines, "a light palette must recolor it");
+        let accent = format!("\x1b[38;5;{}m", light.accent);
+        assert!(themed[0].contains(&accent), "title: {themed:?}");
+        // The ✓ mark is the palette's success role (40 on the legacy table).
+        assert!(
+            themed.iter().any(|line| line.contains("\x1b[38;5;28m")),
+            "{themed:?}"
+        );
     }
 }

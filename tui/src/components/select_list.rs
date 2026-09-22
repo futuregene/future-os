@@ -1,6 +1,7 @@
 //! SelectList — a list selector with filtering and keyboard navigation.
 //! 1:1 port of `tui/src/components/select-list.ts`.
 
+use crate::theme::{Chrome, Theme};
 use crate::tui::{Component, BOLD, CSI, RESET};
 use crate::utils::{apply_background_to_line, truncate_to_width, visible_width, TruncateOptions};
 
@@ -31,6 +32,21 @@ pub const DEFAULT_SELECT_THEME: SelectTheme = SelectTheme {
     bg: 235,
 };
 
+impl SelectTheme {
+    /// The list palette for a [`Chrome`] — how `/theme` reaches this widget.
+    /// `Chrome::LEGACY` maps to [`DEFAULT_SELECT_THEME`] by construction.
+    fn from_chrome(chrome: &Chrome) -> SelectTheme {
+        SelectTheme {
+            accent: chrome.accent,
+            fg: chrome.text,
+            dim_fg: chrome.base,
+            selected_fg: chrome.selected_fg,
+            selected_bg: chrome.selected_bg,
+            bg: chrome.list_bg,
+        }
+    }
+}
+
 pub struct SelectListOptions {
     pub title: String,
     pub items: Vec<SelectItem>,
@@ -52,7 +68,11 @@ pub struct SelectList {
     selected_index: usize,
     filter: String,
     max_visible: usize,
-    theme: SelectTheme,
+    /// Palette handed in by the caller (`SelectListOptions::theme`); wins over
+    /// the app palette when set.
+    theme_override: Option<SelectTheme>,
+    /// The app palette (`/theme`).
+    theme: Theme,
     title: String,
     #[allow(clippy::type_complexity)]
     on_select: Option<Box<dyn FnMut(&SelectItem)>>,
@@ -73,7 +93,8 @@ impl SelectList {
             selected_index: 0,
             filter: String::new(),
             max_visible: options.max_visible.unwrap_or(10),
-            theme: options.theme.unwrap_or(DEFAULT_SELECT_THEME),
+            theme_override: options.theme,
+            theme: Theme::default(),
             title: options.title,
             on_select: options.on_select,
             on_cancel: options.on_cancel,
@@ -89,6 +110,24 @@ impl SelectList {
             return None;
         }
         self.filtered_items.get(self.selected_index)
+    }
+
+    /// Adopt a palette (`/theme`). An explicit [`SelectListOptions::theme`]
+    /// still wins, so a caller that wants a fixed list palette keeps it.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    /// The app palette this list paints with (see [`Self::set_theme`]).
+    pub fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    /// The colors `render` actually uses: the caller's override when present,
+    /// otherwise the app palette.
+    fn palette(&self) -> SelectTheme {
+        self.theme_override
+            .unwrap_or_else(|| SelectTheme::from_chrome(&Chrome::from_theme(&self.theme)))
     }
 
     pub fn set_selected_index(&mut self, index: usize) {
@@ -216,14 +255,15 @@ impl Component for SelectList {
 
         // Helper: pad to innerW-2 with a solid background so the overlay
         // forms a proper box and base text can't bleed through.
-        let bg = self.theme.bg;
-        let sel_bg = self.theme.selected_bg;
+        let theme = self.palette();
+        let bg = theme.bg;
+        let sel_bg = theme.selected_bg;
         let pad_to_width = |line: &str, bg_color: u8| -> String {
             apply_background_to_line(line, inner_w, bg_color as i16)
         };
 
         lines.push(pad_to_width(
-            &format!("{CSI}38;5;{}m{BOLD} {}", self.theme.accent, self.title),
+            &format!("{CSI}38;5;{}m{BOLD} {}", theme.accent, self.title),
             bg,
         ));
         lines.push(pad_to_width(
@@ -238,10 +278,7 @@ impl Component for SelectList {
         // count)
         if self.scroll_offset > 0 {
             lines.push(pad_to_width(
-                &format!(
-                    "{CSI}38;5;{}m↑ {} more",
-                    self.theme.dim_fg, self.scroll_offset
-                ),
+                &format!("{CSI}38;5;{}m↑ {} more", theme.dim_fg, self.scroll_offset),
                 bg,
             ));
         } else {
@@ -273,8 +310,8 @@ impl Component for SelectList {
             if selected {
                 // Single continuous background: no RESET gap between label
                 // and suffix
-                let bg_seq = format!("{CSI}48;5;{}m", self.theme.selected_bg);
-                let fg_seq = format!("{CSI}38;5;{}m", self.theme.selected_fg);
+                let bg_seq = format!("{CSI}48;5;{}m", theme.selected_bg);
+                let fg_seq = format!("{CSI}38;5;{}m", theme.selected_fg);
                 let head = format!("{fg_seq}{bg_seq} ▶ ");
                 let label = format!("{label_part}{label_pad}");
                 let suffix = if desc_part.is_empty() {
@@ -284,14 +321,11 @@ impl Component for SelectList {
                 };
                 lines.push(pad_to_width(&format!("{head}{label}{suffix}"), sel_bg));
             } else {
-                let label = format!(
-                    "{CSI}38;5;{}m  {label_part}{label_pad}{RESET}",
-                    self.theme.fg
-                );
+                let label = format!("{CSI}38;5;{}m  {label_part}{label_pad}{RESET}", theme.fg);
                 let suffix = if desc_part.is_empty() {
                     String::new()
                 } else {
-                    format!(" {CSI}38;5;{}m{CSI}2m{desc_part}{RESET}", self.theme.dim_fg)
+                    format!(" {CSI}38;5;{}m{CSI}2m{desc_part}{RESET}", theme.dim_fg)
                 };
                 lines.push(pad_to_width(&format!("{label}{suffix}"), bg));
             }
@@ -302,7 +336,7 @@ impl Component for SelectList {
         if self.scroll_offset + max_items < total {
             let remaining = total - self.scroll_offset - max_items;
             lines.push(pad_to_width(
-                &format!("{CSI}38;5;{}m↓ {} more", self.theme.dim_fg, remaining),
+                &format!("{CSI}38;5;{}m↓ {} more", theme.dim_fg, remaining),
                 bg,
             ));
         } else {
@@ -374,6 +408,62 @@ mod tests {
 
     fn selected_value(list: &SelectList) -> Option<String> {
         list.get_selected_item().map(|i| i.value.clone())
+    }
+
+    #[test]
+    fn the_legacy_chrome_maps_to_the_default_select_theme() {
+        assert_eq!(
+            SelectTheme::from_chrome(&Chrome::LEGACY),
+            DEFAULT_SELECT_THEME
+        );
+    }
+
+    #[test]
+    fn theme_round_trips_and_recolors_the_list() {
+        let mut list = make_list(3);
+        let default_lines = list.render(60);
+        assert_eq!(list.theme(), crate::theme::DARK_THEME);
+
+        list.set_theme(&crate::theme::DARK_THEME);
+        assert_eq!(list.render(60), default_lines);
+
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        list.set_theme(&light);
+        assert_eq!(list.theme(), light);
+        let themed = list.render(60);
+        assert_ne!(themed, default_lines);
+        // Title accent and the row background come from the palette.
+        let accent = format!("\x1b[38;5;{}m", light.accent);
+        let selected_bg = format!("\x1b[48;5;{}m", light.selected_bg);
+        assert!(themed[0].contains(&accent), "title: {themed:?}");
+        assert!(themed[3].contains(&selected_bg), "selected: {themed:?}");
+    }
+
+    #[test]
+    fn an_explicit_select_theme_wins_over_the_app_palette() {
+        let explicit = SelectTheme {
+            accent: 99,
+            fg: 98,
+            dim_fg: 97,
+            selected_fg: 96,
+            selected_bg: 95,
+            bg: 94,
+        };
+        let mut list = SelectList::new(SelectListOptions {
+            title: "Fixed".into(),
+            items: items(),
+            max_visible: Some(3),
+            theme: Some(explicit),
+            on_select: None,
+            on_cancel: None,
+            on_selection_change: None,
+            on_key: None,
+        });
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        list.set_theme(&light);
+        let lines = list.render(60);
+        assert!(lines[0].contains("\x1b[38;5;99m"), "title: {lines:?}");
+        assert!(lines[0].contains("\x1b[48;5;94m"), "pad: {lines:?}");
     }
 
     #[test]

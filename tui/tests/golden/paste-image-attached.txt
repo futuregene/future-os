@@ -1,0 +1,36 @@
+[48;5;59m line-012 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-013 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-014 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-015 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-016 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-017 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-018 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-019 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-020 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-021 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-022 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-023 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-024 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-025 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-026 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-027 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-028 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-029 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-030 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-031 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-032 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-033 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-034 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-035 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-036 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-037 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-038 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ line-039 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ PASTE-TAIL-SENTINEL
+
+[49m Hello from the mock agent!
+
+ This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
+📎 1 image attached
+> [Image #1][7m [0m
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m

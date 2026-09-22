@@ -101,10 +101,18 @@ serialization (which drops a trailing `.0`) cannot diverge from serde_json.
 # tmux Screen Consistency (Rust vs golden, live app)
 
 End-to-end screen comparison of the **full interactive Rust TUI** running in
-a real tmux pane against a deterministic mock gRPC agent. This is the P4
-gate: the welcome banner, footer (incl. token/cache truthiness), status
-overlay, help card, model selector, sessions overlay, prompt reply and
-Ctrl+C exit.
+a real tmux pane against a deterministic mock gRPC agent. This is the P4 gate,
+and it covers every screen the port renders: the chat itself (welcome banner,
+typing, the streamed reply with its tool call, and `ctrl+g` tool-body
+expand/collapse), the footer/status readouts, and every panel the port added —
+the help card (clipped at 80x36, whole at 80x72, scrolled at 80x36), the model
+selector, the session list, the model-scope and tool menus, the providers list
+(both tabs and the edit form), the skill browser (catalogue, search-filtered,
+and its filter cleared by an escape), the sandbox/permission panel (overlay, an
+applied tier, an applied permission level), the theme picker (light applied,
+dark restored), `/usage`, `/transcript` (pager, search editor and the
+PageDown/PageUp keys), `/stats`, `/agent`, `/metrics`, `/snapshot`,
+`/tool-output` (list and diff body) and `/history`.
 
 ## Harness
 
@@ -115,45 +123,139 @@ tui/tests/tmux-diff.sh --verbose  # show failing diffs
 tui/tests/tmux-diff.sh --keep     # keep /tmp/future-tui-tmux-* artifacts
 ```
 
+Requirements: `tmux` (it provides the pane's PTY) and the pinned toolchain
+(`rust-toolchain.toml`) — the harness builds `future-tui` and the mock agent
+itself. Without tmux it prints `SKIP: tmux not found` and exits 0, which is
+what CI sees (see the local-only note below).
+
 The harness starts one mock agent instance (`tui/examples/mock_agent`, a
 deterministic `FutureAgent` gRPC server), opens a tmux window (80x36 pane)
-with the Rust TUI (`future-tui`), and drives it with keystrokes; at each
-scenario step the pane is captured with `capture-pane -p -e` and
-byte-compared against the golden:
+with the Rust TUI (`future-tui`), and drives it with keystrokes. **45 checks =
+44 golden screens + the Ctrl+C exit**, one per step of a single fixed session
+(every screen sits on top of the chat the earlier steps produced, so the order
+is part of the golden). Grouped:
 
-1. `welcome` — idle screen after connect
-2. `typed` — input line with text
-3. `reply` — submitted prompt + streamed markdown reply
-4. `status` — `/status` overlay (get_state + list_models)
-5. `help-overlay` / `help-closed` — `/help` card + Escape
-6. `model-overlay` / `model-closed` — `/model` selector + Escape
-7. `sessions-overlay` / `sessions-closed` — `/sessions` + Escape
-8. `ctrl-c` — the TUI must exit with status 0
+1. chat — `welcome`, `typed`, `reply`, `tool-expanded` / `tool-collapsed`
+   (`ctrl+g`), `status`
+2. help — `help-overlay` / `help-closed` at 80x36, `help-full` at 80x72 (the
+   card must be opened *after* the resize), `help-scrolled` (PageDown at 80x36)
+3. selectors — `model-overlay` / `model-closed`, `sessions-*`, `models-*`,
+   `tools-*`
+4. providers — `providers-builtin`, `providers-custom` (Tab),
+   `providers-form` (Enter), `providers-closed`
+5. skills — `skills-overlay`, `skills-filtered`, `skills-escape` (the first
+   escape clears the query and keeps the panel), `skills-closed`
+6. sandbox / permission — `sandbox-overlay`, `sandbox-tier`,
+   `permission-overlay`, `permission-applied`
+7. theme — `theme-overlay`, `theme-light`, `theme-dark-restored`
+8. readouts — `usage-overlay`, `transcript-pager`, `transcript-page-down`,
+   `transcript-page-up`, `transcript-search`, `stats`, `agent`, `metrics`,
+   `snapshot`, `tool-output-list`, `tool-output-diff`, `history`
+9. `ctrl-c` — the TUI must exit with status 0
 
-**Golden tests**: `tui/tests/golden/<scenario>.txt` records the reference
-screens — captured from the retired TypeScript TUI's pane **before** the TS
-sources were deleted, then re-verified byte-for-byte against the Rust pane.
-Verify mode checks the Rust pane against the golden, so a divergence in the
-port OR an intentional screen change (which must be committed together with
-re-recorded goldens) is caught. Regenerate with `--record` after an
-intentional change (records from the Rust pane).
+The authoritative list is the script itself:
+`grep -nE '^step |^step_when ' tui/tests/tmux-diff.sh`.
+
+**Content polling, not sleeps.** `step_when <scenario> "<marker>"` polls the
+pane until the literal text that *proves the intended screen painted* (e.g.
+`Usage · mock-model`, `Tool permissions`, `current: Workspace`, or `not
+installed` for the merged skill catalogue) and only then captures — that is
+what keeps the goldens stable on a loaded machine. A scenario whose evidence is
+a *transition* rather than a screen uses `require_text` and asserts instead.
+
+**Golden tests**: `tui/tests/golden/<scenario>.txt` holds the 44 reference
+screens, each captured with `capture-pane -p -e` — **ANSI included**, and
+byte-compared as a whole. All of them are recorded from the **Rust** pane with
+`--record`; the file names date from the port commit `1467a1cd` (2026-08-07),
+when the first ten were captures of the retired TypeScript pane, and the
+TypeScript sources are gone. Verify mode compares the Rust pane against the
+golden, so both a divergence in the port and an intentional screen change
+(which must be committed together with re-recorded goldens) are caught.
+Regenerate with `--record` after an intentional change.
+
+**Recording refuses to freeze a broken screen.** In `--record`, `step`,
+`step_when` and the assertions bail out through one guard: a marker that never
+rendered, a screen that failed its own assertion, or a pane matching the TUI's
+failure phrasings (`Failed to …` / `Error: …` on their own line, a Rust panic,
+the stub's `not implemented:`) is a **FATAL** instead of a golden — a broken
+panel cannot be recorded once and then pass forever.
+
+**Transitions a golden cannot state** are asserted in both modes and reported
+as `ASSERT-FAIL`: that the first escape kept a filtered panel open and cleared
+its query, that PageDown moved the pager's viewport and PageUp walked it back,
+that the second escape closed it, that an applied permission level reached the
+chat. A golden pins pixels; only an assertion can say "this key did
+something".
 
 ## Determinism notes
 
 - Mock agent responses are fixed (session state, model list, sessions list,
   streamed reply) so the TUI renders identical content every run.
+- The pane runs a **copy** of `future-tui` out of the run's temp directory,
+  with a **stub `future` binary beside it**. `/skills` shells out to
+  `future skills list --json`, resolved as `<exe_dir>/future` first: next to
+  `target/debug/future-tui` a developer box usually has `target/debug/future`
+  or the installed `future`, which would run against the isolated HOME, hang
+  until the skill-op timeout and drop a *wall-clock-dependent* error line into
+  the chat behind the panel (a 76-column card at 80 columns shows that chat in
+  its two left columns). The stub answers with a fixed catalogue — and is
+  preflighted — so the catalogue is a fixed document on every host.
 - The harness waits for the banner (`future-tui v`) before capturing, and
-  sleeps 1 s at each step for the 33 ms render scheduler.
+  `step` sleeps 1 s for the 33 ms render scheduler; `step_when` waits for its
+  own marker instead of sleeping.
 - Slash commands use a `submit_cmd` helper: type → wait for the 20 ms
   autocomplete debounce → Enter (applies popup selection) → Enter (submits).
   A single fast Enter would be consumed by the autocomplete popup.
+- The pager scenarios assume no page size: one page is `viewport − 1` rows
+  clamped to the last page, so the step is a property of the content. Evidence
+  is the pager's own `…%` readout plus the screen's byte fingerprint, and the
+  assertions are "it grew", "the bytes changed", "PageUp walks it back" — a
+  hard-coded `PageUp → 0%` would report a defect that is not there.
+- The golden is the ANSI-styled pane (`capture-pane -p -e`) while the
+  `step_when` / `wait_text` polling and the `expect_pane_*` assertions read the
+  **plain-text** pane (`capture-pane -p`). The asymmetry is deliberate — a
+  marker should match text that a repaint cannot hide inside an escape
+  sequence — but it means a marker can be on screen while the golden still
+  differs in styling or layout.
+- Cleanup is scoped on purpose: `tmux kill-session` closes the pane and
+  SIGHUPs its process group, but a TUI whose terminal is gone ignores
+  SIGHUP/SIGINT/SIGTERM (its exit path needs the event loop, which stops
+  progressing), so the harness SIGKILLs the pane's own child (an exact `ppid`
+  lookup) and then sweeps only **this run's** gRPC address
+  (`grpc-addr 127.0.0.1:<per-run port>`). Never replace that with a blanket
+  `pkill future-tui` — several sessions work in this repo at once and it would
+  take theirs down.
+
+## This gate is local-only, so keep it alive
+
+CI does not run it: the runners have no tmux, the harness prints
+`SKIP: tmux not found …` and exits 0 there, and `Makefile` lists the `*-diff` /
+`*-tmux` targets as manual migration-acceptance gates. A purely local gate
+therefore rots silently, and this one did — the goldens were last written on
+2026-08-07 (the port commit `1467a1cd`) while the welcome line gained its
+`ctrl+o expand/collapse` hint on 2026-08-09 (`c1c946ef`), so every scenario was
+red for **~6 weeks** until the panel re-record. Two habits keep it honest:
+
+- re-record (`--record`) and review the drift per scenario after **any**
+  intentional change to a screen, and commit the goldens with it;
+- run it when touching a panel, not only when touching the renderer.
+
+Staleness can also make a scenario capture the *wrong* screen without any
+golden drifting to something visibly broken: once the transcript pager's search
+editor learned to claim the first escape, the single escape left in that
+scenario closed only the search editor, so `/stats` and the scenarios after it
+recorded the transcript instead of their own panel. The transition
+assertions above are what catch that class of drift.
 
 ## Bugs the harness caught (all fixed)
 
 - **Footer token stats JS truthiness** — TS renders `↑/↓/R/W` token stats
   only when the value is truthy (`if (this.data.tokensCacheR)`), so a zero
   value is skipped. The port used `if let Some(n)` and rendered `R0 W0` for a
-  `Some(0)`; the P1 footer parity test had only used non-zero values.
+  `Some(0)`; the P1 footer parity test had only used non-zero values. (The
+  per-part `↑/↓/R/W` layout is unchanged; the session **cumulative** totals now
+  carry a `Σ` prefix so they cannot be misread as the current context, which the
+  `/usage` panel labels as `Cumulative tokens (resent each call)`.)
 - **Status overlay session/model fallback** — TS renders
   `**Session:** ${s.sessionId || "(none)"}` (either-or); the port always
   appended ` or (none)`. Same for `**Model:**` with ` or (unknown)`.

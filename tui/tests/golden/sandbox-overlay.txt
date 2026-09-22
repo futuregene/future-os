@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse ·[39m
+
+[38;5;245m[skills] code-review, future-slides, future-web[39m
+
+[48;5;59m hello
+
+[49m Hello from the mock agent!
+
+  [1m[38;5;39mSandbox & permissions[0m
+
+  [1m[38;5;39mApproval mode[0m  [38;5;245mcurrent: Sandboxed[39m
+  [38;5;252m  Manual[39m
+  [38;5;255m[48;5;38m› Sandboxed  [38;5;245m· current[39m                                                      [49m
+  [38;5;252m  Unrestricted[39m
+    Commands run in the macOS sandbox and ask for approval when needed.
+  [38;5;143m  Sandbox: available — backend macos_seatbelt[39m
+
+  [1m[38;5;39mTool permissions[0m  [38;5;245mcurrent: All[39m
+  [38;5;252m  All  [38;5;245mEvery tool call runs without asking.[39m  [38;5;245m· current[39m
+  [38;5;252m  Workspace  [38;5;245mTool calls ask for approval before they run; the grant is scop…[39m
+  [38;5;252m  None  [38;5;245mEvery tool call is denied before it runs.[39m
+  [38;5;245m↑/↓ move · enter applies · r re-checks · esc closes                         [39m
+  Tier shown is this platform's default — apply one here to set the session's.
+ [38;5;245mContext window: 128K[39m
+ [38;5;245mSession: mock-session-1[39m
+ [38;5;245mCWD: /mock[39m
+ [38;5;245mThinking: off[39m
+ [38;5;245mPermission: all[39m
+ [38;5;245mQueries: 42[39m
+ [38;5;245mAuto compaction: off[39m
+ [38;5;245mStreaming: no[39m
+ [38;5;245mContext: 48000 / 128000 (37.5%)[39m
+>
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m
