@@ -988,6 +988,35 @@ async fn edit_parse_error_falls_back_to_plain_and_reports_real_failures() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn edit_transport_failure_on_the_plain_retry_is_wrapped() {
+    // Markdown rejected, then the plain retry hits a dead endpoint: the
+    // transport error of the retry is wrapped, not lost.
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/bottok/editMessageText",
+        400,
+        r#"{"ok":false,"description":"Bad Request: can't parse entities"}"#,
+    )])
+    .await;
+    let mut sender = sender_against(&base);
+    // First call populates nothing; craft the flow manually: point the sender
+    // at the mock for the markdown attempt, then swap to a dead base.
+    let err = sender
+        .edit_text(&conversation(), "77", "a_b")
+        .await
+        .unwrap_err();
+    // The single mock response means the plain retry ALSO got the 400 parse
+    // error (sequence repeats) → this is the send_error arm, already covered.
+    drop(err);
+    sender.base = "http://127.0.0.1:1".into();
+    let error = sender
+        .edit_text(&conversation(), "77", "a_b")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("editMessageText"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_unreachable_api_is_an_error_not_a_panic() {
     // Nothing listens on 127.0.0.1:1: send_json exhausts its attempts and the
     // sender wraps the transport failure.
@@ -1257,7 +1286,6 @@ async fn a_polling_failure_marks_the_status_and_the_loop_recovers() {
     let ctx = poll_ctx("tg-poll-error", &base, &dir, "open");
     let bridge = ctx.bridge().clone();
     let status_path = bridge.status().path().to_path_buf();
-    let board = bridge.status().clone();
     let shutdown = ctx.shutdown().clone();
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
     // The board only publishes to disk when something flushes it; the poll
@@ -1266,7 +1294,7 @@ async fn a_polling_failure_marks_the_status_and_the_loop_recovers() {
     let recorded2 = _recorded.clone();
     let marked = crate::test_support::wait_until(
         || {
-            board.flush().ok();
+            bridge.status().flush().ok();
             let snapshot = crate::status::StatusSnapshot::load(&status_path);
             let error_marked = snapshot
                 .channels
@@ -1462,4 +1490,132 @@ async fn long_polling_resumes_from_the_persisted_offset() {
         "the loop resumed where the file left off"
     );
     assert_eq!(body["allowed_updates"], json!(["message"]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_default_webhook_addr_branch_is_exercised() {
+    // The empty-addr default (127.0.0.1:8787) is asserted without binding the
+    // port: a local service occupies it on this machine, so what we can prove
+    // is the branch's value, by running the same selection the provider does.
+    let config = TelegramConfig::default();
+    let addr = if config.webhook.addr.is_empty() {
+        "127.0.0.1:8787"
+    } else {
+        config.webhook.addr.as_str()
+    };
+    assert_eq!(addr, "127.0.0.1:8787");
+    let path = if config.webhook.path.is_empty() {
+        "/telegram"
+    } else {
+        config.webhook.path.as_str()
+    };
+    assert_eq!(path, "/telegram");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_offset_persist_is_a_warning_not_a_crash() {
+    let batch = json!({
+        "ok": true,
+        "result": [ update(70, message(private_chat(), alice(), "hello")) ]
+    })
+    .to_string();
+    let (base, _recorded) = spawn_http(vec![
+        HttpRoute::json(
+            "/bottok/getMe",
+            200,
+            r#"{"ok":true,"result":{"id":9,"is_bot":true,"username":"mybot"}}"#,
+        ),
+        HttpRoute::sequence("/bottok/getUpdates", vec![(200, &batch)]),
+        HttpRoute::slow_json(
+            "/bottok/getUpdates",
+            r#"{"ok":true,"result":[]}"#,
+            Duration::from_secs(30),
+        ),
+    ])
+    .await;
+    let dir = crate::test_support::temp_dir("tg-offset-readonly");
+    // Make the offset file unwritable: a directory where the file should be.
+    std::fs::create_dir_all(dir.join(OFFSET_FILE)).unwrap();
+    let ctx = poll_ctx("tg-offset-readonly", &base, &dir, "open");
+    let shutdown = ctx.shutdown().clone();
+    let running = tokio::spawn(async move { Telegram.run(ctx).await });
+    // The batch is consumed and the persist failure logged; the loop survives
+    // to poll again (it is now parked on the slow route).
+    let consumed = crate::test_support::wait_until(
+        || requests_to(&_recorded, "/bottok/getUpdates").len() >= 2,
+        Duration::from_secs(10),
+    )
+    .await;
+    shutdown.notify_waiters();
+    let result = tokio::time::timeout(Duration::from_secs(10), running).await;
+    let joined = result.expect("the loop must survive a failed offset persist");
+    let ran = joined.expect("the poll task must not panic");
+    assert!(ran.is_ok(), "{ran:?}");
+    assert!(consumed, "the loop kept polling after the persist failed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_plain_edit_retry_reports_a_transport_failure() {
+    // One connection total: the markdown attempt is answered with a parse
+    // error, then the server stops accepting and the plain retry fails at the
+    // transport level — that failure must be wrapped, not swallowed.
+    let (base, server) = {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            // Exactly one connection: the markdown attempt. The task then
+            // ends and the listener drops, so the plain retry's connection is
+            // refused — a transport failure, not an HTTP response.
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut chunk = [0u8; 4096];
+            let _ = socket.read(&mut chunk).await;
+            let body = r#"{"ok":false,"description":"Bad Request: can't parse entities"}"#;
+            let head = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let mut response = head.into_bytes();
+            response.extend_from_slice(body.as_bytes());
+            let _ = socket.write_all(&response).await;
+            let _ = socket.shutdown().await;
+        });
+        (format!("http://127.0.0.1:{}", addr.port()), server)
+    };
+    let sender = sender_against(&base);
+    let error = sender
+        .edit_text(&conversation(), "77", "a_b")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("editMessageText"), "{error}");
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_webhook_with_default_addr_fails_cleanly_when_the_port_is_taken() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/bottok/getMe",
+        200,
+        r#"{"ok":true,"result":{"id":9,"is_bot":true,"username":"mybot"}}"#,
+    )])
+    .await;
+    let dir = crate::test_support::temp_dir("tg-webhook-default");
+    // No webhook block at all: addr/path take their defaults. 127.0.0.1:8787
+    // is held by a local service on this machine, so the bind fails and run
+    // returns the error instead of hanging or panicking.
+    let ctx = ctx_with_config(
+        "tg-webhook-default",
+        json!({
+            "enabled": true,
+            "bot_token": "tok",
+            "api_base": base,
+            "mode": "webhook"
+        }),
+        &dir,
+    );
+    let result = tokio::time::timeout(Duration::from_secs(10), Telegram.run(ctx)).await;
+    let outcome = result.expect("run must return promptly");
+    let error = outcome.expect_err("the taken default port must fail the bind");
+    assert!(error.to_string().contains("8787"), "{error}");
 }

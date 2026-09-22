@@ -118,6 +118,20 @@ fn a_missing_number_is_a_configuration_error_naming_the_channel() {
 }
 
 #[test]
+fn a_missing_daemon_url_is_a_configuration_error_naming_the_channel() {
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": "", "number": "+15550001234",
+    }));
+    let error = match Signal.sender(&ctx) {
+        Ok(_) => panic!("a sender must not be built without a daemon URL"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(message.contains("providers.signal"), "{message}");
+    assert!(message.contains("`http_url`"), "{message}");
+}
+
+#[test]
 fn a_malformed_config_block_names_the_channel() {
     let ctx = ctx_with(serde_json::json!({ "enabled": true, "receive_timeout_s": "soon" }));
     let error = ctx.config::<SignalConfig>().expect_err("must fail");
@@ -161,6 +175,11 @@ fn direct_and_group_conversation_ids_round_trip() {
         Target::parse(&group.conversation_id()),
         Target::parse("abc/def+gh=")
     );
+    // A direct target's id is the recipient itself: no prefix, no rewriting.
+    assert_eq!(
+        Target::Direct("+15550009999".into()).conversation_id(),
+        "+15550009999"
+    );
 }
 
 #[test]
@@ -174,6 +193,15 @@ fn send_bodies_use_recipients_for_a_direct_message_and_group_id_for_a_group() {
     let group = Target::Group("groupid".into()).send_body("+15550001234", "hello");
     assert_eq!(group["group-id"], "groupid");
     assert!(group.get("recipients").is_none());
+
+    // The same split exists in the parameter shape the RPC methods take.
+    let direct = Target::Direct("+15550009999".into()).rpc_params("+15550001234");
+    assert_eq!(direct["account"], "+15550001234");
+    assert_eq!(direct["recipient"][0], "+15550009999");
+    assert!(direct.get("groupId").is_none());
+    let group = Target::Group("groupid".into()).rpc_params("+15550001234");
+    assert_eq!(group["groupId"], "groupid");
+    assert!(group.get("recipient").is_none());
 }
 
 #[test]
@@ -382,6 +410,20 @@ fn attachment_kinds_follow_the_content_type() {
     assert_eq!(refs[2].kind, MediaKind::Video);
     assert_eq!(refs[3].kind, MediaKind::Document);
     assert_eq!(refs[4].kind, MediaKind::Unknown);
+}
+
+#[test]
+fn an_envelope_without_a_timestamp_still_gets_a_unique_identity() {
+    // The daemon normally stamps every envelope; when it does not, the dedup
+    // key still has to distinguish two messages.
+    let bare = serde_json::json!({"envelope": {
+        "sourceNumber": "+15550009999",
+        "dataMessage": {"message": "hello"}}});
+    let first = parse_envelope(&bare, &identity("+15550001234"), "http://d").expect("inbound");
+    let second = parse_envelope(&bare, &identity("+15550001234"), "http://d").expect("inbound");
+    assert!(first.created_at_ms.is_none());
+    assert_ne!(first.message_id, second.message_id);
+    assert_eq!(first.text, "hello");
 }
 
 #[test]
@@ -594,6 +636,242 @@ async fn a_reaction_needs_the_numeric_timestamp_of_the_message() {
     assert!(error.to_string().contains("timestamp"), "{error}");
 }
 
+// ─── the daemon's JSON-RPC surface ─────────────────────────────────────────
+
+/// A server that answers without a `Content-Length`, so the size of the body is
+/// only knowable by reading to EOF.
+async fn spawn_lengthless_server(body_len: usize) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut head = [0u8; 1024];
+                let _ = socket.read(&mut head).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let chunk = vec![0u8; 64 * 1024];
+                let mut written = 0usize;
+                while written < body_len {
+                    let take = chunk.len().min(body_len - written);
+                    if socket.write_all(&chunk[..take]).await.is_err() {
+                        return;
+                    }
+                    written += take;
+                }
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+#[tokio::test]
+async fn a_typing_indicator_is_sent_through_the_rpc_route() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::json(
+        "/api/v1/rpc",
+        200,
+        r#"{"jsonrpc":"2.0","id":"sendTyping","result":{}}"#,
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = Signal.sender(&ctx).unwrap();
+
+    // A direct conversation addresses the recipient; a group names the group.
+    // Both shapes come from the same helper, so both are checked here.
+    sender
+        .typing(&ConversationRef {
+            id: "+15550009999".into(),
+            thread_id: None,
+            kind: ChatKind::Direct,
+        })
+        .await
+        .unwrap();
+    sender
+        .typing(&ConversationRef {
+            id: "group:grp==".into(),
+            thread_id: None,
+            kind: ChatKind::Group,
+        })
+        .await
+        .unwrap();
+
+    let calls = requests_to(&recorded, "/api/v1/rpc");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let direct: Value = serde_json::from_str(&calls[0].body_string()).unwrap();
+    assert_eq!(direct["method"], "sendTyping");
+    assert_eq!(direct["params"]["account"], "+15550001234");
+    assert_eq!(direct["params"]["recipient"][0], "+15550009999");
+    assert_eq!(direct["params"]["stop"], false);
+    let group: Value = serde_json::from_str(&calls[1].body_string()).unwrap();
+    assert_eq!(group["params"]["groupId"], "grp==");
+    assert!(group["params"].get("recipient").is_none());
+}
+
+#[tokio::test]
+async fn a_reaction_names_the_message_and_its_author() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::json(
+        "/api/v1/rpc",
+        200,
+        r#"{"jsonrpc":"2.0","id":"sendReaction","result":{}}"#,
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = Signal.sender(&ctx).unwrap();
+    sender
+        .react(&ConversationRef::default(), "1700000000123", "👍")
+        .await
+        .unwrap();
+
+    let calls = requests_to(&recorded, "/api/v1/rpc");
+    let body: Value = serde_json::from_str(&calls[0].body_string()).unwrap();
+    assert_eq!(body["method"], "sendReaction");
+    assert_eq!(body["params"]["reaction"], "👍");
+    // A reaction targets a specific message by timestamp and author.
+    assert_eq!(body["params"]["targetTimestamp"], 1700000000123i64);
+    assert_eq!(body["params"]["targetAuthor"], "+15550001234");
+}
+
+#[tokio::test]
+async fn a_refused_rpc_call_reports_why() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/api/v1/rpc",
+        400,
+        r#"{"error":"Account is not registered"}"#,
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = Signal.sender(&ctx).unwrap();
+    let error = sender
+        .typing(&ConversationRef::default())
+        .await
+        .expect_err("must fail");
+    let message = error.to_string();
+    assert!(message.contains("sendTyping"), "{message}");
+    assert!(message.contains("permanent"), "{message}");
+}
+
+// ─── the receive route’s two shapes ────────────────────────────────────────
+
+#[tokio::test]
+async fn a_daemon_with_only_the_older_receive_route_is_still_polled() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::json(
+        "/v1/receive/%2B15550001234",
+        200,
+        "[]",
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let config: SignalConfig = ctx.config().unwrap();
+    let sender = SignalSender::new(&ctx, &config);
+    let envelopes = sender
+        .receive(&config)
+        .await
+        .expect("the old route answers");
+    assert!(envelopes.is_empty());
+    // The newer path was tried first and is not there; the older one answered.
+    assert_eq!(
+        requests_to(&recorded, "/api/v1/receive/%2B15550001234").len(),
+        1
+    );
+    assert_eq!(
+        requests_to(&recorded, "/v1/receive/%2B15550001234").len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_receive_failure_is_classified_for_the_caller() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/api/v1/receive/%2B15550001234",
+        500,
+        r#"{"error":"daemon is busy"}"#,
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let config: SignalConfig = ctx.config().unwrap();
+    let sender = SignalSender::new(&ctx, &config);
+    let error = sender
+        .receive(&config)
+        .await
+        .expect_err("a 500 is not a poll");
+    let message = error.to_string();
+    assert!(message.contains("receive"), "{message}");
+    // A busy daemon is worth another try, so the text must say so.
+    assert!(message.contains("transient"), "{message}");
+    assert!(!crate::delivery::is_permanent_error(&message), "{message}");
+}
+
+#[tokio::test]
+async fn a_daemon_with_neither_receive_route_says_so() {
+    let (base, _recorded) = spawn_http(Vec::new()).await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let config: SignalConfig = ctx.config().unwrap();
+    let sender = SignalSender::new(&ctx, &config);
+    let error = sender
+        .receive(&config)
+        .await
+        .expect_err("no route can poll");
+    let message = error.to_string();
+    assert!(message.contains("route"), "{message}");
+}
+
+// ─── attachments ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn an_attachment_above_the_size_cap_is_refused_from_its_length() {
+    // The declared length is enough: nothing that big is read into memory.
+    let (base, _recorded) = spawn_http(vec![HttpRoute::binary(
+        "/api/v1/attachments/huge",
+        200,
+        vec![0u8; MAX_MEDIA_BYTES + 1],
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+    let error = sender
+        .download(&format!("{base}/api/v1/attachments/huge"))
+        .await
+        .expect_err("too large to keep");
+    assert!(error.to_string().contains("larger than"), "{error}");
+}
+
+#[tokio::test]
+async fn an_attachment_is_capped_even_when_the_length_is_hidden() {
+    // A daemon that streams the body leaves the client to find the size by
+    // reading it, so the cap is enforced a second time after the read.
+    let base = spawn_lengthless_server(MAX_MEDIA_BYTES + 1).await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+    let error = sender
+        .download(&format!("{base}/api/v1/attachments/streamed"))
+        .await
+        .expect_err("too large to keep");
+    assert!(error.to_string().contains("larger than"), "{error}");
+}
+
 // ─── attachments ───────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -705,6 +983,43 @@ async fn only_images_are_fetched_and_a_reference_is_never_fetched_twice() {
     assert!(requests_to(&recorded, "/api/v1/attachments/doc").is_empty());
 }
 
+#[tokio::test]
+async fn an_image_with_neither_bytes_nor_a_reference_is_left_alone() {
+    let (base, recorded) = spawn_http(Vec::new()).await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+    let mut inbound = Inbound::new_direct("m1", "+15550009999", "+15550009999", "hi");
+    // An image the provider could not even name a URL for: there is nothing to
+    // fetch, and the message must survive untouched.
+    inbound.media = vec![MediaRef {
+        kind: MediaKind::Image,
+        ..Default::default()
+    }];
+
+    hydrate_media(&sender, &mut inbound).await;
+
+    assert_eq!(inbound.media.len(), 1);
+    assert!(inbound.media[0].url.is_none());
+    assert!(inbound.media[0].data.is_none());
+    assert!(
+        recorded.lock().unwrap().is_empty(),
+        "nothing may be requested"
+    );
+}
+
+#[tokio::test]
+async fn a_sender_reports_the_signal_declaration() {
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "number": "+15550001234",
+    }));
+    let sender = Signal.sender(&ctx).unwrap();
+    assert_eq!(sender.definition().id, "signal");
+    // The bridge reads the split limit from here, so it must be the real one.
+    assert_eq!(sender.definition().max_text_len, DEFINITION.max_text_len);
+}
+
 // ─── probing ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -770,6 +1085,12 @@ fn account_answers_are_read_from_both_shapes() {
             .len(),
         0
     );
+    // Entries that are neither an object nor a string carry no account, and an
+    // object with neither field contributes nothing either.
+    let mixed: Value = serde_json::from_str(r#"{"result":[42,null,"+1"]}"#).unwrap();
+    assert_eq!(accounts_of(&mixed).unwrap(), vec!["+1"]);
+    let named: Value = serde_json::from_str(r#"{"result":[{"nickname":"home"},"+2"]}"#).unwrap();
+    assert_eq!(accounts_of(&named).unwrap(), vec!["+2"]);
 }
 
 // ─── the receive loop ──────────────────────────────────────────────────────

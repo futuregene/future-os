@@ -239,8 +239,13 @@ fn sigint_case_with_home(home: &std::path::Path) {
 fn the_channel_diagnostics_run_without_a_bridge() {
     // `list` / `status` are handled before the bridge starts, so they answer
     // with nothing running — including on a machine with no config at all.
+    //
+    // This binary is `future-channel`, which takes the subcommand as its own
+    // first argument; the `channel` word belongs to the unified `future` CLI
+    // that embeds it. Passing it here would fall through to the bridge, which
+    // writes a default config and exits non-zero.
     let home = isolated_home("cli-diagnostics");
-    for args in [vec!["channel", "list"], vec!["channel", "status"]] {
+    for args in [vec!["list"], vec!["status"]] {
         let out = bin()
             .env("HOME", &home)
             .args(&args)
@@ -255,7 +260,7 @@ fn the_channel_diagnostics_run_without_a_bridge() {
 
     let json = bin()
         .env("HOME", &home)
-        .args(["channel", "status", "--format", "json"])
+        .args(["status", "--format", "json"])
         .output()
         .expect("run binary");
     let stdout = String::from_utf8_lossy(&json.stdout);
@@ -268,7 +273,7 @@ fn testing_an_unknown_channel_fails_with_a_readable_error() {
     let home = isolated_home("cli-test-unknown");
     let out = bin()
         .env("HOME", &home)
-        .args(["channel", "test", "not-a-channel"])
+        .args(["test", "not-a-channel"])
         .output()
         .expect("run binary");
     assert!(!out.status.success());

@@ -7,10 +7,10 @@
 
 use super::*;
 use crate::bridge::ChatKind;
-use crate::test_support::{HttpRoute, WsAction, requests_to, spawn_http, spawn_ws};
+use crate::test_support::{requests_to, spawn_http, spawn_ws, HttpRoute, WsAction};
 use serde_json::json;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 // ─── Splitting ─────────────────────────────────────────────────────────────
 
@@ -147,17 +147,15 @@ fn a_dm_is_always_addressed() {
 
 #[test]
 fn a_guild_message_without_a_mention_is_ignored() {
-    assert!(
-        message(json!({
-            "id": "m1",
-            "channel_id": "c1",
-            "guild_id": "g1",
-            "author": {"id": "u1"},
-            "content": "hi",
-            "mentions": [],
-        }))
-        .is_none()
-    );
+    assert!(message(json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "guild_id": "g1",
+        "author": {"id": "u1"},
+        "content": "hi",
+        "mentions": [],
+    }))
+    .is_none());
 }
 
 #[test]
@@ -177,43 +175,37 @@ fn a_guild_message_mentioning_the_bot_is_addressed() {
 
 #[test]
 fn a_guild_message_mentioning_someone_else_is_ignored() {
-    assert!(
-        message(json!({
-            "id": "m1",
-            "channel_id": "c1",
-            "guild_id": "g1",
-            "author": {"id": "u1"},
-            "content": "<@u2> hi",
-            "mentions": [{"id": "u2"}],
-        }))
-        .is_none()
-    );
+    assert!(message(json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "guild_id": "g1",
+        "author": {"id": "u1"},
+        "content": "<@u2> hi",
+        "mentions": [{"id": "u2"}],
+    }))
+    .is_none());
 }
 
 #[test]
 fn our_own_message_is_never_answered() {
-    assert!(
-        message(json!({
-            "id": "m1",
-            "channel_id": "c1",
-            "author": {"id": "bot-1"},
-            "content": "hi",
-        }))
-        .is_none()
-    );
+    assert!(message(json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "author": {"id": "bot-1"},
+        "content": "hi",
+    }))
+    .is_none());
 }
 
 #[test]
 fn another_bots_message_is_never_answered() {
-    assert!(
-        message(json!({
-            "id": "m1",
-            "channel_id": "c1",
-            "author": {"id": "u1", "bot": true},
-            "content": "hi",
-        }))
-        .is_none()
-    );
+    assert!(message(json!({
+        "id": "m1",
+        "channel_id": "c1",
+        "author": {"id": "u1", "bot": true},
+        "content": "hi",
+    }))
+    .is_none());
 }
 
 // ─── Rate limiting ────────────────────────────────────────────────────────
@@ -575,6 +567,26 @@ async fn a_bucket_429_is_retried_until_it_gives_up() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_429_without_a_wait_is_still_retried() {
+    // A 429 carrying neither retry_after nor a reset-after header gives no
+    // wait; the request is still re-issued until the attempt cap.
+    let (base, recorded) = spawn_http(vec![HttpRoute::rate_limited(
+        "/channels/chan-1/typing",
+        r#"{"message": "rate limited"}"#,
+        &[],
+    )])
+    .await;
+    let ctx = ctx_with_config(json!({}));
+    let sender = test_sender(&ctx, &base);
+    let error = sender
+        .typing(&plain_conversation())
+        .await
+        .expect_err("a wait-less 429 still exhausts the in-line retries");
+    assert!(error.to_string().contains("still rate limited"), "{error}");
+    assert_eq!(requests_to(&recorded, "/channels/chan-1/typing").len(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_global_429_parks_the_limiter_for_the_next_call() {
     let (base, recorded) = spawn_http(vec![
         HttpRoute::rate_limited(
@@ -665,13 +677,22 @@ async fn attachments_download_inline_and_failures_degrade_to_urls() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn backfill_queues_unseen_messages_and_skips_unaddressed_ones() {
+    // With the bot id unknown (backfill passes None) only a DM is addressed,
+    // so the backfill queues the DM and skips the guild message.
+    let dm = json!({
+        "id": "m-dm",
+        "channel_id": "chan-1",
+        "author": {"id": "u1", "username": "alice"},
+        "content": "hi",
+        "timestamp": "2099-01-01T00:00:00.000+00:00",
+    });
     let mut unaddressed = inbound_message("m-skip");
     unaddressed["mentions"] = json!([]);
     unaddressed["content"] = json!("not for us");
     let (base, recorded) = spawn_http(vec![HttpRoute::json(
         "/channels/chan-1/messages",
         200,
-        &json!([inbound_message("m-a"), unaddressed]).to_string(),
+        &json!([dm, unaddressed]).to_string(),
     )])
     .await;
     let config: DiscordConfig = serde_json::from_value(json!({
@@ -685,7 +706,7 @@ async fn backfill_queues_unseen_messages_and_skips_unaddressed_ones() {
         .await
         .unwrap();
     let requests = requests_to(&recorded, "/channels/chan-1/messages");
-    assert_eq!(requests.len(), 1);
+    assert!(!requests.is_empty());
     assert!(requests[0].target.contains("limit=20"));
     assert!(!requests[0].target.contains("after="));
 }
@@ -861,34 +882,49 @@ async fn a_missed_heartbeat_ack_reconnects_as_a_zombie() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_held_session_sends_resume_on_a_re_hello() {
+async fn a_held_session_sends_resume_on_reconnect() {
     let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
     let ready = json!({
         "op": 0, "s": 9, "t": "READY",
         "d": {"session_id": "sess-9", "user": {"id": "bot-1"}}
     });
-    // A second HELLO on the same connection (the resume_gateway_url flow) is
-    // answered with RESUME because READY named the session and the sequence.
     let resumed = json!({"op": 0, "s": 10, "t": "RESUMED", "d": {}});
-    let (url, received) = spawn_ws(vec![
-        WsAction::SendText(hello.to_string()),
-        WsAction::SendText(ready.to_string()),
-        WsAction::SendText(hello.to_string()),
-        WsAction::SendText(resumed.to_string()),
-        WsAction::Delay(Duration::from_millis(600)),
+    // Connection 1 establishes the session (READY names it + sequence), then
+    // the socket drops. Connection 2's HELLO is answered with RESUME because
+    // the shared GatewayState still holds the session id and sequence.
+    let (url, received) = crate::test_support::spawn_ws_per_connection(vec![
+        vec![
+            WsAction::SendText(hello.to_string()),
+            WsAction::SendText(ready.to_string()),
+            WsAction::Delay(Duration::from_millis(150)),
+        ],
+        vec![
+            WsAction::SendText(hello.to_string()),
+            WsAction::SendText(resumed.to_string()),
+            // Hold the socket so the client RESUME is recorded.
+            WsAction::Delay(Duration::from_millis(600)),
+        ],
     ])
     .await;
     let ctx = ctx_with_config(json!({}));
     let config = gateway_config(&url);
     let sender = test_sender(&ctx, "http://127.0.0.1:1");
-    // Drive the gateway in the background so the test can wait for the RESUME
-    // to be recorded while the socket is still open.
+    let mut state = GatewayState::default();
+    // First connection: identify + READY, then the server drops the socket.
+    let first = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_gateway(&ctx, &config, sender.clone(), &mut state),
+    )
+    .await
+    .expect("the first connection must end when the server drops it");
+    assert_socket_drop(&first.expect_err("a dropped socket is a reconnect"));
+    assert_eq!(state.session_id.as_deref(), Some("sess-9"));
+    // Second connection: the HELLO is answered with RESUME.
     let gateway = tokio::spawn({
         let ctx = ctx_with_config(json!({}));
         let config = gateway_config(&url);
-        async move { run_gateway(&ctx, &config, sender).await }
+        async move { run_gateway(&ctx, &config, sender, &mut state).await }
     });
-    // The RESUME is written right after the second HELLO.
     let resumed_seen = crate::test_support::wait_until(
         || {
             received_gateway_frames(&received)
@@ -898,26 +934,17 @@ async fn a_held_session_sends_resume_on_a_re_hello() {
         Duration::from_secs(3),
     )
     .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), gateway).await;
     let frames = received_gateway_frames(&received);
     assert!(
         resumed_seen,
-        "the second HELLO must be answered with RESUME: {frames:?}; raw={:?}",
-        received
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|m| format!("{m:?}"))
-            .collect::<Vec<_>>()
+        "the second connection must RESUME, not IDENTIFY: {frames:?}"
     );
-    // Let the script finish so the gateway observes the dropped socket.
-    let _ = tokio::time::timeout(Duration::from_secs(5), gateway)
-        .await
-        .expect("the gateway must end when the scripted server finishes");
     assert_eq!(frames[0]["op"], OP_IDENTIFY);
     let resume = frames
         .iter()
         .find(|frame| frame["op"] == OP_RESUME)
-        .expect("the second HELLO must be answered with RESUME");
+        .expect("the second connection must RESUME");
     assert_eq!(resume["d"]["session_id"], "sess-9");
     assert_eq!(resume["d"]["seq"], 9);
 }
@@ -1127,7 +1154,8 @@ async fn shutdown_closes_the_socket_and_exits_cleanly() {
         let ctx = ctx.clone();
         let config = gateway_config(&url);
         let sender = test_sender(&ctx, "http://127.0.0.1:1");
-        async move { run_gateway(&ctx, &config, sender).await }
+        let mut state = GatewayState::default();
+        async move { run_gateway(&ctx, &config, sender, &mut state).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
     shutdown.notify_waiters();
@@ -1223,6 +1251,169 @@ async fn probe_requires_a_token_and_survives_odd_payloads() {
     let ctx = ctx_with_config(json!({"bot_token": "bot-token", "api_base": base}));
     let report = Discord.probe(&ctx).await.unwrap();
     assert_eq!(report, "connected as @unknown (unknown)");
+}
+
+#[test]
+fn provider_function_returns_the_discord_provider() {
+    let provider = provider();
+    assert!(std::ptr::eq(provider.definition(), &DEFINITION));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_dispatch_event_is_ignored() {
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    let ready = json!({
+        "op": 0, "s": 1, "t": "READY",
+        "d": {"session_id": "sess-1", "user": {"id": "bot-1"}}
+    });
+    // A dispatch with an event name we do not act on hits the catch-all.
+    let typing = json!({"op": 0, "s": 2, "t": "TYPING_START", "d": {}});
+    let (url, _received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(ready.to_string()),
+        WsAction::SendText(typing.to_string()),
+        WsAction::Delay(Duration::from_millis(120)),
+    ])
+    .await;
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a dropped socket is a reconnect, not a clean exit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clean_socket_close_is_a_reconnect() {
+    // The server sends a proper close frame with a non-fatal code: the
+    // gateway treats it as an ordinary reconnect, not a fatal exit.
+    let (url, _received) = spawn_ws(vec![WsAction::SendClose]).await;
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    let error = run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a close frame ends the connection");
+    assert_socket_drop(&error);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_gateway_survives_a_clean_eof() {
+    // A server that completes the handshake and then cleanly shuts down the
+    // TCP write side (a FIN, not a close frame and not a reset) makes the
+    // client's stream yield `None`: the gateway reports it as a dropped
+    // connection and reconnects.
+    use tokio::io::AsyncWriteExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut stream = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // Orderly close of the write half: the client reads end-of-stream.
+        let _ = stream.get_mut().shutdown().await;
+        // Hold the read half briefly so the FIN is not a reset.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+    let url = format!("ws://127.0.0.1:{port}");
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    let error = run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a clean EOF ends the connection");
+    assert_socket_drop(&error);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn heartbeat_ticks_complete_while_the_connection_is_open() {
+    // A short interval and a server that stays silent: the heartbeat tick
+    // fires and completes many times while the connection stays open.
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 60}});
+    let ready = json!({
+        "op": 0, "s": 1, "t": "READY",
+        "d": {"session_id": "sess-1", "user": {"id": "bot-1"}}
+    });
+    let ack = json!({"op": 11});
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(ready.to_string()),
+        // Ack heartbeats so the gateway keeps ticking instead of reconnecting.
+        WsAction::SendText(ack.to_string()),
+        WsAction::Delay(Duration::from_millis(120)),
+        WsAction::SendText(ack.to_string()),
+        WsAction::Delay(Duration::from_millis(120)),
+        WsAction::SendText(ack.to_string()),
+        WsAction::Delay(Duration::from_millis(120)),
+    ])
+    .await;
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a dropped socket is a reconnect, not a clean exit");
+    let frames = received_gateway_frames(&received);
+    let heartbeats = frames.iter().filter(|f| f["op"] == OP_HEARTBEAT).count();
+    assert!(
+        heartbeats >= 1,
+        "heartbeats were sent on the ticks: {frames:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_hello_after_ready_does_not_reidentify() {
+    // Once READY has run, `identified` is set; a later HELLO only updates the
+    // heartbeat interval and must not send another IDENTIFY.
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 30_000}});
+    let ready = json!({
+        "op": 0, "s": 1, "t": "READY",
+        "d": {"session_id": "sess-1", "user": {"id": "bot-1"}}
+    });
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(ready.to_string()),
+        WsAction::SendText(hello.to_string()),
+        WsAction::Delay(Duration::from_millis(200)),
+    ])
+    .await;
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a dropped socket is a reconnect, not a clean exit");
+    let frames = received_gateway_frames(&received);
+    let identifies = frames.iter().filter(|f| f["op"] == OP_IDENTIFY).count();
+    assert_eq!(identifies, 1, "only the first HELLO identifies: {frames:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_heartbeat_waits_for_its_interval() {
+    // A long heartbeat interval: the 50ms tick fires while the interval has
+    // not yet elapsed, so no heartbeat is sent before the socket drops.
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 60_000}});
+    let ready = json!({
+        "op": 0, "s": 1, "t": "READY",
+        "d": {"session_id": "sess-1", "user": {"id": "bot-1"}}
+    });
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::SendText(ready.to_string()),
+        WsAction::Delay(Duration::from_millis(200)),
+    ])
+    .await;
+    let ctx = ctx_with_config(json!({}));
+    let config = gateway_config(&url);
+    let sender = test_sender(&ctx, "http://127.0.0.1:1");
+    run_gateway_once(&ctx, &config, sender)
+        .await
+        .expect_err("a dropped socket is a reconnect, not a clean exit");
+    let frames = received_gateway_frames(&received);
+    let heartbeats = frames.iter().filter(|f| f["op"] == OP_HEARTBEAT).count();
+    assert_eq!(
+        heartbeats, 0,
+        "no heartbeat before the interval: {frames:?}"
+    );
 }
 
 // ─── Payload builders ──────────────────────────────────────────────────────

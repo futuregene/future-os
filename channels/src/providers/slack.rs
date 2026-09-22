@@ -189,8 +189,26 @@ impl SlackApi {
     }
 
     /// POST a Web API method with the bot token, retrying transient failures
-    /// (the HTTP helper honors `Retry-After`).
+    /// (the HTTP helper honors `Retry-After`). Outbound sends use the default
+    /// policy; the run path (probes, handshakes) goes through
+    /// [`SlackApi::call_once`] so a shutdown during the reconnect backoff is
+    /// not delayed behind retry sleeps — the supervise loop owns retries.
     async fn call(&self, method: &str, body: &Value) -> Result<HttpResponse> {
+        self.call_with(method, body, RetryPolicy::default()).await
+    }
+
+    /// One attempt only: the caller retries on its own schedule.
+    async fn call_once(&self, method: &str, body: &Value) -> Result<HttpResponse> {
+        self.call_with(method, body, RetryPolicy::single_attempt())
+            .await
+    }
+
+    async fn call_with(
+        &self,
+        method: &str,
+        body: &Value,
+        policy: RetryPolicy,
+    ) -> Result<HttpResponse> {
         let url = format!("{}/{method}", self.base);
         send_json(
             &self.http,
@@ -198,7 +216,7 @@ impl SlackApi {
             &url,
             &[("Authorization", &self.bot_header())],
             Some(body),
-            RetryPolicy::default(),
+            policy,
         )
         .await
         .with_context(|| format!("slack method {method} failed"))
@@ -214,7 +232,18 @@ impl SlackApi {
         Ok(response)
     }
 
-    /// Socket Mode handshake: returns the WSS URL to connect to.
+    /// [`SlackApi::call_checked`] on the single-attempt policy.
+    async fn call_checked_once(&self, method: &str, body: &Value) -> Result<HttpResponse> {
+        let response = self.call_once(method, body).await?;
+        if !response.is_success() {
+            bail!("{method}: {}", response.error_message());
+        }
+        check_ok(method, &response)?;
+        Ok(response)
+    }
+
+    /// Socket Mode handshake: returns the WSS URL to connect to. Single
+    /// attempt: the outer reconnect loop owns retries.
     async fn open_connection(&self) -> Result<String> {
         let url = format!("{}/apps.connections.open", self.base);
         let response = send_json(
@@ -223,7 +252,7 @@ impl SlackApi {
             &url,
             &[("Authorization", &self.bearer(&self.app_token))],
             Some(&json!({})),
-            RetryPolicy::default(),
+            RetryPolicy::single_attempt(),
         )
         .await?;
         if !response.is_success() {
@@ -659,8 +688,10 @@ impl Provider for Slack {
 
 /// `auth.test` is the smallest real request that proves the bot token works;
 /// it also yields the bot's own user id, used to ignore our own messages.
+/// Single attempt: run() treats a failure as a warning and the probe reports
+/// the error as-is, so no retry is wanted here.
 async fn auth_identity(api: &SlackApi) -> Result<String> {
-    let response = api.call_checked("auth.test", &json!({})).await?;
+    let response = api.call_checked_once("auth.test", &json!({})).await?;
     Ok(response
         .body
         .get("user_id")

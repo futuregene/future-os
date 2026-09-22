@@ -811,19 +811,16 @@ mod tests {
             );
         }
         let report = ListReport::build(&config);
-        let mut planned = 0;
+        // Written over every row rather than the planned subset, so it keeps
+        // asserting a real invariant whichever maturities this build ships.
         for row in &report.channels {
-            match row.maturity {
-                "planned" => {
-                    planned += 1;
-                    assert_eq!(row.configured, "unsupported", "{}", row.id);
-                }
-                _ => assert_eq!(row.configured, "enabled", "{}", row.id),
-            }
+            let expected = match row.maturity {
+                "planned" => "unsupported",
+                _ => "enabled",
+            };
+            assert_eq!(row.configured, expected, "{}", row.id);
         }
-        // Every registered channel keeps a consistent maturity/state pair even
-        // when the set of implemented channels changes.
-        assert!(planned <= report.channels.len());
+        assert!(!report.channels.is_empty());
     }
 
     #[test]
@@ -925,11 +922,8 @@ mod tests {
         let report = StatusReport::build(&config, &stale, &[]);
         assert!(!report.bridge_running);
         assert_eq!(report.snapshot_age_seconds, Some(10_000));
-        assert!(
-            report.render().contains("not running (last status"),
-            "{}",
-            report.render()
-        );
+        let rendered = report.render();
+        assert!(rendered.contains("not running (last status"), "{rendered}");
 
         // No snapshot at all: never started.
         let never = StatusReport::build(&config, &StatusSnapshot::default(), &[]);

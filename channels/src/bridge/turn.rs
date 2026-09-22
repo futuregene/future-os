@@ -80,12 +80,12 @@ pub async fn run_turn(client: &AgentClient, request: TurnRequest) -> Result<Turn
 
     loop {
         if request.watch.is_superseded() {
-            tracing::debug!(
-                channel = %request.channel,
-                session = request.session_id,
-                conversation = request.watch.conversation(),
-                "turn superseded by a newer message"
+            let message = format!(
+                "turn superseded by a newer message (session {}, conversation {})",
+                request.session_id,
+                request.watch.conversation()
             );
+            tracing::debug!(channel = %request.channel, "{message}");
             if !awaiting_approval {
                 request.approvals.remove(&request.conversation_key);
             }
@@ -253,6 +253,13 @@ async fn prepare(
     request: &TurnRequest,
 ) -> Result<(String, crate::grpc_client::AgentEventStream)> {
     let mut client = client.clone();
+    // Log before the prompt is built: the request is consumed by the call below.
+    tracing::info!(
+        channel = %request.channel,
+        session = request.session_id,
+        "dispatching turn: {}",
+        truncate(&request.text, 200, crate::transport::LengthUnit::Chars)
+    );
     let run_id = client
         .prompt_superseding(&request.session_id, &request.text, request.images.clone())
         .await?;
@@ -262,13 +269,8 @@ async fn prepare(
     let stream = client
         .stream_run_events(&request.session_id, &run_id)
         .await?;
-    tracing::info!(
-        channel = %request.channel,
-        session = request.session_id,
-        run = %run_id,
-        text = %truncate(&request.text, 200, crate::transport::LengthUnit::Chars),
-        "dispatched turn"
-    );
+    let dispatched = format!("dispatched turn {run_id}");
+    tracing::debug!(channel = %request.channel, "{dispatched}");
     Ok((run_id, stream))
 }
 
@@ -675,6 +677,10 @@ mod tests {
             vec!["a".to_string(), "ab".to_string()]
         );
         assert_eq!(progressive.finishes(), 1);
+        // The other callbacks are silent no-ops for this sink.
+        assert_eq!(progressive.thinking_pushes(), 0);
+        assert!(progressive.errors().is_empty());
+        assert_eq!(progressive.supersede_count(), 0);
     }
 
     #[tokio::test]
@@ -805,6 +811,10 @@ mod tests {
 
         fn thinking_pushes(&self) -> usize {
             self.thinking.lock().unwrap().len()
+        }
+
+        fn supersede_count(&self) -> usize {
+            *self.supersedes.lock().unwrap()
         }
     }
 

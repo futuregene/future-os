@@ -154,7 +154,8 @@ impl WebhookServer {
             let routes = self.routes.clone();
             tokio::spawn(async move {
                 if let Err(error) = handle_connection(stream, routes).await {
-                    tracing::debug!(%peer, %error, "webhook connection ended with an error");
+                    let message = format!("webhook connection ended with an error: {error}");
+                    tracing::debug!(%peer, "{message}");
                 }
             });
         }

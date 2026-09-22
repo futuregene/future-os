@@ -128,6 +128,21 @@ impl ChannelDefinition {
     pub fn is_implemented(&self) -> bool {
         self.maturity.is_usable()
     }
+
+    /// The failure to report when something tries to use this channel.
+    ///
+    /// One place decides this so the starter, the diagnostics and the outbound
+    /// queue cannot drift apart in what they say — and so the wording is
+    /// testable without a channel that happens to be unimplemented.
+    pub fn ensure_usable(&self) -> Result<(), String> {
+        if self.is_implemented() {
+            return Ok(());
+        }
+        Err(format!(
+            "the {} channel is not implemented in this build",
+            self.id
+        ))
+    }
 }
 
 /// The outbound half of a channel.
@@ -238,12 +253,17 @@ mod tests {
             requires: &[],
         };
         assert!(!planned.is_implemented());
+        // The refusal names the channel, so an operator can act on it.
+        let reason = planned.ensure_usable().expect_err("must refuse");
+        assert!(reason.contains('x'), "{reason}");
+        assert!(reason.contains("not implemented"), "{reason}");
 
         let preview = ChannelDefinition {
             maturity: Maturity::Preview,
             ..planned
         };
         assert!(preview.is_implemented());
+        assert!(preview.ensure_usable().is_ok());
     }
 
     #[test]

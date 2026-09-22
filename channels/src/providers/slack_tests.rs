@@ -848,6 +848,29 @@ fn the_sender_reports_the_slack_definition() {
     assert!(std::ptr::eq(sender.definition(), &DEFINITION));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_test_fails_on_an_http_error_status() {
+    let (base, _) = crate::test_support::spawn_http(vec![crate::test_support::HttpRoute::json(
+        "/auth.test",
+        503,
+        r#"{"ok":false,"error":"service_unavailable"}"#,
+    )])
+    .await;
+    let api = api_for(&base);
+    let error = auth_identity(&api).await.unwrap_err();
+    assert!(error.to_string().contains("503"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_provider_builds_a_sender_with_a_bot_token() {
+    let dir = crate::test_support::temp_dir("slack-sender-build");
+    let ctx = dispatch_ctx(config_value(&test_config("http://127.0.0.1:1")), &dir);
+    let sender = super::Slack
+        .sender(&ctx)
+        .expect("a bot token builds a sender");
+    assert!(std::ptr::eq(sender.definition(), &DEFINITION));
+}
+
 fn request_auth(request: &crate::test_support::RecordedRequest) -> Option<String> {
     request.header("Authorization").map(str::to_string)
 }
@@ -1273,6 +1296,25 @@ async fn socket_mode_fails_when_the_platform_drops_the_socket() {
     .expect("the session must notice the failure promptly")
     .expect_err("a read failure must fail the session");
     assert!(error.to_string().contains("read failed"), "{error}");
+
+    // The platform drops the socket mid-stream without a close handshake:
+    // the same "closed by the platform" error, from the end-of-stream arm.
+    let (url, _) = crate::test_support::spawn_ws(vec![]).await;
+    let ctx = ProviderCtx::offline(&DEFINITION);
+    let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        socket_mode_session(&ctx, sender, "UBOT", socket),
+    )
+    .await
+    .expect("the session must notice the drop promptly")
+    .expect_err("a dropped socket must fail the session");
+    let message = error.to_string();
+    assert!(
+        message.contains("closed") || message.contains("read failed"),
+        "the drop is reported one way or the other: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1280,7 +1322,8 @@ async fn socket_mode_fails_when_the_ack_cannot_be_written() {
     let envelope = json!({ "envelope_id": "env-9", "type": "events_api" });
     let (url, _) = crate::test_support::spawn_ws(vec![
         crate::test_support::WsAction::SendText(envelope.to_string()),
-        // Abort the TCP connection: the client's ack write fails.
+        // Abort the TCP connection: the client's ack write or its next read
+        // fails — either way the session must end with an error, and fast.
         crate::test_support::WsAction::ResetTcp,
     ])
     .await;
@@ -1293,8 +1336,38 @@ async fn socket_mode_fails_when_the_ack_cannot_be_written() {
     )
     .await
     .expect("the session must notice the dead socket promptly")
-    .expect_err("an unwritable socket must fail the session");
-    assert!(error.to_string().contains("not writable"), "{error}");
+    .expect_err("a dead socket must fail the session");
+    let message = error.to_string();
+    assert!(
+        message.contains("not writable") || message.contains("read failed"),
+        "the failure is reported one way or the other: {message}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn socket_mode_fails_when_the_pong_cannot_be_written() {
+    let (url, _) = crate::test_support::spawn_ws(vec![
+        crate::test_support::WsAction::SendPing(b"hb".to_vec()),
+        // Abort the TCP connection: the client's pong write or its next read
+        // fails — either way the session must end with an error, and fast.
+        crate::test_support::WsAction::ResetTcp,
+    ])
+    .await;
+    let ctx = ProviderCtx::offline(&DEFINITION);
+    let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        socket_mode_session(&ctx, sender, "UBOT", socket),
+    )
+    .await
+    .expect("the session must notice the dead socket promptly")
+    .expect_err("a dead socket must fail the session");
+    let message = error.to_string();
+    assert!(
+        message.contains("not writable") || message.contains("read failed"),
+        "the failure is reported one way or the other: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1368,18 +1441,6 @@ async fn run_socket_mode_connects_acks_and_reconnects_until_shutdown() {
         ))],
     ])
     .await;
-    // Probe: does run() return when shutdown fires before it starts?
-    let probe_ctx = dispatch_ctx(
-        json!({ "enabled": true, "bot_token": "xoxb-test", "app_token": "xapp-test", "api_base": "http://127.0.0.1:1" }),
-        &crate::test_support::temp_dir("slack-probe-shutdown"),
-    );
-    let probe_shutdown = probe_ctx.shutdown().clone();
-    let probe = tokio::spawn(async move { super::Slack.run(probe_ctx).await });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    probe_shutdown.notify_waiters();
-    let probe_done = tokio::time::timeout(Duration::from_secs(5), probe).await;
-    eprintln!("probe (shutdown during supervise backoff) finished: {}", probe_done.is_ok());
-
     let (base, _) = crate::test_support::spawn_http(vec![
         crate::test_support::HttpRoute::json("/auth.test", 200, r#"{"ok":true,"user_id":"UBOT"}"#),
         crate::test_support::HttpRoute::json(
@@ -1412,12 +1473,13 @@ async fn run_socket_mode_connects_acks_and_reconnects_until_shutdown() {
     )
     .await;
     assert!(acked, "the envelope must be acked on the first connection");
-    // The first connection has now dropped; the supervise loop is sleeping
-    // before the reconnect (gateway backoff starts at 1s). Shutdown during
-    // that sleep ends the loop, but the loop only wakes from the sleep once
-    // the jittered delay has elapsed — wait for it.
+    // Shutdown can land in two sequential waits — the session's select and
+    // the supervise loop's backoff sleep — so follow the `Started::stop`
+    // pattern: wake whoever is parked now (`notify_waiters`) and leave one
+    // stored permit for the wait that registers next (`notify_one`).
     shutdown.notify_waiters();
-    tokio::time::timeout(Duration::from_secs(15), running)
+    shutdown.notify_one();
+    tokio::time::timeout(Duration::from_secs(10), running)
         .await
         .expect("shutdown during the reconnect backoff must end run() promptly")
         .expect("the run task must not panic")
@@ -1450,8 +1512,11 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
     super::webhook_test_hook::arm(slot.clone());
     let ctx = dispatch_ctx(config_value(&config), &dir);
     let webhook_config = ctx.config::<SlackConfig>().unwrap();
+    // A message event: the spawned dispatch task runs and (denied by the
+    // offline policy) finishes without any reaction.
+    let recording: Arc<RecordingSender> = Arc::new(RecordingSender::new());
+    let sender: Arc<dyn ChannelSender> = recording.clone();
     let shutdown = ctx.shutdown().clone();
-    let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     let serving = tokio::spawn(async move {
         run_events_webhook(&ctx, sender, &webhook_config, "UBOT".into()).await
     });
@@ -1498,9 +1563,14 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .unwrap();
     assert_eq!(response.status(), 401);
 
-    // A signed event callback is acked fast (200) even though the agent is
-    // unreachable; the event is processed off the request path.
-    let event = message_event(json!({ "bot_id": "B1" }));
+    // A signed event callback is acked fast (200); the event is processed
+    // off the request path.
+    let event = message_event(json!({
+        "channel_type": "im",
+        "channel": "D999",
+        "ts": format!("{}.000100", crate::bridge::dedup::now_ms() / 1000),
+        "client_msg_id": format!("hook-{}", crate::bridge::dedup::now_ms()),
+    }));
     let body = json!({ "type": "event_callback", "event": event }).to_string();
     let timestamp = slack_now();
     let signature = slack_signature("signing-secret", &timestamp, body.as_bytes());
@@ -1513,6 +1583,10 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    // The spawned dispatch task ran (the default policy denies the group
+    // message, so no reaction is recorded — what matters is the dispatch
+    // executed without panicking).
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     // A signed payload of any other type is acked and ignored.
     let body = json!({ "type": "app_rate_limited" }).to_string();
@@ -1527,6 +1601,62 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
+    assert!(
+        recording.taken().is_empty(),
+        "a denied event produces no reaction"
+    );
+
+    shutdown.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("the webhook must stop promptly after shutdown")
+        .expect("the webhook task must not panic")
+        .expect("shutdown is a clean end");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_events_webhook_normalizes_an_already_slash_prefixed_path() {
+    let _hook = super::webhook_test_hook::lock();
+    let dir = crate::test_support::temp_dir("slack-webhook-slash");
+    let mut config = test_config("http://127.0.0.1:1");
+    config.signing_secret = "signing-secret".to_string();
+    // Leading slash already present: the path is registered as-is.
+    config.webhook_path = "/already/slashed".to_string();
+    let slot: Arc<std::sync::Mutex<(u16, String, u16)>> =
+        Arc::new(std::sync::Mutex::new((0, String::new(), 0)));
+    super::webhook_test_hook::arm(slot.clone());
+    let ctx = dispatch_ctx(config_value(&config), &dir);
+    let webhook_config = ctx.config::<SlackConfig>().unwrap();
+    let shutdown = ctx.shutdown().clone();
+    let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
+    let serving = tokio::spawn(async move {
+        run_events_webhook(&ctx, sender, &webhook_config, "UBOT".into()).await
+    });
+    let bound = crate::test_support::wait_until(
+        || slot.lock().unwrap_or_else(|error| error.into_inner()).2 != 0,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(bound, "the webhook must bind its port");
+    let (path, port) = {
+        let slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+        (slot.1.clone(), slot.2)
+    };
+    assert_eq!(path, "/already/slashed");
+
+    let body = json!({ "type": "url_verification", "challenge": "c2" }).to_string();
+    let timestamp = slack_now();
+    let signature = slack_signature("signing-secret", &timestamp, body.as_bytes());
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}{path}"))
+        .header("x-slack-request-timestamp", &timestamp)
+        .header("x-slack-signature", &signature)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "c2");
 
     shutdown.notify_waiters();
     tokio::time::timeout(Duration::from_secs(5), serving)

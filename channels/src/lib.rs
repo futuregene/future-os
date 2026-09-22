@@ -210,8 +210,11 @@ pub fn start_all(
         }
         if !definition.is_implemented() {
             // Enabled but not built: say so loudly instead of appearing to run.
-            let reason = format!("the {id} channel is not implemented in this build");
-            warn!("{}", reason);
+            let reason = definition
+                .ensure_usable()
+                .err()
+                .unwrap_or_else(|| "unsupported".to_string());
+            warn!("{reason}");
             status.set_state(id, ChannelState::Unsupported, Some(reason));
             continue;
         }
@@ -256,10 +259,11 @@ async fn run_async() -> Result<()> {
     let started = start_all(&config, root.clone(), status.clone())?;
 
     if started.handles.is_empty() {
-        warn!(
+        let guidance = format!(
             "No channels enabled. Edit {} and set a channel's 'enabled' to true.",
             cfg_path.display()
         );
+        warn!("{guidance}");
     } else {
         info!("{} channel task(s) running", started.handles.len());
     }
@@ -306,7 +310,8 @@ fn spawn_provider(
         let mut backoff = Backoff::gateway();
         loop {
             if let Err(error) = std::fs::create_dir_all(&data_dir) {
-                warn!(channel = id, %error, "cannot create the channel data directory");
+                let message = format!("cannot create the channel data directory: {error}");
+                warn!(channel = id, "{message}");
             }
             // The policy block lives alongside the channel's own settings, so a
             // channel that only sets `enabled` gets the safe defaults.
@@ -354,7 +359,8 @@ fn spawn_status_flusher(
             tokio::select! {
                 _ = tokio::time::sleep(STATUS_FLUSH_INTERVAL) => {
                     if let Err(error) = status.flush_if_due() {
-                        tracing::debug!(%error, "cannot publish channel status");
+                        let message = format!("cannot publish channel status: {error}");
+                        tracing::debug!("{message}");
                     }
                 }
                 _ = shutdown.notified() => return,

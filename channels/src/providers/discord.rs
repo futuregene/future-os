@@ -638,9 +638,10 @@ async fn run_gateway(
                 let _ = socket.close(None).await;
                 return Ok(());
             }
-            _ = tokio::time::sleep(Duration::from_millis(50)), if heartbeat_interval.is_some() => {
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
                 // Heartbeat on the gateway's clock, not ours: miss one ACK and
-                // the next connection is a zombie, so reconnect.
+                // the next connection is a zombie, so reconnect. Before the
+                // first HELLO there is no interval yet and the tick is a no-op.
                 if let Some(interval) = heartbeat_interval {
                     if last_heartbeat.elapsed() >= interval {
                         if !heartbeat_ack {
@@ -763,7 +764,12 @@ async fn run_gateway(
                             ctx.mark_failed("gateway closed the connection with a fatal code");
                             return Err(anyhow!("gateway closed with a fatal code: {frame:?}"));
                         }
-                        return Err(anyhow!("gateway closed the connection: {frame:?}"));
+                        // A normal close: our echo is on the wire and the state
+                        // is ClosedByPeer, so the next read yields the end of
+                        // the stream (None) and the loop reports the dropped
+                        // connection. Continuing keeps the close handshake
+                        // honest instead of assuming it finished.
+                        continue;
                     }
                     WsMessage::Ping(payload) => {
                         socket.send(WsMessage::Pong(payload)).await?;

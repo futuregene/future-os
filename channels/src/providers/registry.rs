@@ -113,15 +113,26 @@ mod tests {
     }
 
     #[test]
-    fn a_planned_channel_refuses_to_start_and_says_why() {
-        for entry in planned() {
-            let provider = (entry.provider)();
-            assert_eq!(provider.definition().maturity, Maturity::Planned);
-            assert!(
-                !provider.definition().is_implemented(),
-                "{} must not be startable",
-                entry.definition.id
-            );
+    fn every_channel_is_either_implemented_or_says_why_not() {
+        // Written over the whole registry rather than over the planned subset,
+        // so it keeps asserting something whichever maturities this build ships.
+        for entry in all() {
+            let definition = entry.definition;
+            match definition.ensure_usable() {
+                Ok(()) => {
+                    assert!(definition.is_implemented(), "{}", definition.id);
+                    assert_eq!(
+                        (entry.provider)().definition().id,
+                        definition.id,
+                        "factory and declaration disagree"
+                    );
+                }
+                Err(reason) => {
+                    assert_eq!(definition.maturity, Maturity::Planned, "{}", definition.id);
+                    assert!(reason.contains(definition.id), "{reason}");
+                    assert!(!definition.is_implemented(), "{}", definition.id);
+                }
+            }
         }
     }
 

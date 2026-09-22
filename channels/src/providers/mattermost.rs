@@ -79,7 +79,7 @@ const EVENT_POSTED: &str = "posted";
 const EVENT_HELLO: &str = "hello";
 
 /// One channel's config block in `~/.future/channels/config.json`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MattermostConfig {
     pub enabled: bool,
@@ -94,19 +94,6 @@ pub struct MattermostConfig {
     pub api_base: String,
     /// Explicit websocket URL (tests); derived from `base_url` when empty.
     pub ws_url: String,
-}
-
-impl Default for MattermostConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            base_url: String::new(),
-            token: String::new(),
-            channel_allowlist: Vec::new(),
-            api_base: String::new(),
-            ws_url: String::new(),
-        }
-    }
 }
 
 impl MattermostConfig {

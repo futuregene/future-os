@@ -749,11 +749,9 @@ async fn download_media(client: &reqwest::Client, base: &str, token: &str, media
     .await;
     match result {
         Ok((file_path, bytes)) => {
-            if bytes.len() > MAX_DOWNLOAD_BYTES {
-                tracing::warn!(
-                    bytes = bytes.len(),
-                    "telegram attachment too large; skipping"
-                );
+            let size = bytes.len();
+            if size > MAX_DOWNLOAD_BYTES {
+                tracing::warn!(bytes = size, "telegram attachment too large; skipping");
                 return;
             }
             if media.filename.is_none() {

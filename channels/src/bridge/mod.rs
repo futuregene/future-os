@@ -247,7 +247,8 @@ impl Bridge {
                 }
             }
             Err(error) => {
-                tracing::warn!(%error, conversation = %job.conversation, "turn failed");
+                let message = format!("turn failed: {error}");
+                tracing::warn!(conversation = %job.conversation, "{message}");
             }
         }
     }
@@ -372,10 +373,9 @@ impl ProviderCtx {
 
     /// The agent session for a conversation, created on first use.
     pub async fn session_for(&self, conversation_key: &str) -> Result<String> {
-        if let Some(existing) = self.sessions.get(conversation_key, None) {
-            if !existing.is_empty() {
-                return Ok(existing);
-            }
+        match self.sessions.get(conversation_key, None) {
+            Some(existing) if !existing.is_empty() => return Ok(existing),
+            _ => {}
         }
         let mut client = self.bridge.client().await?;
         let session_id = client
@@ -455,7 +455,8 @@ impl ProviderCtx {
                     );
                 }
                 Err(error) => {
-                    tracing::warn!(channel = self.id, %error, "approval answer was rejected");
+                    let message = format!("approval answer was rejected: {error}");
+                    tracing::warn!(channel = self.id, "{message}");
                     // Put the route back: the user's answer should be retryable.
                     self.bridge.approvals.insert(&conversation_key, route);
                     return HandleOutcome::Backpressure;
@@ -529,11 +530,11 @@ impl ProviderCtx {
                 continue;
             };
             if data.len() > MAX_IMAGE_BYTES {
-                tracing::warn!(
-                    channel = self.id,
-                    bytes = data.len(),
-                    "skipping an oversized image attachment"
+                let message = format!(
+                    "skipping an oversized image attachment ({} bytes)",
+                    data.len()
                 );
+                tracing::warn!(channel = self.id, "{message}");
                 continue;
             }
             let name = media
@@ -549,7 +550,8 @@ impl ProviderCtx {
                 std::fs::write(&path, data)
             })();
             if let Err(error) = saved {
-                tracing::warn!(channel = self.id, %error, "cannot save an inbound image");
+                let message = format!("cannot save an inbound image: {error}");
+                tracing::warn!(channel = self.id, "{message}");
             }
             images.push(ImageInput {
                 content_type: media
@@ -923,10 +925,11 @@ mod tests {
         let images = ctx.collect_images(&inbound);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].content_type, "image/png");
-        match &images[0].data {
-            ImageData::Base64(encoded) => assert_eq!(encoded, "AQIDBA=="),
-            other => panic!("expected base64 input, got {other:?}"),
-        }
+        let encoded = match &images[0].data {
+            ImageData::Base64(encoded) => encoded.clone(),
+            ImageData::Url(url) => url.clone(),
+        };
+        assert_eq!(encoded, "AQIDBA==", "image bytes travel as base64");
         let path = images[0].file_path.clone().unwrap();
         assert!(std::path::Path::new(&path).exists());
     }
@@ -1052,11 +1055,23 @@ mod tests {
         label: &str,
         events: Vec<future_rpc::proto::StreamEvent>,
     ) -> (ProviderCtx, Arc<RecordingSender>, ts::SharedState) {
+        ctx_with_state(
+            label,
+            ts::MockState {
+                events,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// A context over a mock whose behaviour the test describes in full (a paced
+    /// stream, a refused command).
+    async fn ctx_with_state(
+        label: &str,
+        state: ts::MockState,
+    ) -> (ProviderCtx, Arc<RecordingSender>, ts::SharedState) {
         ts::ensure_crypto_provider();
-        let state = ts::MockState {
-            events,
-            ..Default::default()
-        };
         let (addr, shared) = ts::spawn_mock_grpc(state).await;
         let data_dir = crate::test_support::temp_dir(label);
         let agent_cfg = AgentConfig {
@@ -1262,6 +1277,137 @@ mod tests {
         assert_eq!(outcome, HandleOutcome::ApprovalAnswered);
         assert_eq!(ts::recorded_of(&state, "approval_decision").len(), 1);
         assert!(ctx.bridge.approvals().is_empty(), "the route is consumed");
+    }
+
+    #[tokio::test]
+    async fn a_turn_superseded_mid_stream_is_counted_as_superseded() {
+        // A newer message in the same conversation stops the running turn; the
+        // published counters must show that it was superseded, not completed.
+        let (ctx, sender, _state) = ctx_with_state(
+            "bridge-supersede-counted",
+            ts::MockState {
+                stream_event_delay: Some(std::time::Duration::from_millis(150)),
+                events: vec![
+                    ts::ev(MOCK_RUN, 1, "text_chunk", r#"{"text":"slow"}"#),
+                    ts::ev(MOCK_RUN, 2, "agent_end", r#"{"state":"completed"}"#),
+                ],
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            ctx.handle(
+                Inbound::new_direct("m1", "u1", "c1", "first"),
+                sender.clone()
+            )
+            .await,
+            HandleOutcome::Accepted
+        );
+        // Let the first turn reach its stream, then overtake it.
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert_eq!(
+            ctx.handle(
+                Inbound::new_direct("m2", "u1", "c1", "second"),
+                sender.clone()
+            )
+            .await,
+            HandleOutcome::Accepted
+        );
+        let counted = ts::wait_until(
+            || {
+                ctx.bridge.status().flush().ok();
+                let snapshot = crate::status::StatusSnapshot::load(
+                    &ctx.bridge.data_root().join("status.json"),
+                );
+                snapshot
+                    .channels
+                    .get("testchannel")
+                    .map(|entry| entry.superseded_count > 0)
+                    .unwrap_or(false)
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        assert!(counted, "a superseded turn must be counted");
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_cannot_start_reports_a_failure_instead_of_silence() {
+        // The prompt is refused, so no turn runs: the bridge must log the
+        // failure and stay usable for the next message.
+        let (ctx, sender, _state) = ctx_with_agent(
+            "bridge-turn-failure",
+            vec![ts::ev(MOCK_RUN, 1, "agent_end", r#"{"state":"completed"}"#)],
+        )
+        .await;
+        // Point the bridge at a mock that refuses prompts by rebuilding its
+        // client against a dead endpoint after the session exists.
+        let session = ctx.session_for("testchannel:c1").await.expect("session");
+        let dead = ProviderCtx::new(
+            &DEFINITION,
+            serde_json::json!({"enabled": true}),
+            Bridge::new(
+                Arc::new(AgentConfig {
+                    grpc_addr: "http://127.0.0.1:1".into(),
+                    cwd: ctx.data_dir().to_string_lossy().into_owned(),
+                    ..AgentConfig::default()
+                }),
+                open_policy(),
+                ctx.data_dir().to_path_buf(),
+                Arc::new(StatusBoard::new(ctx.data_dir().join("status.json"))),
+            ),
+            ctx.data_dir().to_path_buf(),
+            Arc::new(SessionStore::new(ctx.data_dir().join("sessions.json"))),
+            Arc::new(Notify::new()),
+        );
+        dead.sessions()
+            .set_session_id("testchannel:c1", None, &session);
+        assert_eq!(
+            dead.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        // The turn fails, the user is told, and the bridge is still routable.
+        let sent = wait_for_reply(&sender).await;
+        assert!(
+            sent.concat().contains("unreachable") || sent.concat().contains("did not finish"),
+            "{sent:?}"
+        );
+        assert_eq!(dead.bridge.conversations().len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn an_approval_answer_the_agent_rejects_is_retryable() {
+        // If delivering the decision fails, the user's answer must not be
+        // swallowed: the route goes back so saying "yes" again works.
+        let (ctx, sender, state) =
+            ctx_with_agent("bridge-approval-reject", completed_turn("ok")).await;
+        assert_eq!(
+            ctx.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        wait_for_reply(&sender).await;
+        let session = ctx.sessions().get("testchannel:c1", None).unwrap();
+        ctx.bridge.approvals().insert(
+            "testchannel:c1",
+            ApprovalRoute {
+                session_id: session,
+                request_id: "req_1".into(),
+                tool_name: "shell".into(),
+            },
+        );
+        state
+            .lock()
+            .unwrap()
+            .fail_commands
+            .insert("approval_decision".to_string());
+        let outcome = ctx
+            .handle(Inbound::new_direct("m2", "u1", "c1", "yes"), sender.clone())
+            .await;
+        assert_eq!(outcome, HandleOutcome::Backpressure);
+        // Rejected delivery puts the route back so the answer can be repeated.
+        assert!(ctx.bridge.approvals().peek("testchannel:c1").is_some());
     }
 
     #[tokio::test]

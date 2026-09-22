@@ -21,6 +21,9 @@ struct MockIrc {
     /// Lines to hand the client after the script.
     out: mpsc::UnboundedSender<String>,
     connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// Asks a TLS server to end the current connection. The plaintext mock has
+    /// no receiver, so sending into it is a no-op.
+    closer: mpsc::UnboundedSender<Close>,
 }
 
 impl MockIrc {
@@ -34,6 +37,12 @@ impl MockIrc {
 
     fn sent(&self, line: &str) {
         self.out.send(line.to_string()).ok();
+    }
+
+    /// End the current TLS connection in the given way, so the client's
+    /// reaction to each kind of closure can be told apart.
+    fn close(&self, how: Close) {
+        self.closer.send(how).ok();
     }
 
     fn lines_matching(&self, needle: &str) -> Vec<String> {
@@ -131,6 +140,61 @@ async fn spawn_irc(script: Vec<String>, keep_open: bool) -> MockIrc {
         received,
         out,
         connections,
+        // A plaintext server ends a connection when its script says so.
+        closer: mpsc::unbounded_channel().0,
+    }
+}
+
+/// A listener that writes `payload` verbatim — no line terminator appended —
+/// which is how a server that is not speaking IRC looks from the client side.
+async fn spawn_irc_raw(payload: &[u8], keep_open: bool) -> MockIrc {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (out, out_rx) = mpsc::unbounded_channel::<String>();
+    let out_rx = Arc::new(tokio::sync::Mutex::new(out_rx));
+    let payload = payload.to_vec();
+    let connections_task = connections.clone();
+
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            connections_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let payload = payload.clone();
+            let out_rx = out_rx.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                if socket.write_all(&payload).await.is_err() {
+                    return;
+                }
+                if !keep_open {
+                    // Drain what the client sent first: a socket closed with
+                    // unread data in it answers with a reset, and the client
+                    // must see an orderly end of stream instead.
+                    let mut sink = [0u8; 4096];
+                    let _ = socket.read(&mut sink).await;
+                    let _ = socket.shutdown().await;
+                    return;
+                }
+                // Keep the connection up: the client must decide on its own
+                // that what it received is not a message.
+                let mut sink = [0u8; 1024];
+                let mut out_rx = out_rx.lock().await;
+                while out_rx.recv().await.is_some() {
+                    if socket.read(&mut sink).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    MockIrc {
+        addr,
+        received,
+        out,
+        connections,
+        closer: mpsc::unbounded_channel().0,
     }
 }
 
@@ -192,7 +256,7 @@ fn ctx_with(block: Value) -> ProviderCtx {
 /// Run the provider in the background and give back its handle.
 fn spawn_run(ctx: &ProviderCtx) -> tokio::task::JoinHandle<Result<()>> {
     let ctx = ctx.clone();
-    tokio::spawn(async move { Irc.run(ctx).await })
+    tokio::spawn(async move { Irc::new().run(ctx).await })
 }
 
 // ─── line parsing ──────────────────────────────────────────────────────────
@@ -251,6 +315,41 @@ fn a_server_timestamp_becomes_a_unix_millisecond_stamp() {
     assert_eq!(server_time_ms(&[]), None);
     let bad = parse_line("@time=yesterday :srv PING :x").expect("parsed");
     assert_eq!(server_time_ms(&bad.tags), None);
+}
+
+#[test]
+fn a_command_without_parameters_or_a_trailing_block_is_still_a_message() {
+    // `PING` on its own has a command and no parameters at all.
+    let bare = parse_line("PING").expect("parsed");
+    assert_eq!(bare.command, "PING");
+    assert!(bare.params.is_empty());
+    assert_eq!(bare.trailing(), "");
+
+    // A tag block with no space after it leaves nothing to parse.
+    assert!(parse_line("@flag").is_none());
+    // A prefix with no space after it does too.
+    assert!(parse_line(":nick!u@h").is_none());
+    // Tags with no command beyond them are not messages either.
+    assert!(parse_line("@flag=1").is_none());
+}
+
+#[test]
+fn tag_escapes_are_decoded() {
+    // Raw string: the backslashes are the wire format, not Rust escapes.
+    // `\s` is a space, `\:` a semicolon, `\r` and `\n` are themselves, and
+    // any other escape is the character that follows it.
+    let msg = parse_line(r"@k=a\sb\:c\rd\ne\qf :srv PING :token").expect("parsed");
+    // a, `\s`→space, b, `\:`→;, c, `\r`→CR, d, `\n`→LF, e, `\q`→q, f
+    assert_eq!(msg.tag("k"), Some("a b;c\rd\neqf"));
+    // The escapes belong to the tag block and leave the rest of the line alone.
+    assert_eq!(msg.prefix.as_deref(), Some("srv"));
+    assert_eq!(msg.command, "PING");
+    assert_eq!(msg.trailing(), "token");
+    // A lone trailing backslash has nothing to escape.
+    let trailing = parse_line(r"@k=tail\ :srv PING :x").expect("parsed");
+    assert_eq!(trailing.tag("k"), Some("tail\\"));
+    // The block ends at the first real space, so the value can hold `:` freely.
+    assert_eq!(trailing.command, "PING");
 }
 
 // ─── inbound normalization ─────────────────────────────────────────────────
@@ -599,7 +698,7 @@ fn a_missing_server_or_nick_names_the_channel() {
         serde_json::json!({"enabled": true, "server": "irc.example"}),
     ] {
         let ctx = ctx_with(block);
-        let error = match Irc.sender(&ctx) {
+        let error = match Irc::new().sender(&ctx) {
             Ok(_) => panic!("a sender must not be built without a server and nick"),
             Err(error) => error,
         };
@@ -613,7 +712,7 @@ fn half_configured_sasl_credentials_are_rejected_rather_than_ignored() {
         "enabled": true, "server": "irc.example", "nick": "bot",
         "sasl": { "account": "bot", "password": "" },
     }));
-    let error = match Irc.sender(&ctx) {
+    let error = match Irc::new().sender(&ctx) {
         Ok(_) => panic!("a sender must not be built with half a credential"),
         Err(error) => error,
     };
@@ -625,7 +724,7 @@ fn a_port_of_zero_is_rejected() {
     let ctx = ctx_with(serde_json::json!({
         "enabled": true, "server": "irc.example", "nick": "bot", "port": 0,
     }));
-    assert!(Irc.sender(&ctx).is_err());
+    assert!(Irc::new().sender(&ctx).is_err());
 }
 
 // ─── the protocol session ──────────────────────────────────────────────────
@@ -801,7 +900,7 @@ async fn rejected_sasl_credentials_end_the_channel_instead_of_retrying() {
         &server,
         serde_json::json!({ "sasl": { "account": "bot", "password": "wrong" } }),
     ));
-    let result = tokio::time::timeout(Duration::from_secs(5), Irc.run(ctx)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), Irc::new().run(ctx)).await;
     let error = result
         .expect("run must return")
         .expect_err("bad credentials are not retryable");
@@ -940,6 +1039,733 @@ async fn a_refusal_numeric_does_not_end_the_session() {
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
+#[tokio::test]
+async fn a_full_outbound_queue_is_reported_rather_than_dropped() {
+    // The connection task owns the socket, so a queue that cannot take another
+    // line means the link is not keeping up — the caller must hear about it.
+    let (out, _rx) = mpsc::channel(1);
+    let sender = IrcSender {
+        out,
+        failures: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let conversation = ConversationRef {
+        id: "#future".into(),
+        thread_id: None,
+        kind: ChatKind::Channel,
+    };
+    sender.send_text(&conversation, "first").await.unwrap();
+    let error = sender
+        .send_text(&conversation, "second")
+        .await
+        .expect_err("the queue is full");
+    assert!(error.to_string().contains("not keeping up"), "{error}");
+}
+
+#[tokio::test]
+async fn a_send_without_a_connected_session_is_reported() {
+    // `future channel send` builds a sender without connecting: the queue has
+    // no receiver, and pretending the message went out would hide that.
+    let (out, rx) = mpsc::channel(OUTBOUND_QUEUE);
+    drop(rx);
+    let sender = IrcSender {
+        out,
+        failures: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let error = sender
+        .send_text(
+            &ConversationRef {
+                id: "#future".into(),
+                thread_id: None,
+                kind: ChatKind::Channel,
+            },
+            "hello",
+        )
+        .await
+        .expect_err("nothing is connected");
+    let message = error.to_string();
+    assert!(message.contains("not connected"), "{message}");
+    // Worth retrying once the bridge is up, so it must not read as permanent.
+    assert!(!crate::delivery::is_permanent_error(&message), "{message}");
+}
+
+#[tokio::test]
+async fn a_sender_reports_the_irc_declaration_without_connecting() {
+    let server = spawn_irc(vec![], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let sender = Irc::new()
+        .sender(&ctx)
+        .expect("a valid configuration needs no server");
+    assert_eq!(sender.definition().id, "irc");
+    assert_eq!(sender.definition().length_unit, LengthUnit::Bytes);
+    // Building a sender must not have opened anything: `future channel send`
+    // on a machine with no bridge running must still construct one.
+    assert_eq!(server.connections(), 0);
+}
+
+#[tokio::test]
+async fn an_over_long_line_from_the_server_ends_the_connection() {
+    // 16 KiB with no line break is not IRC; the reader must give up rather
+    // than growing its buffer until the process runs out of memory. The bytes
+    // are written raw, because the mock normally terminates every line.
+    let payload = vec![b'x'; MAX_INBOUND_LINE_BYTES + 16];
+    let server = spawn_irc_raw(&payload, true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let task = spawn_run(&ctx);
+
+    let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(10)).await;
+    assert!(
+        reconnected,
+        "the nonsense line must be treated as a dropped connection (connections: {})",
+        server.connections()
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_refused_capability_negotiation_does_not_stop_registration() {
+    let server = spawn_irc(
+        vec![
+            ":server CAP * LS :sasl multi-prefix".into(),
+            ":server CAP * ACK :sasl".into(),
+            // A challenge that is not the `+` greeting: the payload must not be
+            // sent on the back of it.
+            "AUTHENTICATE *".into(),
+            ":server CAP * NAK :sasl".into(),
+            ":server 001 bot :Welcome".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(
+        &server,
+        serde_json::json!({ "sasl": { "account": "bot", "password": "hunter2" } }),
+    ));
+    let task = spawn_run(&ctx);
+
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await,
+        "registration must survive a refused capability: {:?}",
+        server.lines()
+    );
+    let lines = server.lines();
+    // The server refused SASL, so registration proceeds without it.
+    assert!(lines.iter().any(|line| line == "CAP END"), "{lines:?}");
+    // Only the `AUTHENTICATE PLAIN` request went out; no credential followed it.
+    let payloads = lines
+        .iter()
+        .filter(|line| line.starts_with("AUTHENTICATE ") && !line.contains("PLAIN"))
+        .count();
+    assert_eq!(payloads, 0, "the payload must wait for `+`: {lines:?}");
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_join_echo_clears_an_earlier_refusal() {
+    let server = spawn_irc(vec![":server 001 bot :Welcome".into()], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let task = spawn_run(&ctx);
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await
+    );
+
+    // Kicked: the server says the bot is not on the channel, so a reply is
+    // refused instead of being queued for a target that cannot take it.
+    server.sent(":server 442 bot #future :You're not on that channel");
+    server.sent(":alice!u@h PRIVMSG #future :bot: are you there?");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        server.lines_matching("PRIVMSG #future").is_empty(),
+        "a refused target must not be written to: {:?}",
+        server.lines()
+    );
+
+    // Back in the channel: being re-joined is what makes it writable again.
+    server.sent(":bot!u@h JOIN #future");
+    server.sent(":alice!u@h PRIVMSG #future :bot: hello again");
+    assert!(
+        server
+            .wait_for("PRIVMSG #future", Duration::from_secs(5))
+            .await,
+        "the join echo must clear the refusal: {:?}",
+        server.lines()
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_server_error_closes_the_connection_and_it_reconnects() {
+    let server = spawn_irc(
+        vec![
+            ":server 001 bot :Welcome".into(),
+            "ERROR :Closing Link: bot (Quit)".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let task = spawn_run(&ctx);
+
+    // An `ERROR` line is the server hanging up on purpose; the channel comes
+    // back rather than dying.
+    let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
+    assert!(reconnected, "the channel never came back");
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn an_unusable_nickname_is_fatal() {
+    let server = spawn_irc(vec![":server 432 * :Erroneous Nickname".into()], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let result = tokio::time::timeout(Duration::from_secs(5), Irc::new().run(ctx)).await;
+    let error = result
+        .expect("run must return")
+        .expect_err("renaming cannot fix a rejected nickname");
+    assert!(error.to_string().contains("rejects"), "{error}");
+}
+
+#[tokio::test]
+async fn a_banned_client_is_fatal() {
+    let server = spawn_irc(vec![":server 465 * :You are banned".into()], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let result = tokio::time::timeout(Duration::from_secs(5), Irc::new().run(ctx)).await;
+    let error = result
+        .expect("run must return")
+        .expect_err("a ban is not worth retrying");
+    assert!(error.to_string().contains("banned"), "{error}");
+}
+
+#[tokio::test]
+async fn a_nickname_that_never_frees_ends_the_channel() {
+    // Every variant is taken too: renaming forever would hammer the network.
+    let collisions: Vec<String> = (0..MAX_RENAMES + 2)
+        .map(|_| ":server 433 * bot :Nickname is already in use".to_string())
+        .collect();
+    let server = spawn_irc(collisions, true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let result = tokio::time::timeout(Duration::from_secs(5), Irc::new().run(ctx)).await;
+    let error = result
+        .expect("run must return")
+        .expect_err("a nickname that never frees is fatal");
+    assert!(error.to_string().contains("taken"), "{error}");
+    // It tried the bounded number of variants and no more.
+    let renames = server.lines_matching("NICK bot_").len();
+    assert!(renames <= MAX_RENAMES as usize, "{renames} renames");
+}
+
+#[tokio::test]
+async fn a_login_numeric_and_an_unknown_numeric_are_only_noted() {
+    let server = spawn_irc(
+        vec![
+            // A blank line is not a message and must not end the connection.
+            "".into(),
+            ":server 900 bot bot!u@h :You are now logged in as bot".into(),
+            ":server 999 bot :Something nobody has heard of".into(),
+            ":server 001 bot :Welcome".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let task = spawn_run(&ctx);
+
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await,
+        "informational numerics must not stop registration: {:?}",
+        server.lines()
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+// ─── TLS ───────────────────────────────────────────────────────────────────
+
+/// A self-signed certificate for these tests only, generated once and embedded
+/// as data: a test that never leaves the loopback interface must not add a
+/// certificate-generation dependency to the crate. Valid to 2035, SAN
+/// `IP:127.0.0.1`.
+const TEST_CERT_DER_B64: &str = "MIIBrTCCAVOgAwIBAgIUPcdm1/isjsejaBpxUxr9OSyZCiowCgYIKoZIzj0EAwIwHjEcMBoGA1UEAwwTZnV0dXJlLWNoYW5uZWwtdGVzdDAeFw0yNjA5MjIwNjAwMTNaFw0zNjA5MTkwNjAwMTNaMB4xHDAaBgNVBAMME2Z1dHVyZS1jaGFubmVsLXRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAS9qplZNsvpiONd4vcb6GL8/1aJ6FBaUGd+RRyy1O8zv2ddVdtlAy2Cr5gDvtWRakjaYpP8j8irGg0lCretgeyGo28wbTAdBgNVHQ4EFgQUcyZxwrgynNukfop1QCI53yYJAq4wHwYDVR0jBBgwFoAUcyZxwrgynNukfop1QCI53yYJAq4wDwYDVR0TAQH/BAUwAwEB/zAaBgNVHREEEzARhwR/AAABgglsb2NhbGhvc3QwCgYIKoZIzj0EAwIDSAAwRQIgCdxFxfhv1RBSquhGXM+a7Y7sjvJPaf17hg4I9nqj2FsCIQCYHdYjqGWipWsesfZFSnGWj7cg8rG+LG5TdVhWwhQN6Q==";
+
+/// The PKCS#8 private key for [`TEST_CERT_DER_B64`].
+const TEST_KEY_DER_B64: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgdThDQAVQuOklcIFkvRg+vjevKPiUe7qPc6zo5frpCy+hRANCAAS9qplZNsvpiONd4vcb6GL8/1aJ6FBaUGd+RRyy1O8zv2ddVdtlAy2Cr5gDvtWRakjaYpP8j8irGg0lCretgeyG";
+
+fn decode_b64(encoded: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("embedded test data must be valid base64")
+}
+
+/// A verifier that accepts the certificate above.
+///
+/// The production client verifies against the platform trust store, which
+/// cannot know a certificate invented for a test; everything else about the
+/// handshake (signatures, record layer, key schedule) is still checked.
+#[derive(Debug)]
+struct TrustTestCertificate;
+
+impl rustls::client::danger::ServerCertVerifier for TrustTestCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &test_algorithms())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &test_algorithms())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        test_algorithms().supported_schemes()
+    }
+}
+
+fn test_algorithms() -> rustls::crypto::WebPkiSupportedAlgorithms {
+    rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms
+}
+
+/// The client TLS configuration these tests use instead of the platform store.
+fn trusting_tls() -> rustls::ClientConfig {
+    crate::test_support::ensure_crypto_provider();
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(TrustTestCertificate))
+        .with_no_client_auth()
+}
+
+/// How a TLS test server ends a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Close {
+    /// Drop the socket during the handshake, so it can never complete.
+    DuringHandshake,
+    /// A clean TLS closure: `close_notify`, then the socket goes away.
+    Clean,
+    /// The socket disappears with no `close_notify` — a truncated connection.
+    Unclean,
+    /// Serve until the test asks for one of the above.
+    Await,
+}
+
+/// A TLS listener that speaks IRC, with the same recording surface as the
+/// plaintext mock.
+async fn spawn_tls_irc(script: Vec<String>, initial: Close) -> MockIrc {
+    crate::test_support::ensure_crypto_provider();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (out, out_rx) = mpsc::unbounded_channel::<String>();
+    let out_rx = Arc::new(tokio::sync::Mutex::new(out_rx));
+    let (closer, close_rx) = mpsc::unbounded_channel::<Close>();
+    let close_rx = Arc::new(tokio::sync::Mutex::new(close_rx));
+    let config = Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls::pki_types::CertificateDer::from(decode_b64(
+                    TEST_CERT_DER_B64,
+                ))],
+                rustls::pki_types::PrivateKeyDer::Pkcs8(
+                    rustls::pki_types::PrivatePkcs8KeyDer::from(decode_b64(TEST_KEY_DER_B64)),
+                ),
+            )
+            .expect("server TLS configuration"),
+    );
+    let received_task = received.clone();
+    let connections_task = connections.clone();
+
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            connections_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let config = config.clone();
+            let script = script.clone();
+            let received = received_task.clone();
+            let out_rx = out_rx.clone();
+            let close_rx = close_rx.clone();
+            tokio::spawn(async move {
+                if initial == Close::DuringHandshake {
+                    // Read the ClientHello first and then walk away: a socket
+                    // closed with unread data in it answers with a reset, and
+                    // the client has to see an orderly end of stream instead.
+                    let mut hello = [0u8; 4096];
+                    let _ = tokio::io::AsyncReadExt::read(&mut tcp, &mut hello).await;
+                    drop(tcp);
+                    return;
+                }
+                let mut conn = rustls::ServerConnection::new(config).expect("server connection");
+                let (mut read, mut write) = tokio::io::split(tcp);
+
+                // Handshake: feed the client's records in, push ours out.
+                while conn.is_handshaking() {
+                    let mut raw = [0u8; 8192];
+                    match read.read(&mut raw).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(read_bytes) => {
+                            if feed(&mut conn, &raw[..read_bytes]).is_err() {
+                                return;
+                            }
+                            if flush(&mut conn, &mut write).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                for line in &script {
+                    if send_line(&mut conn, &mut write, line).await.is_err() {
+                        return;
+                    }
+                }
+
+                // One guard for the whole connection: a lock taken inside a
+                // `select!` arm does not outlive the arm's body.
+                let mut close_rx = close_rx.lock().await;
+                let mut out_rx = out_rx.lock().await;
+                let mut pending: Vec<u8> = Vec::new();
+                loop {
+                    let mut raw = [0u8; 8192];
+                    let event = tokio::select! {
+                        result = read.read(&mut raw) => TlsEvent::Read(result),
+                        Some(line) = out_rx.recv() => TlsEvent::Send(line),
+                        Some(how) = close_rx.recv() => TlsEvent::Close(how),
+                    };
+                    match event {
+                        // A polite closure tells the client the stream ended;
+                        // a truncated one just drops the socket, which is the
+                        // difference the client has to survive.
+                        TlsEvent::Close(Close::Clean) => {
+                            conn.send_close_notify();
+                            let _ = flush(&mut conn, &mut write).await;
+                            return;
+                        }
+                        TlsEvent::Close(Close::Unclean)
+                        | TlsEvent::Close(Close::DuringHandshake) => {
+                            return;
+                        }
+                        TlsEvent::Close(Close::Await) => {}
+                        TlsEvent::Send(line) => {
+                            if send_line(&mut conn, &mut write, &line).await.is_err() {
+                                return;
+                            }
+                        }
+                        TlsEvent::Read(Ok(0)) | TlsEvent::Read(Err(_)) => return,
+                        TlsEvent::Read(Ok(read_bytes)) => {
+                            if feed(&mut conn, &raw[..read_bytes]).is_err() {
+                                return;
+                            }
+                            if flush(&mut conn, &mut write).await.is_err() {
+                                return;
+                            }
+                            pending.extend_from_slice(&take_plaintext(&mut conn));
+                            while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
+                                let line: Vec<u8> = pending.drain(..=index).collect();
+                                let line = &line[..line.len() - 1];
+                                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                                received
+                                    .lock()
+                                    .push(String::from_utf8_lossy(line).into_owned());
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    MockIrc {
+        addr,
+        received,
+        out,
+        connections,
+        closer,
+    }
+}
+
+/// One action the TLS test server takes.
+enum TlsEvent {
+    Read(std::io::Result<usize>),
+    Send(String),
+    Close(Close),
+}
+
+/// Hand bytes to rustls.
+fn feed(conn: &mut rustls::ServerConnection, bytes: &[u8]) -> std::io::Result<()> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    while (cursor.position() as usize) < bytes.len() {
+        conn.read_tls(&mut cursor)?;
+        conn.process_new_packets()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    }
+    Ok(())
+}
+
+/// Push rustls's pending records to the socket.
+async fn flush<W: tokio::io::AsyncWriteExt + Unpin>(
+    conn: &mut rustls::ServerConnection,
+    write: &mut W,
+) -> std::io::Result<()> {
+    while conn.wants_write() {
+        let mut out = Vec::new();
+        conn.write_tls(&mut out)?;
+        write.write_all(&out).await?;
+    }
+    write.flush().await
+}
+
+/// Write one line over the TLS connection and push it out.
+async fn send_line<W: tokio::io::AsyncWriteExt + Unpin>(
+    conn: &mut rustls::ServerConnection,
+    write: &mut W,
+    line: &str,
+) -> std::io::Result<()> {
+    let bytes = format!("{line}\r\n");
+    std::io::Write::write_all(&mut conn.writer(), bytes.as_bytes())?;
+    flush(conn, write).await
+}
+
+/// Everything the client has written that rustls has decrypted so far.
+fn take_plaintext(conn: &mut rustls::ServerConnection) -> Vec<u8> {
+    let mut decrypted = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match std::io::Read::read(&mut conn.reader(), &mut buf) {
+            Ok(0) | Err(_) => return decrypted,
+            Ok(read) => decrypted.extend_from_slice(&buf[..read]),
+        }
+    }
+}
+
+/// The provider as the TLS tests use it: their own trust anchor, since the
+/// platform store cannot know a certificate generated for a test.
+fn trusting_provider() -> Irc {
+    Irc {
+        tls: Some(Arc::new(trusting_tls())),
+    }
+}
+
+/// Run the trusting provider in the background.
+fn spawn_trusting_run(provider: Irc, ctx: &ProviderCtx) -> tokio::task::JoinHandle<Result<()>> {
+    let ctx = ctx.clone();
+    tokio::spawn(async move { provider.run(ctx).await })
+}
+
+/// A TLS configuration pointing at a loopback server.
+fn tls_config_for(server: &MockIrc, extra: Value) -> Value {
+    let mut block = config_for(server, extra);
+    if let Some(object) = block.as_object_mut() {
+        object.insert("tls".into(), Value::Bool(true));
+    }
+    block
+}
+
+#[tokio::test]
+async fn a_tls_probe_handshakes_and_reports_the_transport() {
+    let server = spawn_tls_irc(vec![":server 001 bot :Welcome".into()], Close::Await).await;
+    let ctx = ctx_with(tls_config_for(&server, serde_json::json!({})));
+    let summary = trusting_provider()
+        .probe(&ctx)
+        .await
+        .expect("the handshake must complete");
+    assert!(summary.contains("TLS"), "{summary}");
+    assert!(summary.contains("bot"), "{summary}");
+    // The registration burst travelled over the encrypted connection.
+    assert!(server.wait_for("NICK bot", Duration::from_secs(5)).await);
+    server.close(Close::Clean);
+}
+
+#[tokio::test]
+async fn a_tls_session_registers_replies_and_reconnects_after_a_clean_close() {
+    let server = spawn_tls_irc(vec![":server 001 bot :Welcome".into()], Close::Await).await;
+    let ctx = ctx_with(tls_config_for(&server, serde_json::json!({})));
+    let task = spawn_trusting_run(trusting_provider(), &ctx);
+
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await,
+        "registration over TLS: {:?}",
+        server.lines()
+    );
+    // A message decrypts, reaches the bridge, and the reply is encrypted back.
+    server.sent(":alice!u@h PRIVMSG #future :bot: over tls");
+    assert!(
+        server
+            .wait_for("PRIVMSG #future", Duration::from_secs(5))
+            .await,
+        "a reply must travel over TLS: {:?}",
+        server.lines()
+    );
+
+    // The server closes the session politely: the client comes back.
+    server.close(Close::Clean);
+    let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
+    assert!(reconnected, "a clean close must not end the channel");
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_truncated_tls_handshake_is_reported() {
+    let server = spawn_tls_irc(vec![], Close::DuringHandshake).await;
+    let ctx = ctx_with(tls_config_for(&server, serde_json::json!({})));
+    let error = Irc::new()
+        .probe(&ctx)
+        .await
+        .expect_err("a socket that answers nothing is not a working channel");
+    assert!(error.to_string().contains("TLS handshake"), "{error}");
+}
+
+#[tokio::test]
+async fn a_truncated_tls_connection_is_treated_as_a_dropped_one() {
+    // No `close_notify`: the client has to notice the socket died rather than
+    // wait for a response that will never come.
+    let server = spawn_tls_irc(vec![":server 001 bot :Welcome".into()], Close::Await).await;
+    let ctx = ctx_with(tls_config_for(&server, serde_json::json!({})));
+    let task = spawn_trusting_run(trusting_provider(), &ctx);
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await
+    );
+
+    server.close(Close::Unclean);
+    let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
+    assert!(reconnected, "a truncated connection must be retried");
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_capability_answer_we_did_not_ask_for_and_one_nobody_knows() {
+    let server = spawn_irc(
+        vec![
+            ":server CAP * LS :sasl".into(),
+            // An acknowledgement for a capability this client only announced
+            // interest in: there is nothing to negotiate, so registration
+            // continues without SASL.
+            ":server CAP * ACK :multi-prefix".into(),
+            ":server 001 bot :Welcome".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(
+        &server,
+        serde_json::json!({ "sasl": { "account": "bot", "password": "hunter2" } }),
+    ));
+    let task = spawn_run(&ctx);
+
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await,
+        "an unrelated acknowledgement must not block registration: {:?}",
+        server.lines()
+    );
+    let lines = server.lines();
+    assert!(lines.iter().any(|line| line == "CAP END"), "{lines:?}");
+    // No credential followed, because the capability was never agreed to.
+    assert!(
+        !lines.iter().any(|line| line.contains("PLAIN")),
+        "{lines:?}"
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn an_unknown_capability_subcommand_is_ignored() {
+    let server = spawn_irc(
+        vec![
+            ":server CAP * LS :sasl".into(),
+            // A subcommand the protocol does not define: not worth acting on.
+            ":server CAP * WHATEVER :sasl".into(),
+            ":server 001 bot :Welcome".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(
+        &server,
+        serde_json::json!({ "sasl": { "account": "bot", "password": "hunter2" } }),
+    ));
+    let task = spawn_run(&ctx);
+
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await,
+        "an unknown capability subcommand must not stop registration: {:?}",
+        server.lines()
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
+#[tokio::test]
+async fn a_join_without_a_prefix_is_harmless() {
+    let server = spawn_irc(vec![":server 001 bot :Welcome".into()], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let task = spawn_run(&ctx);
+    assert!(
+        server
+            .wait_for("JOIN #future", Duration::from_secs(5))
+            .await
+    );
+
+    // Servers in the wild have been known to omit the prefix; there is then no
+    // nickname to compare, and the line is simply not ours to act on.
+    server.sent("JOIN #somewhere");
+    server.sent(":alice!u@h PRIVMSG #future :bot: still here?");
+    assert!(
+        server
+            .wait_for("PRIVMSG #future", Duration::from_secs(5))
+            .await,
+        "a prefix-less line must not stop the session: {:?}",
+        server.lines()
+    );
+
+    ctx.shutdown().notify_waiters();
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+}
+
 // ─── probing ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -953,7 +1779,10 @@ async fn a_probe_reports_the_transport_and_the_nickname() {
     )
     .await;
     let ctx = ctx_with(config_for(&server, serde_json::json!({})));
-    let summary = Irc.probe(&ctx).await.expect("a welcome proves the login");
+    let summary = Irc::new()
+        .probe(&ctx)
+        .await
+        .expect("a welcome proves the login");
     assert!(summary.contains("connected"), "{summary}");
     assert!(summary.contains("TCP"), "{summary}");
     assert!(summary.contains("bot"), "{summary}");
@@ -961,11 +1790,81 @@ async fn a_probe_reports_the_transport_and_the_nickname() {
 }
 
 #[tokio::test]
+async fn a_probe_skips_a_line_it_cannot_read() {
+    let server = spawn_irc(vec!["".into(), ":server 001 bot :Welcome".into()], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let summary = Irc::new()
+        .probe(&ctx)
+        .await
+        .expect("a welcome follows the blank line");
+    assert!(summary.contains("bot"), "{summary}");
+}
+
+#[tokio::test]
+async fn a_probe_that_never_registers_gives_up() {
+    // A server that accepts the connection and then says nothing: the probe has
+    // to stop waiting rather than hold `future channel test` forever. The
+    // budget is shortened so the give-up path is exercised without the wait.
+    let server = spawn_irc(vec![], true).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let error = Irc::new()
+        .probe_with_deadline(&ctx, Duration::from_millis(200))
+        .await
+        .expect_err("a silent server is not a working channel");
+    let message = error.to_string();
+    assert!(
+        message.contains("never completed IRC registration"),
+        "{message}"
+    );
+    assert!(server.wait_for("NICK bot", Duration::from_secs(5)).await);
+}
+
+#[tokio::test]
+async fn a_probe_that_loses_the_socket_before_the_welcome_gives_up() {
+    // The server accepts and then goes away: there is no registration to wait
+    // for, so the probe must fail rather than sit until its budget runs out.
+    let server = spawn_irc_raw(&[], false).await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let error = Irc::new()
+        .probe_with_deadline(&ctx, Duration::from_secs(5))
+        .await
+        .expect_err("a closed socket is not a working channel");
+    assert!(
+        error
+            .to_string()
+            .contains("never completed IRC registration"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_probe_keeps_reading_past_a_line_that_is_not_the_welcome() {
+    // A server may say other things first (a login notice, a MOTD line): the
+    // probe has to carry on rather than treat the first line as the answer.
+    let server = spawn_irc(
+        vec![
+            ":server 900 bot bot!u@h :You are now logged in as bot".into(),
+            ":server 376 bot :End of MOTD".into(),
+            ":server 001 bot :Welcome".into(),
+        ],
+        true,
+    )
+    .await;
+    let ctx = ctx_with(config_for(&server, serde_json::json!({})));
+    let summary = Irc::new()
+        .probe(&ctx)
+        .await
+        .expect("the welcome arrives after the notices");
+    assert!(summary.contains("connected"), "{summary}");
+    assert!(summary.contains("bot"), "{summary}");
+}
+
+#[tokio::test]
 async fn a_probe_never_claims_success_without_a_server() {
     let ctx = ctx_with(serde_json::json!({
         "enabled": true, "server": "127.0.0.1", "port": 1, "tls": false, "nick": "bot",
     }));
-    let error = Irc.probe(&ctx).await.expect_err("must fail");
+    let error = Irc::new().probe(&ctx).await.expect_err("must fail");
     assert!(error.to_string().contains("connect"), "{error}");
 }
 
@@ -976,11 +1875,11 @@ async fn a_probe_reports_a_server_that_rejects_the_credentials() {
         &server,
         serde_json::json!({ "password": "wrong" }),
     ));
-    let error = Irc.probe(&ctx).await.expect_err("must fail");
+    let error = Irc::new().probe(&ctx).await.expect_err("must fail");
     assert!(error.to_string().contains("password"), "{error}");
-    // `PASS` must precede `NICK`, or the server ignores it. The probe returns
-    // as soon as the rejection arrives, so wait for the client's whole
-    // registration burst to be on the wire before comparing positions.
+    // `PASS` must precede `NICK`, or the server ignores it. The probe returns as
+    // soon as the rejection arrives, so wait for the client's whole registration
+    // burst to be on the wire before comparing positions.
     assert!(
         server.wait_for("NICK bot", Duration::from_secs(5)).await,
         "{:?}",

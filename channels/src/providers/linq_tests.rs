@@ -132,6 +132,41 @@ fn ctx_with_config(config: Value) -> ProviderCtx {
     )
 }
 
+/// A context wired to a mock agent with an open policy, for the tests that
+/// drive `run` and `deliver` end to end.
+fn ctx_with_agent(grpc_addr: &str, data_dir: &std::path::Path, config: Value) -> ProviderCtx {
+    use std::sync::Arc;
+    let sessions = Arc::new(crate::session_store::SessionStore::new(
+        data_dir.join("sessions.json"),
+    ));
+    let agent_cfg = crate::config::AgentConfig {
+        grpc_addr: grpc_addr.to_string(),
+        cwd: data_dir.to_string_lossy().into_owned(),
+        ..crate::config::AgentConfig::default()
+    };
+    ProviderCtx::new(
+        &DEFINITION,
+        config,
+        crate::bridge::Bridge::new(
+            Arc::new(agent_cfg),
+            crate::policy::AccessPolicyConfig {
+                dm_policy: "open".into(),
+                dm_allowlist: Vec::new(),
+                group_policy: "open".into(),
+                group_allowlist: Vec::new(),
+                require_mention: true,
+            },
+            data_dir.to_path_buf(),
+            Arc::new(crate::status::StatusBoard::new(
+                data_dir.join("status.json"),
+            )),
+        ),
+        data_dir.to_path_buf(),
+        sessions,
+        Arc::new(tokio::sync::Notify::new()),
+    )
+}
+
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 #[test]
@@ -583,6 +618,9 @@ fn a_message_with_nothing_to_answer_is_dropped() {
     // No chat.
     let inbounds = parse_deliveries(&received_message(json!({ "chat": {} })));
     assert!(inbounds.is_empty());
+    // An empty chat id is no chat either.
+    let inbounds = parse_deliveries(&received_message(json!({ "chat": { "id": "" } })));
+    assert!(inbounds.is_empty());
     // No message id: the bridge would have no way to tell a retry from a new
     // message, and answering one delivery twice is worse than not answering.
     let inbounds = parse_deliveries(&received_message(json!({ "id": "" })));
@@ -1001,34 +1039,10 @@ async fn a_verified_delivery_runs_a_turn_and_a_forged_one_does_not() {
     use std::sync::Arc;
     let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
     let data_dir = crate::test_support::temp_dir("linq-e2e");
-    let sessions = Arc::new(crate::session_store::SessionStore::new(
-        data_dir.join("sessions.json"),
-    ));
-    let agent_cfg = crate::config::AgentConfig {
-        grpc_addr: grpc,
-        cwd: data_dir.to_string_lossy().into_owned(),
-        ..crate::config::AgentConfig::default()
-    };
-    let ctx = ProviderCtx::new(
-        &DEFINITION,
+    let ctx = ctx_with_agent(
+        &grpc,
+        &data_dir,
         json!({ "enabled": true, "api_key": "key" }),
-        crate::bridge::Bridge::new(
-            Arc::new(agent_cfg),
-            crate::policy::AccessPolicyConfig {
-                dm_policy: "open".into(),
-                dm_allowlist: Vec::new(),
-                group_policy: "open".into(),
-                group_allowlist: Vec::new(),
-                require_mention: true,
-            },
-            data_dir.clone(),
-            Arc::new(crate::status::StatusBoard::new(
-                data_dir.join("status.json"),
-            )),
-        ),
-        data_dir,
-        sessions,
-        Arc::new(tokio::sync::Notify::new()),
     );
 
     // The signature is checked before anything is parsed, so a delivery with a
@@ -1070,4 +1084,232 @@ async fn a_verified_delivery_runs_a_turn_and_a_forged_one_does_not() {
         crate::test_support::recorded_of(&state, "new_session").len(),
         1
     );
+}
+
+// ─── The webhook listener and the remaining rejection paths ─────────────────
+
+/// A port nothing is bound to right now, so the provider's own listener can
+/// take it. The window between releasing and rebinding is microseconds, and a
+/// loss would surface as `run` failing to bind rather than as a silent pass.
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    listener.local_addr().expect("local_addr").port()
+}
+
+/// The first response, retrying while the server is still coming up.
+async fn post_when_listening(
+    client: &reqwest::Client,
+    url: &str,
+    body: Vec<u8>,
+) -> reqwest::Response {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match client.post(url).body(body.clone()).send().await {
+            Ok(response) => return response,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the webhook never listened: {error}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_signature_candidate_that_cannot_be_decoded_is_skipped() {
+    let body = br#"{"event_type":"message.received","data":{}}"#;
+    let mut request = signed_request(body, "evt-1", &now_seconds().to_string(), SECRET);
+    let good = request.header("webhook-signature").unwrap().to_string();
+    // A candidate that is not base64 is skipped rather than failing the whole
+    // header: a rotation can leave unreadable stale entries beside a good one.
+    request.headers.insert(
+        "webhook-signature".to_string(),
+        format!("v1,not!base64! {good}"),
+    );
+    assert!(verify_delivery(&request, SECRET, now_seconds()));
+
+    // Nothing readable at all: the delivery is not verified.
+    request.headers.insert(
+        "webhook-signature".to_string(),
+        "v1,not!base64!".to_string(),
+    );
+    assert!(!verify_delivery(&request, SECRET, now_seconds()));
+}
+
+#[test]
+fn a_signed_request_without_its_signature_header_is_rejected() {
+    // The id and the instant are there, but there is nothing to compare with.
+    let mut request = webhook_post(br#"{"event_type":"message.received","data":{}}"#);
+    request
+        .headers
+        .insert("webhook-id".to_string(), "evt-1".to_string());
+    request
+        .headers
+        .insert("webhook-timestamp".to_string(), now_seconds().to_string());
+    assert!(!verify_signed_request(&request, SECRET, now_seconds()));
+}
+
+#[test]
+fn a_legacy_delivery_with_an_unreadable_timestamp_is_rejected() {
+    let body = br#"{"event_type":"message.received","data":{}}"#;
+    let mut request = webhook_post(body);
+    request.headers.insert(
+        "x-webhook-signature".to_string(),
+        hmac_sha256_hex(SECRET.as_bytes(), body),
+    );
+    request
+        .headers
+        .insert("x-webhook-timestamp".to_string(), "yesterday".to_string());
+    // An instant that cannot be read cannot be checked for replay, so the
+    // delivery is refused rather than assumed fresh.
+    assert!(!verify_legacy_request(&request, SECRET, now_seconds()));
+}
+
+#[test]
+fn a_part_without_a_usable_value_contributes_nothing() {
+    // A text part with no value, one whose value is not a string, and a link
+    // preview with nothing to preview: each is skipped, not invented.
+    for parts in [
+        json!([{ "type": "text" }]),
+        json!([{ "type": "text", "value": 7 }]),
+        json!([{ "type": "link" }]),
+    ] {
+        let (text, media, mentioned) = parts_of(&json!({ "parts": parts }));
+        assert!(text.is_empty(), "unexpected text {text:?}");
+        assert!(media.is_empty());
+        assert!(!mentioned);
+    }
+    // No parts array at all is not an error either.
+    let (text, media, mentioned) = parts_of(&json!({ "parts": "not-an-array" }));
+    assert!(text.is_empty());
+    assert!(media.is_empty());
+    assert!(!mentioned);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_image_without_a_url_is_left_alone() {
+    let (base, recorded) = spawn_http(vec![]).await;
+    let sender = sender_against(&base, "");
+    let mut media = vec![MediaRef {
+        kind: MediaKind::Image,
+        url: None,
+        ..MediaRef::default()
+    }];
+    sender.hydrate(&mut media).await;
+    assert!(media[0].data.is_none());
+    // Nothing to fetch means no request at all.
+    assert!(recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_attachment_is_refused() {
+    // One byte past the limit the provider will hand to the model.
+    let (base, _recorded) = spawn_http(vec![HttpRoute::binary(
+        "/huge.jpg",
+        200,
+        vec![b'x'; MAX_DOWNLOAD_BYTES + 1],
+    )])
+    .await;
+    let sender = sender_against(&base, "");
+    let error = sender
+        .download(&format!("{base}/huge.jpg"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("above the limit"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_provider_builds_a_working_sender() {
+    let path = format!("/v3/chats/{CHAT_ID}/messages");
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(&path, 200, &ok_send_body())]).await;
+    let ctx = ctx_with_config(json!({ "enabled": true, "api_key": "key", "api_base": base }));
+    let sender = Linq.sender(&ctx).unwrap();
+    assert_eq!(sender.definition().id, "linq");
+    // The sender carries the configuration it was built from.
+    assert_eq!(
+        sender
+            .send_text(&chat_conversation(), "hello!")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("69a37c7d-af4f-4b5e-af42-e28e98ce873a")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probing_a_line_without_a_number_is_a_failure() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/v3/phone_numbers",
+        200,
+        r#"{"phone_numbers":[{"id":"p1","reputation":{"status":"HEALTHY"}}]}"#,
+    )])
+    .await;
+    let ctx = ctx_with_config(json!({ "enabled": true, "api_key": "key", "api_base": base }));
+    let error = Linq.probe(&ctx).await.unwrap_err();
+    assert!(error.to_string().contains("has no number"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_rejects_an_unsigned_delivery_and_runs_a_signed_one() {
+    let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
+    let port = free_port();
+    let ctx = ctx_with_agent(
+        &grpc,
+        &crate::test_support::temp_dir("linq-run"),
+        json!({
+            "enabled": true,
+            "api_key": "key",
+            "webhook": {
+                "addr": format!("127.0.0.1:{port}"),
+                "path": "/hooks/linq",
+                "signing_secret": SECRET,
+            },
+        }),
+    );
+    let task = {
+        let ctx = ctx.clone();
+        tokio::spawn(async move { Linq.run(ctx).await })
+    };
+    let url = format!("http://127.0.0.1:{port}/hooks/linq");
+    let client = reqwest::Client::new();
+
+    // The signed instant has to be "now": the bridge drops anything older than
+    // its freshness window as a replay.
+    let mut live = received_message(json!({}));
+    live["data"]["sent_at"] =
+        json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let body = serde_json::to_vec(&live).unwrap();
+
+    // A delivery nobody signed is refused before it is parsed. The retry loop
+    // also waits out the moment between spawning `run` and the listener
+    // accepting connections.
+    let unsigned = post_when_listening(&client, &url, body.clone()).await;
+    assert_eq!(unsigned.status(), 401);
+    assert_eq!(
+        crate::test_support::recorded_of(&state, "new_session").len(),
+        0
+    );
+
+    // The same body signed is answered immediately and then, off the request,
+    // runs the turn.
+    let request = signed_request(&body, "evt-run", &now_seconds().to_string(), SECRET);
+    let mut signed_post = client.post(&url);
+    for name in ["webhook-id", "webhook-timestamp", "webhook-signature"] {
+        signed_post = signed_post.header(name, request.header(name).unwrap());
+    }
+    let signed = signed_post.body(body).send().await.unwrap();
+    assert_eq!(signed.status(), 200);
+    let delivered = crate::test_support::wait_until(
+        || crate::test_support::recorded_of(&state, "new_session").len() == 1,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert!(delivered, "the signed delivery never reached the agent");
+
+    ctx.shutdown().notify_waiters();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+    assert!(stopped.is_ok(), "run() must return on shutdown");
+    assert!(stopped.unwrap().unwrap().is_ok());
 }

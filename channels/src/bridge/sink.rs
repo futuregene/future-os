@@ -302,11 +302,9 @@ impl ChannelSink {
                 {
                     // A failed edit must not kill the turn: the user still has
                     // the previous version of the message.
-                    tracing::warn!(
-                        channel = self.definition().id,
-                        %error,
-                        "progressive edit failed; keeping the earlier text"
-                    );
+                    let message =
+                        format!("progressive edit failed; keeping the earlier text: {error}");
+                    tracing::warn!(channel = self.definition().id, "{message}");
                 }
             }
             None => {

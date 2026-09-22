@@ -206,11 +206,8 @@ impl Outbox {
                 definition.id
             )
         })?;
-        if !definition.is_implemented() {
-            return Err(anyhow!(
-                "the {} channel is not implemented in this build",
-                definition.id
-            ));
+        if let Err(reason) = definition.ensure_usable() {
+            return Err(anyhow!("{reason}"));
         }
         let block = self.config.provider_config(definition.id).ok_or_else(|| {
             anyhow!(

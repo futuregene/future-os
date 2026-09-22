@@ -87,10 +87,18 @@ mod tests {
     }
 
     #[test]
-    fn a_planned_channel_says_so() {
+    fn a_channel_that_cannot_run_declares_which_maturity_it_is() {
         for definition in all_definitions() {
-            if !definition.is_implemented() {
-                assert_eq!(definition.maturity, Maturity::Planned);
+            match definition.ensure_usable() {
+                Ok(()) => assert!(
+                    matches!(definition.maturity, Maturity::Live | Maturity::Preview),
+                    "{}",
+                    definition.id
+                ),
+                Err(reason) => {
+                    assert_eq!(definition.maturity, Maturity::Planned, "{}", definition.id);
+                    assert!(reason.contains(definition.id), "{reason}");
+                }
             }
         }
     }

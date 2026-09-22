@@ -100,6 +100,8 @@ const MAX_RENAMES: u32 = 4;
 const OUTBOUND_QUEUE: usize = 256;
 /// How long the initial TCP connect may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a `future channel test` probe waits for registration.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Reconnect ceiling; the supervisor's own backoff starts after this loop
 /// finally gives up, so this stays modest.
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
@@ -237,18 +239,18 @@ impl TlsStream {
     async fn fill(&mut self) -> std::io::Result<usize> {
         let mut raw = [0u8; 8192];
         let read = tokio::io::AsyncReadExt::read(&mut self.tcp, &mut raw).await?;
-        if read == 0 {
-            return Ok(0);
-        }
         let mut cursor = std::io::Cursor::new(&raw[..read]);
         while (cursor.position() as usize) < read {
-            let consumed = self.conn.read_tls(&mut cursor)?;
-            if consumed == 0 {
-                break;
-            }
+            self.conn.read_tls(&mut cursor)?;
             self.conn
                 .process_new_packets()
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        }
+        if read == 0 {
+            // Let rustls see the end of the stream, so it can tell a clean
+            // close (`close_notify`) from a truncated one instead of leaving
+            // the reader waiting for bytes that will never arrive.
+            self.conn.read_tls(&mut std::io::Cursor::new(&[][..]))?;
         }
         // A handshake needs a reply (ClientHello, Finished, a key update): the
         // records rustls produced are only on their way out after this.
@@ -261,24 +263,27 @@ impl TlsStream {
         while self.conn.wants_write() {
             let mut out = Vec::new();
             self.conn.write_tls(&mut out)?;
-            if out.is_empty() {
-                break;
-            }
             self.tcp.write_all(&out).await?;
         }
         self.tcp.flush().await
     }
 
-    /// Read decrypted bytes, filling the connection as often as it takes.
+    /// Read decrypted bytes, deframing records off the socket as needed.
+    ///
+    /// The socket is drained *before* the reader is consulted: it can only
+    /// answer once records have been deframed, and rustls has to be told about
+    /// the socket's end of stream before it can tell a clean close from a
+    /// truncated one. Once it has been told, a reader holding no plaintext
+    /// answers with that state's outcome rather than `WouldBlock`, so this loop
+    /// always makes progress.
     async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         loop {
+            self.fill().await?;
             match std::io::Read::read(&mut self.conn.reader(), buf) {
-                Ok(read) => return Ok(read),
+                // Records arrived, but they carried none of the peer's data (a
+                // session ticket, a key update): deframe some more.
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
-            }
-            if self.fill().await? == 0 {
-                return Ok(0);
+                other => return other,
             }
         }
     }
@@ -297,18 +302,26 @@ fn tls_config() -> Result<rustls::ClientConfig> {
 
 impl Wire {
     /// Open the socket and, when configured, complete the TLS handshake.
-    async fn connect(config: &IrcConfig) -> Result<Self> {
+    ///
+    /// `tls` is the provider's client configuration; `None` means the platform
+    /// trust store, which a test holding its own certificate cannot use.
+    async fn connect(config: &IrcConfig, tls: Option<&rustls::ClientConfig>) -> Result<Self> {
+        let tls = match (config.tls, tls) {
+            (false, _) => None,
+            (true, Some(injected)) => Some(injected.clone()),
+            (true, None) => Some(tls_config()?),
+        };
         let address = format!("{}:{}", config.server, config.port);
         let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&address))
             .await
             .map_err(|_| anyhow!("timed out connecting to {address}"))?
             .map_err(|error| anyhow!("cannot connect to {address}: {error}"))?;
-        if !config.tls {
+        let Some(tls) = tls else {
             return Ok(Wire::Plain(tcp));
-        }
+        };
         let name = rustls::pki_types::ServerName::try_from(config.server.clone())
             .map_err(|error| anyhow!("`{}` is not a usable TLS name: {error}", config.server))?;
-        let conn = rustls::ClientConnection::new(Arc::new(tls_config()?), name)?;
+        let conn = rustls::ClientConnection::new(Arc::new(tls), name)?;
         let mut stream = TlsStream { tcp, conn };
         stream.flush().await?;
         while stream.conn.is_handshaking() {
@@ -649,6 +662,22 @@ impl IrcSender {
     }
 }
 
+/// Read one line within the budget, `None` once there is none left to read.
+///
+/// The remaining budget shrinks per call, so a reply that arrived in time is
+/// still read even when the wait has already been spent.
+async fn read_within(
+    session: &mut Session,
+    deadline: tokio::time::Instant,
+) -> Result<Option<String>> {
+    let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+    match tokio::time::timeout(wait, session.read_line()).await {
+        Ok(line) => line,
+        // The budget ran out with the server still silent.
+        Err(_) => Ok(None),
+    }
+}
+
 #[async_trait]
 impl ChannelSender for IrcSender {
     fn definition(&self) -> &'static ChannelDefinition {
@@ -787,8 +816,9 @@ impl Session {
                         }
                     }
                     "NAK" => {
+                        let offered = msg.trailing();
                         tracing::warn!(
-                            offered = msg.trailing(),
+                            offered,
                             "the IRC server refused SASL; continuing without it"
                         );
                         self.write_line("CAP END").await?;
@@ -813,11 +843,9 @@ impl Session {
             "NOTICE" | "MODE" | "TOPIC" | "PART" | "QUIT" | "NICK" => {}
             "ERROR" => {
                 // The server is closing on purpose; reconnecting is right.
-                tracing::debug!(
-                    reason = msg.trailing(),
-                    "the IRC server closed the connection"
-                );
-                anyhow::bail!("the IRC server closed the connection: {}", msg.trailing());
+                let reason = msg.trailing();
+                tracing::debug!(reason, "the IRC server closed the connection");
+                anyhow::bail!("the IRC server closed the connection: {reason}");
             }
             other => {
                 let code: Option<u16> = other.parse().ok();
@@ -967,7 +995,20 @@ pub(crate) fn to_inbound(
 }
 
 /// The receiving half.
-struct Irc;
+struct Irc {
+    /// The TLS client configuration, `None` meaning the platform trust store.
+    ///
+    /// A field rather than a constant because a test that stands up its own
+    /// server has to trust a certificate no platform store has ever heard of.
+    tls: Option<Arc<rustls::ClientConfig>>,
+}
+
+impl Irc {
+    /// The production provider: the platform store decides what TLS to trust.
+    fn new() -> Self {
+        Self { tls: None }
+    }
+}
 
 /// What the run loop does with one event.
 enum Event {
@@ -1064,7 +1105,7 @@ impl Irc {
         shutdown: &mut std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
     ) -> Result<()> {
         let mut session = Session {
-            wire: Wire::connect(config).await?,
+            wire: Wire::connect(config, self.tls.as_deref()).await?,
             buffer: Vec::new(),
             nick: config.nick.clone(),
             renames: 0,
@@ -1140,10 +1181,20 @@ impl Irc {
     /// nickname. Nothing here is simulated — a probe that reports success
     /// without connecting would be worse than no probe.
     async fn probe(&self, ctx: &ProviderCtx) -> Result<String> {
+        self.probe_with_deadline(ctx, PROBE_TIMEOUT).await
+    }
+
+    /// The probe, with the budget as a parameter so a test can exercise the
+    /// give-up path without waiting the full timeout out.
+    pub(crate) async fn probe_with_deadline(
+        &self,
+        ctx: &ProviderCtx,
+        budget: Duration,
+    ) -> Result<String> {
         let config: IrcConfig = ctx.config()?;
         config.validate(DEFINITION.id)?;
         let mut session = Session {
-            wire: Wire::connect(&config).await?,
+            wire: Wire::connect(&config, self.tls.as_deref()).await?,
             buffer: Vec::new(),
             nick: config.nick.clone(),
             renames: 0,
@@ -1151,13 +1202,8 @@ impl Irc {
         };
         session.register(&config).await?;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        while tokio::time::Instant::now() < deadline {
-            let line = match tokio::time::timeout_at(deadline, session.read_line()).await {
-                Ok(line) => line?,
-                Err(_) => break,
-            };
-            let Some(line) = line else { break };
+        let deadline = tokio::time::Instant::now() + budget;
+        while let Some(line) = read_within(&mut session, deadline).await? {
             let Some(msg) = parse_line(&line) else {
                 continue;
             };
@@ -1173,12 +1219,13 @@ impl Irc {
             }
         }
         anyhow::bail!(
-            "{} never completed IRC registration within 30 seconds",
-            config.server
+            "{} never completed IRC registration within {:?}",
+            config.server,
+            budget
         )
     }
 }
 
 pub fn provider() -> Box<dyn Provider> {
-    Box::new(Irc)
+    Box::new(Irc::new())
 }

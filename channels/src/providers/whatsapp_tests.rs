@@ -697,10 +697,17 @@ fn response(status: u16, body: &str) -> HttpResponse {
 #[test]
 fn known_error_codes_are_classified() {
     assert_eq!(classify_error_code(190), Some(ErrorClass::Permanent));
+    assert_eq!(classify_error_code(102), Some(ErrorClass::Permanent));
     assert_eq!(classify_error_code(131047), Some(ErrorClass::Permanent));
     assert_eq!(classify_error_code(131026), Some(ErrorClass::Permanent));
+    assert_eq!(classify_error_code(131052), Some(ErrorClass::Permanent));
+    // A number that is not on WhatsApp at all.
+    assert_eq!(classify_error_code(133010), Some(ErrorClass::Permanent));
+    assert_eq!(classify_error_code(131009), Some(ErrorClass::Permanent));
     assert_eq!(classify_error_code(131048), Some(ErrorClass::Transient));
+    assert_eq!(classify_error_code(131056), Some(ErrorClass::Transient));
     assert_eq!(classify_error_code(130429), Some(ErrorClass::Transient));
+    assert_eq!(classify_error_code(80007), Some(ErrorClass::Transient));
     assert_eq!(classify_error_code(4), Some(ErrorClass::Transient));
     assert_eq!(classify_error_code(999), None);
 }
@@ -941,6 +948,17 @@ fn the_factory_builds_the_provider_it_declares() {
 
 /// A context wired to a mock agent, with an open DM policy.
 fn ctx_with_agent(grpc_addr: &str, base: &str, data_dir: &std::path::Path) -> ProviderCtx {
+    ctx_with_agent_config(grpc_addr, base, data_dir, json!({}))
+}
+
+/// [`ctx_with_agent`] with extra `providers.whatsapp` keys merged in — the
+/// webhook listener, for the tests that drive `run` over a real socket.
+fn ctx_with_agent_config(
+    grpc_addr: &str,
+    base: &str,
+    data_dir: &std::path::Path,
+    extra: Value,
+) -> ProviderCtx {
     use std::sync::Arc;
     let sessions = Arc::new(crate::session_store::SessionStore::new(
         data_dir.join("sessions.json"),
@@ -964,16 +982,20 @@ fn ctx_with_agent(grpc_addr: &str, base: &str, data_dir: &std::path::Path) -> Pr
             data_dir.join("status.json"),
         )),
     );
+    let mut config = json!({
+        "enabled": true,
+        "phone_number_id": PHONE_NUMBER_ID,
+        "access_token": "tok",
+        "verify_token": VERIFY_TOKEN,
+        "app_secret": APP_SECRET,
+        "api_base": base,
+    });
+    if let (Some(config), Some(extra)) = (config.as_object_mut(), extra.as_object()) {
+        config.extend(extra.clone());
+    }
     ProviderCtx::new(
         &DEFINITION,
-        json!({
-            "enabled": true,
-            "phone_number_id": PHONE_NUMBER_ID,
-            "access_token": "tok",
-            "verify_token": VERIFY_TOKEN,
-            "app_secret": APP_SECRET,
-            "api_base": base,
-        }),
+        config,
         bridge,
         data_dir.to_path_buf(),
         sessions,
@@ -1060,4 +1082,293 @@ async fn a_duplicate_delivery_is_answered_without_touching_the_agent_twice() {
         1
     );
     assert_eq!(read_receipts(&recorded).len(), 1);
+}
+
+// ─── The webhook listener ───────────────────────────────────────────────────
+
+/// A port nothing is bound to right now, so the provider's own listener can
+/// take it. The window between releasing and rebinding is microseconds, and a
+/// loss would surface as `run` failing to bind rather than as a silent pass.
+fn free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    listener.local_addr().expect("local_addr").port()
+}
+
+/// The first response, retrying until the server has come up.
+async fn get_when_listening(client: &reqwest::Client, url: &str) -> reqwest::Response {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match client.get(url).send().await {
+            Ok(response) => return response,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the webhook never listened: {error}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_echoes_the_challenge_and_admits_only_signed_deliveries() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::json(&messages_path(), 200, "{}")]).await;
+    let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
+    let port = free_port();
+    let ctx = ctx_with_agent_config(
+        &grpc,
+        &base,
+        &crate::test_support::temp_dir("whatsapp-run"),
+        json!({ "webhook": { "addr": format!("127.0.0.1:{port}"), "path": "/hooks/whatsapp" } }),
+    );
+    let task = {
+        let ctx = ctx.clone();
+        tokio::spawn(async move { Whatsapp.run(ctx).await })
+    };
+    let url = format!("http://127.0.0.1:{port}/hooks/whatsapp");
+    let client = reqwest::Client::new();
+
+    // The one-time endpoint verification: the challenge comes back as plain
+    // text, which is what marks the subscription verified at the platform.
+    let verified = get_when_listening(
+        &client,
+        &format!("{url}?hub.mode=subscribe&hub.verify_token={VERIFY_TOKEN}&hub.challenge=abc123"),
+    )
+    .await;
+    assert_eq!(verified.status(), 200);
+    assert_eq!(verified.text().await.unwrap(), "abc123");
+    // A wrong token never sees the challenge.
+    let refused = client
+        .get(format!(
+            "{url}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=abc123"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+
+    // A delivery nobody signed is refused before it is parsed, so it never
+    // becomes a prompt.
+    let body = serde_json::to_vec(&delivery(vec![live_message("wamid.RUN-1", "hello")])).unwrap();
+    let unsigned = client.post(&url).body(body.clone()).send().await.unwrap();
+    assert_eq!(unsigned.status(), 401);
+    assert_eq!(
+        crate::test_support::recorded_of(&state, "new_session").len(),
+        0
+    );
+
+    // The same delivery signed with the app secret is answered immediately and
+    // then, off the request, runs the turn.
+    let signed = client
+        .post(&url)
+        .header("x-hub-signature-256", sign(APP_SECRET, &body))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(signed.status(), 200);
+    let delivered = crate::test_support::wait_until(
+        || crate::test_support::recorded_of(&state, "new_session").len() == 1,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert!(delivered, "the signed delivery never reached the agent");
+    assert!(
+        crate::test_support::wait_until(
+            || !read_receipts(&recorded).is_empty(),
+            std::time::Duration::from_secs(5),
+        )
+        .await,
+        "an accepted message is marked read"
+    );
+
+    ctx.shutdown().notify_waiters();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+    assert!(stopped.is_ok(), "run() must return on shutdown");
+    assert!(stopped.unwrap().unwrap().is_ok());
+}
+
+// ─── The remaining rejection paths ──────────────────────────────────────────
+
+#[test]
+fn a_change_without_a_value_contributes_no_messages() {
+    // A change the platform sent without a value carries nothing to parse, but
+    // the entries beside it still produce their messages.
+    let body = json!({
+        "entry": [
+            { "id": "WABA-ID", "changes": [{ "field": "messages" }] },
+            {
+                "id": "WABA-ID",
+                "changes": [{
+                    "field": "messages",
+                    "value": { "messages": [text_message("wamid.NOVALUE", "still here")] },
+                }],
+            },
+        ],
+    });
+    let parsed = parse_deliveries(&body);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].text, "still here");
+}
+
+#[test]
+fn a_recipient_that_cannot_receive_is_named_in_the_error() {
+    let body = json!({
+        "error": { "message": "Message undeliverable", "type": "OAuthException", "code": 131026 }
+    })
+    .to_string();
+    let error = send_error("messages", &response(400, &body)).to_string();
+    assert!(error.contains("permanent"), "{error}");
+    assert!(error.contains("cannot receive"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_reaction_is_reported() {
+    let body = json!({ "error": { "message": "Reaction not allowed", "code": 100 } }).to_string();
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(&messages_path(), 400, &body)]).await;
+    let sender = sender_against(&base);
+    let error = sender
+        .react(&conversation(), "wamid.REACT", "👍")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("reaction"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_read_receipt_is_reported() {
+    let body =
+        json!({ "error": { "message": "Unsupported post request", "code": 100 } }).to_string();
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(&messages_path(), 400, &body)]).await;
+    let sender = sender_against(&base);
+    let error = sender.mark_read("wamid.RECEIPT").await.unwrap_err();
+    assert!(error.to_string().contains("mark read"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_media_download_that_fails_keeps_the_reference() {
+    // The lookup succeeds but the signed CDN URL behind it does not.
+    let (cdn, _cdn_recorded) = spawn_http(vec![HttpRoute::json("/cdn/gone", 500, "{}")]).await;
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/v21.0/MEDIA-5",
+        200,
+        &json!({ "url": format!("{cdn}/cdn/gone"), "mime_type": "image/jpeg" }).to_string(),
+    )])
+    .await;
+    let sender = sender_against(&base);
+    let mut media = vec![MediaRef {
+        kind: MediaKind::Image,
+        url: Some("wa-media:MEDIA-5".into()),
+        ..MediaRef::default()
+    }];
+    sender.hydrate(&mut media).await;
+    assert!(media[0].data.is_none(), "no bytes came back");
+    assert_eq!(media[0].url.as_deref(), Some("wa-media:MEDIA-5"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_attachment_is_refused() {
+    // One byte past the limit the provider will hand to the model.
+    let (cdn, _cdn_recorded) = spawn_http(vec![HttpRoute::binary(
+        "/cdn/huge",
+        200,
+        vec![b'x'; MAX_DOWNLOAD_BYTES + 1],
+    )])
+    .await;
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        "/v21.0/MEDIA-6",
+        200,
+        &json!({ "url": format!("{cdn}/cdn/huge") }).to_string(),
+    )])
+    .await;
+    let sender = sender_against(&base);
+    let error = sender.fetch_media("MEDIA-6").await.unwrap_err();
+    assert!(error.to_string().contains("above the"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_provider_builds_a_working_sender() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        &messages_path(),
+        200,
+        &ok_send_body("wamid.SENDER"),
+    )])
+    .await;
+    let ctx = ctx_with_config(json!({
+        "enabled": true,
+        "phone_number_id": PHONE_NUMBER_ID,
+        "access_token": "tok",
+        "api_base": base,
+    }));
+    let sender = Whatsapp.sender(&ctx).unwrap();
+    assert_eq!(sender.definition().id, "whatsapp");
+    // The sender carries the configuration it was built from.
+    assert_eq!(
+        sender
+            .send_text(&conversation(), "hi")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("wamid.SENDER")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probing_a_number_without_a_display_number_is_a_failure() {
+    let (base, _recorded) = spawn_http(vec![HttpRoute::json(
+        &format!("/v21.0/{PHONE_NUMBER_ID}"),
+        200,
+        r#"{"verified_name":"Acme Support"}"#,
+    )])
+    .await;
+    let ctx = ctx_with_config(json!({
+        "enabled": true,
+        "phone_number_id": PHONE_NUMBER_ID,
+        "access_token": "tok",
+        "api_base": base,
+    }));
+    let error = Whatsapp.probe(&ctx).await.unwrap_err();
+    assert!(
+        error.to_string().contains("display_phone_number"),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_receipt_that_is_refused_does_not_fail_the_turn() {
+    use std::sync::Arc;
+    let (base, recorded) = spawn_http(vec![HttpRoute::json(
+        &messages_path(),
+        500,
+        r#"{"error":{"message":"boom","code":1}}"#,
+    )])
+    .await;
+    let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
+    let ctx = ctx_with_agent(
+        &grpc,
+        &base,
+        &crate::test_support::temp_dir("whatsapp-receipt-fail"),
+    );
+    let sender = Arc::new(WhatsappSender::new(
+        reqwest::Client::new(),
+        &config_with_base(&base),
+    ));
+
+    deliver(
+        &ctx,
+        &sender,
+        delivery(vec![live_message("wamid.RECEIPT-FAIL", "hello")]),
+    )
+    .await;
+    // The turn stands even though the receipt was refused: an unread badge is
+    // not worth losing an answer over.
+    assert_eq!(
+        crate::test_support::recorded_of(&state, "new_session").len(),
+        1
+    );
+    assert_eq!(
+        read_receipts(&recorded).len(),
+        1,
+        "the receipt was attempted"
+    );
 }

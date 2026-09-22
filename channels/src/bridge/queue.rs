@@ -295,6 +295,16 @@ mod tests {
         finished: StdMutex<usize>,
     }
 
+    impl RecordingSink {
+        fn superseded_count(&self) -> usize {
+            *self.superseded.lock().unwrap()
+        }
+
+        fn finished_count(&self) -> usize {
+            *self.finished.lock().unwrap()
+        }
+    }
+
     #[async_trait::async_trait]
     impl ReplySink for RecordingSink {
         async fn finish(&self, _outcome: &TurnOutcome) -> anyhow::Result<()> {
@@ -540,11 +550,8 @@ mod tests {
         }
         // The table stays within its bound and the just-submitted conversation
         // is still routed.
-        assert!(
-            conversations.len().await <= 2,
-            "{}",
-            conversations.len().await
-        );
+        let routed = conversations.len().await;
+        assert!(routed <= 2, "{routed}");
         assert!(conversations.generation("c2").await.is_some());
         gate.notify_waiters();
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -697,6 +704,27 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn the_test_sink_records_a_finish() {
+        // The double is part of the harness: a silent no-op there would let a
+        // test pass without exercising the callback it names.
+        let sink = RecordingSink::default();
+        sink.finish(&TurnOutcome::completed("x")).await.unwrap();
+        assert_eq!(sink.finished_count(), 1);
+        assert_eq!(sink.superseded_count(), 0);
+        assert_eq!(sink.finished_count(), 1);
+    }
+
+    #[test]
+    fn the_log_writer_flushes_cleanly() {
+        use std::io::Write as _;
+        let writer = Arc::new(StdMutex::new(Vec::new()));
+        let mut guard = WriterGuard(writer.clone());
+        guard.write_all(b"abc").unwrap();
+        guard.flush().unwrap();
+        assert_eq!(&*writer.lock().unwrap(), b"abc");
     }
 
     #[test]
