@@ -704,7 +704,7 @@ fn build_cli_registry() -> CommandRegistry {
             ("--text TEXT", "todo text", "required; must be non-empty"),
             ("--parent T", "parent todo id", "same goal; at most 3 levels; grouping only, not a dependency"),
             ("--priority P0|P1|P2", "priority (P0 urgent)", "defaults to P1; also prefixes the text with [P0]/[P1]/[P2]"),
-            ("--blocks T", "blocking todo ids", "comma-separated; a bare `--blocks` reads as `true` and is rejected"),
+            ("--blocks T", "ids that block THIS todo", "comma-separated; `--blocks A` means A blocks this todo, not the reverse — a bare `--blocks` reads as `true` and is rejected"),
             ("--verify CMD", "validator command", "e.g. `cargo check -p ...`; advisory for code-like todos so uncompilable work can't be marked done"),
             ("--acceptance a,b", "completion contract tokens", "evidence must contain every token (case-insensitive) before `todo complete` accepts"),
             ("--owner A", "pin the todo to agent A", "absent → shared pool any worker may claim"),
