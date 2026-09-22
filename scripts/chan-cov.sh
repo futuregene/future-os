@@ -35,6 +35,25 @@ if [ "$check" = 1 ] && [ "${#files[@]}" = 0 ]; then
   exit 2
 fi
 
+# One instrumented build per machine. Parallel workers share this checkout, and
+# several concurrent llvm-cov runs thrash the CPU and have been observed to get
+# the test binary killed mid-run. Take an exclusive lock and wait our turn.
+lock_dir="${TMPDIR:-/tmp}/future-chan-cov.lock"
+lock_wait=0
+until mkdir "$lock_dir" 2>/dev/null; do
+  lock_wait=$((lock_wait + 1))
+  if [ "$lock_wait" -gt 7200 ]; then
+    echo "chan-cov: gave up waiting for the measurement lock at $lock_dir" >&2
+    exit 3
+  fi
+  if [ "$lock_wait" = 1 ]; then
+    echo "chan-cov: another measurement is running; waiting for the lock"
+  fi
+  sleep 5
+done
+cleanup_lock() { rmdir "$lock_dir" 2>/dev/null || true; }
+trap cleanup_lock EXIT INT TERM
+
 unset CARGO_HOME CARGO_TARGET_DIR CARGO_BUILD_TARGET 2>/dev/null || true
 export PATH="$HOME/.rustup/toolchains/1.97.0-aarch64-apple-darwin/bin:$PATH"
 export HOME="$PWD/target/chan-cov-home"
