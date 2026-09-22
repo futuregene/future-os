@@ -2531,7 +2531,9 @@ impl<T: TerminalIo> App<T> {
                 Err(err) => self.add_system_message(format!("Failed to export session: {err}")),
             },
             // ── sandbox / permissions ───────────────────────────────────────
-            UiCmd::SandboxProbeRequested => self.request_sandbox_probe(SandboxPlatform::current()),
+            UiCmd::SandboxProbeRequested => {
+                self.request_sandbox_probe(Self::host_sandbox_platform())
+            }
             UiCmd::SandboxProbeLoaded { result } => match result {
                 Ok(payload) => {
                     let probe = SandboxProbe::from_probe_response(&payload);
@@ -2554,8 +2556,10 @@ impl<T: TerminalIo> App<T> {
             }
             UiCmd::SandboxPolicySet { result } => match result {
                 Ok(payload) => {
-                    let status =
-                        SandboxStatus::from_policy_response(SandboxPlatform::current(), &payload);
+                    let status = SandboxStatus::from_policy_response(
+                        Self::host_sandbox_platform(),
+                        &payload,
+                    );
                     self.update_sandbox_status(|cached| *cached = status);
                 }
                 Err(err) => {
@@ -4606,10 +4610,16 @@ fn skills_binary_missing(program: &std::path::Path) -> bool {
 /// executable to run (see [`skills_binary_missing`]). `None` is what turns
 /// "press `i`" into a sentence instead of a failed spawn.
 ///
-/// Under `cfg(test)` the answer is a CLI that *refuses to spawn anything*: the
-/// resolution above would otherwise hand a test app whatever `future` this host
-/// has on `PATH`, and a test that reaches `i`/`u`/`U` without injecting its own
-/// [`SkillsCli::with_runner`] must fail loudly rather than run a real installer.
+/// Under `cfg(test)` the answer is always a CLI that *refuses to spawn
+/// anything*: the resolution above would otherwise hand a test app whatever
+/// `future` this host has on `PATH`, and a test that reaches `i`/`u`/`U`
+/// without injecting its own [`SkillsCli::with_runner`] must fail loudly rather
+/// than run a real installer. "Always" is deliberate — keying the test build
+/// off the located binary made the whole suite depend on the host (no `future`
+/// next to the test executable and none on `PATH`, as on a CI runner, and
+/// every skill test saw the no-binary panel instead of the behaviour under
+/// test). A test that wants the missing-binary state sets
+/// [`App::skills_cli`] to `None`.
 fn skills_cli_for_host() -> Option<Arc<SkillsCli>> {
     let cli = SkillsCli::new();
     let located = !skills_binary_missing(cli.program());
@@ -4619,24 +4629,23 @@ fn skills_cli_for_host() -> Option<Arc<SkillsCli>> {
     resolved
 }
 
-/// [`skills_cli_for_host`] for the test build: the same answer, wrapped in a
-/// runner that reports a spawn attempt instead of performing one.
+/// [`skills_cli_for_host`] for the test build: a runner that reports a spawn
+/// attempt instead of performing one, offered whether or not this host has a
+/// real `future` binary.
 #[cfg(test)]
-fn test_skills_cli(resolved: Option<Arc<SkillsCli>>) -> Option<Arc<SkillsCli>> {
-    resolved.map(|_| {
-        let runner: crate::skills_cli::SkillRunner =
-            Box::new(|program: &std::path::Path, args: &[String]| {
-                Err(format!(
-                    "a test tried to spawn {} {}",
-                    program.display(),
-                    args.join(" ")
-                ))
-            });
-        Arc::new(SkillsCli::with_runner(
-            runner,
-            PathBuf::from(FUTURE_PROGRAM),
-        ))
-    })
+fn test_skills_cli(_resolved: Option<Arc<SkillsCli>>) -> Option<Arc<SkillsCli>> {
+    let runner: crate::skills_cli::SkillRunner =
+        Box::new(|program: &std::path::Path, args: &[String]| {
+            Err(format!(
+                "a test tried to spawn {} {}",
+                program.display(),
+                args.join(" ")
+            ))
+        });
+    Some(Arc::new(SkillsCli::with_runner(
+        runner,
+        PathBuf::from(FUTURE_PROGRAM),
+    )))
 }
 
 /// The `git` plumbing `/worktree` uses on this host.
@@ -6254,7 +6263,25 @@ impl<T: TerminalIo> App<T> {
     /// and Windows need an RPC to learn the answer — macOS has Seatbelt by
     /// construction and an unsupported platform is definitive too.
     fn show_sandbox(&mut self) {
-        self.open_sandbox_panel(SandboxPlatform::current());
+        self.open_sandbox_panel(Self::host_sandbox_platform());
+    }
+
+    /// The platform the sandbox panel assumes this process runs on. One place
+    /// to override: `show_sandbox`, `show_permission`, the probe request and
+    /// the status reconstruction all read it, so a test pinning the platform
+    /// stays consistent across the whole panel lifecycle. Pinned to macOS in
+    /// the test build — the platform whose copy most panel tests assert — so
+    /// the assertions hold on a Linux CI host the same way they do on a
+    /// developer's Mac.
+    #[cfg(test)]
+    fn host_sandbox_platform() -> SandboxPlatform {
+        SandboxPlatform::Macos
+    }
+
+    /// The real platform outside tests.
+    #[cfg(not(test))]
+    fn host_sandbox_platform() -> SandboxPlatform {
+        SandboxPlatform::current()
     }
 
     /// [`Self::show_sandbox`] for an explicit platform: the parameter is what
@@ -6330,7 +6357,7 @@ impl<T: TerminalIo> App<T> {
             // byte-identical panel read as a bug, and this is the difference
             // worth showing — nothing is hidden either way, `↑` still walks
             // into the tier list.
-            self.open_sandbox_card(SandboxPlatform::current(), SandboxFocus::Permissions);
+            self.open_sandbox_card(Self::host_sandbox_platform(), SandboxFocus::Permissions);
             return;
         }
         match PermissionKind::from_wire(arg) {
@@ -6504,7 +6531,7 @@ impl<T: TerminalIo> App<T> {
         let mut status = self
             .sandbox
             .clone()
-            .unwrap_or_else(|| SandboxStatus::new(SandboxPlatform::current()));
+            .unwrap_or_else(|| SandboxStatus::new(Self::host_sandbox_platform()));
         update(&mut status);
         self.sandbox = Some(status.clone());
         if let Some(overlay) = self.top_sandbox_overlay() {
@@ -7094,13 +7121,20 @@ impl<T: TerminalIo> App<T> {
     /// one, attaching a path that names an image). Only a clipboard with
     /// neither, or a clipboard tool that cannot be started, produces a notice.
     fn paste_clipboard(&mut self) {
+        self.paste_clipboard_for_os(std::env::consts::OS);
+    }
+
+    /// [`Self::paste_clipboard`] against an explicit OS: the parameter lets a
+    /// test pin the platform (and therefore the probe command names) regardless
+    /// of the host it runs on.
+    fn paste_clipboard_for_os(&mut self, os: &str) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_millis() as u64)
             .unwrap_or(0);
-        let outcome =
-            self.clipboard_capture
-                .capture(std::env::consts::OS, std::process::id(), now_ms);
+        let outcome = self
+            .clipboard_capture
+            .capture(os, std::process::id(), now_ms);
         match outcome {
             crate::paste::ClipboardPaste::Image { path, .. } => self.input.insert_text(&path),
             crate::paste::ClipboardPaste::Text(text) => self.input.insert_text(&text),
@@ -14235,17 +14269,24 @@ mod tests {
     }
 
     /// A clipboard whose writes are recorded instead of spawning a real
-    /// `pbcopy`/`xclip`.
+    /// `pbcopy`/`xclip`. The candidate list is a single synthetic program, not
+    /// the host's own: a real candidate list is host-dependent (a Linux CI
+    /// runner without X11/Wayland has none, and `copy()` would then take the
+    /// OSC 52 fallback and record nothing), while an empty one would skip the
+    /// native path everywhere. The OSC 52 fallback has its own test
+    /// ([`copy_without_a_native_backend_requests_osc52`]).
     fn recording_clipboard(
         log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     ) -> crate::clipboard::Clipboard {
         let sink = std::sync::Arc::clone(log);
-        crate::clipboard::Clipboard::with_runner(Box::new(
-            move |program: &str, _args: &[String], input: &str| {
+        crate::clipboard::Clipboard::with_parts(
+            Box::new(move |program: &str, _args: &[String], input: &str| {
                 sink.lock().unwrap().push(format!("{program}:{input}"));
                 Ok(())
-            },
-        ))
+            }),
+            vec![("recorder".to_string(), Vec::new())],
+            false,
+        )
     }
 
     /// Snapshot of the recorded clipboard writes.
@@ -20602,6 +20643,13 @@ mod tests {
         PathBuf::from(&rest[..end])
     }
 
+    /// The platform the clipboard-paste tests pin: macOS, whose probe commands
+    /// (`osascript`/`pbpaste`) are the names the scripted clipboard answers.
+    /// Pinning keeps the assertions identical on a Linux CI host, where the
+    /// real probes would be `wl-paste`/`xclip` and the assertions would not
+    /// hold.
+    const CLIPBOARD_TEST_OS: &str = "macos";
+
     /// A clipboard reader backed by a scripted runner: the image probe writes
     /// `bytes` to the path it names (nothing for empty `bytes`), the text tool
     /// answers `text`. No test here ever runs a real clipboard program.
@@ -20650,7 +20698,7 @@ mod tests {
         let (capture, programs) = scripted_clipboard(dir.path(), &clipboard_png(), "never read");
         app.clipboard_capture = capture;
 
-        app.handle_key(Key::CTRL_V);
+        app.paste_clipboard_for_os(CLIPBOARD_TEST_OS);
 
         // The image became an attachment behind a marker — the P1 mechanism,
         // numbering and all — and its file is still where the agent will read
@@ -20688,7 +20736,7 @@ mod tests {
         let (capture, programs) = scripted_clipboard(dir.path(), &clipboard_png(), "never read");
         app.clipboard_capture = capture;
 
-        app.handle_key("super+v");
+        app.paste_clipboard_for_os(CLIPBOARD_TEST_OS);
 
         assert_eq!(app.input.get_value(), "[Image #1]");
         assert_eq!(app.input.take_pending().attachments().len(), 1);
@@ -20721,7 +20769,7 @@ mod tests {
         let (capture, programs) = scripted_clipboard(dir.path(), &[], "a line from the clipboard");
         app.clipboard_capture = capture;
 
-        app.handle_key(Key::CTRL_V);
+        app.paste_clipboard_for_os(CLIPBOARD_TEST_OS);
 
         assert_eq!(app.input.get_value(), "a line from the clipboard");
         assert!(app.input.take_pending().attachments().is_empty());
@@ -20766,7 +20814,7 @@ mod tests {
         );
         app.clipboard_capture = capture;
 
-        app.handle_key(Key::CTRL_V);
+        app.paste_clipboard_for_os(CLIPBOARD_TEST_OS);
 
         assert!(app.input.get_value().is_empty());
         let message = last_system(&app);
