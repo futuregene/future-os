@@ -22,7 +22,11 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::bridge::{ChatKind, ConversationRef, Inbound, ProviderCtx, SenderRef};
+use crate::bridge::{ConversationRef, ProviderCtx};
+// These three are only reached from the macOS-gated implementation, so importing
+// them unconditionally is an unused-import error on every other platform.
+#[cfg(target_os = "macos")]
+use crate::bridge::{ChatKind, Inbound, SenderRef};
 use crate::providers::traits::{
     Capabilities, ChannelDefinition, ChannelSender, Maturity, Provider,
 };

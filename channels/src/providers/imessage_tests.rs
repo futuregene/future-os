@@ -401,8 +401,10 @@ mod unsupported {
             )),
             base.shutdown().clone(),
         );
+        // `Arc<dyn ChannelSender>` has no Debug, so map the Ok side away first.
         let error = IMessage
             .sender(&ctx)
+            .map(|_| ())
             .expect_err("sender must refuse off macOS");
         assert!(error.to_string().contains("macOS"), "{error}");
 
