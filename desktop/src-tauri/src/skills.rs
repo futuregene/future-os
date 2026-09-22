@@ -6,7 +6,9 @@
 //! zip into a local skill directory; uninstall removes it. The *installed* list
 //! shown in the UI comes from the agent's `get_commands` (see
 //! [`crate::agent_bridge::list_installed_skills`]), not from here — this module
-//! only supplies version enrichment and the filesystem mutations.
+//! only supplies version enrichment and the filesystem mutations. Install and
+//! uninstall outcomes are also recorded in agent.db's skill registry
+//! ([`crate::skills_registry`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -242,7 +244,12 @@ static MANAGEMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new((
 
 pub async fn install_and_refresh(id: String, version: String) -> Result<(), AppError> {
     let _guard = MANAGEMENT_LOCK.lock().await;
-    install_skill(id, version).await?;
+    install_skill(id.clone(), version.clone()).await?;
+    // Registry bookkeeping after the filesystem transaction committed — an
+    // explicit install also clears any uninstall tombstone.
+    tokio::task::spawn_blocking(move || crate::skills_registry::record_installed(&id, &version))
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))??;
     crate::agent_bridge::refresh_skills().await;
     crate::agent_events::publish_invalidation("skills_changed");
     Ok(())
@@ -250,6 +257,18 @@ pub async fn install_and_refresh(id: String, version: String) -> Result<(), AppE
 
 pub async fn uninstall_and_refresh(id: String) -> Result<bool, AppError> {
     let _guard = MANAGEMENT_LOCK.lock().await;
+    // Record the tombstone BEFORE the sweep: once the directories are gone
+    // nothing on disk proves the skill was ever installed, so a crash between
+    // the two steps must not lose the "do not auto-install" mark. A failure
+    // aborts with the files untouched, ready for a retry.
+    {
+        let id_for_record = id.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::skills_registry::record_uninstalled(&id_for_record)
+        })
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))??;
+    }
     let removed = tokio::task::spawn_blocking(move || uninstall_skill(&id))
         .await
         .map_err(|error| AppError::Message(error.to_string()))??;

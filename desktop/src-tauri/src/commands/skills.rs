@@ -136,6 +136,9 @@ mod tests {
 
     #[tokio::test]
     async fn uninstall_skill_rejects_invalid_ids_and_removes_installed() {
+        // The uninstall path records a registry tombstone under the FutureOS
+        // home — isolate it from the developer's real agent.db.
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-uninstall-ghost");
         // Invalid id is rejected before touching the filesystem.
         assert!(uninstall_skill("../evil".into()).await.is_err());
         // A valid id with nothing installed reports "nothing removed".
@@ -206,6 +209,22 @@ mod tests {
         cursor.into_inner()
     }
 
+    /// The (version, deleted) registry row for `id` in the isolated home's
+    /// agent.db, or `None` when the skill has no row.
+    fn registry_row(id: &str) -> Option<(Option<String>, bool)> {
+        let connection = rusqlite::Connection::open(
+            crate::auth_store::agent_dir().unwrap().join("agent.db"),
+        )
+        .expect("open agent.db");
+        connection
+            .query_row(
+                "SELECT version, deleted FROM skills WHERE name = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .ok()
+    }
+
     #[tokio::test]
     async fn install_skill_success_refreshes_the_agent() {
         let _lock = mock_agent_lock();
@@ -225,6 +244,11 @@ mod tests {
         install_skill("acme".into(), "1.0".into())
             .await
             .expect("install");
+        assert_eq!(
+            registry_row("acme"),
+            Some((Some("1.0".to_string()), false)),
+            "install recorded in the registry"
+        );
         script_mock_agent(MockScript::default());
     }
 
@@ -245,6 +269,11 @@ mod tests {
 
         let removed = uninstall_skill("acme".into()).await.expect("uninstall");
         assert!(removed);
+        assert_eq!(
+            registry_row("acme"),
+            Some((None, true)),
+            "uninstall left a tombstone"
+        );
         script_mock_agent(MockScript::default());
     }
 }
