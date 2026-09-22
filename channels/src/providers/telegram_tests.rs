@@ -1593,29 +1593,35 @@ async fn the_plain_edit_retry_reports_a_transport_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_webhook_with_default_addr_fails_cleanly_when_the_port_is_taken() {
+async fn a_webhook_whose_address_is_already_taken_fails_cleanly() {
     let (base, _recorded) = spawn_http(vec![HttpRoute::json(
         "/bottok/getMe",
         200,
         r#"{"ok":true,"result":{"id":9,"is_bot":true,"username":"mybot"}}"#,
     )])
     .await;
-    let dir = crate::test_support::temp_dir("tg-webhook-default");
-    // No webhook block at all: addr/path take their defaults. 127.0.0.1:8787
-    // is held by a local service on this machine, so the bind fails and run
-    // returns the error instead of hanging or panicking.
+    // Hold the port ourselves instead of assuming a fixed one is taken: the
+    // default 127.0.0.1:8787 is free on a clean machine, so a test that relied
+    // on a local service holding it passed on a developer's box and failed in CI.
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port to hold");
+    let taken = held.local_addr().expect("local_addr");
+    let dir = crate::test_support::temp_dir("tg-webhook-taken");
     let ctx = ctx_with_config(
-        "tg-webhook-default",
+        "tg-webhook-taken",
         json!({
             "enabled": true,
             "bot_token": "tok",
             "api_base": base,
-            "mode": "webhook"
+            "mode": "webhook",
+            "webhook": { "addr": taken.to_string(), "path": "/telegram" }
         }),
         &dir,
     );
     let result = tokio::time::timeout(Duration::from_secs(10), Telegram.run(ctx)).await;
     let outcome = result.expect("run must return promptly");
-    let error = outcome.expect_err("the taken default port must fail the bind");
-    assert!(error.to_string().contains("8787"), "{error}");
+    let error = outcome.expect_err("a taken port must fail the bind");
+    assert!(
+        error.to_string().contains(&taken.port().to_string()),
+        "{error}"
+    );
 }
