@@ -171,8 +171,6 @@ future loop status        # loop 控制面：goal/todo/gate
 
 ```bash
 future session list
-future session new [--parent <id>] [--title <name>] [--cwd <dir>]
-                   [--model <id>] [--thinking <level>]
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id>
@@ -180,9 +178,8 @@ future session rename <id> <name>
 future session delete <id>
 ```
 
-`new` 建会话并打印新会话 ID（可交给 `future run --session <id>`）；`set` 则修改**已有**会话的
-这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。`--parent` 只记录会话谱系，
-不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
+`set` 修改**已有**会话的这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。
+`--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
 
 标题与 cwd 在会话已有记录（即已经跑过一次）时立即写入；全新会话则在首次运行时一并落盘。模型与思考
 等级属于运行快照，随下一次运行写入记录。`future run` 启动时会用自己的 `--cwd`（默认当前目录）覆盖会话 cwd，

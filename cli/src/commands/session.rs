@@ -1,9 +1,9 @@
 //! `future session` — 1:1 port of cli/src/commands/session.ts.
 //!
-//! list / new / info / rename / delete agent sessions via gRPC.
+//! list / set / info / rename / delete agent sessions via gRPC.
 
 use crate::output::Output;
-use crate::rpc::{grpc_addr, NewSessionOptions, RunClient};
+use crate::rpc::{grpc_addr, RunClient};
 #[cfg(test)]
 use chrono::TimeZone;
 use serde_json::{json, Value};
@@ -15,8 +15,7 @@ pub const SESSION_HELP: &str = "future session — manage agent sessions
 
 Usage:
   future session list [--json]                       List all sessions
-  future session new [options]                       Create a session (parent, title, cwd, model, thinking)
-  future session set <id> [options]                   Change those settings on an existing session
+  future session set <id> [options]                  Change settings on an existing session
   future session info <id>                           Show session details + stats
   future session history --help                      Search/read original history
   future session compact --help                      Request manual compaction
@@ -24,28 +23,6 @@ Usage:
   future session delete <id>                         Delete a session
 
 Session data is stored in ~/.future/agent/agent.db";
-
-/// `future session new --help`.
-pub const SESSION_NEW_HELP: &str = r#"future session new — create a session
-
-Usage:
-  future session new [options]
-
-Options:
-  --parent <session-id>   Record an existing session as this session's parent
-  --title <name>          Initial session title (the same field as
-                          `future session rename`)
-  --cwd <dir>             Working directory for the session
-                          (default: current directory)
-  --model <id>            Model ID for the session
-                          (default: the agent's default model)
-  --thinking <level>      Thinking level: off, minimal, low, medium, high, xhigh
-  --json                  Print the created session as a JSON object
-  --help, -h              Show this help
-
-The parent must be an existing session (checked before creating); it records
-lineage only — the parent's history is not copied into the new session.
-Prints the new session ID, which `future run --session <id>` accepts."#;
 
 /// `future session set --help`.
 pub const SESSION_SET_HELP: &str = r#"future session set — change an existing session's settings
@@ -405,10 +382,10 @@ async fn delete_session(session_id: &str, out: &Output) -> Result<(), String> {
     Ok(())
 }
 
-// ─── Shared options (new / set) ───────────────────────────────────
+// ─── Set options ─────────────────────────────────────────────────────────
 
-/// Options accepted by both `future session new` and `future session set`
-/// (all optional; unset means "leave it alone").
+/// Options accepted by `future session set` (all optional; unset means "leave it
+/// alone", empty string means "clear" for `--parent`).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SessionOptions {
     parent: Option<String>,
@@ -430,16 +407,13 @@ impl SessionOptions {
     }
 }
 
-/// Parse the shared session options.
+/// Parse `future session set <id>` options (`args` excludes the target id).
 ///
-/// `Ok(None)` means help was printed; `Err` is an already-reported usage error
-/// (unlike `future run`, an unknown option is a hard failure here — silently
-/// ignoring `--parent` would record the wrong lineage).
-fn parse_session_options(
-    args: &[String],
-    help: &str,
-    out: &Output,
-) -> Result<Option<SessionOptions>, String> {
+/// `Err` is an already-reported usage error: unlike `future run`, an unknown
+/// option is a hard failure here — silently ignoring `--parent` would record the
+/// wrong lineage. `--help` is handled by the caller before the target id is
+/// known, so it never reaches this parser.
+fn parse_session_options(args: &[String], out: &Output) -> Result<SessionOptions, String> {
     let mut result = SessionOptions::default();
     let mut i = 0;
     while i < args.len() {
@@ -461,10 +435,6 @@ fn parse_session_options(
                 }
             }
             "--json" => result.json = true,
-            "--help" | "-h" => {
-                out.log(help);
-                return Ok(None);
-            }
             _ => {
                 out.log_err(&format!("Unknown option: {arg}"));
                 return Err(crate::HANDLED_EXIT.to_string());
@@ -482,95 +452,7 @@ fn parse_session_options(
             return Err(crate::HANDLED_EXIT.to_string());
         }
     }
-    Ok(Some(result))
-}
-
-/// `future session new` — create a session, optionally with a parent, a title,
-/// a working directory, a model and a thinking level.
-async fn new_session_command(args: &[String], out: &Output) -> Result<(), String> {
-    let Some(parsed) = parse_session_options(args, SESSION_NEW_HELP, out)? else {
-        return Ok(());
-    };
-    let client = RunClient::new(&grpc_addr());
-
-    // The parent must be an existing session: the agent records lineage
-    // without validating it, so a typo would leave a dangling parentSessionId.
-    // Membership is checked against list_sessions rather than
-    // get_session_entries because the latter answers an unknown ID with a
-    // confusing "pass a valid session_id" error. An empty id (e.g. an unset
-    // shell variable) means "no parent", as in `session set`.
-    if let Some(parent) = parsed.parent.as_ref().filter(|parent| !parent.is_empty()) {
-        let data = client.list_sessions().await?;
-        let known = data
-            .get("sessions")
-            .and_then(Value::as_array)
-            .map(|sessions| {
-                sessions
-                    .iter()
-                    .any(|session| session["id"].as_str() == Some(parent.as_str()))
-            })
-            .unwrap_or(false);
-        if !known {
-            out.log_err(&format!("Session not found: {parent}"));
-            return Err(crate::HANDLED_EXIT.to_string());
-        }
-    }
-
-    let cwd = parsed.cwd.clone().unwrap_or_else(|| {
-        std::env::current_dir()
-            .map(|dir| dir.display().to_string())
-            .unwrap_or_default()
-    });
-    let data = client
-        .new_session_with(&NewSessionOptions {
-            cwd: cwd.clone(),
-            parent_session: parsed.parent.clone().unwrap_or_default(),
-            name: parsed.title.clone().unwrap_or_default(),
-            model_id: parsed.model.clone().unwrap_or_default(),
-            level: parsed.thinking.clone().unwrap_or_default(),
-        })
-        .await?;
-    let session_id = data
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if session_id.is_empty() {
-        return Err("new_session returned no sessionId".to_string());
-    }
-
-    if parsed.json {
-        // Key order is insertion-independent (serde_json sorts object keys),
-        // and unset options are explicit nulls.
-        out.log(
-            &serde_json::to_string(&json!({
-                "sessionId": session_id,
-                "parentSessionId": parsed.parent,
-                "name": parsed.title,
-                "cwd": cwd,
-                "model": parsed.model,
-                "thinkingLevel": parsed.thinking,
-            }))
-            .expect("json serializes"),
-        );
-        return Ok(());
-    }
-
-    out.log(&format!("Created session {session_id}"));
-    if let Some(parent) = &parsed.parent {
-        out.log(&format!("  Parent:   {parent}"));
-    }
-    if let Some(title) = &parsed.title {
-        out.log(&format!("  Title:    {title}"));
-    }
-    out.log(&format!("  CWD:      {cwd}"));
-    if let Some(model) = &parsed.model {
-        out.log(&format!("  Model:    {model}"));
-    }
-    if let Some(level) = &parsed.thinking {
-        out.log(&format!("  Thinking: {level}"));
-    }
-    Ok(())
+    Ok(result)
 }
 
 // ─── Set ─────────────────────────────────────────────────────────────────
@@ -602,9 +484,7 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
         out.log_err("Usage: future session set <session-id> [options]");
         return Err(crate::HANDLED_EXIT.to_string());
     };
-    let Some(parsed) = parse_session_options(&args[1..], SESSION_SET_HELP, out)? else {
-        return Ok(());
-    };
+    let parsed = parse_session_options(&args[1..], out)?;
     if parsed.is_empty() {
         out.log_err(
             "Nothing to set. Pass at least one of --parent, --title, --cwd, --model, --thinking",
@@ -676,7 +556,7 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     }
 
     if parsed.json {
-        // Same camelCase field names as `session new --json`.
+        // Same camelCase field names as `session info`.
         let updated: serde_json::Map<String, Value> = applied
             .iter()
             .map(|(key, value)| (key.to_string(), Value::String(value.clone())))
@@ -711,7 +591,7 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     Err(crate::HANDLED_EXIT.to_string())
 }
 
-/// Padded label matching the `session new` / `session info` layout.
+/// Padded label matching the `session info` layout.
 fn option_label(key: &str) -> String {
     let label = match key {
         "parent" => "Parent",
@@ -754,12 +634,8 @@ pub async fn session(
         return Ok(());
     }
 
-    // `new` creates a session and `set` modifies one, so both need their own
-    // argument handling — dispatch before the `<session-id>` handling below.
-    if subcommand == "new" {
-        return new_session_command(args, out).await;
-    }
-
+    // `set` takes its options after the target id, so it does its own argument
+    // handling instead of the plain `<session-id>` path below.
     if subcommand == "set" {
         return set_session_command(args, out).await;
     }
@@ -1242,239 +1118,6 @@ mod tests {
         assert_eq!(stdout, format!("{}\n", SESSION_HELP));
     }
 
-    // ── `session new` ───────────────────────────────────────────────
-
-    fn parse_new(args: &[&str]) -> (Result<Option<SessionOptions>, String>, String, String) {
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let (out, cap) = Output::memory();
-        let result = parse_session_options(&args, SESSION_NEW_HELP, &out);
-        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        (result, stdout, stderr)
-    }
-
-    #[test]
-    fn parse_new_all_options() {
-        let (result, stdout, stderr) = parse_new(&[
-            "--parent",
-            "p-1",
-            "--title",
-            "My Title",
-            "--cwd",
-            "/work",
-            "--model",
-            "m1",
-            "--thinking",
-            "high",
-            "--json",
-        ]);
-        assert_eq!(
-            result.unwrap().unwrap(),
-            SessionOptions {
-                parent: Some("p-1".into()),
-                title: Some("My Title".into()),
-                cwd: Some("/work".into()),
-                model: Some("m1".into()),
-                thinking: Some("high".into()),
-                json: true,
-            }
-        );
-        assert_eq!((stdout.as_str(), stderr.as_str()), ("", ""));
-    }
-
-    #[test]
-    fn parse_new_defaults_and_help() {
-        // No options at all: every field unset.
-        let (result, ..) = parse_new(&[]);
-        assert_eq!(result.unwrap(), Some(SessionOptions::default()));
-
-        // --help prints the command help and stops before any RPC.
-        let (result, stdout, _) = parse_new(&["--help"]);
-        assert_eq!(result.unwrap(), None);
-        assert_eq!(stdout, format!("{}\n", SESSION_NEW_HELP));
-        let (result, stdout, _) = parse_new(&["-h"]);
-        assert_eq!(result.unwrap(), None);
-        assert_eq!(stdout, format!("{}\n", SESSION_NEW_HELP));
-    }
-
-    #[test]
-    fn parse_new_rejects_bad_values() {
-        // A flag with no value is a hard error (not silently ignored).
-        for flag in ["--parent", "--title", "--cwd", "--model", "--thinking"] {
-            let (result, _, stderr) = parse_new(&[flag]);
-            assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()), "flag {flag}");
-            assert_eq!(stderr, format!("Missing value for {flag}\n"), "flag {flag}");
-        }
-        // A trailing flag with a value still parses.
-        let (result, ..) = parse_new(&["--model", "m1"]);
-        assert_eq!(result.unwrap().unwrap().model.as_deref(), Some("m1"));
-
-        let (result, _, stderr) = parse_new(&["--thinking", "bogus"]);
-        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert_eq!(
-            stderr,
-            "Invalid thinking level: bogus. Valid: off, minimal, low, medium, high, xhigh\n"
-        );
-
-        let (result, _, stderr) = parse_new(&["--frobnicate"]);
-        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        assert_eq!(stderr, "Unknown option: --frobnicate\n");
-    }
-
-    #[tokio::test]
-    async fn new_creates_session_with_all_options() {
-        let _guard = crate::test_env::lock_env().await;
-        let mut agent = crate::test_server::MockAgent::default();
-        agent.responses.insert(
-            "list_sessions".into(),
-            "{\"sessions\":[{\"id\":\"p-1\"}]}".into(),
-        );
-        agent
-            .responses
-            .insert("new_session".into(), "{\"sessionId\":\"s-new\"}".into());
-        let (agent, _env) = mock_env(agent).await;
-
-        let (out, cap) = Output::memory();
-        session(
-            Some("new"),
-            &[
-                "--parent".into(),
-                "p-1".into(),
-                "--title".into(),
-                "My Title".into(),
-                "--cwd".into(),
-                "/work".into(),
-                "--model".into(),
-                "m1".into(),
-                "--thinking".into(),
-                "high".into(),
-            ],
-            &out,
-        )
-        .await
-        .expect("new");
-        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert_eq!(
-            stdout,
-            "Created session s-new\n  Parent:   p-1\n  Title:    My Title\n  CWD:      /work\n  Model:    m1\n  Thinking: high\n"
-        );
-
-        // The parent is validated first, then every option lands on the wire.
-        assert_eq!(agent.seen_of("list_sessions").len(), 1);
-        let created = agent.seen_of("new_session");
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].parent_session, "p-1");
-        assert_eq!(created[0].name, "My Title");
-        assert_eq!(created[0].cwd, "/work");
-        assert_eq!(created[0].model_id, "m1");
-        assert_eq!(created[0].level, "high");
-        assert_eq!(created[0].created_by, "cli");
-    }
-
-    #[tokio::test]
-    async fn new_without_options_defaults_cwd_and_json_output() {
-        let _guard = crate::test_env::lock_env().await;
-        let mut agent = crate::test_server::MockAgent::default();
-        agent
-            .responses
-            .insert("new_session".into(), "{\"sessionId\":\"s-2\"}".into());
-        let (agent, _env) = mock_env(agent).await;
-
-        let (out, cap) = Output::memory();
-        session(Some("new"), &["--json".into()], &out)
-            .await
-            .expect("new");
-        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        let parsed: Value = serde_json::from_str(&stdout).expect("json");
-        assert_eq!(parsed["sessionId"], "s-2");
-        assert!(parsed["parentSessionId"].is_null());
-        assert!(parsed["name"].is_null());
-        assert!(parsed["model"].is_null());
-        assert!(parsed["thinkingLevel"].is_null());
-        // No --cwd → the process CWD (never empty in practice).
-        let expected_cwd = std::env::current_dir().unwrap().display().to_string();
-        assert_eq!(parsed["cwd"], expected_cwd);
-
-        // No --parent → no existence probe.
-        assert!(agent.seen_of("list_sessions").is_empty());
-        assert_eq!(agent.seen_of("new_session")[0].cwd, expected_cwd);
-    }
-
-    #[tokio::test]
-    async fn new_unknown_parent_aborts_before_creating() {
-        let _guard = crate::test_env::lock_env().await;
-        let agent =
-            crate::test_server::MockAgent::respond("get_session_entries", "{\"entries\":[]}");
-        let (agent, _env) = mock_env(agent).await;
-
-        let (out, cap) = Output::memory();
-        let result = session(Some("new"), &["--parent".into(), "ghost".into()], &out).await;
-        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
-        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
-        assert_eq!(stderr, "Session not found: ghost\n");
-        assert!(agent.seen_of("new_session").is_empty());
-    }
-
-    #[tokio::test]
-    async fn new_missing_session_id_and_rpc_failure_propagate() {
-        let _guard = crate::test_env::lock_env().await;
-        // Agent answers without a sessionId.
-        let agent = crate::test_server::MockAgent::respond("new_session", "{}");
-        let (_agent, _env) = mock_env(agent).await;
-        let (out, _cap) = Output::memory();
-        let err = session(Some("new"), &[], &out).await.unwrap_err();
-        assert_eq!(err, "new_session returned no sessionId");
-        drop(_env);
-
-        // Transport/RPC failure propagates untouched (catch prints it).
-        let mut agent = crate::test_server::MockAgent::default();
-        agent.fail_types.insert("new_session".into());
-        let (_agent, _env) = mock_env(agent).await;
-        let (out, _cap) = Output::memory();
-        assert!(session(Some("new"), &[], &out).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn new_with_empty_parent_creates_without_lineage() {
-        let _guard = crate::test_env::lock_env().await;
-        let mut agent = crate::test_server::MockAgent::default();
-        agent
-            .responses
-            .insert("new_session".into(), "{\"sessionId\":\"s-e\"}".into());
-        let (agent, _env) = mock_env(agent).await;
-
-        // `--parent "$UNSET_VAR"` must mean "no parent", not "look up an empty
-        // session id" (which reported `Session not found: `).
-        let (out, _cap) = Output::memory();
-        session(
-            Some("new"),
-            &[
-                "--parent".into(),
-                String::new(),
-                "--title".into(),
-                "T".into(),
-            ],
-            &out,
-        )
-        .await
-        .expect("new");
-        assert!(agent.seen_of("list_sessions").is_empty());
-        let created = agent.seen_of("new_session");
-        assert_eq!(created[0].parent_session, "");
-        assert_eq!(created[0].name, "T");
-    }
-
-    #[tokio::test]
-    async fn new_help_runs_without_an_agent() {
-        // --help must not need the agent (no env override → no connection).
-        let (out, cap) = Output::memory();
-        session(Some("new"), &["--help".into()], &out)
-            .await
-            .expect("help");
-        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
-        assert_eq!(stdout, format!("{}\n", SESSION_NEW_HELP));
-    }
-
     // ── `session set` ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -1767,12 +1410,38 @@ mod tests {
         assert!(agent.seen_of("set_session_name").is_empty());
     }
 
+    #[test]
+    fn parse_session_options_requires_values_and_rejects_unknowns() {
+        // A flag with no value is a hard error (not silently ignored).
+        for flag in ["--parent", "--title", "--cwd", "--model", "--thinking"] {
+            let (out, cap) = Output::memory();
+            let result = parse_session_options(&[flag.to_string()], &out);
+            assert!(result.is_err(), "flag {flag}");
+            let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+            assert_eq!(stderr, format!("Missing value for {flag}\n"), "flag {flag}");
+        }
+    }
+
     #[tokio::test]
-    async fn session_help_lists_new_and_set() {
-        assert!(SESSION_HELP.contains("future session new [options]"));
+    async fn session_help_documents_set() {
         assert!(SESSION_HELP.contains("future session set <id> [options]"));
-        assert!(SESSION_NEW_HELP.contains("--parent <session-id>"));
+        assert!(SESSION_HELP.contains("Change settings on an existing session"));
+        // The removed create-session subcommand must not resurface in the help.
+        assert!(!SESSION_HELP.contains("future session new"));
         assert!(SESSION_SET_HELP.contains("future session set <session-id> [options]"));
+    }
+
+    #[tokio::test]
+    async fn session_new_is_gone() {
+        // The subcommand was removed: an agent-less run must fail as an unknown
+        // command, without touching the agent.
+        let (out, cap) = Output::memory();
+        let result = session(Some("new"), &["--title".into(), "T".into()], &out).await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert_eq!(stderr, "Unknown command: new\n");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.starts_with("future session — manage agent sessions"));
     }
 
     #[tokio::test]
