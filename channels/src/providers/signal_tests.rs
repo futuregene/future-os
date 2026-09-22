@@ -496,6 +496,25 @@ fn an_unclassified_status_falls_back_to_the_shared_http_rule() {
     assert_eq!(classify_failure(502, "bad gateway"), ErrorClass::Transient);
 }
 
+#[test]
+fn a_classified_failure_is_readable_by_the_delivery_queue() {
+    // The queue stores the message text and nothing else, so a classification
+    // the provider stamped has to survive as text or it is lost: a permanent
+    // 404 whose body says "no such route" shares no words with the queue's own
+    // patterns, and would otherwise be retried until the attempt cap.
+    let permanent = describe_failure("send", &classify(404, "no such route"));
+    assert!(
+        crate::delivery::is_permanent_error(&permanent.to_string()),
+        "{permanent}"
+    );
+
+    let transient = describe_failure("send", &classify(503, "daemon busy"));
+    assert!(
+        !crate::delivery::is_permanent_error(&transient.to_string()),
+        "a retryable failure must stay retryable: {transient}"
+    );
+}
+
 // ─── sending ───────────────────────────────────────────────────────────────
 
 #[tokio::test]

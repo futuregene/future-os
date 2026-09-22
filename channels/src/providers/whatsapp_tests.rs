@@ -754,6 +754,16 @@ fn an_unclassified_error_falls_back_to_the_http_status() {
         bad_request.to_string().contains("permanent"),
         "{bad_request}"
     );
+    // The queue keeps only text: without reading the label back, a permanent
+    // 400 would be retried until the attempt cap.
+    assert!(
+        crate::delivery::is_permanent_error(&bad_request.to_string()),
+        "{bad_request}"
+    );
+    assert!(
+        !crate::delivery::is_permanent_error(&unavailable.to_string()),
+        "a 500 must stay retryable: {unavailable}"
+    );
 
     // A 401 with no body still yields a message an operator can act on.
     let unauthorized = send_error("messages", &response(401, ""));

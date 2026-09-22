@@ -549,10 +549,7 @@ fn send_error(action: &str, response: &HttpResponse) -> anyhow::Error {
     let class = code
         .and_then(classify_error_code)
         .unwrap_or_else(|| response.class());
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     let retry = match retry_after_hint(response) {
         Some(seconds) => format!(", retry after {seconds}s"),
         None => String::new(),

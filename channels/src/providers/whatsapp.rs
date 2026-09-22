@@ -457,10 +457,7 @@ fn send_error(action: &str, response: &HttpResponse) -> anyhow::Error {
         Some(190) => " (the access token is invalid or expired)",
         _ => "",
     };
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     anyhow!(
         "whatsapp `{action}` rejected ({label}): {}{hint}",
         response.error_message()

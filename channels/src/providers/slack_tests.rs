@@ -400,6 +400,34 @@ async fn check_ok_rejects_the_200_with_ok_false_envelope() {
     assert!(message.contains("permanent"), "{message}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_permanent_api_error_is_readable_by_the_delivery_queue() {
+    // The durable queue stores the message text and nothing else. A code like
+    // `token_revoked` shares no words with the queue's own patterns, so the
+    // classification the provider already made has to travel in the text:
+    // without that, a revoked token is retried until the attempt cap.
+    for (code, permanent) in [("token_revoked", true), ("ratelimited", false)] {
+        let (base, _) =
+            crate::test_support::spawn_http(vec![crate::test_support::HttpRoute::json(
+                "/auth.test",
+                200,
+                &format!(r#"{{"ok":false,"error":"{code}"}}"#),
+            )])
+            .await;
+        let api = api_for(&base);
+        let error = match auth_identity(&api).await {
+            Ok(_) => panic!("an ok:false envelope must fail"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert_eq!(
+            crate::delivery::is_permanent_error(&message),
+            permanent,
+            "{code} must reach the queue's permanence decision as {permanent}: {message}"
+        );
+    }
+}
+
 // ── Webhook signature verification ──────────────────────────────────────────
 
 #[test]

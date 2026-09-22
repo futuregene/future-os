@@ -299,11 +299,8 @@ fn check_ok(method: &str, response: &HttpResponse) -> Result<()> {
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("unknown_error");
-        let class = match classify_api_error(error, response.status) {
-            ErrorClass::Permanent => "permanent",
-            ErrorClass::Transient => "transient",
-        };
-        bail!("{method}: {error} ({class} error)");
+        let class = classify_api_error(error, response.status);
+        bail!("{method}: {error} ({} error)", class.label());
     }
     Ok(())
 }

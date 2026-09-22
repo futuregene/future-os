@@ -865,6 +865,16 @@ fn an_unclassified_error_falls_back_to_the_http_status() {
         bad_request.to_string().contains("permanent"),
         "{bad_request}"
     );
+    // The queue keeps the message text, so the label is the only thing that
+    // tells it a 400 with an empty body is not worth retrying.
+    assert!(
+        crate::delivery::is_permanent_error(&bad_request.to_string()),
+        "{bad_request}"
+    );
+    assert!(
+        !crate::delivery::is_permanent_error(&unavailable.to_string()),
+        "a 500 must stay retryable: {unavailable}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

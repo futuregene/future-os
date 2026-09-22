@@ -37,21 +37,21 @@ python3 scripts/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
 
 在通道 crate 上测得。共 22 行，分四组。
 
-### 环境所致（7）
+### 环境所致（8）
 
 | 行 | 为何测试无法执行 |
 |---|---|
 | `transport/webhook.rs` 149–151 | `accept()` 失败分支。需要监听套接字坏掉或进程耗尽文件描述符——无法在进程内确定性复现；强行制造（耗尽 fd）又会拖累并行运行的其他测试。 |
 | `providers/imessage.rs` 282 | `sender()` 的 `!platform_supported()` 分支。覆盖在 macOS 上测量，该判断恒真。 |
 | `providers/imessage.rs` 391 | `send()` 在 `run_osascript` 之后的收尾。走到它会真的执行 `osascript`，发出真实 iMessage。 |
-| `providers/slack.rs` 937–939 | `#[cfg(not(test))] webhook_test_slot`。被测量的产物是测试构建，这段本身不在其中。 |
+| `providers/slack.rs` 934–936 | `#[cfg(not(test))] webhook_test_slot`。被测量的产物是测试构建，这段本身不在其中。 |
 
 ### 构造上不可达（4）
 
 | 行 | 原因 |
 |---|---|
-| `providers/slack.rs` 736、`providers/mattermost.rs` 527 | `let Some(message) = stream.next() else { bail!("… closed by the platform") }`。已用实验验证：服务端**不发**关闭帧直接断开时，流并不会结束——客户端在读取分支报 `Err(Protocol(ResetWithoutClosingHandshake))`；正常关闭则得到 `Ok(Close)`，由它自己的分支退出。因此这一 `None` 分支经由该客户端不可达；保留是因为 `Stream::next` 的类型是 `Option`。 |
-| `providers/slack.rs` 979 | 测试专用助手里的 `unreachable!("tests dial plain ws only")`：测试传给它的是明文套接字，TLS 分支取不到。 |
+| `providers/slack.rs` 733、`providers/mattermost.rs` 527 | `let Some(message) = stream.next() else { bail!("… closed by the platform") }`。已用实验验证：服务端**不发**关闭帧直接断开时，流并不会结束——客户端在读取分支报 `Err(Protocol(ResetWithoutClosingHandshake))`；正常关闭则得到 `Ok(Close)`，由它自己的分支退出。因此这一 `None` 分支经由该客户端不可达；保留是因为 `Stream::next` 的类型是 `Option`。 |
+| `providers/slack.rs` 976 | 测试专用助手里的 `unreachable!("tests dial plain ws only")`：测试传给它的是明文套接字，TLS 分支取不到。 |
 | `outbox.rs` 210 | `Outbox::context` 中"未实现"的守卫。按 id 解析通道要经过注册表，而注册表不带任何 planned 通道，所以守卫不会触发。同一守卫在启动器里**是**被覆盖的——那里可以直接把定义传进去（见下）。 |
 
 ### 顺序与环境（1）
@@ -60,7 +60,7 @@ python3 scripts/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
 |---|---|
 | `providers/mattermost.rs` 552 | 在"读到帧"与"写回回复"之间死掉的套接字上写 pong。测试台无法给这两件事排序：事先已死的套接字会先在认证写入处失败（已覆盖）；会话正在读取时到达的 RST 又先由读取分支报出。现有的 reset 测试断言了同样的用户可见结果（会话报告套接字不可写）。 |
 
-### 归属假象（10）
+### 归属假象（9）
 
 以下都是大括号或 span 结尾；相邻语句已被表中所列测试覆盖。
 
@@ -69,7 +69,7 @@ python3 scripts/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
 | `lib.rs` 172–173、190–191 | 飞书与钉钉 supervisor 的 `inspect_err` 闭包 | 两个桥在出错时重试、在关停时返回 `Ok`，所以该闭包只在桥被中途 abort 时执行。测试套件里没有这种中途 abort。 |
 | `lib.rs` 386 | 状态刷写失败分支的收尾 `}` | `the_flusher_survives_an_unwritable_snapshot` 让刷写失败并断言刷写器继续运行。 |
 | `lib.rs` 514 | `starting_publishes_a_state_for_every_channel` 状态断言中的 `Some(Running)` 操作数 | 快照在 supervisor 运行之前取得，因此每个启用的行都是 `Starting`，第二个操作数从不求值。保留它是为了让该断言在这一点变化后仍然成立。 |
-| `providers/slack.rs` 766、906 | webhook 里 `if let Some(event)` 之后、以及派发 spawn 之后的 `}` | `the_events_webhook_verifies_signatures_and_answers_the_challenge` 会等待被接受消息的确认反应，而 `dispatch_event` 只在事件走完桥的管道后才发出它。 |
+| `providers/slack.rs` 763、903 | webhook 里 `if let Some(event)` 之后、以及派发 spawn 之后的 `}` | `the_events_webhook_verifies_signatures_and_answers_the_challenge` 会等待被接受消息的确认反应，而 `dispatch_event` 只在事件走完桥的管道后才发出它。 |
 | `providers/qq.rs` 626 | 心跳分支的收尾 `}` | `heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack` 与 `an_ack_clears_the_heartbeat_flag_and_the_connection_survives` 断言了心跳帧与被清掉的 ack 标志。 |
 
 ## 不在本次范围内的行
