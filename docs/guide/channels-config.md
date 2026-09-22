@@ -146,4 +146,4 @@ at a time. Enabling a channel this build cannot run is reported as
   and usage guides per platform.
 - Source: `channels/src/config.rs` (schema + defaults), `channels/src/policy.rs`
   (the dm/group access policy shared by every channel),
-  `channels/src/providers/INTERFACE.md` (how a channel is added).
+  [Channel provider contract](channels-provider-contract.md) (how a channel is added).

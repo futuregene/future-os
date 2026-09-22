@@ -139,4 +139,4 @@ QQ、Linq、iMessage、IRC、Email、Terminal）配置在 `providers` 键下，�
   各平台的分步配置与使用指南。
 - 源码：`channels/src/config.rs`（schema 与默认值）、
   `channels/src/policy.rs`（所有渠道共用的私聊/群聊访问策略）、
-  `channels/src/providers/INTERFACE.md`（如何新增渠道）。
+  [通道 provider 契约](channels-provider-contract.zh-CN.md)（如何新增通道）。

@@ -109,7 +109,7 @@ belongs:
   platform knowledge only: parse events into `bridge::Inbound`, hand them to
   `ProviderCtx::handle`, send/optionally edit text. Chunking, throttling and
   retries are the bridge's, not the provider's. The contract is
-  `channels/src/providers/INTERFACE.md`; `providers/cli.rs` is the reference
+  `docs/guide/channels-provider-contract.md`; `providers/cli.rs` is the reference
   implementation. New channels are registered in `providers/registry.rs`; a
   `Maturity::Planned` channel refuses to start and reports `unsupported`.
 - **Self-bridged channels** (`channels/src/feishu/`, `channels/src/dingtalk/`)

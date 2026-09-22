@@ -570,5 +570,5 @@ These are the things this page would otherwise imply work better than they do:
 - [Channels configuration](channels-config.md) — file location, `agent` block,
   Feishu and DingTalk.
 - [Directory layout](directory-layout.md) — where channel files live.
-- `channels/src/providers/INTERFACE.md` — the contract for adding a channel.
+- [Channel provider contract](channels-provider-contract.md) — the contract for adding a channel.
 - `channels/src/bridge/` — the shared pipeline.

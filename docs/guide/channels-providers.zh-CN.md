@@ -470,5 +470,5 @@ Linq 列出账号线路、IRC 真正建立连接并完成注册、Signal 用账�
 
 - [通道配置](channels-config.zh-CN.md) — 文件位置、`agent` 块、飞书与钉钉。
 - [目录布局](directory-layout.zh-CN.md) — 通道文件的位置。
-- `channels/src/providers/INTERFACE.md` — 新增通道的契约。
+- [通道 provider 契约](channels-provider-contract.zh-CN.md) — 新增通道的契约。
 - `channels/src/bridge/` — 共享链路。
