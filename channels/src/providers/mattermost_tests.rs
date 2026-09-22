@@ -132,9 +132,8 @@ fn a_post_arriving_as_an_object_is_tolerated() {
 fn a_top_level_channel_post_becomes_a_channel_conversation() {
     let event = posted_event(&channel_post(""), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .expect("a fresh post must normalize");
+    let inbound =
+        parse_posted(&posted, "bot-id", &HashSet::new()).expect("a fresh post must normalize");
     assert_eq!(inbound.message_id, "post1");
     assert_eq!(inbound.sender.id, "user-a");
     assert_eq!(inbound.sender.display.as_deref(), Some("@alice"));
@@ -150,9 +149,8 @@ fn a_top_level_channel_post_becomes_a_channel_conversation() {
 fn a_thread_reply_keeps_its_root_as_the_thread() {
     let event = posted_event(&channel_post("root-9"), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .expect("a thread reply must normalize");
+    let inbound =
+        parse_posted(&posted, "bot-id", &HashSet::new()).expect("a thread reply must normalize");
     assert_eq!(inbound.conversation.thread_id.as_deref(), Some("root-9"));
     // A thread is its own conversation, so its session key differs from the
     // top-level channel's.
@@ -173,9 +171,7 @@ fn a_direct_message_is_always_addressed() {
     post["message"] = json!("hi there");
     let event = posted_event(&post, &[], "D");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .expect("a DM must normalize");
+    let inbound = parse_posted(&posted, "bot-id", &HashSet::new()).expect("a DM must normalize");
     assert_eq!(inbound.conversation.kind, ChatKind::Direct);
     assert!(inbound.addressed_to_bot, "a DM needs no mention");
 }
@@ -186,9 +182,8 @@ fn a_direct_message_is_always_addressed() {
 fn a_channel_post_without_a_mention_is_not_addressed() {
     let event = posted_event(&channel_post(""), &["someone-else"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .expect("a fresh post must normalize");
+    let inbound =
+        parse_posted(&posted, "bot-id", &HashSet::new()).expect("a fresh post must normalize");
     assert!(!inbound.addressed_to_bot);
 }
 
@@ -196,9 +191,7 @@ fn a_channel_post_without_a_mention_is_not_addressed() {
 fn a_channel_post_mentioning_the_bot_is_addressed() {
     let event = posted_event(&channel_post(""), &["other", "bot-id"], "P");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .unwrap();
+    let inbound = parse_posted(&posted, "bot-id", &HashSet::new()).unwrap();
     assert!(inbound.addressed_to_bot);
 }
 
@@ -206,9 +199,7 @@ fn a_channel_post_mentioning_the_bot_is_addressed() {
 fn a_group_dm_needs_a_mention() {
     let event = posted_event(&channel_post(""), &[], "G");
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .unwrap();
+    let inbound = parse_posted(&posted, "bot-id", &HashSet::new()).unwrap();
     assert_eq!(inbound.conversation.kind, ChatKind::Group);
     assert!(!inbound.addressed_to_bot);
 }
@@ -221,9 +212,7 @@ fn the_bots_own_post_is_dropped() {
     post["user_id"] = json!("bot-id");
     let event = posted_event(&post, &[], "D");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .is_none());
+    assert!(parse_posted(&posted, "bot-id", &HashSet::new()).is_none());
 }
 
 #[test]
@@ -232,9 +221,7 @@ fn an_empty_message_is_dropped() {
     post["message"] = json!("   ");
     let event = posted_event(&post, &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .is_none());
+    assert!(parse_posted(&posted, "bot-id", &HashSet::new()).is_none());
 }
 
 #[test]
@@ -242,12 +229,10 @@ fn a_channel_outside_the_allowlist_is_dropped() {
     let allowlist: HashSet<String> = ["chan-other".to_string()].into_iter().collect();
     let event = posted_event(&channel_post(""), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &allowlist)
-        .unwrap()
-        .is_none());
+    assert!(parse_posted(&posted, "bot-id", &allowlist).is_none());
 
     let allowlist: HashSet<String> = ["chan1".to_string()].into_iter().collect();
-    let inbound = parse_posted(&posted, "bot-id", &allowlist).unwrap();
+    let inbound = parse_posted(&posted, "bot-id", &allowlist);
     assert!(inbound.is_some(), "an allowlisted channel must pass");
 }
 
@@ -735,9 +720,7 @@ fn a_post_without_a_message_is_dropped() {
     let event = posted_event(&post, &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
     assert!(
-        parse_posted(&posted, "bot-id", &HashSet::new())
-            .unwrap()
-            .is_none(),
+        parse_posted(&posted, "bot-id", &HashSet::new()).is_none(),
         "a whitespace-only message must be dropped"
     );
 }
@@ -937,9 +920,7 @@ fn a_post_without_an_id_or_a_sender_is_dropped() {
         let event = posted_event(&patch, &["bot-id"], "O");
         let posted = parse_ws_event(&event).unwrap();
         assert!(
-            parse_posted(&posted, "bot-id", &HashSet::new())
-                .unwrap()
-                .is_none(),
+            parse_posted(&posted, "bot-id", &HashSet::new()).is_none(),
             "{patch}"
         );
     }
@@ -959,9 +940,8 @@ fn an_unknown_channel_type_is_a_channel_and_display_is_none_when_unnamed() {
         }
     });
     let posted = parse_ws_event(&event).unwrap();
-    let inbound = parse_posted(&posted, "bot-id", &HashSet::new())
-        .unwrap()
-        .expect("a fresh post must normalize");
+    let inbound =
+        parse_posted(&posted, "bot-id", &HashSet::new()).expect("a fresh post must normalize");
     assert_eq!(inbound.conversation.kind, ChatKind::Channel);
     assert_eq!(inbound.sender.display, None);
     assert_eq!(inbound.created_at_ms, None);

@@ -220,8 +220,11 @@ impl Conversations {
         if entries.len() < self.max_conversations || entries.contains_key(keep) {
             return;
         }
-        loop {
-            let candidate = entries
+        while entries.len() >= self.max_conversations {
+            // Prefer a conversation that has been idle long enough; when none
+            // is, drop the least recently used instead, so a long-running
+            // process cannot grow without bound.
+            let idle = entries
                 .iter()
                 .filter(|(key, entry)| {
                     key.as_str() != keep
@@ -230,29 +233,18 @@ impl Conversations {
                 })
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone());
-            match candidate {
-                Some(key) => {
-                    entries.remove(&key);
-                }
-                // Nothing is idle enough: drop the least recently used so a
-                // long-running process cannot grow without bound.
-                None => {
-                    let fallback = entries
-                        .iter()
-                        .filter(|(key, _)| key.as_str() != keep)
-                        .min_by_key(|(_, entry)| entry.last_used)
-                        .map(|(key, _)| key.clone());
-                    match fallback {
-                        Some(key) => {
-                            entries.remove(&key);
-                        }
-                        None => return,
-                    }
-                }
-            }
-            if entries.len() < self.max_conversations {
-                return;
-            }
+            let candidate = idle.or_else(|| {
+                entries
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != keep)
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone())
+            });
+            // The guard above leaves at least one entry that is not `keep`, so
+            // the fallback always names one. Failing to evict would be
+            // unbounded growth, so this is not a silent return.
+            let key = candidate.expect("the capacity guard leaves a candidate");
+            entries.remove(&key);
         }
     }
 }

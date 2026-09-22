@@ -321,36 +321,34 @@ pub(crate) fn classify_api_error(error: &str, status: u16) -> ErrorClass {
 
 /// Normalize one Slack event into an inbound message.
 ///
-/// Returns `Ok(None)` for events that must be dropped: bot-authored messages
+/// Returns `None` for events that must be dropped: bot-authored messages
 /// (including this bridge's own posts, which would otherwise loop back as
 /// prompts), edits and other subtypes, anything without a sender or text.
 /// `bot_user_id` lets us drop our own posts even when Slack did not attach a
 /// subtype to them.
-pub(crate) fn parse_event(event: &Value, bot_user_id: &str) -> Result<Option<Inbound>> {
+pub(crate) fn parse_event(event: &Value, bot_user_id: &str) -> Option<Inbound> {
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
     if !matches!(event_type, "message" | "app_mention") {
-        return Ok(None);
+        return None;
     }
 
     // Subtypes are system transformations (edits, joins, bot relays, …); only
     // file_share still carries a fresh user prompt, the rest are not prompts.
     let subtype = event.get("subtype").and_then(Value::as_str).unwrap_or("");
     if !subtype.is_empty() && subtype != "file_share" {
-        return Ok(None);
+        return None;
     }
     if event.get("bot_id").is_some() {
-        return Ok(None);
+        return None;
     }
 
     let sender_id = event
         .get("user")
         .and_then(Value::as_str)
         .filter(|user| !user.is_empty());
-    let Some(sender_id) = sender_id else {
-        return Ok(None);
-    };
+    let sender_id = sender_id?;
     if sender_id == bot_user_id {
-        return Ok(None);
+        return None;
     }
 
     let raw_text = event
@@ -364,7 +362,7 @@ pub(crate) fn parse_event(event: &Value, bot_user_id: &str) -> Result<Option<Inb
         .map(|files| files.iter().collect())
         .unwrap_or_default();
     if raw_text.trim().is_empty() && files.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let channel_id = event
@@ -436,7 +434,7 @@ pub(crate) fn parse_event(event: &Value, bot_user_id: &str) -> Result<Option<Inb
         })
         .collect::<Vec<_>>();
 
-    Ok(Some(Inbound {
+    Some(Inbound {
         message_id,
         sender: SenderRef {
             id: sender_id.to_string(),
@@ -452,7 +450,7 @@ pub(crate) fn parse_event(event: &Value, bot_user_id: &str) -> Result<Option<Inb
         addressed_to_bot,
         created_at_ms,
         raw: None,
-    }))
+    })
 }
 
 /// Where one file lands in the provider-neutral media vocabulary.
@@ -792,13 +790,8 @@ async fn dispatch_event(
     event: &Value,
     bot_user_id: &str,
 ) {
-    let mut inbound = match parse_event(event, bot_user_id) {
-        Ok(Some(inbound)) => inbound,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::debug!(channel = "slack", %error, "dropping an unparseable event");
-            return;
-        }
+    let Some(mut inbound) = parse_event(event, bot_user_id) else {
+        return;
     };
     if let Err(error) = fetch_attachments(ctx, &mut inbound).await {
         tracing::debug!(channel = "slack", %error, "an attachment could not be fetched");

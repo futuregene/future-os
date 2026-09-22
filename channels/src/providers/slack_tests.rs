@@ -34,9 +34,7 @@ fn message_event(fields: Value) -> Value {
 
 #[test]
 fn a_plain_channel_message_becomes_a_group_conversation() {
-    let inbound = parse_event(&message_event(json!({})), "UBOT")
-        .unwrap()
-        .unwrap();
+    let inbound = parse_event(&message_event(json!({})), "UBOT").unwrap();
     assert_eq!(inbound.message_id, "cm-1");
     assert_eq!(inbound.sender.id, "U111");
     assert_eq!(inbound.conversation.id, "C222");
@@ -53,7 +51,6 @@ fn a_direct_message_is_always_addressed_to_the_bot() {
         &message_event(json!({ "channel_type": "im", "channel": "D999" })),
         "UBOT",
     )
-    .unwrap()
     .unwrap();
     assert_eq!(inbound.conversation.kind, ChatKind::Direct);
     assert!(inbound.addressed_to_bot);
@@ -69,7 +66,7 @@ fn an_app_mention_event_is_addressed_and_the_mention_is_reduced() {
         "channel_type": "channel",
         "ts": "1727000000.000200"
     });
-    let inbound = parse_event(&event, "UBOT").unwrap().unwrap();
+    let inbound = parse_event(&event, "UBOT").unwrap();
     assert!(inbound.addressed_to_bot);
     // No client_msg_id: the channel:ts fallback identifies the message.
     assert_eq!(inbound.message_id, "C222:1727000000.000200");
@@ -82,7 +79,6 @@ fn a_message_that_mentions_the_bot_inline_counts_as_addressed() {
         &message_event(json!({ "text": "hey <@UBOT> look" })),
         "UBOT",
     )
-    .unwrap()
     .unwrap();
     assert!(inbound.addressed_to_bot);
 }
@@ -102,7 +98,7 @@ fn bot_subtypes_and_own_messages_are_dropped() {
     ] {
         let event = message_event(fields);
         assert!(
-            parse_event(&event, "UBOT").unwrap().is_none(),
+            parse_event(&event, "UBOT").is_none(),
             "{label} must be dropped"
         );
     }
@@ -111,7 +107,7 @@ fn bot_subtypes_and_own_messages_are_dropped() {
 #[test]
 fn non_message_events_are_dropped() {
     let event = json!({ "type": "reaction_added", "user": "U111" });
-    assert!(parse_event(&event, "UBOT").unwrap().is_none());
+    assert!(parse_event(&event, "UBOT").is_none());
 }
 
 #[test]
@@ -120,7 +116,6 @@ fn a_thread_reply_keeps_its_thread_as_the_conversation() {
         &message_event(json!({ "thread_ts": "1726999999.000001" })),
         "UBOT",
     )
-    .unwrap()
     .unwrap();
     assert_eq!(
         inbound.conversation.thread_id.as_deref(),
@@ -139,7 +134,6 @@ fn a_top_level_message_with_matching_thread_ts_is_not_a_thread() {
         &message_event(json!({ "thread_ts": "1727000000.000100" })),
         "UBOT",
     )
-    .unwrap()
     .unwrap();
     assert_eq!(inbound.conversation.thread_id, None);
 }
@@ -155,7 +149,7 @@ fn a_file_share_with_files_but_no_text_is_still_a_message() {
             "url_private": "https://files.slack.test/shot.png"
         }]
     }));
-    let inbound = parse_event(&event, "UBOT").unwrap().unwrap();
+    let inbound = parse_event(&event, "UBOT").unwrap();
     assert_eq!(inbound.media.len(), 1);
     assert_eq!(inbound.media[0].kind, crate::bridge::MediaKind::Image);
     assert_eq!(
@@ -220,7 +214,7 @@ fn file_kind_covers_every_bucket() {
 
 #[test]
 fn an_empty_text_without_files_is_dropped() {
-    let inbound = parse_event(&message_event(json!({ "text": "   " })), "UBOT").unwrap();
+    let inbound = parse_event(&message_event(json!({ "text": "   " })), "UBOT");
     assert!(inbound.is_none(), "whitespace-only text is not a prompt");
 }
 
@@ -230,7 +224,6 @@ fn a_group_dm_counts_as_a_group_for_the_mention_gate() {
         &message_event(json!({ "channel_type": "mpim", "channel": "G123" })),
         "UBOT",
     )
-    .unwrap()
     .unwrap();
     assert_eq!(inbound.conversation.kind, ChatKind::Group);
     // A group conversation is only handled when the bot is addressed.
@@ -245,7 +238,7 @@ fn missing_channel_and_ts_fields_default_to_empty_strings() {
         "text": "bare",
         "channel_type": "im"
     });
-    let inbound = parse_event(&event, "UBOT").unwrap().unwrap();
+    let inbound = parse_event(&event, "UBOT").unwrap();
     assert_eq!(inbound.conversation.id, "");
     // No client_msg_id either: the id falls back to the channel:ts pair.
     assert_eq!(inbound.message_id, ":");
@@ -1566,10 +1559,12 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
     let slot: Arc<std::sync::Mutex<(u16, String, u16)>> =
         Arc::new(std::sync::Mutex::new((0, String::new(), 0)));
     super::webhook_test_hook::arm(slot.clone());
-    let ctx = dispatch_ctx(config_value(&config), &dir);
+    // A mock agent that opens sessions, so a dispatched prompt is accepted and
+    // acknowledged instead of failing to reach the agent.
+    let (addr, _state) =
+        crate::test_support::spawn_mock_grpc(crate::test_support::MockState::default()).await;
+    let ctx = dispatch_ctx_to_agent(config_value(&config), &format!("http://{addr}"), &dir);
     let webhook_config = ctx.config::<SlackConfig>().unwrap();
-    // A message event: the spawned dispatch task runs and (denied by the
-    // offline policy) finishes without any reaction.
     let recording: Arc<RecordingSender> = Arc::new(RecordingSender::new());
     let sender: Arc<dyn ChannelSender> = recording.clone();
     let shutdown = ctx.shutdown().clone();
@@ -1639,10 +1634,13 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    // The spawned dispatch task ran (the default policy denies the group
-    // message, so no reaction is recorded — what matters is the dispatch
-    // executed without panicking).
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The event is processed off the request path: waiting for the accepted
+    // prompt's acknowledgement proves the spawned dispatch task ran to
+    // completion (a sleep would prove nothing).
+    let acked =
+        crate::test_support::wait_until(|| !recording.taken().is_empty(), Duration::from_secs(5))
+            .await;
+    assert!(acked, "the dispatched event must reach the bridge pipeline");
 
     // A signed payload of any other type is acked and ignored.
     let body = json!({ "type": "app_rate_limited" }).to_string();
@@ -1657,9 +1655,10 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    assert!(
-        recording.taken().is_empty(),
-        "a denied event produces no reaction"
+    assert_eq!(
+        recording.taken().len(),
+        1,
+        "an ignored payload type adds no second acknowledgement"
     );
 
     shutdown.trigger();
@@ -1709,6 +1708,41 @@ async fn dispatch_skips_events_that_are_not_prompts_and_survives_attachment_fail
     assert!(
         recording.taken().is_empty(),
         "neither dispatch sends anything visible"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_channel_config_does_not_drop_the_prompt() {
+    // Fetching an attachment needs the channel's own configuration; when that
+    // cannot be read the download is skipped, but the prompt itself must still
+    // reach the bridge and be acknowledged — an enrichment failure is not a
+    // reason to lose the message.
+    let (addr, _state) =
+        crate::test_support::spawn_mock_grpc(crate::test_support::MockState::default()).await;
+    let dir = crate::test_support::temp_dir("slack-attach-config-error");
+    let ctx = dispatch_ctx_to_agent(
+        json!({ "enabled": "not-a-bool" }),
+        &format!("http://{addr}"),
+        &dir,
+    );
+    assert!(
+        ctx.config::<SlackConfig>().is_err(),
+        "this test needs a configuration the provider cannot read"
+    );
+    let recording: Arc<RecordingSender> = Arc::new(RecordingSender::new());
+    let sender: Arc<dyn ChannelSender> = recording.clone();
+    let event = message_event(json!({
+        "channel_type": "im",
+        "channel": "D999",
+        "ts": format!("{}.000100", crate::bridge::dedup::now_ms() / 1000),
+        "client_msg_id": format!("cfg-{}", crate::bridge::dedup::now_ms()),
+        "files": [{ "mimetype": "image/png", "url_private": "http://127.0.0.1:1/shot.png" }],
+    }));
+    dispatch_event(&ctx, &sender, &event, "UBOT").await;
+    assert_eq!(
+        recording.taken().len(),
+        1,
+        "a prompt whose attachments cannot be fetched is still accepted"
     );
 }
 
