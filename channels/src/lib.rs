@@ -117,7 +117,13 @@ impl Started {
     ///
     /// Called on Ctrl-C, and by tests so a started bridge never outlives them.
     pub async fn stop(self) {
+        // `notify_waiters` wakes the tasks already parked on the signal, but a
+        // supervisor that is mid-session registers its wait *after* this point
+        // and would then wait for a second signal. `notify_one` stores a permit
+        // so that next registration completes immediately; the aborts below are
+        // what actually guarantees a prompt stop.
         self.shutdown.notify_waiters();
+        self.shutdown.notify_one();
         for handle in self.handles {
             handle.abort();
         }
