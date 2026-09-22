@@ -882,20 +882,6 @@ mod gui {
                 // Agent is authoritative and may have survived a GUI crash; the
                 // watchdog below reattaches or settles each row only after it can
                 // query that authority.
-                // Import sessions created outside the GUI (TUI, channels, another
-                // machine). Runs off the launch path — failures are logged but the
-                // UI renders immediately. The store must be initialized first.
-                std::thread::spawn(|| {
-                    // Single-threaded runtime: `Runtime::new()` is multi_thread and
-                    // would spawn num_cpus workers for this one-shot task.
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("tokio runtime");
-                    rt.block_on(async {
-                        agent_bridge::import_missing_sessions().await;
-                    });
-                });
                 // Pin the FutureGene environment for this build channel before the
                 // agent starts: release builds are production-locked, dev builds
                 // default to the test environment on first launch. The agent reads
@@ -911,17 +897,14 @@ mod gui {
                     agent_supervisor::start_agent_supervision(&agent_handle)
                 });
                 start_thread_streaming_monitor();
-                // Per-session observers: the always-on tap into every agent
-                // session's event stream (settings fan-out, projection of runs no
-                // pipeline collector owns, NATS mirroring). Attach/retry happens
-                // inside each observer task, so a down agent never blocks startup.
-                agent_bridge::seed_observers_from_store();
                 // Global provider/auth completion stream. This is independent of
                 // chat observers and fans committed revisions to WebView + Mobile.
                 agent_bridge::spawn_provider_config_observer();
                 // Global session lifecycle stream: sessions created by other
                 // clients (TUI/CLI/channels) are imported within milliseconds of
-                // the agent's session_created announcement.
+                // the agent's session_created announcement. Its initial attach also
+                // performs the startup discovery pass, so startup has one owner for
+                // session discovery instead of racing a duplicate one-shot import.
                 agent_bridge::spawn_session_events_observer();
                 // Low-frequency safety reconciliation for lifecycle notifications
                 // missed during outages or emitted by an older Agent. The global
