@@ -509,42 +509,16 @@ mod tests {
         assert!(error.contains("own bridge"), "{error}");
     }
 
+    /// The refusal itself is covered in `providers::traits` (a build that
+    /// implements every channel has no planned instance to reach it with); this
+    /// asserts the lists the queue decides from stay a partition.
     #[test]
-    fn a_channel_this_build_cannot_run_is_rejected() {
-        // Whichever channels still declare a planned maturity must refuse to
-        // deliver, with a reason the operator can act on. The wording of that
-        // refusal is unit-tested in `providers::traits`, because a build that
-        // implements every channel has no instance to reach it with here.
-        let outbox = outbox("outbox-planned");
-        let planned: Vec<&'static str> = crate::providers::registry::planned()
-            .iter()
-            .map(|entry| entry.definition.id)
-            .collect();
-        for id in &planned {
-            let mut config = outbox.config.clone();
-            config
-                .providers
-                .insert((*id).to_string(), serde_json::json!({ "enabled": true }));
-            let configured = Outbox::new(
-                outbox.queue.clone(),
-                config,
-                outbox.agent_cfg.clone(),
-                outbox.root.clone(),
-                outbox.status.clone(),
-            );
-            let error = configured
-                .sender(id)
-                .map(|_| ())
-                .expect_err("must refuse")
-                .to_string();
-            assert!(error.contains("not implemented"), "{id}: {error}");
-        }
-        assert_eq!(
-            planned.len(),
-            crate::providers::registry::all().len()
-                - crate::providers::registry::implemented().len(),
-            "planned and implemented partition the registry"
-        );
+    fn the_registry_partitions_into_implemented_and_planned() {
+        let all = crate::providers::registry::all().len();
+        let implemented = crate::providers::registry::implemented().len();
+        let planned = crate::providers::registry::planned().len();
+        assert_eq!(implemented + planned, all);
+        assert!(implemented > 0, "this build ships at least one channel");
     }
 
     #[tokio::test]

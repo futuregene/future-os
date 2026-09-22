@@ -4,6 +4,9 @@
 //! and a user who enables it gets a precise message instead of silence. It must
 //! never look functional, which is why every entry point fails and the maturity
 //! reads `planned`.
+//!
+//! A channel in that state registers `Unsupported::boxed(&DEFINITION)` as its
+//! factory (see `docs/guide/channels-provider-contract.md`).
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -49,17 +52,6 @@ impl Provider for Unsupported {
         Err(self.refuse())
     }
 }
-
-/// Declare a channel whose implementation has not been written yet.
-macro_rules! planned_provider {
-    ($definition:path) => {
-        pub fn provider() -> Box<dyn $crate::providers::traits::Provider> {
-            $crate::providers::unsupported::Unsupported::boxed(&$definition)
-        }
-    };
-}
-
-pub(crate) use planned_provider;
 
 #[cfg(test)]
 mod tests {

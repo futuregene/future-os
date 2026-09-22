@@ -84,10 +84,9 @@ pub fn run(args: &[String]) -> Result<()> {
     // Diagnostics run before (and instead of) the bridge: `future channel
     // status` must answer whether or not a bridge is running, and must not
     // start one.
-    if let Some(command) = args.first() {
-        if cli_cmd::is_subcommand(command) {
-            return cli_cmd::run(args);
-        }
+    match args.first() {
+        Some(command) if cli_cmd::is_subcommand(command) => return cli_cmd::run(args),
+        _ => {}
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -465,15 +464,21 @@ mod tests {
 
         let snapshot = StatusSnapshot::load(&root.join("status.json"));
         for row in cli_cmd::ListReport::build(&config).channels {
-            let entry = snapshot
-                .channels
-                .get(row.id)
-                .unwrap_or_else(|| panic!("{} was never published", row.id));
+            let Some(entry) = snapshot.channels.get(row.id) else {
+                panic!(
+                    "{} was never published ({} channels reported)",
+                    row.id,
+                    snapshot.channels.len()
+                )
+            };
             match row.configured {
                 // Enabled but not built: reported, never silently skipped.
-                "unsupported" => {
-                    assert_eq!(entry.state, Some(ChannelState::Unsupported), "{}", row.id)
-                }
+                "unsupported" => assert_eq!(
+                    entry.state,
+                    Some(ChannelState::Unsupported),
+                    "{} must be reported as unsupported",
+                    row.id
+                ),
                 "not-configured" | "disabled" => {
                     assert_eq!(entry.state, Some(ChannelState::Disabled), "{}", row.id)
                 }
@@ -543,8 +548,8 @@ mod tests {
         // than panicking (the state change above already went through that path).
         let error = status
             .flush()
-            .err()
-            .expect("publishing into a file must fail")
+            .map(|_| ())
+            .expect_err("publishing into a file must fail")
             .to_string();
         assert!(!error.is_empty());
         // The periodic flush reports rather than panics.

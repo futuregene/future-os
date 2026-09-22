@@ -39,7 +39,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tokio::sync::Notify;
 
 use crate::config::AgentConfig;
 use crate::grpc_client::{AgentClient, ImageData, ImageInput};

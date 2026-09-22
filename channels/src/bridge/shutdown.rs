@@ -158,16 +158,17 @@ mod tests {
         let shutdown = Shutdown::new();
         shutdown.trigger();
         let mut wait = shutdown.notified();
-        std::future::poll_fn(|cx| {
-            std::task::Poll::Ready(std::future::Future::poll(std::pin::Pin::new(&mut wait), cx))
-        })
-        .await;
+        assert!(matches!(poll_once(&mut wait), std::task::Poll::Ready(())));
         // Poll it a second time, which must also report readiness.
-        let again = std::future::poll_fn(|cx| {
-            std::task::Poll::Ready(std::future::Future::poll(std::pin::Pin::new(&mut wait), cx))
-        })
-        .await;
-        assert!(matches!(again, std::task::Poll::Ready(())));
+        assert!(matches!(poll_once(&mut wait), std::task::Poll::Ready(())));
+    }
+
+    /// Poll a future once through a no-op waker, so a test can observe the
+    /// stalled/re-ready states `select!` produces.
+    fn poll_once<F: std::future::Future + Unpin>(future: &mut F) -> std::task::Poll<F::Output> {
+        let waker = std::task::Waker::noop().clone();
+        let mut context = std::task::Context::from_waker(&waker);
+        std::future::Future::poll(std::pin::Pin::new(future), &mut context)
     }
 
     #[tokio::test]
