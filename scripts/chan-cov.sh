@@ -38,9 +38,18 @@ fi
 # One instrumented build per machine. Parallel workers share this checkout, and
 # several concurrent llvm-cov runs thrash the CPU and have been observed to get
 # the test binary killed mid-run. Take an exclusive lock and wait our turn.
+#
+# The lock records its owner's pid so a run that was killed outright (SIGKILL
+# skips the trap) cannot block everyone else until the wait timeout.
 lock_dir="${TMPDIR:-/tmp}/future-chan-cov.lock"
 lock_wait=0
-until mkdir "$lock_dir" 2>/dev/null; do
+while ! mkdir "$lock_dir" 2>/dev/null; do
+  holder=$(cat "$lock_dir/pid" 2>/dev/null || true)
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    echo "chan-cov: removing a stale lock left by pid $holder"
+    rm -rf "$lock_dir"
+    continue
+  fi
   lock_wait=$((lock_wait + 1))
   if [ "$lock_wait" -gt 7200 ]; then
     echo "chan-cov: gave up waiting for the measurement lock at $lock_dir" >&2
@@ -51,7 +60,8 @@ until mkdir "$lock_dir" 2>/dev/null; do
   fi
   sleep 5
 done
-cleanup_lock() { rmdir "$lock_dir" 2>/dev/null || true; }
+echo "$$" > "$lock_dir/pid"
+cleanup_lock() { rm -rf "$lock_dir"; }
 trap cleanup_lock EXIT INT TERM
 
 unset CARGO_HOME CARGO_TARGET_DIR CARGO_BUILD_TARGET 2>/dev/null || true
