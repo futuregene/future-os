@@ -530,7 +530,10 @@ immediately and a failure is reported as `failed`, with a non-zero exit status.
 - **Proactive sends are durable.** A message sent outside a turn goes through a
   persisted queue: it is retried with backoff (5 s, 25 s, 2 min, 10 min, up to
   five attempts), a permanent error stops the retries instead of burning them, and
-  the entry stays visible as `failed` for inspection (`channels/src/delivery.rs`).
+  the entry stays visible as `failed` for inspection. "Permanent" is decided from
+  the platform's error text against a deliberately conservative phrase list, so a
+  failure phrased outside it is retried until the attempts run out and then parked
+  as `failed` (`channels/src/delivery.rs`).
 
 ## Known limitations
 
