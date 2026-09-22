@@ -42,11 +42,28 @@ fi
 # The lock records its owner's pid so a run that was killed outright (SIGKILL
 # skips the trap) cannot block everyone else until the wait timeout.
 lock_dir="${TMPDIR:-/tmp}/future-chan-cov.lock"
+
+# Directory age in seconds, portable across GNU and BSD `stat`.
+lock_age() {
+  local mtime
+  mtime=$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || echo 0)
+  [ "$mtime" = 0 ] && { echo 0; return; }
+  echo $(( $(date +%s) - mtime ))
+}
+
 lock_wait=0
 while ! mkdir "$lock_dir" 2>/dev/null; do
   holder=$(cat "$lock_dir/pid" 2>/dev/null || true)
-  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-    echo "chan-cov: removing a stale lock left by pid $holder"
+  stale=0
+  if [ -n "$holder" ]; then
+    kill -0 "$holder" 2>/dev/null || stale=1
+  elif [ "$(lock_age)" -gt 60 ]; then
+    # No owner recorded and nothing has touched it for a minute: left behind by
+    # an older version of this script or a hard kill.
+    stale=1
+  fi
+  if [ "$stale" = 1 ]; then
+    echo "chan-cov: removing a stale measurement lock (owner: ${holder:-unknown})"
     rm -rf "$lock_dir"
     continue
   fi
