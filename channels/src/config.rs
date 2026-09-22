@@ -52,6 +52,42 @@ impl ChannelConfig {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     }
+
+    /// Read configuration for a read-only command.
+    ///
+    /// Unlike [`Self::load`] this has no first-run side effect and never fails:
+    /// `future channel list` and `status` must work on a machine that has never
+    /// started the bridge, and a broken file must not stop them from reporting
+    /// what they can. The note explains anything the caller should tell the user.
+    pub fn load_for_read() -> (Self, Option<String>) {
+        let path = Self::default_path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str::<Self>(&content) {
+                Ok(config) => (config, None),
+                Err(error) => (
+                    Self::default(),
+                    Some(format!(
+                        "cannot parse {}: {error}; reporting defaults",
+                        path.display()
+                    )),
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+                Self::default(),
+                Some(format!(
+                    "no configuration at {}; every channel is unconfigured",
+                    path.display()
+                )),
+            ),
+            Err(error) => (
+                Self::default(),
+                Some(format!(
+                    "cannot read {}: {error}; reporting defaults",
+                    path.display()
+                )),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

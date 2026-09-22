@@ -21,11 +21,13 @@
 #![allow(dead_code)]
 
 pub mod bridge;
+pub mod cli_cmd;
 pub mod config;
 pub mod delivery;
 pub mod dingtalk;
 pub mod feishu;
 pub mod grpc_client;
+pub mod outbox;
 pub mod policy;
 pub mod providers;
 pub mod session_store;
@@ -54,6 +56,9 @@ use transport::ws::Backoff;
 /// How often the published status snapshot is refreshed.
 const STATUS_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How often the durable outbound queue is retried.
+const OUTBOX_DRAIN_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Entry point — the former `main()` body. `args` is argv without the
 /// program name (only `--version`/`-V` are inspected).
 pub fn run(args: &[String]) -> Result<()> {
@@ -76,6 +81,15 @@ pub fn run(args: &[String]) -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Diagnostics run before (and instead of) the bridge: `future channel
+    // status` must answer whether or not a bridge is running, and must not
+    // start one.
+    if let Some(command) = args.first() {
+        if cli_cmd::is_subcommand(command) {
+            return cli_cmd::run(args);
+        }
+    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -198,6 +212,18 @@ async fn run_async() -> Result<()> {
 
     status.flush()?;
     let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+    let outbox_drainer = spawn_outbox_drainer(
+        outbox::Outbox::new(
+            Arc::new(delivery::DeliveryQueue::load(
+                delivery::DeliveryQueue::default_path(),
+            )),
+            config.clone(),
+            agent_cfg.clone(),
+            root.clone(),
+            status.clone(),
+        ),
+        shutdown.clone(),
+    );
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
@@ -206,6 +232,7 @@ async fn run_async() -> Result<()> {
         h.abort();
     }
     flusher.abort();
+    outbox_drainer.abort();
     // Leave a truthful snapshot: nothing is running any more.
     for entry in registry::all() {
         status.set_state(entry.definition.id, ChannelState::Disabled, None);
@@ -284,6 +311,31 @@ fn spawn_status_flusher(
                         tracing::debug!(%error, "cannot publish channel status");
                     }
                 }
+                _ = shutdown.notified() => return,
+            }
+        }
+    })
+}
+
+/// Retry queued outbound messages: the bridge is the only long-lived process,
+/// so it is also what makes a `--durable` send eventually arrive.
+fn spawn_outbox_drainer(
+    outbox: outbox::Outbox,
+    shutdown: Arc<Notify>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let summary = outbox.drain_due().await;
+            if summary.touched() > 0 {
+                tracing::info!(
+                    sent = summary.sent,
+                    retried = summary.retried,
+                    failed = summary.failed,
+                    "drained the outbound queue"
+                );
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(OUTBOX_DRAIN_INTERVAL) => {}
                 _ = shutdown.notified() => return,
             }
         }
