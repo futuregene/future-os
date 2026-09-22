@@ -62,7 +62,7 @@ Install trusted system Bubblewrap ≥ 0.9.0, fully restart FutureOS, then run `f
 
 ### Linux GUI won't start on an older server
 
-The published GUI needs glibc ≥ 2.39 and WebKitGTK 4.1. Use the matching official static CLI-only tarball on a headless host instead; see [[Installation]].
+The published GUI needs glibc ≥ 2.39 and WebKitGTK 4.1. `futureos-headless` and the `future` CLI in the same packages are static musl binaries and run on such hosts; a CLI-only tarball is also available, see [[Installation]].
 
 ---
 

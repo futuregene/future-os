@@ -109,7 +109,9 @@ Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确�
 
 图形程序 `futureos` 链接 GUI 系统库，Linux 加载器在**解析参数前**就需要加载这些库。
 独立的 `futureos-headless` 构建排除了 Tauri/GTK/WebKit，不需要 X11/Wayland 会话。
-其他运行环境要求（例如 glibc 版本）取决于构建目标和环境；源码构建不一定完全静态链接。
+官方 Linux 发布将 `futureos-headless` 构建为完全静态的 musl 二进制，因此也没有
+glibc 版本要求，可以在老的企业/HPC 系统（CentOS 7 / Rocky 8 年代）上运行。
+本地源码构建使用 host 工具链，不一定完全静态链接。
 这条源码构建路径不需要修改发布工作流。
 
 从仓库根目录构建两个程序，无需 npm/Tauri 打包：

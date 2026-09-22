@@ -80,7 +80,10 @@ release manifest, verifies its SHA-256, then runs `future init`:
 - **Headless hosts** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config` and `./future tui` (or `./future agent` for CLI clients). No GUI libraries are needed for the official static musl CLI.
 
 The published GUI needs glibc ≥ 2.39 (roughly Ubuntu 24.04+) and WebKitGTK 4.1.
-Local developer builds use the selected host target and need not be static.
+`futureos-headless` and the `future` CLI in the same packages are fully static
+musl binaries with no glibc requirement, so they also run on older enterprise/HPC
+systems (CentOS 7 / Rocky 8 era). Local developer builds use the selected host
+target and need not be static.
 
 Pin a specific release with `FUTUREOS_VERSION` (e.g. `FUTUREOS_VERSION=1.2.0`),
 or point at a mirror with `FUTUREOS_BASE`. The current pinned-version path skips
