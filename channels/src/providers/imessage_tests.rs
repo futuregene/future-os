@@ -382,6 +382,9 @@ mod provider_macos {
 #[cfg(not(target_os = "macos"))]
 mod unsupported {
     use super::*;
+    // The bridge's conversation types are imported in the parent only under
+    // `cfg(target_os = "macos")`, so this module names what it needs itself.
+    use crate::bridge::ChatKind;
 
     #[test]
     fn this_platform_is_not_supported() {
