@@ -294,6 +294,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_recording_sender_reports_the_terminal_definition() {
+        let sender = RecordingSender::default();
+        assert_eq!(sender.definition().id, "cli");
+        sender
+            .send_text(&ConversationRef::default(), "hello")
+            .await
+            .expect("send");
+        assert_eq!(sender.sent(), vec!["hello".to_string()]);
+    }
+
+    #[tokio::test]
     async fn a_line_becomes_a_prompt_and_a_quit_line_ends_the_session() {
         let ctx = ctx("cli-serve");
         let sender = Arc::new(RecordingSender::default());

@@ -268,6 +268,42 @@ fn the_channel_diagnostics_run_without_a_bridge() {
     assert!(stdout.contains("outboundQueue"), "{stdout}");
 }
 
+/// `--text -` reads the body from stdin, which only the process can do.
+#[cfg(unix)]
+#[test]
+fn a_proactive_send_can_read_its_text_from_stdin() {
+    use std::io::Write as _;
+
+    let home = isolated_home("cli-send-stdin");
+    write_config(
+        &home,
+        r#"{"providers": {"cli": {"enabled": true, "dm_policy": "open"}}}"#,
+    );
+    let mut child = bin()
+        .env("HOME", &home)
+        // This binary takes the subcommand as its own first argument (see the
+        // note in `the_channel_diagnostics_run_without_a_bridge`).
+        .args(["send", "--channel", "cli", "--to", "c1", "--text", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn binary");
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"from the pipe\n")
+        .unwrap();
+    // Close the write end, or reading stdin would wait for more input forever.
+    drop(child.stdin.take());
+    let out = child.wait_with_output().expect("wait");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout: {stdout} stderr: {stderr}");
+    assert!(stdout.contains("cli: sent"), "{stdout}");
+}
+
 #[test]
 fn testing_an_unknown_channel_fails_with_a_readable_error() {
     let home = isolated_home("cli-test-unknown");

@@ -511,15 +511,20 @@ mod tests {
 
     #[test]
     fn a_channel_this_build_cannot_run_is_rejected() {
-        // Whichever channels are still planned must refuse to deliver, with a
-        // reason the operator can act on.
+        // Whichever channels still declare a planned maturity must refuse to
+        // deliver, with a reason the operator can act on. The wording of that
+        // refusal is unit-tested in `providers::traits`, because a build that
+        // implements every channel has no instance to reach it with here.
         let outbox = outbox("outbox-planned");
-        for entry in crate::providers::registry::planned() {
-            let id = entry.definition.id;
+        let planned: Vec<&'static str> = crate::providers::registry::planned()
+            .iter()
+            .map(|entry| entry.definition.id)
+            .collect();
+        for id in &planned {
             let mut config = outbox.config.clone();
             config
                 .providers
-                .insert(id.to_string(), serde_json::json!({ "enabled": true }));
+                .insert((*id).to_string(), serde_json::json!({ "enabled": true }));
             let configured = Outbox::new(
                 outbox.queue.clone(),
                 config,
@@ -529,11 +534,17 @@ mod tests {
             );
             let error = configured
                 .sender(id)
-                .err()
-                .expect("must refuse")
+                .map(|_| ())
+                .expect_err("must refuse")
                 .to_string();
             assert!(error.contains("not implemented"), "{id}: {error}");
         }
+        assert_eq!(
+            planned.len(),
+            crate::providers::registry::all().len()
+                - crate::providers::registry::implemented().len(),
+            "planned and implemented partition the registry"
+        );
     }
 
     #[tokio::test]

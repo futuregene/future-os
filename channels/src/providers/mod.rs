@@ -87,19 +87,11 @@ mod tests {
     }
 
     #[test]
-    fn a_channel_that_cannot_run_declares_which_maturity_it_is() {
+    fn a_channel_is_usable_exactly_when_its_maturity_is_not_planned() {
         for definition in all_definitions() {
-            match definition.ensure_usable() {
-                Ok(()) => assert!(
-                    matches!(definition.maturity, Maturity::Live | Maturity::Preview),
-                    "{}",
-                    definition.id
-                ),
-                Err(reason) => {
-                    assert_eq!(definition.maturity, Maturity::Planned, "{}", definition.id);
-                    assert!(reason.contains(definition.id), "{reason}");
-                }
-            }
+            let usable = definition.ensure_usable().is_ok();
+            let planned = definition.maturity == Maturity::Planned;
+            assert_eq!(usable, !planned, "{}", definition.id);
         }
     }
 

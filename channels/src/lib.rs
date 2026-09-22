@@ -500,6 +500,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_provider_that_fails_to_start_is_reported_and_retried() {
+        // A configured channel whose credentials are missing fails on its first
+        // attempt: the failure is published and the supervisor keeps retrying
+        // instead of dropping the channel.
+        let config = config_with(&[("telegram", true)]);
+        let root = crate::test_support::temp_dir("lib-start-failing");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let started = start_all(&config, root.clone(), status).expect("start");
+        let failed = crate::test_support::wait_until(
+            || {
+                let snapshot = StatusSnapshot::load(&root.join("status.json"));
+                snapshot
+                    .channels
+                    .get("telegram")
+                    .and_then(|entry| entry.state.clone())
+                    .map(|state| state == ChannelState::Error)
+                    .unwrap_or(false)
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        assert!(failed, "a provider that cannot start must be reported");
+        started.stop().await;
+        let after = StatusSnapshot::load(&root.join("status.json"));
+        assert_eq!(
+            after.channels.get("telegram").unwrap().state,
+            Some(ChannelState::Disabled)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_that_cannot_be_written_is_not_fatal() {
+        // The flusher runs on a timer and must survive an unwritable snapshot
+        // path: losing diagnostics must never take the bridge down.
+        let root = crate::test_support::temp_dir("lib-status-unwritable");
+        // A regular file where the snapshot's directory should be.
+        std::fs::write(root.join("blocked"), b"not a directory").unwrap();
+        let status = Arc::new(StatusBoard::new(root.join("blocked").join("status.json")));
+        status.set_state("cli", ChannelState::Running, None);
+        // A transition publishes immediately; the failure is reported rather
+        // than panicking (the state change above already went through that path).
+        let error = status
+            .flush()
+            .err()
+            .expect("publishing into a file must fail")
+            .to_string();
+        assert!(!error.is_empty());
+        // The periodic flush reports rather than panics.
+        let shutdown = Shutdown::new();
+        let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+        shutdown.trigger();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), flusher).await;
+        assert!(stopped.is_ok(), "the flusher must stop on shutdown");
+    }
+
+    #[tokio::test]
     async fn starting_with_nothing_enabled_is_not_an_error() {
         let (started, _root) = start(config::ChannelConfig::default(), "lib-start-empty").await;
         assert!(started.handles.is_empty());

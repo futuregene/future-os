@@ -254,11 +254,11 @@ async fn prepare(
 ) -> Result<(String, crate::grpc_client::AgentEventStream)> {
     let mut client = client.clone();
     // Log before the prompt is built: the request is consumed by the call below.
+    let preview = truncate(&request.text, 200, crate::transport::LengthUnit::Chars);
     tracing::info!(
         channel = %request.channel,
         session = request.session_id,
-        "dispatching turn: {}",
-        truncate(&request.text, 200, crate::transport::LengthUnit::Chars)
+        "dispatching turn: {preview}"
     );
     let run_id = client
         .prompt_superseding(&request.session_id, &request.text, request.images.clone())
@@ -677,10 +677,14 @@ mod tests {
             vec!["a".to_string(), "ab".to_string()]
         );
         assert_eq!(progressive.finishes(), 1);
-        // The other callbacks are silent no-ops for this sink.
+        // The callbacks this turn does not use are no-ops on the double...
         assert_eq!(progressive.thinking_pushes(), 0);
         assert!(progressive.errors().is_empty());
         assert_eq!(progressive.supersede_count(), 0);
+        // ...and the one it would use on a supersede is exercised too, so a
+        // silent no-op cannot hide a missing call.
+        progressive.superseded().await.expect("superseded callback");
+        assert_eq!(progressive.supersede_count(), 1);
     }
 
     #[tokio::test]

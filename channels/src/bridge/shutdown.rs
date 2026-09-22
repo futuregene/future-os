@@ -42,10 +42,6 @@ impl std::future::Future for Notified<'_> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<()> {
         let this = self.get_mut();
-        if this.shutdown.is_triggered() {
-            this.inner = None;
-            return std::task::Poll::Ready(());
-        }
         if this.inner.is_none() {
             let shutdown = this.shutdown;
             this.inner = Some(Box::pin(async move {
@@ -61,13 +57,15 @@ impl std::future::Future for Notified<'_> {
             }));
         }
         let inner = this.inner.as_mut().expect("inner future");
-        match inner.as_mut().poll(cx) {
-            std::task::Poll::Ready(()) => {
-                this.inner = None;
-                std::task::Poll::Ready(())
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
+        if inner.as_mut().poll(cx).is_pending() {
+            return std::task::Poll::Pending;
         }
+        // Clear only on readiness: a pending poll must keep the registration so
+        // the notification can find this waiter. A later poll after readiness
+        // builds a fresh inner future, whose own flag check reports readiness
+        // again instead of panicking.
+        this.inner = None;
+        std::task::Poll::Ready(())
     }
 }
 

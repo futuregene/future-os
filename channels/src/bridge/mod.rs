@@ -934,6 +934,14 @@ mod tests {
             ImageData::Url(url) => url.clone(),
         };
         assert_eq!(encoded, "AQIDBA==", "image bytes travel as base64");
+        // A URL-only attachment is never model input: there are no bytes.
+        let mut linked = Inbound::new_direct("m2", "u1", "c1", "look");
+        linked.media = vec![MediaRef {
+            kind: MediaKind::Image,
+            url: Some("https://example.test/a.png".into()),
+            ..Default::default()
+        }];
+        assert!(ctx.collect_images(&linked).is_empty());
         let path = images[0].file_path.clone().unwrap();
         assert!(std::path::Path::new(&path).exists());
     }
@@ -1513,6 +1521,19 @@ mod tests {
             "status.json"
         );
         assert!(ctx.bridge.conversations().len().await <= 1);
+        assert!(!ctx.bridge().agent_cfg().cwd.is_empty());
+        assert!(ctx.approvals().is_empty(), "no approval is outstanding");
+    }
+
+    #[tokio::test]
+    async fn the_counting_sink_records_both_terminal_callbacks() {
+        let sink = CountingSink::default();
+        sink.finish(&crate::bridge::sink::TurnOutcome::completed("x"))
+            .await
+            .expect("finish");
+        sink.superseded().await.expect("superseded");
+        assert_eq!(sink.finished_count(), 1);
+        assert_eq!(sink.superseded_count(), 1);
     }
 
     #[tokio::test]

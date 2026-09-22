@@ -404,15 +404,26 @@ mod tests {
 
     #[test]
     fn periodic_flushes_are_rate_limited_but_forced_ones_are_not() {
-        let (board, _path) = board("status-flush");
-        board.set_state("telegram", ChannelState::Running, None);
-        // The first due-check may flush (last_flush is backdated) or not; the
-        // forced flush always writes.
-        let _ = board.flush_if_due().unwrap();
-        board.flush().unwrap();
-        board.set_state("telegram", ChannelState::Error, Some("x".into()));
+        let (board, path) = board("status-flush");
+        // A new board starts "due", so a counter update is written out by the
+        // periodic check...
+        board.count_inbound("telegram", 1);
+        let flushed = board.flush_if_due().unwrap();
+        assert!(flushed, "a due snapshot is written");
+        assert!(path.exists());
+        // ...and a second check inside the interval is a no-op.
+        board.count_inbound("telegram", 2);
         assert!(!board.flush_if_due().unwrap(), "within the interval");
+        // An explicit flush always writes.
         board.flush().unwrap();
+    }
+
+    #[test]
+    fn a_clean_board_is_not_flushed_again() {
+        let (board, _path) = board("status-clean");
+        board.set_state("telegram", ChannelState::Running, None);
+        // The state change published it, so nothing is left to flush.
+        assert!(!board.flush_if_due().unwrap(), "nothing changed");
     }
 
     #[test]
