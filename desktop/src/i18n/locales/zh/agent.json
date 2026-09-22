@@ -49,7 +49,6 @@
     "noFinalReplyDetail": "已保留生成的内容。你可以再次发送请求。",
     "messagesLoadFailed": "对话记录加载失败，请稍后重试；如果反复出现，请重新打开 FutureOS。",
     "alreadyRunning": "该对话已有一个回复正在进行中。",
-    "sessionRecreated": "此对话之前的后台记录已丢失，已自动开始新的对话。上方的历史消息仍然保留，但助手已经看不到它们了。",
     "sessionChanged": "此对话的后台会话已更换。历史加载完成后将显示新会话，助手不会继承旧会话的上下文。",
     "responseInterrupted": "回复在完成前被中断。",
     "responseIncomplete": "本次回复未完成",

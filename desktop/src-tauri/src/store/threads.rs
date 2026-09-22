@@ -92,7 +92,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
     let thread_id = create_id("thread");
     // Only use a pre-existing agent session ID (e.g. from fork). For normal
     // threads leave it empty — the agent generates the ID on first prompt
-    // and it's persisted back via update_thread_session_id.
+    // and it's persisted back via bind_thread_session_id.
     let agent_session_id = input
         .agent_session_id
         .map(|id| id.trim().to_string())
@@ -286,21 +286,35 @@ pub fn update_thread_thinking_level(
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
 
-/// Persist the agent-generated session id after the first prompt creates it.
-pub fn update_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
+/// Bind the agent-generated identity to a thread exactly once.
+///
+/// Conversation identity is immutable after the first successful bind. A
+/// caller may idempotently repeat the same bind, but it may never replace a
+/// non-empty identity: doing so would make the UI thread point at a different
+/// transcript and strand the original history.
+pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err("agentSessionId cannot be empty.".to_string().into());
     }
     let now = now_millis();
-    const SQL: &str = "UPDATE threads SET
-         parent_session_id = CASE WHEN agent_session_id = ?1 THEN parent_session_id ELSE NULL END,
-         agent_session_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'";
+    const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'
+           AND (agent_session_id IS NULL OR TRIM(agent_session_id) = '')";
     let conn = connect()?;
-    conn.execute(SQL, params![session_id, now, thread_id])?;
-    mark_catalog_dirty();
-    Ok(())
+    if conn.execute(SQL, params![session_id, now, thread_id])? > 0 {
+        mark_catalog_dirty();
+        return Ok(());
+    }
+    let thread = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    match thread.agent_session_id.as_deref().map(str::trim) {
+        Some(existing) if existing == session_id => Ok(()),
+        Some(existing) if !existing.is_empty() => Err(format!(
+            "Thread is already bound to agent session {existing}; refusing to replace it with {session_id}."
+        )
+        .into()),
+        _ => Err("Thread is not available for session binding.".into()),
+    }
 }
 
 /// Project Agent lineage by session id, not local thread id: parents may be
@@ -828,23 +842,16 @@ mod tests {
             list_threads().unwrap()[0].parent_session_id,
             thread.parent_session_id
         );
-        update_thread_session_id("t1", "sess1").unwrap();
+        bind_thread_session_id("t1", "sess1").unwrap();
         assert_eq!(
             get_thread("t1").unwrap().unwrap().parent_session_id,
             thread.parent_session_id
         );
-        update_thread_session_id("t1", "replacement").unwrap();
-        assert!(get_thread("t1")
-            .unwrap()
-            .unwrap()
-            .parent_session_id
-            .is_none());
-        sync_thread_parent_session("replacement", "replacement").unwrap();
-        assert!(get_thread("t1")
-            .unwrap()
-            .unwrap()
-            .parent_session_id
-            .is_none());
+        assert!(bind_thread_session_id("t1", "replacement").is_err());
+        assert_eq!(
+            get_thread("t1").unwrap().unwrap().parent_session_id,
+            thread.parent_session_id
+        );
     }
 
     #[test]
@@ -1021,8 +1028,8 @@ mod tests {
         assert_eq!(existing.id, created.id);
 
         let other = create_thread(chat_input()).expect("create unbound thread");
-        assert!(update_thread_session_id(&other.id, "sess-one").is_err());
-        assert!(update_thread_session_id(&other.id, "   ").is_err());
+        assert!(bind_thread_session_id(&other.id, "sess-one").is_err());
+        assert!(bind_thread_session_id(&other.id, "   ").is_err());
     }
 
     #[test]
@@ -1102,8 +1109,8 @@ mod tests {
         })
         .is_err());
 
-        // update_thread_session_id + find_by_session round trip.
-        update_thread_session_id("t2", "sess_new").expect("session id");
+        // bind_thread_session_id + find_by_session round trip.
+        bind_thread_session_id("t2", "sess_new").expect("session id");
         let found = find_thread_by_agent_session("sess_new")
             .expect("find")
             .expect("some");

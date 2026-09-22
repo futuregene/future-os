@@ -3549,9 +3549,10 @@ mod bridge_tests {
         })
         .unwrap();
 
-        // Reject provisioning before the prompt reaches the Agent. The local
-        // run exists, but it must never become a successful mobile receipt.
-        agent.script("new_session", false, json!(null), "rejected");
+        // A continuation must reuse its thread-bound session rather than
+        // provisioning a replacement. Reject the actual prompt acceptance so
+        // the local run can never become a successful mobile receipt.
+        agent.script_for("prompt", &session, false, json!(null), "rejected");
 
         let command_id = unique("cmd");
         let reply = bridge
@@ -3560,6 +3561,11 @@ mod bridge_tests {
         assert_eq!(reply["success"], json!(false), "got: {reply}");
         assert!(reply["error"].as_str().unwrap().contains("rejected"));
         assert!(remote_prompt_receipt(&command_id).unwrap().is_none());
+        assert!(agent.served("prompt", &session));
+        assert!(
+            !agent.served("new_session", &session),
+            "continuation must preserve the bound session"
+        );
 
         bridge.stop().await;
     }
