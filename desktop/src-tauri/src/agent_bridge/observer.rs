@@ -1,7 +1,7 @@
-//! Per-session observers: the GUI's always-on tap into each agent session's
-//! event stream. One observer task per known session, alive regardless of
-//! which thread the UI shows — switching conversations only changes what the
-//! frontend renders, never what observers receive.
+//! Per-session observers: on-demand taps into Agent session event streams.
+//! An observer exists only while a session has demonstrated live interest:
+//! its thread is open, it owns an active run, or another client just created it.
+//! Cold historical sessions stay on disk and are not hydrated at startup.
 //!
 //! Each observer subscribes to its session's event stream and fans events out
 //! to four sinks, per session, with no cross-session shared mutable state:
@@ -22,8 +22,8 @@
 //!    webview forward, mirror publish), so the mirrored sequence stays
 //!    in-order and duplicate-free across re-attaches.
 //! 3. **Frontend invalidation** — `thread-runtime-updated` for persisted runs,
-//!    plus whitelisted settings events (`agent-event`) for every session, so
-//!    model/thinking/title changes land in the sidebar cache live.
+//!    plus whitelisted settings events (`agent-event`) for every observed
+//!    session, so model/thinking/title changes land in the sidebar cache live.
 //! 4. **Settlement** — observer-owned runs are settled on `agent_end`/`error`
 //!    (the pipeline settles its own runs).
 //!
@@ -49,7 +49,7 @@ use tokio::sync::oneshot;
 use tonic::Code;
 
 use super::{
-    client::{base_command, get_state_command},
+    client::{base_command, get_state_command, list_streaming_sessions_command},
     connect_agent,
     run_control::{mark_run_completed_if_active, mark_run_failed_if_active},
     stream,
@@ -178,6 +178,14 @@ pub(super) static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+pub(crate) fn has_observer(session_id: &str) -> bool {
+    OBSERVERS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .contains_key(session_id)
+}
+
+#[cfg(test)]
 type TestObserverTask = (
     crate::runtime::JoinHandle<()>,
     std::sync::mpsc::Receiver<()>,
@@ -202,25 +210,13 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Register (or refresh) the sole observer for an Agent session, bound to its
-/// one immutable GUI-thread owner for the observer's lifetime. The store's
-/// unique binding index prevents a second thread from claiming the session.
+/// Register (or refresh) the sole on-demand observer for an Agent session,
+/// bound to its one immutable GUI-thread owner for the observer's lifetime.
+/// Callers are user-interest or active-work paths (thread open, prompt,
+/// remote session creation, or run recovery), never discovery/check paths.
+/// The store's unique binding index prevents a second thread from claiming
+/// the session.
 pub fn ensure_observer_for_thread(session_id: &str, thread_id: &str) -> Result<(), String> {
-    ensure_observer_inner(session_id, thread_id, true)
-}
-
-/// Ensure a passive observer without treating periodic discovery as user
-/// activity. Otherwise the 60-second import loop would keep every idle entry
-/// permanently hot and defeat the 128-observer LRU cap.
-fn ensure_passive_observer(session_id: &str, thread_id: &str) -> Result<(), String> {
-    ensure_observer_inner(session_id, thread_id, false)
-}
-
-fn ensure_observer_inner(
-    session_id: &str,
-    thread_id: &str,
-    touch_existing: bool,
-) -> Result<(), String> {
     let session_id = session_id.trim();
     let thread_id = thread_id.trim();
     if session_id.is_empty() || thread_id.is_empty() {
@@ -242,9 +238,7 @@ fn ensure_observer_inner(
     let mut guard = OBSERVERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(handle) = guard.get(session_id) {
         verify_observer_owner(session_id, handle, thread_id)?;
-        if touch_existing {
-            handle.shared.touch();
-        }
+        handle.shared.touch();
         return Ok(());
     }
     evict_idle_if_over_cap(&mut guard);
@@ -262,6 +256,75 @@ fn ensure_observer_inner(
     Ok(())
 }
 
+/// Express interest in an Agent session when the caller only has its session
+/// id (the remote/mobile protocol shape). Missing local ownership is a no-op:
+/// discovery may still be importing the session, and a later request or the
+/// streaming monitor will retry after the binding exists.
+pub fn ensure_observer_for_session(session_id: &str) -> Result<bool, String> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Ok(false);
+    }
+    let Some(thread) = crate::store::find_thread_by_agent_session(session_id)
+        .map_err(|error| format!("find observer owner: {error}"))?
+    else {
+        return Ok(false);
+    };
+    ensure_observer_for_thread(session_id, &thread.id)?;
+    Ok(true)
+}
+
+/// Discover only sessions that are actively streaming and attach their
+/// observers. `list_streaming_sessions` scans the Agent's resident map and
+/// does not hydrate cold journals; consequently this is safe to run as a
+/// process-level compatibility backstop for runs started by another client.
+///
+/// Returns the corresponding Desktop thread ids for the sidebar status view.
+pub async fn reconcile_streaming_observers() -> Result<Vec<String>, crate::AppError> {
+    let mut client = match connect_agent().await {
+        Ok(client) => client,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let response = match client
+        .execute_command(list_streaming_sessions_command())
+        .await
+    {
+        Ok(response) => response.into_inner(),
+        Err(_) => return Ok(Vec::new()),
+    };
+    if !response.success {
+        return Ok(Vec::new());
+    }
+    let value = future_rpc::decode::response_data(&response);
+    let session_ids = value
+        .get("sessionIds")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut thread_ids = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids.iter().filter_map(serde_json::Value::as_str) {
+        let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
+            continue;
+        };
+        ensure_observer_for_thread(session_id, &thread.id).map_err(crate::AppError::from)?;
+        thread_ids.push(thread.id);
+    }
+    Ok(thread_ids)
+}
+
+/// Headless mode has no WebView sidebar monitor to drive
+/// [`reconcile_streaming_observers`]. Poll only the Agent's resident streaming
+/// set so externally-started work is mirrored without hydrating every stored
+/// conversation.
+pub fn spawn_streaming_observer_monitor() {
+    crate::runtime::spawn(async move {
+        loop {
+            let _ = reconcile_streaming_observers().await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+
 fn verify_observer_owner(
     session_id: &str,
     handle: &ObserverHandle,
@@ -274,27 +337,6 @@ fn verify_observer_owner(
         "observer_owner_conflict: session {session_id} is already observed by thread {}",
         handle.shared.thread_id
     ))
-}
-
-/// Startup seed: one observer per thread that already has an agent session.
-/// Runs synchronously but only spawns tasks — attach/retry happens inside
-/// each observer, so a down agent never blocks the caller.
-pub fn seed_observers_from_store() {
-    let Ok(threads) = crate::store::list_threads() else {
-        return;
-    };
-    for thread in threads {
-        if let Some(session_id) = thread
-            .agent_session_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            if let Err(error) = ensure_passive_observer(session_id, &thread.id) {
-                eprintln!("FutureOS could not seed observer for session {session_id}: {error}");
-            }
-        }
-    }
 }
 
 /// Low-frequency reconciliation for conversations created or removed outside
@@ -1735,41 +1777,8 @@ mod tests {
             .insert("sess-touch".to_string(), ObserverHandle { cancel, shared });
 
         ensure_observer_for_thread("sess-touch", &thread.id).expect("existing touch");
-        ensure_passive_observer("sess-touch", &thread.id).expect("existing passive");
 
         OBSERVERS.lock().unwrap().remove("sess-touch");
-    }
-
-    #[test]
-    fn seed_observers_handles_empty_and_broken_store() {
-        let home = TestHome::new("observer-seed-empty");
-        let _mock = mock_agent();
-        let workspace = seed_workspace(home.path(), "ws");
-        // A thread with no agent session → the `if let Some` else path.
-        seed_thread(&workspace.id, None);
-        seed_observers_from_store();
-        // Broken store → silent return.
-        let prev = break_home();
-        seed_observers_from_store();
-        restore_home(prev);
-    }
-
-    #[test]
-    fn seed_observers_creates_one_observer_per_unique_session() {
-        let home = TestHome::new("observer-seed-unique");
-        let _mock = mock_agent();
-        let workspace = seed_workspace(home.path(), "ws");
-        let _t1 = seed_thread(&workspace.id, Some("sess-one"));
-        let _t2 = seed_thread(&workspace.id, Some("sess-two"));
-
-        seed_observers_from_store();
-
-        let observers = OBSERVERS.lock().unwrap();
-        assert!(observers.contains_key("sess-one"));
-        assert!(observers.contains_key("sess-two"));
-        drop(observers);
-        drop_observer("sess-one");
-        drop_observer("sess-two");
     }
 
     #[tokio::test]

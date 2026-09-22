@@ -624,11 +624,6 @@ pub async fn import_missing_sessions() {
         eprintln!(
             "FutureOS: imported {imported} session(s) ({total_runs} runs) out of {total} agent session(s)"
         );
-        // Full discovery also finds idle sessions, which never appear in the
-        // 1s streaming poll. Arm their passive observers now so later runs and
-        // session metadata changes are projected without requiring a click or
-        // an app restart.
-        super::observer::seed_observers_from_store();
         // New threads landed in the store — let the sidebar know.
         crate::emit_threads_updated();
     }
@@ -1486,8 +1481,6 @@ mod tests {
             .filter(|workspace| workspace.kind == "user")
             .count();
         assert_eq!(groups, 1);
-        super::super::observer::drop_observer("sess-parent");
-        super::super::observer::drop_observer("sess-child");
         let _ = home;
     }
 
@@ -1550,10 +1543,9 @@ mod tests {
             .expect("find")
             .is_some());
         let observers = super::super::observer::OBSERVERS.lock().unwrap();
-        assert!(observers.contains_key("sess-m1"));
-        assert!(observers.contains_key("sess-m2"));
-        drop(observers);
-        super::super::observer::drop_observer("sess-m1");
-        super::super::observer::drop_observer("sess-m2");
+        assert!(
+            !observers.contains_key("sess-m1") && !observers.contains_key("sess-m2"),
+            "discovery imports cold sessions without hydrating observers"
+        );
     }
 }

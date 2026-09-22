@@ -39,10 +39,13 @@ pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worke
 pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
-pub(crate) use self::import::{import_missing_sessions, list_agent_session_ids};
+pub(crate) use self::import::list_agent_session_ids;
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
+#[cfg(test)]
+pub(crate) use self::observer::has_observer;
 pub use self::observer::{
-    drop_observer, ensure_observer_for_thread, seed_observers_from_store, spawn_session_discovery,
+    drop_observer, ensure_observer_for_session, ensure_observer_for_thread,
+    reconcile_streaming_observers, spawn_session_discovery, spawn_streaming_observer_monitor,
 };
 #[cfg(test)]
 pub use self::prompt::agent_prompt;
