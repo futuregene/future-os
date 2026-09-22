@@ -57,7 +57,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "signal",
     display_name: "Signal",
     description: "Signal via a local signal-cli daemon (HTTP interface).",
-    docs: "docs/guide/channels-signal.md",
+    docs: "docs/guide/channels-providers.md#signal",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

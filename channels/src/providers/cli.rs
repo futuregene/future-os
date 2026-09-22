@@ -20,7 +20,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "cli",
     display_name: "Terminal",
     description: "Read prompts from stdin and stream answers to stdout.",
-    docs: "docs/guide/channels-cli.md",
+    docs: "docs/guide/channels-providers.md#terminal",
     maturity: Maturity::Live,
     capabilities: Capabilities {
         receive: true,

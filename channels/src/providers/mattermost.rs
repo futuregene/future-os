@@ -43,7 +43,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "mattermost",
     display_name: "Mattermost",
     description: "Mattermost server: websocket events, threaded posts, channel allowlist.",
-    docs: "docs/guide/channels-mattermost.md",
+    docs: "docs/guide/channels-providers.md#mattermost",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

@@ -44,7 +44,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "qq",
     display_name: "QQ",
     description: "QQ bot (open platform v2): gateway events, C2C and group replies.",
-    docs: "docs/guide/channels-qq.md",
+    docs: "docs/guide/channels-providers.md#qq",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

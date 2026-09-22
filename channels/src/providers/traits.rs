@@ -110,7 +110,10 @@ pub struct ChannelDefinition {
     pub id: &'static str,
     pub display_name: &'static str,
     pub description: &'static str,
-    /// Where to read about it: a path under `docs/`, or the platform's own docs.
+    /// Where to read about it: a path under `docs/`, optionally with the anchor
+    /// of the section that describes this channel. `every_channel_documents_
+    /// itself_somewhere_that_exists` fails the build if the target is not there,
+    /// because this value is user-facing (`future channel list --json`).
     pub docs: &'static str,
     pub maturity: Maturity,
     pub capabilities: Capabilities,

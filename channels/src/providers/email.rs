@@ -53,7 +53,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "email",
     display_name: "Email (IMAP + SMTP)",
     description: "Mailbox channel: IMAP polling for mail, SMTP submission for threaded replies, attachments listed but not downloaded.",
-    docs: "docs/guide/channels-email.md",
+    docs: "docs/guide/channels-providers.md#email",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

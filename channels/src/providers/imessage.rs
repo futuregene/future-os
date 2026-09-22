@@ -36,7 +36,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "imessage",
     display_name: "iMessage (macOS)",
     description: "macOS Messages.app: AppleScript send, local database receive.",
-    docs: "docs/guide/channels-imessage.md",
+    docs: "docs/guide/channels-providers.md#imessage-macos",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

@@ -55,6 +55,62 @@ pub fn definition(id: &str) -> Option<&'static ChannelDefinition> {
 mod tests {
     use super::*;
 
+    /// The anchor GitHub derives from a markdown heading: lower-cased,
+    /// punctuation dropped, spaces turned into hyphens. Backticks disappear,
+    /// so a heading written ``### `feishu` `` anchors at `#feishu`.
+    fn heading_slug(line: &str) -> Option<String> {
+        let heading = line.strip_prefix('#')?.trim_start_matches('#').trim();
+        let kept: String = heading
+            .to_lowercase()
+            .chars()
+            .filter(|character| character.is_alphanumeric() || " -_".contains(*character))
+            .collect();
+        Some(kept.replace(' ', "-"))
+    }
+
+    #[test]
+    fn every_channel_documents_itself_somewhere_that_exists() {
+        // `docs` is user-facing: it is what `future channel list --json`
+        // reports. A path nobody wrote reads as documentation from the outside
+        // while sending the reader nowhere, which is how all fourteen channels
+        // shipped pointing at per-channel pages that were never created. The
+        // crate's tests are the only place this is enforced automatically —
+        // the documentation gate is run by hand.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate sits inside the workspace");
+        for definition in all_definitions() {
+            let docs = definition.docs;
+            assert!(
+                !docs.is_empty(),
+                "{} declares no documentation",
+                definition.id
+            );
+            let (path_text, anchor) = match docs.split_once('#') {
+                Some((path, anchor)) => (path, Some(anchor)),
+                None => (docs, None),
+            };
+            let path = root.join(path_text);
+            let content = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!(
+                    "{} points at `{docs}`, which cannot be read ({error}); \
+                     expected a file at {}",
+                    definition.id,
+                    path.display()
+                )
+            });
+            let Some(anchor) = anchor else {
+                continue;
+            };
+            let anchors: Vec<String> = content.lines().filter_map(heading_slug).collect();
+            assert!(
+                anchors.iter().any(|candidate| candidate == anchor),
+                "{} points at `{docs}`, but that document has no such heading",
+                definition.id
+            );
+        }
+    }
+
     #[test]
     fn every_channel_id_is_unique() {
         let mut seen = std::collections::HashSet::new();

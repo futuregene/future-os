@@ -94,7 +94,12 @@ let outcome = ctx.handle(inbound, sender.clone()).await;
 `#[serde(default)]`，并且**不要**加 `#[serde(deny_unknown_fields)]`——策略键不是你的。
 用 `ctx.config::<MyConfig>()?` 读取，字段格式错误时错误信息会点出通道名。
 让 `DEFINITION.config_example` 与实际读取保持一致，并在
-[通道 provider 参考](channels-providers.zh-CN.md) 中记录该配置块。
+[通道 provider 参考](channels-providers.zh-CN.md) 中记录该配置块：在那里为该通道加一节，
+并让 `DEFINITION.docs` 指向它（带锚点，写英文页路径
+`docs/guide/channels-providers.md#my-channel`）。`docs` 就是
+`future channel list --json` 报出来的值，所以指向一个不存在的路径等于"看起来像文档、
+其实哪里也去不了"——`every_channel_documents_itself_somewhere_that_exists` 会在任何
+通道的目标（含锚点）不存在时让构建失败。
 
 ## 错误
 
