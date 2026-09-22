@@ -6,6 +6,7 @@
 #[cfg(test)]
 use std::env;
 
+use crate::theme::{Chrome, Theme};
 use crate::tui::{Component, RESET};
 use crate::utils::{truncate_to_width, visible_width, TruncateOptions};
 
@@ -30,26 +31,16 @@ pub struct FooterData {
     pub auto_compaction_enabled: bool,
 }
 
-const BASE_FG: u8 = 245;
-const ACCENT_FG: u8 = 252;
-const THINKING_FG: u8 = 117;
-const TOKEN_FG: u8 = 71;
-const COST_FG: u8 = 71;
-const GREEN_FG: u8 = 71;
-const YELLOW_FG: u8 = 226;
-const RED_FG: u8 = 204;
-const AUTO_FG: u8 = 240;
-const SPINNER_FG: u8 = 39;
-
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Colorize with fg and reset to BASE_FG afterwards (TS `colorFg`).
-fn color_fg(c: u8, text: &str) -> String {
-    format!("\x1b[38;5;{c}m{text}\x1b[38;5;{BASE_FG}m")
+/// Colorize with `fg` and reset to `base` afterwards (TS `colorFg`).
+fn color_fg(c: u8, base: u8, text: &str) -> String {
+    format!("\x1b[38;5;{c}m{text}\x1b[38;5;{base}m")
 }
 
 pub struct Footer {
     data: FooterData,
+    theme: Theme,
     #[allow(dead_code)]
     width: usize,
 }
@@ -58,8 +49,21 @@ impl Footer {
     pub fn new(width: usize) -> Self {
         Self {
             data: FooterData::default(),
+            theme: Theme::default(),
             width,
         }
+    }
+
+    /// Adopt a palette (`/theme`). The status bar takes its colors from the
+    /// [`Chrome`] view of it; the default palette is byte-identical to the
+    /// ported TS renderer.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.theme = *theme;
+    }
+
+    /// The palette this footer paints with.
+    pub fn theme(&self) -> Theme {
+        self.theme
     }
 
     pub fn set_data(&mut self, data: FooterData) {
@@ -89,7 +93,8 @@ impl Footer {
 
 impl Component for Footer {
     fn render(&mut self, width: usize) -> Vec<String> {
-        let base_fg = format!("\x1b[38;5;{BASE_FG}m");
+        let chrome = Chrome::from_theme(&self.theme);
+        let base_fg = format!("\x1b[38;5;{}m", chrome.base);
 
         // Build left side: [spinner] [pwd] [model] [thinking]
         let mut left_parts: Vec<String> = Vec::new();
@@ -97,17 +102,25 @@ impl Component for Footer {
         // Spinner when streaming
         if self.data.streaming || self.data.compacting {
             let frame_idx = self.data.spinner_frame.unwrap_or(0) % SPINNER_FRAMES.len();
-            left_parts.push(color_fg(SPINNER_FG, SPINNER_FRAMES[frame_idx]));
+            left_parts.push(color_fg(
+                chrome.accent,
+                chrome.base,
+                SPINNER_FRAMES[frame_idx],
+            ));
         }
 
         if self.data.compacting {
-            left_parts.push(color_fg(SPINNER_FG, "Compacting…"));
+            left_parts.push(color_fg(chrome.accent, chrome.base, "Compacting…"));
         }
 
         // Tool elapsed time
         if let Some(tool_elapsed) = self.data.tool_elapsed {
             if tool_elapsed > 0.0 {
-                left_parts.push(color_fg(TOKEN_FG, &format!("{tool_elapsed}s")));
+                left_parts.push(color_fg(
+                    chrome.token,
+                    chrome.base,
+                    &format!("{tool_elapsed}s"),
+                ));
             }
         }
 
@@ -132,16 +145,24 @@ impl Component for Footer {
         if let Some(model) = &self.data.model {
             let model_short = Self::shorten_model(model);
             let thinking = match self.data.thinking.as_deref() {
-                Some(t) if !t.is_empty() && t != "off" => color_fg(THINKING_FG, &format!(" • {t}")),
+                Some(t) if !t.is_empty() && t != "off" => {
+                    color_fg(chrome.thinking, chrome.base, &format!(" • {t}"))
+                }
                 _ => String::new(),
             };
-            left_parts.push(color_fg(ACCENT_FG, &model_short) + &thinking);
+            left_parts.push(color_fg(chrome.text, chrome.base, &model_short) + &thinking);
         }
 
         // Build right side: [token stats] [cost] [context usage]
         let mut right_parts: Vec<String> = Vec::new();
 
-        // Token stats: ↑Xk ↓Xk
+        // Token stats: Σ↑Xk ↓Xk — session *totals*. They have no ceiling
+        // (every request resends the whole prompt), so they are marked with Σ
+        // to keep them apart from the context readout below, which is the one
+        // bounded level in this bar. The marker is glued to the first counter
+        // and painted muted so it costs a single column: at 80 columns the
+        // right side is already the part that gets truncated first, and a
+        // longer marker would push the cost/context readouts out.
         let mut token_parts: Vec<String> = Vec::new();
         // JS truthiness: `if (this.data.tokensIn)` — a 0 value is falsy and
         // skipped. `if let Some` would render `↑0` for a Some(0).
@@ -166,17 +187,25 @@ impl Component for Footer {
             }
         }
         if !token_parts.is_empty() {
-            right_parts.push(color_fg(TOKEN_FG, &token_parts.join(" ")));
+            let totals = color_fg(chrome.muted, chrome.base, "Σ")
+                + &color_fg(chrome.token, chrome.base, &token_parts.join(" "));
+            right_parts.push(totals);
         }
 
         // Cost
         if let Some(total_cost) = self.data.total_cost {
             if total_cost > 0.0 {
-                right_parts.push(color_fg(COST_FG, &format!("¥{total_cost:.3}")));
+                right_parts.push(color_fg(
+                    chrome.token,
+                    chrome.base,
+                    &format!("¥{total_cost:.3}"),
+                ));
             }
         }
 
         // Context usage: tokenCount/contextWindow (color based on percent fill)
+        // — the one bounded readout in the bar, left unmarked so that the Σ
+        // totals above cannot be confused with it (see the token stats).
         if let Some(context_window) = self.data.context_window {
             // JS truthiness: 0 is falsy — skip zero windows.
             if context_window != 0 {
@@ -185,15 +214,16 @@ impl Component for Footer {
                 let pct = self.data.context_percent.unwrap_or(0);
                 // Color based on usage level
                 let used_color = if pct < 70 {
-                    GREEN_FG // green < 70%
+                    chrome.token // green < 70%
                 } else if pct < 90 {
-                    YELLOW_FG // yellow 70-90%
+                    chrome.warn // yellow 70-90%
                 } else {
-                    RED_FG // red > 90%
+                    chrome.error // red > 90%
                 };
-                let mut usage_str = color_fg(used_color, &used) + &base_fg + &format!("/{win}");
+                let mut usage_str =
+                    color_fg(used_color, chrome.base, &used) + &base_fg + &format!("/{win}");
                 if self.data.auto_compaction_enabled {
-                    usage_str += &color_fg(AUTO_FG, " (auto)");
+                    usage_str += &color_fg(chrome.border, chrome.base, " (auto)");
                 }
                 right_parts.push(usage_str);
             }
@@ -402,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_token_stats() {
+    fn renders_token_stats_as_marked_session_totals() {
         let line = render_footer(
             FooterData {
                 tokens_in: Some(5000),
@@ -412,8 +442,7 @@ mod tests {
             80,
         );
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("↑5k"));
-        assert!(text.contains("↓12k"));
+        assert!(text.contains("Σ↑5k ↓12k"), "{text}");
     }
 
     #[test]
@@ -441,8 +470,46 @@ mod tests {
             80,
         );
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("50k"));
-        assert!(text.contains("128k"));
+        assert!(text.contains("50k/128k"), "{text}");
+        // With no session totals to mark, no Σ is rendered either.
+        assert!(!text.contains('Σ'), "{text}");
+    }
+
+    /// The two token readouts answer different questions — the Σ counters are
+    /// session totals that have no ceiling, the unmarked `used/window` readout
+    /// is the bounded occupancy — so only the totals carry a marker, and the
+    /// whole right-hand side is pinned as one string.
+    #[test]
+    fn the_footer_marks_the_session_totals_apart_from_the_context_readout() {
+        let line = render_footer(
+            FooterData {
+                tokens_in: Some(5000),
+                tokens_out: Some(12000),
+                tokens_cache_r: Some(3000),
+                tokens_cache_w: Some(2000),
+                total_cost: Some(0.5),
+                context_tokens: Some(50000),
+                context_window: Some(128000),
+                context_percent: Some(39),
+                ..Default::default()
+            },
+            80,
+        );
+        let text = strip_ansi_codes(&line);
+        assert!(
+            text.contains("Σ↑5k ↓12k R3k W2k  ¥0.500  50k/128k"),
+            "{text}"
+        );
+        // Exactly one Σ, and it opens the totals group — the context readout
+        // stays unmarked, so the two cannot be read as one dimension.
+        assert_eq!(text.matches('Σ').count(), 1, "{text}");
+        let totals = text.find('Σ').expect("the totals are marked");
+        let context = text.find("50k/128k").expect("the context readout is there");
+        assert!(totals < context, "{text}");
+        assert!(
+            !text[context..].contains('Σ'),
+            "the context readout carries no totals marker: {text}"
+        );
     }
 
     #[test]
@@ -502,6 +569,46 @@ mod tests {
         assert!(text.contains("5s"));
     }
 
+    /// At the 80-column default the right side is the first thing truncated, so
+    /// the Σ marker costs exactly one column, and on the byte-pinned rows above
+    /// it is paid out of the gap (there is a 59-column gap left at 120 columns).
+    /// This is the heavy case — four counters, a cost, an `(auto)` marker and a
+    /// deep cwd — where the truncation is already active: the cost and the
+    /// context usage still show, and the one column comes off the window figure.
+    #[test]
+    fn the_marker_costs_one_column_and_keeps_cost_and_context_visible() {
+        let line = render_footer(
+            FooterData {
+                cwd: Some("/Users/geilige/future-os/.worktrees/tui-parity".into()),
+                model: Some("deepseek-v4-flash".into()),
+                thinking: Some("high".into()),
+                tokens_in: Some(812_000),
+                tokens_out: Some(45_000),
+                tokens_cache_r: Some(700_000),
+                tokens_cache_w: Some(12_000),
+                total_cost: Some(12.345),
+                context_tokens: Some(48_000),
+                context_window: Some(200_000),
+                context_percent: Some(24),
+                auto_compaction_enabled: true,
+                ..Default::default()
+            },
+            80,
+        );
+        assert!(visible_width(&line) <= 80, "{line:?}");
+        let text = strip_ansi_codes(&line);
+        assert!(text.contains("Σ↑812k ↓45k R700k W12k"), "{text}");
+        assert!(text.contains("¥12.345"), "the cost survives: {text}");
+        assert!(text.contains("48k/"), "the context usage survives: {text}");
+        // A marker cannot be free: Σ costs exactly one column, and on this
+        // saturated row that column comes off the *tail* — the cost in the
+        // middle and the used-token figure are untouched, the model name on the
+        // left is already clipped by the same rule. Before the marker the row
+        // ended `...  48k/200` (the half-width cap), so one window digit goes.
+        // The full-width rows above pin the rest of the right side byte for byte.
+        assert!(text.ends_with("48k/20"), "{text}");
+    }
+
     #[test]
     fn never_exceeds_terminal_width() {
         let line = render_footer(
@@ -544,8 +651,7 @@ mod tests {
             60,
         );
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("50k"));
-        assert!(text.contains("128k"));
+        assert!(text.contains("50k/128k"), "{text}");
     }
 
     #[test]
@@ -595,8 +701,7 @@ mod tests {
             120,
         );
         let text = strip_ansi_codes(&line);
-        assert!(text.contains("R3k"));
-        assert!(text.contains("W2k"));
+        assert!(text.contains("ΣR3k W2k"), "{text}");
     }
 
     /// JS truthiness: `if (this.data.tokensCacheR)` skips a zero value, so a
@@ -619,6 +724,8 @@ mod tests {
         assert!(!text.contains("W0"));
         assert!(!text.contains("↑0"));
         assert!(!text.contains("↓0"));
+        // All-zero totals render nothing at all — not even the Σ marker.
+        assert!(!text.contains('Σ'), "{text}");
     }
 
     #[test]
@@ -668,5 +775,126 @@ mod tests {
         let mut footer = Footer::new(80);
         assert!(footer.as_any().downcast_ref::<Footer>().is_some());
         assert!(footer.as_any_mut().downcast_mut::<Footer>().is_some());
+    }
+
+    /// A busy footer: every branch of `render` that paints something.
+    fn busy_footer_data() -> FooterData {
+        FooterData {
+            model: Some("openai/gpt-4o".into()),
+            thinking: Some("high".into()),
+            streaming: true,
+            compacting: true,
+            spinner_frame: Some(0),
+            tool_elapsed: Some(2.0),
+            tokens_in: Some(5000),
+            total_cost: Some(1.5),
+            context_tokens: Some(95),
+            context_window: Some(100),
+            context_percent: Some(95),
+            auto_compaction_enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn theme_round_trips_and_the_default_palette_stays_byte_identical() {
+        let data = busy_footer_data();
+        let default_line = render_footer(data.clone(), 120);
+
+        // Literal bytes, not a round-trip: `Footer::new` already carries
+        // `Theme::default()`, so re-applying the default palette to it would be
+        // true by construction and could never fail. These are the exact SGR
+        // bytes the ported TS footer emits for a busy row — legacy accent 39
+        // (spinner, "Compacting…"), base 245 (repeated because `colorFg`
+        // resets to it and the `join` separator emits it again), token green 71
+        // ("2s", "↑5k", "¥1.500"), bright text 252, thinking blue 117, the
+        // muted 241 "Σ" that marks the token counters as session totals rather
+        // than a level, error red 204 at a 95 % context fill and the muted 240
+        // "(auto)" marker.
+        let expected = format!(
+            "\x1b[38;5;39m⠋\x1b[38;5;245m\x1b[38;5;245m  \
+             \x1b[38;5;39mCompacting…\x1b[38;5;245m\x1b[38;5;245m  \
+             \x1b[38;5;71m2s\x1b[38;5;245m\x1b[38;5;245m  \
+             \x1b[38;5;252mgpt-4o\x1b[38;5;245m\x1b[38;5;117m • high\x1b[38;5;245m\
+             \x1b[38;5;245m{}\
+             \x1b[38;5;241mΣ\x1b[38;5;245m\x1b[38;5;71m↑5k\x1b[38;5;245m\x1b[38;5;245m  \
+             \x1b[38;5;71m¥1.500\x1b[38;5;245m\x1b[38;5;245m  \
+             \x1b[38;5;204m95\x1b[38;5;245m\x1b[38;5;245m/100\x1b[38;5;240m (auto)\
+             \x1b[38;5;245m\x1b[m",
+            " ".repeat(59)
+        );
+        assert_eq!(default_line, expected);
+
+        let mut footer = Footer::new(120);
+        footer.set_data(data);
+        footer.set_theme(&crate::theme::DARK_THEME);
+        assert_eq!(footer.theme(), crate::theme::DARK_THEME);
+        assert_eq!(footer.render(120).remove(0), default_line);
+
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        footer.set_theme(&light);
+        assert_eq!(footer.theme(), light);
+        let themed = footer.render(120).remove(0);
+        assert_ne!(themed, default_line, "a light palette must recolor the bar");
+        // The spinner comes from the applied accent, not the legacy table.
+        assert!(
+            themed.contains(&format!("\x1b[38;5;{}m", light.accent)),
+            "{themed:?}"
+        );
+        assert!(!themed.contains("\x1b[38;5;39m"), "{themed:?}");
+    }
+
+    #[test]
+    fn themed_footer_paints_every_role_from_the_palette() {
+        let theme = crate::theme::Theme {
+            dim: 200,
+            fg: 201,
+            accent: 202,
+            thinking_medium: 203,
+            success: 204,
+            thinking_high: 205,
+            error: 206,
+            border: 207,
+            ..crate::theme::DARK_THEME
+        };
+        let mut footer = Footer::new(120);
+        footer.set_theme(&theme);
+
+        // 95 % context → base 200, text 201, accent 202 (spinner + compacting),
+        // thinking 203, token 204 (tokens + cost), error 206, border 207 (auto).
+        footer.set_data(busy_footer_data());
+        let line = footer.render(120).remove(0);
+        for role in [200u8, 201, 202, 203, 204, 206, 207] {
+            assert!(
+                line.contains(&format!("\x1b[38;5;{role}m")),
+                "role {role} missing: {line:?}"
+            );
+        }
+
+        // 75 % context → the warning yellow (205).
+        footer.set_data(FooterData {
+            context_tokens: Some(75),
+            context_window: Some(100),
+            context_percent: Some(75),
+            ..Default::default()
+        });
+        let line = footer.render(120).remove(0);
+        assert!(line.contains("\x1b[38;5;205m"), "{line:?}");
+    }
+
+    #[test]
+    fn cwd_equal_to_home_renders_as_tilde() {
+        let _guard = crate::test_env::lock();
+        let old = env::var_os("HOME");
+        let home = crate::home::home_dir().unwrap();
+        let line = render_footer(
+            FooterData {
+                cwd: Some(home.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            80,
+        );
+        restore_home(old);
+        assert!(strip_ansi_codes(&line).contains('~'), "{line:?}");
     }
 }

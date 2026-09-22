@@ -21,6 +21,7 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 use crate::keys;
+use crate::paste_burst::{self, BurstStep, BurstText, EventKind, PasteBurst};
 use crate::stdin_buffer::{StdinBuffer, StdinEvent};
 
 #[cfg(unix)]
@@ -264,6 +265,17 @@ impl Terminal {
             let mut buffer = StdinBuffer::with_timeout(10);
             let mut kitty_query_deadline = Some(Instant::now() + Duration::from_millis(150));
             let mut flush_deadline: Option<Instant> = None;
+            // The paste-burst gate: off unless bracketed paste has to be
+            // guessed at (see `paste_burst`), in which case everything arriving
+            // from stdin goes through it.
+            let mut sink = InputSink {
+                on_input: &mut on_input,
+                kitty_active: &kitty_active,
+                draining: &draining,
+                write_lock: &write_lock,
+                burst: paste_burst::gate_for_host()
+                    .then(|| PasteBurst::new(paste_burst::idle_for(std::env::consts::OS))),
+            };
 
             loop {
                 if stop_flag.load(Ordering::SeqCst) {
@@ -271,13 +283,17 @@ impl Terminal {
                 }
 
                 // Wait timeout: wake for the nearest deadline (kitty query
-                // fallback or the StdinBuffer idle flush), else 100 ms.
+                // fallback, the StdinBuffer idle flush, or the paste-burst
+                // window), else 100 ms.
                 let now = Instant::now();
                 let mut timeout_ms: i64 = 100;
                 if let Some(d) = kitty_query_deadline {
                     timeout_ms = timeout_ms.min(ms_until(d, now));
                 }
                 if let Some(d) = flush_deadline {
+                    timeout_ms = timeout_ms.min(ms_until(d, now));
+                }
+                if let Some(d) = sink.deadline() {
                     timeout_ms = timeout_ms.min(ms_until(d, now));
                 }
                 let timeout_ms = timeout_ms.max(0) as i32;
@@ -304,7 +320,10 @@ impl Terminal {
                         *last_data_time.lock() = Instant::now();
                         let events = buffer.process_bytes(&chunk[..n]);
                         for ev in &events {
-                            handle_event(&mut on_input, ev, &kitty_active, &draining, &write_lock);
+                            // One stamp per event: characters of a single read
+                            // are microseconds apart (a paste), a human's keys
+                            // tens of milliseconds (see `paste_burst`).
+                            sink.feed(ev, Instant::now());
                         }
                         if buffer.pending() {
                             flush_deadline =
@@ -375,10 +394,14 @@ impl Terminal {
                         flush_deadline = None;
                         let events = buffer.flush();
                         for ev in &events {
-                            handle_event(&mut on_input, ev, &kitty_active, &draining, &write_lock);
+                            sink.feed(ev, Instant::now());
                         }
                     }
                 }
+
+                // Timer: paste-burst window — release whatever was held (as
+                // typing, or as one paste once the run reached the minimum).
+                sink.due(Instant::now());
             }
         }));
 
@@ -575,6 +598,147 @@ fn ms_until(deadline: Instant, now: Instant) -> i64 {
         .saturating_duration_since(now)
         .as_millis()
         .min(i64::MAX as u128) as i64
+}
+
+/// The app plus the paste-burst gate in front of it: the one place an input
+/// event can be held back from `handle_event`.
+///
+/// With `burst` as `None` — every platform that wraps pastes itself — `feed`
+/// hands the event straight to `handle_event`, which is what makes the gate
+/// free rather than merely harmless when it is off.
+struct InputSink<'a> {
+    on_input: &'a mut Box<dyn FnMut(String) + Send + 'static>,
+    kitty_active: &'a AtomicBool,
+    draining: &'a AtomicBool,
+    write_lock: &'a Mutex<()>,
+    burst: Option<PasteBurst>,
+}
+
+/// What one event needs: a finished run to deliver first, and whether the event
+/// itself still has to reach the app.
+struct Dispatch {
+    emit: Option<BurstText>,
+    pass: bool,
+}
+
+impl Dispatch {
+    /// The event takes its normal path (nothing is held).
+    fn pass() -> Self {
+        Self {
+            emit: None,
+            pass: true,
+        }
+    }
+
+    /// The event was absorbed into a run: nothing reaches the app yet.
+    fn hold() -> Self {
+        Self {
+            emit: None,
+            pass: false,
+        }
+    }
+
+    /// A run ended and the event still has to be delivered after it.
+    fn emit_then_pass(emit: Option<BurstText>) -> Self {
+        Self { emit, pass: true }
+    }
+}
+
+impl InputSink<'_> {
+    /// Feed one `stdin_buffer` event.
+    fn feed(&mut self, ev: &StdinEvent, now: Instant) {
+        let dispatch = self.plan(ev, now);
+        if let Some(text) = dispatch.emit {
+            self.emit(text);
+        }
+        if dispatch.pass {
+            self.pass(ev);
+        }
+    }
+
+    /// When the held run must be released, or `None` when nothing is held.
+    fn deadline(&self) -> Option<Instant> {
+        self.burst.as_ref().and_then(PasteBurst::deadline)
+    }
+
+    /// Release a run whose window has closed (the reader loop's timer).
+    fn due(&mut self, now: Instant) {
+        let text = self.burst.as_mut().and_then(|burst| burst.take_due(now));
+        if let Some(text) = text {
+            self.emit(text);
+        }
+    }
+
+    /// Decide what `ev` needs, without delivering anything yet.
+    fn plan(&mut self, ev: &StdinEvent, now: Instant) -> Dispatch {
+        let draining = self.draining.load(Ordering::SeqCst);
+        let Some(burst) = self.burst.as_mut() else {
+            return Dispatch::pass();
+        };
+        // A modal owns the keyboard: never keep a key from `handle_event`,
+        // which drops input for the duration of the drain.
+        if draining {
+            return Dispatch::emit_then_pass(burst.flush());
+        }
+        match ev {
+            // A paste the terminal *did* wrap: the brackets already say what
+            // this is, so any open run ends here.
+            StdinEvent::Paste(_) => Dispatch::emit_then_pass(burst.flush()),
+            StdinEvent::Data(sequence) => match paste_burst::classify(sequence) {
+                EventKind::Char(ch) => match burst.on_char(ch, now) {
+                    BurstStep::Hold => Dispatch::hold(),
+                    BurstStep::Emit(text) => Dispatch {
+                        emit: Some(text),
+                        pass: false,
+                    },
+                },
+                // Enter / tab are text only *inside* a run; on their own they
+                // take their normal path (submit, autocomplete).
+                EventKind::Newline => {
+                    if burst.on_newline(now) {
+                        Dispatch::hold()
+                    } else {
+                        Dispatch::emit_then_pass(burst.flush())
+                    }
+                }
+                EventKind::Tab => {
+                    if burst.on_tab(now) {
+                        Dispatch::hold()
+                    } else {
+                        Dispatch::emit_then_pass(burst.flush())
+                    }
+                }
+                EventKind::Other => Dispatch::emit_then_pass(burst.flush()),
+            },
+        }
+    }
+
+    /// Hand one event to `handle_event` unchanged.
+    fn pass(&mut self, ev: &StdinEvent) {
+        handle_event(
+            self.on_input,
+            ev,
+            self.kitty_active,
+            self.draining,
+            self.write_lock,
+        );
+    }
+
+    /// Deliver a finished run.
+    fn emit(&mut self, text: BurstText) {
+        match text {
+            // Typing: one event per character — byte-identical to what the
+            // StdinBuffer hands over when the gate is off.
+            BurstText::Typed(text) => {
+                for ch in text.chars() {
+                    self.pass(&StdinEvent::Data(ch.to_string()));
+                }
+            }
+            // A paste: the shape a bracketed paste arrives in, so the app
+            // folds it, attaches it or inserts it through one code path.
+            BurstText::Paste(text) => self.pass(&StdinEvent::Paste(text)),
+        }
+    }
 }
 
 /// Dispatch one StdinBuffer event, mirroring the TS `setupStdinBuffer` data
@@ -1007,6 +1171,191 @@ mod tests {
         assert!(spin_until(&mut || true, 5));
     }
 
+    // ─── the paste-burst gate (InputSink) ──────────────────────────────
+
+    /// A fixed base instant so the burst deadlines in these tests are chosen,
+    /// never measured.
+    fn burst_at(ms: u64) -> Instant {
+        static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *BASE.get_or_init(Instant::now) + Duration::from_millis(ms)
+    }
+
+    /// Everything one [`InputSink`] delivered, in order.
+    fn delivered(rx: &std::sync::mpsc::Receiver<String>) -> Vec<String> {
+        rx.try_iter().collect()
+    }
+
+    /// Run `body` against a recording app behind an [`InputSink`] whose burst
+    /// gate is `burst` (`None` = the gate off, which is what every platform
+    /// that wraps pastes itself gets).
+    fn with_sink<R>(
+        burst: Option<Duration>,
+        body: impl FnOnce(&mut InputSink, &std::sync::mpsc::Receiver<String>, &AtomicBool) -> R,
+    ) -> R {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let mut on_input: Box<dyn FnMut(String) + Send> = Box::new(move |s| {
+            let _ = tx.send(s);
+        });
+        let kitty = AtomicBool::new(false);
+        let draining = AtomicBool::new(false);
+        let lock = Mutex::new(());
+        let mut sink = InputSink {
+            on_input: &mut on_input,
+            kitty_active: &kitty,
+            draining: &draining,
+            write_lock: &lock,
+            burst: burst.map(PasteBurst::new),
+        };
+        body(&mut sink, &rx, &draining)
+    }
+
+    /// The gate off: every event reaches the app untouched, and nothing is ever
+    /// held back (this is the behaviour the 51 tmux goldens pin).
+    #[test]
+    fn input_sink_without_the_gate_delivers_every_event_immediately() {
+        with_sink(None, |sink, rx, _draining| {
+            assert_eq!(sink.deadline(), None);
+            for (index, sequence) in ["a", "b", "c", "\r", "\x1b[A"].iter().enumerate() {
+                sink.feed(
+                    &StdinEvent::Data(sequence.to_string()),
+                    burst_at(index as u64),
+                );
+            }
+            assert_eq!(delivered(rx), vec!["a", "b", "c", "\r", "\x1b[A"]);
+            // Even a fast run changes nothing with the gate off.
+            assert_eq!(sink.deadline(), None);
+        });
+    }
+
+    /// A wrapped paste takes the bracketed path whether the gate exists or not.
+    #[test]
+    fn input_sink_passes_a_wrapped_paste_along_the_existing_path() {
+        for burst in [None, Some(Duration::from_millis(8))] {
+            with_sink(burst, |sink, rx, _draining| {
+                sink.feed(&StdinEvent::Paste("hello paste".to_string()), burst_at(0));
+                assert_eq!(
+                    delivered(rx),
+                    vec!["\x1b[200~hello paste\x1b[201~"],
+                    "burst={burst:?}"
+                );
+                assert_eq!(sink.deadline(), None, "a wrapped paste holds nothing");
+            });
+        }
+    }
+
+    #[test]
+    fn input_sink_holds_a_burst_and_releases_it_as_one_paste() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            for (index, ch) in "hello".chars().enumerate() {
+                sink.feed(&StdinEvent::Data(ch.to_string()), burst_at(index as u64));
+            }
+            // Nothing is on screen yet — that is the point: no flicker.
+            assert_eq!(delivered(rx), Vec::<String>::new());
+            assert_eq!(
+                sink.deadline(),
+                Some(burst_at(4) + Duration::from_millis(8))
+            );
+
+            sink.due(burst_at(4 + 8));
+            assert_eq!(delivered(rx), vec!["\x1b[200~hello\x1b[201~"]);
+            assert_eq!(sink.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn input_sink_turns_an_enter_inside_a_burst_into_text() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            for (index, ch) in "abc".chars().enumerate() {
+                sink.feed(&StdinEvent::Data(ch.to_string()), burst_at(index as u64));
+            }
+            // Enter: no submission, and the run stays open across the newline.
+            sink.feed(&StdinEvent::Data("\r".to_string()), burst_at(3));
+            for (index, ch) in "de".chars().enumerate() {
+                sink.feed(
+                    &StdinEvent::Data(ch.to_string()),
+                    burst_at(4 + index as u64),
+                );
+            }
+            sink.due(burst_at(100));
+            assert_eq!(delivered(rx), vec!["\x1b[200~abc\nde\x1b[201~"]);
+        });
+    }
+
+    #[test]
+    fn input_sink_passes_enter_through_when_the_run_is_not_a_burst() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            // Two characters are typing, not a paste: they reach the app as
+            // their own events and the Enter after them is a key press.
+            sink.feed(&StdinEvent::Data("a".to_string()), burst_at(0));
+            sink.feed(&StdinEvent::Data("b".to_string()), burst_at(1));
+            assert_eq!(delivered(rx), Vec::<String>::new());
+            sink.feed(&StdinEvent::Data("\r".to_string()), burst_at(2));
+            assert_eq!(delivered(rx), vec!["a", "b", "\r"]);
+
+            // A lone Enter (or Tab) with nothing held is passed straight on.
+            sink.feed(&StdinEvent::Data("\r".to_string()), burst_at(3));
+            sink.feed(&StdinEvent::Data("\t".to_string()), burst_at(4));
+            assert_eq!(delivered(rx), vec!["\r", "\t"]);
+            assert_eq!(sink.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn input_sink_keeps_typing_typing_when_the_keys_are_slow() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            // 50 ms apart: every character is delivered as its own event, in
+            // order, so single-key shortcuts still fire.
+            for (index, ch) in "?y".chars().enumerate() {
+                sink.feed(
+                    &StdinEvent::Data(ch.to_string()),
+                    burst_at(index as u64 * 50),
+                );
+            }
+            sink.due(burst_at(1000));
+            assert_eq!(delivered(rx), vec!["?", "y"]);
+        });
+    }
+
+    #[test]
+    fn input_sink_flushes_the_run_before_an_escape_sequence() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            for (index, ch) in "abc".chars().enumerate() {
+                sink.feed(&StdinEvent::Data(ch.to_string()), burst_at(index as u64));
+            }
+            // An arrow key cannot join a burst: the run goes out first and the
+            // key keeps its own order.
+            sink.feed(&StdinEvent::Data("\x1b[A".to_string()), burst_at(3));
+            assert_eq!(delivered(rx), vec!["\x1b[200~abc\x1b[201~", "\x1b[A"]);
+            assert_eq!(sink.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn input_sink_never_holds_a_key_while_a_modal_drains_input() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, draining| {
+            draining.store(true, Ordering::SeqCst);
+            for (index, ch) in "abc".chars().enumerate() {
+                sink.feed(&StdinEvent::Data(ch.to_string()), burst_at(index as u64));
+            }
+            // The drain drops input, so nothing reaches the app and nothing is
+            // left waiting to leak into the box once the modal closes.
+            assert_eq!(delivered(rx), Vec::<String>::new());
+            assert_eq!(sink.deadline(), None);
+        });
+    }
+
+    #[test]
+    fn input_sink_releases_a_held_tab_as_paste_text() {
+        with_sink(Some(Duration::from_millis(8)), |sink, rx, _draining| {
+            for (index, ch) in "abc".chars().enumerate() {
+                sink.feed(&StdinEvent::Data(ch.to_string()), burst_at(index as u64));
+            }
+            sink.feed(&StdinEvent::Data("\t".to_string()), burst_at(3));
+            sink.due(burst_at(4 + 8));
+            assert_eq!(delivered(rx), vec!["\x1b[200~abc\t\x1b[201~"]);
+        });
+    }
+
     #[test]
     fn restore_terminal_for_exit_writes_teardown() {
         let _g = terminal_test_lock();
@@ -1129,6 +1478,61 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         t.stop(); // joins the reader; kitty protocol was active → pop written
         assert!(!t.kitty_protocol_active());
+    }
+
+    /// The reader loop with the burst gate armed and `FUTURE_TUI_PASTE_BURST`
+    /// unset/off: the same bytes the pty hands over become one paste event
+    /// instead of four characters plus an Enter.
+    #[cfg(unix)]
+    #[test]
+    fn reader_loop_gates_bursts_on_a_pty() {
+        let _g = terminal_test_lock();
+        let pty = PtyStdin::install();
+        let env_key = paste_burst::PASTE_BURST_ENV;
+        let saved_env = std::env::var_os(env_key);
+
+        // Armed: `abc` and a carriage return inside one write are microseconds
+        // apart, so they are one paste — delivered only when the window closes,
+        // which is the deadline the reader loop has to wake for.
+        std::env::set_var(env_key, "on");
+        let (input_tx, input_rx) = std::sync::mpsc::channel::<String>();
+        let mut armed = Terminal::new().unwrap();
+        armed
+            .start(
+                Box::new(move |s| {
+                    let _ = input_tx.send(s);
+                }),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        pty.write("abc\r");
+        let pasted = spin_until(
+            &mut || input_rx.try_iter().any(|s| s.starts_with("\x1b[200~")),
+            2000,
+        );
+        assert!(pasted, "the burst must arrive as one paste");
+        armed.stop();
+
+        // Disarmed (the platform default on this host): the very same bytes are
+        // four ordinary events, `Enter` included.
+        std::env::set_var(env_key, "off");
+        let (input_tx, input_rx) = std::sync::mpsc::channel::<String>();
+        let mut plain = Terminal::new().unwrap();
+        plain
+            .start(
+                Box::new(move |s| {
+                    let _ = input_tx.send(s);
+                }),
+                Box::new(|| {}),
+            )
+            .unwrap();
+        pty.write("abc\r");
+        assert!(spin_until(
+            &mut || input_rx.try_iter().any(|s| s == "\r"),
+            2000
+        ));
+        plain.stop();
+        restore_env(env_key, saved_env);
     }
 
     #[cfg(unix)]
