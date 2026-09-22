@@ -403,4 +403,33 @@ mod tests {
             .await;
         assert!(matches!(outcome, HandleOutcome::Denied(_)), "{outcome:?}");
     }
+
+    #[test]
+    fn a_read_error_ends_the_pump_instead_of_retrying_it() {
+        // A broken stdin (a closed descriptor, an unreadable device) must end
+        // the pump: a wedged read would otherwise spin forever and the terminal
+        // channel would never notice that its input is gone.
+        struct Failing {
+            calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl std::io::Read for Failing {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(std::io::Error::other("stdin is gone"))
+            }
+        }
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = std::io::BufReader::new(Failing {
+            calls: calls.clone(),
+        });
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        pump_lines(reader, tx);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pump must return on the first read error rather than retry it"
+        );
+    }
 }
