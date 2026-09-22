@@ -304,7 +304,7 @@ mod provider_macos {
             tokio::spawn(async move { IMessage.run(ctx).await })
         };
         tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
-        ctx.shutdown().notify_one();
+        ctx.shutdown().trigger();
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), run)
             .await
             .expect("run must stop on shutdown")
@@ -544,7 +544,7 @@ mod supported {
             std::sync::Arc::new(crate::session_store::SessionStore::new(
                 data_dir.join("sessions.json"),
             )),
-            std::sync::Arc::new(tokio::sync::Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         let sender = std::sync::Arc::new(PollRecordingSender::default());
         let run = {
@@ -557,7 +557,7 @@ mod supported {
         };
         // Two poll intervals, then shutdown.
         tokio::time::sleep(Duration::from_millis(2_500)).await;
-        ctx.shutdown().notify_one();
+        ctx.shutdown().trigger();
         let result = tokio::time::timeout(Duration::from_secs(5), run)
             .await
             .expect("the loop must stop on shutdown")
@@ -607,7 +607,7 @@ mod supported {
             std::sync::Arc::new(crate::session_store::SessionStore::new(
                 data_dir.join("sessions.json"),
             )),
-            std::sync::Arc::new(tokio::sync::Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         let sender = std::sync::Arc::new(PollRecordingSender::default());
         let run = {
@@ -619,7 +619,7 @@ mod supported {
             })
         };
         tokio::time::sleep(Duration::from_millis(2_500)).await;
-        ctx.shutdown().notify_one();
+        ctx.shutdown().trigger();
         tokio::time::timeout(Duration::from_secs(5), run)
             .await
             .expect("the loop must stop")

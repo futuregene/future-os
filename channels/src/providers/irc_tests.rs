@@ -249,7 +249,7 @@ fn ctx_with(block: Value) -> ProviderCtx {
         bridge,
         data_dir,
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -791,7 +791,7 @@ async fn registration_negotiates_sasl_and_joins_the_configured_channels() {
         .expect("payload");
     assert!(cap_end > payload_at, "{lines:?}");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -811,7 +811,7 @@ async fn a_server_ping_is_answered_with_its_own_token() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -846,7 +846,7 @@ async fn an_addressed_channel_message_reaches_the_sender_and_ctcp_does_not() {
     assert_eq!(replies.len(), 1, "unexpected traffic: {replies:?}");
     assert!(replies[0].contains("agent"), "{replies:?}");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -880,7 +880,7 @@ async fn a_taken_nickname_is_retried_with_a_suffix() {
             .await
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -922,7 +922,7 @@ async fn a_dropped_connection_is_reconnected_automatically() {
         server.connections()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let stopped = tokio::time::timeout(Duration::from_secs(5), task).await;
     assert!(stopped.is_ok(), "run must stop on shutdown");
 }
@@ -942,7 +942,7 @@ async fn an_idle_connection_is_kept_alive_with_a_client_ping() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -957,7 +957,7 @@ async fn run_stops_on_shutdown_without_leaving_the_socket_open() {
             .await
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), task).await;
     assert!(result.is_ok(), "run() must return promptly on shutdown");
     assert!(result.unwrap().unwrap().is_ok());
@@ -1035,7 +1035,7 @@ async fn a_refusal_numeric_does_not_end_the_session() {
         "a refusal numeric must not end the session"
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1119,7 +1119,7 @@ async fn an_over_long_line_from_the_server_ends_the_connection() {
         server.connections()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1161,7 +1161,7 @@ async fn a_refused_capability_negotiation_does_not_stop_registration() {
         .count();
     assert_eq!(payloads, 0, "the payload must wait for `+`: {lines:?}");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1198,7 +1198,7 @@ async fn a_join_echo_clears_an_earlier_refusal() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1220,7 +1220,7 @@ async fn a_server_error_closes_the_connection_and_it_reconnects() {
     let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
     assert!(reconnected, "the channel never came back");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1288,7 +1288,7 @@ async fn a_login_numeric_and_an_unknown_numeric_are_only_noted() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1634,7 +1634,7 @@ async fn a_tls_session_registers_replies_and_reconnects_after_a_clean_close() {
     let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
     assert!(reconnected, "a clean close must not end the channel");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1666,7 +1666,7 @@ async fn a_truncated_tls_connection_is_treated_as_a_dropped_one() {
     let reconnected = wait_until(|| server.connections() >= 2, Duration::from_secs(8)).await;
     assert!(reconnected, "a truncated connection must be retried");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1705,7 +1705,7 @@ async fn a_capability_answer_we_did_not_ask_for_and_one_nobody_knows() {
         "{lines:?}"
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1735,7 +1735,7 @@ async fn an_unknown_capability_subcommand_is_ignored() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 
@@ -1762,7 +1762,7 @@ async fn a_join_without_a_prefix_is_harmless() {
         server.lines()
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
 

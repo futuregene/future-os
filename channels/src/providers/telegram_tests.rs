@@ -381,7 +381,7 @@ fn ctx_with_policy(
         bridge,
         data_dir.to_path_buf(),
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -768,7 +768,7 @@ async fn long_polling_consumes_updates_and_persists_the_offset() {
         offset_seen,
         "offset 12 should be persisted after the first batch"
     );
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), running).await;
     let joined = result.expect("the poll loop must end promptly");
     let ran = joined.expect("the poll task must not panic");
@@ -809,7 +809,7 @@ async fn a_denied_message_still_advances_the_offset() {
     let advanced =
         crate::test_support::wait_until(|| load_offset(&dir) == 21, Duration::from_secs(5)).await;
     assert!(advanced, "a denied update must still advance the offset");
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
 }
 
@@ -1307,7 +1307,7 @@ async fn a_polling_failure_marks_the_status_and_the_loop_recovers() {
         Duration::from_secs(15),
     )
     .await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
     assert!(
         marked,
@@ -1348,7 +1348,7 @@ async fn shutdown_during_the_poll_request_exits_promptly() {
     )
     .await;
     assert!(polling, "the loop must have started polling");
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), running).await;
     let joined = result.expect("shutdown during the request must end the loop promptly");
     let ran = joined.expect("the poll task must not panic");
@@ -1407,7 +1407,7 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
         .await
         .unwrap();
     assert_eq!(accepted.status().as_u16(), 200);
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), running).await;
     let joined = result.expect("the webhook server must stop on shutdown");
     let ran = joined.expect("the webhook task must not panic");
@@ -1451,7 +1451,7 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
         .await
         .unwrap();
     assert_eq!(accepted.status().as_u16(), 200);
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
 }
 
@@ -1481,7 +1481,7 @@ async fn long_polling_resumes_from_the_persisted_offset() {
     )
     .await;
     assert!(polled);
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), running).await;
     let first = &requests_to(&recorded, "/bottok/getUpdates")[0];
     let body: Value = serde_json::from_str(&first.body_string()).unwrap();
@@ -1546,7 +1546,7 @@ async fn a_failed_offset_persist_is_a_warning_not_a_crash() {
         Duration::from_secs(10),
     )
     .await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(10), running).await;
     let joined = result.expect("the loop must survive a failed offset persist");
     let ran = joined.expect("the poll task must not panic");

@@ -2526,7 +2526,7 @@ impl Email {
         config: &EmailConfig,
         seen: &SeenStore,
         sender: &Arc<EmailSender>,
-        shutdown: &mut std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+        shutdown: &mut std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
     ) -> Result<()> {
         let sender_trait: Arc<dyn ChannelSender> = sender.clone();
         let mut session = ImapSession::connect(&config.imap).await?;

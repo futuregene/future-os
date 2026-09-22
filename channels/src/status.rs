@@ -162,22 +162,41 @@ impl StatusBoard {
     }
 
     /// Record a channel's state, with an optional explanation.
+    ///
+    /// A state change is published immediately: it is the part of the snapshot
+    /// an operator reads to answer "is it up?", and a process that dies seconds
+    /// after starting must still have said so. Counters stay on the periodic
+    /// flush, because they change constantly.
     pub fn set_state(&self, channel: &str, state: ChannelState, error: Option<String>) {
-        let mut inner = self.lock();
-        let entry = inner.channels.entry(channel.to_string()).or_default();
-        entry.state = Some(state);
-        entry.last_error = error;
-        inner.dirty = true;
+        {
+            let mut inner = self.lock();
+            let entry = inner.channels.entry(channel.to_string()).or_default();
+            entry.state = Some(state);
+            entry.last_error = error;
+            inner.dirty = true;
+        }
+        self.publish();
     }
 
     /// Record when a channel came up, for the uptime column.
     pub fn set_started(&self, channel: &str) {
-        let mut inner = self.lock();
-        let entry = inner.channels.entry(channel.to_string()).or_default();
-        entry.state = Some(ChannelState::Running);
-        entry.last_error = None;
-        entry.uptime_secs = Some(0);
-        inner.dirty = true;
+        {
+            let mut inner = self.lock();
+            let entry = inner.channels.entry(channel.to_string()).or_default();
+            entry.state = Some(ChannelState::Running);
+            entry.last_error = None;
+            entry.uptime_secs = Some(0);
+            inner.dirty = true;
+        }
+        self.publish();
+    }
+
+    /// Write a transition out, reporting failure without failing the caller.
+    fn publish(&self) {
+        if let Err(error) = self.flush() {
+            let message = format!("cannot publish a channel state change: {error}");
+            tracing::debug!("{message}");
+        }
     }
 
     /// Count one handled inbound message.

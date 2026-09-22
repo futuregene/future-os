@@ -1102,7 +1102,7 @@ impl Irc {
         failures: &Arc<Mutex<HashMap<String, String>>>,
         out_rx: &mut mpsc::Receiver<String>,
         sequence: &mut u64,
-        shutdown: &mut std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+        shutdown: &mut std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
     ) -> Result<()> {
         let mut session = Session {
             wire: Wire::connect(config, self.tls.as_deref()).await?,

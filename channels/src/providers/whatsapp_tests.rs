@@ -999,7 +999,7 @@ fn ctx_with_agent_config(
         bridge,
         data_dir.to_path_buf(),
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -1015,7 +1015,7 @@ fn ctx_with_config(config: Value) -> ProviderCtx {
                 crate::test_support::temp_dir("whatsapp-sessions").join("sessions.json"),
             ))
         },
-        std::sync::Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -1183,7 +1183,7 @@ async fn run_echoes_the_challenge_and_admits_only_signed_deliveries() {
         "an accepted message is marked read"
     );
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
     assert!(stopped.is_ok(), "run() must return on shutdown");
     assert!(stopped.unwrap().unwrap().is_ok());

@@ -1139,7 +1139,7 @@ async fn a_server_ping_is_answered_with_a_pong() {
 async fn shutdown_closes_the_socket_and_exits_cleanly() {
     let (url, _received) = spawn_ws(vec![WsAction::Delay(Duration::from_secs(4))]).await;
     let base = ProviderCtx::offline(&DEFINITION);
-    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ProviderCtx::new(
         &DEFINITION,
         json!({}),
@@ -1158,7 +1158,7 @@ async fn shutdown_closes_the_socket_and_exits_cleanly() {
         async move { run_gateway(&ctx, &config, sender, &mut state).await }
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .expect("shutdown must end the gateway promptly")
@@ -1202,7 +1202,7 @@ async fn run_reconnects_and_stops_on_shutdown() {
     ])
     .await;
     let base = ProviderCtx::offline(&DEFINITION);
-    let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ProviderCtx::new(
         &DEFINITION,
         json!({"bot_token": "bot-token", "gateway_url": url}),
@@ -1217,7 +1217,7 @@ async fn run_reconnects_and_stops_on_shutdown() {
     // The first connection fails fast (op 7); the supervisor backs off and
     // reconnects. Shutdown during the backoff must end the loop cleanly.
     tokio::time::sleep(Duration::from_millis(400)).await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(Duration::from_secs(8), task)
         .await
         .expect("shutdown during the reconnect backoff must end the loop")

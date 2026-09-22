@@ -523,7 +523,7 @@ fn ctx_with_config(config: Value, data_dir: &std::path::Path) -> ProviderCtx {
         Arc::new(crate::session_store::SessionStore::new(
             data_dir.join("sessions.json"),
         )),
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -531,6 +531,9 @@ fn config_value(base: &str, token: &str) -> Value {
     json!({
         "enabled": true,
         "base_url": base,
+        // The mock server serves flat paths ("/users/me"), not "/api/v4/…",
+        // so the API root is the base itself.
+        "api_base": base,
         "token": token,
         "channel_allowlist": ["chan1"],
     })
@@ -596,7 +599,7 @@ async fn a_shutdown_signal_stops_the_session_cleanly() {
         websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
         .await
         .expect("shutdown must end the session");
@@ -684,6 +687,14 @@ impl ChannelSender for RecordingSender {
     }
 }
 
+/// The fixture timestamp must sit inside the bridge's freshness window, or
+/// dispatch drops the post as a stale replay before any assertion runs.
+fn fresh_post(root_id: &str) -> Value {
+    let mut post = channel_post(root_id);
+    post["create_at"] = json!(crate::bridge::dedup::now_ms());
+    post
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_accepted_post_is_acknowledged_with_an_eyes_reaction() {
     let (agent_addr, _shared) =
@@ -715,12 +726,12 @@ async fn an_accepted_post_is_acknowledged_with_an_eyes_reaction() {
         bridge,
         dir.to_path_buf(),
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     );
     let sender = Arc::new(RecordingSender {
         reactions: std::sync::Mutex::new(Vec::new()),
     });
-    let event = posted_event(&channel_post(""), &["bot-id"], "O");
+    let event = posted_event(&fresh_post(""), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
     let dyn_sender: Arc<dyn ChannelSender> = sender.clone();
     dispatch_posted(&ctx, &dyn_sender, &posted, "bot-id", &HashSet::new()).await;
@@ -752,7 +763,7 @@ async fn a_denied_post_gets_no_reaction() {
     let sender = Arc::new(RecordingSender {
         reactions: std::sync::Mutex::new(Vec::new()),
     });
-    let event = posted_event(&channel_post(""), &["bot-id"], "O");
+    let event = posted_event(&fresh_post(""), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
     let dyn_sender: Arc<dyn ChannelSender> = sender.clone();
     dispatch_posted(&ctx, &dyn_sender, &posted, "bot-id", &HashSet::new()).await;
@@ -770,7 +781,7 @@ async fn a_post_the_gate_drops_never_reaches_the_bridge() {
         reactions: std::sync::Mutex::new(Vec::new()),
     });
     // The bot's own post is dropped inside parse_posted.
-    let mut own = channel_post("");
+    let mut own = fresh_post("");
     own["user_id"] = json!("bot-id");
     let event = posted_event(&own, &[], "D");
     let posted = parse_ws_event(&event).unwrap();
@@ -872,20 +883,23 @@ async fn run_authenticates_then_handles_posts_until_shutdown() {
     let (base, _) = spawn_http(vec![HttpRoute::json("/users/me", 200, me_body())]).await;
     let hello = json!({"event": "hello", "data": {"server_version": "9.0"}});
     let posted = posted_event(&channel_post(""), &["bot-id"], "O");
+    // The socket stays open until the test's own deadline; the run loop must
+    // exit because shutdown fired, never because the socket ended.
     let (ws_url, received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(posted.to_string()),
-        WsAction::Delay(std::time::Duration::from_secs(60)),
+        WsAction::Delay(std::time::Duration::from_secs(30)),
     ])
     .await;
 
     let dir = crate::test_support::temp_dir("mm-run");
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ProviderCtx::new(
         &DEFINITION,
         json!({
             "enabled": true,
             "base_url": base,
+            "api_base": base,
             "token": "tok-1",
             "ws_url": ws_url,
         }),
@@ -897,10 +911,11 @@ async fn run_authenticates_then_handles_posts_until_shutdown() {
         shutdown.clone(),
     );
     let run = tokio::spawn(async move { Mattermost.run(ctx).await });
-    // Let the identity call, the connect, and the challenge happen.
+    // Shutdown while the session is mid-read: the session's select hears the
+    // notification and returns Ok, and the supervisor passes it through.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    shutdown.notify_waiters();
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+    shutdown.trigger();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), run)
         .await
         .expect("shutdown must end the run loop");
     assert!(result.unwrap().is_ok(), "shutdown is a clean exit");
@@ -912,6 +927,125 @@ async fn run_authenticates_then_handles_posts_until_shutdown() {
     let challenge: Value = serde_json::from_str(first).unwrap();
     assert_eq!(challenge["action"], "authentication_challenge");
     assert_eq!(challenge["data"]["token"], "tok-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_marks_the_channel_running_once_the_socket_is_up() {
+    let (base, _) = spawn_http(vec![HttpRoute::json("/users/me", 200, me_body())]).await;
+    let hello = json!({"event": "hello", "data": {"server_version": "9.0"}});
+    let (ws_url, _) = spawn_ws(vec![
+        WsAction::SendText(hello.to_string()),
+        WsAction::Delay(std::time::Duration::from_secs(30)),
+    ])
+    .await;
+
+    let dir = crate::test_support::temp_dir("mm-run-status");
+    let status_path = dir.join("status.json");
+    let shutdown = crate::bridge::Shutdown::new();
+    let ctx = ProviderCtx::new(
+        &DEFINITION,
+        json!({
+            "enabled": true,
+            "base_url": base,
+            "api_base": base,
+            "token": "tok-1",
+            "ws_url": ws_url,
+        }),
+        crate::bridge::Bridge::offline_at(dir.to_path_buf()),
+        dir.to_path_buf(),
+        Arc::new(crate::session_store::SessionStore::new(
+            dir.join("sessions.json"),
+        )),
+        shutdown.clone(),
+    );
+    let run = tokio::spawn(async move { Mattermost.run(ctx).await });
+    // `mark_running` fires right after the handshake and publishes the state.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut running = false;
+    while std::time::Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(&status_path) {
+            if text.contains("\"running\"") {
+                running = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    shutdown.trigger();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), run).await;
+    assert!(
+        running,
+        "a connected run must publish the running state to {status_path:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_recovers_after_the_socket_drops_and_still_stops_on_shutdown() {
+    let (base, _) = spawn_http(vec![HttpRoute::json("/users/me", 200, me_body())]).await;
+    // First connection dies at once; every reconnect holds until the test
+    // deadline. The supervisor must reconnect at least once (second auth
+    // challenge) and then exit on shutdown.
+    let hello = json!({"event": "hello", "data": {"server_version": "9.0"}});
+    let (ws_url, received) = crate::test_support::spawn_ws_per_connection(vec![
+        // The first connection authenticates and is then dropped by the
+        // platform, so the reconnect has to authenticate again.
+        vec![
+            WsAction::SendText(hello.to_string()),
+            WsAction::Delay(std::time::Duration::from_millis(200)),
+            WsAction::SendClose,
+        ],
+        vec![
+            WsAction::SendText(hello.to_string()),
+            WsAction::Delay(std::time::Duration::from_secs(30)),
+        ],
+    ])
+    .await;
+
+    let dir = crate::test_support::temp_dir("mm-run-reconnect");
+    let shutdown = crate::bridge::Shutdown::new();
+    let ctx = ProviderCtx::new(
+        &DEFINITION,
+        json!({
+            "enabled": true,
+            "base_url": base,
+            "api_base": base,
+            "token": "tok-1",
+            "ws_url": ws_url,
+        }),
+        crate::bridge::Bridge::offline(),
+        dir.to_path_buf(),
+        Arc::new(crate::session_store::SessionStore::new(
+            dir.join("sessions.json"),
+        )),
+        shutdown.clone(),
+    );
+    let run = tokio::spawn(async move { Mattermost.run(ctx).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let challenges = loop {
+        let count = {
+            received
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .filter_map(|m| m.to_text().ok())
+                .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+                .filter(|frame| frame["action"] == "authentication_challenge")
+                .count()
+        };
+        if count >= 2 || std::time::Instant::now() >= deadline {
+            break count;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    assert!(
+        challenges >= 2,
+        "a dropped socket must lead to a re-authenticated reconnect, saw {challenges} challenge(s)"
+    );
+    shutdown.trigger();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("shutdown must end the run loop");
+    assert!(result.unwrap().is_ok(), "shutdown is a clean exit");
 }
 
 #[tokio::test(flavor = "multi_thread")]

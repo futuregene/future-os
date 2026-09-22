@@ -41,10 +41,9 @@ pub(crate) mod test_support;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use bridge::{Bridge, ProviderCtx};
+use bridge::{Bridge, ProviderCtx, Shutdown};
 use config::AgentConfig;
 use policy::AccessPolicyConfig;
 use providers::registry;
@@ -107,7 +106,7 @@ pub struct Started {
     /// One task per channel (or per supervisor), plus the background helpers.
     pub handles: Vec<tokio::task::JoinHandle<()>>,
     pub status: Arc<StatusBoard>,
-    pub shutdown: Arc<Notify>,
+    pub shutdown: Arc<Shutdown>,
     /// How many framework channels were started (diagnostics and tests).
     pub started_providers: usize,
 }
@@ -122,8 +121,7 @@ impl Started {
         // and would then wait for a second signal. `notify_one` stores a permit
         // so that next registration completes immediately; the aborts below are
         // what actually guarantees a prompt stop.
-        self.shutdown.notify_waiters();
-        self.shutdown.notify_one();
+        self.shutdown.trigger();
         for handle in self.handles {
             handle.abort();
         }
@@ -146,7 +144,7 @@ pub fn start_all(
     status: Arc<StatusBoard>,
 ) -> Result<Started> {
     let agent_cfg = Arc::new(config.agent.clone());
-    let shutdown = Arc::new(Notify::new());
+    let shutdown = Shutdown::new();
     let mut handles = Vec::new();
 
     // The self-bridged channels are published too, so `future channel status`
@@ -299,7 +297,7 @@ fn spawn_provider(
     agent_cfg: Arc<AgentConfig>,
     root: std::path::PathBuf,
     status: Arc<StatusBoard>,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<Shutdown>,
 ) -> tokio::task::JoinHandle<()> {
     let definition = entry.definition;
     let provider: Arc<dyn Provider> = Arc::from((entry.provider)());
@@ -352,7 +350,7 @@ fn spawn_provider(
 /// live counters without the bridge having to flush on every event.
 fn spawn_status_flusher(
     status: Arc<StatusBoard>,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<Shutdown>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -373,7 +371,7 @@ fn spawn_status_flusher(
 /// so it is also what makes a `--durable` send eventually arrive.
 fn spawn_outbox_drainer(
     outbox: outbox::Outbox,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<Shutdown>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -587,7 +585,7 @@ mod tests {
     async fn the_status_flusher_publishes_and_then_stops() {
         let root = crate::test_support::temp_dir("lib-status-flusher");
         let status = Arc::new(StatusBoard::new(root.join("status.json")));
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Shutdown::new();
         status.count_inbound("cli", crate::status::now_unix());
         let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
         // The flusher writes on its own timer; force one write to observe the
@@ -596,7 +594,7 @@ mod tests {
         assert!(root.join("status.json").exists());
         // `notify_one` stores a permit, so the signal survives the flusher
         // being between waits; `notify_waiters` would be lost.
-        shutdown.notify_one();
+        shutdown.trigger();
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), flusher).await;
         assert!(stopped.is_ok(), "the flusher must stop on shutdown");
     }
@@ -629,7 +627,7 @@ mod tests {
             root.clone(),
             Arc::new(StatusBoard::new(root.join("status.json"))),
         );
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Shutdown::new();
         let drainer = spawn_outbox_drainer(outbox, shutdown.clone());
         // Give the first pass a moment to record the failed attempt.
         let recorded = crate::test_support::wait_until(
@@ -638,7 +636,7 @@ mod tests {
         )
         .await;
         assert!(recorded, "the drainer must attempt a due message");
-        shutdown.notify_one();
+        shutdown.trigger();
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), drainer).await;
         assert!(stopped.is_ok(), "the drainer must stop on shutdown");
     }

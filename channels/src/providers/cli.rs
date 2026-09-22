@@ -244,7 +244,7 @@ mod tests {
             bridge,
             data_dir,
             sessions,
-            Arc::new(tokio::sync::Notify::new()),
+            crate::bridge::Shutdown::new(),
         )
     }
 
@@ -382,7 +382,7 @@ mod tests {
             Arc::new(crate::session_store::SessionStore::new(
                 data_dir.join("sessions.json"),
             )),
-            Arc::new(tokio::sync::Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         let outcome = ctx
             .handle(

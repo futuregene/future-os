@@ -18,6 +18,7 @@ pub mod approval;
 pub mod dedup;
 pub mod inbound;
 pub mod queue;
+pub mod shutdown;
 pub mod sink;
 pub mod turn;
 
@@ -25,6 +26,7 @@ pub use approval::{ApprovalRegistry, ApprovalRoute};
 pub use dedup::Dedup;
 pub use inbound::{ChatKind, ConversationRef, Inbound, MediaKind, MediaRef, SenderRef};
 pub use queue::{Conversations, Job, SubmitOutcome, SupersedeWatch};
+pub use shutdown::Shutdown;
 pub use sink::{
     ApprovalPrompt, ChannelSink, ReplySink, TextUpdate, ToolPhase, ToolProgress, TurnOutcome,
     TurnStatus,
@@ -124,15 +126,17 @@ impl Bridge {
 
     /// A bridge with default agent settings, for offline commands and tests.
     pub fn offline() -> Arc<Self> {
+        Self::offline_at(std::env::temp_dir().join("future-channel-offline"))
+    }
+
+    /// A bridge over an offline configuration whose published status lives under
+    /// `root`, so a test can assert what a channel reported.
+    pub fn offline_at(root: PathBuf) -> Arc<Self> {
         Self::new(
             Arc::new(AgentConfig::default()),
             crate::policy::AccessPolicyConfig::default(),
-            std::env::temp_dir().join("future-channel-offline"),
-            Arc::new(StatusBoard::new(
-                std::env::temp_dir()
-                    .join("future-channel-offline")
-                    .join("status.json"),
-            )),
+            root.clone(),
+            Arc::new(StatusBoard::new(root.join("status.json"))),
         )
     }
 
@@ -263,7 +267,7 @@ pub struct ProviderCtx {
     bridge: Arc<Bridge>,
     data_dir: PathBuf,
     sessions: Arc<SessionStore>,
-    shutdown: Arc<Notify>,
+    shutdown: Arc<Shutdown>,
 }
 
 impl ProviderCtx {
@@ -283,7 +287,7 @@ impl ProviderCtx {
             Bridge::offline(),
             data_dir,
             sessions,
-            Arc::new(Notify::new()),
+            Shutdown::new(),
         )
     }
 
@@ -294,7 +298,7 @@ impl ProviderCtx {
         bridge: Arc<Bridge>,
         data_dir: PathBuf,
         sessions: Arc<SessionStore>,
-        shutdown: Arc<Notify>,
+        shutdown: Arc<Shutdown>,
     ) -> Self {
         Self {
             id: definition.id,
@@ -362,7 +366,7 @@ impl ProviderCtx {
     ///
     /// Providers select on `shutdown().notified()` to exit their loops; there is
     /// no polling flag to check.
-    pub fn shutdown(&self) -> &Arc<Notify> {
+    pub fn shutdown(&self) -> &Arc<Shutdown> {
         &self.shutdown
     }
 
@@ -701,7 +705,7 @@ mod tests {
             bridge,
             data_dir,
             sessions,
-            Arc::new(Notify::new()),
+            crate::bridge::Shutdown::new(),
         )
     }
 
@@ -1092,7 +1096,7 @@ mod tests {
             bridge,
             data_dir,
             sessions,
-            Arc::new(Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         (ctx, RecordingSender::new(), shared)
     }
@@ -1358,7 +1362,7 @@ mod tests {
             ),
             ctx.data_dir().to_path_buf(),
             Arc::new(SessionStore::new(ctx.data_dir().join("sessions.json"))),
-            Arc::new(Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         dead.sessions()
             .set_session_id("testchannel:c1", None, &session);
@@ -1473,7 +1477,7 @@ mod tests {
             ),
             ctx.data_dir().to_path_buf(),
             Arc::new(SessionStore::new(ctx.data_dir().join("sessions.json"))),
-            Arc::new(Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         dead.sessions()
             .set_session_id("testchannel:c1", None, &session);
@@ -1493,7 +1497,7 @@ mod tests {
     async fn stopping_wakes_every_provider_and_the_accessors_work() {
         let ctx = ctx("bridge-shutdown", open_policy());
         let waiter = ctx.shutdown().notified();
-        ctx.shutdown().notify_waiters();
+        ctx.shutdown().trigger();
         tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
             .await
             .expect("shutdown must wake providers");

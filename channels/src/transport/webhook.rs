@@ -10,6 +10,7 @@
 //! on a reverse proxy and forward here — which is also how the public URL gets
 //! provisioned in the first place.
 
+use crate::bridge::Shutdown;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::future::Future;
@@ -18,7 +19,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
 
 /// Largest request head we will read (`request line + headers`).
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -135,7 +135,7 @@ impl WebhookServer {
     }
 
     /// Serve until `shutdown` fires.
-    pub async fn serve(self, shutdown: Arc<Notify>) -> Result<()> {
+    pub async fn serve(self, shutdown: Arc<Shutdown>) -> Result<()> {
         loop {
             let accepted = tokio::select! {
                 accepted = self.listener.accept() => accepted,
@@ -457,9 +457,13 @@ mod tests {
     /// handles needed to stop it.
     async fn serve(
         server: WebhookServer,
-    ) -> (SocketAddr, Arc<Notify>, tokio::task::JoinHandle<Result<()>>) {
+    ) -> (
+        SocketAddr,
+        Arc<Shutdown>,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
         let addr = server.local_addr().unwrap();
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Shutdown::new();
         let serving = {
             let shutdown = shutdown.clone();
             tokio::spawn(async move { server.serve(shutdown).await })
@@ -467,8 +471,8 @@ mod tests {
         (addr, shutdown, serving)
     }
 
-    async fn stop(shutdown: Arc<Notify>, serving: tokio::task::JoinHandle<Result<()>>) {
-        shutdown.notify_waiters();
+    async fn stop(shutdown: Arc<Shutdown>, serving: tokio::task::JoinHandle<Result<()>>) {
+        shutdown.trigger();
         let _ = tokio::time::timeout(Duration::from_secs(2), serving).await;
     }
 

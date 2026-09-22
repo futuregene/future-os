@@ -349,7 +349,10 @@ fn config_value(imap_port: u16, smtp_port: u16) -> serde_json::Value {
     })
 }
 
-fn ctx_with(value: serde_json::Value, shutdown: Arc<tokio::sync::Notify>) -> ProviderCtx {
+fn ctx_with(
+    value: serde_json::Value,
+    shutdown: std::sync::Arc<crate::bridge::Shutdown>,
+) -> ProviderCtx {
     // Nothing listens on port 1: the agent is unreachable, which is how the
     // bridge tests stay deterministic.
     ctx_at(
@@ -365,7 +368,7 @@ fn ctx_at(
     data_dir: std::path::PathBuf,
     grpc_addr: &str,
     value: serde_json::Value,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: std::sync::Arc<crate::bridge::Shutdown>,
 ) -> ProviderCtx {
     let sessions = Arc::new(crate::session_store::SessionStore::new(
         data_dir.join("sessions.json"),
@@ -2061,7 +2064,7 @@ fn the_poll_interval_is_at_least_a_second() {
 
 #[tokio::test]
 async fn building_a_sender_checks_the_configuration_without_connecting() {
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     // A closed port: constructing a sender must not try to reach it.
     let ctx = ctx_with(json!({"enabled": true}), shutdown.clone());
     let error = match Email.sender(&ctx) {
@@ -2152,7 +2155,7 @@ async fn the_probe_reports_the_mailbox_and_the_submission_server() {
     ])
     .await;
 
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ctx_with(config_value(imap.port, smtp.port), shutdown);
     let summary = Email.probe(&ctx).await.expect("probe");
     assert!(summary.contains("INBOX"), "{summary}");
@@ -2201,7 +2204,7 @@ async fn the_poller_answers_unseen_mail_and_stops_when_asked() {
 
     // Nothing listens on port 1: the agent is unreachable, so the bridge refuses
     // the message with backpressure instead of answering it.
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ctx_with(config_value(imap.port, 1), shutdown.clone());
     let running = tokio::spawn(async move { Email.run(ctx).await });
 
@@ -2211,7 +2214,7 @@ async fn the_poller_answers_unseen_mail_and_stops_when_asked() {
     )
     .await;
     assert!(fetched, "{:?}", imap.lines());
-    shutdown.notify_one();
+    shutdown.trigger();
 
     let stopped = tokio::time::timeout(Duration::from_secs(10), running)
         .await
@@ -2834,7 +2837,7 @@ async fn the_poller_answers_mail_and_skips_what_it_must_not() {
     let data_dir = temp_dir("email-poller-skips");
     let mut config = config_value(imap.port, 1);
     config["sender_allowlist"] = json!(["alice@example.com"]);
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ctx_at(data_dir.clone(), &grpc, config, shutdown.clone());
     let running = tokio::spawn(async move { Email.run(ctx).await });
 
@@ -2844,7 +2847,7 @@ async fn the_poller_answers_mail_and_skips_what_it_must_not() {
     )
     .await;
     assert!(marked, "the poll runs to the end: {:?}", imap.lines());
-    shutdown.notify_one();
+    shutdown.trigger();
     let stopped = tokio::time::timeout(Duration::from_secs(10), running)
         .await
         .expect("the poller stops")
@@ -2937,7 +2940,7 @@ async fn a_message_already_delivered_under_another_uid_is_marked_without_a_turn(
 
     let data_dir = temp_dir("email-poller-dup");
 
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ctx_at(
         data_dir,
         &grpc,
@@ -2952,7 +2955,7 @@ async fn a_message_already_delivered_under_another_uid_is_marked_without_a_turn(
     )
     .await;
     assert!(marked, "{:?}", imap.lines());
-    shutdown.notify_one();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
     imap.assert_clean();
     // One turn for the first copy, none for the second.
@@ -3912,7 +3915,7 @@ async fn a_store_that_cannot_be_written_is_reported_but_the_mail_is_answered() {
     // The state file is a directory, so writing it fails: a channel that cannot
     // remember what it did must still answer the mail.
     std::fs::create_dir_all(data_dir.join("seen.json")).expect("a directory in the file's place");
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let mut config = config_value(imap.port, 1);
     // A second message the allowlist refuses: the refused-and-not-recorded path
     // is taken as well.
@@ -3932,7 +3935,7 @@ async fn a_store_that_cannot_be_written_is_reported_but_the_mail_is_answered() {
     )
     .await;
     assert!(store_refused, "{:?}", imap.lines());
-    shutdown.notify_one();
+    shutdown.trigger();
     let stopped = tokio::time::timeout(Duration::from_secs(10), running)
         .await
         .expect("the poller stops")
@@ -3978,7 +3981,7 @@ async fn a_uid_that_was_already_recorded_is_marked_without_being_fetched() {
     let seen = SeenStore::load(data_dir.join("seen.json"));
     seen.record("42:7").expect("seed the mailbox position");
 
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = crate::bridge::Shutdown::new();
     let ctx = ctx_at(
         data_dir,
         &grpc,
@@ -3993,7 +3996,7 @@ async fn a_uid_that_was_already_recorded_is_marked_without_being_fetched() {
     )
     .await;
     assert!(finished, "{:?}", imap.lines());
-    shutdown.notify_one();
+    shutdown.trigger();
     let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
     imap.assert_clean();
     // Nothing was asked of the agent for a message that was already handled.

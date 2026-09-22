@@ -987,7 +987,7 @@ fn dispatch_ctx_to_agent(
         bridge,
         data_dir.to_path_buf(),
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -1385,7 +1385,7 @@ async fn socket_mode_stops_cleanly_on_shutdown() {
     let session =
         tokio::spawn(async move { socket_mode_session(&ctx, sender, "UBOT", socket).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
-    shutdown.notify_waiters();
+    shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(5), session)
         .await
         .expect("shutdown must end the session promptly")
@@ -1477,8 +1477,8 @@ async fn run_socket_mode_connects_acks_and_reconnects_until_shutdown() {
     // the supervise loop's backoff sleep — so follow the `Started::stop`
     // pattern: wake whoever is parked now (`notify_waiters`) and leave one
     // stored permit for the wait that registers next (`notify_one`).
-    shutdown.notify_waiters();
-    shutdown.notify_one();
+    shutdown.trigger();
+    shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(10), running)
         .await
         .expect("shutdown during the reconnect backoff must end run() promptly")
@@ -1606,7 +1606,7 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         "a denied event produces no reaction"
     );
 
-    shutdown.notify_waiters();
+    shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(5), serving)
         .await
         .expect("the webhook must stop promptly after shutdown")
@@ -1658,7 +1658,7 @@ async fn the_events_webhook_normalizes_an_already_slash_prefixed_path() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.text().await.unwrap(), "c2");
 
-    shutdown.notify_waiters();
+    shutdown.trigger();
     tokio::time::timeout(Duration::from_secs(5), serving)
         .await
         .expect("the webhook must stop promptly after shutdown")

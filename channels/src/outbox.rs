@@ -232,7 +232,7 @@ impl Outbox {
             bridge,
             data_dir,
             sessions,
-            Arc::new(tokio::sync::Notify::new()),
+            crate::bridge::Shutdown::new(),
         );
         Ok(((entry.provider)(), ctx))
     }

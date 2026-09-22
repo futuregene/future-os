@@ -52,7 +52,7 @@ fn ctx_with(block: Value) -> ProviderCtx {
         bridge,
         data_dir,
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -1131,7 +1131,7 @@ async fn a_received_envelope_reaches_the_sender() {
         Duration::from_secs(5),
     )
     .await;
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let stopped = tokio::time::timeout(Duration::from_secs(5), task).await;
     assert!(delivered, "the received message never reached the sender");
     assert!(stopped.is_ok(), "the receive loop must stop on shutdown");
@@ -1152,7 +1152,7 @@ async fn the_receive_loop_stops_promptly_on_shutdown() {
         Duration::from_secs(5),
     )
     .await;
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), task).await;
     assert!(polled, "the loop never polled");
     assert!(result.is_ok(), "run() must return on shutdown");
@@ -1170,7 +1170,7 @@ async fn an_idle_daemon_is_polled_and_not_hammered() {
         tokio::spawn(async move { Signal.run(ctx).await })
     };
     tokio::time::sleep(Duration::from_millis(700)).await;
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
     let polls = requests_to(&recorded, "/api/v1/receive/%2B15550001234").len();
     // An empty answer must not turn the loop into a busy one: ~3 polls fit in
@@ -1192,7 +1192,7 @@ async fn an_unreachable_daemon_keeps_the_channel_retryable() {
     };
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(!task.is_finished(), "run() gave up instead of retrying");
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), task).await;
     assert!(result.is_ok(), "run() must stop on shutdown");
 }

@@ -439,7 +439,7 @@ fn ctx_with_open_dm(label: &str) -> ProviderCtx {
         Arc::new(crate::session_store::SessionStore::new(
             data_dir.join("sessions.json"),
         )),
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -727,7 +727,7 @@ async fn shutdown_closes_the_socket_and_returns_cleanly() {
         tokio::spawn(async move { run_gateway(&ctx, &config, &api, sender).await })
     };
     tokio::time::sleep(Duration::from_millis(200)).await;
-    ctx.shutdown().notify_one();
+    ctx.shutdown().trigger();
     let result = tokio::time::timeout(Duration::from_secs(3), run)
         .await
         .expect("shutdown must end the gateway promptly")
@@ -790,7 +790,7 @@ async fn run_discovers_the_gateway_then_identifies_and_stops_on_shutdown() {
         tokio::spawn(async move { Qq.run(ctx).await })
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
-    ctx.shutdown().notify_one();
+    ctx.shutdown().trigger();
     let result = tokio::time::timeout(Duration::from_secs(5), run)
         .await
         .expect("run must stop on shutdown")

@@ -6,11 +6,11 @@
 //! jitter so a fleet of bridges does not synchronize its retries, and never
 //! reconnect after shutdown or a fatal handshake failure.
 
+use crate::bridge::Shutdown;
 use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::Notify;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// A connected socket, TLS already negotiated.
@@ -107,7 +107,7 @@ fn jitter(ceiling: Duration) -> Duration {
 /// backoff, so one good session does not leave the next retry sluggish.
 pub async fn supervise<F, Fut>(
     name: &str,
-    shutdown: &Notify,
+    shutdown: &Shutdown,
     backoff: Backoff,
     attempt: F,
 ) -> Result<()>
@@ -125,7 +125,7 @@ pub const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 /// without waiting a minute.
 pub async fn supervise_with<F, Fut>(
     name: &str,
-    shutdown: &Notify,
+    shutdown: &Shutdown,
     mut backoff: Backoff,
     healthy_after: Duration,
     mut attempt: F,
@@ -210,7 +210,7 @@ mod tests {
         // The loop resets after a connection that stayed up long enough to
         // count as healthy: a zero-length health window makes that immediate,
         // and the observed call count proves the loop kept reconnecting.
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Shutdown::new();
         let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let calls_for_attempt = calls.clone();
         let handle = {
@@ -233,7 +233,7 @@ mod tests {
             })
         };
         tokio::time::sleep(Duration::from_millis(40)).await;
-        shutdown.notify_one();
+        shutdown.trigger();
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(
             calls.load(std::sync::atomic::Ordering::SeqCst) > 1,
@@ -246,7 +246,7 @@ mod tests {
         // `supervise` is the production entry point: it must stop on shutdown
         // and use HEALTHY_AFTER rather than a test window.
         assert_eq!(HEALTHY_AFTER, Duration::from_secs(60));
-        let shutdown = Arc::new(Notify::new());
+        let shutdown = Shutdown::new();
         let handle = {
             let shutdown = shutdown.clone();
             tokio::spawn(async move {
@@ -260,7 +260,7 @@ mod tests {
             })
         };
         tokio::time::sleep(Duration::from_millis(30)).await;
-        shutdown.notify_one();
+        shutdown.trigger();
         let stopped = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(stopped.is_ok(), "supervise must stop on shutdown");
         assert!(stopped.unwrap().unwrap().is_ok());
@@ -314,8 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn supervise_stops_on_shutdown() {
-        let shutdown = Notify::new();
-        let notify = std::sync::Arc::new(shutdown);
+        let shutdown = Shutdown::new();
+        let notify = shutdown.clone();
         let handle = {
             let shutdown = notify.clone();
             tokio::spawn(async move {
@@ -331,7 +331,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         // `notify_one` stores a permit: the loop may be between waits, and a
         // one-shot `notify_waiters` would be lost.
-        notify.notify_one();
+        notify.trigger();
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "supervise must stop after shutdown");
         assert!(result.unwrap().unwrap().is_ok());

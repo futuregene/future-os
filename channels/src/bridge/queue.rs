@@ -364,7 +364,7 @@ mod tests {
     async fn different_conversations_run_concurrently() {
         let started: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
         let captured = started.clone();
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let conversations = Conversations::new(Arc::new(move |job, _watch| {
             let captured = captured.clone();
@@ -382,13 +382,13 @@ mod tests {
         let started = started.lock().unwrap().clone();
         assert_eq!(started.len(), 2, "both conversations should be running");
         // Release both runners and let them finish, so the test owns no tasks.
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
     async fn a_full_mailbox_reports_backpressure() {
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let conversations = Conversations::new(Arc::new(move |_job, _watch| {
             let gate = gate_for_runner.clone();
@@ -409,7 +409,7 @@ mod tests {
             outcomes.contains(&SubmitOutcome::Full),
             "expected backpressure, got {outcomes:?}"
         );
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -432,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_superseded_queued_job_is_told_so_instead_of_running() {
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let runs = Arc::new(AtomicU64::new(0));
         let runs_for_runner = runs.clone();
@@ -454,7 +454,7 @@ mod tests {
             *sink.superseded.lock().unwrap() >= 1,
             "the overtaken job must be told it was superseded"
         );
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -474,7 +474,7 @@ mod tests {
         // A message dropped by backpressure must not leave the conversation
         // with no answer at all: the running turn keeps its generation, so it
         // still finishes and reports.
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let conversations = Conversations::new(Arc::new(move |_job, _watch| {
             let gate = gate_for_runner.clone();
@@ -503,7 +503,7 @@ mod tests {
             before,
             "a rejected message must not bump the generation"
         );
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -532,7 +532,7 @@ mod tests {
     async fn idle_conversations_are_evicted_before_an_active_one() {
         // A conversation with recent activity must survive eviction pressure
         // while an idle one is dropped.
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let conversations = Conversations::new(Arc::new(move |_job, _watch| {
             let gate = gate_for_runner.clone();
@@ -553,7 +553,7 @@ mod tests {
         let routed = conversations.len().await;
         assert!(routed <= 2, "{routed}");
         assert!(conversations.generation("c2").await.is_some());
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
@@ -626,7 +626,7 @@ mod tests {
         // newest message would lose its mailbox mid-answer. With nothing idle
         // and a full table, the least recently used *idle* entry goes instead,
         // and the running conversation keeps receiving.
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = crate::bridge::Shutdown::new();
         let gate_for_runner = gate.clone();
         let conversations = Conversations::new(Arc::new(move |_job, _watch| {
             let gate = gate_for_runner.clone();
@@ -651,7 +651,7 @@ mod tests {
         // The busy conversation is still routed, so its next message is queued
         // rather than treated as a new conversation.
         assert!(conversations.generation("busy").await.is_some());
-        gate.notify_waiters();
+        gate.trigger();
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
 

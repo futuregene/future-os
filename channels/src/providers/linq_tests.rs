@@ -128,7 +128,7 @@ fn ctx_with_config(config: Value) -> ProviderCtx {
         Arc::new(crate::session_store::SessionStore::new(
             crate::test_support::temp_dir("linq-sessions").join("sessions.json"),
         )),
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -163,7 +163,7 @@ fn ctx_with_agent(grpc_addr: &str, data_dir: &std::path::Path, config: Value) ->
         ),
         data_dir.to_path_buf(),
         sessions,
-        Arc::new(tokio::sync::Notify::new()),
+        crate::bridge::Shutdown::new(),
     )
 }
 
@@ -1308,7 +1308,7 @@ async fn run_rejects_an_unsigned_delivery_and_runs_a_signed_one() {
     .await;
     assert!(delivered, "the signed delivery never reached the agent");
 
-    ctx.shutdown().notify_waiters();
+    ctx.shutdown().trigger();
     let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
     assert!(stopped.is_ok(), "run() must return on shutdown");
     assert!(stopped.unwrap().unwrap().is_ok());
