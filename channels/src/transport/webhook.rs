@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(set, 0, "SO_LINGER must be settable");
         stream.set_nonblocking(true).unwrap();
         {
-            use std::io::Write as _;
+            use tokio::io::AsyncWriteExt as _;
             let mut stream = tokio::net::TcpStream::from_std(stream).unwrap();
             let _ = stream
                 .write_all(b"POST /hook HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")

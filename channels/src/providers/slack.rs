@@ -865,15 +865,8 @@ async fn run_events_webhook(
     let sender_for_hook = sender.clone();
     // Tests bind an ephemeral port and learn what the server registered
     // through this slot.
-    #[cfg(test)]
-    let test_slot = webhook_test_hook::take();
-    #[cfg(test)]
-    let bind_port = test_slot
-        .as_ref()
-        .map(|slot| slot.lock().unwrap_or_else(|error| error.into_inner()).0)
-        .unwrap_or(config.webhook_port);
-    #[cfg(not(test))]
-    let bind_port = config.webhook_port;
+    let test_slot = webhook_test_slot();
+    let bind_port = webhook_bind_port(config.webhook_port, test_slot.as_ref());
     let server = webhook::WebhookServer::bind(&format!("0.0.0.0:{bind_port}")).await?;
     #[cfg(test)]
     if let Some(slot) = test_slot {
@@ -907,13 +900,13 @@ async fn run_events_webhook(
                 Some("event_callback") => {
                     // Retries of an event we already saw are acked without
                     // work; the bridge dedups on the message id anyway.
+                    // Respond fast (the platform gives ~3s) and process the
+                    // event off the request path.
                     if let Some(event) = body.get("event") {
                         let ctx = ctx.clone();
                         let sender = sender.clone();
                         let bot_user_id = bot_user_id.clone();
                         let event = event.clone();
-                        // Respond fast (the platform gives ~3s) and process
-                        // the event off the request path.
                         tokio::spawn(async move {
                             dispatch_event(&ctx, &sender, &event, &bot_user_id).await;
                         });
@@ -932,6 +925,24 @@ async fn run_events_webhook(
         "events API webhook listening"
     );
     server.serve(ctx.shutdown().clone()).await
+}
+
+/// The configured port, or the ephemeral port a test armed through the hook.
+/// Tests always take the `Some` arm; the `None` arm is the production path
+/// (and the no-hook test), which the configured-port test exercises.
+fn webhook_bind_port(configured: u16, slot: Option<&WebhookBindingSlot>) -> u16 {
+    slot.map(|slot| slot.lock().unwrap_or_else(|error| error.into_inner()).0)
+        .unwrap_or(configured)
+}
+
+#[cfg(test)]
+fn webhook_test_slot() -> Option<std::sync::Arc<std::sync::Mutex<(u16, String, u16)>>> {
+    webhook_test_hook::take()
+}
+
+#[cfg(not(test))]
+fn webhook_test_slot() -> Option<std::sync::Arc<std::sync::Mutex<(u16, String, u16)>>> {
+    None
 }
 
 /// The bind port and path normalization are only observable from inside the
@@ -964,6 +975,23 @@ pub(crate) mod webhook_test_hook {
     }
 }
 
+/// A failure-arm test kills the client socket's write half so the session's
+/// next ack/pong flush fails deterministically (rather than racing the
+/// reconnect read).
+#[cfg(all(test, unix))]
+pub(crate) fn kill_write_half(socket: &ws::Socket) {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let plain = match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(stream) => stream,
+        _ => unreachable!("tests dial plain ws only"),
+    };
+    let borrowed =
+        std::mem::ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_fd(plain.as_raw_fd()) });
+    borrowed
+        .shutdown(std::net::Shutdown::Write)
+        .expect("shutdown the client socket's write half");
+}
+
 pub fn provider() -> Box<dyn Provider> {
     Box::new(Slack)
 }
@@ -971,3 +999,6 @@ pub fn provider() -> Box<dyn Provider> {
 #[cfg(test)]
 #[path = "slack_tests.rs"]
 mod tests;
+/// The test-visible slot that records where the webhook server bound
+/// `(port, path, connections)`.
+type WebhookBindingSlot = std::sync::Arc<std::sync::Mutex<(u16, String, u16)>>;

@@ -3,6 +3,10 @@
 //! platform's 4000-unit limit, error classification, webhook signature
 //! verification, and the outbound method shapes against a mock HTTP server.
 
+// A few tests serialize on a process-global test hook, so the guard is
+// deliberately held across awaits.
+#![allow(clippy::await_holding_lock)]
+
 use super::*;
 use crate::bridge::ChatKind;
 use serde_json::json;
@@ -1296,10 +1300,21 @@ async fn socket_mode_fails_when_the_platform_drops_the_socket() {
     .expect("the session must notice the failure promptly")
     .expect_err("a read failure must fail the session");
     assert!(error.to_string().contains("read failed"), "{error}");
+}
 
-    // The platform drops the socket mid-stream without a close handshake:
-    // the same "closed by the platform" error, from the end-of-stream arm.
-    let (url, _) = crate::test_support::spawn_ws(vec![]).await;
+#[tokio::test(flavor = "multi_thread")]
+async fn socket_mode_fails_when_the_stream_ends_without_a_close_frame() {
+    // The server sends a close frame, then drops the connection without
+    // reading the client's reply. The session bails on the close frame (the
+    // close arm), but the queued close reply still has to be flushed, which
+    // the drain below does: once the client has sent its close it enters
+    // CloseAcknowledged, and the server's FIN then ends the message stream
+    // with `None` rather than a protocol error — the end-of-stream arm.
+    let (url, _) = crate::test_support::spawn_ws(vec![
+        crate::test_support::WsAction::SendClose,
+        crate::test_support::WsAction::Delay(Duration::from_millis(10)),
+    ])
+    .await;
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
@@ -1308,27 +1323,69 @@ async fn socket_mode_fails_when_the_platform_drops_the_socket() {
         socket_mode_session(&ctx, sender, "UBOT", socket),
     )
     .await
-    .expect("the session must notice the drop promptly")
-    .expect_err("a dropped socket must fail the session");
-    let message = error.to_string();
-    assert!(
-        message.contains("closed") || message.contains("read failed"),
-        "the drop is reported one way or the other: {message}"
-    );
+    .expect("the session must notice the close promptly")
+    .expect_err("a close frame is a reconnect reason, not a clean exit");
+    assert!(error.to_string().contains("closed"), "{error}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drained_close_handshake_ends_the_message_stream_with_none() {
+    // Companion to the session test above: after the close handshake the
+    // FIN ends the stream with `None`, which the session maps to the
+    // end-of-stream arm. Driving the handshake directly keeps that mapping
+    // deterministic.
+    let (url, _) = crate::test_support::spawn_ws(vec![
+        crate::test_support::WsAction::SendClose,
+        crate::test_support::WsAction::Delay(Duration::from_millis(200)),
+    ])
+    .await;
+    let mut socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    // The close frame arrives; tungstenite queues the reply.
+    let mut saw_close = false;
+    use futures_util::StreamExt;
+    for _ in 0..100 {
+        match tokio::time::timeout(Duration::from_millis(50), socket.next()).await {
+            Ok(Some(Ok(WsMessage::Close(_)))) => {
+                saw_close = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    assert!(saw_close, "the close frame must arrive");
+    // Sending any frame flushes the queued close reply, completing the
+    // handshake; the server's FIN then ends the stream.
+    use futures_util::SinkExt;
+    let _ = socket.send(WsMessage::Ping(vec![])).await;
+    let mut ended = false;
+    for _ in 0..100 {
+        match tokio::time::timeout(Duration::from_millis(50), socket.next()).await {
+            Ok(None) => {
+                ended = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    assert!(ended, "after the handshake the stream ends with None");
+}
+
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn socket_mode_fails_when_the_ack_cannot_be_written() {
     let envelope = json!({ "envelope_id": "env-9", "type": "events_api" });
     let (url, _) = crate::test_support::spawn_ws(vec![
         crate::test_support::WsAction::SendText(envelope.to_string()),
-        // Abort the TCP connection: the client's ack write or its next read
-        // fails — either way the session must end with an error, and fast.
-        crate::test_support::WsAction::ResetTcp,
+        // Hold the connection open; the test kills the client's write half.
+        crate::test_support::WsAction::Delay(Duration::from_secs(30)),
     ])
     .await;
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    // Kill the write half up front: the ack send fails when it flushes.
+    super::kill_write_half(&socket);
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     let error = tokio::time::timeout(
         Duration::from_secs(5),
@@ -1337,24 +1394,24 @@ async fn socket_mode_fails_when_the_ack_cannot_be_written() {
     .await
     .expect("the session must notice the dead socket promptly")
     .expect_err("a dead socket must fail the session");
-    let message = error.to_string();
     assert!(
-        message.contains("not writable") || message.contains("read failed"),
-        "the failure is reported one way or the other: {message}"
+        error.to_string().contains("not writable"),
+        "the ack write must be the reported failure: {error}"
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn socket_mode_fails_when_the_pong_cannot_be_written() {
     let (url, _) = crate::test_support::spawn_ws(vec![
         crate::test_support::WsAction::SendPing(b"hb".to_vec()),
-        // Abort the TCP connection: the client's pong write or its next read
-        // fails — either way the session must end with an error, and fast.
-        crate::test_support::WsAction::ResetTcp,
+        crate::test_support::WsAction::Delay(Duration::from_secs(30)),
     ])
     .await;
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
+    // Kill the write half up front: the pong send fails when it flushes.
+    super::kill_write_half(&socket);
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     let error = tokio::time::timeout(
         Duration::from_secs(5),
@@ -1363,10 +1420,9 @@ async fn socket_mode_fails_when_the_pong_cannot_be_written() {
     .await
     .expect("the session must notice the dead socket promptly")
     .expect_err("a dead socket must fail the session");
-    let message = error.to_string();
     assert!(
-        message.contains("not writable") || message.contains("read failed"),
-        "the failure is reported one way or the other: {message}"
+        error.to_string().contains("not writable"),
+        "the pong write must be the reported failure: {error}"
     );
 }
 

@@ -631,7 +631,7 @@ async fn an_empty_c2c_dispatch_is_ignored_but_the_connection_lives() {
     // Missing author: `parse_message_create` returns None, so nothing is
     // answered — but the loop must not treat it as an error.
     let empty_dispatch = json!({"op": 0, "s": 12, "t": "C2C_MESSAGE_CREATE", "d": {"id": "m-x"}});
-    let (url, received) = spawn_ws(vec![
+    let (url, _received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(empty_dispatch.to_string()),
         WsAction::Delay(Duration::from_millis(150)),
@@ -676,7 +676,7 @@ async fn an_empty_group_dispatch_is_ignored_but_the_connection_lives() {
         "op": 0, "s": 14, "t": "GROUP_AT_MESSAGE_CREATE",
         "d": {"id": "m-y", "content": "ping"}
     });
-    let (url, received) = spawn_ws(vec![
+    let (url, _received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(empty_dispatch.to_string()),
         WsAction::Delay(Duration::from_millis(150)),

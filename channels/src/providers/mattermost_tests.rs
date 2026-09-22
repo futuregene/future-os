@@ -1161,3 +1161,88 @@ async fn run_refuses_a_missing_token_and_fails_when_identity_fails() {
         "{error}"
     );
 }
+
+// ─── Session gap coverage ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_read_failure_is_reported_as_a_read_error() {
+    // An abortive close mid-stream makes the client's next read fail: the
+    // session must name the read failure, not the close path. The delay lets
+    // the auth challenge and the hello frame land before the reset, so the
+    // failure surfaces on the read, not the challenge write.
+    let (url, _) = spawn_ws(vec![
+        WsAction::SendText(json!({"event": "hello", "data": {}}).to_string()),
+        WsAction::Delay(std::time::Duration::from_millis(100)),
+        WsAction::ResetTcp,
+    ])
+    .await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let session = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), session)
+        .await
+        .expect("the session must end on a reset socket")
+        .expect_err("a reset mid-stream is an error, not a clean exit");
+    assert!(error.to_string().contains("read failed"), "{error}");
+}
+
+#[tokio::test]
+async fn a_posted_event_with_an_unparseable_post_is_skipped_and_the_session_continues() {
+    // `parse_ws_event` rejects a `posted` frame whose `post` string is not
+    // JSON; the session must skip that frame and still handle the next one.
+    let bad_posted = json!({
+        "event": "posted",
+        "data": { "post": "not valid json", "mentions": "[]", "channel_type": "O" }
+    });
+    let hello = json!({"event": "hello", "data": {"server_version": "9.0"}});
+    let (url, _) = spawn_ws(vec![
+        WsAction::SendText(bad_posted.to_string()),
+        WsAction::SendText(hello.to_string()),
+        WsAction::Delay(std::time::Duration::from_millis(150)),
+    ])
+    .await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let session = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket);
+    tokio::time::timeout(std::time::Duration::from_secs(5), session)
+        .await
+        .expect("the session must continue past the bad frame until the server drops the socket")
+        .expect_err("a dropped socket asks for a reconnect");
+}
+
+#[tokio::test]
+async fn an_unparseable_post_is_dropped_inside_dispatch_and_the_session_continues() {
+    // `parse_ws_event` normalizes the envelope but `parse_posted` can still
+    // reject the post (here: a whitespace-only message). Dispatch must drop
+    // it silently — no panic, no reaction — and the session must keep
+    // reading. The fresh `create_at` keeps the offline bridge's freshness
+    // gate from masking the parse path.
+    let mut whitespace = fresh_post("");
+    whitespace["message"] = json!("   ");
+    let good = fresh_post("");
+    let (url, received) = spawn_ws(vec![
+        WsAction::SendText(posted_event(&whitespace, &["bot-id"], "O").to_string()),
+        WsAction::SendText(posted_event(&good, &["bot-id"], "O").to_string()),
+        WsAction::Delay(std::time::Duration::from_millis(150)),
+    ])
+    .await;
+    let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
+    let socket = ws::connect(&url, &[]).await.unwrap();
+    let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
+    let allowlist = HashSet::new();
+    let session = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket);
+    tokio::time::timeout(std::time::Duration::from_secs(5), session)
+        .await
+        .expect("the session must survive the unparseable post until the server drops the socket")
+        .expect_err("a dropped socket asks for a reconnect");
+    let messages = received.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(
+        messages.len(),
+        1,
+        "only the auth challenge may be sent; the dropped post must not produce traffic: {messages:?}"
+    );
+}
