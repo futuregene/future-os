@@ -201,32 +201,30 @@ non-interactive commands never perform it.
 | `/new` | Start a new session |
 | `/sessions` | Browse and switch sessions |
 | `/compact` | Compress conversation context |
-| `/scoped-models` | Configure model enable/disable list |
-| `/clone` | Clone the current session |
-| `/fork` | Fork the current session |
-| `/tree` | Session tree with fork/clone hierarchy |
-| `/name [n]` | Set the session name |
 | `/status` | Session state, token usage, cost |
 | `/stop` | Abort current generation |
-| `/cwd` | Change the working directory |
-| `/approve` | Approve pending tool execution |
-| `/reject` | Reject pending tool execution |
-| `/cancel <run-id>` | Cancel a queued run |
-| `/reload` | Reload skills and context |
+| `/providers` | Configure providers and models |
+| `/skills` | Browse, install and manage skills |
+| `/theme` | Switch the color theme |
+
+Run `/help` in the TUI for the full list (40+ commands).
 
 ### Keyboard Shortcuts (TUI)
 
 | Key | Action |
 |---|---|
+| `ctrl+c` | Interrupt / exit |
 | `ctrl+p` | Cycle model |
+| `ctrl+r` | Browse sessions |
 | `ctrl+t` | Cycle thinking level |
 | `ctrl+o` | Expand / collapse thinking |
-| `ctrl+r` | Browse sessions |
-| `ctrl+c` | Interrupt / exit |
+| `ctrl+g` | Expand / collapse tool output |
+| `ctrl+x` | Copy the last answer |
+| `ctrl+v` | Paste clipboard (image or text) |
 | `tab` | Autocomplete |
+| `↑↓` | Scroll / navigate lists |
 | `enter` | Submit / accept |
 | `escape` | Close popup |
-| `↑↓` | Scroll / navigate lists |
 
 ## Troubleshooting
 
