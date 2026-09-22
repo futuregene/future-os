@@ -473,30 +473,30 @@ mod tests {
 
     use std::time::Duration;
 
-#[tokio::test]
-async fn a_reqwest_json_post_is_answered() {
-    let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
-        "POST",
-        "/hook",
-        |request| async move {
-            let body = String::from_utf8_lossy(&request.body).to_string();
-            WebhookResponse::json(200, &serde_json::json!({ "seen": body }))
-        },
-    );
-    let (addr, shutdown, serving) = serve(server).await;
-    let client = reqwest::Client::builder().http1_only().build().unwrap();
-    let payload = serde_json::json!({"pad": "x".repeat(2000)});
-    let response = client
-        .post(format!("http://{addr}/hook"))
-        .json(&payload)
-        .send()
-        .await
-        .expect("post");
-    assert_eq!(response.status().as_u16(), 200);
-    let text = response.text().await.unwrap();
-    assert!(text.contains("pad"), "{text}");
-    stop(shutdown, serving).await;
-}
+    #[tokio::test]
+    async fn a_reqwest_json_post_is_answered() {
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+            "POST",
+            "/hook",
+            |request| async move {
+                let body = String::from_utf8_lossy(&request.body).to_string();
+                WebhookResponse::json(200, &serde_json::json!({ "seen": body }))
+            },
+        );
+        let (addr, shutdown, serving) = serve(server).await;
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+        let payload = serde_json::json!({"pad": "x".repeat(2000)});
+        let response = client
+            .post(format!("http://{addr}/hook"))
+            .json(&payload)
+            .send()
+            .await
+            .expect("post");
+        assert_eq!(response.status().as_u16(), 200);
+        let text = response.text().await.unwrap();
+        assert!(text.contains("pad"), "{text}");
+        stop(shutdown, serving).await;
+    }
 
     #[tokio::test]
     async fn a_body_split_across_writes_is_read_in_full() {
@@ -519,7 +519,8 @@ async fn a_reqwest_json_post_is_answered() {
         tokio::time::sleep(Duration::from_millis(30)).await;
         stream.write_all(b"hello").await.unwrap();
         let mut response = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
         stop(shutdown, serving).await;
         let response = String::from_utf8_lossy(&response);
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -530,13 +531,14 @@ async fn a_reqwest_json_post_is_answered() {
     async fn a_client_that_stops_mid_body_ends_the_connection_quietly() {
         // Content-Length promises more than the client sends: the server must
         // stop reading and answer, not hang.
-        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
-            "POST",
-            "/hook",
-            |request| async move {
-                WebhookResponse::text(200, format!("got {}", request.body.len()))
-            },
-        );
+        let server =
+            WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+                "POST",
+                "/hook",
+                |request| async move {
+                    WebhookResponse::text(200, format!("got {}", request.body.len()))
+                },
+            );
         let (addr, shutdown, serving) = serve(server).await;
         let mut stream = TcpStream::connect(addr).await.unwrap();
         stream
@@ -548,7 +550,8 @@ async fn a_reqwest_json_post_is_answered() {
         // rest of the body.
         stream.shutdown().await.unwrap();
         let mut response = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
         stop(shutdown, serving).await;
         let response = String::from_utf8_lossy(&response);
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -567,7 +570,8 @@ async fn a_reqwest_json_post_is_answered() {
             stream.write_all(filler.as_bytes()).await.unwrap();
         }
         let mut response = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
         stop(shutdown, serving).await;
         let response = String::from_utf8_lossy(&response);
         assert!(response.starts_with("HTTP/1.1 431"), "{response}");

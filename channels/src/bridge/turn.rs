@@ -381,11 +381,7 @@ mod tests {
             ConversationRef::default(),
         ));
         let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        run_turn(
-            &fixture.client,
-            request(fixture, text, sink, generation, 1),
-        )
-        .await
+        run_turn(&fixture.client, request(fixture, text, sink, generation, 1)).await
     }
 
     #[tokio::test]
@@ -547,8 +543,7 @@ mod tests {
         .await;
         let error = drive(&fixture, "hi")
             .await
-            .err()
-            .expect("the turn must fail")
+            .expect_err("the turn must fail")
             .to_string();
         assert!(error.contains("attach"), "{error}");
         let sent = fixture.sender.ops.lock().unwrap().clone();
@@ -570,8 +565,7 @@ mod tests {
         .await;
         let error = drive(&fixture, "hi")
             .await
-            .err()
-            .expect("the turn must fail")
+            .expect_err("the turn must fail")
             .to_string();
         assert!(error.contains("prompt"), "{error}");
         let sent = fixture.sender.ops.lock().unwrap().clone();
@@ -652,12 +646,9 @@ mod tests {
                 generator.store(2, std::sync::atomic::Ordering::SeqCst);
             })
         };
-        let outcome = run_turn(
-            &fixture.client,
-            request(&fixture, "hi", sink, generator, 1),
-        )
-        .await
-        .expect("turn returns");
+        let outcome = run_turn(&fixture.client, request(&fixture, "hi", sink, generator, 1))
+            .await
+            .expect("turn returns");
         bump.await.ok();
         assert_eq!(outcome.status, TurnStatus::Cancelled, "{outcome:?}");
     }
@@ -679,7 +670,10 @@ mod tests {
         .await
         .expect("turn returns");
         assert_eq!(outcome.text, "ab");
-        assert_eq!(progressive.updates(), vec!["a".to_string(), "ab".to_string()]);
+        assert_eq!(
+            progressive.updates(),
+            vec!["a".to_string(), "ab".to_string()]
+        );
         assert_eq!(progressive.finishes(), 1);
     }
 
@@ -694,7 +688,12 @@ mod tests {
                 "tool_start",
                 r#"{"tool_id":"t1","tool_name":"shell","tool_args":"ls"}"#,
             ),
-            ts::ev(run_id(), 4, "tool_delta", r#"{"tool_id":"t1","text":"out"}"#),
+            ts::ev(
+                run_id(),
+                4,
+                "tool_delta",
+                r#"{"tool_id":"t1","text":"out"}"#,
+            ),
             ts::ev(run_id(), 5, "tool_end", r#"{"tool_id":"t1","text":"done"}"#),
             ts::ev(run_id(), 6, "error", r#"{"error":"a recoverable hiccup"}"#),
             ts::ev(run_id(), 7, "ping", "{}"),
@@ -719,7 +718,6 @@ mod tests {
         assert_eq!(sink.tools().len(), 2, "start and finish are both reported");
         assert_eq!(outcome.status, TurnStatus::Completed);
         assert_eq!(outcome.error.as_deref(), Some("a recoverable hiccup"));
-        assert!(sink.thinking_pushes() >= 0);
     }
 
     #[tokio::test]
@@ -817,7 +815,10 @@ mod tests {
         }
 
         async fn text(&self, update: TextUpdate<'_>) -> Result<()> {
-            self.updates.lock().unwrap().push(update.accumulated.to_string());
+            self.updates
+                .lock()
+                .unwrap()
+                .push(update.accumulated.to_string());
             Ok(())
         }
 
@@ -860,7 +861,12 @@ mod tests {
         // A turn whose text arrives *after* a tool note needs the separator, and
         // enough tool notes to trip the "+N more" summary.
         let fixture = fixture(vec![
-            ts::ev(run_id(), 1, "tool_start", r#"{"tool_id":"t1","tool_name":"a"}"#),
+            ts::ev(
+                run_id(),
+                1,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"a"}"#,
+            ),
             ts::ev(run_id(), 2, "tool_end", r#"{"tool_id":"t1","name":"a"}"#),
             ts::ev(run_id(), 3, "text_chunk", r#"{"text":"the answer"}"#),
             ts::ev(run_id(), 4, "agent_end", r#"{"state":"completed"}"#),
@@ -894,7 +900,12 @@ mod tests {
                 &format!(r#"{{"tool_id":"t{index}"}}"#),
             ));
         }
-        events.push(ts::ev(run_id(), 99, "agent_end", r#"{"state":"completed"}"#));
+        events.push(ts::ev(
+            run_id(),
+            99,
+            "agent_end",
+            r#"{"state":"completed"}"#,
+        ));
         let fixture = fixture(events).await;
         let outcome = drive(&fixture, "do twenty things").await.expect("turn");
         assert_eq!(outcome.tool_calls, 20);

@@ -194,17 +194,17 @@ fn media_kinds_follow_the_mimetype() {
 fn file_kind_covers_every_bucket() {
     use crate::bridge::MediaKind;
     assert_eq!(file_kind(Some("text/plain"), None), MediaKind::Document);
-    assert_eq!(file_kind(Some("application/zip"), None), MediaKind::Document);
+    assert_eq!(
+        file_kind(Some("application/zip"), None),
+        MediaKind::Document
+    );
     // Any application/* mimetype is a document, whatever the filetype says.
     assert_eq!(
         file_kind(Some("application/octet-stream"), Some("mp3")),
         MediaKind::Document
     );
     // A mimetype in no known bucket falls through to the filetype table.
-    assert_eq!(
-        file_kind(Some("model/mesh"), Some("mp3")),
-        MediaKind::Audio
-    );
+    assert_eq!(file_kind(Some("model/mesh"), Some("mp3")), MediaKind::Audio);
     assert_eq!(file_kind(None, Some("m4a")), MediaKind::Audio);
     assert_eq!(file_kind(None, Some("wav")), MediaKind::Audio);
     assert_eq!(file_kind(None, Some("ogg")), MediaKind::Audio);
@@ -1063,7 +1063,10 @@ async fn attachments_are_downloaded_with_the_bot_credentials() {
     fetch_attachments(&ctx, &mut inbound).await.unwrap();
     assert_eq!(inbound.media[0].data.as_deref(), Some(&b"PNGDATA"[..]));
     assert_eq!(inbound.media[1].data.as_deref(), Some(&b"old"[..]));
-    assert!(inbound.media[2].data.is_none(), "documents stay URL references");
+    assert!(
+        inbound.media[2].data.is_none(),
+        "documents stay URL references"
+    );
     assert!(inbound.media[3].data.is_none(), "no URL, nothing to fetch");
     let requests = crate::test_support::requests_to(&recorded, "/files/shot.png");
     assert_eq!(requests.len(), 1);
@@ -1071,9 +1074,7 @@ async fn attachments_are_downloaded_with_the_bot_credentials() {
         request_auth(&requests[0]),
         Some("Bearer xoxb-test".to_string())
     );
-    assert!(
-        crate::test_support::requests_to(&recorded, "/files/spec.pdf").is_empty()
-    );
+    assert!(crate::test_support::requests_to(&recorded, "/files/spec.pdf").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1202,7 +1203,11 @@ async fn socket_mode_acks_envelopes_and_stops_on_a_server_disconnect() {
         ),
     ])
     .await;
-    let ctx = ProviderCtx::offline(&DEFINITION);
+    // A bridge context with an open policy so the delivered event reaches
+    // the pipeline (the offline default would deny it, which is fine too —
+    // the assertion is on the ack, not the outcome).
+    let dir = crate::test_support::temp_dir("slack-session-ack");
+    let ctx = dispatch_ctx(config_value(&test_config("http://127.0.0.1:1")), &dir);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     tokio::time::timeout(
@@ -1222,7 +1227,10 @@ async fn socket_mode_acks_envelopes_and_stops_on_a_server_disconnect() {
         .filter_map(|message| message.to_text().ok())
         .filter(|text| text.contains("envelope_id"))
         .count();
-    assert_eq!(acks, 1, "only the envelope with an id is acked: {received:?}");
+    assert_eq!(
+        acks, 1,
+        "only the envelope with an id is acked: {received:?}"
+    );
     assert!(
         received
             .iter()
@@ -1234,7 +1242,8 @@ async fn socket_mode_acks_envelopes_and_stops_on_a_server_disconnect() {
 #[tokio::test(flavor = "multi_thread")]
 async fn socket_mode_fails_when_the_platform_drops_the_socket() {
     // A clean close frame.
-    let (url, _) = crate::test_support::spawn_ws(vec![crate::test_support::WsAction::SendClose]).await;
+    let (url, _) =
+        crate::test_support::spawn_ws(vec![crate::test_support::WsAction::SendClose]).await;
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
@@ -1300,7 +1309,8 @@ async fn socket_mode_stops_cleanly_on_shutdown() {
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     let shutdown = ctx.shutdown().clone();
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
-    let session = tokio::spawn(async move { socket_mode_session(&ctx, sender, "UBOT", socket).await });
+    let session =
+        tokio::spawn(async move { socket_mode_session(&ctx, sender, "UBOT", socket).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     shutdown.notify_waiters();
     tokio::time::timeout(Duration::from_secs(5), session)
@@ -1353,15 +1363,25 @@ async fn run_socket_mode_connects_acks_and_reconnects_until_shutdown() {
             // and the connection drops.
             crate::test_support::WsAction::Delay(Duration::from_millis(500)),
         ],
-        vec![crate::test_support::WsAction::Delay(Duration::from_secs(30))],
+        vec![crate::test_support::WsAction::Delay(Duration::from_secs(
+            30,
+        ))],
     ])
     .await;
+    // Probe: does run() return when shutdown fires before it starts?
+    let probe_ctx = dispatch_ctx(
+        json!({ "enabled": true, "bot_token": "xoxb-test", "app_token": "xapp-test", "api_base": "http://127.0.0.1:1" }),
+        &crate::test_support::temp_dir("slack-probe-shutdown"),
+    );
+    let probe_shutdown = probe_ctx.shutdown().clone();
+    let probe = tokio::spawn(async move { super::Slack.run(probe_ctx).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    probe_shutdown.notify_waiters();
+    let probe_done = tokio::time::timeout(Duration::from_secs(5), probe).await;
+    eprintln!("probe (shutdown during supervise backoff) finished: {}", probe_done.is_ok());
+
     let (base, _) = crate::test_support::spawn_http(vec![
-        crate::test_support::HttpRoute::json(
-            "/auth.test",
-            200,
-            r#"{"ok":true,"user_id":"UBOT"}"#,
-        ),
+        crate::test_support::HttpRoute::json("/auth.test", 200, r#"{"ok":true,"user_id":"UBOT"}"#),
         crate::test_support::HttpRoute::json(
             "/apps.connections.open",
             200,

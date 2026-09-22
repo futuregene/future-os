@@ -852,47 +852,47 @@ async fn run_events_webhook(
         slot.2 = bound_port;
     }
     let server = server.on("POST", &path, move |request| {
-            let ctx = ctx_clone.clone();
-            let sender = sender_for_hook.clone();
-            let secret = secret.clone();
-            let bot_user_id = bot_user_id.clone();
-            async move {
-                let timestamp = request.header("x-slack-request-timestamp").unwrap_or("");
-                let signature = request.header("x-slack-signature").unwrap_or("");
-                let now = crate::bridge::dedup::now_ms() / 1000;
-                if !verify_request_signature(&secret, timestamp, signature, &request.body, now) {
-                    return webhook::WebhookResponse::unauthorized();
-                }
-                let body = request.json();
-                match body.get("type").and_then(Value::as_str) {
-                    Some("url_verification") => {
-                        let challenge = body
-                            .get("challenge")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        webhook::WebhookResponse::text(200, challenge)
-                    }
-                    Some("event_callback") => {
-                        // Retries of an event we already saw are acked without
-                        // work; the bridge dedups on the message id anyway.
-                        if let Some(event) = body.get("event") {
-                            let ctx = ctx.clone();
-                            let sender = sender.clone();
-                            let bot_user_id = bot_user_id.clone();
-                            let event = event.clone();
-                            // Respond fast (the platform gives ~3s) and process
-                            // the event off the request path.
-                            tokio::spawn(async move {
-                                dispatch_event(&ctx, &sender, &event, &bot_user_id).await;
-                            });
-                        }
-                        webhook::WebhookResponse::ok()
-                    }
-                    _ => webhook::WebhookResponse::ok(),
-                }
+        let ctx = ctx_clone.clone();
+        let sender = sender_for_hook.clone();
+        let secret = secret.clone();
+        let bot_user_id = bot_user_id.clone();
+        async move {
+            let timestamp = request.header("x-slack-request-timestamp").unwrap_or("");
+            let signature = request.header("x-slack-signature").unwrap_or("");
+            let now = crate::bridge::dedup::now_ms() / 1000;
+            if !verify_request_signature(&secret, timestamp, signature, &request.body, now) {
+                return webhook::WebhookResponse::unauthorized();
             }
-        });
+            let body = request.json();
+            match body.get("type").and_then(Value::as_str) {
+                Some("url_verification") => {
+                    let challenge = body
+                        .get("challenge")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    webhook::WebhookResponse::text(200, challenge)
+                }
+                Some("event_callback") => {
+                    // Retries of an event we already saw are acked without
+                    // work; the bridge dedups on the message id anyway.
+                    if let Some(event) = body.get("event") {
+                        let ctx = ctx.clone();
+                        let sender = sender.clone();
+                        let bot_user_id = bot_user_id.clone();
+                        let event = event.clone();
+                        // Respond fast (the platform gives ~3s) and process
+                        // the event off the request path.
+                        tokio::spawn(async move {
+                            dispatch_event(&ctx, &sender, &event, &bot_user_id).await;
+                        });
+                    }
+                    webhook::WebhookResponse::ok()
+                }
+                _ => webhook::WebhookResponse::ok(),
+            }
+        }
+    });
     ctx.mark_running();
     tracing::info!(
         channel = "slack",

@@ -11,7 +11,9 @@ use std::io::{BufRead, Write};
 use std::sync::Arc;
 
 use crate::bridge::{ChatKind, ConversationRef, Inbound, ProviderCtx, SenderRef};
-use crate::providers::traits::{Capabilities, ChannelDefinition, ChannelSender, Maturity, Provider};
+use crate::providers::traits::{
+    Capabilities, ChannelDefinition, ChannelSender, Maturity, Provider,
+};
 use crate::transport::LengthUnit;
 
 pub static DEFINITION: ChannelDefinition = ChannelDefinition {
@@ -232,7 +234,9 @@ mod tests {
                 ..Default::default()
             },
             data_dir.clone(),
-            Arc::new(crate::status::StatusBoard::new(data_dir.join("status.json"))),
+            Arc::new(crate::status::StatusBoard::new(
+                data_dir.join("status.json"),
+            )),
         );
         ProviderCtx::new(
             &DEFINITION,
@@ -301,7 +305,9 @@ mod tests {
                 tx,
             );
         });
-        Cli.drive(&ctx, sender.clone(), &mut rx).await.expect("drive");
+        Cli.drive(&ctx, sender.clone(), &mut rx)
+            .await
+            .expect("drive");
         pump.abort();
         // The prompt reached the bridge (which reports the agent as unreachable
         // and says so on the terminal), and the loop stopped at /quit so the
@@ -348,7 +354,9 @@ mod tests {
             let sender = Arc::new(RecordingSender::default());
             let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
             tx.try_send(format!("{command}\n")).unwrap();
-            Cli.drive(&ctx, sender.clone(), &mut rx).await.expect("drive");
+            Cli.drive(&ctx, sender.clone(), &mut rx)
+                .await
+                .expect("drive");
             assert!(sender.sent().is_empty(), "{command} must not be a prompt");
         }
     }
@@ -362,7 +370,9 @@ mod tests {
             Arc::new(AgentConfig::default()),
             crate::policy::AccessPolicyConfig::default(),
             data_dir.clone(),
-            Arc::new(crate::status::StatusBoard::new(data_dir.join("status.json"))),
+            Arc::new(crate::status::StatusBoard::new(
+                data_dir.join("status.json"),
+            )),
         );
         let ctx = ProviderCtx::new(
             &DEFINITION,

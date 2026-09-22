@@ -434,17 +434,19 @@ mod tests {
     fn the_legacy_top_level_blocks_still_resolve() {
         // Feishu and DingTalk predate the `providers` map; both shapes must work
         // so users can migrate one channel at a time.
-        let mut config = ChannelConfig::default();
-        config.feishu = Some(FeishuChannelConfig {
-            enabled: true,
-            app_id: "app".into(),
+        let config = ChannelConfig {
+            feishu: Some(FeishuChannelConfig {
+                enabled: true,
+                app_id: "app".into(),
+                ..Default::default()
+            }),
+            dingtalk: Some(DingtalkChannelConfig {
+                enabled: true,
+                client_id: "id".into(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
-        config.dingtalk = Some(DingtalkChannelConfig {
-            enabled: true,
-            client_id: "id".into(),
-            ..Default::default()
-        });
+        };
         assert!(ChannelConfig::provider_enabled(
             &config.provider_config("feishu").expect("feishu")
         ));
@@ -457,12 +459,14 @@ mod tests {
 
     #[test]
     fn an_explicit_provider_block_wins_over_the_legacy_one() {
-        let mut config = ChannelConfig::default();
-        config.feishu = Some(FeishuChannelConfig {
-            enabled: false,
-            app_id: "legacy".into(),
+        let mut config = ChannelConfig {
+            feishu: Some(FeishuChannelConfig {
+                enabled: false,
+                app_id: "legacy".into(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         config.providers.insert(
             "feishu".to_string(),
             serde_json::json!({"enabled": true, "app_id": "new"}),

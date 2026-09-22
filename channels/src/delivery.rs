@@ -483,9 +483,7 @@ mod tests {
         let queue = DeliveryQueue::load(path.clone());
         let error = queue.load_error().expect("load error");
         assert!(error.contains("cannot read"), "{error}");
-        assert!(queue
-            .enqueue("telegram", conversation(), "hello")
-            .is_err());
+        assert!(queue.enqueue("telegram", conversation(), "hello").is_err());
     }
 
     #[test]

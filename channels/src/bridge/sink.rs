@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 
 use crate::bridge::inbound::ConversationRef;
 use crate::providers::traits::ChannelSender;
-use crate::transport::{chunk, text::truncate, LengthUnit};
+use crate::transport::text::{is_blank, truncate};
+use crate::transport::{chunk, LengthUnit};
 
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,14 +275,12 @@ impl ChannelSink {
                 definition.length_unit,
             )
         };
-        if composed.is_empty() {
+        if is_blank(&composed) {
             return Ok(());
         }
 
+        // `compose` trims, so a non-blank body always yields at least one chunk.
         let chunks = chunk(&composed, limit, unit);
-        if chunks.is_empty() {
-            return Ok(());
-        }
         let mut standalone = self.lock().standalone;
 
         // Everything except the tail is final: post it once as its own message.
@@ -786,6 +785,42 @@ mod tests {
         .unwrap();
         sink.error("x").await.unwrap();
         sink.superseded().await.unwrap();
+        // `finish` is the one member a sink must implement.
+        sink.finish(&TurnOutcome::completed("x")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_progressive_sink_ignores_an_empty_update() {
+        // The first streamed delta can be empty, and composing it yields nothing
+        // to post; the sink must not send an empty message.
+        let sender = RecordingSender::new(&PROGRESSIVE);
+        let sink = sink(sender.clone());
+        sink.text(TextUpdate {
+            accumulated: "",
+            delta: "",
+        })
+        .await
+        .unwrap();
+        assert!(sender.ops().is_empty());
+        // Whitespace-only output is equally invisible.
+        sink.text(TextUpdate {
+            accumulated: "   \n",
+            delta: "   \n",
+        })
+        .await
+        .unwrap();
+        assert!(sender.ops().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_log_writer_reports_a_clean_flush() {
+        let sink_writer = Arc::new(StdMutex::new(Vec::new()));
+        let mut guard = WriterGuard(sink_writer.clone());
+        // The subscriber may flush; the writer must report success.
+        use std::io::Write as _;
+        guard.flush().unwrap();
+        guard.write_all(b"x").unwrap();
+        assert_eq!(&*sink_writer.lock().unwrap(), b"x");
     }
 
     #[tokio::test]

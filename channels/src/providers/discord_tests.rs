@@ -755,9 +755,13 @@ async fn run_gateway_once(
     config: &DiscordConfig,
     sender: Arc<DiscordSender>,
 ) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(5), run_gateway(ctx, config, sender))
-        .await
-        .expect("the gateway must end when the scripted server finishes")
+    let mut state = GatewayState::default();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        run_gateway(ctx, config, sender, &mut state),
+    )
+    .await
+    .expect("the gateway must end when the scripted server finishes")
 }
 
 fn gateway_config(gateway_url: &str) -> DiscordConfig {
@@ -871,17 +875,44 @@ async fn a_held_session_sends_resume_on_a_re_hello() {
         WsAction::SendText(ready.to_string()),
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(resumed.to_string()),
-        WsAction::Delay(Duration::from_millis(300)),
+        WsAction::Delay(Duration::from_millis(600)),
     ])
     .await;
     let ctx = ctx_with_config(json!({}));
     let config = gateway_config(&url);
     let sender = test_sender(&ctx, "http://127.0.0.1:1");
-    run_gateway_once(&ctx, &config, sender)
-        .await
-        .expect_err("a dropped socket is a reconnect, not a clean exit");
+    // Drive the gateway in the background so the test can wait for the RESUME
+    // to be recorded while the socket is still open.
+    let gateway = tokio::spawn({
+        let ctx = ctx_with_config(json!({}));
+        let config = gateway_config(&url);
+        async move { run_gateway(&ctx, &config, sender).await }
+    });
+    // The RESUME is written right after the second HELLO.
+    let resumed_seen = crate::test_support::wait_until(
+        || {
+            received_gateway_frames(&received)
+                .iter()
+                .any(|frame| frame["op"] == OP_RESUME)
+        },
+        Duration::from_secs(3),
+    )
+    .await;
     let frames = received_gateway_frames(&received);
-    eprintln!("REHELLO frames={frames:?}");
+    assert!(
+        resumed_seen,
+        "the second HELLO must be answered with RESUME: {frames:?}; raw={:?}",
+        received
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|m| format!("{m:?}"))
+            .collect::<Vec<_>>()
+    );
+    // Let the script finish so the gateway observes the dropped socket.
+    let _ = tokio::time::timeout(Duration::from_secs(5), gateway)
+        .await
+        .expect("the gateway must end when the scripted server finishes");
     assert_eq!(frames[0]["op"], OP_IDENTIFY);
     let resume = frames
         .iter()

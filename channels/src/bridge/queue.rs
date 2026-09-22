@@ -127,6 +127,12 @@ impl Conversations {
         self
     }
 
+    /// Override how long an idle conversation stays routed.
+    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
     /// Queue `job`, superseding any turn still running for its conversation.
     pub async fn submit(&self, job: Job) -> SubmitOutcome {
         let conversation = job.conversation.clone();
@@ -274,6 +280,7 @@ async fn worker(
         runner(queued.job, watch).await;
         busy.store(false, Ordering::SeqCst);
     }
+    tracing::debug!(conversation = %conversation, "conversation worker stopped");
 }
 
 #[cfg(test)]
@@ -364,7 +371,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let started = started.lock().unwrap().clone();
         assert_eq!(started.len(), 2, "both conversations should be running");
+        // Release both runners and let them finish, so the test owns no tasks.
         gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
@@ -391,6 +400,7 @@ mod tests {
             "expected backpressure, got {outcomes:?}"
         );
         gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
@@ -435,6 +445,7 @@ mod tests {
             "the overtaken job must be told it was superseded"
         );
         gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
@@ -483,6 +494,7 @@ mod tests {
             "a rejected message must not bump the generation"
         );
         gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
@@ -528,9 +540,14 @@ mod tests {
         }
         // The table stays within its bound and the just-submitted conversation
         // is still routed.
-        assert!(conversations.len().await <= 2, "{}", conversations.len().await);
+        assert!(
+            conversations.len().await <= 2,
+            "{}",
+            conversations.len().await
+        );
         assert!(conversations.generation("c2").await.is_some());
         gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
     }
 
     #[tokio::test]
@@ -594,6 +611,92 @@ mod tests {
             SubmitOutcome::Accepted | SubmitOutcome::Full
         ));
         assert_eq!(conversations.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_busy_conversation_is_not_evicted_for_a_new_one() {
+        // Eviction must never drop a conversation whose turn is running: the
+        // newest message would lose its mailbox mid-answer. With nothing idle
+        // and a full table, the least recently used *idle* entry goes instead,
+        // and the running conversation keeps receiving.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate_for_runner = gate.clone();
+        let conversations = Conversations::new(Arc::new(move |_job, _watch| {
+            let gate = gate_for_runner.clone();
+            Box::pin(async move {
+                gate.notified().await;
+            })
+        }))
+        .with_limits(4, 2)
+        // Nothing counts as idle, so the eviction has to fall back.
+        .with_idle_timeout(Duration::ZERO);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        assert_eq!(
+            conversations.submit(job("busy", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        // Wait for the runner to park, so "busy" is genuinely busy.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(conversations.len().await, 1);
+        // A second conversation overflows the two-entry table.
+        conversations.submit(job("other", sink.clone())).await;
+        assert!(conversations.len().await <= 2);
+        // The busy conversation is still routed, so its next message is queued
+        // rather than treated as a new conversation.
+        assert!(conversations.generation("busy").await.is_some());
+        gate.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    #[tokio::test]
+    async fn an_idle_conversation_is_evicted_and_its_worker_stops() {
+        // Idle conversations are dropped once they exceed their idle timeout and
+        // the table is full. Dropping one closes its mailbox, so its worker
+        // exits rather than lingering forever.
+        let writer = Arc::new(StdMutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let writer = writer.clone();
+                move || WriterGuard(writer.clone())
+            })
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let conversations = Conversations::new(Arc::new(|_job, _watch| Box::pin(async {})))
+            .with_limits(4, 2)
+            .with_idle_timeout(Duration::ZERO);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        for index in 0..4 {
+            conversations
+                .submit(job(&format!("c{index}"), sink.clone()))
+                .await;
+        }
+        let stopped = crate::test_support::wait_until(
+            || {
+                let logged = String::from_utf8_lossy(&writer.lock().unwrap()).to_string();
+                logged.contains("conversation worker stopped")
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(stopped, "an evicted conversation's worker must exit");
+        assert!(conversations.len().await <= 2);
+    }
+
+    /// A `Write` that appends to a shared buffer, so a test can read what the
+    /// subscriber wrote.
+    struct WriterGuard(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for WriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

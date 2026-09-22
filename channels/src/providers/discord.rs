@@ -622,9 +622,9 @@ async fn run_gateway(
     ctx: &ProviderCtx,
     config: &DiscordConfig,
     sender: Arc<DiscordSender>,
+    state: &mut GatewayState,
 ) -> Result<()> {
     let url = config.gateway_url();
-    let mut state = GatewayState::default();
     let mut socket = ws::connect(&url, &[]).await?;
     let mut heartbeat_interval: Option<Duration> = None;
     let mut last_heartbeat = Instant::now();
@@ -688,6 +688,7 @@ async fn run_gateway(
                                         ResumeDecision::Identify => state.identify_payload(&config.bot_token),
                                     };
                                     socket.send(WsMessage::Text(payload.to_string())).await?;
+                                    identified = true;
                                 }
                             }
                             OP_HEARTBEAT => {
@@ -908,8 +909,9 @@ impl Provider for Discord {
         ));
         ctx.mark_running();
         let mut backoff = ws::Backoff::gateway();
+        let mut state = GatewayState::default();
         loop {
-            let result = run_gateway(&ctx, &config, sender.clone()).await;
+            let result = run_gateway(&ctx, &config, sender.clone(), &mut state).await;
             match result {
                 Ok(()) => return Ok(()),
                 Err(error) => {

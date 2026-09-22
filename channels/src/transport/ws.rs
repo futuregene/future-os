@@ -184,8 +184,7 @@ mod tests {
         // Port 1 on loopback is refused, so the failure is deterministic.
         let error = connect("ws://127.0.0.1:1/gateway", &[])
             .await
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("127.0.0.1:1"), "{error}");
     }
@@ -194,8 +193,7 @@ mod tests {
     async fn connect_rejects_a_malformed_header() {
         let error = connect("ws://127.0.0.1:1/", &[("bad header", "value")])
             .await
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("invalid"), "{error}");
     }

@@ -461,7 +461,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} was never published", row.id));
             match row.configured {
                 // Enabled but not built: reported, never silently skipped.
-                "unsupported" => assert_eq!(entry.state, Some(ChannelState::Unsupported), "{}", row.id),
+                "unsupported" => {
+                    assert_eq!(entry.state, Some(ChannelState::Unsupported), "{}", row.id)
+                }
                 "not-configured" | "disabled" => {
                     assert_eq!(entry.state, Some(ChannelState::Disabled), "{}", row.id)
                 }

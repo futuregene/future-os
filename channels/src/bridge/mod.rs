@@ -1151,8 +1151,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_image_input_reaches_the_prompt() {
-        let (ctx, sender, state) =
-            ctx_with_agent("bridge-e2e-image", completed_turn("seen")).await;
+        let (ctx, sender, state) = ctx_with_agent("bridge-e2e-image", completed_turn("seen")).await;
         ctx.ensure_data_dir().unwrap();
         let mut inbound = Inbound::new_direct("m1", "u1", "c1", "what is this");
         inbound.media = vec![MediaRef {
@@ -1208,7 +1207,11 @@ mod tests {
         // The newest message is the one answered, and the superseded turn was
         // either replaced before it prompted or dropped — never answered twice.
         let prompts = ts::recorded_of(&state, "prompt");
-        assert!(!prompts.is_empty() && prompts.len() <= 2, "{}", prompts.len());
+        assert!(
+            !prompts.is_empty() && prompts.len() <= 2,
+            "{}",
+            prompts.len()
+        );
     }
 
     #[tokio::test]
@@ -1263,8 +1266,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_full_conversation_queue_drops_the_message_and_says_so() {
-        let (ctx, sender, _state) =
-            ctx_with_agent("bridge-e2e-full", completed_turn("done")).await;
+        let (ctx, sender, _state) = ctx_with_agent("bridge-e2e-full", completed_turn("done")).await;
         // Fill the mailbox past its bound without letting the worker drain it.
         let mut saw_full = false;
         for index in 0..40 {
@@ -1289,8 +1291,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_client_connects_once_and_can_be_invalidated() {
-        let (ctx, sender, _state) =
-            ctx_with_agent("bridge-e2e-client", completed_turn("ok")).await;
+        let (ctx, sender, _state) = ctx_with_agent("bridge-e2e-client", completed_turn("ok")).await;
         assert!(!ctx.bridge.is_connected());
         let _first = ctx.bridge.client().await.expect("connect");
         assert!(ctx.bridge.is_connected());
@@ -1357,8 +1358,11 @@ mod tests {
             ctx.http() as *const reqwest::Client,
             ctx.bridge.http() as *const reqwest::Client
         ));
-        assert_eq!(ctx.bridge.status().path().file_name().unwrap(), "status.json");
-        assert!(ctx.bridge.conversations().len().await >= 0);
+        assert_eq!(
+            ctx.bridge.status().path().file_name().unwrap(),
+            "status.json"
+        );
+        assert!(ctx.bridge.conversations().len().await <= 1);
     }
 
     #[tokio::test]
@@ -1384,12 +1388,9 @@ mod tests {
         assert_eq!(conversations.submit(job).await, SubmitOutcome::Accepted);
         // The worker ran the job; the runner found no bridge and skipped it, so
         // nothing was reported and the process is still healthy.
-        let routed = crate::test_support::wait_until(
-            || true,
-            std::time::Duration::from_millis(20),
-        )
-        .await;
-        assert!(routed);
+        // The worker is a spawned task: give it a bounded window to run the job
+        // and take the skip path, then assert the process is still healthy.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert_eq!(conversations.len().await, 1);
         assert_eq!(sink.superseded_count(), 0);
         assert_eq!(sink.finished_count(), 0);

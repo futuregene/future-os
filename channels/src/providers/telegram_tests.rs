@@ -1352,10 +1352,7 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
     let shutdown = ctx.shutdown().clone();
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
 
-    let client = reqwest::Client::builder()
-        .http1_only()
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().http1_only().build().unwrap();
     let delivery = update(50, message(private_chat(), alice(), "via webhook"));
     // Wait for the server to bind before posting.
     let bound = crate::test_support::wait_until(
@@ -1411,10 +1408,7 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
     );
     let shutdown = ctx.shutdown().clone();
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
-    let client = reqwest::Client::builder()
-        .http1_only()
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().http1_only().build().unwrap();
     let bound = crate::test_support::wait_until(
         || std::net::TcpStream::connect("127.0.0.1:18899").is_ok(),
         Duration::from_secs(5),

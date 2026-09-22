@@ -153,7 +153,10 @@ mod tests {
         assert!(verify_hex(&format!("v0={digest}"), &digest));
         assert!(verify_hex(&digest, &format!("v1={digest}")));
         // Only a plausible prefix is stripped.
-        assert!(!verify_hex(&digest, &format!("a-very-long-prefix={digest}")));
+        assert!(!verify_hex(
+            &digest,
+            &format!("a-very-long-prefix={digest}")
+        ));
     }
 
     #[test]

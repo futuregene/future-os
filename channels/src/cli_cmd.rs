@@ -338,7 +338,11 @@ pub struct PendingRow {
 pub const SNAPSHOT_FRESHNESS: std::time::Duration = std::time::Duration::from_secs(90);
 
 impl StatusReport {
-    pub fn build(config: &ChannelConfig, snapshot: &StatusSnapshot, queue: &[QueuedDelivery]) -> Self {
+    pub fn build(
+        config: &ChannelConfig,
+        snapshot: &StatusSnapshot,
+        queue: &[QueuedDelivery],
+    ) -> Self {
         let now = crate::status::now_unix();
         let channels = providers::all_definitions()
             .into_iter()
@@ -351,7 +355,9 @@ impl StatusReport {
                         config.provider_config(definition.id).as_ref(),
                         definition.is_implemented(),
                     ),
-                    state: live.and_then(|entry| entry.state.as_ref()).map(ChannelState::as_str),
+                    state: live
+                        .and_then(|entry| entry.state.as_ref())
+                        .map(ChannelState::as_str),
                     inbound: live.map(|entry| entry.inbound_count).unwrap_or(0),
                     outbound: live.map(|entry| entry.outbound_count).unwrap_or(0),
                     duplicates: live.map(|entry| entry.duplicate_count).unwrap_or(0),
@@ -579,7 +585,11 @@ fn send_report(options: &Options, env: &Env, text: &str) -> Result<SendReport> {
     let (state, error) = runtime.block_on(async {
         if durable {
             let id = outbox.enqueue(&channel, conversation.clone(), text).await?;
-            let entry = outbox.queue().all().into_iter().find(|entry| entry.id == id);
+            let entry = outbox
+                .queue()
+                .all()
+                .into_iter()
+                .find(|entry| entry.id == id);
             Ok::<_, anyhow::Error>(classify(entry.as_ref()))
         } else {
             outbox
@@ -627,11 +637,7 @@ pub const STATE_LEGEND: &[ChannelState] = &[
 ];
 
 /// Maturities, for the `list` legend.
-pub const MATURITY_LEGEND: &[Maturity] = &[
-    Maturity::Live,
-    Maturity::Preview,
-    Maturity::Planned,
-];
+pub const MATURITY_LEGEND: &[Maturity] = &[Maturity::Live, Maturity::Preview, Maturity::Planned];
 
 #[cfg(test)]
 mod tests {
@@ -689,9 +695,11 @@ mod tests {
 
     #[test]
     fn options_parse_flags_values_and_positional_arguments() {
-        let options =
-            Options::parse(&args(&["--durable", "--channel", "telegram", "--to=c1", "extra"]), &["channel", "to"])
-                .unwrap();
+        let options = Options::parse(
+            &args(&["--durable", "--channel", "telegram", "--to=c1", "extra"]),
+            &["channel", "to"],
+        )
+        .unwrap();
         assert!(options.flag("durable"));
         assert_eq!(options.value("channel"), Some("telegram"));
         assert_eq!(options.value("to"), Some("c1"));
@@ -708,7 +716,9 @@ mod tests {
 
     #[test]
     fn json_can_be_requested_two_ways() {
-        assert!(Options::parse(&args(&["--json"]), &[]).unwrap().wants_json());
+        assert!(Options::parse(&args(&["--json"]), &[])
+            .unwrap()
+            .wants_json());
         assert!(Options::parse(&args(&["--format", "json"]), &["format"])
             .unwrap()
             .wants_json());
@@ -735,7 +745,10 @@ mod tests {
             "unsupported"
         );
         // A missing `enabled` key means not enabled, not "enabled by default".
-        assert_eq!(configured_state(Some(&serde_json::json!({})), true), "disabled");
+        assert_eq!(
+            configured_state(Some(&serde_json::json!({})), true),
+            "disabled"
+        );
     }
 
     #[test]
@@ -778,7 +791,10 @@ mod tests {
         // The self-bridged channels are described too, and marked as such.
         assert_eq!(by_id["feishu"].bridge, "own");
         assert_eq!(by_id["feishu"].configured, "not-configured");
-        assert!(by_id["signal"].requires.iter().any(|item| item.contains("signal-cli")));
+        assert!(by_id["signal"]
+            .requires
+            .iter()
+            .any(|item| item.contains("signal-cli")));
         assert!(report.channels.len() >= 14);
     }
 
@@ -826,7 +842,10 @@ mod tests {
 
     #[test]
     fn list_supports_both_output_shapes() {
-        let env = env("cli-list", config_with(&[("cli", serde_json::json!({"enabled": true}))]));
+        let env = env(
+            "cli-list",
+            config_with(&[("cli", serde_json::json!({"enabled": true}))]),
+        );
         assert!(list(&args(&["--format", "json"]), &env).is_ok());
         assert!(list(&args(&[]), &env).is_ok());
     }
@@ -887,7 +906,10 @@ mod tests {
         let rendered = report.render();
         assert!(rendered.contains("running (pid 4242)"), "{rendered}");
         assert!(rendered.contains("token rejected"), "{rendered}");
-        assert!(rendered.contains("outbound queue: 0 pending, 0 failed"), "{rendered}");
+        assert!(
+            rendered.contains("outbound queue: 0 pending, 0 failed"),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -903,7 +925,11 @@ mod tests {
         let report = StatusReport::build(&config, &stale, &[]);
         assert!(!report.bridge_running);
         assert_eq!(report.snapshot_age_seconds, Some(10_000));
-        assert!(report.render().contains("not running (last status"), "{}", report.render());
+        assert!(
+            report.render().contains("not running (last status"),
+            "{}",
+            report.render()
+        );
 
         // No snapshot at all: never started.
         let never = StatusReport::build(&config, &StatusSnapshot::default(), &[]);
@@ -935,20 +961,30 @@ mod tests {
                 queue.record_failure(&id, "chat not found");
             }
         }
-        let report = StatusReport::build(&ChannelConfig::default(), &StatusSnapshot::default(), &queue.all());
+        let report = StatusReport::build(
+            &ChannelConfig::default(),
+            &StatusSnapshot::default(),
+            &queue.all(),
+        );
         // Six pending, one permanently failed, and at most five listed.
         assert_eq!(report.outbound_queue.pending, 6);
         assert_eq!(report.outbound_queue.failed, 1);
         assert_eq!(report.pending.len(), 5);
         let rendered = report.render();
-        assert!(rendered.contains("outbound queue: 6 pending, 1 failed"), "{rendered}");
+        assert!(
+            rendered.contains("outbound queue: 6 pending, 1 failed"),
+            "{rendered}"
+        );
         assert!(rendered.contains("pending cli →"), "{rendered}");
     }
 
     #[test]
     fn status_reads_the_snapshot_and_queue_files_from_its_environment() {
         let dir = temp_dir("cli-status-files");
-        let env = Env::at(&dir, config_with(&[("cli", serde_json::json!({"enabled": true}))]));
+        let env = Env::at(
+            &dir,
+            config_with(&[("cli", serde_json::json!({"enabled": true}))]),
+        );
         // Publish a real snapshot for the environment to read back.
         let board = StatusBoard::new(env.status_path.clone());
         board.set_started("cli");
@@ -993,7 +1029,11 @@ mod tests {
         let dir = temp_dir("cli-env-bad-queue");
         let env = Env::at(&dir, ChannelConfig::default());
         std::fs::write(&env.delivery_path, "{not json").unwrap();
-        let error = env.outbox().err().expect("must refuse").to_string();
+        let error = env
+            .outbox()
+            .map(|_| ())
+            .expect_err("must refuse")
+            .to_string();
         assert!(error.contains("cannot parse"), "{error}");
         assert!(error.contains("deliveries.json"), "{error}");
     }
@@ -1031,21 +1071,18 @@ mod tests {
     fn send_requires_its_arguments() {
         let env = env("cli-send-args", ChannelConfig::default());
         let error = send_report(&options(&["--to", "c1", "--text", "hi"]), &env, "hi")
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("--channel is required"), "{error}");
 
         let error = send_report(&options(&["--channel", "cli", "--text", "hi"]), &env, "hi")
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("--to is required"), "{error}");
 
         // The text check lives at the process entry point, before any I/O.
         let error = send(&args(&["--channel", "cli", "--to", "c1"]), &env)
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("--text is required"), "{error}");
     }
@@ -1063,8 +1100,7 @@ mod tests {
             &env,
             "",
         )
-        .err()
-        .expect("must fail")
+        .expect_err("must fail")
         .to_string();
         assert!(error.contains("empty message"), "{error}");
     }
@@ -1100,8 +1136,7 @@ mod tests {
             error: Some("chat not found".into()),
         };
         let error = ensure_delivered(&failed)
-            .err()
-            .expect("must fail")
+            .expect_err("must fail")
             .to_string();
         assert!(error.contains("failed permanently"), "{error}");
         // Anything else is a success.
@@ -1139,10 +1174,7 @@ mod tests {
             ("queued", None)
         );
         assert_eq!(
-            classify(Some(&entry(
-                DeliveryState::Failed,
-                Some("chat not found")
-            ))),
+            classify(Some(&entry(DeliveryState::Failed, Some("chat not found")))),
             ("failed", Some("chat not found".to_string()))
         );
         // A pruned entry means the send already succeeded.
@@ -1157,8 +1189,7 @@ mod tests {
             &env,
             "hi",
         )
-        .err()
-        .expect("must fail")
+        .expect_err("must fail")
         .to_string();
         assert!(error.contains("unknown channel"), "{error}");
     }
@@ -1181,9 +1212,22 @@ mod tests {
         assert_eq!(report.to, "c1");
         assert!(report.error.is_none());
         // Both renderings of a successful send.
-        assert!(send(&args(&["--channel", "cli", "--to", "c1", "--text", "hi"]), &env).is_ok());
         assert!(send(
-            &args(&["--channel", "cli", "--to", "c1", "--text", "hi", "--format", "json"]),
+            &args(&["--channel", "cli", "--to", "c1", "--text", "hi"]),
+            &env
+        )
+        .is_ok());
+        assert!(send(
+            &args(&[
+                "--channel",
+                "cli",
+                "--to",
+                "c1",
+                "--text",
+                "hi",
+                "--format",
+                "json"
+            ]),
             &env
         )
         .is_ok());
@@ -1237,7 +1281,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report.state, "queued");
-        assert_eq!(report.error.as_deref().map(str::to_string).is_some(), true);
+        assert!(
+            report.error.is_some(),
+            "the queue recorded why it is pending"
+        );
         // It is pending, so the bridge will retry it once the channel exists.
         let queue = DeliveryQueue::load(env.delivery_path.clone());
         assert_eq!(queue.pending().len(), 1);
@@ -1267,10 +1314,7 @@ mod tests {
         .unwrap();
         assert_eq!(report.to, "c1");
         let queue = DeliveryQueue::load(env.delivery_path.clone());
-        assert_eq!(
-            queue.all()[0].conversation.thread_id.as_deref(),
-            Some("t9")
-        );
+        assert_eq!(queue.all()[0].conversation.thread_id.as_deref(), Some("t9"));
     }
 
     #[test]
@@ -1282,8 +1326,7 @@ mod tests {
             &args(&["--channel", "feishu", "--to", "c1", "--text", "hi"]),
             &env,
         )
-        .err()
-        .expect("must fail")
+        .expect_err("must fail")
         .to_string();
         assert!(error.contains("feishu"), "{error}");
         assert!(error.contains("own bridge"), "{error}");
@@ -1300,8 +1343,7 @@ mod tests {
             &env,
             "   ",
         )
-        .err()
-        .expect("must fail")
+        .expect_err("must fail")
         .to_string();
         assert!(error.contains("empty message"), "{error}");
     }

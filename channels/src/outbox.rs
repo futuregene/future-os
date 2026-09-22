@@ -16,7 +16,7 @@ use crate::policy::AccessPolicyConfig;
 use crate::providers::traits::{ChannelSender, Provider};
 use crate::providers::{definition, registry};
 use crate::session_store::SessionStore;
-use crate::status::{StatusBoard, StatusSnapshot};
+use crate::status::StatusBoard;
 
 /// Outcome of one drain pass.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -245,6 +245,7 @@ impl Outbox {
 mod tests {
     use super::*;
     use crate::providers::traits::{Capabilities, ChannelDefinition, Maturity};
+    use crate::status::StatusSnapshot;
     use crate::test_support::temp_dir;
     use crate::transport::LengthUnit;
     use async_trait::async_trait;
@@ -374,7 +375,7 @@ mod tests {
         assert!(outbox.queue().pending().is_empty());
         // A successful send is counted for `future channel status`.
         outbox.status.flush().unwrap();
-        let snapshot = StatusSnapshot::load(&outbox.status.path());
+        let snapshot = StatusSnapshot::load(outbox.status.path());
         assert_eq!(snapshot.channels["double"].outbound_count, 1);
     }
 
@@ -479,7 +480,11 @@ mod tests {
     #[test]
     fn an_unknown_channel_is_named_in_the_error() {
         let outbox = outbox("outbox-unknown");
-        let error = outbox.sender("nope").err().expect("must fail").to_string();
+        let error = outbox
+            .sender("nope")
+            .map(|_| ())
+            .expect_err("must fail")
+            .to_string();
         assert!(error.contains("unknown channel"), "{error}");
         assert!(error.contains("future channel list"), "{error}");
     }
@@ -488,14 +493,22 @@ mod tests {
     fn a_channel_without_configuration_says_so() {
         let outbox = outbox("outbox-unconfigured");
         // The terminal channel is implemented, but nothing configured it.
-        let error = outbox.sender("cli").err().expect("must fail").to_string();
+        let error = outbox
+            .sender("cli")
+            .map(|_| ())
+            .expect_err("must fail")
+            .to_string();
         assert!(error.contains("no configuration"), "{error}");
     }
 
     #[test]
     fn a_self_bridged_channel_is_rejected_with_a_reason() {
         let outbox = outbox("outbox-native");
-        let error = outbox.sender("feishu").err().expect("must fail").to_string();
+        let error = outbox
+            .sender("feishu")
+            .err()
+            .expect("must fail")
+            .to_string();
         assert!(error.contains("own bridge"), "{error}");
     }
 
@@ -517,7 +530,11 @@ mod tests {
                 outbox.root.clone(),
                 outbox.status.clone(),
             );
-            let error = configured.sender(id).err().expect("must refuse").to_string();
+            let error = configured
+                .sender(id)
+                .err()
+                .expect("must refuse")
+                .to_string();
             assert!(error.contains("not implemented"), "{id}: {error}");
         }
     }
@@ -588,7 +605,7 @@ mod tests {
             .await
             .expect("direct delivery");
         outbox.status.flush().unwrap();
-        let snapshot = StatusSnapshot::load(&outbox.status.path());
+        let snapshot = StatusSnapshot::load(outbox.status.path());
         assert_eq!(snapshot.channels["cli"].outbound_count, 1);
     }
 

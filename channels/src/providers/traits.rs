@@ -284,8 +284,7 @@ mod tests {
         let ctx = crate::bridge::ProviderCtx::offline(&MINIMAL);
         let error = runtime
             .block_on(async { NoProbe.probe(&ctx).await })
-            .err()
-            .expect("the default probe must fail")
+            .expect_err("the default probe must fail")
             .to_string();
         assert!(error.contains("no connectivity probe"), "{error}");
         assert!(error.contains("minimal"), "{error}");

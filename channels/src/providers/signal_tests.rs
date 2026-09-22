@@ -594,6 +594,117 @@ async fn a_reaction_needs_the_numeric_timestamp_of_the_message() {
     assert!(error.to_string().contains("timestamp"), "{error}");
 }
 
+// ─── attachments ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn an_image_attachment_is_downloaded_into_model_input() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::binary(
+        "/api/v1/attachments/abc",
+        200,
+        vec![0x89, 0x50, 0x4e, 0x47],
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+
+    // The whole way from a daemon envelope to something the model can read.
+    let now = crate::bridge::dedup::now_ms();
+    let raw = serde_json::json!({"envelope": {
+        "sourceNumber": "+15550009999", "timestamp": now,
+        "dataMessage": {"timestamp": now, "attachments": [
+            {"contentType": "image/png", "filename": "shot.png", "id": "abc"}]}}});
+    let mut inbound =
+        parse_envelope(&raw, &identity("+15550001234"), &sender.base).expect("inbound");
+    assert!(inbound.images()[0].data.is_none(), "bytes arrive later");
+
+    hydrate_media(&sender, &mut inbound).await;
+
+    assert_eq!(
+        inbound.media[0].data.as_deref(),
+        Some([0x89, 0x50, 0x4e, 0x47].as_slice())
+    );
+    // The bytes are what the bridge turns into model input.
+    assert_eq!(inbound.images().len(), 1);
+    assert!(inbound.images()[0].data.is_some());
+    assert_eq!(requests_to(&recorded, "/api/v1/attachments/abc").len(), 1);
+}
+
+#[tokio::test]
+async fn a_download_that_fails_keeps_the_reference_instead_of_dropping_it() {
+    // No route for the attachment, so the daemon answers 404.
+    let (base, _recorded) = spawn_http(Vec::new()).await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+    let now = crate::bridge::dedup::now_ms();
+    let raw = serde_json::json!({"envelope": {
+        "sourceNumber": "+15550009999", "timestamp": now,
+        "dataMessage": {"timestamp": now, "message": "look", "attachments": [
+            {"contentType": "image/png", "id": "gone"}]}}});
+    let mut inbound =
+        parse_envelope(&raw, &identity("+15550001234"), &sender.base).expect("inbound");
+
+    hydrate_media(&sender, &mut inbound).await;
+
+    // The message must still be answered; only the bytes are missing.
+    assert!(inbound.media[0].data.is_none());
+    assert_eq!(
+        inbound.media[0].url.as_deref(),
+        Some(format!("{base}/api/v1/attachments/gone").as_str())
+    );
+    assert_eq!(inbound.text, "look");
+}
+
+#[tokio::test]
+async fn only_images_are_fetched_and_a_reference_is_never_fetched_twice() {
+    let (base, recorded) = spawn_http(vec![HttpRoute::binary(
+        "/api/v1/attachments/abc",
+        200,
+        vec![1, 2, 3],
+    )])
+    .await;
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": base, "number": "+15550001234",
+    }));
+    let sender = SignalSender::new(&ctx, &ctx.config::<SignalConfig>().unwrap());
+    let mut inbound = Inbound::new_direct("m1", "+15550009999", "+15550009999", "hi");
+    inbound.media = vec![
+        // A document is not model input, so it is not worth a round trip.
+        MediaRef {
+            kind: MediaKind::Document,
+            url: Some(format!("{base}/api/v1/attachments/doc")),
+            ..Default::default()
+        },
+        MediaRef {
+            kind: MediaKind::Image,
+            url: Some(format!("{base}/api/v1/attachments/abc")),
+            ..Default::default()
+        },
+        // Already downloaded (the daemon may repeat an envelope).
+        MediaRef {
+            kind: MediaKind::Image,
+            url: Some(format!("{base}/api/v1/attachments/abc")),
+            data: Some(vec![9]),
+            ..Default::default()
+        },
+    ];
+
+    hydrate_media(&sender, &mut inbound).await;
+
+    assert_eq!(
+        inbound.media[0].data, None,
+        "documents are left as references"
+    );
+    assert_eq!(inbound.media[1].data, Some(vec![1, 2, 3]));
+    assert_eq!(inbound.media[2].data, Some(vec![9]), "already fetched");
+    // Exactly one request: no document fetch, no second image fetch.
+    assert_eq!(requests_to(&recorded, "/api/v1/attachments/abc").len(), 1);
+    assert!(requests_to(&recorded, "/api/v1/attachments/doc").is_empty());
+}
+
 // ─── probing ───────────────────────────────────────────────────────────────
 
 #[tokio::test]

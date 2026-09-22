@@ -43,8 +43,7 @@ fn a_long_reply_is_split_without_cutting_a_code_block() {
         .map(|i| format!("let line_{i} = compute({i});\n"))
         .collect::<String>();
     let text = format!("intro\n```rust\n{code}```\noutro\n");
-    let chunks =
-        crate::transport::chunk(&text, DEFINITION.max_text_len, DEFINITION.length_unit);
+    let chunks = crate::transport::chunk(&text, DEFINITION.max_text_len, DEFINITION.length_unit);
     assert!(chunks.len() > 1);
     for chunk in &chunks {
         assert!(chunk.chars().count() <= 4000);
@@ -140,7 +139,10 @@ fn a_thread_reply_keeps_its_root_as_the_thread() {
         thread_id: None,
         kind: ChatKind::Channel,
     };
-    assert_ne!(inbound.conversation.key("mattermost"), top.key("mattermost"));
+    assert_ne!(
+        inbound.conversation.key("mattermost"),
+        top.key("mattermost")
+    );
 }
 
 #[test]
@@ -197,7 +199,9 @@ fn the_bots_own_post_is_dropped() {
     post["user_id"] = json!("bot-id");
     let event = posted_event(&post, &[], "D");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &HashSet::new()).unwrap().is_none());
+    assert!(parse_posted(&posted, "bot-id", &HashSet::new())
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -206,7 +210,9 @@ fn an_empty_message_is_dropped() {
     post["message"] = json!("   ");
     let event = posted_event(&post, &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &HashSet::new()).unwrap().is_none());
+    assert!(parse_posted(&posted, "bot-id", &HashSet::new())
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -214,7 +220,9 @@ fn a_channel_outside_the_allowlist_is_dropped() {
     let allowlist: HashSet<String> = ["chan-other".to_string()].into_iter().collect();
     let event = posted_event(&channel_post(""), &["bot-id"], "O");
     let posted = parse_ws_event(&event).unwrap();
-    assert!(parse_posted(&posted, "bot-id", &allowlist).unwrap().is_none());
+    assert!(parse_posted(&posted, "bot-id", &allowlist)
+        .unwrap()
+        .is_none());
 
     let allowlist: HashSet<String> = ["chan1".to_string()].into_iter().collect();
     let inbound = parse_posted(&posted, "bot-id", &allowlist).unwrap();

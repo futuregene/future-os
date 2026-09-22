@@ -156,7 +156,12 @@ impl MattermostApi {
 
     /// One API call with the bearer token, retrying transient failures (the
     /// shared helper honours `Retry-After` on 429).
-    async fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<HttpResponse> {
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<HttpResponse> {
         let url = format!("{}{path}", self.base);
         send_json(
             &self.http,
@@ -475,8 +480,8 @@ impl Provider for Mattermost {
             async move {
                 // The bearer header authenticates the HTTP upgrade; the
                 // challenge frame authenticates the event stream itself.
-                let socket = ws::connect(&ws_url, &[("Authorization", &format!("Bearer {token}"))])
-                    .await?;
+                let socket =
+                    ws::connect(&ws_url, &[("Authorization", &format!("Bearer {token}"))]).await?;
                 ctx.mark_running();
                 websocket_session(&ctx, sender, &token, &bot_user_id, &allowlist, socket).await
             }

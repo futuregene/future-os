@@ -798,12 +798,39 @@ mod tests {
             HttpRoute::json("/made", 201, r#"{"ok":true}"#),
             HttpRoute::json("/bad", 502, "{}"),
             HttpRoute::json("/weird", 499, "{}"), // unmapped reason arm
+            HttpRoute::json("/denied", 401, "{}"),
+            // A rate-limit response with the header a provider must honour.
+            HttpRoute::rate_limited(
+                "/limited",
+                r#"{"error":"slow down"}"#,
+                &[("Retry-After", "7"), ("X-RateLimit-Bucket", "b1")],
+            ),
             HttpRoute::sequence("/seq", vec![(200, r#"{"n":1}"#), (200, r#"{"n":2}"#)]),
             HttpRoute::binary("/bin", 200, b"\x00\x01".to_vec()),
             HttpRoute::slow("/slow", Duration::from_millis(50)),
         ];
         let (base, recorded) = spawn_http(routes).await;
         let client = reqwest::Client::new();
+        // The 401 reason phrase and the extra headers a rate-limit response
+        // carries are part of what the mock must emulate.
+        let denied = client.get(format!("{base}/denied")).send().await.unwrap();
+        assert_eq!(denied.status().as_u16(), 401);
+        let limited = client.get(format!("{base}/limited")).send().await.unwrap();
+        assert_eq!(limited.status().as_u16(), 429);
+        assert_eq!(
+            limited
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok()),
+            Some("7")
+        );
+        assert_eq!(
+            limited
+                .headers()
+                .get("x-ratelimit-bucket")
+                .and_then(|value| value.to_str().ok()),
+            Some("b1")
+        );
         assert_eq!(
             client
                 .get(format!("{base}/made"))
