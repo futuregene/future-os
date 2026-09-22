@@ -55,6 +55,10 @@ pub struct HttpResponse {
     pub status: u16,
     pub text: String,
     pub body: Value,
+    /// Response headers with lowercased names, for the platform-specific
+    /// metadata a body does not carry (rate-limit buckets, request ids,
+    /// pagination cursors).
+    pub headers: std::collections::HashMap<String, String>,
     /// `Retry-After` in seconds, when the platform sent one.
     pub retry_after: Option<Duration>,
 }
@@ -62,6 +66,13 @@ pub struct HttpResponse {
 impl HttpResponse {
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
+    }
+
+    /// One response header, matched case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
 
     pub fn class(&self) -> ErrorClass {
@@ -172,12 +183,23 @@ pub async fn send_json(
 
         let status = response.status().as_u16();
         let retry_after = parse_retry_after(response.headers());
+        let headers: std::collections::HashMap<String, String> = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+            })
+            .collect();
         let text = response.text().await.unwrap_or_default();
         let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         let outcome = HttpResponse {
             status,
             text,
             body: parsed,
+            headers,
             retry_after,
         };
 
@@ -204,8 +226,20 @@ mod tests {
             status,
             text: text.to_string(),
             body: serde_json::from_str(text).unwrap_or(Value::Null),
+            headers: std::collections::HashMap::new(),
             retry_after: None,
         }
+    }
+
+    #[test]
+    fn headers_are_matched_case_insensitively() {
+        let mut response = response(200, "{}");
+        response
+            .headers
+            .insert("x-ratelimit-remaining".to_string(), "3".to_string());
+        assert_eq!(response.header("X-RateLimit-Remaining"), Some("3"));
+        assert_eq!(response.header("x-ratelimit-remaining"), Some("3"));
+        assert_eq!(response.header("missing"), None);
     }
 
     #[test]

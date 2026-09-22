@@ -130,7 +130,7 @@ impl Conversations {
     /// Queue `job`, superseding any turn still running for its conversation.
     pub async fn submit(&self, job: Job) -> SubmitOutcome {
         let conversation = job.conversation.clone();
-        let (tx, generation, busy) = {
+        let (tx, generation, _busy) = {
             let mut entries = self.entries.lock().await;
             self.evict_idle(&mut entries, &conversation);
             match entries.get_mut(&conversation) {
@@ -170,13 +170,23 @@ impl Conversations {
 
         // Bump first, then enqueue: a turn already streaming sees the new
         // generation on its next event and stops.
-        let queued = generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let _ = busy; // kept alive with the entry; the worker owns liveness
+        //
+        // The generation is reserved speculatively and only published once the
+        // message is actually in the mailbox. Bumping it unconditionally would
+        // let a *rejected* message (a full mailbox) stop the turn that is
+        // already running and then drop its replacement, losing the answer
+        // entirely. Two concurrent submissions may reserve the same number;
+        // that is harmless, because a worker runs its job when the generation
+        // still matches and skips it when a newer message has overtaken it.
+        let reserved = generation.load(Ordering::SeqCst) + 1;
         match tx.try_send(QueuedJob {
             job,
-            generation: queued,
+            generation: reserved,
         }) {
-            Ok(()) => SubmitOutcome::Accepted,
+            Ok(()) => {
+                generation.store(reserved, Ordering::SeqCst);
+                SubmitOutcome::Accepted
+            }
             Err(mpsc::error::TrySendError::Full(_)) => SubmitOutcome::Full,
             Err(mpsc::error::TrySendError::Closed(_)) => SubmitOutcome::Full,
         }
@@ -436,6 +446,43 @@ mod tests {
         conversations.submit(job("c1", sink.clone())).await;
         assert_eq!(conversations.generation("c1").await, Some(2));
         assert_eq!(conversations.generation("missing").await, None);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_message_does_not_stop_the_running_turn() {
+        // A message dropped by backpressure must not leave the conversation
+        // with no answer at all: the running turn keeps its generation, so it
+        // still finishes and reports.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate_for_runner = gate.clone();
+        let conversations = Conversations::new(Arc::new(move |_job, _watch| {
+            let gate = gate_for_runner.clone();
+            Box::pin(async move {
+                gate.notified().await;
+            })
+        }))
+        .with_limits(1, 8);
+
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        assert_eq!(
+            conversations.submit(job("c1", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        let before = conversations.generation("c1").await;
+        // Fill the mailbox, then overflow it.
+        let mut saw_full = false;
+        for _ in 0..4 {
+            if conversations.submit(job("c1", sink.clone())).await == SubmitOutcome::Full {
+                saw_full = true;
+            }
+        }
+        assert!(saw_full, "the mailbox should have overflowed");
+        assert_eq!(
+            conversations.generation("c1").await,
+            before,
+            "a rejected message must not bump the generation"
+        );
+        gate.notify_waiters();
     }
 
     #[test]
