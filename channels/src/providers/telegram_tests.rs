@@ -1592,6 +1592,40 @@ async fn the_plain_edit_retry_reports_a_transport_failure() {
     let _ = server.await;
 }
 
+#[test]
+fn the_webhook_defaults_are_used_only_when_the_config_is_silent() {
+    // Both branches of the address and path selection. Asserted directly rather
+    // than by relying on the default port being taken, because the default is
+    // free on a clean machine (that assumption is what made an earlier version
+    // of this file pass locally and fail in CI).
+    let silent: TelegramConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "bot_token": "tok"
+    }))
+    .expect("a config without a webhook block");
+    assert_eq!(webhook_addr(&silent), DEFAULT_WEBHOOK_ADDR);
+    assert_eq!(webhook_path(&silent), DEFAULT_WEBHOOK_PATH);
+
+    let explicit: TelegramConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "bot_token": "tok",
+        "webhook": { "addr": "127.0.0.1:9101", "path": "/hooks/tg" }
+    }))
+    .expect("a config with a webhook block");
+    assert_eq!(webhook_addr(&explicit), "127.0.0.1:9101");
+    assert_eq!(webhook_path(&explicit), "/hooks/tg");
+
+    // A block that exists but names only one of the two keeps the other default.
+    let partial: TelegramConfig = serde_json::from_value(json!({
+        "enabled": true,
+        "bot_token": "tok",
+        "webhook": { "secret_token": "s3cret" }
+    }))
+    .expect("a partial webhook block");
+    assert_eq!(webhook_addr(&partial), DEFAULT_WEBHOOK_ADDR);
+    assert_eq!(webhook_path(&partial), DEFAULT_WEBHOOK_PATH);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_webhook_whose_address_is_already_taken_fails_cleanly() {
     let (base, _recorded) = spawn_http(vec![HttpRoute::json(
