@@ -1,24 +1,58 @@
 //! future_channel — FutureAgent Channel Bridge library.
 //!
-//! Reads ~/.future/channels/config.json and starts enabled channels.
-//! Each channel connects to the FutureAgent via gRPC. The same entry point
+//! Reads `~/.future/channels/config.json` and starts the enabled channels.
+//! Every channel talks to the FutureAgent over gRPC. The same entry point
 //! (`run`) is used by the standalone `future-channel` binary and, embedded,
 //! by the `future` CLI (`future channel`).
+//!
+//! There are two kinds of channel here:
+//!
+//! * **Framework channels** live in [`providers`]. Each one implements the
+//!   [`providers::Provider`] trait and gets duplicate filtering, access policy,
+//!   session routing, per-conversation queueing, streaming replies and approval
+//!   routing from [`bridge::Bridge`] — so a new IM is one file, not a new
+//!   pipeline.
+//! * **Self-bridged channels** (`feishu`, `dingtalk`) predate the framework and
+//!   keep their own bridges, which carry platform behaviour the framework does
+//!   not model yet (interactive cards, streaming card elements, approval
+//!   buttons). They are declared in [`providers::native`] so the CLI and the
+//!   docs describe the whole product.
 
 #![allow(dead_code)]
 
+pub mod bridge;
 pub mod config;
+pub mod delivery;
 pub mod dingtalk;
 pub mod feishu;
 pub mod grpc_client;
+pub mod policy;
+pub mod providers;
+pub mod session_store;
+pub mod status;
 pub mod tls;
+pub mod transport;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::info;
+use std::time::Duration;
+use tokio::sync::Notify;
+use tracing::{info, warn};
+
+use bridge::{Bridge, ProviderCtx};
+use config::AgentConfig;
+use policy::AccessPolicyConfig;
+use providers::registry;
+use providers::traits::Provider;
+use session_store::SessionStore;
+use status::{ChannelState, StatusBoard, StatusSnapshot};
+use transport::ws::Backoff;
+
+/// How often the published status snapshot is refreshed.
+const STATUS_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Entry point — the former `main()` body. `args` is argv without the
 /// program name (only `--version`/`-V` are inspected).
@@ -49,6 +83,11 @@ pub fn run(args: &[String]) -> Result<()> {
     runtime.block_on(run_async())
 }
 
+/// Where channel data lives: `~/.future/channels`.
+pub fn data_root() -> std::path::PathBuf {
+    config::home_dir().join(".future").join("channels")
+}
+
 async fn run_async() -> Result<()> {
     let cfg_path = config::ChannelConfig::default_path();
     info!("Loading config from {}", cfg_path.display());
@@ -59,14 +98,16 @@ async fn run_async() -> Result<()> {
                 return Err(e);
             }
             // File doesn't exist — load() already wrote defaults
-            tracing::warn!("{}", e);
+            warn!("{}", e);
             return Ok(());
         }
     };
 
-    let agent_cfg = Arc::new(config.agent);
+    let agent_cfg = Arc::new(config.agent.clone());
     let mut handles = Vec::new();
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    let shutdown = Arc::new(Notify::new());
+    let status = Arc::new(StatusBoard::new(StatusSnapshot::default_path()));
+    let root = data_root();
 
     // ── Feishu ─────────────────────────────────────────────────────────
 
@@ -76,6 +117,7 @@ async fn run_async() -> Result<()> {
                 anyhow::bail!("Feishu channel enabled but app_id/app_secret missing");
             }
             info!("Starting Feishu channel...");
+            status.set_started("feishu");
             let agent = agent_cfg.clone();
             let fcfg = feishu_cfg.clone();
             let sd = shutdown.clone();
@@ -98,6 +140,7 @@ async fn run_async() -> Result<()> {
                 anyhow::bail!("DingTalk channel enabled but client_id/client_secret missing");
             }
             info!("Starting DingTalk channel...");
+            status.set_started("dingtalk");
             let agent = agent_cfg.clone();
             let dcfg = dt_cfg.clone();
             let sd = shutdown.clone();
@@ -109,12 +152,52 @@ async fn run_async() -> Result<()> {
         }
     }
 
+    // ── Framework channels ────────────────────────────────────────────
+
+    let mut started = 0usize;
+    for entry in registry::all() {
+        let definition = entry.definition;
+        let id = definition.id;
+        let Some(block) = config.provider_config(id) else {
+            status.set_state(id, ChannelState::Disabled, None);
+            continue;
+        };
+        if !config::ChannelConfig::provider_enabled(&block) {
+            status.set_state(id, ChannelState::Disabled, None);
+            continue;
+        }
+        if !definition.is_implemented() {
+            // Enabled but not built: say so loudly instead of appearing to run.
+            let reason = format!("the {id} channel is not implemented in this build");
+            warn!("{}", reason);
+            status.set_state(id, ChannelState::Unsupported, Some(reason));
+            continue;
+        }
+        info!("Starting {} channel...", definition.display_name);
+        started += 1;
+        status.set_state(id, ChannelState::Starting, None);
+        handles.push(spawn_provider(
+            entry,
+            block,
+            agent_cfg.clone(),
+            root.clone(),
+            status.clone(),
+            shutdown.clone(),
+        ));
+    }
+
     if handles.is_empty() {
-        tracing::warn!(
+        warn!(
             "No channels enabled. Edit {} and set a channel's 'enabled' to true.",
             cfg_path.display()
         );
+    } else {
+        info!("{} channel task(s) running", handles.len());
+        let _ = started;
     }
+
+    status.flush()?;
+    let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
@@ -122,7 +205,89 @@ async fn run_async() -> Result<()> {
     for h in handles {
         h.abort();
     }
+    flusher.abort();
+    // Leave a truthful snapshot: nothing is running any more.
+    for entry in registry::all() {
+        status.set_state(entry.definition.id, ChannelState::Disabled, None);
+    }
+    let _ = status.flush();
     Ok(())
+}
+
+/// Supervise one framework channel: run it, and restart it with backoff when
+/// it stops or fails, until the process is asked to stop.
+fn spawn_provider(
+    entry: &'static registry::ProviderEntry,
+    block: serde_json::Value,
+    agent_cfg: Arc<AgentConfig>,
+    root: std::path::PathBuf,
+    status: Arc<StatusBoard>,
+    shutdown: Arc<Notify>,
+) -> tokio::task::JoinHandle<()> {
+    let definition = entry.definition;
+    let provider: Arc<dyn Provider> = Arc::from((entry.provider)());
+    tokio::spawn(async move {
+        let id = definition.id;
+        let data_dir = root.join(id);
+        let sessions = Arc::new(SessionStore::new(data_dir.join("sessions.json")));
+        let mut backoff = Backoff::gateway();
+        loop {
+            if let Err(error) = std::fs::create_dir_all(&data_dir) {
+                warn!(channel = id, %error, "cannot create the channel data directory");
+            }
+            // The policy block lives alongside the channel's own settings, so a
+            // channel that only sets `enabled` gets the safe defaults.
+            let policy =
+                serde_json::from_value::<AccessPolicyConfig>(block.clone()).unwrap_or_default();
+            let bridge = Bridge::new(agent_cfg.clone(), policy, data_dir.clone(), status.clone());
+            let ctx = ProviderCtx::new(
+                definition,
+                block.clone(),
+                bridge,
+                data_dir.clone(),
+                sessions.clone(),
+                shutdown.clone(),
+            );
+
+            let result = tokio::select! {
+                result = provider.run(ctx) => result,
+                _ = shutdown.notified() => return,
+            };
+            match result {
+                Ok(()) => info!(channel = id, "channel stopped; restarting"),
+                Err(error) => {
+                    warn!(channel = id, %error, "channel failed; restarting");
+                    status.set_state(id, ChannelState::Error, Some(error.to_string()));
+                }
+            }
+
+            let delay = backoff.next_delay();
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = shutdown.notified() => return,
+            }
+        }
+    })
+}
+
+/// Publish the status snapshot on a timer so `future channel status` sees
+/// live counters without the bridge having to flush on every event.
+fn spawn_status_flusher(
+    status: Arc<StatusBoard>,
+    shutdown: Arc<Notify>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(STATUS_FLUSH_INTERVAL) => {
+                    if let Err(error) = status.flush_if_due() {
+                        tracing::debug!(%error, "cannot publish channel status");
+                    }
+                }
+                _ = shutdown.notified() => return,
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -152,5 +317,14 @@ mod tests {
             err.to_string().contains("app_id/app_secret missing"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn data_root_follows_the_future_home() {
+        let _guard = crate::test_support::home_lock();
+        let home = crate::test_support::IsolatedHome::new("lib-data-root");
+        let root = data_root();
+        assert!(root.starts_with(&home.path), "{root:?}");
+        assert!(root.ends_with("channels"));
     }
 }

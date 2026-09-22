@@ -12,6 +12,46 @@ pub struct ChannelConfig {
     pub feishu: Option<FeishuChannelConfig>,
     #[serde(default)]
     pub dingtalk: Option<DingtalkChannelConfig>,
+    /// Configuration for every other channel, keyed by channel id.
+    ///
+    /// One block per channel keeps this file open-ended: a new channel is a new
+    /// key, not a new field in a schema every version has to agree on. Each
+    /// channel deserializes its own block and reports a precise error if it does
+    /// not fit.
+    #[serde(default)]
+    pub providers: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl ChannelConfig {
+    /// The config block for one channel.
+    ///
+    /// A channel with a legacy top-level block (`feishu`, `dingtalk`) gets that
+    /// unless an explicit `providers.<id>` block exists, which wins — so users
+    /// can migrate one channel at a time without a flag day.
+    pub fn provider_config(&self, id: &str) -> Option<serde_json::Value> {
+        if let Some(block) = self.providers.get(id) {
+            return Some(block.clone());
+        }
+        match id {
+            "feishu" => self
+                .feishu
+                .as_ref()
+                .and_then(|block| serde_json::to_value(block).ok()),
+            "dingtalk" => self
+                .dingtalk
+                .as_ref()
+                .and_then(|block| serde_json::to_value(block).ok()),
+            _ => None,
+        }
+    }
+
+    /// Whether a channel's block asks to be started.
+    pub fn provider_enabled(block: &serde_json::Value) -> bool {
+        block
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -358,6 +398,7 @@ mod tests {
                 ..Default::default()
             }),
             dingtalk: None,
+            providers: std::collections::BTreeMap::new(),
         };
         let json = serde_json::to_string(&original).unwrap();
         let restored: ChannelConfig = serde_json::from_str(&json).unwrap();
