@@ -3288,6 +3288,18 @@ fn print_goal_status(goal: &Goal) {
     if let Some(gap) = crate::store::projection_gap(goal) {
         println!("⚠ projection gap: {gap}");
     }
+    // The lineage warning, next to `next` because it is the thing about to
+    // happen: dispatching a fresh worker now mints a session with no parent, and
+    // `parent_session_id` is written once at creation and never repaired. Better
+    // to see it here than to notice a flat session tree afterwards.
+    if goal.supervisor_session_id.is_none() && !goal.todos.is_empty() {
+        println!(
+            "⚠ supervisor: none registered — a worker dispatched now gets a session with no \
+             parent; fix with: future loop supervisor register --goal {} --session-id \
+             <your-session-id>",
+            goal.goal_id
+        );
+    }
     let s = goal.todo_summary();
     println!(
         "summary   : user open={} done={} | agent open={} done={} | monitor={} | closure_proof={}",
@@ -4356,12 +4368,18 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         Some(id) => {
             println!("   ⚠ retained session {id} is no longer alive — starting fresh");
             created_session = true;
+            if let Some(warning) = missing_parent_warning(parent_session, &goal_id) {
+                eprintln!("{warning}");
+            }
             client
                 .new_child_session(&goal0.cwd, &session_title, parent_session)
                 .await?
         }
         None => {
             created_session = true;
+            if let Some(warning) = missing_parent_warning(parent_session, &goal_id) {
+                eprintln!("{warning}");
+            }
             client
                 .new_child_session(&goal0.cwd, &session_title, parent_session)
                 .await?
@@ -6750,9 +6768,20 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
     };
     if targets.is_empty() {
         println!(
-            "no live worker session(s) found for {} — nothing to stop (workers may already be idle)",
-            goal_id
+            "no live worker session(s) found for {goal_id} — nothing to stop (workers may already be idle)"
         );
+        // Nothing to abort means nothing can still be mid-turn, so the claims
+        // this agent still holds are only keeping peers out. (This is the case
+        // that bit: a worker finished its turn, its lease stayed active for
+        // hours of TTL, and only the owner may release it — the owner being the
+        // worker the operator just stopped.)
+        if let Some(a) = agent_id.as_deref() {
+            for todo_id in release_leases_of_stopped(store, &goal_id, &[a.to_string()])? {
+                println!("  ↦ released todo {todo_id} (no live worker held it)");
+            }
+            refresh_next_action(store, &goal_id)?;
+            sync_compat(store, &goal_id)?;
+        }
         return Ok(());
     }
 
@@ -6780,23 +6809,70 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
         );
     }
 
-    abort_worker_sessions(&targets, delete).await;
+    let stopped = abort_worker_sessions(&targets, delete).await;
+    // The workers are gone; their leases would otherwise block peers until the
+    // TTL lapses, with nobody able to release them (only the owner may).
+    for todo_id in release_leases_of_stopped(store, &goal_id, &stopped)? {
+        println!("  ↦ released todo {todo_id} (its worker was stopped)");
+    }
+    refresh_next_action(store, &goal_id)?;
+    sync_compat(store, &goal_id)?;
     Ok(())
+}
+
+/// What to say when a worker session is about to be minted with no parent
+/// conversation. `None` when there is a parent, so the caller can print
+/// unconditionally.
+///
+/// A worker's `parent_session_id` is written once at creation and nothing
+/// reparents it later ("does not copy context or reparent resumed sessions"),
+/// so a worker dispatched before the goal had a supervisor session registered
+/// is a root conversation forever: the TUI's `/tree` shows it beside the goal it
+/// belongs to instead of under it, and no retry repairs that.
+///
+/// Observed: one goal's twelve workers all came out parentless because
+/// `supervisor register` was skipped at setup, while three sibling goals —
+/// registered right after `goal init` — had every worker attached.
+///
+/// Warned rather than refused: a goal with no supervisor is a state the loop
+/// already supports on purpose (the worker runs; its reports are ledgered and
+/// not pushed — see `run_without_supervisor_sends_no_report`). Turning that into
+/// a hard stop would forbid a documented mode to protect a metadata field; the
+/// trap is worth surfacing loudly, not worth blocking dispatch over.
+fn missing_parent_warning(parent_session: Option<&str>, goal_id: &str) -> Option<String> {
+    parent_session.is_none().then(|| {
+        format!(
+            "⚠ worker session has no parent conversation: {goal_id} has no supervisor session \
+             registered and no --parent-session was given, so this session is minted as a root \
+             conversation and cannot be reparented later.\n\
+             \x20  Fix it once for the goal (copy YOUR current session id, not a worker's):\n\
+             \x20  future loop supervisor register --goal {goal_id} --session-id <your-session-id>"
+        )
+    })
 }
 
 /// gRPC abort for the given worker sessions (and optional session reclaim).
 /// The ledger `worker_stopped` event (appended by the caller BEFORE this) is
 /// the durable stop signal the run client exits on at its turn boundary; the
 /// abort interrupts the in-flight turn NOW. Best-effort on unreachable agents.
-async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) {
+///
+/// Returns the agent ids whose session was actually aborted — the callers use
+/// that to release the leases those workers held, and must not release a lease
+/// for a worker that may still be running (see
+/// [`release_leases_of_stopped`]).
+async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) -> Vec<String> {
+    let mut stopped: Vec<String> = Vec::new();
     if targets.is_empty() {
-        return;
+        return stopped;
     }
     let Ok(mut client) =
         crate::agent_client::AgentClient::connect(&crate::agent_client::agent_addr()).await
     else {
-        println!("⚠ agent unreachable — stop rides the ledger signal alone");
-        return;
+        println!(
+            "⚠ agent unreachable — stop rides the ledger signal alone; leases keep their TTL \
+             (a worker that may still be mid-turn must not lose its claim)"
+        );
+        return stopped;
     };
     for t in targets {
         match client.abort(&t.session_id).await {
@@ -6805,6 +6881,9 @@ async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) {
                     "✗ aborted agent session {} (agent {} / todo {})",
                     t.session_id, t.agent_id, t.todo_id
                 );
+                if !t.agent_id.is_empty() && !stopped.contains(&t.agent_id) {
+                    stopped.push(t.agent_id.clone());
+                }
             }
             Err(e) => {
                 println!(
@@ -6820,6 +6899,59 @@ async fn abort_worker_sessions(targets: &[WorkerSession], delete: bool) {
             }
         }
     }
+    stopped
+}
+
+/// Drop the todo leases held by workers that have just been stopped.
+///
+/// A stopped worker can neither renew nor complete its lease, so leaving it in
+/// place tells every peer the todo is still being worked on: the workspace
+/// guard refuses to hand those paths to anyone else ("retry after the holder
+/// releases its lease") and only the owner may release — and the owner is gone.
+/// The lease therefore goes away here, so a peer can claim immediately instead
+/// of waiting out a TTL of hours.
+///
+/// Only for agents whose abort actually landed: if the agent was unreachable the
+/// original worker may still be mid-turn, and its lease is exactly what keeps
+/// two agents off the same todo until the TTL lapses.
+fn release_leases_of_stopped(
+    store: &mut Store,
+    goal_id: &str,
+    stopped_agents: &[String],
+) -> Result<Vec<String>> {
+    if stopped_agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(goal) = store.replay(goal_id)? else {
+        return Ok(Vec::new());
+    };
+    let now = crate::state::now_epoch();
+    let held: Vec<(String, String)> = goal
+        .todos
+        .iter()
+        .filter_map(|todo| {
+            let owner = todo.claimed_by.as_deref()?;
+            if !stopped_agents.iter().any(|a| a == owner) {
+                return None;
+            }
+            matches!(
+                crate::work_items::task_lease::lease_status(todo, now),
+                crate::work_items::task_lease::LeaseStatus::Active { .. }
+            )
+            .then(|| (todo.id.clone(), owner.to_string()))
+        })
+        .collect();
+    let mut released = Vec::new();
+    for (todo_id, owner) in held {
+        store.append(Event::TodoReleased {
+            goal_id: goal_id.to_string(),
+            todo_id: todo_id.clone(),
+            agent_id: owner,
+            ts: now,
+        })?;
+        released.push(todo_id);
+    }
+    Ok(released)
 }
 
 /// Cancel/delete/supersede companion: stop every live worker of `goal_id`
@@ -6859,7 +6991,12 @@ async fn stop_goal_workers(
         "■ stop signal sent to {} worker(s) of {goal_id} — run clients exit at their next turn boundary",
         targets.len()
     );
-    abort_worker_sessions(&targets, false).await;
+    let stopped = abort_worker_sessions(&targets, false).await;
+    for todo_id in release_leases_of_stopped(store, goal_id, &stopped)? {
+        println!("  ↦ released todo {todo_id} (its worker was stopped)");
+    }
+    refresh_next_action(store, goal_id)?;
+    sync_compat(store, goal_id)?;
     Ok(targets.len())
 }
 
@@ -7377,6 +7514,33 @@ fn delivery_record(store: &mut Store, args: &[String]) -> Result<()> {
         ts: now_epoch(),
     })?;
     println!("delivery {todo_id} → {outcome} ✔");
+    // The follow-through todo this delivery spawned ("verify the delivery of
+    // X") has now been served: recording a resolution IS that verification,
+    // which is the operator action its text names. Leaving it open kept
+    // `all_todos_done` false, so a goal whose work was finished could never
+    // reach terminal closure — bookkeeping nobody could satisfy, because
+    // nothing else ever completed it.
+    if dov::is_resolution(outcome) {
+        if let Some(followup) = goal
+            .delivery_state(&todo_id)
+            .and_then(|delivery| delivery.followthrough_todo_id.clone())
+        {
+            let still_open = goal
+                .todo(&followup)
+                .is_some_and(|todo| todo.status != crate::state::TodoStatus::Done);
+            if still_open {
+                store.append(Event::TodoCompleted {
+                    goal_id: goal_id.clone(),
+                    todo_id: followup.clone(),
+                    no_follow_up: true,
+                    successor_ids: Vec::new(),
+                    evidence: Some(format!("delivery {todo_id} → {outcome}")),
+                    ts: now_epoch(),
+                })?;
+                println!("follow-through todo {followup} closed ✔ (delivery {todo_id} resolved)");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -9023,7 +9187,6 @@ mod coverage_tests {
         steer_worker_watch(path, None, "sess".to_string()).await;
         STEER_WATCH_MAX_POLLS.store(0, std::sync::atomic::Ordering::Relaxed);
     }
-
     #[tokio::test]
     async fn claim_loop_breaks_when_nothing_is_selected() {
         let dir = tempfile::tempdir().unwrap();
@@ -10565,6 +10728,324 @@ mod residual_branch_tests {
         assert!(
             next.todos.iter().any(|t| t.text.contains("Follow-through")),
             "a follow-through todo joined the frontier"
+        );
+    }
+
+    // ── a fresh worker never mints a parentless session silently ───────────
+    //
+    // Observed: one goal's twelve workers all came out with no
+    // `parent_session_id` because `supervisor register` was skipped at setup,
+    // while three sibling goals registered right after `goal init` had every
+    // worker attached. The session still ran, so nothing surfaced until the
+    // session tree was read afterwards.
+    #[tokio::test]
+    async fn worker_stop_releases_a_gone_workers_claims_through_the_command() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        // No bound session and no run header → nothing to abort. That is the
+        // "worker already finished its turn" case, where the lease alone is
+        // what blocks the next claim.
+        cmd_worker_stop(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--agent-id".into(),
+                "worker-a".into(),
+            ],
+        )
+        .await
+        .expect("stop runs without a session");
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert!(
+            goal.todo("t1").unwrap().claimed_by.is_none(),
+            "the claim came back: {:?}",
+            goal.todo("t1").unwrap().claimed_by
+        );
+    }
+
+    // ── a fresh worker never mints a parentless session silently ───────────
+    //
+    // Observed: one goal's twelve workers all came out with no
+    // `parent_session_id` because `supervisor register` was skipped at setup,
+    // while three sibling goals registered right after `goal init` had every
+    // worker attached. The session still ran, so nothing surfaced until the
+    // session tree was read afterwards — and `parent_session_id` is written once
+    // and never repaired, so there was nothing to fix afterwards either.
+    //
+    // Warned rather than refused: `agent_run_drive::run_without_supervisor_sends_no_report`
+    // shows a supervisor-less goal is a mode the loop supports on purpose, so
+    // this must surface the trap without forbidding the dispatch.
+    #[test]
+    fn a_fresh_worker_without_a_parent_says_so_and_names_the_fix() {
+        let warning =
+            missing_parent_warning(None, "goal_x").expect("no parent is worth saying out loud");
+        assert!(
+            warning.contains("supervisor register --goal goal_x --session-id"),
+            "the warning names the command that fixes it: {warning}"
+        );
+        assert!(
+            warning.contains("cannot be reparented later"),
+            "and why it has to be fixed now: {warning}"
+        );
+        assert!(
+            warning.contains("your-session-id"),
+            "and whose id to copy (not a worker's): {warning}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_worker_with_a_parent_has_nothing_to_warn_about() {
+        assert_eq!(
+            missing_parent_warning(Some("20260101-000000-abc"), "goal_x"),
+            None
+        );
+    }
+
+    // ── worker stop frees the leases its workers held ───────────────────────
+    #[test]
+    fn stopping_a_worker_releases_the_lease_it_held() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".to_string()])
+            .expect("release runs");
+        assert_eq!(released, vec!["t1"], "the stopped worker's todo came back");
+
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo("t1").unwrap();
+        assert!(
+            todo.claimed_by.is_none(),
+            "a lease nobody can renew must not keep blocking peers: {:?}",
+            todo.claimed_by
+        );
+        assert!(todo.lease_expires_at.is_none());
+    }
+
+    /// Only agents that were actually stopped lose their claims: an unreachable
+    /// agent's worker may still be mid-turn, and its lease is what keeps a
+    /// second agent off the same todo until the TTL lapses.
+    #[test]
+    fn stopping_does_not_release_another_agents_lease() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "write the thing"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-b".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(4242),
+                ts: now,
+            })
+            .unwrap();
+
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".to_string()])
+            .expect("release runs");
+        assert!(
+            released.is_empty(),
+            "worker-b was not stopped: {released:?}"
+        );
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t1").and_then(|t| t.claimed_by.clone()),
+            Some("worker-b".to_string())
+        );
+    }
+
+    /// An abort that never landed (agent unreachable) reports no stopped agents,
+    /// so nothing is released — the caller sees an empty list.
+    #[test]
+    fn no_stopped_agents_releases_nothing() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let released = release_leases_of_stopped(&mut store, "g", &[]).unwrap();
+        assert!(released.is_empty());
+    }
+
+    // ── the follow-through a delivery spawned is closed by resolving it ─────
+    //
+    // Observed on a finished goal: seven "Follow-through: verify the delivery of
+    // X" todos stayed open although every source delivery had a recorded
+    // outcome, so `all_todos_done` never held and the goal could not reach
+    // terminal closure. Recording the resolution IS the verification the todo
+    // asks for, so it has to close it.
+    #[test]
+    fn resolving_a_delivery_closes_its_followthrough_todo() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+        seed_overdue_delivery(&mut store);
+        let goal = store.replay("g").unwrap().unwrap();
+        run_followthrough_and_refresh(&mut store, "g", goal).unwrap();
+        let followup = store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .delivery_state("t1")
+            .and_then(|d| d.followthrough_todo_id.clone())
+            .expect("the overdue delivery spawned a follow-through todo");
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_VERIFIED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        let todo = goal.todo(&followup).expect("still present");
+        assert_eq!(
+            todo.status,
+            crate::state::TodoStatus::Done,
+            "the follow-through is satisfied by the resolution"
+        );
+        assert!(todo.no_follow_up, "bookkeeping closes without a successor");
+        assert!(
+            todo.evidence.as_deref() == Some("delivery t1 → verified"),
+            "the evidence names what resolved it: {:?}",
+            todo.evidence
+        );
+    }
+
+    /// The reset case: a *fresh* delivery starts a new cycle and must not be
+    /// read as a resolution — the follow-through for the previous cycle was
+    /// already dropped by the fold, and a new one is minted when this one ages.
+    #[test]
+    fn a_fresh_delivery_does_not_close_anything() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(
+            goal.todo("t1").map(|t| t.status),
+            Some(crate::state::TodoStatus::Open),
+            "delivering is not completing"
+        );
+        assert!(goal.todo("t1").unwrap().completed_at.is_none());
+    }
+
+    /// A resolution with no follow-through to close (the delivery was verified
+    /// before the threshold fired) must stay a no-op, not invent a completion.
+    #[test]
+    fn resolving_a_delivery_without_a_followthrough_is_a_no_op() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "ship it"),
+                ts: 2,
+            })
+            .unwrap();
+        store
+            .append(Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                outcome: crate::work_items::delivery_outcome::OUTCOME_DELIVERED.into(),
+                note: None,
+                delivered_turn: 0,
+                seq: 1,
+                ts: 3,
+            })
+            .unwrap();
+
+        delivery_record(
+            &mut store,
+            &[
+                "--goal".into(),
+                "g".into(),
+                "--todo-id".into(),
+                "t1".into(),
+                "--outcome".into(),
+                crate::work_items::delivery_outcome::OUTCOME_FAILED.into(),
+            ],
+        )
+        .unwrap();
+
+        let goal = store.replay("g").unwrap().unwrap();
+        assert_eq!(goal.todos.len(), 1, "nothing was minted or completed");
+        assert_eq!(
+            goal.todo("t1").map(|t| t.status),
+            Some(crate::state::TodoStatus::Open)
         );
     }
 
