@@ -125,15 +125,31 @@ jobs:
 
       # This is a standalone user-facing entrypoint, not a Tauri sidecar. Build
       # it without the GUI feature so the server binary cannot acquire
-      # GTK/WebKit dependencies. tauri.linux.conf.json adds it to the .deb as
+      # GTK/WebKit dependencies. Like the CLI above it is a static musl build:
+      # headless hosts are exactly the old-glibc enterprise/HPC systems where
+      # a gnu binary linked against the ubuntu-latest glibc dies with
+      # "GLIBC_2.xx not found". tauri.linux.conf.json adds it to the .deb as
       # /usr/bin/futureos-headless; the portable bundle is assembled below.
       - name: Build and verify headless desktop
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: |
           set -euo pipefail
-          cargo build --release --no-default-features --features headless \
-            --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
+          target="${{ matrix.arch }}-unknown-linux-musl"
+          rustup target add "$target"
+          cargo build --release --target "$target" --no-default-features \
+            --features headless --bin futureos-headless \
+            --manifest-path desktop/src-tauri/Cargo.toml
           bash scripts/ci/check-headless-linux.sh \
-            desktop/src-tauri/target/release/futureos-headless
+            "desktop/src-tauri/target/$target/release/futureos-headless"
+          # Stage the static binary where tauri.linux.conf.json (.deb) and the
+          # portable assembly expect it. The later gui-features tauri build
+          # cannot clobber it: futureos-headless carries
+          # required-features = ["headless"], unsatisfied by a default build.
+          mkdir -p desktop/src-tauri/target/release
+          cp "desktop/src-tauri/target/$target/release/futureos-headless" \
+            "desktop/src-tauri/target/release/futureos-headless"
 
       - name: Build desktop bundle (.deb)
         if: inputs.release != true

@@ -137,10 +137,11 @@ the default behavior of headless mode.
 
 The graphical `futureos` binary links GUI libraries, which the Linux loader needs
 **before** parsing arguments. The standalone `futureos-headless` build excludes
-Tauri/GTK/WebKit and needs no X11/Wayland session. Its other runtime requirements
-(such as glibc) depend on the build target and environment; source builds are not
-necessarily fully static. No release workflow changes are required for this
-source-build path.
+Tauri/GTK/WebKit and needs no X11/Wayland session. Official Linux releases build
+`futureos-headless` as a fully static musl binary, so it also imposes no glibc
+version and runs on old enterprise/HPC systems (CentOS 7 / Rocky 8 era). Local
+source builds use the host toolchain instead and are not necessarily static.
+No release workflow changes are required for this source-build path.
 
 To build both binaries from the repository root without npm/Tauri packaging:
 
