@@ -89,6 +89,10 @@ const POLL_ERROR_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 /// File holding the persisted update offset.
 const OFFSET_FILE: &str = "offset.json";
+/// Where the webhook listens when the config names no address.
+const DEFAULT_WEBHOOK_ADDR: &str = "127.0.0.1:8787";
+/// The path the webhook answers on when the config names none.
+const DEFAULT_WEBHOOK_PATH: &str = "/telegram";
 
 /// The `providers.telegram` block.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -128,6 +132,28 @@ pub struct WebhookConfig {
     /// Registered with `setWebhook`; Telegram repeats it in the
     /// `X-Telegram-Bot-Api-Secret-Token` header of every delivery.
     pub secret_token: String,
+}
+
+/// Where the webhook listens.
+///
+/// Split out of the run loop so both branches — the default and an explicit
+/// address — are asserted without depending on whether the default port happens
+/// to be free on the machine running the test.
+fn webhook_addr(config: &TelegramConfig) -> &str {
+    if config.webhook.addr.is_empty() {
+        DEFAULT_WEBHOOK_ADDR
+    } else {
+        config.webhook.addr.as_str()
+    }
+}
+
+/// The path the webhook answers on, defaulting to `/telegram`.
+fn webhook_path(config: &TelegramConfig) -> &str {
+    if config.webhook.path.is_empty() {
+        DEFAULT_WEBHOOK_PATH
+    } else {
+        config.webhook.path.as_str()
+    }
 }
 
 /// One Bot API method URL.
@@ -935,16 +961,8 @@ impl Telegram {
     async fn run_webhook(&self, ctx: ProviderCtx, config: &TelegramConfig) -> Result<()> {
         let sender = self.sender(&ctx)?;
         let identity = Self::identify(&ctx, config).await?;
-        let addr = if config.webhook.addr.is_empty() {
-            "127.0.0.1:8787"
-        } else {
-            config.webhook.addr.as_str()
-        };
-        let path = if config.webhook.path.is_empty() {
-            "/telegram"
-        } else {
-            config.webhook.path.as_str()
-        };
+        let addr = webhook_addr(config);
+        let path = webhook_path(config);
         let secret = config.webhook.secret_token.clone();
 
         let handler_ctx = ctx.clone();
