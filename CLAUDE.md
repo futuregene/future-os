@@ -89,7 +89,7 @@ CI works around this with **empty placeholder sidecars** (`.github/workflows/ci.
 Screenshots, feature diagrams, demo videos, variant sheets for picking a style, version/style comparison sheets, pixel-offset measurement diagrams and illustrated documents (release notes, feature walkthroughs, test point checklists) are produced from the **real** desktop/mobile UI, rendered in a local headless Chrome against demo data — no display, no running app needed. Read `docs/guide/screenshots.zh-CN.md` (English: `docs/guide/screenshots.md`) before doing this work: its "常见请求怎么做 / Recipes" section has a worked recipe for each case, plus the commands (`serve-*`, `capture-*`, `video-*`, `variants-*`, `measure-*`, `compare-*`, `terminal`, `pdf`), the scenario table, the document-assembly schema, and how to extend the mocks when a screen changes. Captures and generated figures are gitignored — never commit them.
 
 ### Config
-Agent config lives under `~/.future/agent/` (`settings.json`, `models.json`, `auth.json`, `sessions/`). Model config reads purely from these files — no model-related CLI flags or env vars. Channel config is under `~/.future/channels/config.json`, auto-created with defaults on first run. The TUI persists client-side settings to `~/.future/tui/settings.json`.
+Agent config lives under `~/.future/agent/` (`settings.json`, `models.json`, `auth.json`, `sessions/`). Model config reads purely from these files — no model-related CLI flags or env vars. Channel config is under `~/.future/channels/config.json`, auto-created with defaults on first run: framework channels use a `providers.<id>` block (each channel reads its own; the access-policy keys `dm_policy`/`group_policy`/`require_mention` are read by the bridge), while Feishu and DingTalk also accept their legacy top-level block — `providers.<id>` wins when both exist. The TUI persists client-side settings to `~/.future/tui/settings.json`.
 
 API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider) → model built-in key → `auth.json` default key.
 
@@ -98,6 +98,35 @@ API key resolution order: `auth.json` (by model ID) → `auth.json` (by provider
 See `desktop/CLAUDE.md` for the desktop development guide. The desktop app owns `~/.future/app/` (SQLite `app.db`, images, review repos) and per-thread chat workspaces under `~/.future/workspaces/chat/`.
 
 ### Channels (`channels/`)
+
+Two kinds of channel live here, and the distinction decides where a change
+belongs:
+
+- **Framework channels** (`channels/src/providers/<id>.rs`) implement
+  `providers::traits::Provider` + `ChannelSender` and get duplicate filtering,
+  access policy, session mapping, per-conversation queueing, streaming replies
+  and chat-based approvals from `channels/src/bridge/`. A provider holds
+  platform knowledge only: parse events into `bridge::Inbound`, hand them to
+  `ProviderCtx::handle`, send/optionally edit text. Chunking, throttling and
+  retries are the bridge's, not the provider's. The contract is
+  `channels/src/providers/INTERFACE.md`; `providers/cli.rs` is the reference
+  implementation. New channels are registered in `providers/registry.rs`; a
+  `Maturity::Planned` channel refuses to start and reports `unsupported`.
+- **Self-bridged channels** (`channels/src/feishu/`, `channels/src/dingtalk/`)
+  keep their own bridges, which is where platform behaviour the framework does
+  not model yet lives (interactive cards, streaming card elements, approval
+  buttons, slash commands). They are declared in `providers/native.rs` so the
+  CLI and docs describe them too.
+
+Shared pieces worth knowing before adding code: `channels/src/policy.rs` (the
+dm/group access policy used by every channel), `channels/src/session_store.rs`
+(conversation → agent session), `channels/src/delivery.rs` + `outbox.rs` (the
+durable outbound queue and its drainer), `channels/src/transport/` (retrying
+HTTP, reconnecting websocket, webhook signatures, an inbound webhook server,
+text splitting), `channels/src/status.rs` (the snapshot `future channel status`
+reads). `future channel list|status|test|send` are handled by
+`channels/src/cli_cmd.rs` **before** the bridge starts, so diagnostics work with
+no bridge running.
 
 - **Feishu API base URLs:** `api_base()` = `https://open.feishu.cn/open-apis` (REST), `api_domain()` = `https://open.feishu.cn` (WS bootstrap). Do NOT append `/open-apis` again.
 - **CardKit streaming lifecycle:** Create card → stream element updates at 250ms throttle → finalize: FIRST `set_card_streaming_mode(false)`, THEN `update_cardkit_card` with complete card. Order matters (settings first clears the "[生成中...]" status).

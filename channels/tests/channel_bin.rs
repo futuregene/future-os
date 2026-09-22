@@ -158,3 +158,120 @@ fn disabled_channels_sigint_exits_cleanly() {
             "dingtalk": {"enabled": false, "client_id": "x", "client_secret": "y"}}"#,
     );
 }
+
+/// Spawn the binary with piped stdin, feed it prompts, then SIGINT.
+///
+/// This is the only way to cover the terminal channel's read loop: in-process
+/// the reader would block on the test runner's own stdin.
+#[cfg(unix)]
+#[test]
+fn terminal_channel_reads_prompts_and_exits_cleanly() {
+    use std::io::Write as _;
+
+    let home = isolated_home("cli-channel");
+    write_config(
+        &home,
+        r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
+            "providers": {"cli": {"enabled": true, "dm_policy": "open"}}}"#,
+    );
+    let mut child = bin()
+        .env("HOME", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn binary");
+    {
+        let stdin = child.stdin.as_mut().expect("piped stdin");
+        // A blank line is skipped, the prompt is submitted, /quit ends the loop.
+        stdin
+            .write_all(b"\nhello from the terminal\n/quit\n")
+            .unwrap();
+        stdin.flush().unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let pid = child.id() as i32;
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "clean shutdown expected: {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // The agent is unreachable, so the terminal is told rather than left quiet.
+    assert!(
+        stdout.contains("Cannot reach the agent") || stdout.contains("unreachable"),
+        "stdout: {stdout}"
+    );
+    // The bridge published a status snapshot while it ran.
+    assert!(home.join(".future/channels/status.json").exists());
+}
+
+/// The same config with the terminal channel *disabled* exercises the
+/// configured-but-off branch of the starter.
+#[cfg(unix)]
+#[test]
+fn a_disabled_terminal_channel_does_not_start() {
+    let home = isolated_home("cli-channel-disabled");
+    write_config(&home, r#"{"providers": {"cli": {"enabled": false}}}"#);
+    sigint_case_with_home(&home);
+}
+
+/// Send SIGINT to a spawned binary and assert a clean exit.
+#[cfg(unix)]
+fn sigint_case_with_home(home: &std::path::Path) {
+    let mut child = bin()
+        .env("HOME", home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn binary");
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    let pid = child.id() as i32;
+    unsafe { libc::kill(pid, libc::SIGINT) };
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "clean shutdown expected, got {status:?}");
+}
+
+#[test]
+fn the_channel_diagnostics_run_without_a_bridge() {
+    // `list` / `status` are handled before the bridge starts, so they answer
+    // with nothing running — including on a machine with no config at all.
+    let home = isolated_home("cli-diagnostics");
+    for args in [vec!["channel", "list"], vec!["channel", "status"]] {
+        let out = bin()
+            .env("HOME", &home)
+            .args(&args)
+            .output()
+            .expect("run binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{args:?} failed: {stdout}");
+        assert!(!stdout.is_empty(), "{args:?} printed nothing");
+    }
+    // A missing config is reported, never written by a read-only command.
+    assert!(!home.join(".future/channels/config.json").exists());
+
+    let json = bin()
+        .env("HOME", &home)
+        .args(["channel", "status", "--format", "json"])
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(stdout.contains("bridgeRunning"), "{stdout}");
+    assert!(stdout.contains("outboundQueue"), "{stdout}");
+}
+
+#[test]
+fn testing_an_unknown_channel_fails_with_a_readable_error() {
+    let home = isolated_home("cli-test-unknown");
+    let out = bin()
+        .env("HOME", &home)
+        .args(["channel", "test", "not-a-channel"])
+        .output()
+        .expect("run binary");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown channel"), "{stderr}");
+}

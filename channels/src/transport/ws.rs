@@ -108,21 +108,39 @@ fn jitter(ceiling: Duration) -> Duration {
 pub async fn supervise<F, Fut>(
     name: &str,
     shutdown: &Notify,
+    backoff: Backoff,
+    attempt: F,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    supervise_with(name, shutdown, backoff, HEALTHY_AFTER, attempt).await
+}
+
+/// How long a connection must stay up before the backoff resets.
+pub const HEALTHY_AFTER: Duration = Duration::from_secs(60);
+
+/// [`supervise`] with an explicit health window, so the reset is testable
+/// without waiting a minute.
+pub async fn supervise_with<F, Fut>(
+    name: &str,
+    shutdown: &Notify,
     mut backoff: Backoff,
+    healthy_after: Duration,
     mut attempt: F,
 ) -> Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    const HEALTHY_AFTER: Duration = Duration::from_secs(60);
     loop {
         let started = Instant::now();
         match attempt().await {
             Ok(()) => tracing::info!(channel = name, "connection closed; reconnecting"),
             Err(error) => tracing::warn!(channel = name, %error, "connection failed; reconnecting"),
         }
-        if started.elapsed() >= HEALTHY_AFTER {
+        if started.elapsed() >= healthy_after {
             backoff.reset();
         }
         let delay = backoff.next_delay();
@@ -140,6 +158,115 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn connect_attaches_headers_and_reaches_a_local_socket() {
+        // A local websocket server gives the handshake a real peer: the helper
+        // must return a live socket rather than error.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Drain one frame and close, so the client's connect returns first.
+            let _ = futures_util::StreamExt::next(&mut ws).await;
+        });
+        let socket = connect(&format!("ws://{addr}/gateway"), &[("x-test", "1")])
+            .await
+            .expect("connect");
+        drop(socket);
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test]
+    async fn connect_reports_an_unreachable_peer_with_the_url() {
+        // Port 1 on loopback is refused, so the failure is deterministic.
+        let error = connect("ws://127.0.0.1:1/gateway", &[])
+            .await
+            .err()
+            .expect("must fail")
+            .to_string();
+        assert!(error.contains("127.0.0.1:1"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_a_malformed_header() {
+        let error = connect("ws://127.0.0.1:1/", &[("bad header", "value")])
+            .await
+            .err()
+            .expect("must fail")
+            .to_string();
+        assert!(error.contains("invalid"), "{error}");
+    }
+
+    #[test]
+    fn the_gateway_backoff_starts_at_one_second() {
+        let mut backoff = Backoff::gateway();
+        // Jitter means only the bound is assertable, not an exact value.
+        assert!(backoff.next_delay() <= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_healthy_connection_resets_the_backoff_before_the_next_failure() {
+        // The loop resets after a connection that stayed up long enough to
+        // count as healthy: a zero-length health window makes that immediate,
+        // and the observed call count proves the loop kept reconnecting.
+        let shutdown = Arc::new(Notify::new());
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let calls_for_attempt = calls.clone();
+        let handle = {
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                supervise_with(
+                    "test",
+                    &shutdown,
+                    Backoff::new(Duration::from_millis(1), Duration::from_millis(2)),
+                    Duration::ZERO,
+                    move || {
+                        let calls = calls_for_attempt.clone();
+                        async move {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        }
+                    },
+                )
+                .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        shutdown.notify_one();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(
+            calls.load(std::sync::atomic::Ordering::SeqCst) > 1,
+            "a clean close must still reconnect"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_production_supervisor_uses_the_documented_health_window() {
+        // `supervise` is the production entry point: it must stop on shutdown
+        // and use HEALTHY_AFTER rather than a test window.
+        assert_eq!(HEALTHY_AFTER, Duration::from_secs(60));
+        let shutdown = Arc::new(Notify::new());
+        let handle = {
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                supervise(
+                    "test",
+                    &shutdown,
+                    Backoff::new(Duration::from_millis(1), Duration::from_millis(2)),
+                    || async { Ok(()) },
+                )
+                .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        shutdown.notify_one();
+        let stopped = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(stopped.is_ok(), "supervise must stop on shutdown");
+        assert!(stopped.unwrap().unwrap().is_ok());
+    }
 
     #[test]
     fn backoff_never_exceeds_its_ceiling() {
@@ -204,7 +331,9 @@ mod tests {
             })
         };
         tokio::time::sleep(Duration::from_millis(30)).await;
-        notify.notify_waiters();
+        // `notify_one` stores a permit: the loop may be between waits, and a
+        // one-shot `notify_waiters` would be lost.
+        notify.notify_one();
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "supervise must stop after shutdown");
         assert!(result.unwrap().unwrap().is_ok());

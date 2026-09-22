@@ -259,6 +259,11 @@ impl StatusBoard {
         self.write(&snapshot)
     }
 
+    /// Where the snapshot is published (diagnostics and tests).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn build(inner: &Inner) -> StatusSnapshot {
         let mut channels = inner.channels.clone();
         for (id, counters) in &inner.counters {
@@ -278,9 +283,12 @@ impl StatusBoard {
     }
 
     fn write(&self, snapshot: &StatusSnapshot) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
         // Write-then-rename: a reader never sees a half-written snapshot.
         let temporary = self.path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_string_pretty(snapshot)?)?;

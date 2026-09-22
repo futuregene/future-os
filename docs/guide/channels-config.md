@@ -2,15 +2,22 @@
 
 The channel bridge (`future-channel`, see `channels/`) reads a single config
 file at `~/.future/channels/config.json`. It connects to the agent over gRPC
-and exposes it through Feishu and DingTalk bots. Start it with `future channel`
+and exposes it through the configured channels. Start it with `future channel`
 (the unified CLI entry; identical to the standalone `future-channel` binary).
+
+The channels that run on the shared bridge (Telegram, Slack, Discord,
+Mattermost, Signal, WhatsApp, QQ, Linq, iMessage, IRC, Email, Terminal) are
+configured under a `providers` key and documented in
+[Channel providers](channels-providers.md); this page covers the file itself,
+the shared `agent` block, and the two self-bridged channels (Feishu and
+DingTalk).
 
 **First run:** if the file doesn't exist, the bridge writes a default template
 and **exits** — edit the file and start it again.
 
 The bridge only starts channels that are `enabled: true`. All fields are
 optional; every field has a default, so `{}` is a valid config (agent block
-with defaults, both channels disabled).
+with defaults, every channel disabled).
 
 ## Schema
 
@@ -23,6 +30,12 @@ with defaults, both channels disabled).
     "model": "future/deepseek-v4-pro",      // default model for channel sessions
     "thinking_level": "xhigh",              // off | minimal | low | medium | high | xhigh
     "permission_level": "all"               // all | workspace | none
+  },
+
+  // Framework channels — one block per channel, each read by that channel.
+  // See docs/guide/channels-providers.md for the full list and every field.
+  "providers": {
+    "telegram": { "enabled": false, "bot_token": "" }
   },
 
   // Feishu block — only enabled when "enabled": true.
@@ -64,6 +77,18 @@ with defaults, both channels disabled).
 | `model` | `future/deepseek-v4-pro` | Default model for channel sessions. Empty means "use the agent's boot-time default". |
 | `thinking_level` | `xhigh` | Default thinking level: `off` / `minimal` / `low` / `medium` / `high` / `xhigh`. |
 | `permission_level` | `all` | `all` is unrestricted; `workspace` enables approval gating; `none` denies all tools. This is not an OS sandbox selector. |
+
+### `providers.<id>`
+
+Each framework channel reads its own block here, including the shared access
+policy keys (`dm_policy`, `dm_allowlist`, `group_policy`, `group_allowlist`,
+`require_mention`) and `enabled`. See [Channel providers](channels-providers.md)
+for the per-channel fields.
+
+For `feishu` and `dingtalk`, a `providers.<id>` block wins over the legacy
+top-level block above, so either shape works and a channel can be migrated one
+at a time. Enabling a channel this build cannot run is reported as
+`unsupported` at startup and in `future channel status`.
 
 ### `feishu`
 
@@ -114,8 +139,11 @@ with defaults, both channels disabled).
 
 ## See also
 
+- [Channel providers](channels-providers.md) — the shared-bridge channels,
+  their fields, diagnostics and runtime files.
 - [Directory layout](directory-layout.md) — where this file lives.
 - Wiki [Feishu](../wiki/en/Feishu.md) / [DingTalk](../wiki/en/DingTalk.md) pages — setup
   and usage guides per platform.
-- Source: `channels/src/config.rs` (schema + defaults), `channels/src/feishu/policy.rs`
-  (dm/group access policies).
+- Source: `channels/src/config.rs` (schema + defaults), `channels/src/policy.rs`
+  (the dm/group access policy shared by every channel),
+  `channels/src/providers/INTERFACE.md` (how a channel is added).

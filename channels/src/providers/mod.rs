@@ -27,6 +27,9 @@ mod unsupported;
 
 pub use traits::{Capabilities, ChannelDefinition, ChannelSender, Maturity, Provider};
 
+/// Declarations for the channels that keep their own bridge (Feishu, DingTalk).
+pub use native::definitions as native_definitions;
+
 /// Every channel this build knows about, in display order.
 ///
 /// Includes the channels implemented by their own bridge (`feishu`, `dingtalk`)

@@ -744,6 +744,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sink_that_only_implements_finish_uses_every_default() {
+        // The trait's defaults are the contract a platform with a plain text API
+        // relies on: calling them must be a no-op, not an error.
+        struct MinimalSink;
+
+        #[async_trait::async_trait]
+        impl ReplySink for MinimalSink {
+            async fn finish(&self, _outcome: &TurnOutcome) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let sink = MinimalSink;
+        assert!(!sink.progressive());
+        assert_eq!(sink.throttle(), Duration::from_millis(250));
+        sink.begin().await.unwrap();
+        sink.text(TextUpdate {
+            accumulated: "x",
+            delta: "x",
+        })
+        .await
+        .unwrap();
+        sink.thinking("x").await.unwrap();
+        sink.tool(&ToolProgress {
+            tool_id: "t".into(),
+            name: "n".into(),
+            args: None,
+            phase: ToolPhase::Started,
+        })
+        .await
+        .unwrap();
+        sink.approval(&ApprovalPrompt {
+            request_id: "r".into(),
+            tool_name: "n".into(),
+            risk_level: String::new(),
+            title: "t".into(),
+            summary: String::new(),
+        })
+        .await
+        .unwrap();
+        sink.error("x").await.unwrap();
+        sink.superseded().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_edit_is_logged_and_the_turn_continues() {
+        // The failure path writes a diagnostic, so the test needs a subscriber:
+        // tracing arguments are only evaluated when one is installed.
+        let sink_writer = Arc::new(StdMutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let sink_writer = sink_writer.clone();
+                move || WriterGuard(sink_writer.clone())
+            })
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let sender = RecordingSender::failing_edits(&PROGRESSIVE);
+        let sink = sink(sender.clone());
+        sink.text(TextUpdate {
+            accumulated: "one",
+            delta: "one",
+        })
+        .await
+        .unwrap();
+        sink.text(TextUpdate {
+            accumulated: "one two",
+            delta: " two",
+        })
+        .await
+        .unwrap();
+        let logged = String::from_utf8_lossy(&sink_writer.lock().unwrap()).to_string();
+        assert!(logged.contains("edit failed"), "{logged}");
+        assert_eq!(sender.sends(), vec!["one".to_string()]);
+    }
+
+    /// A `Write` that appends to a shared buffer, so a test can read what the
+    /// subscriber wrote after the sink has run.
+    struct WriterGuard(Arc<StdMutex<Vec<u8>>>);
+
+    impl std::io::Write for WriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
     async fn a_failed_turn_explains_itself() {
         let sender = RecordingSender::new(&BUFFERED);
         let sink = sink(sender.clone());

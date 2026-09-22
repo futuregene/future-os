@@ -70,16 +70,26 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 /// Compare a hex signature header against a freshly computed digest, accepting
-/// the `sha256=` prefix some platforms add.
+/// the scheme prefix platforms put in front of the digest (`sha256=`, `v0=`,
+/// `v1=`, …). The prefix names the scheme, not the algorithm we verify: every
+/// platform we speak to here signs with HMAC-SHA256, and a header without a
+/// prefix is compared as-is.
 pub fn verify_hex(expected: &str, actual: &str) -> bool {
     let expected = expected.trim();
     let actual = actual.trim();
-    let strip = |value: &str| {
-        value
-            .split_once('=')
-            .filter(|(prefix, _)| prefix.eq_ignore_ascii_case("sha256"))
-            .map(|(_, rest)| rest.to_string())
-            .unwrap_or_else(|| value.to_string())
+    // Only strip a plausible scheme prefix, so a malformed header cannot hide
+    // its difference behind an accidental split.
+    let strip = |value: &str| match value.split_once('=') {
+        Some((prefix, rest))
+            if !prefix.is_empty()
+                && prefix.len() <= 8
+                && prefix
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') =>
+        {
+            rest.to_string()
+        }
+        _ => value.to_string(),
     };
     constant_time_eq(
         strip(expected).to_ascii_lowercase().as_bytes(),
@@ -139,6 +149,11 @@ mod tests {
             &digest,
             &format!("sha256={}", digest.to_uppercase())
         ));
+        // The scheme prefix is not always `sha256=`.
+        assert!(verify_hex(&format!("v0={digest}"), &digest));
+        assert!(verify_hex(&digest, &format!("v1={digest}")));
+        // Only a plausible prefix is stripped.
+        assert!(!verify_hex(&digest, &format!("a-very-long-prefix={digest}")));
     }
 
     #[test]

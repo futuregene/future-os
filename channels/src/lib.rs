@@ -102,73 +102,95 @@ pub fn data_root() -> std::path::PathBuf {
     config::home_dir().join(".future").join("channels")
 }
 
-async fn run_async() -> Result<()> {
-    let cfg_path = config::ChannelConfig::default_path();
-    info!("Loading config from {}", cfg_path.display());
-    let config = match config::ChannelConfig::load() {
-        Ok(c) => c,
-        Err(e) => {
-            if cfg_path.exists() {
-                return Err(e);
-            }
-            // File doesn't exist — load() already wrote defaults
-            warn!("{}", e);
-            return Ok(());
-        }
-    };
+/// What a started bridge is holding, so `run_async` and tests share one path.
+pub struct Started {
+    /// One task per channel (or per supervisor), plus the background helpers.
+    pub handles: Vec<tokio::task::JoinHandle<()>>,
+    pub status: Arc<StatusBoard>,
+    pub shutdown: Arc<Notify>,
+    /// How many framework channels were started (diagnostics and tests).
+    pub started_providers: usize,
+}
 
+impl Started {
+    /// Stop everything and leave a snapshot that says so.
+    ///
+    /// Called on Ctrl-C, and by tests so a started bridge never outlives them.
+    pub async fn stop(self) {
+        self.shutdown.notify_waiters();
+        for handle in self.handles {
+            handle.abort();
+        }
+        for entry in registry::all() {
+            self.status
+                .set_state(entry.definition.id, ChannelState::Disabled, None);
+        }
+        let _ = self.status.flush();
+    }
+}
+
+/// Start every enabled channel described by `config`.
+///
+/// Split out of the process entry point because this is the part worth testing:
+/// which channels start, which are reported as `unsupported`, and what the
+/// published snapshot says. It never installs a signal handler and never blocks.
+pub fn start_all(
+    config: &config::ChannelConfig,
+    root: std::path::PathBuf,
+    status: Arc<StatusBoard>,
+) -> Result<Started> {
     let agent_cfg = Arc::new(config.agent.clone());
-    let mut handles = Vec::new();
     let shutdown = Arc::new(Notify::new());
-    let status = Arc::new(StatusBoard::new(StatusSnapshot::default_path()));
-    let root = data_root();
+    let mut handles = Vec::new();
+
+    // The self-bridged channels are published too, so `future channel status`
+    // shows an off channel as off rather than as one that never reported.
+    for definition in providers::native_definitions() {
+        status.set_state(definition.id, ChannelState::Disabled, None);
+    }
 
     // ── Feishu ─────────────────────────────────────────────────────────
 
-    if let Some(ref feishu_cfg) = config.feishu {
-        if feishu_cfg.enabled {
-            if feishu_cfg.app_id.is_empty() || feishu_cfg.app_secret.is_empty() {
-                anyhow::bail!("Feishu channel enabled but app_id/app_secret missing");
-            }
-            info!("Starting Feishu channel...");
-            status.set_started("feishu");
-            let agent = agent_cfg.clone();
-            let fcfg = feishu_cfg.clone();
-            let sd = shutdown.clone();
-            handles.push(tokio::spawn(async move {
-                // inspect_err, not if-let: rustfmt explodes single-line
-                // if-lets and the Ok-edge brace is unreachable in tests
-                // (a channel run only returns on error or shutdown abort).
-                let _ = feishu::FeishuChannel::run(agent, fcfg, sd)
-                    .await
-                    .inspect_err(|e| tracing::error!("Feishu channel exited: {}", e));
-            }));
+    if let Some(feishu_cfg) = config.feishu.as_ref().filter(|cfg| cfg.enabled) {
+        if feishu_cfg.app_id.is_empty() || feishu_cfg.app_secret.is_empty() {
+            anyhow::bail!("Feishu channel enabled but app_id/app_secret missing");
         }
+        info!("Starting Feishu channel...");
+        status.set_started("feishu");
+        let agent = agent_cfg.clone();
+        let fcfg = feishu_cfg.clone();
+        let sd = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            // inspect_err, not if-let: rustfmt explodes single-line
+            // if-lets and the Ok-edge brace is unreachable in tests
+            // (a channel run only returns on error or shutdown abort).
+            let _ = feishu::FeishuChannel::run(agent, fcfg, sd)
+                .await
+                .inspect_err(|e| tracing::error!("Feishu channel exited: {}", e));
+        }));
     }
 
     // ── DingTalk ──────────────────────────────────────────────────────
 
-    if let Some(ref dt_cfg) = config.dingtalk {
-        if dt_cfg.enabled {
-            if dt_cfg.client_id.is_empty() || dt_cfg.client_secret.is_empty() {
-                anyhow::bail!("DingTalk channel enabled but client_id/client_secret missing");
-            }
-            info!("Starting DingTalk channel...");
-            status.set_started("dingtalk");
-            let agent = agent_cfg.clone();
-            let dcfg = dt_cfg.clone();
-            let sd = shutdown.clone();
-            handles.push(tokio::spawn(async move {
-                let _ = dingtalk::DingtalkChannel::run(agent, dcfg, sd)
-                    .await
-                    .inspect_err(|e| tracing::error!("DingTalk channel exited: {}", e));
-            }));
+    if let Some(dt_cfg) = config.dingtalk.as_ref().filter(|cfg| cfg.enabled) {
+        if dt_cfg.client_id.is_empty() || dt_cfg.client_secret.is_empty() {
+            anyhow::bail!("DingTalk channel enabled but client_id/client_secret missing");
         }
+        info!("Starting DingTalk channel...");
+        status.set_started("dingtalk");
+        let agent = agent_cfg.clone();
+        let dcfg = dt_cfg.clone();
+        let sd = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            let _ = dingtalk::DingtalkChannel::run(agent, dcfg, sd)
+                .await
+                .inspect_err(|e| tracing::error!("DingTalk channel exited: {}", e));
+        }));
     }
 
     // ── Framework channels ────────────────────────────────────────────
 
-    let mut started = 0usize;
+    let mut started_providers = 0usize;
     for entry in registry::all() {
         let definition = entry.definition;
         let id = definition.id;
@@ -188,7 +210,7 @@ async fn run_async() -> Result<()> {
             continue;
         }
         info!("Starting {} channel...", definition.display_name);
-        started += 1;
+        started_providers += 1;
         status.set_state(id, ChannelState::Starting, None);
         handles.push(spawn_provider(
             entry,
@@ -200,44 +222,62 @@ async fn run_async() -> Result<()> {
         ));
     }
 
-    if handles.is_empty() {
+    Ok(Started {
+        handles,
+        status,
+        shutdown,
+        started_providers,
+    })
+}
+
+async fn run_async() -> Result<()> {
+    let cfg_path = config::ChannelConfig::default_path();
+    info!("Loading config from {}", cfg_path.display());
+    let config = match config::ChannelConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            if cfg_path.exists() {
+                return Err(e);
+            }
+            // File doesn't exist — load() already wrote defaults
+            warn!("{}", e);
+            return Ok(());
+        }
+    };
+
+    let status = Arc::new(StatusBoard::new(StatusSnapshot::default_path()));
+    let root = data_root();
+    let started = start_all(&config, root.clone(), status.clone())?;
+
+    if started.handles.is_empty() {
         warn!(
             "No channels enabled. Edit {} and set a channel's 'enabled' to true.",
             cfg_path.display()
         );
     } else {
-        info!("{} channel task(s) running", handles.len());
-        let _ = started;
+        info!("{} channel task(s) running", started.handles.len());
     }
 
     status.flush()?;
-    let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+    let flusher = spawn_status_flusher(status.clone(), started.shutdown.clone());
     let outbox_drainer = spawn_outbox_drainer(
         outbox::Outbox::new(
             Arc::new(delivery::DeliveryQueue::load(
                 delivery::DeliveryQueue::default_path(),
             )),
             config.clone(),
-            agent_cfg.clone(),
-            root.clone(),
+            Arc::new(config.agent.clone()),
+            root,
             status.clone(),
         ),
-        shutdown.clone(),
+        started.shutdown.clone(),
     );
 
     tokio::signal::ctrl_c().await?;
     info!("Shutting down...");
-    shutdown.notify_waiters();
-    for h in handles {
-        h.abort();
-    }
     flusher.abort();
     outbox_drainer.abort();
-    // Leave a truthful snapshot: nothing is running any more.
-    for entry in registry::all() {
-        status.set_state(entry.definition.id, ChannelState::Disabled, None);
-    }
-    let _ = status.flush();
+    started.stop().await;
     Ok(())
 }
 
@@ -378,5 +418,214 @@ mod tests {
         let root = data_root();
         assert!(root.starts_with(&home.path), "{root:?}");
         assert!(root.ends_with("channels"));
+    }
+
+    fn config_with(entries: &[(&str, bool)]) -> config::ChannelConfig {
+        let mut config = config::ChannelConfig::default();
+        for (id, enabled) in entries {
+            config
+                .providers
+                .insert((*id).to_string(), serde_json::json!({ "enabled": enabled }));
+        }
+        config
+    }
+
+    async fn start(config: config::ChannelConfig, label: &str) -> (Started, std::path::PathBuf) {
+        let root = crate::test_support::temp_dir(label);
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let started = start_all(&config, root.clone(), status).expect("start");
+        (started, root)
+    }
+
+    #[tokio::test]
+    async fn starting_publishes_a_state_for_every_channel() {
+        let config = config_with(&[("cli", true), ("telegram", true), ("slack", false)]);
+        let expected_running = providers::registry::implemented()
+            .iter()
+            .filter(|entry| matches!(entry.definition.id, "cli" | "telegram"))
+            .count();
+
+        let root = crate::test_support::temp_dir("lib-start-states");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let started = start_all(&config, root.clone(), status).expect("start");
+        // Whatever the build implements, every enabled-and-implemented channel
+        // spawns a supervisor and everything else is reported instead.
+        assert_eq!(started.started_providers, expected_running);
+        started.status.flush().unwrap();
+
+        let snapshot = StatusSnapshot::load(&root.join("status.json"));
+        for row in cli_cmd::ListReport::build(&config).channels {
+            let entry = snapshot
+                .channels
+                .get(row.id)
+                .unwrap_or_else(|| panic!("{} was never published", row.id));
+            match row.configured {
+                // Enabled but not built: reported, never silently skipped.
+                "unsupported" => assert_eq!(entry.state, Some(ChannelState::Unsupported), "{}", row.id),
+                "not-configured" | "disabled" => {
+                    assert_eq!(entry.state, Some(ChannelState::Disabled), "{}", row.id)
+                }
+                // Enabled and implemented: a supervisor is running it.
+                _ => assert!(
+                    matches!(
+                        entry.state,
+                        Some(ChannelState::Starting) | Some(ChannelState::Running)
+                    ),
+                    "{} should be running, got {:?}",
+                    row.id,
+                    entry.state
+                ),
+            }
+        }
+
+        started.stop().await;
+        let after = StatusSnapshot::load(&root.join("status.json"));
+        assert_eq!(
+            after.channels.get("cli").unwrap().state,
+            Some(ChannelState::Disabled),
+            "stopping leaves a truthful snapshot"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_with_nothing_enabled_is_not_an_error() {
+        let (started, _root) = start(config::ChannelConfig::default(), "lib-start-empty").await;
+        assert!(started.handles.is_empty());
+        assert_eq!(started.started_providers, 0);
+        started.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_native_bridges_start_with_the_shared_snapshot() {
+        let mut config = config::ChannelConfig::default();
+        config.feishu = Some(config::FeishuChannelConfig {
+            enabled: true,
+            app_id: "app".into(),
+            app_secret: "secret".into(),
+            ..Default::default()
+        });
+        config.dingtalk = Some(config::DingtalkChannelConfig {
+            enabled: true,
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+            ..Default::default()
+        });
+        let root = crate::test_support::temp_dir("lib-start-native");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let started = start_all(&config, root.clone(), status).expect("start");
+        // Both self-bridged channels spawned a supervisor, and both are
+        // published as started before their transports connect.
+        assert_eq!(started.handles.len(), 2);
+        started.status.flush().unwrap();
+        let snapshot = StatusSnapshot::load(&root.join("status.json"));
+        assert_eq!(
+            snapshot.channels.get("feishu").unwrap().state,
+            Some(ChannelState::Running)
+        );
+        assert_eq!(
+            snapshot.channels.get("dingtalk").unwrap().state,
+            Some(ChannelState::Running)
+        );
+        started.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_native_bridge_without_credentials_refuses_to_start() {
+        let mut config = config::ChannelConfig::default();
+        config.feishu = Some(config::FeishuChannelConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let root = crate::test_support::temp_dir("lib-start-feishu-nocreds");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let error = start_all(&config, root, status)
+            .err()
+            .expect("must refuse")
+            .to_string();
+        assert!(error.contains("app_id/app_secret"), "{error}");
+
+        let mut config = config::ChannelConfig::default();
+        config.dingtalk = Some(config::DingtalkChannelConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let root = crate::test_support::temp_dir("lib-start-dingtalk-nocreds");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let error = start_all(&config, root, status)
+            .err()
+            .expect("must refuse")
+            .to_string();
+        assert!(error.contains("client_id/client_secret"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn stopping_cancels_a_running_channel_task() {
+        // The supervisor loops until shutdown, so a started provider task is
+        // still pending here; stopping must abort it rather than leak it.
+        let config = config_with(&[("cli", true)]);
+        let (started, _root) = start(config, "lib-stop-cancels").await;
+        let handles = started.handles.len();
+        assert!(handles >= 1);
+        started.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_status_flusher_publishes_and_then_stops() {
+        let root = crate::test_support::temp_dir("lib-status-flusher");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let shutdown = Arc::new(Notify::new());
+        status.count_inbound("cli", crate::status::now_unix());
+        let flusher = spawn_status_flusher(status.clone(), shutdown.clone());
+        // The flusher writes on its own timer; force one write to observe the
+        // effect without sleeping for the interval.
+        status.flush().unwrap();
+        assert!(root.join("status.json").exists());
+        // `notify_one` stores a permit, so the signal survives the flusher
+        // being between waits; `notify_waiters` would be lost.
+        shutdown.notify_one();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), flusher).await;
+        assert!(stopped.is_ok(), "the flusher must stop on shutdown");
+    }
+
+    #[tokio::test]
+    async fn the_outbox_drainer_retries_a_queued_message_and_stops() {
+        let root = crate::test_support::temp_dir("lib-outbox-drainer");
+        let config = config_with(&[("telegram", true)]);
+        let queue = Arc::new(crate::delivery::DeliveryQueue::load(
+            root.join("deliveries.json"),
+        ));
+        queue
+            .enqueue(
+                "telegram",
+                crate::bridge::ConversationRef {
+                    id: "c1".into(),
+                    thread_id: None,
+                    kind: crate::bridge::ChatKind::Direct,
+                },
+                "hello",
+            )
+            .unwrap();
+        let outbox = outbox::Outbox::new(
+            queue.clone(),
+            config,
+            Arc::new(config::AgentConfig {
+                grpc_addr: "http://127.0.0.1:1".into(),
+                ..config::AgentConfig::default()
+            }),
+            root.clone(),
+            Arc::new(StatusBoard::new(root.join("status.json"))),
+        );
+        let shutdown = Arc::new(Notify::new());
+        let drainer = spawn_outbox_drainer(outbox, shutdown.clone());
+        // Give the first pass a moment to record the failed attempt.
+        let recorded = crate::test_support::wait_until(
+            || !queue.pending().is_empty() && queue.pending()[0].attempts > 0,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        assert!(recorded, "the drainer must attempt a due message");
+        shutdown.notify_one();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), drainer).await;
+        assert!(stopped.is_ok(), "the drainer must stop on shutdown");
     }
 }

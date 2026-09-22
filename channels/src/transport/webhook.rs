@@ -391,13 +391,216 @@ mod tests {
         assert!(raw.ends_with("\r\n\r\nhi"));
     }
 
+    fn request(method: &str, path: &str) -> String {
+        format!("{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nok")
+    }
+
+    #[test]
+    fn a_request_exposes_its_headers_body_and_query() {
+        let mut headers = HashMap::new();
+        headers.insert("x-signature".to_string(), "abc".to_string());
+        let request = WebhookRequest {
+            method: "POST".into(),
+            path: "/hook".into(),
+            query: "hub.mode=subscribe&hub.challenge=42".into(),
+            headers,
+            body: br#"{"event":"message"}"#.to_vec(),
+        };
+        assert_eq!(request.header("X-Signature"), Some("abc"));
+        assert_eq!(request.header("missing"), None);
+        assert_eq!(request.json()["event"], "message");
+        assert_eq!(request.query_param("hub.challenge").as_deref(), Some("42"));
+        assert_eq!(request.query_param("nope"), None);
+
+        // A body that is not JSON is reported as null rather than panicking:
+        // webhooks are attacker-reachable, so a bad body is normal input.
+        let plain = WebhookRequest {
+            body: b"not json".to_vec(),
+            ..request
+        };
+        assert_eq!(plain.json(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_short_response_constructors_set_their_status_and_body() {
+        let ok = WebhookResponse::ok();
+        assert_eq!(ok.status, 200);
+        assert_eq!(String::from_utf8_lossy(&ok.body), "ok");
+        assert!(ok.content_type.starts_with("text/plain"));
+
+        let bad = WebhookResponse::bad_request("no signature");
+        assert_eq!(bad.status, 400);
+        assert_eq!(String::from_utf8_lossy(&bad.body), "no signature");
+
+        let unauthorized = WebhookResponse::unauthorized();
+        assert_eq!(unauthorized.status, 401);
+        let missing = WebhookResponse::not_found();
+        assert_eq!(missing.status, 404);
+
+        let json = WebhookResponse::json(200, &serde_json::json!({"ok": true}));
+        assert_eq!(json.content_type, "application/json");
+        assert_eq!(String::from_utf8_lossy(&json.body), r#"{"ok":true}"#);
+    }
+
+    async fn round_trip(server: WebhookServer, raw: &str) -> String {
+        let (addr, shutdown, serving) = serve(server).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(raw.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        stop(shutdown, serving).await;
+        String::from_utf8_lossy(&response).to_string()
+    }
+
+    /// Start a server on an ephemeral port and hand back its address plus the
+    /// handles needed to stop it.
+    async fn serve(
+        server: WebhookServer,
+    ) -> (SocketAddr, Arc<Notify>, tokio::task::JoinHandle<Result<()>>) {
+        let addr = server.local_addr().unwrap();
+        let shutdown = Arc::new(Notify::new());
+        let serving = {
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move { server.serve(shutdown).await })
+        };
+        (addr, shutdown, serving)
+    }
+
+    async fn stop(shutdown: Arc<Notify>, serving: tokio::task::JoinHandle<Result<()>>) {
+        shutdown.notify_waiters();
+        let _ = tokio::time::timeout(Duration::from_secs(2), serving).await;
+    }
+
+    use std::time::Duration;
+
+#[tokio::test]
+async fn a_reqwest_json_post_is_answered() {
+    let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+        "POST",
+        "/hook",
+        |request| async move {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            WebhookResponse::json(200, &serde_json::json!({ "seen": body }))
+        },
+    );
+    let (addr, shutdown, serving) = serve(server).await;
+    let client = reqwest::Client::builder().http1_only().build().unwrap();
+    let payload = serde_json::json!({"pad": "x".repeat(2000)});
+    let response = client
+        .post(format!("http://{addr}/hook"))
+        .json(&payload)
+        .send()
+        .await
+        .expect("post");
+    assert_eq!(response.status().as_u16(), 200);
+    let text = response.text().await.unwrap();
+    assert!(text.contains("pad"), "{text}");
+    stop(shutdown, serving).await;
+}
+
+    #[tokio::test]
+    async fn a_body_split_across_writes_is_read_in_full() {
+        // A real client can deliver the head and the body in separate packets;
+        // the server must keep reading until Content-Length is satisfied.
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+            "POST",
+            "/hook",
+            |request| async move {
+                WebhookResponse::text(200, String::from_utf8_lossy(&request.body).to_string())
+            },
+        );
+        let (addr, shutdown, serving) = serve(server).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"POST /hook HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        stream.write_all(b"hello").await.unwrap();
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        stop(shutdown, serving).await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("hello"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_stops_mid_body_ends_the_connection_quietly() {
+        // Content-Length promises more than the client sends: the server must
+        // stop reading and answer, not hang.
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap().on(
+            "POST",
+            "/hook",
+            |request| async move {
+                WebhookResponse::text(200, format!("got {}", request.body.len()))
+            },
+        );
+        let (addr, shutdown, serving) = serve(server).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"POST /hook HTTP/1.1\r\nHost: x\r\nContent-Length: 40\r\n\r\nonly-this")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        // Half-close the write side: the server sees EOF while waiting for the
+        // rest of the body.
+        stream.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        stop(shutdown, serving).await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("got 9"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_header_block_is_rejected() {
+        // Headers with no end marker: the server must refuse rather than read
+        // an unbounded amount of memory.
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap();
+        let (addr, shutdown, serving) = serve(server).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let filler = format!("X-Pad: {}\r\n", "a".repeat(1024));
+        for _ in 0..20 {
+            stream.write_all(filler.as_bytes()).await.unwrap();
+        }
+        let mut response = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;
+        stop(shutdown, serving).await;
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 431"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_never_sends_a_request_is_dropped_quietly() {
+        let server = WebhookServer::bind("127.0.0.1:0").await.unwrap();
+        let (addr, shutdown, serving) = serve(server).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stop(shutdown, serving).await;
+    }
+
     #[test]
     fn status_text_covers_the_codes_we_emit() {
         assert_eq!(status_text(200), "OK");
+        assert_eq!(status_text(400), "Bad Request");
         assert_eq!(status_text(401), "Unauthorized");
+        assert_eq!(status_text(403), "Forbidden");
         assert_eq!(status_text(404), "Not Found");
         assert_eq!(status_text(413), "Payload Too Large");
+        assert_eq!(status_text(431), "Request Header Fields Too Large");
+        assert_eq!(status_text(500), "Internal Server Error");
         assert_eq!(status_text(418), "Response");
+    }
+
+    #[test]
+    fn percent_decoding_treats_plus_as_a_space() {
+        let params = parse_query("token=a+b&other=c%20d");
+        assert_eq!(params.get("token").map(String::as_str), Some("a b"));
+        assert_eq!(params.get("other").map(String::as_str), Some("c d"));
     }
 
     #[test]
@@ -405,28 +608,6 @@ mod tests {
         assert_eq!(find_head_end(b"GET / HTTP/1.1\r\n\r\nrest"), Some(14));
         assert_eq!(find_head_end(b"GET / HTTP/1.1\r\n"), None);
     }
-
-    fn request(method: &str, path: &str) -> String {
-        format!("{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nok")
-    }
-
-    async fn round_trip(server: WebhookServer, raw: &str) -> String {
-        let addr = server.local_addr().unwrap();
-        let shutdown = Arc::new(Notify::new());
-        let serving = {
-            let shutdown = shutdown.clone();
-            tokio::spawn(async move { server.serve(shutdown).await })
-        };
-        let mut stream = TcpStream::connect(addr).await.unwrap();
-        stream.write_all(raw.as_bytes()).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        shutdown.notify_waiters();
-        let _ = tokio::time::timeout(Duration::from_secs(2), serving).await;
-        String::from_utf8_lossy(&response).to_string()
-    }
-
-    use std::time::Duration;
 
     #[tokio::test]
     async fn serves_a_registered_route_and_sees_the_body() {

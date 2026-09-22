@@ -258,14 +258,9 @@ mod tests {
     fn every_chunk_respects_the_limit() {
         let text = "The quick brown fox\njumps over the lazy dog.\n".repeat(30);
         let chunks = chunk(&text, 80, LengthUnit::Chars);
+        let lengths = len_of(&chunks, LengthUnit::Chars);
         assert!(chunks.len() > 1);
-        assert!(
-            len_of(&chunks, LengthUnit::Chars)
-                .iter()
-                .all(|len| *len <= 80),
-            "{:?}",
-            len_of(&chunks, LengthUnit::Chars)
-        );
+        assert!(lengths.iter().all(|len| *len <= 80), "{lengths:?}");
     }
 
     #[test]
@@ -336,6 +331,17 @@ mod tests {
         let text = "```\nshort\n```\n";
         let chunks = chunk(text, 400, LengthUnit::Chars);
         assert_eq!(chunks, vec![text.to_string()]);
+    }
+
+    #[test]
+    fn byte_limits_keep_a_wide_character_whole() {
+        // A 4-byte character with a smaller budget: the splitter must keep it in
+        // one piece rather than loop forever or cut it in half.
+        let text = "🙂🙂🙂";
+        let chunks = chunk(text, 2, LengthUnit::Bytes);
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks.concat(), text);
+        assert!(chunks.iter().all(|chunk| LengthUnit::Bytes.len(chunk) > 0));
     }
 
     #[test]

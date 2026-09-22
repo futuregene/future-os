@@ -261,6 +261,22 @@ mod tests {
     }
 
     #[test]
+    fn peek_returns_nothing_without_a_route_or_after_expiry() {
+        let registry = ApprovalRegistry::new();
+        assert!(registry.peek("c1").is_none());
+        registry.insert("c1", route());
+        assert!(registry.peek("c1").is_some());
+        // Expire the route in place: peek must drop it rather than return it.
+        {
+            let mut routes = registry.lock();
+            let (_, created) = routes.get_mut("c1").unwrap();
+            *created = *created - DEFAULT_TTL - Duration::from_secs(1);
+        }
+        assert!(registry.peek("c1").is_none());
+        assert!(registry.is_empty(), "an expired route is dropped by peek");
+    }
+
+    #[test]
     fn an_expired_route_is_not_claimable() {
         let registry = ApprovalRegistry::new();
         registry.insert("c1", route());

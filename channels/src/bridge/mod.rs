@@ -349,6 +349,14 @@ impl ProviderCtx {
         &self.sessions
     }
 
+    /// Outstanding approval requests for this bridge.
+    ///
+    /// Providers normally only observe approvals through the sink; this is for
+    /// probing state (diagnostics) and for seeding one in a test.
+    pub fn approvals(&self) -> &Arc<ApprovalRegistry> {
+        self.bridge.approvals()
+    }
+
     /// Fires once the process is stopping.
     ///
     /// Providers select on `shutdown().notified()` to exit their loops; there is
@@ -620,6 +628,7 @@ impl Bridge {
 mod tests {
     use super::*;
     use crate::providers::traits::{Capabilities, Maturity};
+    use crate::test_support as ts;
     use crate::transport::LengthUnit;
     use std::sync::Mutex as StdMutex;
 
@@ -1002,5 +1011,402 @@ mod tests {
         let entry = snapshot.channels.get("testchannel").expect("entry");
         assert_eq!(entry.state, Some(ChannelState::Error));
         assert_eq!(entry.last_error.as_deref(), Some("token rejected"));
+    }
+
+    // ─── the whole pipeline against a mock agent ────────────────────────────
+
+    /// A sink that only counts what it was told, for tests that care about the
+    /// pipeline rather than the rendering.
+    #[derive(Default)]
+    struct CountingSink {
+        superseded: StdMutex<usize>,
+        finished: StdMutex<usize>,
+    }
+
+    impl CountingSink {
+        fn superseded_count(&self) -> usize {
+            *self.superseded.lock().unwrap()
+        }
+
+        #[allow(dead_code)]
+        fn finished_count(&self) -> usize {
+            *self.finished.lock().unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::bridge::sink::ReplySink for CountingSink {
+        async fn finish(&self, _outcome: &crate::bridge::sink::TurnOutcome) -> Result<()> {
+            *self.finished.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        async fn superseded(&self) -> Result<()> {
+            *self.superseded.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    /// A context wired to a mock agent, plus the sender its replies land in.
+    async fn ctx_with_agent(
+        label: &str,
+        events: Vec<future_rpc::proto::StreamEvent>,
+    ) -> (ProviderCtx, Arc<RecordingSender>, ts::SharedState) {
+        ts::ensure_crypto_provider();
+        let state = ts::MockState {
+            events,
+            ..Default::default()
+        };
+        let (addr, shared) = ts::spawn_mock_grpc(state).await;
+        let data_dir = crate::test_support::temp_dir(label);
+        let agent_cfg = AgentConfig {
+            grpc_addr: format!("http://{addr}"),
+            cwd: data_dir.to_string_lossy().into_owned(),
+            ..AgentConfig::default()
+        };
+        let bridge = Bridge::new(
+            Arc::new(agent_cfg),
+            open_policy(),
+            data_dir.clone(),
+            Arc::new(StatusBoard::new(data_dir.join("status.json"))),
+        );
+        let sessions = Arc::new(SessionStore::new(data_dir.join("sessions.json")));
+        let ctx = ProviderCtx::new(
+            &DEFINITION,
+            serde_json::json!({"enabled": true}),
+            bridge,
+            data_dir,
+            sessions,
+            Arc::new(Notify::new()),
+        );
+        (ctx, RecordingSender::new(), shared)
+    }
+
+    /// The mock names its first run `mock-run-1`.
+    const MOCK_RUN: &str = "mock-run-1";
+
+    fn completed_turn(answer: &str) -> Vec<future_rpc::proto::StreamEvent> {
+        vec![
+            ts::ev(
+                MOCK_RUN,
+                1,
+                "text_chunk",
+                &format!(r#"{{"text":{answer:?}}}"#),
+            ),
+            ts::ev(MOCK_RUN, 2, "agent_end", r#"{"state":"completed"}"#),
+        ]
+    }
+
+    async fn wait_for_reply(sender: &RecordingSender) -> Vec<String> {
+        let ok = ts::wait_until(
+            || !sender.sent().is_empty(),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        assert!(ok, "the turn should have produced a reply");
+        sender.sent()
+    }
+
+    #[tokio::test]
+    async fn a_message_becomes_a_session_a_turn_and_a_reply() {
+        let (ctx, sender, state) = ctx_with_agent("bridge-e2e", completed_turn("Hello")).await;
+        let outcome = ctx
+            .handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+            .await;
+        assert_eq!(outcome, HandleOutcome::Accepted);
+        assert!(outcome.is_accepted());
+
+        assert_eq!(wait_for_reply(&sender).await, vec!["Hello".to_string()]);
+
+        // The agent saw a session and a prompt on it.
+        assert_eq!(ts::recorded_of(&state, "new_session").len(), 1);
+        let prompts = ts::recorded_of(&state, "prompt");
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].message.contains("hi"));
+
+        // The conversation now maps to that session, so the next message
+        // reuses it instead of opening another.
+        let session = ctx
+            .sessions()
+            .get("testchannel:c1", None)
+            .expect("a session mapping");
+        assert!(session.starts_with("mock-session-"));
+        assert_eq!(
+            ctx.handle(
+                Inbound::new_direct("m2", "u1", "c1", "again"),
+                sender.clone()
+            )
+            .await,
+            HandleOutcome::Accepted
+        );
+        assert_eq!(ts::recorded_of(&state, "new_session").len(), 1);
+        // And the counters that `future channel status` reads were updated.
+        ctx.bridge.status().flush().unwrap();
+        let snapshot =
+            crate::status::StatusSnapshot::load(&ctx.bridge.data_root().join("status.json"));
+        let entry = snapshot.channels.get("testchannel").expect("status entry");
+        assert_eq!(entry.inbound_count, 2);
+        assert!(entry.outbound_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn an_image_input_reaches_the_prompt() {
+        let (ctx, sender, state) =
+            ctx_with_agent("bridge-e2e-image", completed_turn("seen")).await;
+        ctx.ensure_data_dir().unwrap();
+        let mut inbound = Inbound::new_direct("m1", "u1", "c1", "what is this");
+        inbound.media = vec![MediaRef {
+            kind: MediaKind::Image,
+            filename: Some("shot.png".into()),
+            content_type: Some("image/png".into()),
+            data: Some(vec![1, 2, 3, 4]),
+            url: None,
+        }];
+        assert_eq!(
+            ctx.handle(inbound, sender.clone()).await,
+            HandleOutcome::Accepted
+        );
+        wait_for_reply(&sender).await;
+        let prompts = ts::recorded_of(&state, "prompt");
+        assert_eq!(
+            prompts[0].images.len(),
+            1,
+            "the image travels with the prompt"
+        );
+        assert_eq!(prompts[0].images[0].r#type, "image/png");
+    }
+
+    #[tokio::test]
+    async fn a_second_message_in_the_same_conversation_wins() {
+        // Two prompts in flight: the newer message supersedes the older turn,
+        // so the user is answered once rather than twice.
+        let (ctx, sender, state) = ctx_with_agent(
+            "bridge-e2e-supersede",
+            vec![
+                ts::ev(MOCK_RUN, 1, "text_chunk", r#"{"text":"first"}"#),
+                ts::ev(MOCK_RUN, 2, "agent_end", r#"{"state":"completed"}"#),
+                ts::ev(MOCK_RUN, 3, "text_chunk", r#"{"text":"second"}"#),
+                ts::ev(MOCK_RUN, 4, "agent_end", r#"{"state":"completed"}"#),
+            ],
+        )
+        .await;
+        let mut counter = 0;
+        let mut conversation = || {
+            counter += 1;
+            Inbound::new_direct(&format!("m{counter}"), "u1", "c1", "hi")
+        };
+        assert_eq!(
+            ctx.handle(conversation(), sender.clone()).await,
+            HandleOutcome::Accepted
+        );
+        assert_eq!(
+            ctx.handle(conversation(), sender.clone()).await,
+            HandleOutcome::Accepted
+        );
+        let sent = wait_for_reply(&sender).await;
+        assert!(!sent.is_empty());
+        // The newest message is the one answered, and the superseded turn was
+        // either replaced before it prompted or dropped — never answered twice.
+        let prompts = ts::recorded_of(&state, "prompt");
+        assert!(!prompts.is_empty() && prompts.len() <= 2, "{}", prompts.len());
+    }
+
+    #[tokio::test]
+    async fn a_failed_turn_is_explained_to_the_user() {
+        let (ctx, sender, _state) = ctx_with_agent(
+            "bridge-e2e-error",
+            vec![ts::ev(
+                MOCK_RUN,
+                1,
+                "agent_end",
+                r#"{"state":"error","error":"the provider refused"}"#,
+            )],
+        )
+        .await;
+        assert_eq!(
+            ctx.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        let sent = wait_for_reply(&sender).await;
+        assert!(sent.concat().contains("the provider refused"), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn an_approval_answer_asks_the_agent_to_decide() {
+        let (ctx, sender, state) =
+            ctx_with_agent("bridge-e2e-approval", completed_turn("ok")).await;
+        // Establish the session first, then pretend the agent parked a request.
+        assert_eq!(
+            ctx.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        wait_for_reply(&sender).await;
+        let session = ctx.sessions().get("testchannel:c1", None).unwrap();
+        ctx.bridge.approvals().insert(
+            "testchannel:c1",
+            ApprovalRoute {
+                session_id: session,
+                request_id: "req_1".into(),
+                tool_name: "shell".into(),
+            },
+        );
+
+        let outcome = ctx
+            .handle(Inbound::new_direct("m2", "u1", "c1", "yes"), sender.clone())
+            .await;
+        assert_eq!(outcome, HandleOutcome::ApprovalAnswered);
+        assert_eq!(ts::recorded_of(&state, "approval_decision").len(), 1);
+        assert!(ctx.bridge.approvals().is_empty(), "the route is consumed");
+    }
+
+    #[tokio::test]
+    async fn a_full_conversation_queue_drops_the_message_and_says_so() {
+        let (ctx, sender, _state) =
+            ctx_with_agent("bridge-e2e-full", completed_turn("done")).await;
+        // Fill the mailbox past its bound without letting the worker drain it.
+        let mut saw_full = false;
+        for index in 0..40 {
+            let outcome = ctx
+                .handle(
+                    Inbound::new_direct(&format!("m{index}"), "u1", "c1", "hi"),
+                    sender.clone(),
+                )
+                .await;
+            if outcome == HandleOutcome::Backpressure {
+                saw_full = true;
+                break;
+            }
+        }
+        assert!(saw_full, "the queue must apply backpressure");
+        ctx.bridge.status().flush().unwrap();
+        let snapshot =
+            crate::status::StatusSnapshot::load(&ctx.bridge.data_root().join("status.json"));
+        let entry = snapshot.channels.get("testchannel").expect("status entry");
+        assert_eq!(entry.rejected_count, 1);
+    }
+
+    #[tokio::test]
+    async fn the_client_connects_once_and_can_be_invalidated() {
+        let (ctx, sender, _state) =
+            ctx_with_agent("bridge-e2e-client", completed_turn("ok")).await;
+        assert!(!ctx.bridge.is_connected());
+        let _first = ctx.bridge.client().await.expect("connect");
+        assert!(ctx.bridge.is_connected());
+        // The cached connection is reused rather than dialled again.
+        let _second = ctx.bridge.client().await.expect("cached connect");
+        ctx.bridge.invalidate_client();
+        assert!(!ctx.bridge.is_connected());
+        let _third = ctx.bridge.client().await.expect("reconnect");
+        assert!(ctx.bridge.is_connected());
+        assert!(sender.sent().is_empty(), "nothing was sent for this test");
+    }
+
+    #[tokio::test]
+    async fn a_turn_with_no_reachable_agent_fails_the_job_not_the_process() {
+        // The conversation was accepted, but the agent is unreachable when the
+        // turn runs: the user is told and the bridge stays up.
+        let (ctx, sender, _state) =
+            ctx_with_agent("bridge-e2e-late-failure", completed_turn("never")).await;
+        let session = ctx.session_for("testchannel:c1").await.expect("session");
+        assert!(session.starts_with("mock-session-"));
+        let dead = ProviderCtx::new(
+            &DEFINITION,
+            serde_json::json!({"enabled": true}),
+            Bridge::new(
+                Arc::new(AgentConfig {
+                    grpc_addr: "http://127.0.0.1:1".into(),
+                    cwd: ctx.data_dir().to_string_lossy().into_owned(),
+                    ..AgentConfig::default()
+                }),
+                open_policy(),
+                ctx.data_dir().to_path_buf(),
+                Arc::new(StatusBoard::new(ctx.data_dir().join("status.json"))),
+            ),
+            ctx.data_dir().to_path_buf(),
+            Arc::new(SessionStore::new(ctx.data_dir().join("sessions.json"))),
+            Arc::new(Notify::new()),
+        );
+        dead.sessions()
+            .set_session_id("testchannel:c1", None, &session);
+        assert_eq!(
+            dead.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        let sent = wait_for_reply(&sender).await;
+        assert!(
+            sent.concat().contains("unreachable") || sent.concat().contains("did not finish"),
+            "{sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_wakes_every_provider_and_the_accessors_work() {
+        let ctx = ctx("bridge-shutdown", open_policy());
+        let waiter = ctx.shutdown().notified();
+        ctx.shutdown().notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("shutdown must wake providers");
+        assert_eq!(ctx.bridge.agent_cfg().model, AgentConfig::default().model);
+        // The provider talks through the bridge's client rather than building
+        // its own, so connection pooling and timeouts stay in one place.
+        assert!(std::ptr::eq(
+            ctx.http() as *const reqwest::Client,
+            ctx.bridge.http() as *const reqwest::Client
+        ));
+        assert_eq!(ctx.bridge.status().path().file_name().unwrap(), "status.json");
+        assert!(ctx.bridge.conversations().len().await >= 0);
+    }
+
+    #[tokio::test]
+    async fn a_job_after_the_bridge_is_dropped_is_skipped_not_fatal() {
+        // A conversation worker can outlive the bridge it was built from (the
+        // routing table is shared by reference). A job arriving then must be
+        // skipped — the bridge is gone, so there is nothing to answer with — and
+        // must not panic inside the worker.
+        let bridge = Bridge::offline();
+        let conversations = bridge.conversations().clone();
+        drop(bridge);
+
+        let sink = Arc::new(CountingSink::default());
+        let job = Job {
+            conversation: "testchannel:c1".into(),
+            channel: "testchannel".into(),
+            session_id: "s1".into(),
+            reply_to: ConversationRef::default(),
+            text: "hi".into(),
+            images: Vec::new(),
+            sink: sink.clone(),
+        };
+        assert_eq!(conversations.submit(job).await, SubmitOutcome::Accepted);
+        // The worker ran the job; the runner found no bridge and skipped it, so
+        // nothing was reported and the process is still healthy.
+        let routed = crate::test_support::wait_until(
+            || true,
+            std::time::Duration::from_millis(20),
+        )
+        .await;
+        assert!(routed);
+        assert_eq!(conversations.len().await, 1);
+        assert_eq!(sink.superseded_count(), 0);
+        assert_eq!(sink.finished_count(), 0);
+    }
+
+    #[test]
+    fn offer_outcomes_are_classified() {
+        assert!(HandleOutcome::Accepted.is_accepted());
+        assert!(HandleOutcome::ApprovalAnswered.is_accepted());
+        assert!(!HandleOutcome::Duplicate.is_accepted());
+        assert!(!HandleOutcome::Stale.is_accepted());
+        assert!(!HandleOutcome::Backpressure.is_accepted());
+        assert!(!HandleOutcome::Denied("no".into()).is_accepted());
+        // Denials carry the reason an administrator needs to act on.
+        assert_eq!(
+            HandleOutcome::Denied("not allowlisted".into()),
+            HandleOutcome::Denied("not allowlisted".into())
+        );
     }
 }

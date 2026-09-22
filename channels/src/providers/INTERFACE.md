@@ -156,7 +156,26 @@ contact a live platform, and must never reach an agent: an unreachable address
 Prefer a test that fails when the logic is wrong over a test that asserts the
 implementation back to itself.
 
-## 6. Ground rules
+## 6. Working in a shared checkout
+
+Several providers are written at the same time, in the *same* working tree. That
+has two consequences worth knowing before you start:
+
+* **`cargo` compiles the whole crate.** A peer's half-written file can fail your
+  `cargo test -p future-channel providers::<yours>`. Filter to your own module
+  and re-run once; a failure whose file is not in your write set is not your
+  defect, but do say so in your handoff instead of silently retrying forever.
+* **Never `git stash`, `git checkout --`, `git clean` or `git reset`.** Those
+  operations act on the shared tree and can discard a peer's in-flight work.
+  Read-only inspection (`git show`, `git diff -- <your file>`) is fine. If you
+  need to isolate your own file, run the test filter, not a tree operation.
+
+Keep the tree compiling as you go: write your module, then
+`cargo check -p future-channel` before you start on tests. When you are done,
+`cargo fmt -p future-channel` and `cargo clippy -p future-channel --all-targets`
+should be clean for your file.
+
+## 7. Ground rules
 
 * **Write the implementation from the platform's public API documentation.** Do
   not copy code, comments, identifier names or constant tables from another

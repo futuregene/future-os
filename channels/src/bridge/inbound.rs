@@ -231,6 +231,13 @@ mod tests {
     }
 
     #[test]
+    fn chat_kind_names_are_stable() {
+        assert_eq!(ChatKind::Direct.as_str(), "direct");
+        assert_eq!(ChatKind::Group.as_str(), "group");
+        assert_eq!(ChatKind::Channel.as_str(), "channel");
+    }
+
+    #[test]
     fn builders_set_the_expected_fields() {
         let inbound = Inbound::new_direct("m1", "u1", "c1", "hello")
             .in_thread("t1")

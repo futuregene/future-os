@@ -247,6 +247,68 @@ mod tests {
     }
 
     #[test]
+    fn maturity_names_are_stable_and_usable() {
+        assert_eq!(Maturity::Planned.as_str(), "planned");
+        assert_eq!(Maturity::Preview.as_str(), "preview");
+        assert_eq!(Maturity::Live.as_str(), "live");
+        assert!(!Maturity::Planned.is_usable());
+        assert!(Maturity::Preview.is_usable());
+        assert!(Maturity::Live.is_usable());
+    }
+
+    #[test]
+    fn the_default_probe_refuses_rather_than_claiming_success() {
+        // A provider without a real connectivity check must not report ok: a
+        // false "healthy" is worse than an honest "no probe exists".
+        struct NoProbe;
+
+        #[async_trait]
+        impl Provider for NoProbe {
+            fn definition(&self) -> &'static ChannelDefinition {
+                &MINIMAL
+            }
+
+            fn sender(&self, _ctx: &ProviderCtx) -> Result<Arc<dyn ChannelSender>> {
+                anyhow::bail!("not used")
+            }
+
+            async fn run(&self, _ctx: ProviderCtx) -> Result<()> {
+                anyhow::bail!("not used")
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let ctx = crate::bridge::ProviderCtx::offline(&MINIMAL);
+        let error = runtime
+            .block_on(async { NoProbe.probe(&ctx).await })
+            .err()
+            .expect("the default probe must fail")
+            .to_string();
+        assert!(error.contains("no connectivity probe"), "{error}");
+        assert!(error.contains("minimal"), "{error}");
+        // The other two entry points are the test double's own, and must fail
+        // rather than look functional.
+        assert!(NoProbe.sender(&ctx).is_err());
+        let run = runtime.block_on(NoProbe.run(ctx));
+        assert!(run.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_minimal_sender_delivers_text_without_a_platform_id() {
+        // A platform that returns no message id must still be usable; the
+        // bridge then simply has nothing to edit later.
+        let sender = MinimalSender {
+            definition: &MINIMAL,
+        };
+        let conversation = ConversationRef::default();
+        assert_eq!(sender.definition().max_text_len, 10);
+        assert_eq!(sender.send_text(&conversation, "hi").await.unwrap(), None);
+    }
+
+    #[test]
     fn the_preset_capability_sets_round_trip_through_their_wire_shape() {
         let text = serde_json::to_value(Capabilities::TEXT).unwrap();
         assert_eq!(text["receive"], serde_json::json!(true));

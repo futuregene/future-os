@@ -281,6 +281,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_retry_after_reads_a_delta_seconds_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "12".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(12)));
+        // A hostile or bogus value is capped rather than trusted.
+        headers.insert(reqwest::header::RETRY_AFTER, "99999".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_absent_and_unparsable_values() {
+        let headers = reqwest::header::HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None);
+        let mut headers = reqwest::header::HeaderMap::new();
+        // An HTTP-date form is legal but not a delta we can use.
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&headers), None);
+    }
+
+    #[test]
     fn error_message_reads_the_variants_platforms_use() {
         assert_eq!(
             response(400, r#"{"message":"bad token"}"#).error_message(),

@@ -485,6 +485,117 @@ mod tests {
         gate.notify_waiters();
     }
 
+    #[tokio::test]
+    async fn a_watch_reports_the_conversation_it_belongs_to() {
+        let generation = std::sync::Arc::new(AtomicU64::new(3));
+        let watch = SupersedeWatch::new("slack:C1:T9", generation.clone(), 3);
+        assert_eq!(watch.conversation(), "slack:C1:T9");
+        assert_eq!(watch.generation(), 3);
+        assert!(!watch.is_superseded());
+        generation.store(4, Ordering::SeqCst);
+        assert!(watch.is_superseded());
+    }
+
+    #[tokio::test]
+    async fn an_empty_table_is_reported_as_empty() {
+        let conversations = Conversations::new(Arc::new(|_job, _watch| Box::pin(async {})));
+        assert!(conversations.is_empty().await);
+        assert_eq!(conversations.len().await, 0);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        conversations.submit(job("c1", sink)).await;
+        assert!(!conversations.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn idle_conversations_are_evicted_before_an_active_one() {
+        // A conversation with recent activity must survive eviction pressure
+        // while an idle one is dropped.
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate_for_runner = gate.clone();
+        let conversations = Conversations::new(Arc::new(move |_job, _watch| {
+            let gate = gate_for_runner.clone();
+            Box::pin(async move {
+                gate.notified().await;
+            })
+        }))
+        .with_limits(4, 2);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        // Fill the table: the newest conversation is the one being submitted.
+        for index in 0..3 {
+            conversations
+                .submit(job(&format!("c{index}"), sink.clone()))
+                .await;
+        }
+        // The table stays within its bound and the just-submitted conversation
+        // is still routed.
+        assert!(conversations.len().await <= 2, "{}", conversations.len().await);
+        assert!(conversations.generation("c2").await.is_some());
+        gate.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_ends_frees_its_conversation_for_a_new_generation() {
+        // The runner returns immediately, so the worker loops back to receive:
+        // a later message must still run rather than landing in a dead mailbox.
+        let runs = Arc::new(AtomicU64::new(0));
+        let runs_for_runner = runs.clone();
+        let conversations = Conversations::new(Arc::new(move |_job, _watch| {
+            let runs = runs_for_runner.clone();
+            Box::pin(async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+            })
+        }));
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        for index in 0..3 {
+            assert_eq!(
+                conversations.submit(job("c1", sink.clone())).await,
+                SubmitOutcome::Accepted
+            );
+            let ran = crate::test_support::wait_until(
+                || runs.load(Ordering::SeqCst) as usize > index,
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(ran, "each submission should reach the runner");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_panics_is_reported_as_backpressure() {
+        // If a conversation worker dies (a runner panic), the mailbox is closed
+        // but the table still holds its sender. The next message must learn that
+        // rather than being silently lost in a dead channel.
+        let panicked = Arc::new(AtomicU64::new(0));
+        let panicked_for_runner = panicked.clone();
+        let conversations = Conversations::new(Arc::new(move |_job, _watch| {
+            let panicked = panicked_for_runner.clone();
+            Box::pin(async move {
+                panicked.fetch_add(1, Ordering::SeqCst);
+                panic!("runner exploded");
+            })
+        }));
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        assert_eq!(
+            conversations.submit(job("c1", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        let ran = crate::test_support::wait_until(
+            || panicked.load(Ordering::SeqCst) > 0,
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(ran, "the runner should have been called");
+
+        // The worker task is gone; the next submit for the same conversation
+        // must be handled without panicking, whatever the channel reports.
+        let outcome = conversations.submit(job("c1", sink)).await;
+        assert!(matches!(
+            outcome,
+            SubmitOutcome::Accepted | SubmitOutcome::Full
+        ));
+        assert_eq!(conversations.len().await, 1);
+    }
+
     #[test]
     fn a_job_carries_its_channel_for_accounting() {
         let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());

@@ -2,14 +2,19 @@
 
 渠道桥（`future-channel`，见 `channels/`）只读取一个配置文件：
 `~/.future/channels/config.json`。它通过 gRPC 连接 agent，并把 agent 暴露
-为飞书与钉钉机器人。用 `future channel` 启动（统一 CLI 入口，与独立二进制
+为所配置的各渠道。用 `future channel` 启动（统一 CLI 入口，与独立二进制
 `future-channel` 完全一致）。
+
+运行在共享桥上的渠道（Telegram、Slack、Discord、Mattermost、Signal、WhatsApp、
+QQ、Linq、iMessage、IRC、Email、Terminal）配置在 `providers` 键下，见
+[通道 provider 参考](channels-providers.zh-CN.md)；本页讲文件本身、共用的
+`agent` 块，以及两个自带桥的渠道（飞书与钉钉）。
 
 **首次运行：** 若文件不存在，桥会写入默认模板并**退出**——编辑该文件后
 重新启动。
 
 桥只启动 `enabled: true` 的渠道。所有字段都是可选的；每个字段都有默认值，
-因此 `{}` 也是合法配置（agent 块用默认值，两个渠道均禁用）。
+因此 `{}` 也是合法配置（agent 块用默认值，各渠道均禁用）。
 
 ## Schema
 
@@ -22,6 +27,12 @@
     "model": "future/deepseek-v4-pro",      // 渠道会话的默认模型
     "thinking_level": "xhigh",              // off | minimal | low | medium | high | xhigh
     "permission_level": "all"               // all | workspace | none
+  },
+
+  // 框架渠道——每个渠道一块，各自读取自己的块。
+  // 完整清单与全部字段见 docs/guide/channels-providers.zh-CN.md。
+  "providers": {
+    "telegram": { "enabled": false, "bot_token": "" }
   },
 
   // 飞书块——仅在 "enabled": true 时启用。
@@ -63,6 +74,16 @@
 | `model` | `future/deepseek-v4-pro` | 渠道会话的默认模型。为空表示「使用 agent 启动时的默认值」。 |
 | `thinking_level` | `xhigh` | 默认思考级别：`off` / `minimal` / `low` / `medium` / `high` / `xhigh`。 |
 | `permission_level` | `all` | `all` 不受限；`workspace` 启用审批门控；`none` 禁止所有工具。它不是 OS 沙箱选择器。 |
+
+### `providers.<id>`
+
+每个框架渠道在此读取自己的块，包括共享的访问策略键（`dm_policy`、
+`dm_allowlist`、`group_policy`、`group_allowlist`、`require_mention`）与
+`enabled`。逐渠道字段见[通道 provider 参考](channels-providers.zh-CN.md)。
+
+对 `feishu` 与 `dingtalk`，`providers.<id>` 块优先于上文的顶层块，
+两种写法都可用，因此可以逐个渠道迁移。启用本构建无法运行的渠道时，
+启动日志与 `future channel status` 会报 `unsupported`。
 
 ### `feishu`
 
@@ -111,8 +132,11 @@
 
 ## 参见
 
+- [通道 provider 参考](channels-providers.zh-CN.md) —— 共享桥上的渠道、
+  字段、诊断与运行时文件。
 - [目录布局](directory-layout.zh-CN.md) —— 本文件所在位置。
 - wiki [飞书](../wiki/zh/Feishu.md) / [钉钉](../wiki/zh/DingTalk.md) 页面——
   各平台的分步配置与使用指南。
 - 源码：`channels/src/config.rs`（schema 与默认值）、
-  `channels/src/feishu/policy.rs`（私聊/群聊访问策略）。
+  `channels/src/policy.rs`（所有渠道共用的私聊/群聊访问策略）、
+  `channels/src/providers/INTERFACE.md`（如何新增渠道）。

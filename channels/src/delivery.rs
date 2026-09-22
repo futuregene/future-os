@@ -277,9 +277,12 @@ impl DeliveryQueue {
         {
             anyhow::bail!("refusing to overwrite an unreadable delivery queue: {error}");
         }
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
         let payload = Store {
             deliveries: self.lock().clone(),
         };
@@ -449,6 +452,40 @@ mod tests {
         assert_eq!(queue.prune_finished().unwrap(), 1);
         assert_eq!(queue.all().len(), 1);
         assert_eq!(queue.pending()[0].text, "two");
+    }
+
+    #[test]
+    fn a_finished_delivery_is_never_due_again() {
+        let (queue, _path) = queue("delivery-not-due");
+        let sent = queue.enqueue("telegram", conversation(), "one").unwrap();
+        queue.record_success(&sent).unwrap();
+        let sent = queue.all().into_iter().next().unwrap();
+        assert!(!sent.is_due(now_ms() + 10_000_000));
+
+        let failed = queue.enqueue("telegram", conversation(), "two").unwrap();
+        queue.record_failure(&failed, "chat not found");
+        let failed = queue
+            .all()
+            .into_iter()
+            .find(|entry| entry.id == failed)
+            .unwrap();
+        assert_eq!(failed.state, DeliveryState::Failed);
+        assert!(!failed.is_due(now_ms() + 10_000_000));
+    }
+
+    #[test]
+    fn a_read_error_other_than_missing_is_reported() {
+        // A directory where the file should be: reading fails with a real error
+        // that must be surfaced rather than silently treated as an empty queue.
+        let dir = crate::test_support::temp_dir("delivery-dir-as-file");
+        let path = dir.join("deliveries.json");
+        std::fs::create_dir_all(&path).unwrap();
+        let queue = DeliveryQueue::load(path.clone());
+        let error = queue.load_error().expect("load error");
+        assert!(error.contains("cannot read"), "{error}");
+        assert!(queue
+            .enqueue("telegram", conversation(), "hello")
+            .is_err());
     }
 
     #[test]

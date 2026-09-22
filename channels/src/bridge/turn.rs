@@ -325,15 +325,19 @@ mod tests {
         client: AgentClient,
         approvals: Arc<ApprovalRegistry>,
         sender: Arc<RecordingSender>,
-        _state: ts::SharedState,
+        state: ts::SharedState,
     }
 
     async fn fixture(events: Vec<future_rpc::proto::StreamEvent>) -> Fixture {
-        ts::ensure_crypto_provider();
-        let state = ts::MockState {
+        fixture_with(ts::MockState {
             events,
             ..Default::default()
-        };
+        })
+        .await
+    }
+
+    async fn fixture_with(state: ts::MockState) -> Fixture {
+        ts::ensure_crypto_provider();
         let (addr, shared) = ts::spawn_mock_grpc(state).await;
         let client = AgentClient::connect(&addr).await.expect("connect");
         Fixture {
@@ -342,13 +346,33 @@ mod tests {
             sender: Arc::new(RecordingSender {
                 ops: StdMutex::new(Vec::new()),
             }),
-            _state: shared,
+            state: shared,
         }
     }
 
     /// The mock names the first run `mock-run-1`.
     fn run_id() -> &'static str {
         "mock-run-1"
+    }
+
+    fn request(
+        fixture: &Fixture,
+        text: &str,
+        sink: Arc<dyn ReplySink>,
+        generation: Arc<std::sync::atomic::AtomicU64>,
+        expected: u64,
+    ) -> TurnRequest {
+        TurnRequest {
+            session_id: "sess".into(),
+            text: text.into(),
+            images: Vec::new(),
+            conversation_key: "testchannel:c1".into(),
+            reply_to: ConversationRef::default(),
+            channel: "testchannel".into(),
+            sink,
+            watch: SupersedeWatch::new("testchannel:c1", generation, expected),
+            approvals: fixture.approvals.clone(),
+        }
     }
 
     async fn drive(fixture: &Fixture, text: &str) -> Result<TurnOutcome> {
@@ -359,17 +383,7 @@ mod tests {
         let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
         run_turn(
             &fixture.client,
-            TurnRequest {
-                session_id: "sess".into(),
-                text: text.into(),
-                images: Vec::new(),
-                conversation_key: "testchannel:c1".into(),
-                reply_to: ConversationRef::default(),
-                channel: "testchannel".into(),
-                sink,
-                watch: SupersedeWatch::new("testchannel:c1", generation, 1),
-                approvals: fixture.approvals.clone(),
-            },
+            request(fixture, text, sink, generation, 1),
         )
         .await
     }
@@ -523,33 +537,382 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_run_acknowledgement_reports_a_failed_turn() {
-        ts::ensure_crypto_provider();
-        let (addr, _shared) = ts::spawn_mock_grpc(ts::MockState::default()).await;
-        let client = AgentClient::connect(&addr).await.expect("connect");
-        let sender = Arc::new(RecordingSender {
-            ops: StdMutex::new(Vec::new()),
-        });
-        let sink = Arc::new(ChannelSink::new(sender.clone(), ConversationRef::default()));
-        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        let result = run_turn(
-            &client,
-            TurnRequest {
-                session_id: "sess".into(),
-                text: "hi".into(),
-                images: Vec::new(),
-                conversation_key: "testchannel:c1".into(),
-                reply_to: ConversationRef::default(),
-                channel: "testchannel".into(),
-                sink,
-                watch: SupersedeWatch::new("testchannel:c1", generation, 1),
-                approvals: Arc::new(ApprovalRegistry::new()),
-            },
-        )
+    async fn a_turn_whose_stream_cannot_be_attached_reports_a_failed_turn() {
+        // The prompt is accepted but the event stream cannot be attached: the
+        // user must be told, and the turn must not pretend it succeeded.
+        let fixture = fixture_with(ts::MockState {
+            stream_status_error: true,
+            ..Default::default()
+        })
         .await;
-        // The mock answers `prompt` with a run id, so this path is exercised by
-        // the explicit failure test below; here the turn simply succeeds.
-        assert!(result.is_ok() || result.is_err());
+        let error = drive(&fixture, "hi")
+            .await
+            .err()
+            .expect("the turn must fail")
+            .to_string();
+        assert!(error.contains("attach"), "{error}");
+        let sent = fixture.sender.ops.lock().unwrap().clone();
+        assert!(
+            sent.iter().any(|line| line.contains("did not finish")),
+            "{sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_the_agent_rejects_fails_the_turn_and_tells_the_user() {
+        // The first thing a turn does is prompt; if that is refused there is no
+        // stream to read, and the user must still be told rather than left in
+        // silence.
+        let fixture = fixture_with(ts::MockState {
+            fail_commands: ["prompt".to_string()].into_iter().collect(),
+            ..Default::default()
+        })
+        .await;
+        let error = drive(&fixture, "hi")
+            .await
+            .err()
+            .expect("the turn must fail")
+            .to_string();
+        assert!(error.contains("prompt"), "{error}");
+        let sent = fixture.sender.ops.lock().unwrap().clone();
+        assert!(
+            sent.iter().any(|line| line.contains("did not finish")),
+            "{sent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_breaks_mid_turn_reports_incomplete_not_success() {
+        let mut state = ts::MockState {
+            events: vec![
+                ts::ev(run_id(), 1, "text_chunk", r#"{"text":"partial"}"#),
+                ts::ev(run_id(), 2, "agent_end", r#"{"state":"completed"}"#),
+            ],
+            ..Default::default()
+        };
+        state.stream_mid_error_after = Some(1);
+        let fixture = fixture_with(state).await;
+        let outcome = drive(&fixture, "hi").await.expect("turn returns");
+        assert_eq!(outcome.status, TurnStatus::Incomplete);
+        assert!(outcome.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_turn_overtaken_before_it_starts_stops_without_answering() {
+        // The generation already moved on (a newer message arrived while this
+        // turn waited for the queue): it must stop at the first check and hand
+        // the answer to the newer turn.
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "text_chunk", r#"{"text":"stale"}"#),
+            ts::ev(run_id(), 2, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let sink = Arc::new(ChannelSink::new(
+            fixture.sender.clone(),
+            ConversationRef::default(),
+        ));
+        // Watch generation 1 while the counter already reads 2.
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(2));
+        let outcome = run_turn(
+            &fixture.client,
+            request(&fixture, "hi", sink, generation, 1),
+        )
+        .await
+        .expect("turn returns");
+        assert_eq!(outcome.status, TurnStatus::Cancelled);
+        assert!(
+            fixture.sender.ops.lock().unwrap().is_empty(),
+            "a superseded turn posts nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_superseded_mid_stream_stops_at_the_next_event() {
+        // Generation flips while the turn is streaming: the loop notices on its
+        // next event and stops instead of finishing the stale answer.
+        let state = ts::MockState {
+            stream_event_delay: Some(Duration::from_millis(120)),
+            events: vec![
+                ts::ev(run_id(), 1, "text_chunk", r#"{"text":"one"}"#),
+                ts::ev(run_id(), 2, "text_chunk", r#"{"text":" two"}"#),
+                ts::ev(run_id(), 3, "agent_end", r#"{"state":"completed"}"#),
+            ],
+            ..Default::default()
+        };
+        let fixture = fixture_with(state).await;
+        let generator = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let sink = Arc::new(ChannelSink::new(
+            fixture.sender.clone(),
+            ConversationRef::default(),
+        ));
+        let bump = {
+            let generator = generator.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                generator.store(2, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        let outcome = run_turn(
+            &fixture.client,
+            request(&fixture, "hi", sink, generator, 1),
+        )
+        .await
+        .expect("turn returns");
+        bump.await.ok();
+        assert_eq!(outcome.status, TurnStatus::Cancelled, "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn a_progressive_sink_receives_streamed_updates() {
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "text_chunk", r#"{"text":"a"}"#),
+            ts::ev(run_id(), 2, "text_chunk", r#"{"text":"b"}"#),
+            ts::ev(run_id(), 3, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let progressive = Arc::new(RecordingProgressiveSink::default());
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let outcome = run_turn(
+            &fixture.client,
+            request(&fixture, "hi", progressive.clone(), generation, 1),
+        )
+        .await
+        .expect("turn returns");
+        assert_eq!(outcome.text, "ab");
+        assert_eq!(progressive.updates(), vec!["a".to_string(), "ab".to_string()]);
+        assert_eq!(progressive.finishes(), 1);
+    }
+
+    #[tokio::test]
+    async fn reasoning_tool_and_error_events_all_reach_the_sink() {
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "thinking_start", "{}"),
+            ts::ev(run_id(), 2, "thinking_delta", r#"{"text":"weighing"}"#),
+            ts::ev(
+                run_id(),
+                3,
+                "tool_start",
+                r#"{"tool_id":"t1","tool_name":"shell","tool_args":"ls"}"#,
+            ),
+            ts::ev(run_id(), 4, "tool_delta", r#"{"tool_id":"t1","text":"out"}"#),
+            ts::ev(run_id(), 5, "tool_end", r#"{"tool_id":"t1","text":"done"}"#),
+            ts::ev(run_id(), 6, "error", r#"{"error":"a recoverable hiccup"}"#),
+            ts::ev(run_id(), 7, "ping", "{}"),
+            ts::ev(run_id(), 8, "agent_start", "{}"),
+            ts::ev(run_id(), 9, "thinking_end", "{}"),
+            ts::ev(run_id(), 10, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let sink = Arc::new(RecordingProgressiveSink::default());
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let outcome = run_turn(
+            &fixture.client,
+            request(&fixture, "hi", sink.clone(), generation, 1),
+        )
+        .await
+        .expect("turn returns");
+        assert_eq!(outcome.thinking, "weighing");
+        assert_eq!(outcome.tool_calls, 1);
+        // A mid-stream error is reported but does not end the turn; the
+        // terminal frame still decides the status.
+        assert_eq!(sink.errors(), vec!["a recoverable hiccup".to_string()]);
+        assert_eq!(sink.tools().len(), 2, "start and finish are both reported");
+        assert_eq!(outcome.status, TurnStatus::Completed);
+        assert_eq!(outcome.error.as_deref(), Some("a recoverable hiccup"));
+        assert!(sink.thinking_pushes() >= 0);
+    }
+
+    #[tokio::test]
+    async fn an_approval_is_advertised_and_its_route_is_kept_while_parked() {
+        let fixture = fixture(vec![
+            ts::ev(
+                run_id(),
+                1,
+                "approval_request",
+                r#"{"approval_request_id":"req_7","tool_id":"t1","tool_name":"shell",
+                    "kind":"exec","risk_level":"high","title":"danger","summary":"rm -rf /"}"#,
+            ),
+            ts::ev(run_id(), 2, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let sink = Arc::new(RecordingProgressiveSink::default());
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        run_turn(
+            &fixture.client,
+            request(&fixture, "clean up", sink.clone(), generation, 1),
+        )
+        .await
+        .expect("turn returns");
+        let approvals = sink.approvals();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].request_id, "req_7");
+        assert_eq!(approvals[0].summary, "rm -rf /");
+        // The route outlives the turn so the next bare yes/no answers it.
+        let (route, approved) = fixture
+            .approvals
+            .claim("testchannel:c1", "no")
+            .expect("claim");
+        assert_eq!(route.request_id, "req_7");
+        assert!(!approved);
+    }
+
+    #[tokio::test]
+    async fn an_event_with_no_agent_mapping_is_skipped() {
+        // `usage` has no AgentEvent mapping, so the parser returns None and the
+        // turn must carry on to the next event.
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "usage", r#"{"total_tokens":10}"#),
+            ts::ev(run_id(), 2, "text_chunk", r#"{"text":"after usage"}"#),
+            ts::ev(run_id(), 3, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let outcome = drive(&fixture, "hi").await.expect("turn returns");
+        assert_eq!(outcome.text, "after usage");
+        assert_eq!(outcome.status, TurnStatus::Completed);
+    }
+
+    /// A sink that records every callback, so a turn's translation of agent
+    /// events can be asserted without a platform.
+    #[derive(Default)]
+    struct RecordingProgressiveSink {
+        updates: StdMutex<Vec<String>>,
+        tools: StdMutex<Vec<(String, ToolPhase)>>,
+        approvals: StdMutex<Vec<ApprovalPrompt>>,
+        errors: StdMutex<Vec<String>>,
+        finishes: StdMutex<usize>,
+        supersedes: StdMutex<usize>,
+        thinking: StdMutex<Vec<String>>,
+    }
+
+    impl RecordingProgressiveSink {
+        fn updates(&self) -> Vec<String> {
+            self.updates.lock().unwrap().clone()
+        }
+
+        fn tools(&self) -> Vec<(String, ToolPhase)> {
+            self.tools.lock().unwrap().clone()
+        }
+
+        fn approvals(&self) -> Vec<ApprovalPrompt> {
+            self.approvals.lock().unwrap().clone()
+        }
+
+        fn errors(&self) -> Vec<String> {
+            self.errors.lock().unwrap().clone()
+        }
+
+        fn finishes(&self) -> usize {
+            *self.finishes.lock().unwrap()
+        }
+
+        fn thinking_pushes(&self) -> usize {
+            self.thinking.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ReplySink for RecordingProgressiveSink {
+        fn progressive(&self) -> bool {
+            true
+        }
+
+        async fn text(&self, update: TextUpdate<'_>) -> Result<()> {
+            self.updates.lock().unwrap().push(update.accumulated.to_string());
+            Ok(())
+        }
+
+        async fn thinking(&self, accumulated: &str) -> Result<()> {
+            self.thinking.lock().unwrap().push(accumulated.to_string());
+            Ok(())
+        }
+
+        async fn tool(&self, progress: &ToolProgress) -> Result<()> {
+            self.tools
+                .lock()
+                .unwrap()
+                .push((progress.name.clone(), progress.phase));
+            Ok(())
+        }
+
+        async fn approval(&self, prompt: &ApprovalPrompt) -> Result<()> {
+            self.approvals.lock().unwrap().push(prompt.clone());
+            Ok(())
+        }
+
+        async fn error(&self, message: &str) -> Result<()> {
+            self.errors.lock().unwrap().push(message.to_string());
+            Ok(())
+        }
+
+        async fn finish(&self, _outcome: &TurnOutcome) -> Result<()> {
+            *self.finishes.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        async fn superseded(&self) -> Result<()> {
+            *self.supersedes.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_with_no_output_leaves_nothing_visible_but_keeps_the_route() {
+        // A turn whose text arrives *after* a tool note needs the separator, and
+        // enough tool notes to trip the "+N more" summary.
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "tool_start", r#"{"tool_id":"t1","tool_name":"a"}"#),
+            ts::ev(run_id(), 2, "tool_end", r#"{"tool_id":"t1","name":"a"}"#),
+            ts::ev(run_id(), 3, "text_chunk", r#"{"text":"the answer"}"#),
+            ts::ev(run_id(), 4, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let outcome = drive(&fixture, "hi").await.expect("turn returns");
+        assert_eq!(outcome.text, "the answer");
+        let sent = fixture.sender.ops.lock().unwrap().clone();
+        let joined = sent.concat();
+        assert!(joined.contains("the answer"), "{sent:?}");
+        assert!(joined.contains("\n\n"), "text and tool notes are separated");
+        assert!(joined.contains('a'), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn many_tool_calls_are_summarized_rather_than_all_printed() {
+        // More tool activity than the note cap: the sink summarizes the excess
+        // instead of letting the message grow without bound.
+        let mut events = Vec::new();
+        for index in 0..20 {
+            events.push(ts::ev(
+                run_id(),
+                index * 2 + 1,
+                "tool_start",
+                &format!(r#"{{"tool_id":"t{index}","tool_name":"tool{index}"}}"#),
+            ));
+            events.push(ts::ev(
+                run_id(),
+                index * 2 + 2,
+                "tool_end",
+                &format!(r#"{{"tool_id":"t{index}"}}"#),
+            ));
+        }
+        events.push(ts::ev(run_id(), 99, "agent_end", r#"{"state":"completed"}"#));
+        let fixture = fixture(events).await;
+        let outcome = drive(&fixture, "do twenty things").await.expect("turn");
+        assert_eq!(outcome.tool_calls, 20);
+        let joined = fixture.sender.ops.lock().unwrap().clone().concat();
+        assert!(joined.contains("more"), "{joined}");
+    }
+
+    #[tokio::test]
+    async fn a_mid_stream_error_is_surfaced_by_the_channel_sink() {
+        let fixture = fixture(vec![
+            ts::ev(run_id(), 1, "text_chunk", r#"{"text":"before"}"#),
+            ts::ev(run_id(), 2, "error", r#"{"error":"a hiccup"}"#),
+            ts::ev(run_id(), 3, "agent_end", r#"{"state":"completed"}"#),
+        ])
+        .await;
+        let outcome = drive(&fixture, "hi").await.expect("turn returns");
+        assert_eq!(outcome.error.as_deref(), Some("a hiccup"));
+        assert_eq!(outcome.text, "before");
     }
 
     #[test]
