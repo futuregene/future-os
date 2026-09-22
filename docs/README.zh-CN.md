@@ -13,7 +13,9 @@
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-loop` 安装、技能安装 |
 | [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
-| [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / Feishu / DingTalk 块、默认值） |
+| [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
+| [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
+| [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
 | [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `futureos-headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、loop） |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |

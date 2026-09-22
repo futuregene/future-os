@@ -1,0 +1,36 @@
+Runtime metrics
+
+sessionId: mock-session-1
+activeRunGauge: 0
+staleEpochDrops: 2
+persistenceDegraded: 0
+broadcastLag: 1
+ringTruncations: 0
+activeRunId: (none)
+queuedRuns: 0
+queuedBytes: 0
+eventJournalHealthy: true
+eventJournalError: (none)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

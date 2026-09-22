@@ -18,11 +18,14 @@
 //! Like the TS client, transport failures and `success:false` responses
 //! surface as plain `String` messages.
 
+use crate::rpc::provider_types::{
+    parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
+};
 use crate::rpc::types::{
     AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionSummary,
 };
 use future_rpc::proto::future_agent_client::FutureAgentClient;
-use future_rpc::proto::{RpcCommand, StreamEvent, StreamRequest};
+use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -91,6 +94,10 @@ struct ClientState {
     connected: bool,
     current_session_id: String,
     active_run_id: Option<String>,
+    /// The most recent run of this session, kept after the run ends: the
+    /// run-scoped reads (`list_tool_calls` / `get_tool_output`) are asked for
+    /// exactly when a run has finished and `active_run_id` is already `None`.
+    last_run_id: Option<String>,
     runs: HashMap<String, RunStatus>,
     agent_instance_id: Option<String>,
     lost_queued_run_ids: Vec<String>,
@@ -144,6 +151,7 @@ impl GrpcClient {
                 connected: false,
                 current_session_id: String::new(),
                 active_run_id: None,
+                last_run_id: None,
                 runs: HashMap::new(),
                 agent_instance_id: None,
                 lost_queued_run_ids: Vec::new(),
@@ -200,6 +208,7 @@ impl GrpcClient {
             let mut st = self.inner.state.lock();
             st.current_session_id = session_id.to_string();
             st.active_run_id = None;
+            st.last_run_id = None;
             st.runs.clear();
         }
         self.poke();
@@ -440,18 +449,31 @@ impl GrpcClient {
     /// `prompt(message, images?, busyPolicy)` — generates `requestedRunId`
     /// and `clientRequestId` like the TS client and records the ack's run
     /// status.
-    pub async fn prompt(&self, message: &str, busy_policy: &str) -> Result<RunAck, String> {
+    ///
+    /// `attachments` are the images the draft references: only their paths
+    /// cross the wire (the agent reads and encodes the bytes itself), and the
+    /// agent turns each one into an `image_url` block when the active model
+    /// accepts image input — otherwise it lists the path in the prompt so the
+    /// model can still read the file with its own tools.
+    pub async fn prompt(
+        &self,
+        message: &str,
+        busy_policy: &str,
+        attachments: Vec<Attachment>,
+    ) -> Result<RunAck, String> {
         let request_id = uuid_hex();
         let cmd = RpcCommand {
             message: message.to_string(),
             requested_run_id: format!("run_{}", uuid_hex()),
             client_request_id: format!("request_{request_id}"),
             busy_policy: busy_policy.to_string(),
+            attachments,
             ..Default::default()
         };
         let resp = self.call("prompt", cmd).await?;
         let ack: RunAck = serde_json::from_value(resp).map_err(|e| e.to_string())?;
         let mut st = self.inner.state.lock();
+        st.last_run_id = Some(ack.run_id.clone());
         if ack.accepted_state == "running" {
             st.active_run_id = Some(ack.run_id.clone());
             st.runs.insert(ack.run_id.clone(), RunStatus::Running);
@@ -507,6 +529,7 @@ impl GrpcClient {
         st.runs.clear();
         if let Some(active) = &state.active_run {
             st.active_run_id = Some(active.run_id.clone());
+            st.last_run_id = Some(active.run_id.clone());
             st.runs.insert(active.run_id.clone(), RunStatus::Running);
         } else {
             st.active_run_id = None;
@@ -616,9 +639,306 @@ impl GrpcClient {
         Ok(())
     }
 
+    // ─── Sandbox (tier + availability probe) ────────────────────────────
+
+    /// `probeSandbox()` — `{available, code, backend, path?, version?}` for the
+    /// host's OS sandbox. Read-only: the agent caches the answer per process,
+    /// so a client may call it once and keep the result.
+    pub async fn probe_sandbox(&self) -> Result<Value, String> {
+        self.call("probe_sandbox", RpcCommand::default()).await
+    }
+
+    /// `probeWindowsSandbox()` — the Windows write-protection probe. Only
+    /// meaningful on a Windows host (elsewhere the agent reports the host
+    /// probe's diagnostic).
+    pub async fn probe_windows_sandbox(&self) -> Result<Value, String> {
+        self.call("probe_windows_sandbox", RpcCommand::default())
+            .await
+    }
+
+    /// `setSandboxPolicy(tier)` — `off` | `manual` | `sandbox`.
+    ///
+    /// Returns the agent's *own* summary rather than `()`: the agent answers
+    /// `tier:"manual"` with `requestedTier:"sandbox"` when the probe found no
+    /// usable backend, and reporting that as an applied request would lie to
+    /// the user. Callers must read `tier`/`requestedTier` from the response.
+    pub async fn set_sandbox_policy(&self, tier: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            sandbox_policy: Some(future_rpc::proto::SandboxPolicy {
+                tier: tier.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.call("set_sandbox_policy", cmd).await
+    }
+
+    // ─── Skills catalogue ──────────────────────────────────────────────
+
+    /// `getCommands()` — `{commands:[{name, description, nameZh?, descriptionZh?,
+    /// source}]}`. Rows with `source == "skill"` are the discovered skills.
+    pub async fn get_commands(&self) -> Result<Value, String> {
+        self.call("get_commands", RpcCommand::default()).await
+    }
+
+    /// `refreshSkills()` — re-scan the skill directories. The agent's payload
+    /// is snake_case (`{refreshed, skills, skills_count}`), unlike most commands.
+    pub async fn refresh_skills(&self) -> Result<Value, String> {
+        self.call("refresh_skills", RpcCommand::default()).await
+    }
+
     /// `reloadConfig()` — `{skills, contextFiles}`.
     pub async fn reload_config(&self) -> Result<Value, String> {
         self.call("reload_config", RpcCommand::default()).await
+    }
+
+    // ─── Provider / auth configuration (sessionless) ────────────────────
+
+    /// `listProviders()` — the agent's provider view (`{builtin, custom}`)
+    /// flattened to built-ins first. Entries the parser cannot use are skipped
+    /// rather than failing the list.
+    pub async fn list_providers(&self) -> Result<Vec<ProviderInfo>, String> {
+        let resp = self.call("list_providers", RpcCommand::default()).await?;
+        Ok(parse_providers_response(&resp))
+    }
+
+    /// `upsertProvider(input)` — create/update a **custom** provider (plus its
+    /// optional API key). Validated client-side first so the form gets the same
+    /// message without a round-trip; the agent stays authoritative.
+    ///
+    /// Built-in providers cannot be redefined (the agent rejects it) — their
+    /// key/URL go through [`Self::set_auth_key`] instead.
+    pub async fn upsert_provider(&self, provider: &ProviderInput) -> Result<(), String> {
+        validate_provider_input(provider)?;
+        let cmd = RpcCommand {
+            provider_config: Some(provider.to_proto()),
+            ..Default::default()
+        };
+        self.call("upsert_provider", cmd).await?;
+        Ok(())
+    }
+
+    /// `deleteProvider(id)` — removes the models.json entry and the auth.json
+    /// entry. Built-in provider ids are refused by the agent.
+    pub async fn delete_provider(&self, id: &str) -> Result<(), String> {
+        let cmd = RpcCommand {
+            provider_config: Some(future_rpc::proto::ProviderUpsert {
+                id: id.trim().to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.call("delete_provider", cmd).await?;
+        Ok(())
+    }
+
+    /// `setAuthKey(provider, key)` — store `key` for `provider`, or clear the
+    /// stored key when `key` is `None`/blank. Applies to built-in providers too
+    /// (this is how the Future sign-in key is set or removed).
+    pub async fn set_auth_key(&self, provider: &str, key: Option<&str>) -> Result<(), String> {
+        let key = key.filter(|key| !key.trim().is_empty());
+        let cmd = RpcCommand {
+            auth_update: Some(future_rpc::proto::AuthUpdate {
+                provider: provider.trim().to_string(),
+                key: key.unwrap_or("").to_string(),
+                clear_key: key.is_none(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.call("set_auth", cmd).await?;
+        Ok(())
+    }
+
+    /// `reloadAuth()` — rebuild the agent's provider registry from disk.
+    pub async fn reload_auth(&self) -> Result<(), String> {
+        self.call("reload_auth", RpcCommand::default()).await?;
+        Ok(())
+    }
+
+    /// `syncFutureModels()` — fetch the Future catalogue; returns
+    /// `{synced, modelCount, revision}`.
+    pub async fn sync_future_models(&self) -> Result<Value, String> {
+        self.call("sync_future_models", RpcCommand::default()).await
+    }
+
+    /// `setDefaultModel(modelId)` — persist the global default model.
+    pub async fn set_default_model(&self, model_id: &str) -> Result<(), String> {
+        let cmd = RpcCommand {
+            model_id: model_id.to_string(),
+            ..Default::default()
+        };
+        self.call("set_default_model", cmd).await?;
+        Ok(())
+    }
+
+    /// `getAgentInfo()` — `{version, agentInstanceId, skillsCount}`.
+    pub async fn get_agent_info(&self) -> Result<Value, String> {
+        self.call("get_agent_info", RpcCommand::default()).await
+    }
+
+    // ─── Session inspection (session-scoped) ───────────────────────────
+
+    /// `getSessionStats()` — message/tool/token counters plus cost.
+    pub async fn get_session_stats(&self) -> Result<Value, String> {
+        self.call("get_session_stats", RpcCommand::default()).await
+    }
+
+    /// The run the run-scoped reads address: the live run, else the most
+    /// recent one of this session.
+    fn inspection_run_id(&self) -> Option<String> {
+        let st = self.inner.state.lock();
+        st.active_run_id.clone().or_else(|| st.last_run_id.clone())
+    }
+
+    /// `listToolCalls()` — stored tool calls of the current (or last) run.
+    /// Errors when the session has no run yet: the agent requires a run id.
+    pub async fn list_tool_calls(&self) -> Result<Value, String> {
+        let run_id = self
+            .inspection_run_id()
+            .ok_or_else(|| "no run to list tool calls for".to_string())?;
+        let cmd = RpcCommand {
+            run_id,
+            ..Default::default()
+        };
+        self.call("list_tool_calls", cmd).await
+    }
+
+    /// `getToolOutput(toolCallId)` — the full stored output of one tool call of
+    /// the current (or last) run.
+    pub async fn get_tool_output(&self, tool_call_id: &str) -> Result<Value, String> {
+        let run_id = self
+            .inspection_run_id()
+            .ok_or_else(|| "no run to read tool output for".to_string())?;
+        let cmd = RpcCommand {
+            run_id,
+            tool_call_id: Some(tool_call_id.to_string()),
+            ..Default::default()
+        };
+        self.call("get_tool_output", cmd).await
+    }
+
+    /// `searchSessionHistory(query, limit)` — search the persisted session's
+    /// original visible history (`message` carries the literal query).
+    pub async fn search_session_history(&self, query: &str, limit: usize) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            message: query.to_string(),
+            limit: Some(limit as i64),
+            ..Default::default()
+        };
+        self.call("search_session_history", cmd).await
+    }
+
+    /// `deleteSession(sessionId)` — delete one session (its record and file).
+    /// The id is explicit so the caller never deletes "whatever is current" by
+    /// accident.
+    pub async fn delete_session(&self, session_id: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            session_id: session_id.to_string(),
+            ..Default::default()
+        };
+        self.call("delete_session", cmd).await
+    }
+
+    /// `generateSessionTitle(mode)` — a model-suggested title for the current
+    /// session. `mode` is the locale the agent's prompt is written in
+    /// (`"zh"` | `"en"`; anything else is an agent-side error). The agent never
+    /// persists the suggestion — apply it with [`Self::set_session_name`].
+    pub async fn generate_session_title(&self, mode: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            mode: mode.to_string(),
+            ..Default::default()
+        };
+        self.call("generate_session_title", cmd).await
+    }
+
+    /// `getRuntimeMetrics()` — the session's live runtime counters.
+    pub async fn get_runtime_metrics(&self) -> Result<Value, String> {
+        self.call("get_runtime_metrics", RpcCommand::default())
+            .await
+    }
+
+    /// `getRunSnapshot(runId)` — the projection snapshot of one run.
+    pub async fn get_run_snapshot(&self, run_id: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            run_id: run_id.to_string(),
+            ..Default::default()
+        };
+        self.call("get_run_snapshot", cmd).await
+    }
+
+    /// The run `/snapshot` addresses: the live run, else the most recent one.
+    /// Errors when the session has no run yet (the agent requires a run id).
+    pub fn snapshot_run_id(&self) -> Result<String, String> {
+        self.inspection_run_id()
+            .ok_or_else(|| "no run to snapshot yet".to_string())
+    }
+
+    // ─── Prompt steering + session lifecycle ───────────────────────────
+
+    /// `setContextFiles(enabled)` — whether the agent loads the workspace's
+    /// project instructions (AGENTS.md, …) into the prompt.
+    pub async fn set_context_files(&self, enabled: bool) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.call("set_context_files", cmd).await?;
+        Ok(())
+    }
+
+    /// `shell(command)` — run one command through the agent's shell (the same
+    /// `bash -c` / PowerShell contract as the shell tool, in the session cwd).
+    /// `timeout_ms == 0` selects the agent's default.
+    pub async fn shell(&self, command: &str, timeout_ms: u64) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            command: command.to_string(),
+            shell_timeout_ms: timeout_ms,
+            ..Default::default()
+        };
+        self.call("shell", cmd).await
+    }
+
+    // ─── Session settings ──────────────────────────────────────────────
+
+    /// `setAutoCompaction(enabled)`.
+    pub async fn set_auto_compaction(&self, enabled: bool) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.call("set_auto_compaction", cmd).await?;
+        Ok(())
+    }
+
+    /// `setAutoRetry(enabled)`.
+    pub async fn set_auto_retry(&self, enabled: bool) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.call("set_auto_retry", cmd).await?;
+        Ok(())
+    }
+
+    /// `setTools(tools)` — replace the session's enabled tool set.
+    pub async fn set_tools(&self, tools: &[String]) -> Result<(), String> {
+        let cmd = RpcCommand {
+            tools: tools.to_vec(),
+            ..Default::default()
+        };
+        self.call("set_tools", cmd).await?;
+        Ok(())
+    }
+
+    /// `disableTools()` — turn every tool off for this session.
+    pub async fn disable_tools(&self) -> Result<(), String> {
+        self.call("disable_tools", RpcCommand::default()).await?;
+        Ok(())
+    }
+
+    /// `exportHtml()` — write the session to an HTML file, `{path}`.
+    pub async fn export_html(&self) -> Result<Value, String> {
+        self.call("export_html", RpcCommand::default()).await
     }
 }
 
@@ -943,6 +1263,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                             if agent_event.r#type == "agent_start" {
                                 let mut st = inner.state.lock();
                                 st.active_run_id = Some(run_id.clone());
+                                st.last_run_id = Some(run_id.clone());
                                 st.runs.insert(run_id.clone(), RunStatus::Running);
                             } else if agent_event.r#type == "agent_end" {
                                 let mut st = inner.state.lock();
@@ -1039,6 +1360,7 @@ fn spawn_heartbeat(inner: Arc<Inner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rpc::provider_types::ProviderModelInput;
 
     fn sample_stream_event() -> StreamEvent {
         StreamEvent {
@@ -1144,12 +1466,15 @@ mod tests {
     // they run: over an actual gRPC stream.
 
     use future_rpc::proto::future_agent_server::{FutureAgent, FutureAgentServer};
-    use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
+    use future_rpc::proto::{
+        response_payload, AgentInfo, ResponsePayload, RpcCommand, RpcResponse,
+        SessionStatsResponse, StatsTokens, StreamEvent, StreamRequest, SyncFutureModelsResult,
+    };
     use futures_util::stream;
     use futures_util::StreamExt;
-    use std::net::TcpListener;
     use std::pin::Pin;
     use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tonic::transport::server::TcpIncoming;
     use tonic::transport::Server;
 
     /// Mock agent: `stream_events` emits ONE event then goes silent (idle
@@ -1207,9 +1532,12 @@ mod tests {
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         String,
     ) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Serve on the listener bound here: probe-binding the port, dropping
+        // it and letting tonic re-bind left a window where a concurrent mock
+        // could steal it (intermittent "transport error" in the suite).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener); // tonic binds the same port below
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
         let agent = MockAgent {
             event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
@@ -1218,10 +1546,8 @@ mod tests {
         let handle = tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(agent))
-                .serve(addr),
+                .serve_with_incoming(incoming),
         );
-        // Give the server a moment to start listening.
-        tokio::time::sleep(Duration::from_millis(50)).await;
         (handle, format!("127.0.0.1:{}", addr.port()))
     }
 
@@ -1307,6 +1633,9 @@ mod tests {
     #[derive(Clone, Default)]
     struct ApiMock {
         data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
+        /// Typed `payload` per command type — exercises the typed-first decode
+        /// (`data` is usually left empty for these).
+        payload_by_type: StdHashMap<String, ResponsePayload>,
         status_errors: StdHashMap<String, tonic::Status>,
         seen: Arc<std::sync::Mutex<Vec<String>>>,
         /// (type, session_id) of every command, for routing assertions.
@@ -1360,7 +1689,7 @@ mod tests {
                 error: fail.cloned().unwrap_or_default(),
                 error_code: String::new(),
                 error_data: String::new(),
-                payload: None,
+                payload: self.payload_by_type.get(&cmd.r#type).cloned(),
             }))
         }
 
@@ -1392,18 +1721,500 @@ mod tests {
         }
     }
 
+    /// The last request of `command_type` the mock received, for wire-shape
+    /// asserts.
+    fn last_request(
+        requests: &Arc<std::sync::Mutex<Vec<RpcCommand>>>,
+        command_type: &str,
+    ) -> RpcCommand {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|cmd| cmd.r#type == command_type)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {command_type} request was sent"))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_configuration_calls_send_the_documented_wire_shape() {
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                (
+                    "list_providers".into(),
+                    r#"{"builtin":[{"id":"future","name":"Future","baseUrl":"https://api.future.test","hasApiKey":true,"modelCount":900}],"custom":[{"id":"acme","name":"Acme","api":"openai-completions","baseUrl":"https://api.acme.test/v1","hasApiKey":false,"models":[{"id":"m1","name":"M1"}]}]}"#
+                        .into(),
+                ),
+                (
+                    "sync_future_models".into(),
+                    r#"{"synced":true,"modelCount":42,"revision":7}"#.into(),
+                ),
+                (
+                    "get_agent_info".into(),
+                    r#"{"version":"1.2.3","agentInstanceId":"agent-9","skillsCount":4}"#
+                        .into(),
+                ),
+                (
+                    "export_html".into(),
+                    r#"{"path":"/tmp/session.html"}"#.into(),
+                ),
+                ("list_tool_calls".into(), r#"{"toolCalls":[]}"#.into()),
+                (
+                    "get_tool_output".into(),
+                    r#"{"output":"hello"}"#.into(),
+                ),
+                (
+                    "search_session_history".into(),
+                    r#"{"hits":[]}"#.into(),
+                ),
+            ]))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+
+        // ── Providers / auth ───────────────────────────────────────────
+        let providers = client.list_providers().await.unwrap();
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].id, "future");
+        assert!(providers[0].builtin);
+        assert_eq!(providers[0].model_count, 900);
+        assert_eq!(providers[1].id, "acme");
+        assert_eq!(providers[1].models.len(), 1);
+
+        let input = ProviderInput {
+            id: "acme".into(),
+            name: "Acme".into(),
+            api_type: "openai-completions".into(),
+            base_url: "https://api.acme.test/v1".into(),
+            models: vec![ProviderModelInput::new("m1", "M1")],
+            api_key: Some("sk-test".into()),
+            clear_api_key: false,
+            create_only: true,
+        };
+        client.upsert_provider(&input).await.unwrap();
+        let sent = last_request(&requests, "upsert_provider");
+        let spec = sent.provider_config.clone().expect("provider_config");
+        assert_eq!(spec.id, "acme");
+        assert_eq!(spec.name, "Acme");
+        assert_eq!(spec.api, "openai-completions");
+        assert_eq!(spec.base_url, "https://api.acme.test/v1");
+        assert_eq!(spec.api_key, "sk-test");
+        assert!(spec.replace_models);
+        assert!(spec.create_only);
+        assert_eq!(spec.models.len(), 1);
+        assert_eq!(spec.models[0].id, "m1");
+        assert_eq!(spec.models[0].modalities, vec!["text".to_string()]);
+        assert_eq!(spec.models[0].reasoning, Some(true));
+
+        client.delete_provider("acme").await.unwrap();
+        let spec = last_request(&requests, "delete_provider")
+            .provider_config
+            .expect("provider_config");
+        assert_eq!(spec.id, "acme");
+        // delete_provider only reads the id — nothing else may travel with it.
+        assert_eq!(
+            spec,
+            future_rpc::proto::ProviderUpsert {
+                id: "acme".into(),
+                ..Default::default()
+            }
+        );
+
+        client.set_auth_key("future", Some("sk-x")).await.unwrap();
+        let update = last_request(&requests, "set_auth")
+            .auth_update
+            .expect("auth_update");
+        assert_eq!(update.provider, "future");
+        assert_eq!(update.key, "sk-x");
+        assert!(!update.clear_key);
+        // `None` and whitespace-only both clear the stored key.
+        for key in [None, Some("   ")] {
+            client.set_auth_key("future", key).await.unwrap();
+            let update = last_request(&requests, "set_auth")
+                .auth_update
+                .expect("auth_update");
+            assert_eq!(update.key, "");
+            assert!(update.clear_key);
+        }
+
+        client.reload_auth().await.unwrap();
+        assert!(!last_request(&requests, "reload_auth").id.is_empty());
+        let synced = client.sync_future_models().await.unwrap();
+        assert_eq!(synced.get("modelCount").and_then(Value::as_i64), Some(42));
+        client.set_default_model("future/gpt-5").await.unwrap();
+        assert_eq!(
+            last_request(&requests, "set_default_model").model_id,
+            "future/gpt-5"
+        );
+        let info = client.get_agent_info().await.unwrap();
+        assert_eq!(info.get("version").and_then(Value::as_str), Some("1.2.3"));
+
+        // ── Session inspection ─────────────────────────────────────────
+        // The run-scoped reads address the run the client tracks (here: a
+        // second mock whose `prompt` answers with a real run ack).
+        let ack_data = "{\"run_id\":\"r1\",\"run_epoch\":1,\"accepted_state\":\"running\"}";
+        let mock2 = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                ("prompt".into(), ack_data.to_string()),
+                ("list_tool_calls".into(), r#"{"toolCalls":[]}"#.into()),
+                ("get_tool_output".into(), r#"{"output":"hello"}"#.into()),
+            ]))),
+            ..Default::default()
+        };
+        let requests2 = mock2.requests.clone();
+        let addr2 = spawn_api_mock(mock2).await;
+        let (client2, _events2, _conn2) = GrpcClient::new(&addr2);
+        client2.set_current_session_id("sess-1");
+        client2
+            .prompt("go", "enqueue_if_busy", Vec::new())
+            .await
+            .unwrap();
+        client2.list_tool_calls().await.unwrap();
+        let cmd = last_request(&requests2, "list_tool_calls");
+        assert_eq!(cmd.run_id, "r1");
+        assert_eq!(cmd.session_id, "sess-1");
+        assert_eq!(
+            client2.get_tool_output("tool-1").await.unwrap()["output"],
+            "hello"
+        );
+        let cmd = last_request(&requests2, "get_tool_output");
+        assert_eq!(cmd.run_id, "r1");
+        assert_eq!(cmd.tool_call_id.as_deref(), Some("tool-1"));
+        client2.disconnect();
+
+        // ── Session settings ───────────────────────────────────────────
+        client.search_session_history("needle", 5).await.unwrap();
+        let cmd = last_request(&requests, "search_session_history");
+        assert_eq!(cmd.message, "needle");
+        assert_eq!(cmd.limit, Some(5));
+        assert_eq!(cmd.session_id, "sess-1");
+        client.set_auto_compaction(true).await.unwrap();
+        assert!(last_request(&requests, "set_auto_compaction").enabled);
+        client.set_auto_retry(false).await.unwrap();
+        assert!(!last_request(&requests, "set_auto_retry").enabled);
+        client
+            .set_tools(&["read".to_string(), "write".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(
+            last_request(&requests, "set_tools").tools,
+            vec!["read".to_string(), "write".to_string()]
+        );
+        client.disable_tools().await.unwrap();
+        assert_eq!(
+            last_request(&requests, "disable_tools").session_id,
+            "sess-1"
+        );
+        let export = client.export_html().await.unwrap();
+        assert_eq!(
+            export.get("path").and_then(Value::as_str),
+            Some("/tmp/session.html")
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn provider_configuration_errors_and_empty_views_surface() {
+        let mock = ApiMock {
+            // list_providers/custom arrays missing entirely (an agent with no
+            // configured providers) — the list is empty, not an error. The
+            // prompt answers a live run so the run-scoped reads reach the
+            // agent (and its failures) instead of the client-side guard.
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                ("list_providers".into(), String::new()),
+                (
+                    "prompt".into(),
+                    "{\"run_id\":\"r1\",\"run_epoch\":1,\"accepted_state\":\"running\"}".into(),
+                ),
+            ]))),
+            fail_with: StdHashMap::from([
+                (
+                    "upsert_provider".into(),
+                    "provider_config.id is empty".into(),
+                ),
+                (
+                    "delete_provider".into(),
+                    "reserved for a built-in provider".into(),
+                ),
+                ("set_auth".into(), "auth_update.provider is empty".into()),
+                ("reload_auth".into(), "reload failed".into()),
+                ("sync_future_models".into(), "network down".into()),
+                (
+                    "set_default_model".into(),
+                    "model is not in the catalog".into(),
+                ),
+                ("get_session_stats".into(), "no session".into()),
+                ("export_html".into(), "failed to write file".into()),
+                ("set_tools".into(), "unknown tool".into()),
+                ("search_session_history".into(), "session not found".into()),
+                ("set_auto_compaction".into(), "busy".into()),
+                ("set_auto_retry".into(), "busy".into()),
+                ("disable_tools".into(), "busy".into()),
+                ("append_system_prompt".into(), "prompt too long".into()),
+            ]),
+            status_errors: StdHashMap::from([
+                (
+                    "get_agent_info".into(),
+                    tonic::Status::unavailable("agent gone"),
+                ),
+                (
+                    "get_tool_output".into(),
+                    tonic::Status::internal("tool output boom"),
+                ),
+            ]),
+            ..Default::default()
+        };
+        let seen = mock.seen.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+
+        // A payload the parser cannot read yields an empty list, never an error.
+        assert!(client.list_providers().await.unwrap().is_empty());
+
+        let input = crate::rpc::provider_types::ProviderInput {
+            id: "acme".into(),
+            name: "Acme".into(),
+            api_type: "openai-completions".into(),
+            base_url: "https://api.acme.test/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            client.upsert_provider(&input).await.unwrap_err(),
+            "provider_config.id is empty"
+        );
+        assert_eq!(
+            client.delete_provider("future").await.unwrap_err(),
+            "reserved for a built-in provider"
+        );
+        assert_eq!(
+            client.set_auth_key("", None).await.unwrap_err(),
+            "auth_update.provider is empty"
+        );
+        assert_eq!(client.reload_auth().await.unwrap_err(), "reload failed");
+        assert_eq!(
+            client.sync_future_models().await.unwrap_err(),
+            "network down"
+        );
+        assert_eq!(
+            client.set_default_model("nope").await.unwrap_err(),
+            "model is not in the catalog"
+        );
+        assert!(client
+            .get_agent_info()
+            .await
+            .unwrap_err()
+            .contains("agent gone"));
+        assert_eq!(client.get_session_stats().await.unwrap_err(), "no session");
+        // Run-scoped read against a live (mock) run: the agent answers, so the
+        // call succeeds (an empty payload still decodes to an object).
+        client
+            .prompt("go", "enqueue_if_busy", Vec::new())
+            .await
+            .unwrap();
+        assert!(client.list_tool_calls().await.is_ok());
+        assert_eq!(
+            client.export_html().await.unwrap_err(),
+            "failed to write file"
+        );
+        assert_eq!(
+            client.set_tools(&["nope".to_string()]).await.unwrap_err(),
+            "unknown tool"
+        );
+        assert_eq!(
+            client.search_session_history("x", 1).await.unwrap_err(),
+            "session not found"
+        );
+        assert!(client
+            .get_tool_output("tool-1")
+            .await
+            .unwrap_err()
+            .contains("tool output boom"));
+        // The remaining wrappers take no interesting input — an error response
+        // still has to surface instead of being swallowed.
+        for result in [
+            client.set_auto_compaction(true).await,
+            client.set_auto_retry(true).await,
+            client.disable_tools().await,
+        ] {
+            assert!(result.is_err(), "a failed response must surface");
+        }
+        assert!(!seen.lock().unwrap().is_empty());
+        client.disconnect();
+    }
+
+    /// Client-side validation runs before the wire: an invalid provider never
+    /// reaches the agent (and the form still learns why).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn upsert_provider_validates_before_the_wire() {
+        let mock = ApiMock::default();
+        let seen = mock.seen.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        let invalid = ProviderInput {
+            id: "Bad Id".into(),
+            api_type: "openai-completions".into(),
+            base_url: "https://api.acme.test/v1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            client.upsert_provider(&invalid).await.unwrap_err(),
+            "provider id must use lowercase letters, digits, '-' or '_'"
+        );
+        assert!(!seen.lock().unwrap().iter().any(|t| t == "upsert_provider"));
+        client.disconnect();
+    }
+
+    /// A run-scoped read must keep working after the run ends (`active_run_id`
+    /// is cleared on `agent_end`) and only fail when there was never a run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tool_reads_use_the_active_then_the_last_run() {
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                (
+                    "prompt".into(),
+                    "{\"run_id\":\"r1\",\"run_epoch\":1,\"accepted_state\":\"running\"}".into(),
+                ),
+                ("get_state".into(), "{\"sessionId\":\"s1\"}".into()),
+                ("list_tool_calls".into(), "{\"toolCalls\":[]}".into()),
+            ]))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+
+        // Never ran anything in this session.
+        assert_eq!(
+            client.list_tool_calls().await.unwrap_err(),
+            "no run to list tool calls for"
+        );
+        assert_eq!(
+            client.get_tool_output("tool-1").await.unwrap_err(),
+            "no run to read tool output for"
+        );
+
+        client
+            .prompt("go", "enqueue_if_busy", Vec::new())
+            .await
+            .unwrap();
+        client.list_tool_calls().await.unwrap();
+        assert_eq!(last_request(&requests, "list_tool_calls").run_id, "r1");
+
+        // The run ends: get_state reports no active run, the last one is kept.
+        client.get_state().await.unwrap();
+        client.list_tool_calls().await.unwrap();
+        assert_eq!(last_request(&requests, "list_tool_calls").run_id, "r1");
+
+        // A different session has no run of its own.
+        client.set_current_session_id("s2");
+        assert!(client.list_tool_calls().await.is_err());
+        client.disconnect();
+    }
+
+    /// Typed `payload` responses decode ahead of the JSON `data` fallback
+    /// (get_agent_info / get_session_stats / sync_future_models are typed).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn typed_payloads_decode_and_json_data_still_falls_back() {
+        let mock = ApiMock {
+            payload_by_type: StdHashMap::from([
+                (
+                    "get_agent_info".into(),
+                    ResponsePayload {
+                        kind: Some(response_payload::Kind::GetAgentInfo(AgentInfo {
+                            version: "9.9.9".into(),
+                            agent_instance_id: "agent-typed".into(),
+                            skills_count: 3,
+                        })),
+                    },
+                ),
+                (
+                    "sync_future_models".into(),
+                    ResponsePayload {
+                        kind: Some(response_payload::Kind::SyncFutureModels(
+                            SyncFutureModelsResult {
+                                synced: true,
+                                model_count: 1_234,
+                                revision: 5,
+                            },
+                        )),
+                    },
+                ),
+                (
+                    "get_session_stats".into(),
+                    ResponsePayload {
+                        kind: Some(response_payload::Kind::GetSessionStats(
+                            SessionStatsResponse {
+                                session_file: "/tmp/s.jsonl".into(),
+                                session_id: "s1".into(),
+                                user_messages: 2,
+                                assistant_messages: 3,
+                                tool_calls: 4,
+                                tool_results: 4,
+                                total_messages: 9,
+                                tokens: Some(StatsTokens {
+                                    input: 100,
+                                    output: 50,
+                                    cache_read: 10,
+                                    total: 160,
+                                }),
+                                cost: 1.5,
+                            },
+                        )),
+                    },
+                ),
+            ]),
+            // Stale JSON `data` for the same commands: the typed payload wins.
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                (
+                    "get_agent_info".into(),
+                    "{\"version\":\"0.0.0\",\"agentInstanceId\":\"stale\"}".into(),
+                ),
+                (
+                    "sync_future_models".into(),
+                    "{\"synced\":false,\"modelCount\":1}".into(),
+                ),
+            ]))),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+
+        let info = client.get_agent_info().await.unwrap();
+        assert_eq!(info["version"], "9.9.9");
+        assert_eq!(info["agentInstanceId"], "agent-typed");
+        assert_eq!(info["skillsCount"], 3);
+
+        let synced = client.sync_future_models().await.unwrap();
+        assert_eq!(synced["synced"], true);
+        assert_eq!(synced["modelCount"], 1_234);
+        assert_eq!(synced["revision"], 5);
+
+        let stats = client.get_session_stats().await.unwrap();
+        assert_eq!(stats["sessionId"], "s1");
+        assert_eq!(stats["toolCalls"], 4);
+        assert_eq!(stats["tokens"]["total"], 160);
+        assert_eq!(stats["cost"], 1.5);
+        client.disconnect();
+    }
+
     async fn spawn_api_mock(mock: ApiMock) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
         // Spawn the serve future directly (no async block → no never-taken
         // completion tail).
         tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(mock))
-                .serve(addr),
+                .serve_with_incoming(incoming),
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
     }
 
@@ -1456,10 +2267,139 @@ mod tests {
         client.set_current_session_id("s1");
         wait_connected(&mut conn).await;
         assert_eq!(
-            client.prompt("hi", "enqueue_if_busy").await.unwrap_err(),
+            client
+                .prompt("hi", "enqueue_if_busy", Vec::new())
+                .await
+                .unwrap_err(),
             "unsupported"
         );
         assert!(!seen.lock().unwrap().iter().any(|cmd| cmd == "prompt"));
+        client.disconnect();
+    }
+
+    // ─── Sandbox / skills / lifecycle wrappers ─────────────────────────
+
+    /// Each wrapper added with the TUI-parity round puts its argument on the
+    /// exact field the agent reads (`sandbox_policy.tier`, `mode`, `run_id`,
+    /// `command` + `shell_timeout_ms`, …) and hands the response back verbatim
+    /// — including the sandbox downgrade, which the wrapper deliberately does
+    /// not flatten into `()`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sandbox_skills_and_lifecycle_wrappers_reach_the_wire() {
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                (
+                    "probe_sandbox".into(),
+                    r#"{"available":true,"code":"available","backend":"macos_seatbelt"}"#.into(),
+                ),
+                (
+                    "probe_windows_sandbox".into(),
+                    r#"{"available":false,"code":"platform_unsupported"}"#.into(),
+                ),
+                (
+                    "set_sandbox_policy".into(),
+                    r#"{"tier":"manual","requestedTier":"sandbox","sandboxAvailable":false,"sandboxCode":"binary_missing"}"#
+                        .into(),
+                ),
+                ("get_commands".into(), r#"{"commands":[]}"#.into()),
+                (
+                    "refresh_skills".into(),
+                    r#"{"refreshed":true,"skills":[],"skills_count":0}"#.into(),
+                ),
+                ("delete_session".into(), r#"{"sessionId":"s2"}"#.into()),
+                ("generate_session_title".into(), r#"{"title":"hi"}"#.into()),
+                ("get_runtime_metrics".into(), r#"{"activeRunGauge":0}"#.into()),
+                (
+                    "get_run_snapshot".into(),
+                    r#"{"runSnapshot":true,"watermark":3}"#.into(),
+                ),
+                ("shell".into(), r#"{"output":"hi\n","exitCode":0}"#.into()),
+            ]))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+
+        let probe = client.probe_sandbox().await.unwrap();
+        assert_eq!(probe["backend"], "macos_seatbelt");
+        assert_eq!(
+            client.probe_windows_sandbox().await.unwrap()["code"],
+            "platform_unsupported"
+        );
+        // The downgrade survives the wrapper: requested sandbox, got manual.
+        let policy = client.set_sandbox_policy("sandbox").await.unwrap();
+        assert_eq!(policy["tier"], "manual");
+        assert_eq!(policy["requestedTier"], "sandbox");
+        assert_eq!(
+            client.get_commands().await.unwrap()["commands"],
+            serde_json::json!([])
+        );
+        assert!(client.refresh_skills().await.unwrap()["refreshed"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(
+            client.delete_session("s2").await.unwrap()["sessionId"],
+            "s2"
+        );
+        assert_eq!(
+            client.generate_session_title("zh").await.unwrap()["title"],
+            "hi"
+        );
+        assert_eq!(
+            client.get_runtime_metrics().await.unwrap()["activeRunGauge"],
+            0
+        );
+        assert_eq!(
+            client.get_run_snapshot("run-9").await.unwrap()["watermark"],
+            3
+        );
+        client.set_context_files(false).await.unwrap();
+        assert_eq!(client.shell("ls -la", 0).await.unwrap()["exitCode"], 0);
+        assert_eq!(client.shell("ls", 5_000).await.unwrap()["output"], "hi\n");
+
+        let sent = requests.lock().unwrap().clone();
+        let last = |command: &str| {
+            sent.iter()
+                .rfind(|cmd| cmd.r#type == command)
+                .cloned()
+                .unwrap_or_else(|| panic!("{command} never reached the agent"))
+        };
+        assert_eq!(
+            last("set_sandbox_policy")
+                .sandbox_policy
+                .as_ref()
+                .unwrap()
+                .tier,
+            "sandbox"
+        );
+        assert_eq!(last("delete_session").session_id, "s2");
+        assert_eq!(last("generate_session_title").mode, "zh");
+        assert_eq!(last("get_run_snapshot").run_id, "run-9");
+        assert!(!last("set_context_files").enabled);
+        assert_eq!(last("shell").command, "ls");
+        assert_eq!(last("shell").shell_timeout_ms, 5_000);
+        // The probes and the skills catalogue carry no arguments at all.
+        assert_eq!(last("probe_sandbox").session_id, "");
+        assert_eq!(last("refresh_skills").session_id, "");
+        client.disconnect();
+    }
+
+    /// A failed write is an `Err`, never a silent `Ok(())`; and the run-scoped
+    /// snapshot names its own client-side reason when the session has no run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lifecycle_wrapper_failures_surface_and_snapshot_needs_a_run() {
+        let mock = ApiMock {
+            fail_with: StdHashMap::from([("set_context_files".into(), "nope".into())]),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        assert_eq!(client.set_context_files(true).await.unwrap_err(), "nope");
+        assert_eq!(
+            client.snapshot_run_id().unwrap_err(),
+            "no run to snapshot yet"
+        );
         client.disconnect();
     }
 
@@ -1623,7 +2563,7 @@ mod tests {
         client.set_current_session_id("s1");
 
         // prompt (running) → run tracked as active.
-        let ack = client.prompt("hello", "queue").await.unwrap();
+        let ack = client.prompt("hello", "queue", Vec::new()).await.unwrap();
         assert_eq!(ack.run_id, "r1");
         assert!(client.has_running_run());
 
@@ -1676,7 +2616,7 @@ mod tests {
         let (client, _events, _conn) = GrpcClient::new(&addr);
         client.set_current_session_id("s1");
 
-        let ack = client.prompt("later", "queue").await.unwrap();
+        let ack = client.prompt("later", "queue", Vec::new()).await.unwrap();
         assert_eq!(ack.accepted_state, "queued");
         assert!(!client.has_running_run());
 
@@ -1689,7 +2629,7 @@ mod tests {
             "{\"sessionId\":\"s1\",\"agentInstanceId\":\"agent-2\",\"queuedRuns\":[]}".to_string(),
         );
         // Requeue the run locally so there is something to lose.
-        client.prompt("again", "queue").await.unwrap();
+        client.prompt("again", "queue", Vec::new()).await.unwrap();
         client.get_state().await.unwrap();
         assert_eq!(client.take_lost_queued_run_ids(), vec!["q1".to_string()]);
         // Second take drains.
@@ -1868,18 +2808,17 @@ mod tests {
 
     async fn spawn_eventful_mock() -> (EventSource, String) {
         let source = EventSource::default();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
         let mock = EventfulMock {
             source: source.clone(),
         };
         tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(mock))
-                .serve(addr),
+                .serve_with_incoming(incoming),
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
         (source, format!("127.0.0.1:{}", addr.port()))
     }
 
@@ -2254,16 +3193,19 @@ mod tests {
 
         // Revive on the same address: the poll's tryConnect succeeds →
         // resubscribe → connected again.
-        let listener = TcpListener::bind(&addr).unwrap();
+        // Revive on the same address — bind it here and keep the listener, so
+        // the port cannot be taken between the bind and the serve.
+        let listener = tokio::net::TcpListener::bind(addr.as_str()).await.unwrap();
         let addr2 = listener.local_addr().unwrap();
-        drop(listener);
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
+        assert_eq!(addr2.to_string(), addr);
         let agent = MockAgent {
             event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
         tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(agent))
-                .serve(addr2),
+                .serve_with_incoming(incoming),
         );
         wait_conn(&mut conn, true, "reconnect").await;
         assert!(client.is_connected());
@@ -2299,11 +3241,11 @@ mod tests {
         // A black-hole agent: accepts TCP, never answers. The session change
         // lands while a subscribe/tryConnect is blocked mid-flight, so the
         // reconnect poll's pre-select session check catches it.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Bind here and move the listener into the task: the port is held
+        // from the start, so nothing can steal it before it starts accepting.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
         tokio::spawn(async move {
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
             // Sockets are held open (never speaking) until the runtime ends.
             let mut held = Vec::new();
             loop {
@@ -2311,7 +3253,6 @@ mod tests {
                 held.push(sock);
             }
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let addr = format!("127.0.0.1:{}", addr.port());
 
         let (client, _e, _c) = GrpcClient::new(&addr);

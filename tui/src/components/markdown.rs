@@ -27,8 +27,8 @@ use regex::Regex;
 
 use crate::terminal_image::{hyperlink, is_image_line};
 use crate::theme::{
-    bold as theme_bold, dim as theme_dim, fg as theme_fg, italic as theme_italic,
-    underline as theme_underline,
+    bold as theme_bold, dim as theme_dim, fg as theme_fg, index as theme_index,
+    italic as theme_italic, underline as theme_underline, Theme,
 };
 use crate::tui::{Component, RESET};
 use crate::utils::{
@@ -187,8 +187,70 @@ impl Default for MarkdownTheme {
     }
 }
 
-/// Partial theme overrides — mirrors the TS `Partial<MarkdownTheme>`
-/// constructor parameter (`{...defaults, ...theme}`).
+impl MarkdownTheme {
+    /// The renderer theme for a palette.
+    ///
+    /// Every markdown role [`Theme`] declares is wired to the style fn the
+    /// renderer calls for it (`md_heading` → heading, `md_link` → link,
+    /// `md_code` → inline code *and* list bullets, `md_code_block` → fence
+    /// bodies, `md_code_block_border` → fence borders, `md_quote` → quote
+    /// text/border and the horizontal rule). Without this the renderer kept the
+    /// xterm indices baked into [`MarkdownTheme::default`] — the `Theme` roles
+    /// were written by every palette and read by nobody.
+    ///
+    /// `bold`/`italic`/`underline` stay attribute-only. `link_url` and
+    /// `strikethrough` have no `Theme` field; they take the muted-gray role
+    /// (`dim` / `md_quote`), which is what `MarkdownTheme::default` emits for
+    /// `DARK_THEME` — the byte-level tests below pin that.
+    pub fn from_theme(theme: &Theme) -> Self {
+        let heading = theme_index(theme.md_heading);
+        let link = theme_index(theme.md_link);
+        let code = theme_index(theme.md_code);
+        let code_block = theme_index(theme.md_code_block);
+        let code_block_border = theme_index(theme.md_code_block_border);
+        let quote = theme_index(theme.md_quote);
+        let link_url = theme_index(theme.dim);
+        MarkdownTheme {
+            heading: Rc::new(move |t| theme_fg(heading, &theme_bold(t))),
+            link: Rc::new(move |t| theme_fg(link, t)),
+            link_url: Rc::new(move |t| theme_fg(link_url, t)),
+            code: Rc::new(move |t| theme_fg(code, t)),
+            code_block: Rc::new(move |t| theme_fg(code_block, &theme_dim(t))),
+            code_block_border: Rc::new(move |t| theme_fg(code_block_border, &theme_dim(t))),
+            quote: Rc::new(move |t| theme_fg(quote, &theme_italic(t))),
+            quote_border: Rc::new(move |t| theme_fg(quote, t)),
+            hr: Rc::new(move |t| theme_fg(quote, t)),
+            list_bullet: Rc::new(move |t| theme_fg(code, t)),
+            bold: Rc::new(theme_bold),
+            italic: Rc::new(theme_italic),
+            strikethrough: Rc::new(move |t| theme_fg(quote, t)),
+            underline: Rc::new(theme_underline),
+            highlight_code: None,
+            code_block_indent: None,
+        }
+    }
+
+    /// The `38;5;N` index the `quote` style fn paints with.
+    ///
+    /// The blockquote arm cannot call the closure: it builds *raw* fg+italic
+    /// sequences so internal resets can be re-armed with the same color, and it
+    /// shares one color between the `│ ` border and the text. A style fn that
+    /// emits no foreground (a caller override) falls back to the dark quote
+    /// gray, which is the color this arm shipped before the theme was wired in.
+    fn quote_fg_index(&self) -> u8 {
+        static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| Regex::new(r"38;5;(\d+)").unwrap());
+        re.captures(&(self.quote)("\u{0}"))
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<u8>().ok())
+            .unwrap_or(DEFAULT_QUOTE_FG)
+    }
+}
+
+/// The quote gray the blockquote arm uses when a themed `quote` style fn emits
+/// no `38;5;N` (`MarkdownTheme::default`'s value).
+pub const DEFAULT_QUOTE_FG: u8 = 244;
+
 #[derive(Default)]
 pub struct MarkdownThemePartial {
     pub heading: Option<StyleFn>,
@@ -210,8 +272,8 @@ pub struct MarkdownThemePartial {
 }
 
 impl MarkdownTheme {
-    /// `{...defaults, ...theme}` — apply partial overrides.
-    fn with_partial(mut self, partial: MarkdownThemePartial) -> Self {
+    /// `{...self, ...partial}` — overlay partial overrides.
+    pub fn with_partial(mut self, partial: MarkdownThemePartial) -> Self {
         if let Some(v) = partial.heading {
             self.heading = v;
         }
@@ -1037,6 +1099,15 @@ impl MarkdownRenderer {
         r
     }
 
+    /// Constructor from a complete [`MarkdownTheme`] — what the chat area
+    /// builds per palette (see [`MarkdownTheme::from_theme`]) and rebuilds on
+    /// `/theme`.
+    pub fn with_markdown_theme(theme: MarkdownTheme) -> Self {
+        let mut r = Self::new();
+        r.theme = theme;
+        r
+    }
+
     /// Constructor with theme overrides + default text style.
     pub fn with_theme_and_style(
         theme: MarkdownThemePartial,
@@ -1321,9 +1392,11 @@ impl MarkdownRenderer {
 
             MdBlock::Blockquote { blocks } => {
                 // Use raw fg+italic for quote text so internal ANSI resets
-                // don't clear the style. (Hardcoded 244 in TS — the themed
-                // quote/quoteBorder fields are unused by the renderer.)
-                let quote_style_prefix = "\x1b[3m\x1b[38;5;244m";
+                // don't clear the style. The color is the theme's quote role
+                // (`md_quote`), recovered from its style fn; the border shares
+                // it, so the two can never drift apart.
+                let quote_color = self.theme.quote_fg_index();
+                let quote_style_prefix = format!("\x1b[3m\x1b[38;5;{quote_color}m");
                 let quote_content_width = std::cmp::max(1, width.saturating_sub(2));
 
                 let mut rendered_quote: Vec<String> = Vec::new();
@@ -1344,10 +1417,12 @@ impl MarkdownRenderer {
 
                 // Border uses raw fg (no RESET) so it flows into the styled
                 // quote text.
-                let border_raw = "\x1b[38;5;244m│ ";
+                let border_raw = format!("\x1b[38;5;{quote_color}m│ ");
                 for ql in rendered_quote {
-                    let styled_line =
-                        format!("{quote_style_prefix}{}{RESET}", reapply_quote_style(&ql));
+                    let styled_line = format!(
+                        "{quote_style_prefix}{}{RESET}",
+                        reapply_quote_style(&ql, quote_color)
+                    );
                     let wrapped = wrap_text_with_ansi(&styled_line, quote_content_width);
                     for wl in wrapped {
                         lines.push(format!("{border_raw}{wl}"));
@@ -1881,11 +1956,11 @@ impl Default for MarkdownRenderer {
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 /// Re-apply quote style after every ANSI reset (`\x1b[0m` or `\x1b[m`).
-fn reapply_quote_style(line: &str) -> String {
+fn reapply_quote_style(line: &str, quote_color: u8) -> String {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = RE.get_or_init(|| Regex::new(r"\x1b\[0?m").unwrap());
-    re.replace_all(line, "\x1b[0m\x1b[3m\x1b[38;5;244m")
-        .into_owned()
+    let replacement = format!("\x1b[0m\x1b[3m\x1b[38;5;{quote_color}m");
+    re.replace_all(line, replacement).into_owned()
 }
 
 /// `styled.match(/48;5;(\d+)/)` → bg number.
@@ -2763,10 +2838,15 @@ mod tests {
 
     #[test]
     fn helpers_cover_their_branches() {
-        // reapply_quote_style re-arms after every reset form.
+        // reapply_quote_style re-arms after every reset form, with the color
+        // it is handed (the theme's quote gray — 244 for the dark palette).
         assert_eq!(
-            reapply_quote_style("a\x1b[0mb\x1b[mc"),
+            reapply_quote_style("a\x1b[0mb\x1b[mc", 244),
             "a\x1b[0m\x1b[3m\x1b[38;5;244mb\x1b[0m\x1b[3m\x1b[38;5;244mc"
+        );
+        assert_eq!(
+            reapply_quote_style("x\x1b[my", 245),
+            "x\x1b[0m\x1b[3m\x1b[38;5;245my"
         );
         // extract_bg_num finds / misses the bg number.
         assert_eq!(extract_bg_num("\x1b[48;5;17mx"), Some(17));
@@ -2845,6 +2925,167 @@ mod tests {
         assert!(!text.ends_with('\n'));
     }
 
+    /// A document exercising every markdown role the palette wiring touches:
+    /// heading, link, inline code, fence body + border, list bullet, quote text
+    /// (and its `│ ` border), strikethrough, hr and a table.
+    const MD_ROLE_DOC: &str = "# Head one\n\nA para with `code`, [a link](https://example.com), **bold**, *em* and ~~gone~~.\n\n> a quoted line\n\n- first item\n- second item\n\n```rust\nfn main() {}\n```\n\n---\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n## Sub head\n";
+
+    #[test]
+    fn dark_palette_renders_byte_identically_to_the_pre_fix_constants() {
+        // Captured from the build *before* the palette was wired in (the
+        // renderer kept `MarkdownTheme::default`'s xterm indices). The dark
+        // palette must still produce exactly these bytes: any index moving by
+        // one would be a silent product change for every existing user.
+        let mut r = MarkdownRenderer::with_markdown_theme(MarkdownTheme::from_theme(
+            &crate::theme::DARK_THEME,
+        ));
+        let lines = r.render_text(MD_ROLE_DOC, 60);
+        assert_eq!(
+            lines,
+            vec![
+                "\u{1b}[38;5;221m\u{1b}[1m\u{1b}[1m\u{1b}[4mHead one\u{1b}[m\u{1b}[m\u{1b}[m\u{1b}[m\u{1b}[0m",
+                "",
+                "A para with \u{1b}[38;5;151mcode\u{1b}[m, \u{1b}]8;;https://example.com\u{1b}\\\u{1b}[38;5;117m\u{1b}[4ma link\u{1b}[m\u{1b}[m\u{1b}]8;;\u{1b}\\, \u{1b}[1mbold\u{1b}[m, \u{1b}[3mem\u{1b}[m and \u{1b}[38;5;244mgone\u{1b}[m.\u{1b}[0m",
+                "",
+                "\u{1b}[38;5;244m│ \u{1b}[3m\u{1b}[38;5;244ma quoted line\u{1b}[m\u{1b}[0m\u{1b}[0m",
+                "",
+                "\u{1b}[38;5;151m- \u{1b}[mfirst item\u{1b}[0m",
+                "\u{1b}[38;5;151m- \u{1b}[msecond item\u{1b}[0m",
+                "",
+                "\u{1b}[38;5;244m\u{1b}[2m────────────────────────────────────────────────────────────\u{1b}[m\u{1b}[m\u{1b}[0m",
+                "  \u{1b}[38;5;143m\u{1b}[2mfn main() {}\u{1b}[m\u{1b}[m\u{1b}[0m",
+                "\u{1b}[38;5;244m\u{1b}[2m────────────────────────────────────────────────────────────\u{1b}[m\u{1b}[m\u{1b}[0m",
+                "",
+                "\u{1b}[38;5;244m────────────────────────────────────────────────────────────\u{1b}[m\u{1b}[0m",
+                "",
+                "┌───┬───┐\u{1b}[0m",
+                "│ \u{1b}[1mA\u{1b}[0m\u{1b}[m │ \u{1b}[1mB\u{1b}[0m\u{1b}[m │\u{1b}[0m",
+                "├───┼───┤\u{1b}[0m",
+                "│ 1\u{1b}[0m │ 2\u{1b}[0m │\u{1b}[0m",
+                "└───┴───┘\u{1b}[0m",
+                "",
+                "\u{1b}[38;5;221m\u{1b}[1m\u{1b}[1mSub head\u{1b}[m\u{1b}[m\u{1b}[m\u{1b}[0m",
+            ]
+        );
+    }
+
+    #[test]
+    fn from_theme_of_the_dark_palette_equals_the_default_theme() {
+        let themed = MarkdownTheme::from_theme(&crate::theme::DARK_THEME);
+        let default = MarkdownTheme::default();
+        for sample in ["", "x", "two words"] {
+            assert_eq!((themed.heading)(sample), (default.heading)(sample));
+            assert_eq!((themed.link)(sample), (default.link)(sample));
+            assert_eq!((themed.link_url)(sample), (default.link_url)(sample));
+            assert_eq!((themed.code)(sample), (default.code)(sample));
+            assert_eq!((themed.code_block)(sample), (default.code_block)(sample));
+            assert_eq!(
+                (themed.code_block_border)(sample),
+                (default.code_block_border)(sample)
+            );
+            assert_eq!((themed.quote)(sample), (default.quote)(sample));
+            assert_eq!(
+                (themed.quote_border)(sample),
+                (default.quote_border)(sample)
+            );
+            assert_eq!((themed.hr)(sample), (default.hr)(sample));
+            assert_eq!((themed.list_bullet)(sample), (default.list_bullet)(sample));
+            assert_eq!((themed.bold)(sample), (default.bold)(sample));
+            assert_eq!((themed.italic)(sample), (default.italic)(sample));
+            assert_eq!(
+                (themed.strikethrough)(sample),
+                (default.strikethrough)(sample)
+            );
+            assert_eq!((themed.underline)(sample), (default.underline)(sample));
+        }
+        assert!(themed.highlight_code.is_none());
+        assert!(themed.code_block_indent.is_none());
+        // …and a whole render agrees too (the fields above are the whole state).
+        let mut a = MarkdownRenderer::with_markdown_theme(themed);
+        let mut b = MarkdownRenderer::new();
+        assert_eq!(
+            a.render_text(MD_ROLE_DOC, 60),
+            b.render_text(MD_ROLE_DOC, 60)
+        );
+        // The dark palette's fence green is the renderer's own 143 (`C.green`),
+        // not the 142 `C.md_code_block` used to declare: the pristine default
+        // renderer has always painted fences with 143, and dark output must not
+        // move, so the palette value was aligned to the renderer.
+        assert_eq!(crate::theme::DARK_THEME.md_code_block, 143);
+        assert_eq!(crate::theme::C.md_code_block, crate::theme::C.green);
+    }
+
+    #[test]
+    fn light_palette_markdown_roles_reach_the_renderer() {
+        let light = crate::themes::theme_by_id("light").expect("light palette");
+        let mut r = MarkdownRenderer::with_markdown_theme(MarkdownTheme::from_theme(&light));
+        let joined = r.render_text(MD_ROLE_DOC, 60).join("\n");
+        // The palette's declared roles: heading 130, link 25, code/bullet 30,
+        // fence body 28, fence border 250, quote 245.
+        for want in [
+            "38;5;130m",
+            "38;5;25m",
+            "38;5;30m",
+            "38;5;28m",
+            "38;5;250m",
+            "38;5;245m",
+        ] {
+            assert!(joined.contains(want), "light render is missing {want}");
+        }
+        // …and none of the dark constants the renderer used to bake in.
+        for gone in [
+            "38;5;221m",
+            "38;5;117m",
+            "38;5;151m",
+            "38;5;143m",
+            "38;5;244m",
+        ] {
+            assert!(!joined.contains(gone), "light render still emits {gone}");
+        }
+    }
+
+    #[test]
+    fn blockquote_color_follows_the_theme_and_falls_back_to_244() {
+        let light = crate::themes::theme_by_id("light").expect("light palette");
+        let mut r = MarkdownRenderer::with_markdown_theme(MarkdownTheme::from_theme(&light));
+        let lines = r.render_text("> quoted", 40);
+        assert_eq!(
+            lines[0],
+            "\u{1b}[38;5;245m│ \u{1b}[3m\u{1b}[38;5;245mquoted\u{1b}[m\u{1b}[0m\u{1b}[0m"
+        );
+        // A `quote` override that paints no foreground (possible through
+        // `with_partial`) keeps the gray this arm shipped before the wiring.
+        let mut r = MarkdownRenderer::with_theme(MarkdownThemePartial {
+            quote: Some(std::rc::Rc::new(|t: &str| t.to_string())),
+            ..Default::default()
+        });
+        let lines = r.render_text("> quoted", 40);
+        assert!(lines[0].contains("38;5;244m"), "{:?}", lines[0]);
+        assert_eq!(DEFAULT_QUOTE_FG, 244);
+    }
+
+    #[test]
+    fn from_theme_clamps_terminal_default_colors() {
+        // `-1` means "terminal default" and has no `38;5;` spelling; such a role
+        // must clamp to 0 instead of wrapping to 255.
+        let custom = crate::theme::Theme {
+            md_heading: -1,
+            md_link: -1,
+            ..crate::theme::DARK_THEME
+        };
+        let themed = MarkdownTheme::from_theme(&custom);
+        assert!((themed.heading)("x").contains("38;5;0m"));
+        assert!((themed.link)("x").contains("38;5;0m"));
+    }
+
+    #[test]
+    fn with_markdown_theme_replaces_the_default_palette() {
+        let mut r = MarkdownRenderer::with_markdown_theme(MarkdownTheme::default());
+        assert!(r.render_text("`c`", 20).join("").contains("38;5;151m"));
+        let light = crate::themes::theme_by_id("light").expect("light palette");
+        let mut r = MarkdownRenderer::with_markdown_theme(MarkdownTheme::from_theme(&light));
+        assert!(r.render_text("`c`", 20).join("").contains("38;5;30m"));
+    }
     // ─── white-box render drives ──────────────────────────────────────
 
     fn bare_ctx(r: &mut MarkdownRenderer) -> InlineStyleContext {

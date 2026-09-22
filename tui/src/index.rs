@@ -1423,8 +1423,8 @@ mod tests {
     use futures_util::stream;
     use futures_util::StreamExt as _;
     use std::collections::{HashMap, HashSet};
-    use std::net::TcpListener;
     use std::pin::Pin;
+    use tonic::transport::server::TcpIncoming;
     use tonic::transport::Server;
 
     /// Configurable mock: canned data for get_state/get_available_models,
@@ -1535,17 +1535,19 @@ mod tests {
     }
 
     async fn spawn_mock(agent: MockAgent) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Serve on the listener bound here: probe-bind → drop → `serve(addr)`
+        // left a window where a concurrent mock could take the freed port
+        // (observed as an intermittent "transport error" failure).
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let incoming = TcpIncoming::from_listener(listener, true, None).unwrap();
         // Spawn the serve future directly — no async-block tail that never
         // completes.
         tokio::spawn(
             Server::builder()
                 .add_service(FutureAgentServer::new(agent))
-                .serve(addr),
+                .serve_with_incoming(incoming),
         );
-        tokio::time::sleep(Duration::from_millis(50)).await;
         format!("127.0.0.1:{}", addr.port())
     }
 

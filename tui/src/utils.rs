@@ -851,6 +851,67 @@ pub fn apply_background_to_line(line: &str, width: usize, bg: i16) -> String {
     )
 }
 
+// ─── Highlight Matches ─────────────────────────────────────────────────────
+
+/// Wrap every non-overlapping occurrence of `query` in `text` in the search
+/// highlight — background `bg` plus bold, the same pair the pager paints a
+/// search hit with (`Chrome::highlight_bg`) — and return `text` unchanged when
+/// there is nothing to mark.
+///
+/// Case-insensitive exactly like the agent's `lower(…)` search (ASCII only), so
+/// a hit the server found is a hit that gets marked.
+///
+/// The scan walks **graphemes** and slices at their byte offsets, never at a
+/// byte count: a wide neighbour (CJK, emoji) cannot be cut in half the way a
+/// `pos + query.len()` splice would, and the marks land on the characters the
+/// terminal actually draws. Every mark closes with a reset, so the colour
+/// cannot bleed into the next row. Stripping the result gives `text` back —
+/// that is the pager's `y` copy path, which must stay clean.
+pub fn highlight_matches(text: &str, query: &str, bg: u8) -> String {
+    if query.is_empty() {
+        return text.to_string();
+    }
+    let needle: Vec<&str> = query.graphemes(true).collect();
+    let hay: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+    if needle.len() > hay.len() {
+        return text.to_string();
+    }
+
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if (0..needle.len()).all(|k| hay[i + k].1.eq_ignore_ascii_case(needle[k])) {
+            let start = hay[i].0;
+            // The end of the last matched grapheme is the start of the next one
+            // (or the end of the text), so the span can never split a grapheme.
+            let end = hay
+                .get(i + needle.len())
+                .map(|(offset, _)| *offset)
+                .unwrap_or(text.len());
+            spans.push((start, end));
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    if spans.is_empty() {
+        return text.to_string();
+    }
+
+    let open = format!("\x1b[48;5;{bg}m\x1b[1m");
+    let mut out = String::with_capacity(text.len() + spans.len() * open.len());
+    let mut last = 0;
+    for (start, end) in spans {
+        out.push_str(&text[last..start]);
+        out.push_str(&open);
+        out.push_str(&text[start..end]);
+        out.push_str("\x1b[0m");
+        last = end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 // ─── Truncate to Width ─────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1748,5 +1809,113 @@ mod tests {
         // strict_after clips a grapheme that would overrun after_end.
         let seg = extract_segments("ab中cd", 1, 2, 1, true);
         assert_eq!(strip_ansi_codes(&seg.after), "");
+    }
+
+    // ─── highlight_matches ─────────────────────────────────────────────
+
+    /// The mark `highlight_matches` emits for `text`: the pager's search-hit
+    /// pair (background + bold), closed by a reset.
+    fn hl(text: &str) -> String {
+        format!("\x1b[48;5;{HL_BG}m\x1b[1m{text}\x1b[0m")
+    }
+    const HL_BG: u8 = 237;
+
+    #[test]
+    fn highlight_matches_marks_the_query_and_leaves_the_rest_alone() {
+        assert_eq!(
+            highlight_matches("a needle here", "needle", HL_BG),
+            format!("a {} here", hl("needle"))
+        );
+        assert_eq!(highlight_matches("needle", "needle", HL_BG), hl("needle"));
+        // No hit → untouched, no stray escape. The agent's snippet is a byte
+        // window around the hit, so a real payload can hand back a snippet whose
+        // match was sliced away; that must not panic or wrap a half-match.
+        assert_eq!(
+            highlight_matches("nothing here", "needle", HL_BG),
+            "nothing here"
+        );
+        // An empty query, and one longer than the text, are both no-ops.
+        assert_eq!(highlight_matches("text", "", HL_BG), "text");
+        assert_eq!(highlight_matches("ab", "abc", HL_BG), "ab");
+    }
+
+    #[test]
+    fn highlight_matches_marks_every_occurrence() {
+        assert_eq!(
+            highlight_matches("needle and needle", "needle", HL_BG),
+            format!("{} and {}", hl("needle"), hl("needle"))
+        );
+        // Adjacent hits advance past the hit, so "aa" in "aaaa" is two marks
+        // rather than three overlapping ones.
+        assert_eq!(
+            highlight_matches("aaaa", "aa", HL_BG),
+            format!("{}{}", hl("aa"), hl("aa"))
+        );
+    }
+
+    #[test]
+    fn highlight_matches_is_ascii_case_insensitive() {
+        assert_eq!(
+            highlight_matches("a Needle b", "needle", HL_BG),
+            format!("a {} b", hl("Needle"))
+        );
+        assert_eq!(
+            highlight_matches("a needle b", "NEEDLE", HL_BG),
+            format!("a {} b", hl("needle"))
+        );
+    }
+
+    #[test]
+    fn highlight_matches_never_splits_a_wide_character() {
+        // A CJK prefix, an emoji prefix and a combining mark: a byte-offset
+        // splice (`pos + query.len()`) would cut inside the multi-byte
+        // character and corrupt the row. The mark lands on exactly the match in
+        // every case.
+        assert_eq!(
+            highlight_matches("中文needle尾巴", "needle", HL_BG),
+            format!("中文{}尾巴", hl("needle"))
+        );
+        assert_eq!(
+            highlight_matches("🚀needle🚀", "needle", HL_BG),
+            format!("🚀{}🚀", hl("needle"))
+        );
+        assert_eq!(
+            highlight_matches("👨‍👩‍👧needle", "needle", HL_BG),
+            format!("👨‍👩‍👧{}", hl("needle"))
+        );
+        assert_eq!(
+            highlight_matches("café needle", "needle", HL_BG),
+            format!("café {}", hl("needle"))
+        );
+        // A CJK query is marked grapheme-for-grapheme.
+        assert_eq!(
+            highlight_matches("你好世界", "世界", HL_BG),
+            format!("你好{}", hl("世界"))
+        );
+        // A hit at the very end closes the span at `text.len()`.
+        assert_eq!(
+            highlight_matches("中文needle", "needle", HL_BG),
+            format!("中文{}", hl("needle"))
+        );
+        // The marks carry no columns: the pager wraps and pads by visible width.
+        let marked = highlight_matches("中文needle尾巴", "needle", HL_BG);
+        assert_eq!(visible_width(&marked), visible_width("中文needle尾巴"));
+    }
+
+    #[test]
+    fn highlight_matches_strips_back_to_the_plain_text() {
+        // The pager's `y` copy path strips ANSI: a marked row must copy as the
+        // original snippet, escape-free.
+        for (text, query) in [
+            ("中文needle尾巴", "needle"),
+            ("🚀 need 🚀", "need"),
+            ("👨‍👩‍👧 needle", "needle"),
+            ("cafe\u{0301} needle", "needle"),
+            ("Needle needle NEEDLE", "needle"),
+            ("no hit at all", "zzz"),
+        ] {
+            let marked = highlight_matches(text, query, HL_BG);
+            assert_eq!(strip_ansi_codes(&marked), text, "copy path for {text:?}");
+        }
     }
 }

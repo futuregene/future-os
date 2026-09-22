@@ -1,0 +1,36 @@
+Tool calls in this run:
+call_mock_1  edit  completed
+call_mock_2  shell  failed
+Run /tool-output <call-id> for the full stored output.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

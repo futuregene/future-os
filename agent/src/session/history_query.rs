@@ -10,6 +10,26 @@ pub const HISTORY_MAX_MATCHES: i64 = 20;
 
 type EntryMetadata = (i64, String, Option<String>, Option<String>, Option<i64>);
 
+/// SQLite slices the snippet with `substr(CAST(body AS BLOB), ...)`, which is a
+/// *byte* window and therefore can begin or end inside a multi-byte character.
+/// Decoding such a window lossily renders the halves as U+FFFD (a box in the
+/// terminal), so drop the partial character on each edge instead: a snippet may
+/// be a few bytes shorter, never a broken character.
+fn trim_partial_characters(bytes: &[u8]) -> &[u8] {
+    // A window that starts mid-character begins with continuation bytes
+    // (0b10xxxxxx); skip them to reach the next character boundary.
+    let start = bytes.iter().take_while(|b| *b & 0xC0 == 0x80).count();
+    let bytes = &bytes[start..];
+    // On the trailing edge `from_utf8` reports the last *complete* character:
+    // an incomplete sequence yields `error_len() == None` and `valid_up_to()`
+    // at the start of the truncated character. (An actually invalid byte cannot
+    // occur in a TEXT column's UTF-8, but cutting there would still be safe.)
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(error) => &bytes[..error.valid_up_to()],
+    }
+}
+
 fn require_session(db: &Connection, session: &str) -> Result<()> {
     let exists: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND revision>=0) AND NOT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')",
@@ -60,12 +80,16 @@ impl Manager {
             let mut rows = stmt.query(params![session,query,limit+1])?;
             let mut matches = Vec::new();
             while let Some(row) = rows.next()? {
+                let snippet = row.get::<_, Vec<u8>>(9)?;
                 matches.push(json!({
                     "entryId":row.get::<_,String>(0)?,"entryPosition":row.get::<_,i64>(1)?,
                     "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<String>>(3)?,
                     "timestampMs":row.get::<_,Option<i64>>(4)?,"blockIndex":row.get::<_,i64>(5)?,
                     "kind":row.get::<_,String>(6)?,"toolCallId":row.get::<_,Option<String>>(7)?,
-                    "toolName":row.get::<_,Option<String>>(8)?,"snippet":String::from_utf8_lossy(&row.get::<_,Vec<u8>>(9)?),
+                    "toolName":row.get::<_,Option<String>>(8)?,
+                    // Trimmed to character boundaries, so lossy decoding only
+                    // ever substitutes for genuinely invalid stored bytes.
+                    "snippet":String::from_utf8_lossy(trim_partial_characters(&snippet)),
                     "byteOffset":row.get::<_,i64>(10)?
                 }));
             }
@@ -253,6 +277,88 @@ mod tests {
             Ok(rows.join("\n"))
         }).unwrap();
         assert!(plan.contains("entries_identity_unique"), "{plan}");
+    }
+
+    /// The snippet window is a *byte* slice of concatenated UTF-8, so its edges
+    /// land inside a multi-byte character whenever the match sits at a residue
+    /// other than 0 mod (char width). Decoding such a window lossily turns the
+    /// halves into U+FFFD, which a terminal draws as a box — the reported bug.
+    /// Sweep the match across 100 offsets so every residue is exercised, and
+    /// only trim: the query must survive and `byteOffset` must still point at it.
+    #[test]
+    fn snippets_keep_character_boundaries_at_every_match_offset() {
+        let temp = tempfile::tempdir().unwrap();
+        let m = Manager::new(temp.path().to_owned());
+        let needle = "ExpoSharing";
+        for pad in 0..100 {
+            // A mix of 3-byte CJK and 4-byte emoji before the match keeps
+            // `hit-120` inside a character for most residues (a pure 3-byte
+            // prefix would stay aligned, since 120 is divisible by 3), and a
+            // long emoji tail pushes the trailing edge past 480 bytes without
+            // running off the end of the body.
+            let body = format!(
+                "{}{}{needle}{}",
+                "汉".repeat(90 + pad),
+                "🙂".repeat(pad % 7),
+                "🙂".repeat(150)
+            );
+            m.storage()
+                .unwrap()
+                .replace(
+                    "s",
+                    vec![json!({"id":"u","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content": body})],
+                )
+                .unwrap();
+            let r = m.search_history("s", needle, 1).unwrap();
+            let hit = &r["matches"][0];
+            let snippet = hit["snippet"].as_str().unwrap();
+            assert!(
+                snippet.contains(needle),
+                "pad {pad}: snippet lost the query: {snippet:?}"
+            );
+            assert!(
+                !snippet.contains('\u{FFFD}'),
+                "pad {pad}: replacement character in {snippet:?}"
+            );
+            assert!(
+                body.contains(snippet),
+                "pad {pad}: snippet is not a contiguous slice of the body"
+            );
+            let offset = hit["byteOffset"].as_u64().unwrap() as usize;
+            assert!(
+                body[offset..].starts_with(needle),
+                "pad {pad}: byteOffset {offset} no longer points at the match"
+            );
+        }
+    }
+
+    /// `trim_partial_characters` may only ever drop an *incomplete* character;
+    /// a window that happens to end on a boundary stays byte-identical.
+    #[test]
+    fn snippet_edges_drop_only_incomplete_characters() {
+        let cjk = [0xE4, 0xB8, 0xAD]; // 中 (3 bytes)
+        let emoji = [0xF0, 0x9F, 0x99, 0x82]; // 🙂 (4 bytes)
+
+        // Leading continuation bytes belong to the character before the window.
+        let mut leading = vec![0xAD];
+        leading.extend_from_slice(&cjk);
+        assert_eq!(trim_partial_characters(&leading), cjk);
+        // Incomplete characters on either edge disappear entirely.
+        assert_eq!(trim_partial_characters(&cjk[..2]), &[] as &[u8]);
+        assert_eq!(trim_partial_characters(&emoji[..3]), &[] as &[u8]);
+        assert_eq!(trim_partial_characters(&[emoji[0], emoji[1]]), &[] as &[u8]);
+        // Whole characters and ASCII are never touched.
+        assert_eq!(trim_partial_characters(&cjk), cjk);
+        assert_eq!(trim_partial_characters(&emoji), emoji);
+        let mut mixed = b"abc".to_vec();
+        mixed.extend_from_slice(&cjk);
+        mixed.extend_from_slice(b"def");
+        mixed.extend_from_slice(&emoji);
+        assert_eq!(trim_partial_characters(&mixed), mixed.as_slice());
+        let mut trailing = b"abc".to_vec();
+        trailing.extend_from_slice(&emoji[..3]);
+        assert_eq!(trim_partial_characters(&trailing), b"abc");
+        assert_eq!(trim_partial_characters(b""), b"");
     }
 
     #[test]

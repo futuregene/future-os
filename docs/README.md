@@ -15,7 +15,9 @@
 |---|---|
 | [Build & Install](guide/build-and-install.md) ([中文](guide/build-and-install.zh-CN.md)) | Prerequisites, per-platform toolchains (macOS / Linux / Windows), `make` targets, GUI packaging, `future-loop` install, skills install |
 | [TUI](guide/tui.md) ([中文](guide/tui.zh-CN.md)) | The terminal UI (`future-tui`): slash commands, keyboard shortcuts, settings |
-| [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / Feishu / DingTalk blocks, defaults) |
+| [Channels configuration](guide/channels-config.md) ([中文](guide/channels-config.zh-CN.md)) | Unified reference for `~/.future/channels/config.json` (agent / providers / Feishu / DingTalk blocks, defaults) |
+| [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
+| [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
 | [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` (agent, channels, TUI, GUI, loop) |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
@@ -35,6 +37,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Response outcomes](architecture/response-outcomes.zh-CN.md) | End-of-response outcome semantics (stop / refusal / filter / pause) (zh only for now) |
 | [loop/](architecture/loop/README.md) | The `future-loop` crate: [architecture](architecture/loop/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/loop/UPSTREAM.md), [decision-kernel snapshot](architecture/loop/snapshots.md) |
 | [Shared packages](architecture/packages.md) | `packages/` conventions: npm/workspace packages and crate boundaries |
+| [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
 ## Internals (`internals/`)

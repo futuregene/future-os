@@ -28,7 +28,7 @@ pub const C: ColorConstants = ColorConstants {
     md_link: 117,              // #81a2be (light blue)
     md_link_url: 102,          // #666666
     md_code: 151,              // #8abeb7 (accent)
-    md_code_block: 142,        // #b5bd68 (green)
+    md_code_block: 143,        // #b5bd68 (= `green`; the renderer's fence color)
     md_code_block_border: 244, // gray
     md_quote: 244,             // gray
 
@@ -156,6 +156,150 @@ pub const DARK_THEME: Theme = Theme {
     user_bg: C.user_msg_bg as i16, // ChatGPT-style user message bubble background
     assistant_bg: -1,              // use terminal default background
 };
+
+/// The palette the TUI has always shipped (`DARK_THEME`). Implemented by hand
+/// rather than derived: every field of `Theme` needs its own value, and `-1`
+/// (terminal default) is a meaningful color, not a zeroed one.
+impl Default for Theme {
+    fn default() -> Self {
+        DARK_THEME
+    }
+}
+
+// ─── Chrome palette ──────────────────────────────────────────────────────
+
+/// Palette for the *chrome* widgets — the ones the ported TS renderers paint
+/// from the wider `C` table instead of from `Theme`: footer, input, select
+/// list, pager, usage panel and the scoped-model selector.
+///
+/// Why a second palette exists at all: `Theme` models the *conversation*
+/// (markdown, tool blocks, thinking levels) in exactly 29 fields, and that set
+/// is frozen — `themes.rs` asserts the field count and compares themes field by
+/// field, so widening `Theme` is a deliberate cross-module change. The chrome
+/// needs a handful of roles that set has no slot for (a faint annotation gray,
+/// a cyan status tag, the token/cost green, the >70 % warning yellow, the
+/// ✓/✗ marks, the list/pager backgrounds), so they live here.
+///
+/// Two sources, by design:
+///
+/// * [`Chrome::LEGACY`] is what the chrome paints **today**, byte for byte.
+/// * [`Chrome::from_theme`] derives every role from a [`Theme`] so switching
+///   palettes with `/theme` recolors the whole frame, and returns `LEGACY`
+///   verbatim for the default palette so `/theme dark` cannot change a single
+///   byte of output (the byte-level chrome tests depend on it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chrome {
+    /// Default body text (`245`).
+    pub base: u8,
+    /// Bright primary text: model name, totals, list labels (`252`).
+    pub text: u8,
+    /// Faint annotation text ("Session", "no usage data yet") (`241`).
+    pub muted: u8,
+    /// Interactive accent: list titles, spinner, prompt marks (`39`).
+    pub accent: u8,
+    /// Secondary status accent ("streaming") (`45`).
+    pub info: u8,
+    /// Section heading ("By model") (`109`).
+    pub heading: u8,
+    /// Search-hit text in the pager (`117`).
+    pub secondary: u8,
+    /// Thinking-level tag in the footer (`117`).
+    pub thinking: u8,
+    /// Positive figure in the usage table (`143`).
+    pub success: u8,
+    /// "Enabled" mark in the scoped-model selector (`40`).
+    pub mark_ok: u8,
+    /// Error text (`204`).
+    pub error: u8,
+    /// "Disabled" mark in the scoped-model selector (`196`).
+    pub mark_no: u8,
+    /// Warning text and the >70 % context fill (`226`).
+    pub warn: u8,
+    /// Token/cost readout in the footer (`71`).
+    pub token: u8,
+    /// Border/secondary marker ("(auto)") (`240`).
+    pub border: u8,
+    /// Selection background of the list widgets (`38`).
+    pub selected_bg: u8,
+    /// Foreground on [`Chrome::selected_bg`] (`255`).
+    pub selected_fg: u8,
+    /// Selection background of a pager search hit (`237`).
+    pub highlight_bg: u8,
+    /// Background the list widgets pad their rows with (`235`).
+    pub list_bg: u8,
+}
+
+impl Chrome {
+    /// The exact indices the ported TS chrome emits today — the values every
+    /// byte-level test was written against.
+    pub const LEGACY: Chrome = Chrome {
+        base: 245,
+        text: 252,
+        muted: 241,
+        accent: 39,
+        info: 45,
+        heading: 109,
+        secondary: 117,
+        thinking: 117,
+        success: 143,
+        mark_ok: 40,
+        error: 204,
+        mark_no: 196,
+        warn: 226,
+        token: 71,
+        border: 240,
+        selected_bg: 38,
+        selected_fg: 255,
+        highlight_bg: 237,
+        list_bg: 235,
+    };
+
+    /// The chrome palette for `theme`: [`Chrome::LEGACY`] for the default
+    /// palette, otherwise every role resolved from a `Theme` field.
+    ///
+    /// Roles map to their nearest semantic `Theme` field (`base`/`muted` →
+    /// `dim`, `text` → `fg`, `accent` → `accent`, `token`/`success`/`mark_ok` →
+    /// `success`, `warn` → `thinking_high`, …). A theme that leaves `bg` at `-1`
+    /// keeps the legacy list background: `-1` means "terminal default" and
+    /// cannot be used as an opaque background for a padded row.
+    pub fn from_theme(theme: &Theme) -> Chrome {
+        if *theme == DARK_THEME {
+            return Self::LEGACY;
+        }
+        Chrome {
+            base: index(theme.dim),
+            text: index(theme.fg),
+            muted: index(theme.dim),
+            accent: index(theme.accent),
+            info: index(theme.md_link),
+            heading: index(theme.tool_title),
+            secondary: index(theme.md_link),
+            thinking: index(theme.thinking_medium),
+            success: index(theme.success),
+            mark_ok: index(theme.success),
+            error: index(theme.error),
+            mark_no: index(theme.error),
+            warn: index(theme.thinking_high),
+            token: index(theme.success),
+            border: index(theme.border),
+            selected_bg: index(theme.selected_bg),
+            selected_fg: index(theme.selected_fg),
+            highlight_bg: index(theme.selected_bg),
+            list_bg: if theme.bg < 0 {
+                Self::LEGACY.list_bg
+            } else {
+                index(theme.bg)
+            },
+        }
+    }
+}
+
+/// A `Theme` color index as the `u8` the `38;5;N`/`48;5;N` sequences need.
+/// `Theme` allows `-1` ("terminal default"), which has no `38;5;` spelling;
+/// such a role falls back to index 0 rather than wrapping to 255.
+pub(crate) fn index(color: Color) -> u8 {
+    color.clamp(0, 255) as u8
+}
 
 /// Legacy theme table from `tui/src/tui.ts` (the app uses `DARK_THEME` from
 /// theme.ts; kept for completeness of the 1:1 port).
@@ -344,6 +488,107 @@ mod tests {
         assert_eq!(underline("x"), "\x1b[4mx\x1b[m");
         assert_eq!(strikethrough("x"), "\x1b[9mx\x1b[m");
         assert_eq!(reset("x"), "\x1b[mx\x1b[m");
+    }
+
+    #[test]
+    fn theme_default_is_the_dark_palette() {
+        assert_eq!(Theme::default(), DARK_THEME);
+    }
+
+    #[test]
+    fn chrome_legacy_freezes_the_ported_chrome_indices() {
+        // The roles `Theme` has no slot for — the ones that must survive a
+        // refactor untouched, because the byte-level tests were written to them.
+        assert_eq!(Chrome::LEGACY.base, 245);
+        assert_eq!(Chrome::LEGACY.muted, 241);
+        assert_eq!(Chrome::LEGACY.info, 45);
+        assert_eq!(Chrome::LEGACY.heading, 109);
+        assert_eq!(Chrome::LEGACY.token, 71);
+        assert_eq!(Chrome::LEGACY.warn, 226);
+        assert_eq!(Chrome::LEGACY.highlight_bg, 237);
+        assert_eq!(Chrome::LEGACY.mark_ok, 40);
+        assert_eq!(Chrome::LEGACY.mark_no, 196);
+        assert_eq!(Chrome::LEGACY.list_bg, 235);
+    }
+
+    #[test]
+    fn chrome_from_the_default_palette_is_the_legacy_table() {
+        assert_eq!(Chrome::from_theme(&DARK_THEME), Chrome::LEGACY);
+        assert_eq!(Chrome::from_theme(&Theme::default()), Chrome::LEGACY);
+    }
+
+    #[test]
+    fn chrome_from_a_theme_resolves_every_role() {
+        let custom = Theme {
+            bg: 231,
+            dim: 111,
+            fg: 112,
+            accent: 113,
+            md_link: 114,
+            tool_title: 115,
+            thinking_medium: 116,
+            success: 117,
+            error: 118,
+            thinking_high: 119,
+            border: 120,
+            selected_bg: 121,
+            selected_fg: 122,
+            ..DARK_THEME
+        };
+        let chrome = Chrome::from_theme(&custom);
+        assert_eq!(chrome.base, 111);
+        assert_eq!(chrome.muted, 111);
+        assert_eq!(chrome.text, 112);
+        assert_eq!(chrome.accent, 113);
+        assert_eq!(chrome.info, 114);
+        assert_eq!(chrome.secondary, 114);
+        assert_eq!(chrome.heading, 115);
+        assert_eq!(chrome.thinking, 116);
+        assert_eq!(chrome.success, 117);
+        assert_eq!(chrome.token, 117);
+        assert_eq!(chrome.mark_ok, 117);
+        assert_eq!(chrome.error, 118);
+        assert_eq!(chrome.mark_no, 118);
+        assert_eq!(chrome.warn, 119);
+        assert_eq!(chrome.border, 120);
+        assert_eq!(chrome.selected_bg, 121);
+        assert_eq!(chrome.highlight_bg, 121);
+        assert_eq!(chrome.selected_fg, 122);
+        assert_eq!(chrome.list_bg, 231);
+    }
+
+    /// A non-default palette that still inherits the terminal background, and
+    /// a role left at "terminal default" — both have no `38;5;` spelling.
+    #[test]
+    fn chrome_keeps_the_list_background_and_clamps_terminal_default_roles() {
+        let inherited = Theme {
+            bg: -1,
+            md_link: -1,
+            dim: 111,
+            ..DARK_THEME
+        };
+        let chrome = Chrome::from_theme(&inherited);
+        assert_eq!(chrome.list_bg, Chrome::LEGACY.list_bg);
+        assert_eq!(chrome.info, 0);
+        assert_eq!(chrome.secondary, 0);
+    }
+
+    #[test]
+    fn chrome_from_the_light_catalog_theme_differs_from_legacy() {
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        let chrome = Chrome::from_theme(&light);
+        assert_ne!(chrome, Chrome::LEGACY);
+        assert_eq!(chrome.text, 236); // light fg
+        assert_eq!(chrome.selected_bg, 153); // light selected_bg
+        assert_eq!(chrome.error, 160); // light error
+    }
+
+    #[test]
+    fn index_clamps_colors_into_the_256_color_range() {
+        assert_eq!(index(-1), 0);
+        assert_eq!(index(0), 0);
+        assert_eq!(index(255), 255);
+        assert_eq!(index(4096), 255);
     }
 
     #[test]
