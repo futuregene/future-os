@@ -17,7 +17,7 @@ Groups:
   skills    Install & manage agent skills
   tools     List, describe, and call platform & browser tools
   models    List available AI models from the agent
-  session   Create, list, inspect, update, rename, and delete agent sessions
+  session   List, inspect, update, rename, and delete agent sessions
   doctor    Environment diagnostic
 
 Apps (run the FutureOS components — same as their standalone binaries):

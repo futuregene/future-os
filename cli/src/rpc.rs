@@ -291,30 +291,14 @@ impl RunClient {
         self.execute_command("fork", cmd, Some(session_id), 5).await
     }
 
-    /// `newSession(opts)` — `new_session` with `createdBy: "cli"`.
-    ///
-    /// Empty strings leave the agent's default (default workspace, no parent,
-    /// no title, default model, agent-preferred thinking level).
-    pub async fn new_session_with(&self, opts: &NewSessionOptions) -> Result<Value, String> {
+    /// `newSession(cwd)` — `new_session` with `createdBy: "cli"`.
+    pub async fn new_session(&self, cwd: &str) -> Result<Value, String> {
         let cmd = RpcCommand {
-            cwd: opts.cwd.clone(),
-            parent_session: opts.parent_session.clone(),
-            name: opts.name.clone(),
-            model_id: opts.model_id.clone(),
-            level: opts.level.clone(),
+            cwd: cwd.to_string(),
             created_by: "cli".to_string(),
             ..Default::default()
         };
         self.execute_command("new_session", cmd, None, 5).await
-    }
-
-    /// `newSession(cwd)` — `new_session` with `createdBy: "cli"`.
-    pub async fn new_session(&self, cwd: &str) -> Result<Value, String> {
-        self.new_session_with(&NewSessionOptions {
-            cwd: cwd.to_string(),
-            ..Default::default()
-        })
-        .await
     }
 
     /// `setModel(modelId, sessionId?)` — `set_model`.
@@ -923,22 +907,6 @@ fn parse_stream_event(event: &StreamEvent, raw_data: &Map<String, Value>) -> Val
 pub const BUSY_ENQUEUE: &str = "enqueue_if_busy";
 pub const BUSY_SUPERSEDE: &str = "supersede_session";
 
-/// Options accepted by the `new_session` command beyond the defaults the agent
-/// fills in itself (empty field = "let the agent decide").
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NewSessionOptions {
-    /// Working directory for the session (default: the agent's workspace).
-    pub cwd: String,
-    /// Existing session to record as this session's parent (lineage only).
-    pub parent_session: String,
-    /// Initial human-readable title.
-    pub name: String,
-    /// Canonical model ID; empty keeps the agent's default model.
-    pub model_id: String,
-    /// Thinking level; empty keeps the agent's preferred level.
-    pub level: String,
-}
-
 /// `RunConfig` from grpc-client.ts.
 #[derive(Debug, Clone, Default)]
 pub struct RunConfig {
@@ -1223,7 +1191,7 @@ mod tests {
     // ── execute_command surface ─────────────────────────────────────
 
     #[tokio::test]
-    async fn new_session_options_reach_the_wire() {
+    async fn new_session_sends_cli_creator() {
         let mut agent = MockAgent::default();
         agent
             .responses
@@ -1231,34 +1199,18 @@ mod tests {
         let addr = spawn_mock(agent.clone()).await;
         let client = RunClient::new(&addr);
 
-        client
-            .new_session_with(&NewSessionOptions {
-                cwd: "/work".into(),
-                parent_session: "p-1".into(),
-                name: "Title".into(),
-                model_id: "m1".into(),
-                level: "high".into(),
-            })
-            .await
-            .expect("new_session");
+        assert_eq!(
+            client.new_session("/tmp").await.expect("new_session")["sessionId"],
+            "s1"
+        );
         let seen = agent.seen_of("new_session");
-        assert_eq!(seen[0].cwd, "/work");
-        assert_eq!(seen[0].parent_session, "p-1");
-        assert_eq!(seen[0].name, "Title");
-        assert_eq!(seen[0].model_id, "m1");
-        assert_eq!(seen[0].level, "high");
+        assert_eq!(seen[0].cwd, "/tmp");
         assert_eq!(seen[0].created_by, "cli");
+        assert!(seen[0].parent_session.is_empty());
+        assert!(seen[0].name.is_empty());
+        assert!(seen[0].model_id.is_empty());
+        assert!(seen[0].level.is_empty());
         assert!(seen[0].session_id.is_empty());
-
-        // The plain cwd-only variant is the empty-options shorthand.
-        client.new_session("/tmp").await.expect("new_session");
-        let seen = agent.seen_of("new_session");
-        assert_eq!(seen[1].cwd, "/tmp");
-        assert!(seen[1].parent_session.is_empty());
-        assert!(seen[1].name.is_empty());
-        assert!(seen[1].model_id.is_empty());
-        assert!(seen[1].level.is_empty());
-        assert_eq!(seen[1].created_by, "cli");
     }
 
     #[tokio::test]

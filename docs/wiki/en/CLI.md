@@ -174,8 +174,6 @@ future loop status        # loop control plane: goals/todos/gates
 
 ```bash
 future session list
-future session new [--parent <id>] [--title <name>] [--cwd <dir>]
-                   [--model <id>] [--thinking <level>]
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id>
@@ -183,9 +181,8 @@ future session rename <id> <name>
 future session delete <id>
 ```
 
-`new` creates a session and prints its ID (usable with `future run --session <id>`);
-`set` changes those same settings on an existing session — only the options you pass
-are touched (`--parent ""` detaches). A parent records lineage only: no history is
+`set` changes those settings on an existing session — only the options you pass are
+touched (`--parent ""` detaches). A parent records lineage only: no history is
 copied (that is `fork`), and the parent must be an existing session.
 
 Title and cwd are written to the session record immediately; the model and thinking
