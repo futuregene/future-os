@@ -1,0 +1,1135 @@
+{
+  "total": 141,
+  "builtin": 15,
+  "thirdParty": 126,
+  "skills": [
+    {
+      "name": "future-account",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "账户管理",
+      "description": "View Future account profile and credit balance via Future CLI. Use when the user asks about their account info, credits balance, remaining credits, or asks \"how is my account\" or \"show me my balance\".",
+      "descriptionZh": "通过 Future CLI 查看账户信息和积分余额；不创建充值订单"
+    },
+    {
+      "name": "future-browser",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "浏览器控制",
+      "description": "Control a local visible Chrome, Edge, or Safari browser through Future CLI tools. Use for opening local apps, inspecting pages, clicking, typing, screenshots, and reading console output without modifying the Rust agent.",
+      "descriptionZh": "通过 Future CLI 控制本地 Chrome、Edge 或 Safari，按授权打开页面并执行网页操作"
+    },
+    {
+      "name": "future-database-lookup",
+      "builtin": true,
+      "category": "databases",
+      "nameZh": "科学数据库查询",
+      "description": "Query 78 scientific and public-data databases through documented APIs for reproducible facts about compounds, genes, variants, structures, clinical trials, pathways, patents, environmental and economic data. Use for named databases or scientific identifiers. Not for general web search or a literature review.",
+      "descriptionZh": "确定性查询 78 个公开科学数据库，包括生物医学、材料科学、监管、金融等领域"
+    },
+    {
+      "name": "future-deep-research",
+      "builtin": true,
+      "category": "methodology",
+      "nameZh": "深度研究",
+      "description": "Evidence-driven deep research using web, academic papers and user materials. Produce a full research report, a delegated methods brief, or an incremental update; trace claims to sources, verify key citations, and report gaps and resource use. Use for deep research, literature reviews, industry or technology analysis, research reports, and methods research delegated by future-explore. Not for editing this skill itself or ordinary single-fact lookups.",
+      "descriptionZh": "执行多轮深度研究任务，自动搜索、分析并综合多源信息生成研究报告"
+    },
+    {
+      "name": "future-document",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "文档解析",
+      "description": "Extract PDF or Word (.docx) content into structured Markdown, including headings, tables and formulas. Use for document reading, parsing or conversion; choose authorized remote parsing or a local workflow according to privacy and offline requirements.",
+      "descriptionZh": "按隐私与离线要求选择本地解析或授权的远程 PDF/Word 解析，输出结构化 Markdown 并说明提取限制"
+    },
+    {
+      "name": "future-experimental-design",
+      "builtin": true,
+      "category": "methodology",
+      "nameZh": "实验设计",
+      "description": "Design experiments and research protocols before data collection — select design type, randomization, blocking, treatment combination layout, and ensure experimental results are interpretable. For planning studies, assigning subjects/samples to groups, randomization, blocking, stratification, controls, factorial/fractional factorial designs, DOE, screening multiple factors, response surface optimization, crossover/repeated measures/split-plot designs, cluster randomization, Latin squares, well-plate layouts, batch/run order effects, replication vs. pseudoreplication, and sequential/adaptive designs.",
+      "descriptionZh": "设计科学实验方案，包括对照组、样本量计算、随机化和统计分析计划"
+    },
+    {
+      "name": "future-image",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "图像生成与编辑",
+      "description": "Generate images from text, edit supplied images, and analyze images or screenshots for OCR and visual questions using Future CLI tools. Use for drawing, image editing, visual inspection and chart reading within the user's data and resource permissions.",
+      "descriptionZh": "文本到图像生成、自然语言图像编辑和图像分析"
+    },
+    {
+      "name": "future-loop",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "长程目标循环",
+      "description": "FutureOS loop control plane — manage long-running goals, todos, human gates, workers, monitors, and validated completion. Use for cross-session work, ongoing task status, \"keep working\", \"run overnight\", or /future-loop. Not needed for a one-shot review or ordinary code edit.",
+      "descriptionZh": "FutureOS 循环控制平面——将对话转化为持久、可审查的长程目标：目标、todo、人工门禁、监控、证据与闭环验证都持久化在聊天之外"
+    },
+    {
+      "name": "future-paper",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "文献搜索与获取",
+      "description": "Search academic literature and retrieve paper content by PMID, DOI or other supported identifiers. Use for finding papers, literature reviews and extracting specific findings. Distinguish generated search summaries from inspected original passages and report unavailable full text.",
+      "descriptionZh": "跨多数据库搜索学术文献，按标识符获取全文内容"
+    },
+    {
+      "name": "future-peer-review",
+      "builtin": true,
+      "category": "methodology",
+      "nameZh": "同行评审",
+      "description": "Review scientific manuscripts, grant proposals and research presentations with evidence-linked, constructive assessment of methods, statistics, reproducibility, ethics and reporting standards. Use for formal peer review, manuscript critique and revision feedback. Distinguish major validity issues from minor presentation issues.",
+      "descriptionZh": "结构化稿件/基金评审，基于清单的系统性评估方法"
+    },
+    {
+      "name": "future-scientific-writing",
+      "builtin": true,
+      "category": "methodology",
+      "nameZh": "科研写作",
+      "description": "Draft and revise scientific manuscripts, abstracts and journal submissions. Build an evidence-linked outline, then write clear prose using venue-specific structure, citation style, figures and reporting guidelines. Use for IMRAD papers, manuscript revision, scientific writing and responses to reviewers.",
+      "descriptionZh": "按证据提纲撰写和修订科学稿件，遵循用户与期刊的结构、引用及报告规范"
+    },
+    {
+      "name": "future-skill-creator",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "自定义技能创建",
+      "description": "Create, review or improve a custom Future skill with clear triggers, concise instructions, optional scripts/references/assets and offline validation. Use for requests to add a skill, update SKILL.md, port a workflow or create a custom skill. Default installation scope is ~/.future/agent/skills (Windows USERPROFILE equivalent).",
+      "descriptionZh": "在本地创建或更新自定义技能，采用成熟的技能设计模式"
+    },
+    {
+      "name": "future-slides",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "幻灯片与演示生成",
+      "description": "Turn a report or outline into a coherent deck of PNG slide images and an optional PDF. Supports minimal, dark-tech, sketched, corporate, vibrant, research-poster, molecular-aesthetic, data-driven and custom styles. Use for presentation/slide creation; clarify when the user needs editable PPTX rather than image-based slides.",
+      "descriptionZh": "从 Markdown 报告生成演示幻灯片，支持 8 种预设视觉风格（极简、深色科技、手绘、现代商务、活力多彩、科研海报、分子美学、数据驱动）及自定义风格"
+    },
+    {
+      "name": "future-software-install",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "轻量软件安装与镜像配置",
+      "description": "Install or update lightweight software, command-line tools, browser automation prerequisites, and document-processing libraries for FutureOS across Windows, macOS, and Linux. Use when the user asks to install a tool, configure Homebrew or a package manager, set up Chrome/headless browsing, add Python document libraries, or use mainland China download mirrors.",
+      "descriptionZh": "跨 Windows、macOS 和 Linux 安装轻量命令行工具、Chrome 与文档处理库，并提供中国大陆网络镜像策略"
+    },
+    {
+      "name": "future-web",
+      "builtin": true,
+      "category": "tools",
+      "nameZh": "网页搜索",
+      "description": "Search the public web, retrieve pages and verify current facts, news or documentation. Use for web searches and user-supplied URLs. Try fetch_url first, then an authorized browser fallback for incomplete or JavaScript-rendered pages; report access limitations honestly.",
+      "descriptionZh": "搜索公开网络获取最新信息，返回页面标题、URL 和内容摘要"
+    },
+    {
+      "name": "adaptyv",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "Adaptyv 生物实验",
+      "description": "How to use the Adaptyv Bio Foundry API and Python SDK for protein experiment design, submission, and results retrieval. Use this skill whenever the user mentions Adaptyv, Foundry API, protein binding assays, protein screening experiments, BLI/SPR assays, thermostability assays, or wants to submit protein sequences for experimental characterization. Also trigger when code imports `adaptyv`, `adaptyv_sdk`, or `FoundryClient`, or references `foundry-api-public.adaptyvbio.com`.",
+      "descriptionZh": "使用 Adaptyv Bio Foundry API 和 Python SDK 进行蛋白质实验设计、提交和结果获取"
+    },
+    {
+      "name": "aeon",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "时间序列机器学习",
+      "description": "This skill should be used for time series machine learning tasks including classification, regression, clustering, forecasting, anomaly detection, segmentation, and similarity search. Use when working with temporal data, sequential patterns, or time-indexed observations requiring specialized algorithms beyond standard ML approaches. Particularly suited for univariate and multivariate time series analysis with scikit-learn compatible APIs.",
+      "descriptionZh": "时间序列分类、回归、聚类、预测、异常检测等 ML 任务的专用工具包"
+    },
+    {
+      "name": "anndata",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "单细胞数据格式",
+      "description": "Data structure for annotated matrices in single-cell analysis. Use when working with .h5ad files or integrating with the scverse ecosystem. This is the data format skill—for analysis workflows use scanpy; for probabilistic models use scvi-tools; for population-scale queries use cellxgene-census.",
+      "descriptionZh": "单细胞分析中的注释矩阵数据结构，支持 .h5ad 文件读写及 scverse 生态集成"
+    },
+    {
+      "name": "arbor",
+      "builtin": false,
+      "category": "neuroscience",
+      "nameZh": "Arbor 迭代改进",
+      "description": "Autonomously improve a real artifact (code, training recipe, agent harness, data pipeline, prompt) against an objective and an evaluator, using Hypothesis Tree Refinement (HTR) from the Arbor paper. Use this whenever someone wants to iteratively optimize something over many experiments without overfitting — e.g. \"get my model's eval score up\", \"improve this agent/harness\", \"tune this pipeline\", \"beat the baseline on this benchmark\", \"run a search over approaches and keep the best\", \"do an MLE-bench / Kaggle-style optimization\", or any long-horizon \"make this artifact better and don't just memorize the dev set\" task. Trigger it even when the user doesn't say \"Arbor\" or \"hypothesis tree\" but describes repeated experiment-and-evaluate loops, branching exploration of competing ideas, or worries about a dev/test gap. Runs Claude itself as the coordinator with subagent executors in isolated git worktrees; for the standalone `arbor` CLI tool see references/arbor-upstream.md.",
+      "descriptionZh": "自主改进代码、训练配方、Agent 框架、数据管线等实际工件"
+    },
+    {
+      "name": "arboreto",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "基因调控网络推断",
+      "description": "Infer gene regulatory networks (GRNs) from gene expression data using scalable algorithms (GRNBoost2, GENIE3). Use when analyzing transcriptomics data (bulk RNA-seq, single-cell RNA-seq) to identify transcription factor-target gene relationships and regulatory interactions. Supports distributed computation for large-scale datasets.",
+      "descriptionZh": "从基因表达数据推断基因调控网络，支持 GRNBoost2 和 GENIE3 算法"
+    },
+    {
+      "name": "astropy",
+      "builtin": false,
+      "category": "other",
+      "nameZh": "天文物理计算",
+      "description": "Core Python library for astronomy and astrophysics workflows that need Astropy APIs, including units/quantities, coordinates, FITS I/O, tables, time systems, WCS, and cosmology. Use when implementing or debugging astronomical data analysis code with Astropy.",
+      "descriptionZh": "天文和天体物理工作流核心库，涵盖单位转换、坐标、星表、时间、WCS 等"
+    },
+    {
+      "name": "autoskill",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "自动技能生成",
+      "description": "Observe the user's screen via screenpipe, detect repeated research workflows, match them against existing scientific-agent-skills, and draft new skills (or composition recipes that chain existing ones) for the patterns not yet covered. Use when the user asks to analyze their recent work and propose skills based on what they actually do. Requires the screenpipe daemon (https://github.com/screenpipe/screenpipe) running locally on port 3030 — the skill has no other data source and will refuse to run if screenpipe is unreachable. All detection runs locally; only redacted cluster summaries reach the LLM.",
+      "descriptionZh": "通过 screenpipe 观察用户屏幕，检测重复研究工作流并自动生成匹配技能"
+    },
+    {
+      "name": "benchling-integration",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "Benchling 实验平台",
+      "description": "Benchling Python SDK and REST API integration for registry entities, inventory, ELN entries, workflows, Benchling Apps, and Data Warehouse queries. Use when automating lab data with benchling-sdk or the v2 API.",
+      "descriptionZh": "Benchling Python SDK 与 REST API 集成，管理注册实体、库存、ELN、工作流等"
+    },
+    {
+      "name": "bids",
+      "builtin": false,
+      "category": "neuroscience",
+      "nameZh": "脑影像数据标准",
+      "description": "Use this skill when working with Brain Imaging Data Structure (BIDS) datasets: organizing neuroscience and biomedical data (MRI, EEG, MEG, iEEG, PET, microscopy, NIRS, motion capture, EMG, MR spectroscopy, behavioral), querying BIDS layouts, validating compliance, converting DICOM to BIDS, writing metadata sidecars, or creating BIDS derivatives.",
+      "descriptionZh": "BIDS 神经影像数据格式规范，用于组织 MRI、EEG、MEG 等脑成像数据"
+    },
+    {
+      "name": "biopython",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "生物信息学工具包",
+      "description": "Comprehensive molecular biology toolkit. Use for sequence manipulation, file parsing (FASTA/GenBank/PDB), phylogenetics, and programmatic NCBI/PubMed access (Bio.Entrez). Best for batch processing, custom bioinformatics pipelines, BLAST automation. For quick lookups use gget; for multi-service integration use bioservices.",
+      "descriptionZh": "全面的分子生物学工具包，支持序列操作、文件解析（FASTA/GenBank）、BLAST、PDB 结构等"
+    },
+    {
+      "name": "bioservices",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "生物信息学服务集成",
+      "description": "Unified Python interface to 40+ bioinformatics services. Use when querying multiple databases (UniProt, KEGG, ChEMBL, Reactome) in a single workflow with consistent API. Best for cross-database analysis, ID mapping across services. For quick single-database lookups use gget; for sequence/file manipulation use biopython.",
+      "descriptionZh": "40+ 生物信息学服务的统一 Python 接口，支持 UniProt、KEGG、ChEBI 等多数据库查询"
+    },
+    {
+      "name": "bulk-rnaseq",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "批量 RNA-seq 分析",
+      "description": "End-to-end bulk RNA-seq orchestrator — takes raw FASTQ reads through QC and trimming (FastQC, fastp/Trim Galore), alignment and quantification (STAR, Salmon, featureCounts), assembles a gene-level counts matrix, then hands off to differential expression (pydeseq2), pathway/GSEA enrichment (pathway-enrichment), and publication figures (scientific-visualization). Use whenever the user has bulk RNA-seq reads or quant output and wants a complete, reproducible differential-expression workflow — e.g. \"analyze my RNA-seq\", \"FASTQ to DESeq2\", \"run nf-core/rnaseq\", \"STAR/Salmon quantification\", \"build a counts matrix for DESeq2\", or \"go from reads to differentially expressed genes and enriched pathways\". Routes between an nf-core/rnaseq (Nextflow) path and a standalone STAR/Salmon path, and covers experimental design, strandedness, and QC gates. For single-cell RNA-seq use the scanpy skill instead.",
+      "descriptionZh": "端到端批量 RNA-seq 流程：从 FASTQ 到 QC、比对、定量、差异表达和功能富集分析"
+    },
+    {
+      "name": "cellxgene-census",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "单细胞数据查询",
+      "description": "Query the CZ CELLxGENE Census programmatically for versioned public single-cell and spatial transcriptomics data. Use when you need population-scale cell metadata, gene expression slices, Census summary counts, source H5AD URIs/downloads, embeddings, spatial Census data, or reference atlas comparisons across organisms, tissues, diseases, assays, and cell types. For analyzing your own local single-cell data use scanpy, anndata, or scvi-tools.",
+      "descriptionZh": "通过 CZ CELLxGENE Census 编程查询公开单细胞和空间转录组数据"
+    },
+    {
+      "name": "clinical-decision-support",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "临床决策支持",
+      "description": "Generate professional clinical decision support (CDS) documents for pharmaceutical and clinical research settings, including patient cohort analyses (biomarker-stratified with outcomes) and treatment recommendation reports (evidence-based guidelines with decision algorithms). Supports GRADE evidence grading, statistical analysis (hazard ratios, survival curves, waterfall plots), biomarker integration, and regulatory compliance. Outputs publication-ready LaTeX/PDF format optimized for drug development, clinical research, and evidence synthesis.",
+      "descriptionZh": "生成专业临床决策支持文档，适用于制药和临床研究场景"
+    },
+    {
+      "name": "clinical-reports",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "临床报告撰写",
+      "description": "Write comprehensive clinical reports including case reports (CARE guidelines), diagnostic reports (radiology/pathology/lab), clinical trial reports (ICH-E3, SAE, CSR), and patient documentation (SOAP, H&P, discharge summaries). Full support with templates, regulatory compliance (HIPAA, FDA, ICH-GCP), and validation tools.",
+      "descriptionZh": "撰写综合临床报告：病例报告、诊断报告、影像学报告等专业医学文档"
+    },
+    {
+      "name": "cobrapy",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "代谢网络建模",
+      "description": "Constraint-based metabolic modeling (COBRA). FBA, FVA, gene knockouts, flux sampling, SBML models, for systems biology and metabolic engineering analysis.",
+      "descriptionZh": "基于约束的代谢建模（COBRA）：FBA、FVA、基因敲除、通量采样、SBML 模型"
+    },
+    {
+      "name": "consciousness-council",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "思维委员会审议",
+      "description": "Run a multi-perspective Mind Council deliberation on any question, decision, or creative challenge. Use this skill whenever the user wants diverse viewpoints, needs help making a tough decision, asks for a council/panel/board discussion, wants to explore a problem from multiple angles, requests devil's advocate analysis, or says things like \"what would different experts think about this\", \"help me think through this from all sides\", \"council mode\", \"mind council\", or \"deliberate on this\". Also trigger when the user faces a dilemma, trade-off, or complex choice with no obvious answer.",
+      "descriptionZh": "运行多视角思维委员会审议，对任意问题、决策或创意挑战进行多角度探讨"
+    },
+    {
+      "name": "dask",
+      "builtin": false,
+      "category": "workflow",
+      "nameZh": "大规模分布式计算",
+      "description": "Distributed computing for larger-than-RAM pandas/NumPy workflows. Use when you need to scale existing pandas/NumPy code beyond memory or across clusters. Best for parallel file processing, distributed ML, integration with existing pandas code. For out-of-core analytics on single machine use vaex; for in-memory speed use polars.",
+      "descriptionZh": "超内存规模的 pandas/NumPy 分布式计算框架，无缝扩展现有数据分析代码"
+    },
+    {
+      "name": "datamol",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "分子化学信息学",
+      "description": "Pythonic wrapper around RDKit with simplified interface and sensible defaults. Preferred for standard drug discovery including SMILES parsing, standardization, descriptors, fingerprints, clustering, 3D conformers, parallel processing. Returns native rdkit.Chem.Mol objects. For advanced control or custom parameters, use rdkit directly.",
+      "descriptionZh": "RDKit 的 Pythonic 封装，简化分子操作接口，适用于标准化化学信息学任务"
+    },
+    {
+      "name": "deepchem",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "分子深度学习",
+      "description": "Molecular ML with diverse featurizers and pre-built datasets. Use for property prediction (ADMET, toxicity) with traditional ML or GNNs when you want extensive featurization options and MoleculeNet benchmarks. Best for quick experiments with pre-trained models, diverse molecular representations. For graph-first PyTorch workflows use torchdrug; for benchmark datasets use pytdc.",
+      "descriptionZh": "分子机器学习工具包，用于性质预测（ADMET、毒性）、药物-靶点相互作用等"
+    },
+    {
+      "name": "deeptools",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "NGS 数据分析",
+      "description": "NGS analysis toolkit. BAM to bigWig conversion, QC (correlation, PCA, fingerprints), heatmaps/profiles (TSS, peaks), for ChIP-seq, RNA-seq, ATAC-seq visualization.",
+      "descriptionZh": "NGS 分析工具包：BAM 转 bigWig、QC、热图/谱图、峰注释等"
+    },
+    {
+      "name": "depmap",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "癌症依赖图谱",
+      "description": "Query the Cancer Dependency Map (DepMap) for cancer cell line gene dependency scores (CRISPR Chronos), drug sensitivity data, and gene effect profiles. Use for identifying cancer-specific vulnerabilities, synthetic lethal interactions, and validating oncology drug targets.",
+      "descriptionZh": "查询 Cancer Dependency Map，获取癌细胞系基因依赖性评分（CRISPR Chronos）"
+    },
+    {
+      "name": "dhdna-profiler",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "认知模式分析",
+      "description": "Extract cognitive patterns and thinking fingerprints from any text. Use this skill when the user wants to analyze how someone thinks, understand cognitive style, profile writing or speech patterns, compare thinking styles between people, asks \"what's my thinking style\", \"analyze how this person reasons\", \"cognitive profile\", \"thinking pattern\", \"DHDNA\", \"digital DNA\", or wants to understand the mind behind any text. Also trigger when the user provides text and wants deeper insight into the author's reasoning patterns, decision-making style, or cognitive signature.",
+      "descriptionZh": "从文本中提取认知模式和思维指纹，分析思维风格和认知特征"
+    },
+    {
+      "name": "diffdock",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "分子对接",
+      "description": "DiffDock and DiffDock-L molecular docking. Use for protein-small-molecule pose prediction from PDB or sequence plus SMILES/SDF/MOL2, batch docking, virtual screening, and pose-confidence interpretation. Not for binding affinity prediction.",
+      "descriptionZh": "DiffDock 和 DiffDock-L 分子对接工具，从 PDB 结构预测蛋白质-小分子结合姿态"
+    },
+    {
+      "name": "dnanexus-integration",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "DNAnexus 云基因组",
+      "description": "DNAnexus cloud genomics platform. Build apps/applets, manage data (upload/download), dxpy Python SDK, run workflows, FASTQ/BAM/VCF, for genomics pipeline development and execution.",
+      "descriptionZh": "DNAnexus 云基因组平台：构建应用、管理数据、dxpy Python SDK 集成"
+    },
+    {
+      "name": "esm",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "蛋白质语言模型",
+      "description": "Use when working directly with the `esm` Python SDK, ESM3 or ESMC model IDs, Forge/Biohub inference clients, or ESMFold2 folding workflows.",
+      "descriptionZh": "使用 ESM3/ESMC 等蛋白质语言模型进行结构预测、功能注释和突变分析"
+    },
+    {
+      "name": "etetoolkit",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "系统发育树分析",
+      "description": "Phylogenetic tree toolkit (ETE). Tree manipulation (Newick/NHX), evolutionary event detection, orthology/paralogy, NCBI taxonomy, visualization (PDF/SVG), for phylogenomics.",
+      "descriptionZh": "系统发育树工具包：树操作（Newick/NHX）、进化事件检测、同源性分析、可视化"
+    },
+    {
+      "name": "exploratory-data-analysis",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "探索性数据分析",
+      "description": "Perform comprehensive exploratory data analysis on scientific data files across 200+ file formats. This skill should be used when analyzing any scientific data file to understand its structure, content, quality, and characteristics. Automatically detects file type and generates detailed markdown reports with format-specific analysis, quality metrics, and downstream analysis recommendations. Covers chemistry, bioinformatics, microscopy, spectroscopy, proteomics, metabolomics, and general scientific data formats.",
+      "descriptionZh": "对 200+ 文件格式的科学数据进行全面探索性分析，生成统计摘要和可视化"
+    },
+    {
+      "name": "flowio",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "流式细胞数据解析",
+      "description": "Parse FCS (Flow Cytometry Standard) files v2.0-3.1. Extract events as NumPy arrays, read metadata/channels, convert to CSV/DataFrame, for flow cytometry data preprocessing.",
+      "descriptionZh": "解析 FCS 流式细胞标准文件，提取事件为 NumPy 数组，读取元数据"
+    },
+    {
+      "name": "fluidsim",
+      "builtin": false,
+      "category": "other",
+      "nameZh": "流体力学模拟",
+      "description": "Framework for computational fluid dynamics simulations using Python. Use when running fluid dynamics simulations including Navier-Stokes equations (2D/3D), shallow water equations, stratified flows, or when analyzing turbulence, vortex dynamics, or geophysical flows. Provides pseudospectral methods with FFT, HPC support, and comprehensive output analysis.",
+      "descriptionZh": "计算流体力学模拟框架，用于湍流、多相流等 CFD 模拟"
+    },
+    {
+      "name": "future-explore",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "探索求解与验证",
+      "description": "Evidence-driven exploration, method comparison, experimentation, optimization and feasibility assessment when the answer is not yet known. Use for scientific/engineering exploration or explicitly requested multi-worker reflection. Not for routine factual lookup, a code change with known implementation steps, or editing this skill itself.",
+      "descriptionZh": "按风险和预算选择轻量、标准或重型研究流程，比较方法、记录增量证据、独立验证，并区分达标、受阻和预算耗尽"
+    },
+    {
+      "name": "geniml",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "基因组区间机器学习",
+      "description": "This skill should be used when working with genomic interval data (BED files) for machine learning tasks. Use for training region embeddings (Region2Vec, BEDspace), single-cell ATAC-seq analysis (scEmbed), building consensus peaks (universes), or any ML-based analysis of genomic regions. Applies to BED file collections, scATAC-seq data, chromatin accessibility datasets, and region-based genomic feature learning.",
+      "descriptionZh": "处理基因组区间数据（BED 文件）的机器学习工具包"
+    },
+    {
+      "name": "geomaster",
+      "builtin": false,
+      "category": "other",
+      "nameZh": "地理空间科学",
+      "description": "Comprehensive geospatial science skill covering remote sensing, GIS, spatial analysis, machine learning for earth observation, and 30+ scientific domains. Supports satellite imagery processing (Sentinel, Landsat, MODIS, SAR, hyperspectral), vector and raster data operations, spatial statistics, point cloud processing, network analysis, cloud-native workflows (STAC, COG, Planetary Computer), and 8 programming languages (Python, R, Julia, JavaScript, C++, Java, Go, Rust) with 500+ code examples. Use for remote sensing workflows, GIS analysis, spatial ML, Earth observation data processing, terrain analysis, hydrological modeling, marine spatial analysis, atmospheric science, and any geospatial computation task.",
+      "descriptionZh": "综合地理空间科学技能：遥感、GIS、空间分析、机器学习应用于地理数据"
+    },
+    {
+      "name": "geopandas",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "地理空间数据处理",
+      "description": "Python library for working with geospatial vector data including shapefiles, GeoJSON, and GeoPackage files. Use when working with geographic data for spatial analysis, geometric operations, coordinate transformations, spatial joins, overlay operations, choropleth mapping, or any task involving reading/writing/analyzing vector geographic data. Supports PostGIS databases, interactive maps, and integration with matplotlib/folium/cartopy. Use for tasks like buffer analysis, spatial joins between datasets, dissolving boundaries, clipping data, calculating areas/distances, reprojecting coordinate systems, creating maps, or converting between spatial file formats.",
+      "descriptionZh": "处理矢量地理空间数据的 Python 库，支持 shapefile、GeoJSON、GeoPackage"
+    },
+    {
+      "name": "get-available-resources",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "计算资源检测",
+      "description": "This skill should be used at the start of any computationally intensive scientific task to detect and report available system resources (CPU cores, GPUs, memory, disk space). It creates a JSON file with resource information and strategic recommendations that inform computational approach decisions such as whether to use parallel processing (joblib, multiprocessing), out-of-core computing (Dask, Zarr), GPU acceleration (PyTorch, JAX), or memory-efficient strategies. Use this skill before running analyses, training models, processing large datasets, or any task where resource constraints matter.",
+      "descriptionZh": "在计算密集型任务开始前检测系统可用资源（CPU/GPU/内存/磁盘）"
+    },
+    {
+      "name": "gget",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "生物数据库快速查询",
+      "description": "Fast CLI/Python queries to 20+ bioinformatics databases. Use for quick lookups: gene info, BLAST/BLAT, viral sequence downloads, AlphaFold structures, enrichment analysis, OpenTargets, COSMIC, CELLxGENE, and 8cube mouse specificity/expression data. Best for interactive exploration and simple queries. For batch processing or advanced BLAST use biopython; for multi-database Python workflows use bioservices.",
+      "descriptionZh": "20+ 生物信息学数据库的快速 CLI/Python 查询工具"
+    },
+    {
+      "name": "ginkgo-cloud-lab",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "Ginkgo 云实验室",
+      "description": "Submit and manage protocols on Ginkgo Bioworks Cloud Lab (cloud.ginkgo.bio), a web-based interface for autonomous lab execution on Reconfigurable Automation Carts (RACs). Use when the user wants to run protein expression and purification (cell-free, E. coli, or Pichia), HiBiT or A280 or LabChip quantification, IVT mRNA/circRNA synthesis, thermal shift / developability assays, Echo-MS enzyme or analyte methods, SPR target onboarding, fluorescent pixel art, or otherwise interact with Ginkgo Cloud Lab services. Covers protocol selection, input preparation, pricing, and ordering workflows.",
+      "descriptionZh": "通过 Ginkgo Bioworks Cloud Lab 提交和管理湿实验协议"
+    },
+    {
+      "name": "glycoengineering",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "糖基化工程",
+      "description": "Analyze and engineer protein glycosylation. Scan sequences for N-glycosylation sequons (N-X-S/T), predict O-glycosylation hotspots, and access curated glycoengineering tools (NetOGlyc, GlycoShield, GlycoWorkbench). For glycoprotein engineering, therapeutic antibody optimization, and vaccine design.",
+      "descriptionZh": "分析和工程化蛋白质糖基化：N-糖基化位点扫描、糖型预测和改造"
+    },
+    {
+      "name": "gtars",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "基因组区间分析",
+      "description": "High-performance toolkit for genomic interval analysis in Rust with Python bindings. Use when working with genomic regions, BED files, coverage tracks, overlap detection, tokenization for ML models, or fragment analysis in computational genomics and machine learning applications.",
+      "descriptionZh": "基于 Rust 的高性能基因组区间分析工具包，含 Python 绑定"
+    },
+    {
+      "name": "histolab",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "病理切片预处理",
+      "description": "Lightweight WSI tile extraction and preprocessing. Use for basic slide processing, tissue detection, tile extraction, and stain normalization for H&E images. Best for simple pipelines, dataset preparation, and quick tile-based analysis. For advanced spatial proteomics, multiplexed imaging, or deep learning pipelines use pathml.",
+      "descriptionZh": "轻量级全切片图像瓦片提取和预处理工具"
+    },
+    {
+      "name": "hugging-science",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "HuggingFace 科研模型",
+      "description": "Use when the user is doing AI/ML work in a scientific domain such as biology, chemistry, physics, astronomy, climate, genomics, materials, medicine, ecology, energy, engineering, math, drug discovery, protein design, weather modeling, theorem proving, single-cell, or PDE solving. Hugging Science is a curated catalog of scientific datasets, models, blog posts, and interactive Spaces. This skill helps discover and use resources via `datasets`, `transformers`, the HF Inference API, `gradio_client`, and methodology citations.",
+      "descriptionZh": "在生物、化学、物理等科学领域使用 HuggingFace 预训练模型"
+    },
+    {
+      "name": "hypogenic",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "自动假设生成",
+      "description": "Automated LLM-driven hypothesis generation and testing on tabular datasets. Use when you want to systematically explore hypotheses about patterns in empirical data (e.g., deception detection, content analysis). Combines literature insights with data-driven hypothesis testing. For manual hypothesis formulation use hypothesis-generation; for creative ideation use scientific-brainstorming.",
+      "descriptionZh": "基于表格数据的自动化 LLM 驱动假设生成和检验"
+    },
+    {
+      "name": "hypothesis-generation",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "科学假设构建",
+      "description": "Structured hypothesis formulation from observations. Use when you have experimental observations or data and need to formulate testable hypotheses with predictions, propose mechanisms, and design experiments to test them. Follows scientific method framework. For open-ended ideation use scientific-brainstorming; for automated LLM-driven hypothesis testing on datasets use hypogenic.",
+      "descriptionZh": "从实验观察出发，系统化构建和评价科学假设"
+    },
+    {
+      "name": "imaging-data-commons",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "癌症影像数据",
+      "description": "Query and download public cancer imaging data from NCI Imaging Data Commons using idc-index. Use for accessing large-scale radiology (CT, MR, PET) and pathology datasets for AI training or research. No authentication required. Query by metadata, visualize in browser, check licenses.",
+      "descriptionZh": "从 NCI Imaging Data Commons 查询和下载公开癌症影像数据"
+    },
+    {
+      "name": "iso-13485-certification",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "ISO 13485 认证",
+      "description": "Comprehensive toolkit for preparing ISO 13485 certification documentation for medical device Quality Management Systems. Use when users need help with ISO 13485 QMS documentation, including (1) conducting gap analysis of existing documentation, (2) creating Quality Manuals, (3) developing required procedures and work instructions, (4) preparing Medical Device Files, (5) understanding ISO 13485 requirements, or (6) identifying missing documentation for medical device certification. Also use when users mention medical device regulations, QMS certification, FDA QMSR, EU MDR, or need help with quality system documentation.",
+      "descriptionZh": "医疗器械质量管理体系 ISO 13485 认证文档准备工具包"
+    },
+    {
+      "name": "labarchive-integration",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "LabArchive 电子实验本",
+      "description": "Electronic lab notebook API integration. Access notebooks, manage entries/attachments, backup notebooks, integrate with Protocols.io/Jupyter/REDCap, for programmatic ELN workflows.",
+      "descriptionZh": "电子实验本 API 集成：管理笔记本、条目、附件和数据备份"
+    },
+    {
+      "name": "lamindb",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "LaminDB 数据湖仓",
+      "description": "Use when working with LaminDB, the open-source lineage-native lakehouse for biological datasets and models. Covers setup, artifact registration, query/search, lineage tracking, validation, ontology-backed annotation with Bionty, collections, branches, storage, and workflow integrations.",
+      "descriptionZh": "开源血缘感知的生物数据库，管理数据集和模型训练的完整数据链路"
+    },
+    {
+      "name": "latchbio-integration",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "Latch 生信平台",
+      "description": "Latch platform for bioinformatics workflows. Build pipelines with Latch SDK, @workflow/@task decorators, deploy serverless workflows, LatchFile/LatchDir, Nextflow/Snakemake integration.",
+      "descriptionZh": "Latch 生物信息学工作流平台：构建管线、管理数据和云资源"
+    },
+    {
+      "name": "latex-posters",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "LaTeX 学术海报",
+      "description": "Create professional research posters in LaTeX using beamerposter, tikzposter, or baposter. Support for conference presentations, academic posters, and scientific communication. Includes layout design, color schemes, multi-column formats, figure integration, and poster-specific best practices for visual communication.",
+      "descriptionZh": "使用 beamerposter、tikzposter 或 baposter 创建专业研究海报"
+    },
+    {
+      "name": "markdown-mermaid-writing",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Markdown 与图表写作",
+      "description": "Comprehensive markdown and Mermaid diagram writing skill. Use when creating any scientific document, report, analysis, or visualization. Establishes text-based diagrams as the default documentation standard with full style guides (markdown + mermaid), 24 diagram type references, and 9 document templates.",
+      "descriptionZh": "全面的 Markdown 和 Mermaid 图表写作技能，适用于科学文档"
+    },
+    {
+      "name": "market-research-reports",
+      "builtin": false,
+      "category": "other",
+      "nameZh": "市场研究报告",
+      "description": "Generate comprehensive market research reports (50+ pages) in the style of top consulting firms (McKinsey, BCG, Gartner). Features professional LaTeX formatting, extensive visual generation with scientific-schematics and generate-image, deep integration with research-lookup for data gathering, and multi-framework strategic analysis including Porter Five Forces, PESTLE, SWOT, TAM/SAM/SOM, and BCG Matrix.",
+      "descriptionZh": "生成 McKinsey/BCG/Bain 风格的 50+ 页综合市场研究报告"
+    },
+    {
+      "name": "matchms",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "质谱相似性分析",
+      "description": "Spectral similarity and compound identification for metabolomics. Use for comparing mass spectra, computing similarity scores (cosine, modified cosine), and identifying unknown compounds from spectral libraries. Best for metabolite identification, spectral matching, library searching. For full LC-MS/MS proteomics pipelines use pyopenms.",
+      "descriptionZh": "代谢组学质谱相似性和化合物鉴定工具"
+    },
+    {
+      "name": "matlab",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "MATLAB/Octave 计算",
+      "description": "MATLAB and GNU Octave numerical computing for matrix operations, data analysis, visualization, and scientific computing. Use when writing MATLAB/Octave scripts for linear algebra, signal processing, image processing, differential equations, optimization, statistics, or creating scientific visualizations. Also use when the user needs help with MATLAB syntax, functions, or wants to convert between MATLAB and Python code. Scripts can be executed with MATLAB or the open-source GNU Octave interpreter.",
+      "descriptionZh": "MATLAB 和 GNU Octave 数值计算：矩阵运算、数据分析、可视化和科学计算"
+    },
+    {
+      "name": "matplotlib",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "Python 绑图",
+      "description": "Low-level plotting library for full customization. Use when you need fine-grained control over every plot element, creating novel plot types, or integrating with specific scientific workflows. Export to PNG/PDF/SVG for publication. For quick statistical plots use seaborn; for interactive plots use plotly; for publication-ready multi-panel figures with journal styling, use scientific-visualization.",
+      "descriptionZh": "底层绑图库，提供对图形元素完全自定义的科学绑图能力"
+    },
+    {
+      "name": "medchem",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "药物化学筛选",
+      "description": "Medicinal chemistry filters for compound triage. Apply drug-likeness rules (Lipinski, Veber, CNS), structural alert catalogs (PAINS, NIBR, ChEMBL), complexity metrics, and the medchem query language for library filtering.",
+      "descriptionZh": "药物化学过滤规则：类药性、毒性基团、结构警报等化合物筛选"
+    },
+    {
+      "name": "modal",
+      "builtin": false,
+      "category": "workflow",
+      "nameZh": "Modal 无服务器计算",
+      "description": "Modal is a serverless cloud platform for running Python on demand, including on-demand GPUs. Use when deploying or serving AI/ML models, running GPU-accelerated workloads (training, fine-tuning, inference), serving web endpoints, scheduling batch jobs, or scaling Python code to cloud containers with the Modal SDK.",
+      "descriptionZh": "Modal 无服务器云平台：按需运行 Python，支持 GPU 实例"
+    },
+    {
+      "name": "molecular-dynamics",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "分子动力学模拟",
+      "description": "Run and analyze molecular dynamics simulations with OpenMM and MDAnalysis. Set up protein/small molecule systems, define force fields, run energy minimization and production MD, analyze trajectories (RMSD, RMSF, contact maps, free energy surfaces). For structural biology, drug binding, and biophysics.",
+      "descriptionZh": "使用 OpenMM 和 MDAnalysis 运行和分析分子动力学模拟"
+    },
+    {
+      "name": "molfeat",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "分子特征化",
+      "description": "Molecular featurization for ML (100+ featurizers). ECFP, MACCS, descriptors, pretrained models (ChemBERTa), convert SMILES to features, for QSAR and molecular ML.",
+      "descriptionZh": "100+ 分子特征化方法：ECFP、MACCS、描述符、预训练模型"
+    },
+    {
+      "name": "networkx",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "复杂网络分析",
+      "description": "Create, analyze, and visualize complex networks and graphs in Python with NetworkX. Use when working with network/graph data structures, computing graph algorithms (shortest paths, centrality, clustering), detecting communities, generating synthetic networks (random, scale-free, small-world), reading/writing graph file formats, or drawing network topologies. Common applications include social, biological, transportation, and citation networks.",
+      "descriptionZh": "创建、分析和可视化复杂网络和图结构的 Python 工具"
+    },
+    {
+      "name": "neurokit2",
+      "builtin": false,
+      "category": "neuroscience",
+      "nameZh": "生理信号处理",
+      "description": "Comprehensive biosignal processing toolkit for analyzing physiological data including ECG, EEG, EDA, RSP, PPG, EMG, and EOG signals. Use this skill when processing cardiovascular signals, brain activity, electrodermal responses, respiratory patterns, muscle activity, or eye movements. Applicable for heart rate variability analysis, event-related potentials, complexity measures, autonomic nervous system assessment, psychophysiology research, and multi-modal physiological signal integration.",
+      "descriptionZh": "全面的生物信号处理工具包：ECG、EEG、EDA、EMG 等生理数据分析"
+    },
+    {
+      "name": "neuropixels-analysis",
+      "builtin": false,
+      "category": "neuroscience",
+      "nameZh": "Neuropixels 记录分析",
+      "description": "Analyze Neuropixels extracellular recordings end-to-end with SpikeInterface. Covers loading SpikeGLX/Open Ephys/NWB data, preprocessing, drift/motion correction, Kilosort4 (and CPU) spike sorting, quality metrics, and unit curation (threshold-based, model-based UnitRefine, and AI-assisted visual review). Use when working with Neuropixels 1.0/2.0 recordings, spike sorting, or extracellular electrophysiology analysis.",
+      "descriptionZh": "使用 SpikeInterface 端到端分析 Neuropixels 细胞外电生理记录"
+    },
+    {
+      "name": "nextflow",
+      "builtin": false,
+      "category": "workflow",
+      "nameZh": "Nextflow 工作流",
+      "description": "Build, run, and debug Nextflow data pipelines and nf-core workflows end to end. Use whenever the user mentions Nextflow, nf-core, .nf files, nextflow.config, DSL2, processes/channels/operators, samplesheets, or wants to run a community pipeline (e.g. nf-core/rnaseq, nf-core/sarek), write or test a module/subworkflow with nf-test, configure executors/containers (Docker, Singularity/Apptainer, Conda, Wave), scale a workflow to HPC/SLURM or cloud (AWS Batch, Google Batch, Azure, Kubernetes), or debug a failed/-resume run. Make sure to use this skill for any reproducible scientific/bioinformatics workflow work even if the user does not say the word \"Nextflow\", and for authoring nf-core-compliant pipelines, modules, configs, and linting.",
+      "descriptionZh": "构建、运行和调试 Nextflow 数据管线及 nf-core 工作流"
+    },
+    {
+      "name": "omero-integration",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "OMERO 显微镜数据",
+      "description": "Microscopy data management platform. Access images via Python, retrieve datasets, analyze pixels, manage ROIs/annotations, batch processing, for high-content screening and microscopy workflows.",
+      "descriptionZh": "显微镜数据管理平台，通过 Python 访问图像、分析像素和元数据"
+    },
+    {
+      "name": "onekgpd",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "千人基因组计划",
+      "description": "Query the 1000 Genomes Project dataset (3,202 whole-genome-sequenced individuals, GRCh38) at the level of individual participants. Use when a question is about individuals or variants in the 1000 Genomes Project cohort: which individuals carry variants matching specific criteria in a gene or region, which individuals are homozygous-reference at a position, which variants exist in the dataset or carried by specified individuals in a gene or region, the relatedness between two specified individuals. Variants are returned with 1000 Genomes allele frequencies (AF), gnomAD v4.1 exome and genome AF, AlphaMissense score, and HGVSp annotations.",
+      "descriptionZh": "千人基因组计划数据查询和分析，获取人群遗传变异信息"
+    },
+    {
+      "name": "open-notebook",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "Open Notebook AI",
+      "description": "Self-hosted, open-source alternative to Google NotebookLM for AI-powered research and document analysis. Use when organizing research materials into notebooks, ingesting diverse content sources (PDFs, videos, audio, web pages, Office documents), generating AI-powered notes and summaries, creating multi-speaker podcasts from research, chatting with documents using context-aware AI, searching across materials with full-text and vector search, or running custom content transformations. Supports 16+ AI providers including OpenAI, Anthropic, Google, Ollama, Groq, and Mistral with complete data privacy through self-hosting.",
+      "descriptionZh": "自托管开源 AI 研究助手，替代 Google NotebookLM 进行文档分析"
+    },
+    {
+      "name": "opentrons-integration",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "Opentrons 移液机器人",
+      "description": "Official Opentrons Protocol API for OT-2 and Flex robots. Use when writing protocols specifically for Opentrons hardware with full access to Protocol API v2 features. Best for production Opentrons protocols, official API compatibility. For multi-vendor automation or broader equipment control use pylabrobot.",
+      "descriptionZh": "Opentrons OT-2 和 Flex 液体处理机器人协议编写"
+    },
+    {
+      "name": "optimize-for-gpu",
+      "builtin": false,
+      "category": "workflow",
+      "nameZh": "GPU 加速优化",
+      "description": "GPU-accelerate Python code using CuPy, Numba CUDA, Warp, cuDF, cuML, cuGraph, KvikIO, cuCIM, cuxfilter, cuVS, cuSpatial, and RAFT. Use whenever the user mentions GPU/CUDA/NVIDIA acceleration, or wants to speed up NumPy, pandas, scikit-learn, scikit-image, NetworkX, GeoPandas, or Faiss workloads. Covers physics simulation, differentiable rendering, mesh ray casting, particle systems (DEM/SPH/fluids), vector/similarity search, GPUDirect Storage file IO, interactive dashboards, geospatial analysis, medical imaging, and sparse eigensolvers. Also use when you see CPU-bound Python code (loops, large arrays, ML pipelines, graph analytics, image processing) that would benefit from GPU acceleration, even if not explicitly requested.",
+      "descriptionZh": "使用 CuPy、Numba CUDA、cuDF 等将 Python 代码 GPU 加速"
+    },
+    {
+      "name": "pacsomatic",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "肿瘤-正常体细胞分析",
+      "description": "Operator toolkit for nf-core/pacsomatic matched tumor-normal workflows from BAM inputs. Use this skill when the user needs to validate run inputs, generate pacsomatic-compliant samplesheets, prepare reproducible Nextflow launch artifacts, run locally or submit to schedulers (LSF/Slurm/PBS/SGE), and triage execution failures. Triggers on requests to run pacsomatic, prepare launch commands/scripts, perform dry-run checks, or troubleshoot pipeline startup and scheduler submission errors.",
+      "descriptionZh": "nf-core/pacsomatic 配对肿瘤-正常样本体细胞变异分析工具"
+    },
+    {
+      "name": "paperzilla",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Paperzilla 文献推荐",
+      "description": "Chat with your agent about projects, recommendations, and canonical papers in Paperzilla. Use when users ask for recent project recommendations, canonical paper details, markdown-based summaries, recommendation feedback, feed export, or Atom feed URLs.",
+      "descriptionZh": "与 Paperzilla 中的文献推荐和项目交互，管理研究论文"
+    },
+    {
+      "name": "pathml",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "计算病理学",
+      "description": "Full-featured computational pathology toolkit. Use for advanced WSI analysis including multiplexed immunofluorescence (CODEX, Vectra), nucleus segmentation, tissue graph construction, and ML model training on pathology data. Supports 160+ slide formats. For simple tile extraction from H&E slides, histolab may be simpler.",
+      "descriptionZh": "全特征计算病理学工具包：多重免疫荧光、H&E 染色分析"
+    },
+    {
+      "name": "pathway-enrichment",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "通路富集分析",
+      "description": "Run pathway and gene-set enrichment analysis on gene lists or ranked gene data, then interpret the results. Use whenever the user has a set of genes (differentially expressed genes from PyDESeq2/Scanpy, CRISPR-screen hits, cluster marker genes, proteomics hits) and wants to know which biological pathways, GO terms, or gene sets are over-represented or enriched. Covers over-representation analysis (ORA / Enrichr / Fisher / hypergeometric), ranked Gene Set Enrichment Analysis (GSEA / preranked), single-sample scoring (ssGSEA/GSVA), and functional profiling via gseapy, g:Profiler, Enrichr libraries, MSigDB, GO, KEGG, Reactome, and WikiPathways — plus gene-ID mapping, choosing the right background universe, multiple-testing correction, redundancy reduction, dotplots/enrichment maps, and publication-ready tables. Use this for \"pathway analysis\", \"enrichment analysis\", \"GO enrichment\", \"KEGG/Reactome pathways\", \"GSEA\", \"over-representation\", \"functional annotation\", or \"what pathways are my genes in\".",
+      "descriptionZh": "对基因列表进行通路和基因集富集分析，解释生物学意义"
+    },
+    {
+      "name": "phylogenetics",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "系统发育分析",
+      "description": "Build and analyze phylogenetic trees using MAFFT (multiple alignment), IQ-TREE 2 (maximum likelihood), and FastTree (fast NJ/ML). Visualize with ETE3 or FigTree. For evolutionary analysis, microbial genomics, viral phylodynamics, protein family analysis, and molecular clock studies.",
+      "descriptionZh": "使用 MAFFT、IQ-TREE 2 和 BEAST2 构建和分析系统发育树"
+    },
+    {
+      "name": "pi-agent",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Pi 终端 AI 编程",
+      "description": "Build with and use Pi, the minimal terminal coding harness. Use for installing Pi, configuring providers/models/settings, creating Pi skills/extensions/packages/themes/prompt templates, embedding Pi through the SDK, integrating over RPC or JSON event streams, parsing sessions, developing custom Pi providers and TUI components, or using ecosystem packages such as pi-subagents (delegation/orchestration), pi-mcp-adapter (MCP servers), pi-interview (interactive forms), and pi-web-access (web search, fetching, video understanding).",
+      "descriptionZh": "使用 Pi 极简终端编程框架进行编码和任务自动化"
+    },
+    {
+      "name": "polars",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "Polars 高性能数据",
+      "description": "High-performance DataFrame library for Python ETL, analytics, and pandas migration. Use for expression-based data manipulation with lazy query optimization, parallel execution, streaming out-of-core processing, Arrow interoperability, and optional GPU execution.",
+      "descriptionZh": "高性能 DataFrame 库，用于 Python ETL、分析和 pandas 迁移"
+    },
+    {
+      "name": "polars-bio",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "Polars 基因组区间",
+      "description": "High-performance genomic interval operations and bioinformatics file I/O on Polars DataFrames. Overlap, nearest, merge, coverage, complement, subtract for BED/VCF/BAM/GFF intervals. Streaming, cloud-native, faster bioframe alternative.",
+      "descriptionZh": "基于 Polars 的高性能基因组区间操作和生物信息学文件 I/O"
+    },
+    {
+      "name": "primekg",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "精准医学知识图谱",
+      "description": "Query the Precision Medicine Knowledge Graph (PrimeKG) for multiscale biological data including genes, drugs, diseases, phenotypes, and more.",
+      "descriptionZh": "查询 PrimeKG 精准医学知识图谱，获取多尺度生物数据"
+    },
+    {
+      "name": "protocolsio-integration",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "protocols.io 协议",
+      "description": "Integration with protocols.io API for managing scientific protocols. This skill should be used when working with protocols.io to search, create, update, or publish protocols; manage protocol steps and materials; handle discussions and comments; organize workspaces; upload and manage files; or integrate protocols.io functionality into workflows. Applicable for protocol discovery, collaborative protocol development, experiment tracking, lab protocol management, and scientific documentation.",
+      "descriptionZh": "集成 protocols.io API，管理和分享科学实验协议"
+    },
+    {
+      "name": "pufferlib",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "强化学习框架",
+      "description": "High-performance reinforcement learning framework optimized for speed and scale. Use when you need fast parallel training, vectorized environments, multi-agent systems, or integration with game environments (Atari, Procgen, NetHack). Achieves 2-10x speedups over standard implementations. For quick prototyping or standard algorithm implementations with extensive documentation, use stable-baselines3 instead.",
+      "descriptionZh": "高性能强化学习框架，专为速度和规模化优化"
+    },
+    {
+      "name": "pydeseq2",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "差异表达分析",
+      "description": "Differential gene expression analysis for bulk RNA-seq with PyDESeq2, including formulaic designs, Wald tests, FDR correction, LFC shrinkage, and result visualization.",
+      "descriptionZh": "使用 PyDESeq2 进行批量 RNA-seq 差异基因表达分析"
+    },
+    {
+      "name": "pydicom",
+      "builtin": false,
+      "category": "medical-imaging",
+      "nameZh": "DICOM 医学影像",
+      "description": "Python library for working with DICOM (Digital Imaging and Communications in Medicine) files. Use this skill when reading, writing, or modifying medical imaging data in DICOM format, extracting pixel data from medical images (CT, MRI, X-ray, ultrasound), anonymizing DICOM files, working with DICOM metadata and tags, converting DICOM images to other formats, handling compressed DICOM data, or processing medical imaging datasets. Applies to tasks involving medical image analysis, PACS systems, radiology workflows, and healthcare imaging applications.",
+      "descriptionZh": "处理 DICOM 医学影像文件的 Python 库"
+    },
+    {
+      "name": "pyhealth",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "临床深度学习",
+      "description": "Build clinical/healthcare deep-learning pipelines with PyHealth — loading EHR/signal/imaging datasets (MIMIC-III/IV, eICU, OMOP, SleepEDF, ChestXray14, EHRShot), defining tasks (mortality, readmission, length-of-stay, drug recommendation, sleep staging, ICD coding, EEG events), instantiating models (Transformer, RETAIN, GAMENet, SafeDrug, MICRON, StageNet, AdaCare, CNN/RNN/MLP), training with the PyHealth Trainer, computing clinical metrics, and using medical code utilities (ICD/ATC/NDC/RxNorm lookup and cross-mapping). Use this skill whenever the user mentions PyHealth, MIMIC, eICU, OMOP, EHR modeling, clinical prediction, drug recommendation, sleep staging, medical code mapping, ICD/ATC codes, or any healthcare ML pipeline that fits the dataset → task → model → trainer → metrics pattern, even if \"PyHealth\" isn't named explicitly.",
+      "descriptionZh": "构建临床/医疗深度学习管线：EHR、信号、影像数据处理"
+    },
+    {
+      "name": "pylabrobot",
+      "builtin": false,
+      "category": "wet-lab",
+      "nameZh": "实验室自动化",
+      "description": "Vendor-agnostic lab automation framework. Use when controlling multiple equipment types (Hamilton, Tecan, Opentrons, plate readers, pumps) or needing unified programming across different vendors. Best for complex workflows, multi-vendor setups, simulation. For Opentrons-only protocols with official API, opentrons-integration may be simpler.",
+      "descriptionZh": "跨厂商实验室自动化框架，支持 Hamilton、Tecan 等多种设备"
+    },
+    {
+      "name": "pymatgen",
+      "builtin": false,
+      "category": "other",
+      "nameZh": "材料科学分析",
+      "description": "Materials science toolkit. Crystal structures (CIF, POSCAR), phase diagrams, band structure, DOS, Materials Project integration, format conversion, for computational materials science.",
+      "descriptionZh": "材料科学工具包：晶体结构、相图、能带结构、态密度等"
+    },
+    {
+      "name": "pymc",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "贝叶斯建模",
+      "description": "Bayesian modeling with PyMC. Build hierarchical models, MCMC (NUTS), variational inference, LOO/WAIC comparison, posterior checks, for probabilistic programming and inference.",
+      "descriptionZh": "贝叶斯统计建模：层次模型、MCMC（NUTS）、变分推断"
+    },
+    {
+      "name": "pymoo",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "多目标优化",
+      "description": "Multi-objective optimization framework. NSGA-II, NSGA-III, MOEA/D, Pareto fronts, constraint handling, benchmarks (ZDT, DTLZ), for engineering design and optimization problems.",
+      "descriptionZh": "多目标优化框架：NSGA-II、NSGA-III、MOEA/D、Pareto 前沿"
+    },
+    {
+      "name": "pyopenms",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "质谱分析平台",
+      "description": "Complete mass spectrometry analysis platform. Use for proteomics and metabolomics workflows—feature detection, peptide/protein identification, label-free and isobaric quantification, adduct/accurate-mass annotation, and complex LC-MS/MS pipelines. Supports extensive file formats and algorithms. For simple spectral comparison and small-molecule library matching use matchms.",
+      "descriptionZh": "完整质谱分析平台：蛋白质组学和代谢组学特征检测、定量和鉴定"
+    },
+    {
+      "name": "pysam",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "基因组文件处理",
+      "description": "Genomic file toolkit. Read/write SAM/BAM/CRAM alignments, VCF/BCF variants, FASTA/FASTQ sequences, extract regions, calculate coverage, for NGS data processing pipelines.",
+      "descriptionZh": "基因组文件工具包：SAM/BAM/CRAM、VCF/BCF、FASTA/FASTQ"
+    },
+    {
+      "name": "pytdc",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "药物发现数据集",
+      "description": "Therapeutics Data Commons. AI-ready drug discovery datasets (ADME, toxicity, DTI), benchmarks, scaffold splits, molecular oracles, for therapeutic ML and pharmacological prediction.",
+      "descriptionZh": "Therapeutics Data Commons：AI 就绪的药物发现数据集和基准"
+    },
+    {
+      "name": "pytorch-lightning",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "PyTorch Lightning 训练",
+      "description": "Deep learning framework (PyTorch Lightning / lightning package). Organize PyTorch code into LightningModules, configure Trainers for multi-GPU/TPU, implement data pipelines, callbacks, logging (W&B, TensorBoard, MLflow), distributed training (DDP, FSDP, DeepSpeed), for scalable neural network training.",
+      "descriptionZh": "深度学习框架：将 PyTorch 代码组织为 Lightning 模块，简化训练流程"
+    },
+    {
+      "name": "pyzotero",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Zotero 文献管理",
+      "description": "Interact with Zotero reference management libraries using the pyzotero Python client. Retrieve, create, update, and delete items, collections, tags, and attachments via the Zotero Web API v3. Use this skill when working with Zotero libraries programmatically, managing bibliographic references, exporting citations, searching library contents, uploading PDF attachments, or building research automation workflows that integrate with Zotero.",
+      "descriptionZh": "使用 pyzotero 操作 Zotero 参考文献库：检索、创建和管理文献条目"
+    },
+    {
+      "name": "rdkit",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "RDKit 化学信息学",
+      "description": "Cheminformatics toolkit for fine-grained molecular control. SMILES/SDF parsing, descriptors (MW, LogP, TPSA), fingerprints, substructure search, 2D/3D generation, similarity, reactions. For standard workflows with simpler interface, use datamol (wrapper around RDKit). Use rdkit for advanced control, custom sanitization, specialized algorithms.",
+      "descriptionZh": "化学信息学工具包：SMILES/SDF 解析、分子描述符、药效团、子结构搜索"
+    },
+    {
+      "name": "research-grants",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "研究基金申请",
+      "description": "Write competitive research proposals for NSF, NIH, DOE, DARPA, and Taiwan NSTC. Agency-specific formatting, review criteria, budget preparation, broader impacts, significance statements, innovation narratives, and compliance with submission requirements.",
+      "descriptionZh": "撰写 NSF、NIH、DOE、DARPA 和台湾 NSTC 等基金申请书"
+    },
+    {
+      "name": "rowan",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "Rowan 分子建模",
+      "description": "Rowan is a cloud-native molecular modeling and medicinal-chemistry workflow platform with a Python API. Use for pKa and macropKa prediction, conformer and tautomer ensembles, docking and analogue docking, protein-ligand cofolding, MSA generation, molecular dynamics, permeability, descriptor workflows, and related small-molecule or protein modeling tasks. Ideal for programmatic batch screening, multi-step chemistry pipelines, and workflows that would otherwise require maintaining local HPC/GPU infrastructure.",
+      "descriptionZh": "云原生分子建模和药物化学工作流平台，含 Python API"
+    },
+    {
+      "name": "scanpy",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "单细胞 RNA-seq",
+      "description": "Standard single-cell RNA-seq analysis pipeline. Use for QC, normalization, dimensionality reduction (PCA/UMAP/t-SNE), clustering, differential expression, visualization, and converting R-friendly single-cell formats such as Seurat or SingleCellExperiment RDS files into h5ad for Scanpy. Best for exploratory scRNA-seq analysis with established workflows. For deep learning models use scvi-tools; for data format questions use anndata.",
+      "descriptionZh": "标准单细胞 RNA-seq 分析：QC、标准化、降维、聚类、差异表达"
+    },
+    {
+      "name": "scholar-evaluation",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "学术评价",
+      "description": "Systematically evaluate scholarly work using the ScholarEval framework, providing structured assessment across research quality dimensions including problem formulation, methodology, analysis, and writing with quantitative scoring and actionable feedback.",
+      "descriptionZh": "使用 ScholarEval 框架系统评估学术工作的质量与影响"
+    },
+    {
+      "name": "scientific-brainstorming",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "科学头脑风暴",
+      "description": "Creative research ideation and exploration. Use for open-ended brainstorming sessions, exploring interdisciplinary connections, challenging assumptions, or identifying research gaps. Best for early-stage research planning when you do not have specific observations yet. For formulating testable hypotheses from data use hypothesis-generation.",
+      "descriptionZh": "开放式研究创意探索，跨学科联想和创新研究方向的灵感激发"
+    },
+    {
+      "name": "scientific-critical-thinking",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "科学批判思维",
+      "description": "Evaluate scientific claims and evidence quality. Use for assessing experimental design validity, identifying biases and confounders, applying evidence grading frameworks (GRADE, Cochrane Risk of Bias), or teaching critical analysis. Best for understanding evidence quality, identifying flaws. For formal peer review writing use peer-review.",
+      "descriptionZh": "评估科学证据和方法论质量：实验设计有效性、逻辑推理和潜在偏差"
+    },
+    {
+      "name": "scientific-schematics",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "科学示意图",
+      "description": "Create publication-quality scientific diagrams using Nano Banana 2 AI with smart iterative refinement. Uses Gemini 3.1 Pro Preview for quality review. Only regenerates if quality is below threshold for your document type. Specialized in neural network architectures, system diagrams, flowcharts, biological pathways, and complex scientific visualizations.",
+      "descriptionZh": "使用 AI 创建发表级科学示意图、机制图和图形摘要"
+    },
+    {
+      "name": "scientific-visualization",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "科学可视化",
+      "description": "Meta-skill for publication-ready figures. Use when creating journal submission figures requiring multi-panel layouts, significance annotations, error bars, colorblind-safe palettes, and specific journal formatting (Nature, Science, Cell). Orchestrates matplotlib/seaborn/plotly with publication styles. For quick exploration use seaborn or plotly directly.",
+      "descriptionZh": "创建发表级图表：包含多子图和高级绑图元素的综合可视化"
+    },
+    {
+      "name": "scikit-bio",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "生物数据分析",
+      "description": "Biological data toolkit. Sequence analysis, alignments, phylogenetic trees, diversity metrics (alpha/beta, UniFrac), ordination (PCoA), PERMANOVA, FASTA/Newick I/O, for microbiome analysis.",
+      "descriptionZh": "生物数据工具包：序列分析、比对、系统发育、多样性指标"
+    },
+    {
+      "name": "scikit-learn",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "机器学习",
+      "description": "Machine learning in Python with scikit-learn. Use when working with supervised learning (classification, regression), unsupervised learning (clustering, dimensionality reduction), model evaluation, hyperparameter tuning, preprocessing, or building ML pipelines. Provides comprehensive reference documentation for algorithms, preprocessing techniques, pipelines, and best practices.",
+      "descriptionZh": "Python 机器学习：分类、回归、聚类、降维、模型选择和预处理"
+    },
+    {
+      "name": "scikit-survival",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "生存分析",
+      "description": "Comprehensive toolkit for survival analysis and time-to-event modeling in Python using scikit-survival. Use this skill when working with censored survival data, performing time-to-event analysis, fitting Cox models, Random Survival Forests, Gradient Boosting models, or Survival SVMs, evaluating survival predictions with concordance index or Brier score, handling competing risks, or implementing any survival analysis workflow with the scikit-survival library.",
+      "descriptionZh": "全面的生存分析和时间到事件建模 Python 工具包"
+    },
+    {
+      "name": "scvelo",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "RNA 速率分析",
+      "description": "RNA velocity analysis with scVelo. Estimate cell state transitions from unspliced/spliced mRNA dynamics, infer trajectory directions, compute latent time, and identify driver genes in single-cell RNA-seq data. Complements Scanpy/scVI-tools for trajectory inference.",
+      "descriptionZh": "使用 scVelo 从未剪接/已剪接 mRNA 动态估计细胞状态转换"
+    },
+    {
+      "name": "scvi-tools",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "单细胞生成模型",
+      "description": "Deep generative models for single-cell omics. Use when you need probabilistic batch correction (scVI), transfer learning, differential expression with uncertainty, or multi-modal integration (TOTALVI, MultiVI). Best for advanced modeling, batch effects, multimodal data. For standard analysis pipelines use scanpy.",
+      "descriptionZh": "单细胞组学深度生成模型：批效应校正、数据整合、差异表达"
+    },
+    {
+      "name": "seaborn",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "统计可视化",
+      "description": "Statistical visualization with pandas integration. Use for quick exploration of distributions, relationships, and categorical comparisons with attractive defaults. Best for box plots, violin plots, pair plots, heatmaps. Built on matplotlib. For interactive plots use plotly; for publication styling use scientific-visualization.",
+      "descriptionZh": "与 pandas 集成的统计可视化库，快速探索数据分布和关系"
+    },
+    {
+      "name": "shap",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "模型可解释性",
+      "description": "Model interpretability and explainability using SHAP (SHapley Additive exPlanations). Use this skill when explaining machine learning model predictions, computing feature importance, generating SHAP plots (waterfall, beeswarm, bar, scatter, force, heatmap), debugging models, analyzing model bias or fairness, comparing models, or implementing explainable AI. Works with tree-based models (XGBoost, LightGBM, Random Forest), deep learning (TensorFlow, PyTorch), linear models, and any black-box model.",
+      "descriptionZh": "使用 SHAP 值进行模型预测解释和特征重要性分析"
+    },
+    {
+      "name": "simpy",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "离散事件模拟",
+      "description": "Process-based discrete-event simulation framework in Python. Use this skill when building simulations of systems with processes, queues, resources, and time-based events such as manufacturing systems, service operations, network traffic, logistics, or any system where entities interact with shared resources over time.",
+      "descriptionZh": "基于进程的离散事件模拟框架，用于排队系统、供应链等仿真"
+    },
+    {
+      "name": "stable-baselines3",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "强化学习算法",
+      "description": "Production-ready reinforcement learning algorithms (PPO, SAC, DQN, TD3, DDPG, A2C) with scikit-learn-like API. Use for standard RL experiments, quick prototyping, and well-documented algorithm implementations. Best for single-agent RL with Gymnasium environments. For high-performance parallel training, multi-agent systems, or custom vectorized environments, use pufferlib instead.",
+      "descriptionZh": "生产级强化学习算法实现：PPO、SAC、DQN、TD3 等"
+    },
+    {
+      "name": "statistical-analysis",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "统计分析指导",
+      "description": "Guided statistical analysis with test selection and reporting. Use when you need help choosing appropriate tests for your data, assumption checking, power analysis, and APA-formatted results. Best for academic research reporting, test selection guidance. For implementing specific models programmatically use statsmodels.",
+      "descriptionZh": "引导式统计分析：测试选择、假设检验、效应量报告"
+    },
+    {
+      "name": "statistical-power",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "统计功效计算",
+      "description": "Sample-size and statistical power calculations for planning studies. Use whenever someone asks \"how many subjects/samples/replicates do I need\", wants an a priori power analysis, a minimum detectable effect (MDE), a power curve, or needs to justify a sample size for a grant, IRB protocol, or pre-registration. Covers closed-form power for t-tests, ANOVA, proportions, correlations, chi-square, and regression, plus simulation-based (Monte Carlo) power for designs with no formula — logistic/Poisson regression, mixed models, cluster-randomized trials, survival, and interactions. Use this skill even when the request only mentions an effect size, alpha, or \"80% power\" without saying \"power analysis\" explicitly. For laying out the study (randomization, blocking, factorial/DOE, crossover, sequential designs) use experimental-design; for analyzing data already collected and reporting it use statistical-analysis.",
+      "descriptionZh": "样本量和统计功效计算：实验规划和研究设计"
+    },
+    {
+      "name": "statsmodels",
+      "builtin": false,
+      "category": "statistics",
+      "nameZh": "统计建模",
+      "description": "Statistical models library for Python. Use when you need specific model classes (OLS, GLM, mixed models, ARIMA) with detailed diagnostics, residuals, and inference. Best for econometrics, time series, rigorous inference with coefficient tables. For guided statistical test selection with APA reporting use statistical-analysis.",
+      "descriptionZh": "Python 统计模型库：OLS、GLM、混合模型、时间序列分析"
+    },
+    {
+      "name": "sympy",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "符号数学",
+      "description": "Use when you need exact symbolic math in Python — algebra, calculus, equation solving, symbolic linear algebra, or code generation via lambdify/LaTeX. Prefer NumPy or SciPy when floating-point approximations are sufficient.",
+      "descriptionZh": "Python 符号数学：代数、微积分、方程求解、符号线性代数"
+    },
+    {
+      "name": "tamarind",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Tamarind 分子设计",
+      "description": "Access a collection of open-source molecular design and structural biology tools on the Tamarind Bio platform, via its REST API or MCP server — no local GPUs required. Tamarind bundles popular open-source models for structure prediction (AlphaFold, Boltz, Chai, ESMFold), protein, binder, and de novo design (RFdiffusion, ProteinMPNN, BoltzGen), antibody and nanobody design and developability, protein-ligand docking (DiffDock, Autodock Vina), binding-affinity prediction, MSA generation, and molecular dynamics. Use when the user mentions Tamarind or tamarind.bio, wants to run any of these open-source tools in the cloud, references app.tamarind.bio/api or the x-api-key header, or needs to submit batches of sequences for structural or biophysical characterization.",
+      "descriptionZh": "访问 Tamarind Bio 开源分子设计和结构生物学工具集"
+    },
+    {
+      "name": "tiledbvcf",
+      "builtin": false,
+      "category": "bioinformatics",
+      "nameZh": "变异数据存储",
+      "description": "Efficient storage and retrieval of genomic variant data using TileDB. Scalable VCF/BCF ingestion, incremental sample addition, compressed storage, parallel queries, and export capabilities for population genomics.",
+      "descriptionZh": "使用 TileDB 高效存储和检索基因组变异数据（VCF/BCF）"
+    },
+    {
+      "name": "timesfm-forecasting",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "时间序列预测",
+      "description": "Zero-shot time series forecasting with Google's TimesFM foundation model. Use for any univariate time series (sales, sensors, energy, vitals, weather) without training a custom model. Supports CSV/DataFrame/array inputs with point forecasts and prediction intervals. Includes a preflight system checker script to verify RAM/GPU before first use.",
+      "descriptionZh": "使用 Google TimesFM 基础模型进行零样本时间序列预测"
+    },
+    {
+      "name": "torch-geometric",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "图神经网络",
+      "description": "PyTorch Geometric (PyG) for graph neural networks — node/link/graph classification, message passing (GCN, GAT, GraphSAGE, GIN), heterogeneous graphs, neighbor sampling, and custom datasets. Use when working with torch_geometric, not for general NetworkX analytics or non-graph PyTorch models.",
+      "descriptionZh": "PyTorch Geometric：节点/边/图分类、消息传递、图卷积"
+    },
+    {
+      "name": "torchdrug",
+      "builtin": false,
+      "category": "chemistry-drug",
+      "nameZh": "药物分子 GNN",
+      "description": "PyTorch-native graph neural networks for molecules and proteins. Use when building custom GNN architectures for drug discovery, protein modeling, or knowledge graph reasoning. Best for custom model development, protein property prediction, retrosynthesis. For pre-trained models and diverse featurizers use deepchem; for benchmark datasets use pytdc.",
+      "descriptionZh": "PyTorch 原生分子和蛋白质图神经网络，自定义 GNN 架构"
+    },
+    {
+      "name": "transformers",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "HuggingFace Transformers",
+      "description": "Hugging Face Transformers for loading Hub models, running pipeline inference, text generation, and Trainer fine-tuning on NLP, vision, audio, and multimodal tasks. Use when working with AutoModel, pipelines, tokenizers, or TrainingArguments—not for general ML outside the Transformers library.",
+      "descriptionZh": "加载 Hub 模型、运行管线推理、文本生成的 Transformers 库"
+    },
+    {
+      "name": "treatment-plans",
+      "builtin": false,
+      "category": "clinical",
+      "nameZh": "治疗方案",
+      "description": "Generate concise (3-4 page), focused medical treatment plans in LaTeX/PDF format for all clinical specialties. Supports general medical treatment, rehabilitation therapy, mental health care, chronic disease management, perioperative care, and pain management. Includes SMART goal frameworks, evidence-based interventions with minimal text citations, regulatory compliance (HIPAA), and professional formatting. Prioritizes brevity and clinical actionability.",
+      "descriptionZh": "生成简洁聚焦的 3-4 页 LaTeX/PDF 格式治疗方案"
+    },
+    {
+      "name": "umap-learn",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "UMAP 降维",
+      "description": "Use UMAP-learn for nonlinear dimensionality reduction, 2D/3D embeddings, clustering preprocessing, supervised or semi-supervised UMAP, DensMAP, AlignedUMAP, and Parametric UMAP workflows.",
+      "descriptionZh": "UMAP 非线性降维：2D/3D 嵌入、聚类预处理、高维数据可视化"
+    },
+    {
+      "name": "usfiscaldata",
+      "builtin": false,
+      "category": "databases",
+      "nameZh": "美国财政数据",
+      "description": "Query the U.S. Treasury Fiscal Data REST API for federal financial data. No API key required. Use for national debt (Debt to the Penny), Daily Treasury Statements, Monthly Treasury Statements, Treasury securities auctions, interest rates, foreign exchange rates, savings bonds, or U.S. government revenue and spending statistics.",
+      "descriptionZh": "查询美国财政部 REST API 获取联邦财政数据"
+    },
+    {
+      "name": "vaex",
+      "builtin": false,
+      "category": "data-ml",
+      "nameZh": "十亿级数据处理",
+      "description": "Use this skill for processing and analyzing large tabular datasets (billions of rows) that exceed available RAM. Vaex excels at out-of-core DataFrame operations, lazy evaluation, fast aggregations, efficient visualization of big data, and machine learning on large datasets. Apply when users need to work with large CSV/HDF5/Arrow/Parquet files, perform fast statistics on massive datasets, create visualizations of big data, or build ML pipelines that do not fit in memory.",
+      "descriptionZh": "处理和可视化数十亿行的大型表格数据，超出内存限制"
+    },
+    {
+      "name": "venue-templates",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "期刊模板",
+      "description": "Access comprehensive LaTeX templates, formatting requirements, and submission guidelines for major scientific publication venues (Nature, Science, PLOS, IEEE, ACM), academic conferences (NeurIPS, ICML, CVPR, CHI), research posters, and grant proposals (NSF, NIH, DOE, DARPA). This skill should be used when preparing manuscripts for journal submission, conference papers, research posters, or grant proposals and need venue-specific formatting requirements and templates.",
+      "descriptionZh": "各大期刊和会议的 LaTeX 模板、格式要求和投稿指南"
+    },
+    {
+      "name": "what-if-oracle",
+      "builtin": false,
+      "category": "methodology",
+      "nameZh": "多情景分析",
+      "description": "Run structured What-If scenario analysis with 4–6 branch possibility exploration (best, likely, worst, wild card, contrarian, second-order). Use when the user asks speculative what-if questions about uncertain futures, strategic forks, contingency planning, or stress-testing a decision before committing.",
+      "descriptionZh": "运行结构化 What-If 情景分析：4-6 分支（最佳、可能、最坏、黑天鹅）"
+    },
+    {
+      "name": "xlsx",
+      "builtin": false,
+      "category": "tools",
+      "nameZh": "Excel 电子表格",
+      "description": "Create, edit, analyze, or convert Excel spreadsheets (.xlsx, .xlsm) where the workbook file is the primary deliverable. Use for formulas, formatting, financial models, multi-sheet workbooks, and tabular cleanup exported to Excel. Also applies to .csv/.tsv when the user wants spreadsheet output. Do NOT use for Word documents, HTML reports, standalone Python scripts, database pipelines, or Google Sheets API work.",
+      "descriptionZh": "创建、编辑、分析或转换 Excel 电子表格文件"
+    },
+    {
+      "name": "zarr-python",
+      "builtin": false,
+      "category": "workflow",
+      "nameZh": "Zarr 多维数组",
+      "description": "Chunked N-D arrays for cloud storage (Zarr-Python 3). Compressed arrays, parallel I/O, S3/GCS via fsspec, NumPy/Dask/Xarray compatible, for large-scale scientific computing pipelines.",
+      "descriptionZh": "云存储分块 N-D 数组：压缩存储、并行 I/O、S3/GCS 兼容"
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+# Per-question raw records from the benchmark steps (rebuilt by the bench/*.mjs scripts).
+# The distilled evidence is committed instead: dataset/questions.json and dataset/score.json.
+runs/

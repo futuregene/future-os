@@ -1,0 +1,740 @@
+{
+  "generated_at": "2026-09-22T14:28:50.926Z",
+  "generator_model": "future/kimi-k3",
+  "note": "source_skill is bookkeeping only; the label is produced by ground-truth.mjs",
+  "total": 100,
+  "covered": 65,
+  "uncovered": 35,
+  "questions": [
+    {
+      "id": "p001",
+      "text": "Can you check how much I have left to spend on my subscription and confirm my sign-up email?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-account",
+      "clean": true
+    },
+    {
+      "id": "p002",
+      "text": "帮我在本机打开一个可视化窗口，访问 http://localhost:3000，点击登录按钮，输入测试账号密码，然后截图给我看页面效果，顺便帮我排查一下页面报错的问题。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-browser",
+      "clean": true
+    },
+    {
+      "id": "p003",
+      "text": "我想查一下人类 BRCA1 基因（GRCh38）的已知致病变异，包括临床意义和文献出处，能帮我系统地整理出来吗？最好说明信息来源和查询日期，方便以后复现。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-database-lookup",
+      "clean": true
+    },
+    {
+      "id": "p004",
+      "text": "请帮我在授权范围和时间预算内，针对“固态电池量产时间表”这个问题做彻底的调查：不仅要找到相关说法，还要实际阅读原始资料（如公司公告、论文原文），区分一手证据、二手分析和互相转载的内容，核实每个关键论点，最后给我一份结论都有可追溯出处支撑的综合回答；如果某些问题找不到证据，请如实说明而不是编造。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-deep-research",
+      "clean": true
+    },
+    {
+      "id": "p005",
+      "text": "我手头有一份产品说明书的 PDF 文件，想把里面的文字内容提取出来方便做笔记，你能帮我处理一下吗？这份文件不涉及机密信息。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-document",
+      "clean": true
+    },
+    {
+      "id": "p006",
+      "text": "I'm planning a study to test whether three different watering schedules and two soil types affect plant growth in my greenhouse. How should I assign pots to conditions and structure the trial so my results actually let me draw causal conclusions, before I start collecting any data?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-experimental-design",
+      "clean": true
+    },
+    {
+      "id": "p007",
+      "text": "帮我把一张海边日落的相片改成水彩风格，保存到本地；如果画面里有招牌上的字，也请辨认并标出没把握的部分。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-image",
+      "clean": true
+    },
+    {
+      "id": "p008",
+      "text": "Please keep this repo task moving across replies: track what's done, what's next, prove results with saved artifacts, and stop to ask before spending more or changing my chosen settings.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-loop",
+      "clean": true
+    },
+    {
+      "id": "p009",
+      "text": "Find recent scientific studies on BRCA1 variant classification guidelines and summarize their methods, key findings, and limitations, then pull the full text of the most relevant one.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-paper",
+      "clean": true
+    },
+    {
+      "id": "p010",
+      "text": "I've drafted a manuscript I plan to submit to a journal. Could you act as a referee and critically assess whether the claims in my paper are actually supported by the data and methods I present, and give me a written report on its strengths and weaknesses before I send it in?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-peer-review",
+      "clean": true
+    },
+    {
+      "id": "p011",
+      "text": "Please turn my lab notes and outcome figures into a clear, submission-ready article for clinicians, keeping every claim tied to the measurements and listing any gaps before you compose it.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-scientific-writing",
+      "clean": true
+    },
+    {
+      "id": "p012",
+      "text": "帮我在本机默认的应用目录下新建一个自定义能力包，放在用户主目录对应的位置，包含入口说明文件和运行时所需的资源，工作流要小巧可测试，不要装到共享目录里去。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-skill-creator",
+      "clean": true
+    },
+    {
+      "id": "p013",
+      "text": "我需要给公司管理层做一份季度汇报演示，大约10页，风格简洁专业，内容由我提供文字稿。请帮我生成一份可以直接放映的成品文件，并提前说明最终交付的是什么格式、能否后续编辑。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-slides",
+      "clean": true
+    },
+    {
+      "id": "p014",
+      "text": "请帮我在当前这台机器上弄一个体积很小的命令行 JSON 处理工具，先看看是否已经有可用的，再按合适来源装好并验证版本。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-software-install",
+      "clean": true
+    },
+    {
+      "id": "p015",
+      "text": "Find recent public articles about BRCA1 variant classification guidelines, and pull the full text of the two most relevant pages so I can read them.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-web",
+      "clean": true
+    },
+    {
+      "id": "p016",
+      "text": "我想通过API提交一批蛋白质氨基酸序列，让云端自动化实验室帮我测定它们的结合亲和力和热稳定性，并在大约三周后拿到实验结果。请帮我写一段代码来完成提交和结果查询，注意密钥要从环境变量读取。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "adaptyv",
+      "clean": true
+    },
+    {
+      "id": "p017",
+      "text": "我有一份单细胞转录组数据，包含基因表达矩阵、细胞注释和基因注释，想把它存成一种带注释的数据矩阵格式，之后还要做筛选子集、合并多个实验批次，并用稀疏矩阵节省内存，请问该怎么做？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "anndata",
+      "clean": true
+    },
+    {
+      "id": "p018",
+      "text": "I have a list of stars with right ascension and declination in the ICRS frame, and I need to convert them to Galactic longitude and latitude, then compute the luminosity distance for each given their redshifts. Can you help me do this in Python?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "astropy",
+      "clean": true
+    },
+    {
+      "id": "p019",
+      "text": "I need a Python script that pulls all registered DNA sequences for a specific project from our cloud-based life sciences R&D platform, then exports them as GenBank files to a local folder. Can you write that?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "benchling-integration",
+      "clean": true
+    },
+    {
+      "id": "p020",
+      "text": "我想用 Python 批量下载一批人类蛋白质的序列和功能注释信息,并根据基因编号在不同数据库之间做标识符转换,最后把结果整理成一个表格,请问应该怎么实现?",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "bioservices",
+      "clean": true
+    },
+    {
+      "id": "p021",
+      "text": "我想在不下載完整數據集的情況下，按組織和細胞類型篩選人類的單細胞轉錄組公共數據，並把查詢到的基因表達矩陣導出成 AnnData 格式做後續分析，該怎麼做？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "cellxgene-census",
+      "clean": true
+    },
+    {
+      "id": "p022",
+      "text": "I have a genome-scale model of E. coli saved as an SBML file. How can I load it in Python, run a simulation to predict the maximum growth rate under aerobic glucose conditions, and then systematically disable each gene one at a time to identify which genes are essential for growth?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "cobrapy",
+      "clean": true
+    },
+    {
+      "id": "p023",
+      "text": "我有一个大约200GB的CSV数据集，电脑内存装不下，用pandas直接读会崩溃。有没有办法在单机上分块并行处理这些数据，同时还能保留类似pandas的DataFrame写法？最好以后还能平滑扩展到多机集群上跑。请帮我写一个完整的示例流程，包括安装、读取、分组聚合和写出结果。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "dask",
+      "clean": true
+    },
+    {
+      "id": "p024",
+      "text": "我手头有几个染色质免疫共沉淀测序的比对结果文件，想把它们转换成归一化的基因组覆盖度轨道文件，并且在这些样本之间做相关性比较，最后围绕着转录起始位点画热图和信号分布曲线图，能帮我完成这一整套分析吗？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "deeptools",
+      "clean": true
+    },
+    {
+      "id": "p025",
+      "text": "我有一段匿名作者的文章,想请你系统地分析这段文字背后作者的思维方式特征——比如他的分析深度、创造力、情绪处理方式、决策风格、价值取向和表达习惯,帮我还原出这个人的心智特质画像,并给出结构化的分析报告。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "dhdna-profiler",
+      "clean": true
+    },
+    {
+      "id": "p026",
+      "text": "I need to generate novel protein sequences with specific functional properties and also get embeddings for some existing sequences — what's the current recommended workflow, and can I predict all-atom structures for the results?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "esm",
+      "clean": true
+    },
+    {
+      "id": "p027",
+      "text": "我这里有一个实验采集的科学数据文件，能帮我看看里面都有什么内容吗？比如文件格式、字段结构、基本统计特征，顺便检查一下有没有缺失值或异常数据，最后整理成一份方便归档的报告。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "exploratory-data-analysis",
+      "clean": true
+    },
+    {
+      "id": "p028",
+      "text": "I'm torn between two caching approaches for our API and don't want to just guess — can you dig into the actual behavior of each, run some targeted measurements against our real workload, and give me an evidence-backed recommendation on which one to commit to?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "future-explore",
+      "clean": true
+    },
+    {
+      "id": "p029",
+      "text": "我有一组哨兵2号卫星影像，想计算NDVI植被指数并把结果存成GeoTIFF文件，同时用Python做栅格重投影到WGS84坐标系，请给我完整的代码示例和需要安装的依赖。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "geomaster",
+      "clean": true
+    },
+    {
+      "id": "p030",
+      "text": "请帮我查询人类 BRCA1 基因的基本信息和对应转录本序列，比较它在小鼠不同组织中的表达特异性，并整理成一份可复现的分析步骤。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "gget",
+      "clean": true
+    },
+    {
+      "id": "p031",
+      "text": "I'm working on improving the stability and circulation half-life of a recombinant protein drug candidate. Can you help me analyze which asparagine residues are likely to carry N-linked sugar modifications based on their local sequence context, and suggest mutations that would add or remove glycan attachment sites to fine-tune the molecule's properties?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "glycoengineering",
+      "clean": true
+    },
+    {
+      "id": "p032",
+      "text": "我想找一些开放的蛋白质设计相关的数据集、模型和交互式演示，有什么高质量的科学机器学习资源索引可以帮我快速定位吗？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "hugging-science",
+      "clean": true
+    },
+    {
+      "id": "p033",
+      "text": "I've noticed that plants on my south-facing windowsill grow noticeably taller and lean toward the glass compared to those in my hallway. Can you help me come up with testable explanations for this pattern, design an experiment to check them, and outline what results would support each explanation?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "hypothesis-generation",
+      "clean": true
+    },
+    {
+      "id": "p034",
+      "text": "I need to automatically back up all of my research team's digital experiment records every night, including any attached files, and then upload the daily measurements from our instruments as new dated records. Can you help me set that up programmatically?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "labarchive-integration",
+      "clean": true
+    },
+    {
+      "id": "p035",
+      "text": "I have a set of RNA-seq analysis steps written in Python that I want to run as a scalable cloud pipeline with automatic container packaging, a no-code UI for my collaborators, and easy handling of input/output files stored remotely. How do I set that up?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "latchbio-integration",
+      "clean": true
+    },
+    {
+      "id": "p036",
+      "text": "我想深入了解一下新能源汽车行业未来五年的发展前景，包括主要厂商的竞争格局、政策环境、上下游供应链情况，以及潜在的投资机会。请帮我整理成一份内容详实、图文并茂、篇幅较长（几十页以上）的专业分析文档，最好参考顶级咨询公司的交付风格。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "market-research-reports",
+      "clean": true
+    },
+    {
+      "id": "p037",
+      "text": "我有一个3x3的矩阵，想计算它的逆矩阵，再对一个从0到1均匀取100个点的向量做数值积分，请问该用什么工具，具体命令怎么写？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "matlab",
+      "clean": true
+    },
+    {
+      "id": "p038",
+      "text": "我想把一个大语言模型部署成可以自动扩缩容的在线推理接口，平时没流量时不产生费用，有请求时能快速启动并使用高性能显卡，应该怎么实现？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "modal",
+      "clean": true
+    },
+    {
+      "id": "p039",
+      "text": "I have a CSV file with a column of SMILES strings for about 5,000 small molecules. How can I turn each one into a numerical vector suitable for training a scikit-learn model to predict solubility, ideally using a pre-trained neural embedding and with caching so re-runs are fast?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "molfeat",
+      "clean": true
+    },
+    {
+      "id": "p040",
+      "text": "我手头有一批高密度神经探针记录的原始数据文件（.ap.bin、.lf.bin 和 .meta），想按照 Allen 研究所和 IBL 的现行最佳实践，完成从原始信号到可用于发表论文的、经过人工整理的神经单元全流程分析，包括加载数据、预处理、尖峰排序和质量评估。请帮我搭建这套分析流程并给出可直接运行的脚本。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "neuropixels-analysis",
+      "clean": true
+    },
+    {
+      "id": "p041",
+      "text": "请帮我找出在指定基因组区段内、整体人群中出现频率低于百分之一、被预测为可能致病且归类为临床意义明确的单碱基改变，并列出携带这些改变的个体编号及各自基因型。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "onekgpd",
+      "clean": true
+    },
+    {
+      "id": "p042",
+      "text": "我想写一个 Python 脚本来自动完成 96 孔板的梯度稀释实验：需要在实验室机器人上自动移液、控制加热振荡模块进行混匀和恒温孵育，并在正式运行前先模拟一遍以检查吸头用量和移液步骤是否正确。请帮我搭建整个流程，包括孔板布局设计和多通道移液操作。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "opentrons-integration",
+      "clean": true
+    },
+    {
+      "id": "p043",
+      "text": "请帮我查看我跟踪的某个研究项目最近更新了哪些论文，选一篇最相关的说明它对我的课题有什么价值，并把结果整理成可保存的结构化数据。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "paperzilla",
+      "clean": true
+    },
+    {
+      "id": "p044",
+      "text": "我刚做完差异表达分析，拿到了一批显著基因和一个完整的排序列表，想弄清楚这些基因背后反映了哪些生物学功能被过度代表，应该选阈值法还是全排序法？帮我分析并解释结果。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pathway-enrichment",
+      "clean": true
+    },
+    {
+      "id": "p045",
+      "text": "我有一个几百万行的 CSV 文件需要处理，pandas 太慢了，想换一个基于表达式 API、支持惰性求值的高性能表格数据处理库，帮我写个示例：读取 CSV、按某列过滤行、再分组聚合统计。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "polars",
+      "clean": true
+    },
+    {
+      "id": "p046",
+      "text": "我手上有一个正在研究的老药，想查一下它和哪些基因、蛋白质以及疾病存在已知的关联证据，帮我看看有没有可以拓展到新适应症的可能性。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "primekg",
+      "clean": true
+    },
+    {
+      "id": "p047",
+      "text": "我有一份bulk RNA-seq的基因计数数据，想比较处理组和对照组之间哪些基因的表达水平存在显著差异，最好还能校正批次效应并做多重检验校正，用Python该怎么分析？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pydeseq2",
+      "clean": true
+    },
+    {
+      "id": "p048",
+      "text": "我手头有一批重症监护病房的匿名化病历数据，包含诊断代码、用药记录和生理监测时序。我想用 Python 搭一个端到端的深度学习流程：先把原始数据整理成统一格式的数据集，再定义预测任务（比如病人出院后短期内是否需要再次入院），然后选一个适合序列病历数据的模型进行训练，最后用标准指标评估效果。请帮我写出完整的示例代码，要求各环节之间接口清晰、可以方便地替换数据集或模型。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pyhealth",
+      "clean": true
+    },
+    {
+      "id": "p049",
+      "text": "我有一个关于用户转化率的数据集，想用贝叶斯方法估计转化率的不确定区间，并对不同方案做概率比较，请帮我写一段 Python 代码完成建模和推断，并给出结果解读。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pymc",
+      "clean": true
+    },
+    {
+      "id": "p050",
+      "text": "I have raw LC-MS/MS output files from a proteomics experiment in mzML format. How can I load the spectra, filter out noisy scans, detect and quantify features across the run, and export the results to a table for downstream statistical analysis?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pyopenms",
+      "clean": true
+    },
+    {
+      "id": "p051",
+      "text": "我有一段用 PyTorch 写的神经网络训练代码，里面有大量手动处理的样板代码，比如训练循环、验证循环、设备切换和分布式训练配置。我想把它重构成结构清晰、易于维护的形式，并且能方便地在多张 GPU 上扩展训练，同时保留对训练细节的完全控制。请帮我改写这段代码，并加上模型保存和训练日志记录的最佳实践。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "pytorch-lightning",
+      "clean": true
+    },
+    {
+      "id": "p052",
+      "text": "I have a CSV file with SMILES strings for a set of candidate compounds. Can you write Python code to parse each structure, compute its molecular weight and logP, flag any molecules containing a nitro group, and save 2D depictions of the top five most drug-like candidates as images?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "rdkit",
+      "clean": true
+    },
+    {
+      "id": "p053",
+      "text": "请给我一个可复现的 Python 流程，对高维基因表达计数矩阵做质控、归一化、降维、分群、标志物识别、可视化和轨迹推断，并说明环境依赖与大数据集加速方案。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "scanpy",
+      "clean": true
+    },
+    {
+      "id": "p054",
+      "text": "我在做科研时卡住了，想找一些新的研究方向。你能像合作伙伴一样和我聊聊，帮我提出一些假设、挑战一下现有框架里的默认前提，并想想有没有跨领域的思路可以用进来吗？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "scientific-brainstorming",
+      "clean": true
+    },
+    {
+      "id": "p055",
+      "text": "我有一组实验数据需要画成论文投稿用的图，要求包含多个子图、误差线和显著性标记，配色要对色盲友好，最后导出成高分辨率的PDF和TIFF格式，能帮我完成吗？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "scientific-visualization",
+      "clean": true
+    },
+    {
+      "id": "p056",
+      "text": "I have a CSV of customer data with features like age, income, and purchase history, plus a churn label. Show me how to split it into train/test sets, scale the numeric columns, train a classifier, and evaluate it with cross-validation and a confusion matrix in Python.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "scikit-learn",
+      "clean": true
+    },
+    {
+      "id": "p057",
+      "text": "I have a single-cell RNA-seq dataset from multiple donors and I'd like to remove batch effects, learn a low-dimensional latent representation, and then annotate cell types using a small set of labeled reference cells. Can you show me how to set that up in Python and run differential expression afterward?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "scvi-tools",
+      "clean": true
+    },
+    {
+      "id": "p058",
+      "text": "我训练了一个风控打分器，想知道某位申请人被拒的主要原因，并生成一张图展示各项资料对结果的推动方向与幅度，能帮我做吗？",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "shap",
+      "clean": true
+    },
+    {
+      "id": "p059",
+      "text": "I ran a study comparing test scores across three different teaching methods, and I also want to know if study hours predict final grades. Can you help me figure out whether the group differences are meaningful, check that my data meets the required conditions, tell me how big the effects are, and format the findings for a psychology journal submission?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "statistical-analysis",
+      "clean": true
+    },
+    {
+      "id": "p060",
+      "text": "I have a CSV of monthly sales data from the past five years. I want to understand which factors (price, advertising spend, season) drive the numbers, get confidence intervals for each factor's effect, and check whether my assumptions hold up. Can you show me how to do this analysis in Python?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "statsmodels",
+      "clean": true
+    },
+    {
+      "id": "p061",
+      "text": "I have thousands of genomic variant call files from a cohort study and keep needing to add new samples without re-processing everything. How can I store them so I can quickly pull out variants for specific chromosome regions across all samples, including data sitting in cloud object storage?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "tiledbvcf",
+      "clean": true
+    },
+    {
+      "id": "p062",
+      "text": "我想用 PyTorch 来构建一个处理图结构数据的模型：节点有特征向量，边描述节点间的关系，需要能堆叠多种消息传递层、支持按小批量采样邻居来做大规模训练，还能处理含有多种节点和边类型的异构图。请告诉我怎么安装相关库并写一个简单的节点分类示例。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "torch-geometric",
+      "clean": true
+    },
+    {
+      "id": "p063",
+      "text": "我父亲刚被诊断出2型糖尿病和高血压，医生给了一套用药和复查安排。能不能帮我整理成一份简洁规范、带可衡量目标和随访时间表的临床照护文档（3到4页以内），最好导出成PDF？要符合隐私和病历书写规范。",
+      "lang": "Chinese",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "treatment-plans",
+      "clean": true
+    },
+    {
+      "id": "p064",
+      "text": "Can you pull the most recent total public debt outstanding for the United States and show me the as-of date along with the amount?",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "usfiscaldata",
+      "clean": true
+    },
+    {
+      "id": "p065",
+      "text": "What would happen if the world lost access to GPS satellites for a full year? Please explore several distinct plausible timelines, assign rough likelihoods to each, and walk through how their consequences would differ.",
+      "lang": "English",
+      "origin": "written from a skill's SKILL.md, without naming it",
+      "source_skill": "what-if-oracle",
+      "clean": true
+    },
+    {
+      "id": "n001",
+      "text": "hey, how's it going? just checking in",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n002",
+      "text": "给我讲个程序员的冷笑话",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n003",
+      "text": "what should I have for dinner tonight?",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n004",
+      "text": "谢谢，帮了大忙了！",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n005",
+      "text": "are you able to remember what we talked about yesterday?",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n006",
+      "text": "简单解释一下什么是 monad",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n007",
+      "text": "who wrote the novel Middlemarch?",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n008",
+      "text": "为什么天空是蓝色的",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n009",
+      "text": "summarize the history of the Roman Republic for me",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n010",
+      "text": "TCP 和 UDP 有什么区别",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n011",
+      "text": "rename the function fetchUser to loadUser across this repo",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n012",
+      "text": "我的 CSS grid 布局在 Safari 上塌了，帮我看看",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n013",
+      "text": "add pagination to this REST endpoint",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n014",
+      "text": "把这个 800 行的 Python 文件拆成几个模块",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n015",
+      "text": "write a git pre-commit hook that runs prettier",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n016",
+      "text": "看看这个 Go 服务的错误处理有没有问题",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n017",
+      "text": "why is my docker build so slow, it takes 6 minutes",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n018",
+      "text": "帮我订下周二去柏林的机票",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n019",
+      "text": "add these three cards to our Trello backlog",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n020",
+      "text": "把这条更新发到我们的 Mastodon 账号",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n021",
+      "text": "create a Spotify playlist from my liked songs",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n022",
+      "text": "给值班工程师发个 Slack 私聊",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n023",
+      "text": "file an expense report in Concur for this receipt",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n024",
+      "text": "把我的日历和团队 Notion 页面对齐",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n025",
+      "text": "order more coffee beans from the usual shop",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n026",
+      "text": "BRCA1 蛋白一般有什么生物学功能",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n027",
+      "text": "explain what single-cell sequencing is at a high level",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n028",
+      "text": "受凉真的会感冒吗",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n029",
+      "text": "how do I read a scientific paper efficiently?",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n030",
+      "text": "一个好的研究问题应该具备什么特点",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n031",
+      "text": "recommend a good textbook for learning statistics",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n032",
+      "text": "现在蛋白质折叠领域进展到哪一步了，纯好奇",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n033",
+      "text": "what can you actually do for me?",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n034",
+      "text": "你刚才的回答太长了，之后简短点",
+      "lang": "zh",
+      "origin": "hand-written uncovered"
+    },
+    {
+      "id": "n035",
+      "text": "switch to a cheaper model for this conversation",
+      "lang": "en",
+      "origin": "hand-written uncovered"
+    }
+  ]
+}
