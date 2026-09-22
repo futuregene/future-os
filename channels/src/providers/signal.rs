@@ -931,9 +931,6 @@ fn classify(status: u16, text: &str) -> HttpResponse {
 fn describe_failure(operation: &str, response: &HttpResponse) -> anyhow::Error {
     let message = response.error_message();
     let class = classify_failure(response.status, &message);
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     anyhow!("signal {operation} failed: {message} ({label} error)")
 }

@@ -94,6 +94,16 @@ const PERMANENT_PATTERNS: &[&str] = &[
     "channel is archived",
     "message too long",
     "not configured",
+    // A provider that classified the failure itself says so in the message,
+    // using `ErrorClass::label`. Without these two the label is decoration:
+    // the provider has usually already decided, and re-deriving the decision
+    // from platform words misses the codes it knew about — a permanent
+    // `channel_not_found` shares no words with "channel not found", so it was
+    // retried until the attempt cap. Parenthesised, so a platform's own prose
+    // cannot accidentally match. Kept in step by
+    // `the_provider_classification_label_is_recognised`.
+    "(permanent)",
+    "(permanent error)",
 ];
 
 /// Whether an error message describes a permanent failure.
@@ -502,6 +512,36 @@ mod tests {
         let pending = queue.pending();
         assert_eq!(pending.len(), 1, "the pending message is never dropped");
         assert_eq!(pending[0].text, format!("m{}", MAX_ENTRIES + 4));
+    }
+
+    #[test]
+    fn the_provider_classification_label_is_recognised() {
+        // A provider that knows the platform's error code stamps its own
+        // classification into the message. The queue only stores text, so it
+        // has to read the label back; otherwise the provider's decision is
+        // thrown away and the retry decision is made from platform words.
+        use crate::transport::http::ErrorClass;
+        let permanent = ErrorClass::Permanent.label();
+        // Both shapes providers use, built from the label itself so renaming
+        // the label cannot leave these patterns behind.
+        for message in [
+            format!("chat.postMessage: not_authed ({permanent} error)"),
+            format!("linq `send` rejected ({permanent}): bad request"),
+            format!("whatsapp `send` rejected ({permanent}): template paused"),
+            format!("signal send failed: peer refused ({permanent} error)"),
+        ] {
+            assert!(is_permanent_error(&message), "{message}");
+        }
+        // A transient label must not be read as permanent — that would drop a
+        // message that was worth retrying.
+        let transient = ErrorClass::Transient.label();
+        for message in [
+            format!("chat.postMessage: ratelimited ({transient} error)"),
+            format!("linq `send` rejected ({transient}): busy"),
+            format!("signal send failed: busy ({transient} error)"),
+        ] {
+            assert!(!is_permanent_error(&message), "{message}");
+        }
     }
 
     #[test]

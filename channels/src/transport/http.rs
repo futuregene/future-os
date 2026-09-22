@@ -20,6 +20,23 @@ pub enum ErrorClass {
     Transient,
 }
 
+impl ErrorClass {
+    /// The word a provider stamps into its error message once it has classified
+    /// the failure itself.
+    ///
+    /// A provider sees the platform's error code, so it often knows more than
+    /// the text it ends up returning. Stamping the label is what carries that
+    /// knowledge forward: the durable delivery queue only stores the message,
+    /// and it reads the label back out (see `delivery::is_permanent_error`) so
+    /// the decision is not re-derived from whatever words the platform used.
+    pub fn label(self) -> &'static str {
+        match self {
+            ErrorClass::Permanent => "permanent",
+            ErrorClass::Transient => "transient",
+        }
+    }
+}
+
 /// How hard to try before giving up on one HTTP call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {

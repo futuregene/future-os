@@ -123,6 +123,13 @@ helpers handle the rest (`transport::http::ErrorClass`,
 * A blocked bot, a deleted channel or bad credentials is permanent.
 * Never retry a send that could duplicate a user-visible message unless the
   platform provides an idempotency key.
+* **Put the class in the message text** with `ErrorClass::label`. The durable
+  queue stores the text and nothing else, so a classification that never
+  reaches the text is lost — it falls back to matching the platform's own
+  words, which does not know the codes you just classified. A permanent
+  `channel_not_found` shares no words with the queue's "channel not found", so
+  it was retried until the attempt cap. Assert it, as
+  `a_classified_failure_is_readable_by_the_delivery_queue` does for Signal.
 
 ## Tests
 
@@ -134,7 +141,8 @@ Test what is platform-specific and easy to get wrong:
   `transport::text`;
 * the addressing rule (mention detection, reply-to-bot, direct message);
 * signature verification for webhook providers (valid, invalid, missing);
-* error classification;
+* error classification, including that the class reaches the durable queue
+  (`delivery::is_permanent_error` on the real message text);
 * config defaults, and that a malformed block fails with a readable message.
 
 Use `crate::test_support` (`temp_dir`, `home_lock`, `spawn_mock_grpc`,
