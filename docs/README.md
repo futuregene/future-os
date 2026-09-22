@@ -29,6 +29,8 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 
 | Doc | What it covers |
 |---|---|
+| [CLI authorization and Loop refactor](architecture/CLI_REFACTOR.zh-CN.md) (Chinese only by project decision) | Phase one: restricted CLI runtime, delegated authorization and native Loop; phase two: management IPC sandbox isolation, evidence and acceptance |
+| [Remote execution design](architecture/REMOTE_EXECUTION_DESIGN.md) (Chinese) | SSH Linux runner, execution backends, skills, recovery, desktop panels, and later WSL2 integration |
 | [Loop Control Plane](architecture/loop-control-plane.md) ([中文](architecture/loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
 | [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
 | [SQLite migration](architecture/sqlite-migration.zh-CN.md) | Agent/desktop SQLite storage layout and migration policy (zh only for now) |

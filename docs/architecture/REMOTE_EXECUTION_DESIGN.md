@@ -1,14 +1,16 @@
 # 远程 Linux 执行能力开发方案
 
-日期：2026-09-20
+日期：2026-09-22
 
 状态：开发设计草案；本文描述目标实现，不代表现有功能已经实现或经过验证。
 
-前置工程：[CLI 授权与 Loop 工具化改造](CLI_REFACTOR.zh-CN.md)（[English](CLI_REFACTOR.md)）。先完成本地 CLI 受限授权、恢复 auth.json 沙盒保护和 Loop 内置工具；远程 CLI 复用同一 runtime，仅由 runner 转发授权请求。原始账户/模型 Key 不下发。Browser 在远端执行，缺少浏览器或启动失败直接报错；远端技能库安装/更新一期可明确不支持。本文继续负责 SSH、执行器与资源生命周期，CLI/Loop 职责以该前置方案为准。
+前置工程：[CLI 授权与 Loop 工具化改造](CLI_REFACTOR.zh-CN.md)（仅维护中文版）。先完成本地 CLI 受限授权、恢复 auth.json 沙盒保护和 Loop 内置工具；远程 CLI 复用同一 runtime，仅由 runner 转发授权请求。原始账户/模型 Key 不下发。Browser 在远端执行，缺少浏览器或启动失败直接报错；远端技能库安装/更新一期可明确不支持。本文继续负责 SSH、执行器与资源生命周期，CLI/Loop 职责以该前置方案为准。
 
-一期范围：Windows / macOS 控制端连接普通 Linux 服务器；Linux 控制端沿用相同接口。
+现有 Agent 管理 IPC 的沙盒隔离修复列入 [CLI 改造二期](CLI_REFACTOR.zh-CN.md#9-cli-二期管理-ipc-沙盒隔离)，不混入 CLI 一期或本远程工程。本文仍负责新增 runner 控制资源的隔离和受限授权接入；两者不能混同。完整安全声明需引用 CLI 二期对应平台的验证结果，不能因 SSH 加密或 broker 已受限就认定现有管理端点已隔离。
 
-下一期：超算、Slurm / PBS、计算节点调度与作业恢复，以及远端开发服务的端口转发，不进入一期实现和验收。端口转发规划见第 17 节。
+一期范围：Windows / macOS 控制端通过 SSH 连接普通 Linux 服务器；Linux 控制端沿用相同接口。实施优先级为 CLI 前置改造 → SSH Linux → 本机 WSL2 直连。WSL2 不阻塞前两项交付，也不进入 SSH 一期验收。
+
+后续范围：本机 WSL2 通过 `wsl.exe` 直连 runner，优先级低于 SSH Linux，见第 17.4 节；超算、Slurm / PBS、计算节点调度与作业恢复，以及远端开发服务的端口转发也不进入一期实现和验收。后续事项之间未在本文统一排期。
 
 ## 1. 已确认的目标与边界
 
@@ -32,6 +34,8 @@
 16. 一期接入 Desktop Files、Git Review 和远程 Terminal；远程“上次运行”Review 延期，Local 现有功能和历史数据保留。普通对话仍只有 Files/Terminal，不扩展为项目 Review。专项设计见第 19—22 节。Git 是 Git Review 的可选功能前提；没有 Git 不阻止 runner、Files、Terminal 或无需 Git 的 Agent 工具使用。
 
 ## 2. 组件与职责
+
+本节图示为一期 SSH 路径。后续 WSL2 仅替换 runner 的启动与传输适配，复用执行协议、CLI 授权、资源服务与监督逻辑，见第 17.4 节；不把 Windows shell 单独替换成 WSL bash。
 
 ```mermaid
 flowchart LR
@@ -152,6 +156,8 @@ sequenceDiagram
 
 数字版本不一致返回 `RUNNER_VERSION_MISMATCH`，阻止新执行；控制端提供匹配版本的 runner 包。更新仅影响对应 `target_id` 的二进制，保留其 Skill 缓存和普通对话目录。发布替换也要取得同一 home 锁并保持到安装完成，避免检查空闲后与 Local/serve 启动竞争；不覆盖运行文件，不为升级启动第二个 serve。已有任务先由原实例完成或明确取消，释放占用后再更新。
 
+上述准入也覆盖包内远端 `future` 入口及 CLI runtime；独立二进制或共享二进制均采用相同数字核心规则，版本不符时在执行前返回 `RUNNER_VERSION_MISMATCH` 并指出不匹配组件。独立工件必须由同一包清单列出并校验完整性，整体原子发布；入口固定解析到本包，不能按普通 PATH 命中旧版完整 CLI。版本一致不替代正常授权协议/能力检查，也不增加开发构建后缀或 hash 相等门槛。
+
 ### 3.5 首次准备与日常连接分开
 
 | 场景 | 路径 |
@@ -163,6 +169,8 @@ sequenceDiagram
 | 端点不可达、身份/权限检查失败 | 返回分类错误；不能仅凭连接失败推断需要重装或清理 |
 
 控制端按完整发布构建标识、远端 OS/架构及发布摘要缓存已验证包，首次缺包时在控制端下载，远端不依赖联网。包缓存标识用于选择和完整性校验，不增加“开发版构建 hash 必须一致”的准入条件；兼容仍按第 3.4 节数字核心判定。VS Code 同样支持本地下载后上传，作为部署路径参考：[Remote SSH 安装与联网说明](https://code.visualstudio.com/docs/remote/ssh#what-are-the-connectivity-requirements-for-the-vs-code-server-when-it-is-running-on-a-remote-machine--vm)。
+
+缓存和上传单位是包含 runner、远端 `future` 入口及其 runtime 的完整发行包，不单独混搭不同缓存中的组件；中断不能发布半套入口。离线安装 runner 不代表云工具可离线使用，业务服务的出网约束见第 6.5 节。
 
 日常重连复用安装和固定 Skill 快照，不重复上传二进制、不全量扫描或上传所有 Skill。身份、UID、home、runner 实例、owner、workspace 根与必要沙盒检查不能跳过。环境/策略/实例变化使相关探测缓存失效；按需核对本 run 所需资源，不能把“快路径”等同于直接使用旧授权。
 
@@ -213,7 +221,7 @@ sequenceDiagram
     execution-owner.json                  # 固定位置的最小占用/异常恢复提示，无秘密
   runner/
     <target_id>/                          # 0700；每次主机注册一份持久目录
-      bin/future-runner                   # 验证后发布的当前二进制
+      bin/future-runner                   # 验证后整体发布的当前包；同时提供受限 future 入口
       skills/<bundle-hash>/               # 完整不可变 Skill 快照，只读绑定
       workspaces/chat/<chat-dir-id>/      # 沿用 thread/session 命名规则；用户产物不按缓存删除
       staging/<transfer-id>/              # 上传半成品与非敏感恢复清单
@@ -236,6 +244,8 @@ runner 复用锁文件不等于初始化完整 Agent；只创建必需的锁父�
 
 runtime 记录不包含凭据。发现端点必须验证 owner、mode、非 symlink、真实 socket 与握手；清理 stale socket 前取得共享锁并检查残留进程，不能删除活动端点或 unlink/recreate 活跃锁文件。路径解析使用 no-follow、目录 FD 与原子 rename 防止替换。
 
+上图仅列远端资源。Remote Loop 的业务状态位于**控制端** `<FUTURE_HOME>/agent/loop/<workspace_id>/`，不放入 runner 树或同步到服务器；具体身份解析与清理契约见 [CLI 方案第 7.3 节](CLI_REFACTOR.zh-CN.md#73-执行位置与存储兼容) 和本文第 16.4 节。
+
 ### 4.3 隔离规则
 
 - 每个 SSH 账号独立安装/runtime 根和权限；同账号不同 FUTURE_HOME 独立管理。同根多个 runner 有独立资源和配额，共用一把占用锁。
@@ -245,6 +255,7 @@ runtime 记录不包含凭据。发现端点必须验证 owner、mode、非 syml
 - 文件工具和 shell 同样受权限策略约束。默认只允许工作区、已绑定 Skill/input、该操作临时目录以及必要系统运行时资源；不能通过 read 工具或面板的目录列表、文件搜索入口绕过权限边界读取控制资源。
 - 沙盒内屏蔽 runtime、控制 socket、安装根、其他 workspace 资源、账号凭据目录；仅把当前 Skill/input 视图显式只读挂载。不得把父目录全部可见后仅依赖 chmod。
 - 不继承控制连接、日志或审批 FD；隔离 `/proc`/进程可见性，防止从 FD 或其他进程重新取得控制通道。沙盒能力验收需包含这些路径。
+- CLI 可取得单独的受限授权 FD/handle，只能访问 [CLI 授权窄接口](CLI_REFACTOR.zh-CN.md#42-受限通道与管理通道分离)，不能复用 serve/SSH/完整管理通道。runner 从受控句柄来源绑定当前上下文，管理命令及控制帧均拒绝；它不是对上一条完整控制 FD 禁令的豁免。rendezvous 凭证单次兑换与授权通道可承载多次分别校验的请求是不同生命周期。
 - Skill 内容对象不直接给工具写入；工作区视图通过只读挂载呈现。需要写出的 Skill 应使用项目输出目录或 operation tmp。
 - 所有工具子进程使用受控环境变量表。禁止透传控制端环境、认证 token、SSH agent socket、runner 内部标识；`PATH`、HOME、locale 等来自明确的远端执行配置。
 - 禁止越权操作安装/控制资源是 runner 硬边界。明确批准的无沙盒命令拥有该 Unix 账号权限，不能继续声称拥有这些隔离保证；UI 必须清楚显示。
@@ -267,7 +278,7 @@ runtime 记录不包含凭据。发现端点必须验证 owner、mode、非 syml
 | `ExecutionEnvironment` | Linux aarch64，bash 5.x，POSIX 路径 | 模型 shell 指令、远端工具、项目与沙盒 |
 | `ToolExecutionSite` | `workspace_backend` / `controller_service` | 决定每个工具在哪里运行 |
 
-远程会话的现有 Agent 工具 shell/read/write/edit 必须走 workspace backend；Git 面板操作和项目上下文读取也必须绑定同一执行目标，但不因此成为新的模型工具。当前没有独立的 Agent `search` 工具，本期不新增；模型需要检索项目内容时使用目标端 shell 中实际可用的命令，缺少命令时明确报告。Files 面板的文件搜索属于第 19 节的受限资源接口，不能与模型工具混淆。模型服务、Loop 和带凭据的连接器等控制端服务保留在控制端。工具注册必须声明 `ToolExecutionSite`，缺失声明的工具不得进入远程会话的可用工具集；调度器按注册信息及固定 ExecutionContext 强制路由，不由模型指定或改写执行位置。远端失败不能回退本地执行。
+远程会话的现有 Agent 工具 shell/read/write/edit 必须走 workspace backend；Git 面板操作和项目上下文读取也必须绑定同一执行目标，但不因此成为新的模型工具。当前没有独立的 Agent `search` 工具，本期不新增；模型需要检索项目内容时使用目标端 shell 中实际可用的命令，缺少命令时明确报告。Files 面板的文件搜索属于第 19 节的受限资源接口，不能与模型工具混淆。模型服务、Loop 编排及确需控制端的连接器保留在控制端；CLI 平台云工具按第 6.1 节在执行主机取得受限授权后直连，不能仅因需要认证就归为控制端执行。工具注册必须声明 `ToolExecutionSite`，缺失声明的工具不得进入远程会话的可用工具集；调度器按注册信息及固定 ExecutionContext 强制路由，不由模型指定或改写执行位置。远端失败不能回退本地执行。
 
 文件打开、附件上传、产物下载和浏览器入口使用带 target/workspace 身份的资源引用，分别交给受控资源服务或控制端 UI，不能将远端绝对路径交给本机文件 API。远程会话中的 `future-browser` 在远端执行，用于查看远端开发页面；其 `localhost`、文件与截图均属于远端。缺少浏览器或启动失败时直接报错，不回退控制端。用户在控制端 UI 打开链接是另一种行为，不能把远端 `localhost`/回环 URL 当作本机 URL 打开。本期不实现端口转发，也不承诺通过本地浏览器访问仅监听远端回环地址的测试服务；下一期规划见第 17 节。
 
@@ -397,11 +408,15 @@ Skill 注册、发现优先级、用户启用状态和原始内容以控制端�
 | --- | --- |
 | 纯指令/参考资料 | 控制端读取；如按现有 read 工具访问 location，则绑定远端只读快照 |
 | 远程项目脚本型 | 传输所选 Skill 的文件快照，在 workspace backend 内运行 |
-| 控制端服务型 | 原有具凭据工具在控制端执行，输出按需要传给远端；不传 token |
+| 平台云工具型 | 执行主机上的 CLI runtime 经 runner 申请受限临时授权，再直连业务服务；文件在执行主机处理，不下发原始 Key，不经控制端中转文件 |
+| 执行主机能力型 | 浏览器等在 workspace backend 所在主机执行；缺少浏览器或无法启动明确失败，不回退控制端 |
+| 控制端服务型 | Loop 由 Agent 内置工具执行编排，项目文件/验证经 backend；account 一期由 Agent 返回只读业务结果；不下发原始 Key，也不提供任意反向 CLI |
 | 混合型 | 工具执行位置显式标识，输入/产物通过资源句柄交接 |
 | 平台不兼容或依赖缺失 | 标记 unavailable/needs_dependency，说明具体原因，不回退本地执行 |
 
 原始 SKILL.md 不是认证数据，不能命令系统上传凭据、任意本地目录或创建新的本地执行后端。带绝对本机路径的 Skill 应标记不可移植；不能全局字符串替换它的正文来假装已经兼容远端。
+
+分类依据是具体能力的执行职责，不是“是否需要认证”；云授权与真正的控制端服务不能合并为一类。命令兼容范围和失败语义以 [CLI 方案第 6 节](CLI_REFACTOR.zh-CN.md#6-cli-命令兼容与能力范围) 为共同契约。
 
 ### 6.2 内容快照与 Manifest
 
@@ -434,6 +449,8 @@ Windows 上没有 Unix executable 位时，使用明确的脚本入口/发布元
 会话先使用控制端已有的 Skill 名称/描述目录。对于用户显式选用的 Skill，在该 run 开始前准备；对于模型运行中发现的 Skill，在首次读取其内容或调用资源时经过资源准备屏障。模型不能拿到一个尚未完成绑定的远端脚本路径就开始执行。
 
 一期增加受限的 `resolve_skill(skill_name)` 控制端资源入口（名称待实现确定），只接受当前 run 冻结目录内有效的选择键，不接受任意本地路径。它完成下面的同步和绑定后，返回 SKILL.md 内容、bundle hash、远端 location 与依赖状态；已有显式选用 Skill 的流程内部调用相同入口。未准备的目录项展示 Skill 名称和该入口，不展示虚假的本地或远端文件路径。
+
+此入口当前尚未实现：CLI 阶段 D 先交付可信解析与 Local 路径，远程 M3 扩展同一入口的快照、传输和远端绑定。Local 不模拟上传协议；动态启用 Loop 的 schema/handler/预算与重试一致性按 [CLI 方案第 7.2 节](CLI_REFACTOR.zh-CN.md#72-技能触发的工具可见性) 实施，不用现有 set_tools RPC 代替当前 run 的可信激活。
 
 为兼容现有通过通用 read 读取 Skill 的行为，一期默认在 resolve 时同步所选 Skill 的完整快照，包括纯指令 Skill；确定为纯控制端服务且不暴露远端资源的 Skill 才走明确的控制端读取路径。不要让调用方在两种读取方式之间自行猜测。
 
@@ -475,6 +492,8 @@ DiscoverLocal → Snapshot → CheckCompatibility → Prepare(manifest)
 现有 Skill 不强制新增一套 metadata 才能使用。优先利用已有信息与可识别的入口，缺少信息时标为 unknown，通过受控探测和运行错误报告补充。不能仅靠静态扫描或模型判断保证任意脚本可移植。
 
 缺少 Python/R/工具链时返回 `SKILL_DEPENDENCY_MISSING`，列出需求、远端探测结果和目标；用户可使用服务器已有虚拟环境或明确安装项目依赖。FutureOS 不把这类依赖混入 runner 的安装链。
+
+SSH/授权通道可用不代表执行端可访问业务服务。远端无出网、DNS/连接失败、TLS 校验失败或策略拒绝分别返回网络/安全错误，不属于 `SKILL_DEPENDENCY_MISSING`；不修改 Skill 快照或静默回退控制端代理。按操作所需服务报告，不因某个云服务不可达禁用所有项目操作。提交前确认未发送与提交后结果未知分开，未知结果查询原 operation，不换 ID 重提；服务恢复后重新校验授权再续接。
 
 ## 7. 沙盒与审批契约
 
@@ -724,6 +743,10 @@ stdout/stderr 各自有单调 byte offset，生命周期事件有单调 seq；�
 | N72 | 远端离线/身份失败时 Desktop 恢复 session | 区分连接失败与会话丢失，不新建空会话、不调用 set_cwd 偷换目标 |
 | N73 | chat 路径尚未落实时创建回包丢失 | 恢复原请求/session 与目录决定，不换 ID 创建重复目录；已有产物不自动改名 |
 | N74 | Agent 重启恢复旧/新 schema 会话和队列 | 旧记录明确迁移 Local；新记录校验执行绑定，旧操作不因新 context 自动重跑 |
+| N75 | 沙盒通过受限授权句柄发送管理 RPC 或 runner 控制帧 | broker 拒绝，不能升级为完整控制通道；现有 Agent 管理 IPC 的专项隔离由 CLI 二期验证 |
+| N76 | SSH 正常且已取得授权，远端业务服务无出网/DNS/TLS/策略失败 | 分类报错，不回退控制端；已提交或无法确认时查询原 operation，恢复不重复计费 |
+| N77 | runner 与远端 future/runtime 版本错配、包上传中断或 PATH 残留旧 CLI | 核对包内入口和整体完整性；数字版本不符拒绝，新包未原子发布不得启动混合组件 |
+| N78 | Remote Loop 恢复、普通对话并行、切换控制端或清理 runner | 控制端按稳定 workspace 引用复用/隔离状态；跨控制端不合并；远端清理不删除控制端 Loop 历史 |
 
 覆盖原则：按“身份/建连 → 安装 → 接收 → 启动 → 输出 → 完成 → ACK → 清理”的每个边界注入断线；分别重启 bridge、serve、控制端和服务器。所有有副作用的 API 都应套用这套边界检查，不只检查 shell。
 
@@ -796,9 +819,12 @@ Desktop 专项还需拆分 Files 的资源访问、Git Review 的目标端计算
 
 ## 13. 开发顺序与完成标准
 
+共同前置先于 CLI D：从现有本地执行逻辑提取项目文件、验证命令和环境探测所需的最小 ExecutionBackend 契约及 Local 适配，交付边界见 [CLI 迁移顺序](CLI_REFACTOR.zh-CN.md#8-迁移顺序与验收门槛)。CLI D 使用它完成 Loop 工具化；M1 复用并扩展这份实现，不把整个 M1 或 SSH/runner 当作 CLI 的前置，也不重复建设 backend。功能接入顺序仍是 CLI 一期前置工程 → SSH Linux → 后续 WSL2；管理 IPC 隔离归 CLI 二期，不依赖 SSH/WSL 完成，也不把安全闭环视为 CLI 一期自动交付。
+
 ### M1：执行上下文与本地兼容
 
 - 引入组合式目标数据、ExecutionContext、LocalPath/RemotePath、工具执行位置。
+- 复用共同前置的 ExecutionBackend/Local 实现，保留 CLI D 已接入的文件、验证和环境探测契约，不另建 Loop 专用 backend。
 - 先按第 18 节梳理 Session 执行绑定和既有 run 接收/准备边界，让 Local 复用现有逻辑；不新增平行会话/调度系统。
 - 将 prompt、工具描述、项目上下文、Skill location、沙盒信息统一接入环境描述。
 - 工具注册强制声明执行位置，调度器统一路由；文件/附件/产物保留 target 身份，远端回环 URL 不误开为本地服务。
@@ -809,6 +835,7 @@ Desktop 专项还需拆分 Files 的资源访问、Git Review 的目标端计算
 
 - 交付可独立构建的 Linux runner，以及安装、认证、stdio bridge、私有 UDS、协议协商。
 - 分离首次准备与连接快路径，实现控制端发布包缓存；每 target 一个 RemoteConnection，跨 workspace 复用并合并并发连接请求。
+- 将远端 `future` 入口/runtime 纳入同一包的版本准入、完整性验证和原子发布，复用 CLI runtime 与授权契约。
 - Local/SSH 统一读取固定占用记录，校验实际 socket 与实例，不依赖各登录会话的 XDG 路径一致。
 - 打通远端现有 shell/read/write/edit 工具，工作区身份与审批绑定；Files 面板搜索按第 19 节单独接入。
 - 验证独立 Linux 账号之间的 socket、workspace 和资源隔离；同 UID 的限制明确呈现。
@@ -818,6 +845,7 @@ Desktop 专项还需拆分 Files 的资源访问、Git Review 的目标端计算
 ### M3：资源与 Skill 完整性
 
 - 实现一致快照、hash manifest、分块传输、原子发布、只读绑定、版本固定、配额与 GC。
+- 扩展 CLI D 已交付的可信技能解析/Local 入口，实现同一 resolve_skill 契约的远端准备与绑定；按第 6.1 节区分云工具、执行主机能力和控制端服务。
 - 覆盖 Windows 源 Skill、CRLF、依赖缺失、断线同步、源变化和运行时 GC。
 - 附件、输入、结果下载复用同一资源传输协议；原有只传本机绝对路径的方式不能跨目标复用。
 
@@ -1143,11 +1171,13 @@ serve 启动时生成 `instance_id`；首次取得锁并 attach 后，本次占�
 | inputs/staging/tmp | 在该 runner 内按资源/workspace/操作隔离并限制配额 |
 | socket/占用提示 | socket 使用私有短路径；占用提示和共享锁固定在 agent 根，跨登录一致发现 |
 | 数据库/长期模型凭据 | 保留在各控制端，runner 不同步、不新建 |
+| Remote Loop 业务状态 | 控制端 `<FUTURE_HOME>/agent/loop/<workspace_id>/`；按 Agent 验证的稳定逻辑工作区定位，格式复用现有 Loop store，不在远端新建状态库 |
 
 远程普通对话不放入现有 Local chat 根，避免 [Local orphan chat 清理](../../desktop/src-tauri/src/store/cleanup.rs) 因本地数据库没有对应会话而误删。runner 的 chat 是用户产物，不纳入 Skill/tmp GC；删除主机注册、退出或升级也不能自动删除这些目录。独立 runner 缓存可能重复占用磁盘，这是本期接受的成本。
 
 Linux 本机若启动完整 FutureOS 使用 Local，该机器此时也承担控制端职责，会产生自身的本地数据库和配置；远程控制端 A/B 的数据库和密钥仍不传过去。同一项目目录不意味着不同控制端之间合并聊天历史或自动接管模型上下文。
 
+Loop 同样遵守此边界：不同控制端的 Loop 状态各自独立，Local 项目仍沿用既有本地状态；远端项目文件共用不等于 Loop 历史共用。Remote 状态根由 Agent 根据第 18.4 节稳定工作区引用解析，Desktop/TUI/headless 一致；不增加 target/controller 目录层，不把远端 cwd 或 `FUTURE_LOOP_ROOT` 当控制端路径。workspace 后续会话、重启和连接配置修改复用原根；独立普通对话分别隔离。状态仅由控制端显式清理并先停止相关 worker/写入者，目标删除、断线和 runner GC 不触发删除。详见 [CLI 存储契约](CLI_REFACTOR.zh-CN.md#73-执行位置与存储兼容)。
 ### 16.5 与之前方案的取舍
 
 | 方面 | 本期简化方案 | 原多控制端并行方案 |
@@ -1208,6 +1238,76 @@ Linux 本机若启动完整 FutureOS 使用 Local，该机器此时也承担控�
 
 远程运行前后文件快照与差异展示不进入一期，实现成本、现有行为风险与重启恢复边界见第 20 节。下一期先重新评估价值，不承诺一定实现；必要时可长期仅提供远程 Git Review。Local 的上次运行功能不因此删除，也不迁移历史快照和 changeset。
 
+### 17.4 本机 WSL2 直连（低于 SSH Linux 的后续阶段）
+
+#### 范围与复用
+
+已确认增加 Windows 控制端直连本机 WSL2 的执行方式，先完成 CLI 改造和 SSH Linux，再实现本节。只支持 WSL2，不包含 WSL1；不把 WSL2 设为 Windows 的强制依赖，不静默改变已有 Local workspace。
+
+```text
+Windows Agent
+  ↔ 本机受控子进程的 stdin/stdout
+  ↔ wsl.exe（显式指定发行版、Linux 用户，执行固定 runner bridge 入口）
+  ↔ WSL2 内账号私有 socket
+  ↔ future-runner serve
+  ↔ Linux 沙盒 / 文件 / shell / Git / 浏览器 / PTY
+```
+
+`wsl.exe` 提供指定发行版和用户的执行入口，见 [微软 WSL 命令说明](https://learn.microsoft.com/en-us/windows/wsl/basic-commands)。通过结构化进程参数启动固定入口，模型命令仍走 runner 协议，不插入 Windows 命令行或 bootstrap 字符串。具体 exec 参数、编码和管道行为需在支持版本实测；不依赖默认发行版、默认登录 shell 或 Windows 当前目录。
+
+WSL2 路径不要求 sshd、IP、SSH 密码、主机公钥或端口转发。传输是本机进程管道，不使用 SSH 网络加密层，也不开放替代 TCP 服务。受控进程身份、句柄继承、runner owner 与受限 CLI 授权检查仍然必须执行；“同机”不等于“可信”。
+
+复用同一 runner 二进制与协议、数字版本规则、target/context/operation 身份、Skill 快照、单占用锁、临时授权和恢复语义。按启动/传输方式组合 SSH 与 WSL 适配器，不复制 runner 业务，不把 WSL 内装成完整 Agent。CLI runtime 仍只面对 Agent 授权服务；runner 用当前控制连接转发，不增加第三套凭据协议。
+
+#### 目标配置、身份与目录
+
+设置中后续提供 `WSL2` 目标类型，选择当前 Windows 用户可访问的已安装发行版与非 root Linux 用户。保存前核对 WSL2、账号 UID、有效 home、执行根及可用能力；此操作可能启动已安装发行版，应明确显示，不自动安装/升级/转换发行版或改变其默认用户。
+
+沿用稳定 `target_id` 和不可改绑 workspace：`Local`、某个 `Ssh` 目标、某个 `Wsl` 目标是不同执行绑定。修改系统默认发行版或默认用户不改变既有目标；不能在发现目标失效后自动选一个同名/默认目标继续运行。
+
+后续 `WslConfig` 包含配置 revision、显式发行版/用户选择，以及已验证的发行版注册身份、UID、Linux home/root 身份。发行版名称仅用于定位和展示，不能单独证明连续性；注册身份的获取方式与支持版本在实现前确定，不预设未经验证的公开 GUID API。同名删除重建、重新导入、身份/根变化或连续性无法证明时阻断，要求新建目标；不以一个可随发行版复制的 marker 作为唯一证明。启动实例变化按正常重启恢复处理，不能仅因重启而要求重新绑定。
+
+WSL home、runner 安装、Skill 缓存和默认项目根限定在发行版内 Linux 文件系统；暂不支持 Windows 挂载盘上的 workspace。按实际挂载类型及解析后的根检查，不能只匹配 `/home` 或 `/mnt/c` 前缀。不得将 Windows 控制端的 `FUTURE_HOME`、PATH、原始凭据环境自动传入 WSL。
+
+Files、Git Review、read/write/edit/shell、项目上下文、浏览器、Loop 验证和 Terminal 全部绑定 WSL backend；不在 Windows 端通过 UNC 路径旁路读取 WSL 项目。模型得到 Linux 环境事实。浏览器使用已安装的 Linux headless Chromium，缺少/启动失败直接报错。Terminal 使用 runner 内的 Linux PTY；`wsl.exe` 的协议管道不充当用户交互终端。
+
+共享 home 锁在 WSL Linux 内执行。同一 home 经 SSH 或 `wsl.exe` 接入仍竞争同一个占用，不能因传输方式不同启动两个 owner。不同目标注册仍按第 16 节分别保存 runner 目录；不得把新传输当作已有 workspace 的自动改绑入口。
+
+#### WSL 专项隔离是上线门槛
+
+当前 [Linux 沙盒范围](../internals/desktop/SANDBOX/LINUX.zh-CN.md) 明确不支持/不专门检测 WSL。该说明保留为当前实现事实；本节是后续扩展计划，完成实测前不能把原生 Linux probe 通过或 SSH 可连接等同于 WSL 支持。
+
+WSL 能挂载 Windows 文件系统、启动 Windows 程序，见 [互通配置](https://learn.microsoft.com/en-us/windows/wsl/wsl-config#interop-settings)。因此“不下发原始 Key”还不足以保护 Windows 控制端本来就存在的凭据文件。WSL 适配至少需要：
+
+- 在模型工具沙盒内屏蔽未授权宿主磁盘与挂载别名，保护 Windows 控制端凭据/管理资源；只读挂载并不禁止泄露内容。
+- 阻断经 WSL interop 启动 Windows 进程、访问 interop socket 或继承控制句柄的旁路。清理 PATH、`WSL_INTEROP` 和 `WSLENV` 不是充分条件；微软实现还存在 [interop socket 查找回退](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/interop.md)。
+- 验证不能通过宿主可达网络端点调用 Windows Agent 的完整管理接口；继续只提供上下文绑定的受限 CLI 授权能力。
+- 按运行作用域落实限制，不为建立执行连接修改全局 `/etc/wsl.conf` 或要求关闭用户整个发行版的 interop。不能满足隔离策略时明确不可用，不自动脱沙盒。
+- 用户手工 Terminal 仍按第 21 节作为独立授权入口，不能成为模型借用的 Windows 互通旁路；不把用户主动操作的权限宣传成工具沙盒的隔离保证。
+
+#### 启动、断开与恢复
+
+可以用 `wsl.exe` 启动所绑定的已安装发行版及固定 bridge，再按已有规则启动/附着 serve；不要求用户先启动 sshd。首次部署沿用控制端分发已验证 runner 的流程，只替换传输方式。标准输出仅供协议，诊断走独立且有界的 stderr；测试非 ASCII 路径、二进制帧和大输出，不能假定终端文本转发等于可靠协议。
+
+bridge/`wsl.exe` 退出不直接等于工作进程退出；操作终态、取消和残留清理由 runner 确认。连接失效后沿用 control epoch、operation 查询、有限宽限期和授权撤销；不另造 WSL 去重记录或长期状态库。不要用 `wsl --terminate`/`wsl --shutdown` 实现单任务取消、断开或退出，它们会影响发行版中无关工作。
+
+Windows 休眠、WSL 被停止、发行版重启和管道丢失分别验证。休眠不承诺任务持续推进；实例终止后纯内存结果不可恢复，未知副作用不得重跑。仅在 WSL 实例继续存活时承诺断线继续执行；systemd 服务本身不保证实例常驻，见 [微软 systemd 生命周期说明](https://learn.microsoft.com/en-us/windows/wsl/systemd)。不自动修改全局休眠或 WSL 空闲配置来掩盖限制。
+
+#### 后续验收（不计入 SSH 一期门槛）
+
+| 编号 | 场景 | 预期 |
+| --- | --- | --- |
+| W01 | WSL 未安装、WSL1、发行版缺失、用户不存在、probe 失败 | 明确错误；不安装、不转换、不回退 Local/SSH |
+| W02 | 已停止发行版、默认发行版/用户改变 | 只启动绑定目标；不跟随系统默认值，不改变 workspace |
+| W03 | 同名重建/导入、用户或根替换、普通实例重启 | 前者阻断身份连续性；正常重启复核实例与上下文，未知操作不重做 |
+| W04 | Windows 挂载路径、别名、宿主凭据、Windows 程序与 interop socket | 模型沙盒不能读取受保护秘密或借 Windows 进程越界；仅通过普通 bwrap probe 不算通过 |
+| W05 | 中文/空格参数、二进制帧、stderr 污染、大输出、断管 | 参数不重解析、协议不串流、背压有界；结果未知不误报成功 |
+| W06 | Windows 休眠、Agent 崩溃、WSL 终止/重启、取消 | 沿用恢复/过期规则；不终止整个发行版，不声称任务一定存活 |
+| W07 | read/write/edit/shell、Files/Git、浏览器、Loop、PTY | 均在绑定 Linux 根执行；工具不能借 Windows 文件 API 或手工 Terminal 旁路 |
+| W08 | 同 home 经 SSH/WSL/发行版内 Local 竞争、临时授权重连 | 共享占用与授权规则，无双 owner、旧授权复活或原始 Key 下发 |
+
+实施时记录 Windows/WSL/发行版/内核与 Bubblewrap 版本，完成实机专项 review 后再更新支持声明；本节没有实机验证结果。
+
 ## 18. 已确认的组合结构、现有兼容与 Agent 执行入口优化
 
 本节落实类型组织和现有代码衔接决定，保持前述产品/安全边界。代码事实经只读检查；以下改造尚未实现。字段序列化、数据库迁移和函数签名在实施 review 中确认，不重新建立平行会话系统。
@@ -1218,6 +1318,7 @@ Linux 本机若启动完整 FutureOS 使用 Local，该机器此时也承担控�
 ExecutionTarget
   common: TargetInfo                # target_id、名称、enabled；Local 为内置目标
   config: Local(LocalConfig) | Ssh(SshConfig)
+  # 后续 WSL2 阶段扩展 Wsl(WslConfig)，一期不要求落库或开放 UI
 
 SshConfig
   config_revision
@@ -1232,6 +1333,7 @@ SshConfig
   ExecutionBackend
     LocalBackend
     SshRemoteBackend                # 复用目标的 RemoteConnection
+    # 后续 WslBackend：复用 runner 执行逻辑，组合 wsl.exe 传输适配
 
 执行环境
   公共 OS/arch/shell/路径/能力事实
@@ -1241,6 +1343,8 @@ SshConfig
 Rust 使用公共结构体加枚举分支组合数据，trait 定义执行行为；TypeScript/RPC 对应带 kind 的联合类型/oneof。不用继承树，不给 Local 填虚假的 SSH 字段，不为每个分组新建一张表或服务。LocalConfig 只承载本地所需配置，无需求时可以为空；Local 的内置启用/不可删除规则不因公共字段而改变。
 
 Local/SSH 是连接方式，Windows/macOS/Linux 是执行平台，两个维度独立。Linux Local 复用 Linux 执行实现；Windows/macOS 控制端连 Linux 时环境仍由远端报告。UID 留在远端账号事实中，需要本地身份时使用本地 OS 的真实表示，不强制映射为 Linux 数字。
+
+后续增加 WSL2 时，连接方式扩展为 Local/SSH/WSL，执行平台仍然是 Linux。`WslConfig` 不填虚假的 SSH 地址、密码或主机公钥；复用公共目标字段和 Linux 账号/home 事实，发行版身份与启动参数只放在 WSL 分支。具体边界与低优先级实施约束见第 17.4 节。
 
 SshConfig 的 server/account/home 是同一目标内不同的校验事实：公钥验证服务器、UID 验证账号、home/root identity 验证资源连续性。ssh_user 可在验证同 UID 后改名；不能同时改写固定身份来使编辑验证通过。首次尚未安装 runner 时 home 的准备状态应显式表达，不能用空路径冒充已验证的根。
 

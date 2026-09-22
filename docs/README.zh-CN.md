@@ -27,6 +27,8 @@
 
 | 文档 | 内容 |
 |---|---|
+| [CLI 授权与 Loop 工具化改造](architecture/CLI_REFACTOR.zh-CN.md)（项目约定仅维护中文） | 一期：受限 CLI runtime、临时授权与 Loop 内置工具；二期：管理 IPC 沙盒隔离、调查依据与验收 |
+| [远程执行方案](architecture/REMOTE_EXECUTION_DESIGN.md)（中文） | SSH Linux runner、执行后端、Skill、恢复、桌面面板与后续 WSL2 接入 |
 | [Loop 控制面](architecture/loop-control-plane.zh-CN.md)（[en](architecture/loop-control-plane.md)） | `future-loop` — 目标/todos/门禁/监控、should-run 内核、配额、事件溯源、交付闭环、多 agent、supervisor/worker 消息、web dashboard |
 | [长程证据账本](architecture/long-run-evidence-ledger.zh-CN.md)（[en](architecture/long-run-evidence-ledger.md)） | 长程 loop 目标问责记录 — 墙钟、花费、验证结果、每个已关闭目标的显式边界 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md) | Agent/Desktop SQLite 存储布局与迁移策略（暂缺英文） |
