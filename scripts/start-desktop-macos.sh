@@ -18,6 +18,9 @@ case "$AGENT_ADDR" in
     AGENT_ADDR="auto"
     AGENT_SOCKET="${FUTURE_AGENT_SOCKET:-$HOME/.future/run/agent.sock}"
     AGENT_ENDPOINT="unix://$AGENT_SOCKET"
+    AGENT_TCP_ADDR=""
+    AGENT_HOST=""
+    AGENT_PORT=""
     ;;
   *)
     AGENT_TRANSPORT="tcp"
@@ -26,6 +29,7 @@ case "$AGENT_ADDR" in
     AGENT_HOST="${AGENT_TCP_ADDR%:*}"
     AGENT_PORT="${AGENT_TCP_ADDR##*:}"
     AGENT_ENDPOINT="http://$AGENT_TCP_ADDR"
+    AGENT_SOCKET=""
     ;;
 esac
 DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
@@ -38,20 +42,34 @@ AGENT_BUILD_LOG="$LOG_DIR/future-agent-test.build.log"
 CLI_BUILD_LOG="$LOG_DIR/future-cli-test.build.log"
 DESKTOP_CONSOLE_LOG="$LOG_DIR/futureos-desktop-test.log.console"
 AGENT_PID_FILE="$LOG_DIR/future-agent-test.pid"
-STARTED_AGENT_PID=""
-DESKTOP_PID=""
 
 REUSE_AGENT="${REUSE_AGENT:-0}"
 BUILD_AGENT="${BUILD_AGENT:-1}"
 BUILD_CLI="${BUILD_CLI:-1}"
 CLEAN_STALE_APP_TASKS="${CLEAN_STALE_APP_TASKS:-1}"
 DRY_RUN="${DRY_RUN:-0}"
+LIVE_LOGS="${LIVE_LOGS:-1}"
 
-# Monitor mode gives each background job its own process group on macOS's
-# system Bash, without requiring GNU setsid. Disable it inside each job so its
-# descendants stay in that job's group. The launcher alone receives terminal
-# Ctrl-C and controls shutdown order.
-set -m
+STARTED_AGENT_PID=""
+DESKTOP_PID=""
+
+stream_log_to_console() {
+  local label="$1"
+  local line
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '[%s] %s\n' "$label" "$line"
+  done
+}
+
+mirror_log() {
+  local label="$1"
+  if [[ "$LIVE_LOGS" == "1" ]]; then
+    stream_log_to_console "$label"
+  else
+    cat >/dev/null
+  fi
+}
 
 stop_process_group() {
   local pid="$1"
@@ -73,14 +91,30 @@ stop_process_group() {
   wait "$pid" 2>/dev/null || true
 }
 
+stop_process() {
+  local pid="$1"
+  local label="$2"
+  [[ -n "$pid" ]] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Stopping $label pid=$pid"
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Force stopping $label pid=$pid"
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   trap '' INT TERM
-  # Keep Bash from printing expected "Terminated: 15" job notifications while
-  # the launcher deliberately tears down the process groups below.
+  # Expected SIGTERM during deliberate teardown must not produce job-control
+  # notifications such as "Terminated: 15".
   set +m
   # Tauri/Vite and the GUI must stop before the endpoint they consume.
   stop_process_group "$DESKTOP_PID" "desktop"
-  stop_process_group "$STARTED_AGENT_PID" "future-agent"
+  stop_process "$STARTED_AGENT_PID" "future-agent"
   if [[ -f "$AGENT_PID_FILE" ]] && [[ "$(cat "$AGENT_PID_FILE" 2>/dev/null || true)" == "$STARTED_AGENT_PID" ]]; then
     rm -f "$AGENT_PID_FILE"
   fi
@@ -203,11 +237,11 @@ WHERE status IN ('queued', 'running', 'waiting_approval');
 SQL
 }
 
+mkdir -p "$LOG_DIR"
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-mkdir -p "$LOG_DIR"
 
 echo "Workspace: $ROOT_DIR"
 echo "Agent endpoint: $AGENT_ENDPOINT"
@@ -221,7 +255,6 @@ fi
 if [[ "$CLEAN_STALE_APP_TASKS" == "1" ]]; then
   cancel_stale_app_tasks
 fi
-
 
 if [[ ! -d "$DESKTOP_DIR/node_modules" ]]; then
   echo "Installing desktop dependencies..."
@@ -272,7 +305,6 @@ else
     echo "Stop the old agent manually, or run with REUSE_AGENT=1 if you intentionally want to reuse it."
     exit 1
   fi
-  echo "Starting future-agent..."
   # `agent` is a member of the root Cargo workspace, so `cargo build` (even when
   # invoked from within agent/) writes the binary to the workspace-level target
   # dir ($ROOT_DIR/target/debug) — NOT $AGENT_DIR/target/debug. Launching a
@@ -284,13 +316,10 @@ else
     echo "Build it first (BUILD_AGENT defaults to 1) or run with BUILD_AGENT=1."
     exit 1
   fi
-  # exec the built binary directly instead of `cargo run`, so $! is the agent's
-  # own pid rather than the cargo wrapper's. Otherwise killing the recorded pid
-  # leaves the orphaned future-agent child holding the gRPC port.
-  # The agent writes structured logs to its default location ($AGENT_LOG) via
-  # bare --log-file; stdout/stderr (panics, pre-tracing output) go to
-  # $AGENT_CONSOLE_LOG so the same lines are not duplicated into $AGENT_LOG by
-  # shell redirection.
+  echo "Starting future-agent..."
+  # Launch the workspace artifact directly so the pid file tracks the Agent,
+  # not a cargo wrapper that could leave an orphan holding the endpoint.
+  : >"$AGENT_CONSOLE_LOG"
   (
     set +m
     cd "$AGENT_DIR"
@@ -299,7 +328,7 @@ else
     else
       exec "$AGENT_BIN" --log-file
     fi
-  ) </dev/null >"$AGENT_CONSOLE_LOG" 2>&1 &
+  ) </dev/null > >(tee -a "$AGENT_CONSOLE_LOG" | mirror_log "agent") 2>&1 &
   STARTED_AGENT_PID="$!"
   echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
   wait_for_agent
@@ -326,19 +355,26 @@ echo "Starting desktop..."
 echo "Press Ctrl-C here to stop the desktop and the agent started by this script."
 echo "Desktop log: $DESKTOP_CONSOLE_LOG"
 
-# The launcher owns terminal input (Ctrl-C); background readers must not suspend
-# the Tauri group with SIGTTIN. Vite already receives piped stdin from Tauri.
+# The Agent intentionally remains in the launcher's foreground group. On
+# macOS, putting both background jobs into monitor-mode groups lets Tauri's
+# dev lifecycle terminate the script-owned Agent after its first application
+# launch. Only Desktop needs a group: it owns npm, Vite, Cargo, and the GUI.
+set -m
+
+# The launcher owns terminal input; child stdin is detached so no background
+# reader can suspend the Tauri process group with SIGTTIN.
+echo "Live logs: [agent] and [desktop] lines are mirrored here; set LIVE_LOGS=0 to keep file-only logs."
+: >"$DESKTOP_CONSOLE_LOG"
 (
   set +m
   cd "$DESKTOP_DIR"
   if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
     export FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR"
-    exec npm run tauri:dev
   else
     unset FUTURE_AGENT_GRPC_ADDR
-    exec npm run tauri:dev
   fi
-) </dev/null >"$DESKTOP_CONSOLE_LOG" 2>&1 &
+  exec npm run tauri:dev
+) </dev/null > >(tee -a "$DESKTOP_CONSOLE_LOG" | mirror_log "desktop") 2>&1 &
 DESKTOP_PID="$!"
 
 # Rebuilds happen inside the long-lived Tauri job. Keep the same Agent alive
@@ -348,8 +384,7 @@ while kill -0 "$DESKTOP_PID" 2>/dev/null; do
     echo "future-agent exited unexpectedly; stopping desktop. See $AGENT_LOG and $AGENT_CONSOLE_LOG" >&2
     exit 1
   fi
-  sleep 1 &
-  wait "$!"
+  sleep 1
 done
 
 if wait "$DESKTOP_PID"; then

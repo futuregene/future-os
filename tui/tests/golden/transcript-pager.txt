@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse ·[39m
+
+[38;5;245m[skills] code-review, future-slides, future-web[39m
+
+[48;5;59m hello
+
+[49m Hello from the mock agent!
+
+
+[48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
+[49m  [1m[38;5;245m     --- a/src/greeting.rs[0m
+  [1m[38;5;245m     +++ b/src/greeting.rs[0m
+  [38;5;39m     @@ -1,4 +1,5 @@[39m
+  [38;5;252m   1  pub fn greeting() -> &'static str {[39m
+[38;5;245m  … 4 more lines · ctrl+g to expand[39m
+
+ Hello from the mock agent!
+
+ This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
+
+ [38;5;245mModel: Mock Model (`mock-model`)[39m
+ [38;5;245mProvider: future[39m
+ [38;5;245mImage support: yes[39m
+ [38;5;245mContext window: 128K[39m
+ [38;5;245mSession: mock-session-1[39m
+ [38;5;245mCWD: /mock[39m
+ [38;5;245mThinking: off[39m
+ [38;5;245mPermission: all[39m
+ [38;5;245mQueries: 42[39m
+ [38;5;245mAuto compaction: off[39m
+ [38;5;245mStreaming: no[39m
+ [38;5;245mContext: 48000 / 128000 (37.5%)[39m
+ [38;5;245m  file: /mock/session.jsonl[39m
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close      0%

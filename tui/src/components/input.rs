@@ -22,12 +22,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use future_rpc::proto::Attachment;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::paste;
 use crate::tui::{Component, Focusable, CURSOR_MARKER};
 use crate::utils::{
-    extract_ansi_code, is_punctuation_char, is_whitespace_char, strip_ansi_codes, visible_width,
-    wrap_text_with_ansi,
+    extract_ansi_code, is_punctuation_char, is_whitespace_char, strip_ansi_codes,
+    truncate_to_width, visible_width, wrap_text_with_ansi, TruncateOptions,
 };
 
 // ─── UTF-16 helpers (JS string semantics) ──────────────────────────────────
@@ -153,6 +155,32 @@ fn grapheme_u16_len(g: &str) -> usize {
 /// new edits push beyond the bound.
 const MAX_UNDO_STACK: usize = 200;
 
+/// The paste and image state that belongs to one draft.
+///
+/// A submission takes it (so a placeholder that is still on screen can be
+/// expanded and its images sent) and a guard that puts the draft back hands it
+/// back, so the draft keeps meaning what it says.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PendingDraft {
+    pastes: HashMap<String, String>,
+    attachments: Vec<Attachment>,
+}
+
+impl PendingDraft {
+    /// The text to put on the wire for `draft`: every `[Pasted Content …]`
+    /// placeholder still present replaced by the text the user pasted. A
+    /// placeholder the user deleted is gone from `draft` and so is its text;
+    /// a placeholder the store has never seen stays literal.
+    pub fn expand(&self, draft: &str) -> String {
+        paste::expand(draft, &self.pastes)
+    }
+
+    /// The images `draft` still references, in marker order.
+    pub fn attachments(&self) -> &[Attachment] {
+        &self.attachments
+    }
+}
+
 // Field names mirror the TS class (`onSubmit`/`onEscape`/`onChange` are the
 // exact property names in `input.ts`).
 #[allow(non_snake_case, clippy::type_complexity)]
@@ -162,6 +190,10 @@ pub struct Input {
     pub onSubmit: Option<Box<dyn FnMut(&str)>>,
     pub onEscape: Option<Box<dyn FnMut()>>,
     pub onChange: Option<Box<dyn FnMut(&str)>>,
+    /// Something the input refused to do, phrased for the user (a paste past
+    /// the length cap). The app turns it into a transcript notice — the box
+    /// itself cannot explain why a key did nothing.
+    pub onNotice: Option<Box<dyn FnMut(&str)>>,
 
     // Input history — up/down to recall previous submissions
     history: Vec<String>,
@@ -174,9 +206,22 @@ pub struct Input {
     paste_buffer: String,
     is_in_paste: bool,
 
-    // Undo stack — (value, cursor) snapshots taken before each edit.
-    // Cleared on submit; bounded at MAX_UNDO_STACK entries.
-    undo_stack: Vec<(String, usize)>,
+    // Folded pastes — `[Pasted Content N chars]` placeholder → the text it
+    // stands for. Entries are never pruned: a placeholder the user deleted
+    // and then restored with ctrl+z has to expand again, and a name is only
+    // ever reused while its placeholder is absent from the draft, so a stale
+    // entry can never be reachable.
+    pastes: HashMap<String, String>,
+    // Images attached to this draft, in `[Image #N]` marker order.
+    attachments: Vec<Attachment>,
+    // Whether the active model accepts image input (`ModelInfo.supports_images`),
+    // as the app last learned it. `None` = not known, which is not the same as
+    // "no": the attachment line only warns when the answer is known.
+    image_support: Option<bool>,
+
+    // Undo stack — (value, cursor, attachments) snapshots taken before each
+    // edit. Cleared on submit; bounded at MAX_UNDO_STACK entries.
+    undo_stack: Vec<(String, usize, Vec<Attachment>)>,
     // Kill ring — text deleted by ctrl+u / ctrl+k / ctrl+w / alt+d,
     // restored by ctrl+y (yank).
     kill_text: String,
@@ -186,6 +231,14 @@ pub struct Input {
     cached_visual_lines: Vec<String>,
     cached_line_map: Vec<usize>, // visualLine → source UTF-16 offset
     cached_value_for_layout: String,
+
+    // App palette (`/theme`). The ported TS renderer emits no SGR at all — the
+    // prompt is a bare `"> "` — so the palette is inert here by design: it is
+    // stored so every chrome widget answers the same `set_theme`/`theme`
+    // contract, and so a caller that wants to color the prompt has the palette
+    // in hand. `theme_round_trips_and_leaves_rendering_untouched` pins that
+    // inertness (no `38;5;` under either palette).
+    theme: crate::theme::Theme,
 }
 
 impl Default for Input {
@@ -202,19 +255,35 @@ impl Input {
             onSubmit: None,
             onEscape: None,
             onChange: None,
+            onNotice: None,
             history: Vec::new(),
             history_index: -1,
             history_draft: String::new(),
             focused: false,
             paste_buffer: String::new(),
             is_in_paste: false,
+            pastes: HashMap::new(),
+            attachments: Vec::new(),
+            image_support: None,
             undo_stack: Vec::new(),
             kill_text: String::new(),
             cached_visual_width: -1,
             cached_visual_lines: Vec::new(),
             cached_line_map: Vec::new(),
             cached_value_for_layout: String::new(),
+            theme: crate::theme::Theme::default(),
         }
+    }
+
+    /// Adopt a palette (`/theme`). See the `theme` field: the input renders
+    /// uncolored, so this is a no-op for `render` by design.
+    pub fn set_theme(&mut self, theme: &crate::theme::Theme) {
+        self.theme = *theme;
+    }
+
+    /// The palette this input was handed.
+    pub fn theme(&self) -> crate::theme::Theme {
+        self.theme
     }
 
     pub fn get_value(&self) -> &str {
@@ -240,19 +309,161 @@ impl Input {
             Some(pos) => pos.min(vlen),
             None => vlen,
         };
+        // The markers in the new value decide which attachments survive, but a
+        // programmatic set (autocomplete completing the draft, a restored
+        // session draft) must not fire `onChange` — that is the app's own edit.
+        self.sync_attachments();
         self.cached_visual_width = -1;
     }
 
+    /// Text arriving from outside the keyboard — a bracketed paste, or a
+    /// single multi-byte character the key parser hands through.
+    ///
+    /// Three things can happen to it, in this order:
+    /// - it names a real image file → an attachment, and an `[Image #N]`
+    ///   marker in its place (dragging a file into a terminal pastes its path);
+    /// - it is longer than the fold threshold → a `[Pasted Content N chars]`
+    ///   placeholder, with the text kept out of the box;
+    /// - otherwise it is inserted as text, exactly as before.
+    ///
+    /// The length cap is checked against the *assembled* message before any of
+    /// that, so an oversized paste is refused with a reason instead of being
+    /// truncated.
     pub fn insert_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
         // Normalize line endings (preserve newlines), replace tabs
-        let clean = text
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            .replace('\t', "    ");
+        let clean = paste::normalize(text);
+        if let Some(message) = self.over_limit_message(&clean) {
+            self.notify(&message);
+            return;
+        }
+        if let Some((path, name)) = paste::resolve_image_path(&clean) {
+            self.attach_image(path, name);
+            return;
+        }
+        if paste::char_len(&clean) > paste::FOLD_THRESHOLD {
+            self.fold_paste(&clean);
+            return;
+        }
         self.insert_at_cursor(&clean);
+    }
+
+    /// The text to send for `draft`: every `[Pasted Content …]` placeholder
+    /// that survived to submission, expanded back to the pasted bytes.
+    pub fn expanded(&self, draft: &str) -> String {
+        paste::expand(draft, &self.pastes)
+    }
+
+    /// Take the paste/image state for a submission (the caller is about to
+    /// clear the box, or has just cleared it) — see [`PendingDraft`].
+    pub fn take_pending(&mut self) -> PendingDraft {
+        PendingDraft {
+            pastes: std::mem::take(&mut self.pastes),
+            attachments: std::mem::take(&mut self.attachments),
+        }
+    }
+
+    /// Hand a taken [`PendingDraft`] back — the draft it belongs to is on
+    /// screen again (a submission that was refused: compaction is running).
+    pub fn restore_pending(&mut self, pending: PendingDraft) {
+        self.pastes = pending.pastes;
+        self.attachments = pending.attachments;
+    }
+
+    /// Tell the input whether the active model accepts image input, so the
+    /// attachment line can say when a picture is going to arrive as a path.
+    pub fn set_image_support(&mut self, supported: Option<bool>) {
+        self.image_support = supported;
+    }
+
+    /// Attach an image (already sniffed as one) and put its marker at the
+    /// cursor. The attachment is pushed before the marker so the undo snapshot
+    /// `insert_at_cursor` takes describes the state without it; undoing the
+    /// marker then drops the image again (`commit_edit` re-derives the list
+    /// from the markers).
+    fn attach_image(&mut self, path: String, name: String) {
+        self.attachments.push(Attachment {
+            path,
+            kind: "image".to_string(),
+            name,
+            thumbnail: String::new(),
+        });
+        let marker = paste::image_marker(self.attachments.len());
+        self.insert_at_cursor(&marker);
+    }
+
+    /// Keep a paste out of the box: store it under a fresh placeholder name and
+    /// insert the placeholder.
+    fn fold_paste(&mut self, content: &str) {
+        let name = paste::free_placeholder_name(&self.value, paste::char_len(content));
+        self.pastes.insert(name.clone(), content.to_string());
+        self.insert_at_cursor(&name);
+    }
+
+    /// How many characters the draft would send right now.
+    fn assembled_chars(&self) -> usize {
+        paste::char_len(&self.expanded(&self.value))
+    }
+
+    /// The refusal message when inserting `text` would push the assembled
+    /// message past [`paste::MAX_MESSAGE_CHARS`].
+    fn over_limit_message(&self, text: &str) -> Option<String> {
+        paste::over_limit_message(self.assembled_chars() + paste::char_len(text))
+    }
+
+    /// Report something the user asked for that did not happen.
+    fn notify(&mut self, message: &str) {
+        if let Some(on_notice) = self.onNotice.as_mut() {
+            on_notice(message);
+        }
+    }
+
+    /// Finish an edit: re-derive the attachment list from the markers the draft
+    /// still contains, drop the cached layout and tell the app.
+    fn commit_edit(&mut self) {
+        self.sync_attachments();
+        self.cached_visual_width = -1;
+        if let Some(on_change) = self.onChange.as_mut() {
+            on_change(&self.value);
+        }
+    }
+
+    /// Drop the images whose `[Image #N]` marker the user deleted, and renumber
+    /// the survivors so the numbering stays `1..N` (deleting `#1` turns `#2`
+    /// into `#1`). A marker with no attachment behind it — one the user typed
+    /// by hand — is left as text.
+    fn sync_attachments(&mut self) {
+        let (order, rewrites) = paste::sync_image_markers(&self.value, self.attachments.len());
+        if !rewrites.is_empty() {
+            self.apply_marker_rewrites(&rewrites);
+        }
+        self.attachments = order
+            .into_iter()
+            .map(|number| self.attachments[number - 1].clone())
+            .collect();
+    }
+
+    /// Apply a renumbering to the draft, keeping the cursor on the character it
+    /// was on (a shrinking `#10` → `#9` moves everything after it left).
+    fn apply_marker_rewrites(&mut self, rewrites: &[paste::MarkerRewrite]) {
+        for rewrite in rewrites {
+            let start = u16_len(&self.value[..rewrite.start]);
+            let end = start + u16_len(&self.value[rewrite.start..rewrite.end]);
+            let delta = u16_len(&rewrite.text) as i64 - (end - start) as i64;
+            if self.cursor >= end {
+                self.cursor = (self.cursor as i64 + delta).max(0) as usize;
+            } else if self.cursor > start {
+                // Inside the marker being rewritten: settle before it.
+                self.cursor = start;
+            }
+        }
+        // Back to front, so the offsets of the rewrites still ahead stay valid.
+        for rewrite in rewrites.iter().rev() {
+            self.value
+                .replace_range(rewrite.start..rewrite.end, &rewrite.text);
+        }
     }
 
     pub fn handle_key(&mut self, key: &str) -> bool {
@@ -267,8 +478,12 @@ impl Input {
         // Submit
         if key == "enter" {
             let v = self.value.clone();
-            if !v.is_empty() && (self.history.is_empty() || self.history[0] != v) {
-                self.history.insert(0, v.clone());
+            // History keeps what was *sent*, not what the box showed: recalling
+            // a line must not put the placeholder back on screen without the
+            // text it stands for.
+            let sent = self.expanded(&v);
+            if !sent.is_empty() && (self.history.is_empty() || self.history[0] != sent) {
+                self.history.insert(0, sent);
             }
             self.history_index = -1;
             self.history_draft.clear();
@@ -682,9 +897,7 @@ impl Input {
         // history_index is clamped to len-1 above.
         self.value = self.history[idx].clone();
         self.cursor = u16_len(&self.value);
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
         true
     }
 
@@ -703,34 +916,33 @@ impl Input {
             self.value = self.history_draft.clone();
         }
         self.cursor = u16_len(&self.value);
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
         true
     }
 
     // ── Text manipulation ─────────────────────────────────────────────
 
-    /// Snapshot the current (value, cursor) so an edit can be undone.
+    /// Snapshot the current (value, cursor, attachments) so an edit can be
+    /// undone. The attachments travel with the text: undoing the deletion of an
+    /// `[Image #N]` marker has to bring the image back, not just the marker.
     fn push_undo(&mut self) {
         if self.undo_stack.len() >= MAX_UNDO_STACK {
             self.undo_stack.remove(0);
         }
-        self.undo_stack.push((self.value.clone(), self.cursor));
+        self.undo_stack
+            .push((self.value.clone(), self.cursor, self.attachments.clone()));
     }
 
     /// Restore the most recent pre-edit state. Returns true when a snapshot
     /// was restored (false = nothing to undo).
     fn undo(&mut self) -> bool {
-        let Some((value, cursor)) = self.undo_stack.pop() else {
+        let Some((value, cursor, attachments)) = self.undo_stack.pop() else {
             return false;
         };
         self.value = value;
         self.cursor = cursor;
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.attachments = attachments;
+        self.commit_edit();
         true
     }
 
@@ -744,15 +956,16 @@ impl Input {
     }
 
     fn insert_at_cursor(&mut self, text: &str) {
+        if let Some(message) = self.over_limit_message(text) {
+            self.notify(&message);
+            return;
+        }
         self.push_undo();
         let before = slice_u16(&self.value, 0, self.cursor);
         let after = slice_u16(&self.value, self.cursor, u16_len(&self.value));
         self.value = format!("{before}{text}{after}");
         self.cursor += u16_len(text);
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
     }
 
     fn handle_backspace(&mut self) {
@@ -765,10 +978,7 @@ impl Input {
             self.push_undo();
             self.value = format!("{}{tail}", slice_u16(&self.value, 0, keep));
             self.cursor = keep;
-            self.cached_visual_width = -1;
-            if let Some(on_change) = self.onChange.as_mut() {
-                on_change(&self.value);
-            }
+            self.commit_edit();
         }
     }
 
@@ -782,10 +992,7 @@ impl Input {
             let tail = slice_u16(&self.value, self.cursor + grapheme_length, vlen);
             self.push_undo();
             self.value = format!("{before}{tail}");
-            self.cached_visual_width = -1;
-            if let Some(on_change) = self.onChange.as_mut() {
-                on_change(&self.value);
-            }
+            self.commit_edit();
         }
     }
 
@@ -800,10 +1007,7 @@ impl Input {
                 self.kill_text = "\n".to_string();
                 self.value = format!("{head}{tail}");
                 self.cursor = before_newline;
-                self.cached_visual_width = -1;
-                if let Some(on_change) = self.onChange.as_mut() {
-                    on_change(&self.value);
-                }
+                self.commit_edit();
             }
             return;
         }
@@ -813,10 +1017,7 @@ impl Input {
         self.kill_text = slice_u16(&self.value, start, self.cursor);
         self.value = format!("{head}{tail}");
         self.cursor = start;
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
     }
 
     fn delete_to_line_end(&mut self) {
@@ -829,10 +1030,7 @@ impl Input {
         self.push_undo();
         self.kill_text = slice_u16(&self.value, self.cursor, end);
         self.value = format!("{head}{tail}");
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
     }
 
     fn delete_word_backwards(&mut self) {
@@ -849,10 +1047,7 @@ impl Input {
         self.kill_text = slice_u16(&self.value, delete_from, self.cursor);
         self.value = format!("{head}{tail}");
         self.cursor = delete_from;
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
     }
 
     fn delete_word_forward(&mut self) {
@@ -869,10 +1064,7 @@ impl Input {
         self.push_undo();
         self.kill_text = slice_u16(&self.value, self.cursor, delete_to);
         self.value = format!("{head}{tail}");
-        self.cached_visual_width = -1;
-        if let Some(on_change) = self.onChange.as_mut() {
-            on_change(&self.value);
-        }
+        self.commit_edit();
     }
 
     fn move_word_backwards(&mut self) {
@@ -952,17 +1144,26 @@ impl Input {
         }
     }
 
-    // ── Paste handling ────────────────────────────────────────────────
-
-    fn handle_paste(&mut self, pasted_text: &str) {
-        let clean_text = pasted_text
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            .replace('\t', "    ");
-        self.insert_at_cursor(&clean_text);
-    }
-
     // ── Render ────────────────────────────────────────────────────────
+
+    /// The attachment line the box shows above the prompt (`None` = nothing to
+    /// say, and the screen is byte-identical to an input with no attachments).
+    fn attachment_line(&self, screen_width: usize) -> Option<String> {
+        let images = self
+            .attachments
+            .iter()
+            .filter(|a| a.kind == "image")
+            .count();
+        let notice = paste::attachment_notice(images, self.image_support)?;
+        Some(truncate_to_width(
+            &notice,
+            screen_width,
+            &TruncateOptions {
+                ellipsis: true,
+                pad: false,
+            },
+        ))
+    }
 
     fn render_cursor_in_line(
         &self,
@@ -1061,6 +1262,10 @@ impl Component for Input {
 
         let mut output: Vec<String> = Vec::new();
 
+        if let Some(line) = self.attachment_line(screen_width) {
+            output.push(line);
+        }
+
         for (vi, sub_text) in visual_lines.iter().enumerate() {
             let is_first_line = vi == 0;
             let prompt = if is_first_line { "> " } else { "  " };
@@ -1102,7 +1307,7 @@ impl Component for Input {
             self.paste_buffer.push_str(&data);
             if let Some(end_index) = self.paste_buffer.find("\x1b[201~") {
                 let paste_content = self.paste_buffer[..end_index].to_string();
-                self.handle_paste(&paste_content);
+                self.insert_text(&paste_content);
                 self.is_in_paste = false;
                 let remaining = self.paste_buffer[end_index + 6..].to_string();
                 self.paste_buffer.clear();
@@ -2193,5 +2398,440 @@ mod tests {
         assert!(input.focused());
         assert!(input.as_any().downcast_ref::<Input>().is_some());
         assert!(input.as_any_mut().downcast_mut::<Input>().is_some());
+    }
+
+    #[test]
+    fn theme_round_trips_and_leaves_rendering_untouched() {
+        let mut input = make_input();
+        input.set_value("hello world", Some(5));
+        let default_lines = input.render(20);
+        assert_eq!(input.theme(), crate::theme::Theme::default());
+        assert!(
+            !default_lines.iter().any(|line| line.contains("\x1b[38;5;")),
+            "the ported renderer is uncolored: {default_lines:?}"
+        );
+
+        input.set_theme(&crate::theme::DARK_THEME);
+        assert_eq!(input.render(20), default_lines);
+
+        let light = crate::themes::theme_by_id("light").expect("light is in the catalog");
+        input.set_theme(&light);
+        assert_eq!(input.theme(), light);
+        assert_eq!(input.render(20), default_lines);
+    }
+
+    /// A wrapped line whose source carries an ANSI code: the layout walk has to
+    /// step over the escape bytes rather than count them as visible text.
+    #[test]
+    fn wrapped_line_with_an_ansi_code_maps_offsets_past_the_escape() {
+        let mut input = make_input();
+        // The escape sits *inside* what the wrapper reports as one plain
+        // fragment, so `find` cannot locate it and the walk has to skip the
+        // escape byte by byte.
+        input.set_value("ab\x1b[31mcd", None);
+        let lines = input.render(20);
+        assert_eq!(input.cached_line_map.len(), lines.len());
+        assert!(crate::utils::strip_ansi_codes(&lines[0]).contains("abcd"));
+        // Every mapped offset still points at a real char of the source value.
+        let value = input.get_value().to_string();
+        for offset in &input.cached_line_map {
+            let byte = u16_to_byte(&value, *offset);
+            assert!(value.is_char_boundary(byte), "{offset} → {byte}");
+            assert!(byte <= value.len());
+        }
+    }
+
+    // ─── folded pastes ────────────────────────────────────────────────
+
+    /// A paste of `n` characters with a recognisable end, so a test can tell
+    /// the stored text from the placeholder that stands in for it.
+    fn long_paste(n: usize) -> String {
+        let mut text = "P".repeat(n - 1);
+        text.push('\n');
+        assert_eq!(text.chars().count(), n);
+        text
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes
+    }
+
+    /// A real image on disk (magic bytes, believable size) plus its path.
+    fn image_fixture(dir: &tempfile::TempDir, name: &str) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, png_bytes()).expect("write fixture");
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn a_paste_over_the_threshold_folds_into_a_placeholder() {
+        let mut input = make_input();
+        input.insert_text("note: ");
+        let pasted = long_paste(1001);
+        input.insert_text(&pasted);
+
+        assert_eq!(input.get_value(), "note: [Pasted Content 1001 chars]");
+        let in_box = input.get_value().to_string();
+        assert!(
+            !in_box.contains('\n'),
+            "the text stays out of the box: {in_box}"
+        );
+        // …but it is what the message carries, exactly as pasted.
+        assert_eq!(input.expanded(&in_box), format!("note: {pasted}"));
+        // One visual line: a placeholder, not thirteen wrapped rows.
+        assert_eq!(input.render(80).len(), 1);
+    }
+
+    #[test]
+    fn a_paste_at_the_threshold_is_inserted_as_text() {
+        let mut input = make_input();
+        input.insert_text(&long_paste(paste::FOLD_THRESHOLD));
+        assert_eq!(input.get_value().chars().count(), paste::FOLD_THRESHOLD);
+        assert!(input.get_value().ends_with('\n'));
+        // Nothing was stored, so there is nothing to expand either.
+        assert_eq!(input.expanded(input.get_value()), input.get_value());
+    }
+
+    #[test]
+    fn repeated_pastes_of_one_size_suffix_then_reuse_a_freed_name() {
+        let mut input = make_input();
+        let first = long_paste(1201);
+        let second = long_paste(1201).replace('P', "Q");
+        input.insert_text(&first);
+        input.insert_text(&second);
+        assert_eq!(
+            input.get_value(),
+            "[Pasted Content 1201 chars][Pasted Content 1201 chars #2]"
+        );
+        assert_eq!(
+            input.expanded(input.get_value()),
+            format!("{first}{second}")
+        );
+
+        // Emptying the box frees `#1` again instead of growing the suffix.
+        input.set_value("", None);
+        input.insert_text(&first);
+        assert_eq!(input.get_value(), "[Pasted Content 1201 chars]");
+        assert_eq!(input.expanded(input.get_value()), first);
+    }
+
+    #[test]
+    fn a_deleted_placeholder_stops_being_part_of_the_message() {
+        let mut input = make_input();
+        let pasted = long_paste(1202);
+        input.insert_text(&pasted);
+        input.insert_text("tail");
+        let placeholder = paste::placeholder_name(1202, 1);
+
+        input.handle_key("ctrl+a");
+        for _ in 0..placeholder.chars().count() {
+            input.handle_key("delete");
+        }
+        assert_eq!(input.get_value(), "tail");
+        assert_eq!(input.expanded(input.get_value()), "tail");
+    }
+
+    #[test]
+    fn undo_brings_a_deleted_placeholder_back_with_its_text() {
+        let mut input = make_input();
+        let pasted = long_paste(1203);
+        input.insert_text(&pasted);
+        let placeholder = paste::placeholder_name(1203, 1);
+        let steps = placeholder.chars().count();
+
+        input.handle_key("ctrl+a");
+        for _ in 0..steps {
+            input.handle_key("delete");
+        }
+        assert_eq!(input.get_value(), "");
+        for _ in 0..steps {
+            input.handle_key("ctrl+z");
+        }
+        assert_eq!(input.get_value(), placeholder);
+        assert_eq!(input.expanded(input.get_value()), pasted);
+    }
+
+    #[test]
+    fn a_partly_deleted_placeholder_is_sent_verbatim() {
+        let mut input = make_input();
+        input.insert_text(&long_paste(1204));
+        input.handle_key("ctrl+e");
+        for _ in 0..2 {
+            input.handle_key("backspace");
+        }
+        let value = input.get_value().to_string();
+        assert!(value.ends_with("char"), "{value}");
+        assert_eq!(input.expanded(&value), value);
+        assert_eq!(input.render(80).len(), 1);
+    }
+
+    #[test]
+    fn history_keeps_what_was_sent_not_the_placeholder() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let mut input = make_input();
+        let pasted = long_paste(1205);
+        input.insert_text(&pasted);
+        let submitted = Rc::new(RefCell::new(String::new()));
+        let cb = Rc::clone(&submitted);
+        input.onSubmit = Some(Box::new(move |v| *cb.borrow_mut() = v.to_string()));
+
+        input.handle_key("enter");
+        // The draft the app is handed still shows the placeholder (the app is
+        // the layer that expands it), but recalling this line restores the real
+        // text rather than a placeholder with nothing behind it.
+        assert_eq!(*submitted.borrow(), paste::placeholder_name(1205, 1));
+        assert_eq!(input.history, vec![pasted.clone()]);
+        input.handle_key("up");
+        assert_eq!(input.get_value(), pasted);
+        assert_eq!(input.expanded(input.get_value()), pasted);
+    }
+
+    #[test]
+    fn a_paste_past_the_cap_is_refused_with_a_reason() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let notices = Rc::new(RefCell::new(Vec::new()));
+        let cb = Rc::clone(&notices);
+        let mut input = make_input();
+        input.onNotice = Some(Box::new(move |m| cb.borrow_mut().push(m.to_string())));
+
+        input.insert_text(&long_paste(paste::MAX_MESSAGE_CHARS + 1));
+        assert_eq!(input.get_value(), "", "nothing is inserted");
+        assert_eq!(
+            notices.borrow().as_slice(),
+            &[format!(
+                "Message exceeds the maximum length of {} characters ({} provided).",
+                paste::MAX_MESSAGE_CHARS,
+                paste::MAX_MESSAGE_CHARS + 1
+            )]
+        );
+
+        // The cap counts the whole assembled message, folded pastes included: a
+        // second large paste is refused even though the box is nearly empty.
+        input.insert_text(&long_paste(90_000));
+        assert_eq!(input.get_value(), paste::placeholder_name(90_000, 1));
+        input.insert_text(&long_paste(20_000));
+        assert_eq!(input.get_value(), paste::placeholder_name(90_000, 1));
+        assert_eq!(notices.borrow().len(), 2);
+        assert!(notices.borrow()[1].contains("110000 provided"));
+
+        // Exactly at the cap: one more character does not get in (a typed one,
+        // so the insert path's own check is the thing under test)…
+        input.set_value("", None);
+        input.insert_text(&"x".repeat(paste::MAX_MESSAGE_CHARS));
+        let cap = paste::placeholder_name(paste::MAX_MESSAGE_CHARS, 1);
+        assert_eq!(input.get_value(), cap);
+        input.handle_key("y");
+        assert_eq!(input.get_value(), cap);
+        assert_eq!(notices.borrow().len(), 3);
+        assert!(notices.borrow()[2].contains("100001 provided"));
+        // …while a draft that is not at the cap still accepts text: the limit
+        // is on the message, not on the number of edits.
+        input.handle_key("ctrl+a");
+        for _ in 0..cap.chars().count() {
+            input.handle_key("delete");
+        }
+        assert_eq!(input.get_value(), "");
+        input.handle_key("y");
+        assert_eq!(input.get_value(), "y");
+        assert_eq!(notices.borrow().len(), 3);
+    }
+
+    // ─── image attachments ────────────────────────────────────────────
+
+    #[test]
+    fn pasting_an_image_path_attaches_it_instead_of_inserting_the_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = image_fixture(&dir, "shot.png");
+        let mut input = make_input();
+        input.insert_text("look:");
+        input.insert_text(&format!(" {path}"));
+
+        assert_eq!(input.get_value(), "look:[Image #1]");
+        let pending = input.take_pending();
+        let attachments = pending.attachments();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].path, path);
+        assert_eq!(attachments[0].kind, "image");
+        assert_eq!(attachments[0].name, "shot.png");
+        // The message itself carries the marker, not the path.
+        assert_eq!(pending.expand("look:[Image #1]"), "look:[Image #1]");
+        // And the attachment is not sticky: the next submission has none.
+        assert!(input.take_pending().attachments().is_empty());
+    }
+
+    #[test]
+    fn a_path_that_is_not_really_an_image_stays_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let liar = dir.path().join("notes.png");
+        std::fs::write(&liar, b"this is a text file\n").expect("write");
+        let missing = dir.path().join("gone.png").to_string_lossy().to_string();
+        let mut input = make_input();
+        input.insert_text(&liar.to_string_lossy());
+        input.insert_text(&format!(" {missing}"));
+        assert!(input.get_value().ends_with(".png"), "{}", input.get_value());
+        assert!(input.take_pending().attachments().is_empty());
+    }
+
+    #[test]
+    fn deleting_the_first_marker_renumbers_the_rest_and_drops_its_image() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = image_fixture(&dir, "one.png");
+        let second = image_fixture(&dir, "two.png");
+        let mut input = make_input();
+        input.insert_text(&first);
+        input.insert_text(&format!(" {second}"));
+        // The paste *is* the path: the marker takes its place, whitespace and
+        // all.
+        assert_eq!(input.get_value(), "[Image #1][Image #2]");
+
+        // Delete the first marker, grapheme by grapheme, the way a user does.
+        input.handle_key("ctrl+a");
+        for _ in 0..paste::image_marker(1).chars().count() {
+            input.handle_key("delete");
+        }
+        assert_eq!(
+            input.get_value(),
+            "[Image #1]",
+            "the survivor is renumbered"
+        );
+        let pending = input.take_pending();
+        assert_eq!(pending.attachments().len(), 1);
+        assert_eq!(pending.attachments()[0].path, second);
+    }
+
+    #[test]
+    fn undo_after_deleting_a_marker_brings_the_image_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = image_fixture(&dir, "shot.png");
+        let mut input = make_input();
+        input.insert_text(&path);
+        assert_eq!(input.get_value(), "[Image #1]");
+
+        input.handle_key("ctrl+e");
+        for _ in 0..paste::image_marker(1).chars().count() {
+            input.handle_key("backspace");
+        }
+        assert_eq!(input.get_value(), "");
+        assert!(input.take_pending().attachments().is_empty());
+
+        // …and the box is whole again after undoing every one of those edits.
+        for _ in 0..paste::image_marker(1).chars().count() {
+            input.handle_key("ctrl+z");
+        }
+        assert_eq!(input.get_value(), "[Image #1]");
+        let pending = input.take_pending();
+        assert_eq!(pending.attachments().len(), 1);
+        assert_eq!(pending.attachments()[0].path, path);
+    }
+
+    #[test]
+    fn a_marker_the_user_typed_is_just_text() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = image_fixture(&dir, "shot.png");
+        let mut input = make_input();
+        input.set_value("[Image #4] ", None);
+        input.insert_text(&path);
+        // `#4` is nobody's, so the new image takes `#1` and the hand-typed
+        // marker stays exactly as typed.
+        assert_eq!(input.get_value(), "[Image #4] [Image #1]");
+        assert_eq!(input.take_pending().attachments().len(), 1);
+    }
+
+    #[test]
+    fn pending_state_round_trips_through_take_and_restore() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = image_fixture(&dir, "shot.png");
+        let mut input = make_input();
+        input.insert_text(&long_paste(1300));
+        input.insert_text(&path);
+        let draft = input.get_value().to_string();
+        let expanded = input.expanded(&draft);
+        assert!(expanded.contains('\n') && draft.contains("[Image #1]"));
+
+        let pending = input.take_pending();
+        assert_eq!(input.expanded(&draft), draft, "nothing is left to expand");
+        assert!(pending.expand(&draft).contains('\n'));
+        assert_eq!(pending.attachments().len(), 1);
+
+        input.restore_pending(pending);
+        assert_eq!(input.expanded(&draft), expanded);
+        assert_eq!(input.render(80)[0], "📎 1 image attached");
+    }
+
+    #[test]
+    fn the_box_shows_how_many_images_are_waiting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let one = image_fixture(&dir, "one.png");
+        let two = image_fixture(&dir, "two.png");
+        let mut input = make_input();
+        input.insert_text("hi");
+        assert_eq!(input.render(80).len(), 1, "no attachments, no extra line");
+        assert!(!input.render(80)[0].contains("📎"));
+
+        input.insert_text(&one);
+        let lines = input.render(80);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "📎 1 image attached");
+        assert!(lines[1].starts_with("> hi[Image #1]"));
+
+        input.insert_text(&two);
+        assert_eq!(input.render(80)[0], "📎 2 images attached");
+
+        // A model that cannot take images is called out before sending, and a
+        // narrow pane truncates the line instead of widening the box.
+        input.set_image_support(Some(false));
+        let warned = input.render(80)[0].clone();
+        assert!(warned.contains("cannot view images"), "{warned}");
+        let narrow = input.render(20)[0].clone();
+        assert!(narrow.ends_with('…'), "{narrow}");
+        assert!(visible_width(&narrow) <= 20);
+        assert_eq!(input.render(0)[0], "");
+
+        // Unknown support says nothing (it is not the same as "no"), and a
+        // model that takes images loses the warning.
+        input.set_image_support(None);
+        assert_eq!(input.render(80)[0], "📎 2 images attached");
+        input.set_image_support(Some(true));
+        assert_eq!(input.render(80)[0], "📎 2 images attached");
+    }
+
+    #[test]
+    fn a_multi_line_paste_is_never_a_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = image_fixture(&dir, "shot.png");
+        let mut input = make_input();
+        input.insert_text(&format!("{path}\n/png.png"));
+        assert!(input.get_value().contains("shot.png"));
+        assert!(input.take_pending().attachments().is_empty());
+    }
+
+    #[test]
+    fn renumbering_keeps_the_caret_with_the_marker_it_was_on() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let one = image_fixture(&dir, "one.png");
+        let two = image_fixture(&dir, "two.png");
+        let marker = paste::image_marker(1).chars().count();
+        let mut input = make_input();
+        input.insert_text(&one);
+        input.insert_text(&two);
+        assert_eq!(input.get_value(), "[Image #1][Image #2]");
+
+        // A caret *after* the rewritten marker (the ordinary case: it is at the
+        // end of the draft) stays where it is — the renumbering did not move
+        // any character the caret had already passed.
+        input.set_value("[Image #2]", Some(marker));
+        assert_eq!(input.get_value(), "[Image #1]");
+        assert_eq!(input.cursor(), marker);
+
+        // A caret caught *inside* the marker being rewritten settles before it.
+        input.insert_text(&one);
+        assert_eq!(input.get_value(), "[Image #1][Image #2]");
+        input.set_value("[Image #2]", Some(5));
+        assert_eq!(input.get_value(), "[Image #1]");
+        assert_eq!(input.cursor(), 0);
     }
 }

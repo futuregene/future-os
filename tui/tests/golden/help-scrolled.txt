@@ -1,0 +1,36 @@
+[38;5;245m┌──────────────────────────────────────────────────────────────────────────────┐
+│[39m  [1m[38;5;252mfuture-tui[0m  [38;5;245mTerminal UI Help[39m                                                [38;5;245m│
+├──────────────────────────────────────────────────────────────────────────────┤
+│[39m  [38;5;245m/editor                 edit the draft in $VISUAL/$EDITOR[39m                   [38;5;245m│
+│[39m  [38;5;245m/export                 export the session to an HTML file[39m                  [38;5;245m│
+│[39m  [38;5;245m/fork                   fork the current session[39m                            [38;5;245m│
+│[39m  [38;5;245m/help                   show all commands and shortcuts[39m                     [38;5;245m│
+│[39m  [38;5;245m/history <query>        search the session history[39m                          [38;5;245m│
+│[39m  [38;5;245m/keymap                 view and rebind keyboard shortcuts[39m                  [38;5;245m│
+│[39m  [38;5;245m/metrics                runtime metrics of this session[39m                     [38;5;245m│
+│[39m  [38;5;245m/model [name]           select model[39m                                        [38;5;245m│
+│[39m  [38;5;245m/models                 model scope (enter) / default[39m                       [38;5;245m│
+│[39m  [38;5;245m/name [n]               set the session name[39m                                [38;5;245m│
+│[39m  [38;5;245m/new                    start a new session[39m                                 [38;5;245m│
+│[39m  [38;5;245m/permission [level]     tool permissions; or set the level[39m                  [38;5;245m│
+│[39m  [38;5;245m/provider-key <id>      set or clear a provider API key[39m                     [38;5;245m│
+│[39m  [38;5;245m/providers              providers, API keys, model sync[39m                     [38;5;245m│
+│[39m  [38;5;245m/reject                 reject pending tool execution[39m                       [38;5;245m│
+│[39m  [38;5;245m/reload                 reload skills and context[39m                           [38;5;245m│
+│[39m  [38;5;245m/sandbox                approval tier + tool permissions (one card)[39m         [38;5;245m│
+│[39m  [38;5;245m/scoped-models          configure model enable/disable list[39m                 [38;5;245m│
+│[39m  [38;5;245m/sessions               browse and switch sessions[39m                          [38;5;245m│
+│[39m  [38;5;245m/shell <cmd>            run a shell command via the agent[39m                   [38;5;245m│
+│[39m  [38;5;245m/skills                 browse, insert and install skills[39m                   [38;5;245m│
+│[39m  [38;5;245m/snapshot               diagnostic snapshot of the current run[39m              [38;5;245m│
+│[39m  [38;5;245m/status                 session state, token usage, cost[39m                    [38;5;245m│
+│[39m  [38;5;245m/stop                   abort current generation[39m                            [38;5;245m│
+│[39m  [38;5;245m/theme                  pick a color theme[39m                                  [38;5;245m│
+│[39m  [38;5;245m/title [zh|en]          generate and apply a session title[39m                  [38;5;245m│
+│[39m  [38;5;245m/tool-output [call-id]  list tool calls or show one output[39m                  [38;5;245m│
+│[39m  [38;5;245m/tools                  enable or disable tools[39m                             [38;5;245m│
+│[39m  [38;5;245m/transcript             full transcript with search and copy[39m                [38;5;245m│
+│[39m  [38;5;245m/tree                   session tree with fork/clone hierarchy[39m              [38;5;245m│
+│[39m  [38;5;245m/usage                  tokens, cost and context usage[39m                      [38;5;245m│
+│[39m  [38;5;245m  ↑ 26 above · ↑↓ scroll[39m                                                    [38;5;245m│
+└──────────────────────────────────────────────────────────────────────────────┘

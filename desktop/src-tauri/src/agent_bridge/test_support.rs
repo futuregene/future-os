@@ -482,7 +482,28 @@ impl TestHome {
         std::fs::create_dir_all(&dir).expect("create test home");
         let prev_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &dir);
-        crate::store::initialize_app_store().expect("initialize app store in test home");
+        // The cancels above stop tracked tasks, but a task outside those
+        // registries can still be mid-write on the freshly published HOME and
+        // hold its lock for a moment (slow CI runners widen this window).
+        // Every step of initialize_app_store is idempotent, so retry the
+        // unlucky attempt instead of failing the test.
+        let mut result = crate::store::initialize_app_store();
+        for _ in 0..4 {
+            match result {
+                Err(crate::AppError::Database(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error {
+                        code: rusqlite::ffi::ErrorCode::DatabaseBusy,
+                        ..
+                    },
+                    _,
+                ))) => {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    result = crate::store::initialize_app_store();
+                }
+                _ => break,
+            }
+        }
+        result.expect("initialize app store in test home");
         Self {
             _lock: lock,
             prev_home,

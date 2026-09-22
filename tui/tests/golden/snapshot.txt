@@ -1,0 +1,36 @@
+Run snapshot
+
+runSnapshot: true
+watermark: 6
+nextSinceIdx: 6
+hasMore: false
+projection run: run_mock_1
+projection cursor: 6
+
+events: 6
+#0 user_message
+#1 agent_start
+#2 text_chunk
+#3 tool_start
+#4 tool_end
+#5 agent_end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

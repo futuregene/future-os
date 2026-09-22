@@ -1,0 +1,36 @@
+[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
+
+[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse ·[39m
+
+[38;5;245m[skills] code-review, future-slides, future-web[39m
+
+[48;5;59m hello
+
+[49m Hello from the mock agent!
+
+
+[48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
+[49m  [1m[38;5;245m     --- a/src/greeting.rs[0m
+  [1m[38;5;245m     +++ b/src/greeting.rs[0m
+  [38;5;39m     @@ -1,4 +1,5 @@[39m
+  [38;5;252m   1  pub fn greeting() -> &'static str {[39m
+  [38;5;204m   2 -    "Hello, world!"[39m
+  [38;5;143m   2 +    "Hello from the mock agent!"
+[39m  [38;5;252m   3  }[39m
+  [38;5;143m   4 +[39m
+
+ Hello from the mock agent!
+
+ This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
+
+> [7m [0m
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m
+
+
+
+
+
+
+
+
+

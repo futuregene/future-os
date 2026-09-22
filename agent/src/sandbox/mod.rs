@@ -818,7 +818,10 @@ pub fn hydrate_from_login_shell() {
 
     let dump = match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(buf) => {
-            let _ = child.wait();
+            // The dump is complete (stdout hit EOF); the shell itself may
+            // still linger (rc background jobs, exotic shells). Do not let
+            // an unbounded wait block agent startup.
+            reap_with_grace(&mut child, Duration::from_secs(2));
             buf
         }
         Err(_) => {
@@ -837,6 +840,25 @@ pub fn hydrate_from_login_shell() {
     if let Some(value) = path {
         std::env::set_var("PATH", value);
         tracing::info!("hydrated PATH from login shell ({shell}); merged {merged_count} env vars");
+    }
+}
+
+/// Reap a hydration shell whose env dump is already captured: it either
+/// exits within the grace period or is killed. A shell kept alive by rc
+/// background jobs must never block agent startup.
+#[cfg(not(target_os = "windows"))]
+fn reap_with_grace(child: &mut std::process::Child, grace: std::time::Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+        }
     }
 }
 
@@ -1926,5 +1948,29 @@ mod tests {
         );
         assert_eq!(std::env::var("PATH").unwrap_or_default(), current_path);
         std::env::remove_var("FUTURE_HYDRATE_MERGE_TEST");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn reap_with_grace_kills_a_shell_that_lingers_after_closing_stdout() {
+        // stdout hit EOF (the env dump is complete) but the process keeps
+        // running; the post-dump wait must stay bounded instead of blocking
+        // until the shell exits on its own.
+        let (_dir, shell) = fake_shell("printf 'dump'; exec 1>&-; sleep 30");
+        let mut child = std::process::Command::new(&shell)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut stdout = child.stdout.take().unwrap();
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut stdout, &mut buf).unwrap();
+            assert_eq!(buf, "dump");
+        }
+        let started = std::time::Instant::now();
+        reap_with_grace(&mut child, std::time::Duration::from_millis(100));
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 }

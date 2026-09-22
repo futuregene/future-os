@@ -1,0 +1,36 @@
+History matches for 'hello': 3
+
+[2m15:06:40[0m · [1muser[0m
+  [1m[48;5;237mhello[0m
+  [2m#entry_mock_user_1 · text[0m
+
+[2m15:06:40[0m · [1massistant[0m · edit
+  {"path":"src/greeting.rs"}
+  [2m#entry_mock_assistant_1 · tool_call · call call_mock_1[0m
+
+[2m15:06:40[0m · [1mtool[0m · edit
+  @@ -1,4 +1,5 @@ pub fn greeting()
+  [2m#entry_mock_tool_1 · tool_result · call call_mock_1[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close    100%

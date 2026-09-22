@@ -72,8 +72,9 @@ Debian/Ubuntu 使用匹配的 `.deb`；其他 Linux 使用 portable 桌面包。
 
 发布的 GUI 包需要较新的 glibc 发行版（glibc ≥ 2.39，约 Ubuntu 24.04+）和 WebKitGTK 4.1。
 portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
-`sudo dnf install webkit2gtk4.1`。官方 Linux CI 使用静态 musl 构建 CLI，CLI 不需要这些
-GUI 运行库；本地源码构建的依赖取决于所选 target。
+`sudo dnf install webkit2gtk4.1`。官方 Linux CI 使用静态 musl 构建 CLI 与
+`futureos-headless`，两者不需要这些 GUI 运行库，也没有 glibc 版本要求；
+本地源码构建的依赖取决于所选 target。
 
 沙箱模式需要安装**系统 Bubblewrap ≥ 0.9.0**，重启应用后运行
 `future agent --probe-sandbox` / `future doctor`。它不随应用捆绑，旧发行版包可能需要可信

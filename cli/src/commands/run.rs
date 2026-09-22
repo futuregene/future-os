@@ -9,7 +9,8 @@ use crate::output::Output;
 use crate::rpc::RunConfig;
 use std::path::Path;
 
-const VALID_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+pub(crate) const VALID_THINKING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh"];
 const VALID_PERMISSION_LEVELS: &[&str] = &["all", "workspace", "none"];
 
 // ─── CLI Types ────────────────────────────────────────────────────────

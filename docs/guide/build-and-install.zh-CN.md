@@ -70,7 +70,9 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 - **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + `futureos-headless` + 统一 `future`），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
 - **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config` 和 `./future tui`（或运行 `./future agent` 供 CLI 客户端连接）。官方静态 musl CLI 不需要 GUI 运行库。
 
-发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。本地开发构建使用
+发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。同包中的
+`futureos-headless` 与 `future` CLI 是完全静态的 musl 二进制，没有 glibc 版本要求，
+可在更老的企业/HPC 系统（CentOS 7 / Rocky 8 年代）上运行。本地开发构建使用
 所选 host target，不一定是静态链接。
 
 用 `FUTUREOS_VERSION` 锁定特定版本（如 `FUTUREOS_VERSION=1.2.0`），或用 `FUTUREOS_BASE` 指向镜像。

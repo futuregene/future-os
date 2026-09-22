@@ -115,14 +115,15 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
         remote::unpair().await?;
     }
     // Same background projections, approvals and persistence paths as Desktop.
-    crate::agent_bridge::seed_observers_from_store();
+    // Headless has no active-thread UI hint, so its compatibility monitor
+    // observes only sessions the Agent reports as actively streaming.
+    crate::agent_bridge::spawn_streaming_observer_monitor();
     crate::agent_bridge::spawn_provider_config_observer();
     crate::agent_bridge::spawn_session_events_observer();
     crate::agent_bridge::spawn_session_discovery();
     crate::agent_bridge::spawn_delete_outbox_worker();
     crate::agent_bridge::spawn_active_run_watchdog();
     tokio::spawn(async {
-        crate::agent_bridge::import_missing_sessions().await;
         crate::agent_bridge::reconcile_interrupted_runs().await;
         crate::agent_bridge::reconcile_pending_approvals().await;
     });
