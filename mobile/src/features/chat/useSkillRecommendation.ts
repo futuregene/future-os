@@ -37,8 +37,10 @@ export interface SkillCandidate {
 const MIN_QUERY_BYTES = 30;
 /** Longest draft worth asking about; longer ones are sent immediately. */
 const MAX_QUERY_CHARS = 2000;
-/** Hard budget for the whole round-trip, per the product spec. */
-const RECOMMEND_TIMEOUT_MS = 1500;
+/** Hard budget for the whole round-trip. 3 s — see the desktop hook's constant
+ * for why (the recommender's p95 is ≈1.4 s, and the phone adds a relay hop), and
+ * for the input lock that keeps the wait honest. */
+export const RECOMMEND_TIMEOUT_MS = 3000;
 /** A Choice accepts at most 255 options and "none of these" takes one. */
 const MAX_CANDIDATES = 254;
 
@@ -97,6 +99,15 @@ export interface SkillRecommendationApi {
   /** The suggestion waiting for a decision, or null. */
   suggestion: PendingSuggestion | null;
   /**
+   * True while the recommender is being asked about a draft.
+   *
+   * The caller locks the composer for this window (see `ComposerDock`): the
+   * message that will be sent must be the one that was evaluated, and the
+   * send button turns into a spinner so the wait is visible rather than the
+   * composer looking dead.
+   */
+  evaluating: boolean;
+  /**
    * Evaluate `draft`. Resolves true when a suggestion is shown (the caller must
    * NOT send yet), false when the message should be sent normally.
    */
@@ -114,6 +125,7 @@ export function useSkillRecommendation(
 ): SkillRecommendationApi {
   const remote = useRemote();
   const [suggestion, setSuggestion] = useState<PendingSuggestion | null>(null);
+  const [evaluating, setEvaluating] = useState(false);
   // One evaluation cannot overlap another. The toggle is a dependency of
   // `evaluate` below rather than a ref, so each evaluation sees the current
   // value without writing a ref during render.
@@ -164,21 +176,30 @@ export function useSkillRecommendation(
       const candidates = await candidateList();
       if (candidates.length === 0) return false;
 
-      const answer = await withTimeout(remote.suggestSkill(trimmed, candidates));
-      if (!answer) return false;
-      // Already shown today: skip rather than offer a different skill (§4).
-      if (alreadyRecommended(today, answer.name)) return false;
-      // Recorded before it is shown: the card spends the budget the moment it
-      // is displayed, whatever the user then does.
-      await recordShown(answer.name, hash);
-      setSuggestion({
-        skill: {
-          name: answer.name,
-          description: shownDescription(answer, language, zhDescriptionsRef.current),
-        },
-        draft: trimmed,
-      });
-      return true;
+      // Lock the composer for exactly the wait that can take the full budget —
+      // the local budget/candidate checks above are fast and must not flash the
+      // input disabled.
+      setEvaluating(true);
+      try {
+        const answer = await withTimeout(remote.suggestSkill(trimmed, candidates));
+        if (!answer) return false;
+        // Already shown today: skip rather than offer a different skill (§4).
+        if (alreadyRecommended(today, answer.name)) return false;
+        // Recorded before it is shown: the card spends the budget the moment it
+        // is displayed, whatever the user then does.
+        await recordShown(answer.name, hash);
+        setSuggestion({
+          skill: {
+            name: answer.name,
+            description: shownDescription(answer, language, zhDescriptionsRef.current),
+          },
+          draft: trimmed,
+        });
+        return true;
+      }
+      finally {
+        setEvaluating(false);
+      }
     } catch {
       // Every failure means "send the message": a recommendation is never worth
       // failing a send over.
@@ -207,5 +228,5 @@ export function useSkillRecommendation(
 
   const dismiss = useCallback(() => setSuggestion(null), []);
 
-  return { suggestion, evaluate, installAndUse, dismiss };
+  return { suggestion, evaluating, evaluate, installAndUse, dismiss };
 }

@@ -133,6 +133,46 @@ it("does not ask the recommender twice for the same draft", async () => {
   }
 });
 
+it("locks the input and spins the send button while the recommender is asked", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const onSend = vi.fn();
+  // An evaluate we resolve by hand, so the pending window can be inspected.
+  let release!: (card: null) => void;
+  const pending = new Promise<null>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await mount(host, recommendationProps(() => pending), onSend);
+    const editor = typeInto(host, "please search the web for this");
+    // Fire submit without awaiting: the composer is now inside the wait.
+    act(() => {
+      host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    // The editor is locked (the message that will be sent is the one that was
+    // evaluated) and the draft survives.
+    expect(editor.getAttribute("contenteditable")).toBe("false");
+    expect(editor.textContent).toContain("search the web");
+    // The send button cannot be pressed and says why.
+    const send = host.querySelector<HTMLButtonElement>("button[type=submit]")!;
+    expect(send.disabled).toBe(true);
+    expect(send.getAttribute("aria-label")).toBe("Finding a skill…");
+    expect(host.querySelector("[role=status]")?.textContent).toBe("Finding a skill…");
+    // Nothing went out during the wait.
+    expect(onSend).not.toHaveBeenCalled();
+
+    // Once the answer arrives (here: no skill), the draft is sent and the box
+    // is usable again.
+    await act(async () => release(null));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(host.querySelector<HTMLElement>("[role=textbox]")!.getAttribute("contenteditable")).toBe("true");
+  }
+  finally {
+    act(() => host.remove());
+  }
+});
+
 it("installs, appends the slash command and sends on 安装并使用", async () => {
   const host = document.createElement("div");
   document.body.append(host);

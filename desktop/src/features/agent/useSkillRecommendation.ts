@@ -36,8 +36,17 @@ export const MIN_QUERY_BYTES = 30;
 export const MAX_QUERY_CHARS = 2000;
 /** Recommendations shown per user per local day; a spent budget stops the calls. */
 export const DAILY_RECOMMENDATION_LIMIT = 3;
-/** Hard budget for the whole recommend round-trip, matching the product spec. */
-const RECOMMEND_TIMEOUT_MS = 1500;
+/**
+ * Hard budget for the whole recommend round-trip.
+ *
+ * 3 s rather than the original 1.5 s: the recommender's measured latency is
+ * p50 ≈ 0.5 s but p95 ≈ 1.4 s (`docs/internals/skill_reco/evaluation.md`), so a
+ * 1.5 s deadline discarded one answer in twenty *and the client cannot tell a
+ * slow answer from no answer* — the card just never appears. The submit is held
+ * for this long, which is why the input is locked and the send button spins for
+ * the wait (see `Composer`): a frozen-looking box would be worse than the wait.
+ */
+export const RECOMMEND_TIMEOUT_MS = 3000;
 
 export interface SkillRecommendationState {
   /** The recommendation currently shown as a card, or null. */

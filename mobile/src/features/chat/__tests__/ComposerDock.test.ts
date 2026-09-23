@@ -68,6 +68,44 @@ test("streaming allows drafting while one stop press sends a request and exposes
   }
 });
 
+test("the recommendation wait locks the input and spins the send button", () => {
+  const send = jest.fn(async () => {});
+  const props = {
+    message: "查一下这个基因在人群中的频率", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: { draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, abort: jest.fn() },
+    openAttachmentMenu: jest.fn(), send, atLatest: true, scrollToLatest: jest.fn(),
+    pendingApprovals: [], approvalSubmitting: null, approvalError: null,
+    decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+  } as unknown as ComponentProps<typeof ComposerDock>;
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, { ...props, skillEvaluating: true })); });
+  const input = () => tree.root.findByType(TextInput);
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0];
+  try {
+    // The message that goes out must be the one being evaluated, so drafting is
+    // closed too — and the send button says why instead of looking dead.
+    expect(input().props.editable).toBe(false);
+    expect(button("chat.send")).toBeUndefined();
+    const evaluating = button("chat.findingSkill")!;
+    expect(evaluating.props.disabled).toBe(true);
+    expect(evaluating.props.accessibilityState.busy).toBe(true);
+    act(() => evaluating.props.onPress());
+    act(() => input().props.onSubmitEditing());
+    expect(send).not.toHaveBeenCalled();
+
+    act(() => tree.update(createElement(ComposerDock, { ...props, skillEvaluating: false })));
+    expect(input().props.editable).toBe(true);
+    expect(button("chat.send")!.props.disabled).toBe(false);
+    act(() => button("chat.send")!.props.onPress());
+    expect(send).toHaveBeenCalledTimes(1);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
 test("streaming keeps the next draft through updates and completion without submitting it", () => {
   const send = jest.fn(async () => {});
   const props = {

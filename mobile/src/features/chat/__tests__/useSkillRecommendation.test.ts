@@ -177,6 +177,39 @@ describe("showing a recommendation", () => {
     }
   });
 
+  /**
+   * The composer is locked for exactly the network wait (and not for the fast
+   * local budget/candidate checks before it), so the caller can show the wait
+   * instead of a composer that looks dead.
+   */
+  it("reports the wait while the desktop is being asked", async () => {
+    let release!: (value: null) => void;
+    const pending = new Promise<null>((resolve) => {
+      release = resolve;
+    });
+    remoteMock.mockReturnValue(remote({ suggestSkill: jest.fn(() => pending) }));
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      expect(api.current!.evaluating).toBe(false);
+      let answer: boolean | undefined;
+      await act(async () => {
+        void api.current!.evaluate(DRAFT).then((value) => {
+          answer = value;
+        });
+      });
+      expect(api.current!.evaluating).toBe(true);
+      expect(answer).toBeUndefined();
+      await act(async () => {
+        release(null);
+      });
+      expect(api.current!.evaluating).toBe(false);
+      expect(answer).toBe(false);
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
+
   it("sends normally when the desktop declines, errors, or is unreachable", async () => {
     for (const suggestSkill of [
       jest.fn(async () => null),

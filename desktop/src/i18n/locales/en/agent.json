@@ -182,6 +182,7 @@
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
     "compacting": "Compacting context…",
+    "recommending": "Finding a skill…",
     "compactionNotNeeded": "There is no conversation context to compact.",
     "compactionNoNewContent": "No conversation content was added after the last compaction.",
     "compactionWaitTimedOut": "Timed out waiting for the Agent's compaction result.",

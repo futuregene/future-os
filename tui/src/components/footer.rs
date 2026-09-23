@@ -31,7 +31,10 @@ pub struct FooterData {
     pub auto_compaction_enabled: bool,
 }
 
-const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Braille spinner frames, advanced by `AppState::spinner_frame`. Shared with
+/// the skill-recommendation prompt line, which spins for the same reason the
+/// footer's does: something is being waited on.
+pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Colorize with `fg` and reset to `base` afterwards (TS `colorFg`).
 fn color_fg(c: u8, base: u8, text: &str) -> String {
