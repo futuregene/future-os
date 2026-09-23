@@ -527,6 +527,8 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         provider_config: None,
         suggest_query: String::new(),
         suggest_candidates: vec![],
+        skill_id: String::new(),
+        skill_version: String::new(),
     }
 }
 

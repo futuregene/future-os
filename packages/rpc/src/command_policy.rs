@@ -87,6 +87,11 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_session_stats",
     "get_state",
     "list_models",
+    "list_installed_skills",
+    "list_available_skills",
+    "install_skill",
+    "uninstall_skill",
+    "sync_skills",
     "list_tool_calls",
     "get_tool_output",
     "list_providers",
@@ -153,6 +158,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_state"
         | "list_models"
         | "list_providers"
+        | "list_installed_skills"
         | "list_streaming_sessions" => policy(
             FAST_TIMEOUT,
             RetryPolicy::SafeRead,
@@ -164,6 +170,21 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::Bounded,
         ),
         "sync_future_models" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),
+        "list_available_skills" => policy(
+            NETWORK_TIMEOUT,
+            RetryPolicy::SafeRead,
+            ExecutionKind::Bounded,
+        ),
+        "install_skill" | "uninstall_skill" => policy(
+            Duration::from_secs(120),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
+        ),
+        "sync_skills" => policy(
+            Duration::from_secs(600),
+            RetryPolicy::Never,
+            ExecutionKind::Bounded,
+        ),
         // External Jev HTTP call with its own internal deadline; never retry
         // (a retried suggestion would spend a second model call).
         "suggest_skill" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),

@@ -440,6 +440,14 @@ platform catalog**, not stored in the repo. Users can browse, install, and
 uninstall skills on the Skills page; after installation, `/技能名` triggers
 them in the conversation input box.
 
+Skill operations run on the host-local Agent SkillManager, including requests
+from Desktop, mobile, and the one-shot CLI. The Agent reconciles its SQLite
+inventory with the installed files and records the package version after a
+successful replacement. With automatic upgrades enabled, each sync upgrades
+managed skills and installs a newly catalogued builtin only when it has never
+been installed or explicitly uninstalled on that host. The uninstall record
+prevents that builtin from returning on the next sync.
+
 The input box's `/` menu carries not only Skills but a few high-frequency
 **context tools**. Context tools execute FutureOS's own session operations —
 they are not sent to the model as user prompts and do not pretend to be Skills.

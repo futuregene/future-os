@@ -12,7 +12,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── settings.json          # agent settings (model defaults, sandbox, …)
 │   ├── models.json            # provider/model catalog: apiKey, baseUrl, models[]
 │   ├── auth.json              # credentials, keyed by model id or provider
-│   ├── agent.db               # authoritative SQLite session/run/event store
+│   ├── agent.db               # authoritative SQLite session/run/event and skill inventory store
 │   ├── sessions/              # retained legacy JSONL migration sources
 │   ├── run-events/            # retained legacy event migration sources
 │   ├── agent-instance.lock    # per-user agent singleton lock
@@ -58,7 +58,9 @@ vars:
   `future auth login` syncs this automatically; it can also be hand-edited.
 - `auth.json` — credentials, keyed by model id first, then provider, then a
   default entry: `{"<provider>": {"type": "api_key", "key": …, "baseUrl": …}}`.
-- `agent.db` — authoritative SQLite sessions, entries, runs and replay events.
+- `agent.db` — authoritative SQLite sessions, entries, runs, replay events, and
+  SkillManager tables (`skills` history/tombstones, `skill_installations`
+  observed inventory, and `skill_operations` recovery journal).
 - `sessions/` — retained legacy JSONL migration sources.
 - `run-events/<session_id>/` — retained legacy event sources; custom legacy
   directories use `.run-events/`. New events are stored only in SQLite.
@@ -216,7 +218,8 @@ is not the default). See [loop-control-plane.md](../architecture/loop-control-pl
 
 ## `~/.future/bin/` — CLI links
 
-`future init` installs the built-in skills and (macOS/Linux) symlinks
+`future init` installs builtin skills with no prior install or uninstall record
+and (macOS/Linux) symlinks
 `future` — plus `future-agent`, when it sits next to the `future` executable
 — into `~/.future/bin/`, printing a PATH setup hint. On a default install
 only `future` is linked (the standalone binaries are no longer installed).

@@ -376,6 +376,8 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 }
             }),
             suggest_query: cmd.suggest_query,
+            skill_id: cmd.skill_id,
+            skill_version: cmd.skill_version,
             suggest_candidates: cmd
                 .suggest_candidates
                 .into_iter()

@@ -174,6 +174,12 @@ pub struct RpcCommand {
     /// installed). The agent never sees installed skills.
     #[prost(message, repeated, tag = "181")]
     pub suggest_candidates: ::prost::alloc::vec::Vec<SkillCandidate>,
+    /// Host-local skill management. The Agent owns the files and registry;
+    /// clients provide only a catalog id and the selected release version.
+    #[prost(string, tag = "182")]
+    pub skill_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "183")]
+    pub skill_version: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attachment {
