@@ -22,15 +22,13 @@ it("enables title generation by default and allows opting out without context co
         onChangeApprovalTier={() => {}}
         autoUpgradeSkills={false}
         onToggleAutoUpgradeSkills={() => {}}
-        skillRecommend={false}
-        onToggleSkillRecommend={() => {}}
         bellOnComplete
         onToggleBellOnComplete={() => {}}
         autoTitleFirstTurn={DEFAULT_APP_SETTINGS.autoTitleFirstTurn}
         onToggleAutoTitleFirstTurn={onToggle}
       />,
     ));
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(4);
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(3);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");
