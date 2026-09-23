@@ -207,6 +207,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn management_commands_forward_identity_and_upgrade_status() {
+        let _home = TestHome::new("skills-management");
+        let mock = mock_agent();
+        mock.push_data(
+            "list_available_skills",
+            serde_json::json!([{
+                "id":"future-x", "name":"X", "latestVersion":"2.0.0",
+                "builtin":true, "upgradeAvailable":true
+            }]),
+        );
+        assert!(list_available_skills().await.unwrap()[0].upgrade_available);
+        mock.push_data("install_skill", serde_json::json!({}));
+        install_skill("future-x".into(), "2.0.0".into())
+            .await
+            .unwrap();
+        let install = &mock.requests_of("install_skill")[0];
+        assert_eq!(install.skill_id, "future-x");
+        assert_eq!(install.skill_version, "2.0.0");
+        mock.push_data("uninstall_skill", serde_json::json!({"removed":true}));
+        assert!(uninstall_skill("future-x".into()).await.unwrap());
+        assert_eq!(mock.requests_of("uninstall_skill")[0].skill_id, "future-x");
+        mock.push_data(
+            "sync_skills",
+            serde_json::json!({"installed":[],"upgraded":[],"skipped":[],"failed":[]}),
+        );
+        sync_skills(true).await.unwrap();
+        assert!(mock.requests_of("sync_skills")[0].enabled);
+    }
+
+    #[tokio::test]
     async fn refresh_skills_is_best_effort() {
         let mock = mock_agent();
         // Agent reachable: the command goes out.

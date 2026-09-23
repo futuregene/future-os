@@ -528,7 +528,7 @@ impl SkillManager {
                 let id = super::extract_frontmatter_field(&content, "name")
                     .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
                 let declared = super::extract_frontmatter_field(&content, "version");
-                let receipt = read_receipt(&path)
+                let receipt = read_receipt(path)
                     .filter(|r| r.id == id && Some(&r.version) == declared.as_ref());
                 let prior_managed = previous
                     .get(path.to_string_lossy().as_ref())

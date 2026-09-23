@@ -2932,30 +2932,47 @@ mod bridge_tests {
     }
 
     #[tokio::test]
-    async fn skill_management_validates_ids_and_mutates_desktop_files() {
+    async fn skill_management_forwards_agent_results_without_mutating_desktop_files() {
         let _lock = mock_agent_lock();
         let (_home, bridge) = active_bridge("cmd-skill-management").await;
         let agent = ensure_mock_agent();
         agent.clear_scripts();
+        agent.script(
+            "install_skill",
+            false,
+            json!(null),
+            "invalid skill id or version",
+        );
+        agent.script("uninstall_skill", false, json!(null), "invalid skill id");
         for kind in ["install_skill", "uninstall_skill"] {
             let reply = bridge
                 .call(json!({ "type": kind, "skillId": "../escape", "version": "1.0" }))
                 .await;
             assert_eq!(reply["success"], false, "{reply}");
         }
+        agent.script("install_skill", false, json!(null), "invalid skill version");
         let reply = bridge
             .call(json!({ "type": "install_skill", "skillId": "acme", "version": "../escape" }))
             .await;
         assert_eq!(reply["success"], false);
-        let path = crate::auth_store::agent_dir().unwrap().join("skills/acme");
-        std::fs::create_dir_all(&path).unwrap();
+        agent.script("install_skill", true, json!({}), "");
+        let reply = bridge
+            .call(json!({ "type": "install_skill", "skillId": "acme", "version": "1.0.0" }))
+            .await;
+        assert_eq!(reply["success"], true);
+        agent.script("uninstall_skill", true, json!({"removed": true}), "");
         let reply = bridge
             .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
             .await;
         assert_eq!(reply["success"], true, "{reply}");
         assert_eq!(reply["data"]["removed"], true);
-        assert!(!path.exists());
-        assert!(agent.served("refresh_skills", ""));
+        assert!(agent.served("install_skill", ""));
+        assert!(agent.served("uninstall_skill", ""));
+        assert!(!crate::auth_store::agent_dir()
+            .unwrap()
+            .join("skills/acme")
+            .exists());
+        agent.script("uninstall_skill", true, json!({"removed": false}), "");
         let reply = bridge
             .call(json!({ "type": "uninstall_skill", "skillId": "acme" }))
             .await;
@@ -3247,12 +3264,12 @@ mod bridge_tests {
 
         // Read the Agent's installed skills, not a mobile-local catalogue.
         agent.script(
-            "get_commands",
+            "list_installed_skills",
             true,
-            json!({ "commands": [
-            { "name": "research", "description": "Research", "nameZh": "研究", "source": "skill" },
-            { "name": "builtin", "source": "command" }
-        ] }),
+            json!([
+                { "id": "research", "name": "research", "description": "Research",
+                  "nameZh": "研究", "descriptionZh": null, "version": "1.0.0" }
+            ]),
             "",
         );
         let reply = bridge
@@ -3262,7 +3279,12 @@ mod bridge_tests {
         assert_eq!(reply["data"]["skills"].as_array().unwrap().len(), 1);
         assert_eq!(reply["data"]["skills"][0]["name"], "research");
         assert_eq!(reply["data"]["skills"][0]["nameZh"], "研究");
-        agent.script("get_commands", false, json!(null), "skills unavailable");
+        agent.script(
+            "list_installed_skills",
+            false,
+            json!(null),
+            "skills unavailable",
+        );
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "list_skills" }))
             .await;

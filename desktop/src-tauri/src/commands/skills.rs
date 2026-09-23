@@ -81,6 +81,7 @@ pub async fn bootstrap_builtin_skills<R: tauri::Runtime>(app: tauri::AppHandle<R
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
     use std::collections::HashMap;
