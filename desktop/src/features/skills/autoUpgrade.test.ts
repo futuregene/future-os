@@ -16,20 +16,21 @@ function available(overrides: Partial<AvailableSkill> = {}): AvailableSkill {
     category: "core",
     categoryZh: "",
     latestVersion: "1.0.0",
+    upgradeAvailable: false,
     ...overrides,
   };
 }
 
 describe("computeSkillUpgrades", () => {
-  it("returns skills whose catalogue version is newer", () => {
+  it("returns skills the Agent marked upgradable", () => {
     const result = computeSkillUpgrades(
       [installed({ id: "a", version: "1.0.0" }), installed({ id: "b", version: "2.1.0" })],
-      [available({ id: "a", latestVersion: "1.2.0" }), available({ id: "b", latestVersion: "2.1.0" })],
+      [available({ id: "a", latestVersion: "1.2.0", upgradeAvailable: true }), available({ id: "b", latestVersion: "2.1.0" })],
     );
     expect(result).toEqual([{ id: "a", version: "1.2.0" }]);
   });
 
-  it("ignores skills at or above the catalogue version", () => {
+  it("ignores skills the Agent did not mark upgradable", () => {
     const result = computeSkillUpgrades(
       [installed({ id: "a", version: "2.0.0" })],
       [available({ id: "a", latestVersion: "1.9.0" })],
@@ -48,7 +49,7 @@ describe("computeSkillUpgrades", () => {
   it("skips skills with a missing installed or catalogue version", () => {
     const result = computeSkillUpgrades(
       [installed({ id: "a", version: null }), installed({ id: "b", version: "1.0.0" })],
-      [available({ id: "a", latestVersion: "2.0.0" }), available({ id: "b", latestVersion: null })],
+      [available({ id: "a", latestVersion: "2.0.0" }), available({ id: "b", latestVersion: null, upgradeAvailable: true })],
     );
     expect(result).toEqual([]);
   });

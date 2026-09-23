@@ -245,6 +245,11 @@ message RpcCommand {
   // UNINSTALLED skill candidates offered to Jev (caller computes catalog −
   // installed). The agent never sees installed skills.
   repeated SkillCandidate suggest_candidates = 181;
+
+  // Host-local skill management. The Agent owns the files and registry;
+  // clients provide only a catalog id and the selected release version.
+  string skill_id = 182;
+  string skill_version = 183;
 }
 
 // ── Attachment ───────────────────────────────────────────────────────────────

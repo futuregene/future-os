@@ -1,14 +1,10 @@
-//! Installed-skill listing via the agent. The agent is the source of truth for
-//! which skills are active (it discovers them across scopes and resolves
-//! collisions), so the "installed" tab reads its `get_commands` rather than
-//! scanning the filesystem directly. Versions are enriched locally since
-//! `get_commands` only carries name + description.
+//! Host-local skill management through the Agent's single SkillManager.
 
 use serde::{Deserialize, Serialize};
 
 use super::client::{base_command, connect_agent, RpcResponseExt};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstalledSkill {
     /// Equal to the install directory name and the catalogue id (a skill's
@@ -22,56 +18,76 @@ pub struct InstalledSkill {
 }
 
 pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppError> {
-    #[derive(Deserialize)]
-    struct CommandsResponse {
-        #[serde(default)]
-        commands: Vec<CommandEntry>,
-    }
+    serde_json::from_value(
+        skill_command(base_command("list_installed_skills", String::new())).await?,
+    )
+    .map_err(|error| format!("Invalid installed skills response: {error}").into())
+}
 
-    #[derive(Deserialize)]
-    struct CommandEntry {
-        #[serde(default)]
-        name: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default, alias = "nameZh")]
-        name_zh: Option<String>,
-        #[serde(default, alias = "descriptionZh")]
-        description_zh: Option<String>,
-        #[serde(default)]
-        source: String,
-    }
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableSkill {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub name_zh: String,
+    #[serde(default)]
+    pub description_zh: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub category_zh: String,
+    pub latest_version: Option<String>,
+    pub builtin: bool,
+    #[serde(default)]
+    pub upgrade_available: bool,
+}
 
+async fn skill_command(
+    command: crate::agent_proto::RpcCommand,
+) -> Result<serde_json::Value, crate::AppError> {
     let mut client = connect_agent().await?;
     let response = client
-        .execute_command(base_command("get_commands", String::new()))
+        .execute_command(command)
         .await
-        .map_err(|error| format!("Unable to load installed skills: {error}"))?
+        .map_err(|error| format!("Skill request failed: {error}"))?
         .into_inner()
-        .ok_or_rpc_error("Future Agent rejected the skills request.")?;
+        .ok_or_rpc_error("Future Agent rejected the skill request.")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
 
-    let parsed =
-        serde_json::from_value::<CommandsResponse>(future_rpc::decode::response_data(&response))
-            .map_err(|error| format!("Future Agent returned invalid skills data: {error}"))?;
+pub async fn list_available_skills() -> Result<Vec<AvailableSkill>, crate::AppError> {
+    serde_json::from_value(
+        skill_command(base_command("list_available_skills", String::new())).await?,
+    )
+    .map_err(|error| format!("Invalid available skills response: {error}").into())
+}
 
-    let versions = crate::skills::installed_versions();
-    let skills = parsed
-        .commands
-        .into_iter()
-        .filter(|command| command.source == "skill")
-        .map(|command| {
-            let version = versions.get(&command.name).cloned().flatten();
-            InstalledSkill {
-                id: command.name.clone(),
-                name: command.name,
-                description: command.description,
-                name_zh: command.name_zh,
-                description_zh: command.description_zh,
-                version,
-            }
-        })
-        .collect();
-    Ok(skills)
+pub async fn install_skill(id: String, version: String) -> Result<(), crate::AppError> {
+    let mut command = base_command("install_skill", String::new());
+    command.skill_id = id;
+    command.skill_version = version;
+    skill_command(command).await?;
+    Ok(())
+}
+
+pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
+    let mut command = base_command("uninstall_skill", String::new());
+    command.skill_id = id;
+    let response = skill_command(command).await?;
+    Ok(response
+        .get("removed")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false))
+}
+
+pub async fn sync_skills(enabled: bool) -> Result<serde_json::Value, crate::AppError> {
+    let mut command = base_command("sync_skills", String::new());
+    command.enabled = enabled;
+    skill_command(command).await
 }
 
 /// Tell the agent to drop its 60 s skills cache and re-scan so freshly
@@ -137,46 +153,22 @@ mod tests {
     use super::super::test_support::{mock_agent, Reply, TestHome};
     use super::*;
 
-    fn commands_payload() -> serde_json::Value {
-        serde_json::json!({
-            "commands": [
-                {"name": "my-skill", "description": "does things", "source": "skill",
-                 "nameZh": "我的技能", "descriptionZh": "做事"},
-                {"name": "plain-skill", "description": "no zh", "source": "skill"},
-                {"name": "not-a-skill", "description": "command", "source": "command"}
-            ]
-        })
-    }
-
     #[tokio::test]
-    async fn list_installed_skills_filters_and_enriches_versions() {
-        let home = TestHome::new("skills-list");
+    async fn list_installed_skills_uses_agent_snapshot() {
+        let _home = TestHome::new("skills-list");
         let mock = mock_agent();
-        // Plant a versioned skill in the global scope ($HOME/.agents/skills).
-        let skill_dir = home.path().join(".agents/skills/my-skill");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: my-skill\nversion: 1.2.3\n---\n# my-skill\n",
-        )
-        .unwrap();
-
-        mock.push_data("get_commands", commands_payload());
+        mock.push_data(
+            "list_installed_skills",
+            serde_json::json!([{
+                "id":"my-skill", "name":"my-skill", "description":"does things",
+                "nameZh":"我的技能", "descriptionZh":"做事", "version":"1.2.3"
+            }]),
+        );
         let skills = list_installed_skills().await.expect("skills");
-        assert_eq!(skills.len(), 2, "non-skill commands filtered out");
-        let mine = skills
-            .iter()
-            .find(|s| s.id == "my-skill")
-            .expect("my-skill");
-        assert_eq!(mine.name_zh.as_deref(), Some("我的技能"));
-        assert_eq!(mine.description_zh.as_deref(), Some("做事"));
-        assert_eq!(mine.version.as_deref(), Some("1.2.3"), "version enriched");
-        let plain = skills
-            .iter()
-            .find(|s| s.id == "plain-skill")
-            .expect("plain-skill");
-        assert_eq!(plain.version, None, "no local install → no version");
-        assert_eq!(plain.name_zh, None);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].version.as_deref(), Some("1.2.3"));
+        assert_eq!(skills[0].name_zh.as_deref(), Some("我的技能"));
+        assert_eq!(mock.requests_of("list_installed_skills").len(), 1);
     }
 
     #[tokio::test]
@@ -184,25 +176,64 @@ mod tests {
         let _home = TestHome::new("skills-errors");
         let mock = mock_agent();
 
-        mock.push("get_commands", Reply::Status(tonic::Code::Internal, "boom"));
+        mock.push(
+            "list_installed_skills",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
         let error = list_installed_skills().await.expect_err("transport");
         assert!(
-            error
-                .to_string()
-                .contains("Unable to load installed skills"),
+            error.to_string().contains("Skill request failed"),
             "{error}"
         );
 
-        mock.push("get_commands", Reply::Reject(String::new()));
+        mock.push("list_installed_skills", Reply::Reject(String::new()));
         let error = list_installed_skills().await.expect_err("rejected");
         assert_eq!(
             error.to_string(),
-            "Future Agent rejected the skills request."
+            "Future Agent rejected the skill request."
         );
 
-        mock.push_data("get_commands", serde_json::json!({"commands": "nope"}));
+        mock.push_data(
+            "list_installed_skills",
+            serde_json::json!({"commands": "nope"}),
+        );
         let error = list_installed_skills().await.expect_err("invalid");
-        assert!(error.to_string().contains("invalid skills data"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid installed skills response"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn management_commands_forward_identity_and_upgrade_status() {
+        let _home = TestHome::new("skills-management");
+        let mock = mock_agent();
+        mock.push_data(
+            "list_available_skills",
+            serde_json::json!([{
+                "id":"future-x", "name":"X", "latestVersion":"2.0.0",
+                "builtin":true, "upgradeAvailable":true
+            }]),
+        );
+        assert!(list_available_skills().await.unwrap()[0].upgrade_available);
+        mock.push_data("install_skill", serde_json::json!({}));
+        install_skill("future-x".into(), "2.0.0".into())
+            .await
+            .unwrap();
+        let install = &mock.requests_of("install_skill")[0];
+        assert_eq!(install.skill_id, "future-x");
+        assert_eq!(install.skill_version, "2.0.0");
+        mock.push_data("uninstall_skill", serde_json::json!({"removed":true}));
+        assert!(uninstall_skill("future-x".into()).await.unwrap());
+        assert_eq!(mock.requests_of("uninstall_skill")[0].skill_id, "future-x");
+        mock.push_data(
+            "sync_skills",
+            serde_json::json!({"installed":[],"upgraded":[],"skipped":[],"failed":[]}),
+        );
+        sync_skills(true).await.unwrap();
+        assert!(mock.requests_of("sync_skills")[0].enabled);
     }
 
     #[tokio::test]

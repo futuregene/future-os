@@ -93,7 +93,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if version != 0 && version != 2 && version != 3 {
+    if version != 0 && version != 2 && version != 3 && version != 4 {
         bail!("unsupported Agent database schema version {version}");
     }
     if application != 0 && application != 0x46555452 {
@@ -261,7 +261,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS history_users ON history_display(session_id,is_user,ordinal);
         PRAGMA application_id = 1179997266;
-        PRAGMA user_version = 3;",
+        PRAGMA user_version = 4;",
     )?;
     tx.execute_batch(crate::skills::registry::SKILLS_TABLE_SQL)?;
     tx.execute_batch(super::records::VIEWS)?;
@@ -467,7 +467,7 @@ mod tests {
                 connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let skills: i64 =
                 connection.query_row("SELECT count(*) FROM skills", [], |row| row.get(0))?;
-            assert_eq!((version, skills), (3, 0));
+            assert_eq!((version, skills), (4, 0));
             Ok(())
         })
         .unwrap();

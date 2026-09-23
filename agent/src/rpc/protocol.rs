@@ -139,6 +139,11 @@ pub struct RpcCommand {
     pub suggest_query: String,
     #[serde(skip)]
     pub suggest_candidates: Vec<crate::skill_reco::SkillCandidate>,
+
+    #[serde(default)]
+    pub skill_id: String,
+    #[serde(default)]
+    pub skill_version: String,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────

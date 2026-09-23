@@ -18,20 +18,26 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Ok(data) => reply(sink, true, data, None).await,
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
-        "list_available_skills" => match crate::skills::list_available_skills().await {
+        "list_available_skills" => match crate::agent_bridge::list_available_skills().await {
             Ok(skills) => reply(sink, true, json!({ "skills": skills }), None).await,
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "install_skill" => {
-            reply_unit(
-                sink,
-                crate::skills::install_and_refresh(cmd.skill_id.clone(), cmd.version.clone()).await,
-            )
-            .await;
+            let result =
+                crate::agent_bridge::install_skill(cmd.skill_id.clone(), cmd.version.clone()).await;
+            if result.is_ok() {
+                crate::agent_events::publish_invalidation("skills_changed");
+            }
+            reply_unit(sink, result).await;
         }
-        "uninstall_skill" => match crate::skills::uninstall_and_refresh(cmd.skill_id.clone()).await
+        "uninstall_skill" => match crate::agent_bridge::uninstall_skill(cmd.skill_id.clone()).await
         {
-            Ok(removed) => reply(sink, true, json!({ "removed": removed }), None).await,
+            Ok(removed) => {
+                if removed {
+                    crate::agent_events::publish_invalidation("skills_changed");
+                }
+                reply(sink, true, json!({ "removed": removed }), None).await
+            }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "get_state" => {

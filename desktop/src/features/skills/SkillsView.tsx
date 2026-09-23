@@ -14,6 +14,7 @@ import {
   listAvailableSkills,
   listInstalledSkills,
   refreshSkills,
+  syncSkills,
   uninstallSkill,
 } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -28,7 +29,6 @@ import {
   matchesAvailableSkill,
   matchesInstalledSkill,
 } from "./skillsFilter";
-import { isUpgradeAvailable } from "./skillVersion";
 
 type SkillsTab = "installed" | "all";
 
@@ -180,18 +180,17 @@ export function SkillsView({
     }
   }, [t]);
 
-  // Manual "Upgrade all": overwrite-install every upgradable skill sequentially,
-  // marking each busy, then broadcast "skills-changed" once (the listener above
-  // reloads this view; the left rail refreshes its badge). User-initiated, so
-  // failures toast.
+  // Agent owns the version decision and the install transaction. The local
+  // comparison only controls the button's count and busy presentation.
   const upgradeAll = useCallback(async () => {
     if (skillUpgrades.length === 0)
       return;
     const ids = skillUpgrades.map(u => u.id);
     setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, true])) }));
     try {
-      for (const { id, version } of skillUpgrades)
-        await installSkill(id, version);
+      const result = await syncSkills();
+      if (result.failed.length > 0)
+        throw new Error(result.failed.join("; "));
       emitFutureEvent("skills-changed", undefined);
     }
     catch (error) {
@@ -385,7 +384,7 @@ function InstalledTab({
           : cat?.description || skill.description;
         const category = (useChinese && cat?.categoryZh ? cat.categoryZh : cat?.category) || undefined;
         const latest = cat?.latestVersion ?? null;
-        const canUpgrade = isUpgradeAvailable(skill.version, latest);
+        const canUpgrade = Boolean(cat?.upgradeAvailable && latest);
         return (
           <SkillRow
             key={skill.id}
@@ -488,8 +487,7 @@ function AllTab({
         const zh = useChineseCatalogueText && skill.nameZh;
         const name = zh ? `${skill.name}（${zh}）` : skill.name;
         const description = useChineseCatalogueText ? skill.descriptionZh || skill.description : skill.description;
-        const installedVersion = installedById.get(skill.id)?.version ?? null;
-        const canUpgrade = isUpgradeAvailable(installedVersion, skill.latestVersion);
+        const canUpgrade = Boolean(installedById.has(skill.id) && skill.upgradeAvailable);
         return (
           <SkillRow
             key={skill.id}

@@ -1,6 +1,7 @@
 //! Skills discovery — 1:1 compatible with Go internal/skills/
 
-pub mod registry;
+pub mod manager;
+pub(crate) mod registry;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

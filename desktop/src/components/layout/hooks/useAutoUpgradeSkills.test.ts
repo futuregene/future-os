@@ -5,20 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync } from "../../../test/renderHook";
 import { useAutoUpgradeSkills } from "./useAutoUpgradeSkills";
 
-const mocks = vi.hoisted(() => ({
-  installed: vi.fn(),
-  available: vi.fn(),
-  install: vi.fn(),
-  emit: vi.fn(),
-}));
-vi.mock("../../../integrations/skills/skillsClient", () => ({
-  listInstalledSkills: mocks.installed,
-  listAvailableSkills: mocks.available,
-  installSkill: mocks.install,
-}));
-vi.mock("../../../features/skills/autoUpgrade", () => ({
-  computeSkillUpgrades: () => [{ id: "example", version: "2.0" }],
-}));
+const mocks = vi.hoisted(() => ({ sync: vi.fn(), emit: vi.fn() }));
+vi.mock("../../../integrations/skills/skillsClient", () => ({ syncSkills: mocks.sync }));
 vi.mock("../../../lib/futureEvents", () => ({ emitFutureEvent: mocks.emit }));
 
 const unmounts: Array<() => void> = [];
@@ -38,18 +26,17 @@ function mount(enabled = true, strict = false) {
   return { render };
 }
 function deferred() {
-  let resolve!: (value: never[]) => void;
-  const promise = new Promise<never[]>((done) => {
+  let resolve!: (value: { installed: string[]; upgraded: string[]; failed: string[] }) => void;
+  const promise = new Promise<{ installed: string[]; upgraded: string[]; failed: string[] }>((done) => {
     resolve = done;
   });
   return { promise, resolve };
 }
+const empty = { installed: [], upgraded: [], skipped: [], failed: [] };
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.installed.mockResolvedValue([]);
-  mocks.available.mockResolvedValue([]);
-  mocks.install.mockResolvedValue(undefined);
+  mocks.sync.mockResolvedValue(empty);
 });
 afterEach(() => {
   for (const unmount of unmounts.splice(0))
@@ -58,74 +45,57 @@ afterEach(() => {
 });
 
 describe("useAutoUpgradeSkills lifecycle", () => {
-  it("upgrades once under StrictMode", async () => {
+  it("runs one Agent sync under StrictMode and broadcasts changes", async () => {
+    mocks.sync.mockResolvedValueOnce({ ...empty, installed: ["new"] });
     mount(true, true);
     await flushAsync();
-    expect(mocks.install).toHaveBeenCalledExactlyOnceWith("example", "2.0");
+    expect(mocks.sync).toHaveBeenCalledTimes(1);
     expect(mocks.emit).toHaveBeenCalledWith("skills-changed", undefined);
   });
 
-  it("does nothing while disabled and starts when enabled", async () => {
+  it("starts only when enabled", async () => {
     const h = mount(false);
     await flushAsync();
-    expect(mocks.available).not.toHaveBeenCalled();
+    expect(mocks.sync).not.toHaveBeenCalled();
     h.render(true);
     await flushAsync();
-    expect(mocks.install).toHaveBeenCalledTimes(1);
+    expect(mocks.sync).toHaveBeenCalledTimes(1);
   });
 
-  it("does not lose a re-enable while the cancelled catalogue fetch is pending", async () => {
+  it("queues a re-enable behind an in-flight sync", async () => {
     const first = deferred();
-    mocks.installed.mockReturnValueOnce(first.promise);
+    mocks.sync.mockReturnValueOnce(first.promise);
     const h = mount();
     await flushAsync();
     h.render(false);
     h.render(true);
     await flushAsync();
-    expect(mocks.installed).toHaveBeenCalledTimes(1);
-    first.resolve([]);
+    expect(mocks.sync).toHaveBeenCalledTimes(1);
+    first.resolve({ installed: ["old"], upgraded: [], failed: [] });
     await flushAsync();
-    expect(mocks.installed).toHaveBeenCalledTimes(2);
-    expect(mocks.install).toHaveBeenCalledTimes(1);
-  });
-
-  it("waits for an in-flight install before starting the replacement effect", async () => {
-    const first = deferred();
-    mocks.install.mockReturnValueOnce(first.promise);
-    const h = mount();
-    await flushAsync();
-    expect(mocks.install).toHaveBeenCalledTimes(1);
-    h.render(false);
-    h.render(true);
-    await flushAsync();
-    expect(mocks.installed).toHaveBeenCalledTimes(1);
-    first.resolve([]);
-    await flushAsync();
-    expect(mocks.installed).toHaveBeenCalledTimes(2);
-    expect(mocks.install).toHaveBeenCalledTimes(2);
-    expect(mocks.emit).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not install or notify after unmount", async () => {
-    const first = deferred();
-    mocks.installed.mockReturnValueOnce(first.promise);
-    mount();
-    await flushAsync();
-    unmounts.pop()!();
-    first.resolve([]);
-    await flushAsync();
-    expect(mocks.install).not.toHaveBeenCalled();
+    expect(mocks.sync).toHaveBeenCalledTimes(2);
     expect(mocks.emit).not.toHaveBeenCalled();
   });
 
-  it("a catalogue failure does not poison the next enable", async () => {
+  it("does not notify after unmount", async () => {
+    const first = deferred();
+    mocks.sync.mockReturnValueOnce(first.promise);
+    mount();
+    await flushAsync();
+    unmounts.pop()!();
+    first.resolve({ installed: ["new"], upgraded: [], failed: [] });
+    await flushAsync();
+    expect(mocks.emit).not.toHaveBeenCalled();
+  });
+
+  it("retries after an RPC failure on the next enable", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    mocks.available.mockRejectedValueOnce(new Error("offline"));
+    mocks.sync.mockRejectedValueOnce(new Error("offline"));
     const h = mount();
     await flushAsync();
     h.render(false);
     h.render(true);
     await flushAsync();
-    expect(mocks.install).toHaveBeenCalledTimes(1);
+    expect(mocks.sync).toHaveBeenCalledTimes(2);
   });
 });

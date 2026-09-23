@@ -1,10 +1,4 @@
-//! Skill management Tauri commands: the installed list comes from the agent;
-//! the catalogue and install/uninstall are handled locally (see
-//! [`crate::skills`]).  After install/uninstall, the agent's skills cache is
-//! invalidated via `refresh_skills` — awaited (best-effort, bounded by the
-//! agent connect timeout) so the notification is guaranteed to be sent
-//! before this command returns and no follow-up prompt can race the stale
-//! cache.
+//! Thin Tauri surface for the Agent's host-local SkillManager.
 
 use crate::{agent_bridge, skills, skills_bootstrap};
 
@@ -23,8 +17,8 @@ pub async fn list_installed_skills() -> Result<Vec<agent_bridge::InstalledSkill>
 }
 
 #[tauri::command]
-pub async fn list_available_skills() -> Result<Vec<skills::SkillInfo>, crate::AppError> {
-    skills::list_available_skills().await
+pub async fn list_available_skills() -> Result<Vec<agent_bridge::AvailableSkill>, crate::AppError> {
+    agent_bridge::list_available_skills().await
 }
 
 /// Recommend at most one UNINSTALLED skill for the user's first-turn text via
@@ -49,12 +43,25 @@ pub async fn get_skill_guide() -> Result<skills::SkillGuide, crate::AppError> {
 
 #[tauri::command]
 pub async fn install_skill(id: String, version: String) -> Result<(), crate::AppError> {
-    skills::install_and_refresh(id, version).await
+    agent_bridge::install_skill(id, version).await?;
+    crate::agent_events::publish_invalidation("skills_changed");
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
-    skills::uninstall_and_refresh(id).await
+    let removed = agent_bridge::uninstall_skill(id).await?;
+    if removed {
+        crate::agent_events::publish_invalidation("skills_changed");
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+pub async fn sync_skills() -> Result<serde_json::Value, crate::AppError> {
+    let result = agent_bridge::sync_skills(true).await?;
+    crate::agent_events::publish_invalidation("skills_changed");
+    Ok(result)
 }
 
 /// Force-run the built-in skill bootstrap (installs platform built-in skills
@@ -80,38 +87,11 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn spawn_builtin_skills_runs_against_a_mock_handle() {
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        // The spawned thread fails the sidecar spawn and logs — no panic, no
-        // drain, and the thread body runs against the mock handle.
-        spawn_builtin_skills(app.handle().clone());
-    }
-
-    #[tokio::test]
-    async fn bootstrap_builtin_skills_spawns_against_a_mock_handle() {
-        let app = tauri::test::mock_builder()
-            .plugin(tauri_plugin_shell::init())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("build mock app");
-        // The command wrapper is generic over Runtime so its body (which just
-        // delegates to spawn_builtin_skills) can run against a mock handle.
-        bootstrap_builtin_skills(app.handle().clone()).await;
-    }
-
-    #[test]
-    fn async_command_wrappers_reject_malformed_bodies() {
+    fn command_wrappers_reject_malformed_bodies() {
         crate::commands::ipc_harness::assert_all_reject_bad_body(
             tauri::generate_handler![install_skill, uninstall_skill],
             &["install_skill", "uninstall_skill"],
         );
-        // `install_skill` takes two arguments, so the empty-body rejection above
-        // `install_skill` takes two arguments, so the empty-body rejection above
-        // only exercises its *first* argument's error arm (attributed to the
-        // signature line). Fail the *last* argument instead to hit the error arm
-        // attributed to the `#[tauri::command]` attribute line.
         crate::commands::ipc_harness::assert_all_reject_bodies(
             tauri::generate_handler![install_skill],
             &[("install_skill", serde_json::json!({ "id": "x" }))],
@@ -119,173 +99,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_installed_skills_parses_skill_sourced_commands() {
+    async fn skills_commands_forward_to_agent() {
         let _lock = mock_agent_lock();
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([(
-                "get_commands".to_string(),
-                "{\"commands\":[{\"name\":\"foo\",\"description\":\"d\",\"source\":\"skill\"},{\"name\":\"bar\",\"description\":\"d\",\"source\":\"builtin\"}]}".to_string(),
-            )]),
+            data: HashMap::from([
+                ("list_installed_skills".into(), "[]".into()),
+                ("list_available_skills".into(), "[]".into()),
+                ("install_skill".into(), "{}".into()),
+                ("uninstall_skill".into(), "{\"removed\":true}".into()),
+                (
+                    "sync_skills".into(),
+                    "{\"installed\":[],\"upgraded\":[],\"skipped\":[],\"failed\":[]}".into(),
+                ),
+            ]),
             ..Default::default()
         });
-        let skills = list_installed_skills().await.expect("skills");
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "foo");
+        assert!(list_installed_skills().await.unwrap().is_empty());
+        assert!(list_available_skills().await.unwrap().is_empty());
+        install_skill("acme".into(), "1.0.0".into()).await.unwrap();
+        assert!(uninstall_skill("acme".into()).await.unwrap());
+        assert!(sync_skills().await.is_ok());
         script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]
-    async fn refresh_skills_is_best_effort() {
-        let _lock = mock_agent_lock();
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
-            ..Default::default()
-        });
-        refresh_skills().await.expect("refresh");
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn uninstall_skill_rejects_invalid_ids_and_removes_installed() {
-        // The uninstall path records a registry tombstone under the FutureOS
-        // home — isolate it from the developer's real agent.db.
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-uninstall-ghost");
-        // Invalid id is rejected before touching the filesystem.
-        assert!(uninstall_skill("../evil".into()).await.is_err());
-        // A valid id with nothing installed reports "nothing removed".
-        assert!(!uninstall_skill("ghost_skill".into())
-            .await
-            .expect("uninstall"));
-    }
-
-    #[tokio::test]
-    async fn list_available_skills_lists_the_filesystem_catalog() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-avail");
-        // A clean home has no bundled skills yet — the wrapper still returns a
-        // (possibly empty) catalog rather than failing.
-        let _ = list_available_skills().await;
-    }
-
-    #[tokio::test]
-    async fn get_skill_guide_fetches_the_platform_guide() {
+    async fn skill_guide_still_uses_the_platform_endpoint() {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-guide");
-        // Point the platform at a mock serving an empty (all-default) guide,
-        // so the unauthenticated fetch parses without a real network call.
-        let url = mock_http_server(vec![(200, "application/json", b"{}".to_vec())]);
-        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
-        let guide = get_skill_guide().await.expect("guide");
-        assert!(guide.links.help.is_empty());
-        assert!(guide.skills.coach_prompt.zh.is_empty());
-    }
-
-    #[tokio::test]
-    async fn install_skill_rejects_a_bad_id_before_fs_work() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install");
-        assert!(install_skill("../evil".into(), "1.0".into()).await.is_err());
-    }
-
-    /// A one-shot mock HTTP server: each `(status, content-type, body)` tuple
-    /// answers one request. `Connection: close` so the client reads the body
-    /// and moves on without keep-alive stalls.
-    fn mock_http_server(responses: Vec<(u16, &'static str, Vec<u8>)>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://{}", listener.local_addr().unwrap());
         std::thread::spawn(move || {
             use std::io::{Read, Write};
-            for (status, content_type, body) in responses {
-                let (mut stream, _) = listener.accept().expect("mock accept");
-                let mut sink = [0u8; 8192];
-                let _ = stream.read(&mut sink);
-                let header = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(&body);
-                let _ = stream.flush();
-            }
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let count = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).contains("/client/v1/guide"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
         });
-        format!("http://127.0.0.1:{port}")
-    }
-
-    fn skill_zip() -> Vec<u8> {
-        let mut cursor = std::io::Cursor::new(Vec::new());
-        {
-            let mut writer = zip::ZipWriter::new(&mut cursor);
-            let options = zip::write::SimpleFileOptions::default();
-            writer.start_file("SKILL.md", options).unwrap();
-            std::io::Write::write_all(&mut writer, b"# acme\n").unwrap();
-            writer.finish().unwrap();
-        }
-        cursor.into_inner()
-    }
-
-    /// The (version, deleted) registry row for `id` in the isolated home's
-    /// agent.db, or `None` when the skill has no row.
-    fn registry_row(id: &str) -> Option<(Option<String>, bool)> {
-        let connection =
-            rusqlite::Connection::open(crate::auth_store::agent_dir().unwrap().join("agent.db"))
-                .expect("open agent.db");
-        connection
-            .query_row(
-                "SELECT version, deleted FROM skills WHERE name = ?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
-            )
-            .ok()
-    }
-
-    #[tokio::test]
-    async fn install_skill_success_refreshes_the_agent() {
-        let _lock = mock_agent_lock();
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-install-ok");
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
-            ..Default::default()
-        });
-
-        // Point the platform at a mock that serves a valid skill zip, so the
-        // download + extract path succeeds and the command reaches its
-        // post-install agent refresh.
-        let url = mock_http_server(vec![(200, "application/zip", skill_zip())]);
         crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
-
-        install_skill("acme".into(), "1.0".into())
-            .await
-            .expect("install");
-        assert_eq!(
-            registry_row("acme"),
-            Some((Some("1.0".to_string()), false)),
-            "install recorded in the registry"
-        );
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn uninstall_skill_removed_true_refreshes_the_agent() {
-        let _lock = mock_agent_lock();
-        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-uninstall-ok");
-        crate::commands::agent_mock::ensure_mock_agent();
-        script_mock_agent(MockScript {
-            data: HashMap::from([("refresh_skills".to_string(), "{}".to_string())]),
-            ..Default::default()
-        });
-
-        // Lay down an installed skill dir manually (no download needed) so the
-        // command's `if removed` branch fires and refreshes the agent.
-        let dest = crate::auth_store::agent_dir().unwrap().join("skills/acme");
-        std::fs::create_dir_all(&dest).unwrap();
-
-        let removed = uninstall_skill("acme".into()).await.expect("uninstall");
-        assert!(removed);
-        assert_eq!(
-            registry_row("acme"),
-            Some((None, true)),
-            "uninstall left a tombstone"
-        );
-        script_mock_agent(MockScript::default());
+        assert!(get_skill_guide().await.unwrap().links.help.is_empty());
     }
 }
