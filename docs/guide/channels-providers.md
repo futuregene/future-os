@@ -109,6 +109,7 @@ columns are what the bridge can rely on:
 | QQ | `qq` | preview | gateway websocket | no | no | no | no | no | yes | 4000 chars | a QQ open-platform bot |
 | iMessage | `imessage` | preview | macOS only | no | no | no | no | no | no | 20000 chars | macOS, and Full Disk Access for the terminal running the bridge |
 | Email | `email` | preview | IMAP + SMTP | no | yes | no | no | no | no | 100000 bytes | a mailbox that allows IMAP and SMTP with a password or app password |
+| WeCom | `wecom` | preview | encrypted callback | no | no | no | no | no | no | 2048 bytes | a WeCom self-built app whose callback URL reaches this host |
 | Terminal | `cli` | live | stdin/stdout | no | no | yes | no | no | no | 100000 chars | — |
 
 Feishu and DingTalk are not in this table because they are not framework
@@ -441,6 +442,53 @@ but not downloaded, and the bridge never answers the mailbox's own address.
 accepts the connection and then stalls fails as a transient error instead of
 hanging the poll loop. OAuth is not supported — use a password or app password.
 
+### WeCom
+
+The platform's own name is 企业微信; other headings on this page are English
+too, and the anchor has to stay `#wecom` — a heading with the Chinese name in it
+would slug to `wecom-企业微信`, because those characters are alphanumeric.
+
+```jsonc
+{
+  "enabled": true,
+  "corp_id": "",                         // corp id, ww…; the callback's receive id is checked against it
+  "agent_id": 0,                         // the self-built app's AgentId; every send names it
+  "secret": "",                          // the app secret, used to fetch the access token
+  "token": "",                           // callback Token
+  "encoding_aes_key": "",                 // callback EncodingAESKey, 43 characters
+  "webhook": { "addr": "127.0.0.1:8790", "path": "/webhooks/wecom" },
+  "dm_policy": "allowlist", "dm_allowlist": [],
+  "api_base": ""                         // test seam: replaces the app API origin
+}
+```
+
+WeCom calls *us* with an **encrypted** body, and both halves of that are
+checked. The callback's `msg_signature` is SHA-1 over the token, timestamp,
+nonce and ciphertext, sorted and concatenated; it is verified **before**
+anything is decrypted, because a ciphertext from the network is attacker-chosen
+input. The body is then decrypted (AES-256-CBC under `encoding_aes_key`) and the
+envelope — 16 random bytes, a length, the message, and the id of the corp it was
+meant for — must end with **this** corp id, so a callback captured from another
+tenant cannot be replayed here.
+
+The answer to a callback is an empty body: that is WeCom's documented "no
+passive reply", and it is what stops the platform retrying while the turn runs.
+The reply itself goes out through the app API (`message/send`) as a new message,
+with the access token cached until shortly before it expires.
+
+Two things about the API are worth knowing before debugging a silent failure:
+
+* **HTTP 200 does not mean success.** A rejected send is `200` with a non-zero
+  `errcode` in the body. Every call checks it, and the `errcode` and its class
+  are what the error carries.
+* **A self-built app receives members' direct messages only.** Every conversation
+  is direct, so `dm_policy` is the gate and there is no mention to detect. Group
+  chats are a different integration (a group robot webhook, which is send-only)
+  and are out of scope here.
+
+`max_text_len` is 2048 **bytes**, not characters: one CJK character costs three,
+so the shared splitter is told the unit rather than assuming.
+
 ### Terminal
 
 ```jsonc
@@ -476,11 +524,12 @@ message; the JSON view reports all five, the text view the first four.
 
 `test` builds the channel from its configuration (so the block must exist) and
 runs the provider's probe: Telegram `getMe`, Slack `auth.test`, Discord
-`users/@me`, Mattermost `users/me`, WhatsApp a read of the phone number, Linq the
-account's lines, IRC a real connect and registration, Signal an account listing
-that deliberately does **not** drain the daemon's message queue, and the terminal
-channel nothing at all (it is always available). A channel whose provider has no
-probe reports that instead of claiming success.
+`users/@me`, Mattermost `users/me`, WeCom a token fetch plus the app's own
+record, WhatsApp a read of the phone number, Linq the account's lines, IRC a real
+connect and registration, Signal an account listing that deliberately does
+**not** drain the daemon's message queue, and the terminal channel nothing at all
+(it is always available). A channel whose provider has no probe reports that
+instead of claiming success.
 
 `send` is the outbound path that does not belong to a conversation: a cron job, a
 gate notification, or an agent's own "notify me when done". Whatever runs the
@@ -578,14 +627,20 @@ These are the things this page would otherwise imply work better than they do:
   send fails permanently unless a template is used.
 - **Linq group replies depend on the payload version**, as described above; on the
   older version `require_mention: false` is the only way to be answered.
-- **The built-in webhook server is plain HTTP.** Telegram, WhatsApp and Linq
-  webhook modes expect a public URL; terminate TLS in a reverse proxy in front of
-  `webhook.addr`.
+- **The built-in webhook server is plain HTTP.** Telegram, WhatsApp, Linq and
+  WeCom webhook modes expect a public URL; terminate TLS in a reverse proxy in
+  front of `webhook.addr`.
 - **`guild_allowlist` (Discord) is not enforced** — see the Discord block above.
   The mention gate is what keeps a busy guild quiet.
 - **Feishu and DingTalk are out of scope here.** They are `live`, they run their
   own bridge, and their config blocks are documented in
   [Channels configuration](channels-config.md).
+- **WeCom carries text only.** An image, voice or video callback is dropped
+  rather than turned into an empty prompt, because this provider resolves no
+  attachments; the envelope and the signature are still enforced on every
+  callback.
+- **WeCom group chats are not reachable.** A self-built app receives direct
+  messages; group conversations need the separate group-robot integration.
 
 ## See also
 

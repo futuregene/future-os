@@ -21,7 +21,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   └── logs/agent.log         # agent 日志（启用日志时）
 ├── agent-app/                 # 遗留凭据目录（auth.json），向后兼容读取
 ├── channels/
-│   ├── config.json            # 飞书 / 钉钉桥配置（见 channels-config.zh-CN.md）
+│   ├── config.json            # 所有通道的配置（见 channels-config.zh-CN.md）
+│   ├── <channel>/             # 每通道数据：会话文件、下载的附件
 │   └── feishu/                # 飞书桥数据（会话文件、接收的文件）
 ├── tui/                       # 终端界面（future-tui）
 │   ├── settings.json          # defaultModel、defaultThinkingLevel 等（见 tui.zh-CN.md）
@@ -121,11 +122,14 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 ## `~/.future/channels/` — 渠道桥
 
-归 `future-channel`（飞书 / 钉钉桥）所有。`config.json` 包含 `agent`、
-`feishu`、`dingtalk` 三个块——完整 schema 与默认值见
-[channels-config.zh-CN.md](channels-config.zh-CN.md)。若文件不存在，桥会
-写入默认模板并退出，提示编辑后重启。`feishu/` 是飞书桥的数据目录（会话文件
-与接收的文件/图片）。
+归 `future-channel` 所有。所有通道——[通道 provider](channels-providers.zh-CN.md)
+里列出的框架通道，以及自建桥的两个——都配在同一份 `config.json` 里：一个 `agent`
+块、每个通道一个 `providers.<id>` 块，另有遗留的顶层 `feishu` / `dingtalk` 块。
+完整 schema 与默认值见 [channels-config.zh-CN.md](channels-config.zh-CN.md)。
+若文件不存在，桥会写入默认模板并退出，提示编辑后重启。
+
+`<channel>/` 保存该通道自己持久化的东西：会话映射文件，以及它下载过的附件。
+`feishu/` 是飞书桥的目录，其中还保留了从平台收到的文件。
 
 ## `~/.future/tui/` — 终端界面
 

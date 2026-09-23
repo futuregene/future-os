@@ -20,6 +20,7 @@ pub mod qq;
 pub mod signal;
 pub mod slack;
 pub mod telegram;
+pub mod wecom;
 pub mod whatsapp;
 
 mod native;

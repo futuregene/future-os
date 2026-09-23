@@ -90,6 +90,7 @@
 | QQ | `qq` | preview | 网关 WebSocket | 否 | 否 | 否 | 否 | 否 | 是 | 4000 字符 | QQ 开放平台机器人 |
 | iMessage | `imessage` | preview | 仅 macOS | 否 | 否 | 否 | 否 | 否 | 否 | 20000 字符 | macOS，且运行桥的终端具备「完全磁盘访问权限」 |
 | Email | `email` | preview | IMAP + SMTP | 否 | 是 | 否 | 否 | 否 | 否 | 100000 字节 | 支持密码或应用专用密码的 IMAP/SMTP 邮箱 |
+| WeCom | `wecom` | preview | 加密回调 | 否 | 否 | 否 | 否 | 否 | 否 | 2048 字节 | 一个自建应用，其回调 URL 能到达本机 |
 | Terminal | `cli` | live | 标准输入输出 | 否 | 否 | 是 | 否 | 否 | 否 | 100000 字符 | — |
 
 飞书与钉钉不在本表中，因为它们不是框架通道；两者都是 `live`，见
@@ -376,6 +377,44 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 `timeout_seconds` 限制每一次协议读取，因此「接受连接后不再应答」的服务器会被判为可重试错误，
 而不是把轮询循环挂死。不支持 OAuth——请用密码或应用专用密码。
 
+### WeCom
+
+平台自己的名字是“企业微信”；本页其他小节标题也用英文，而且锚点必须保持 `#wecom`——
+标题里带上中文名会 slug 成 `wecom-企业微信`，因为这些字符属于 alphanumeric。
+
+```jsonc
+{
+  "enabled": true,
+  "corp_id": "",                         // 企业 ID，ww…；回调的接收方 ID 要与它一致
+  "agent_id": 0,                         // 自建应用 AgentId；每次发送都要带上
+  "secret": "",                          // 应用 Secret，用于换取 access_token
+  "token": "",                           // 回调 Token
+  "encoding_aes_key": "",                 // 回调 EncodingAESKey，43 个字符
+  "webhook": { "addr": "127.0.0.1:8790", "path": "/webhooks/wecom" },
+  "dm_policy": "allowlist", "dm_allowlist": [],
+  "api_base": ""                         // 测试接缝：替换应用 API 的源
+}
+```
+
+企业微信是**回调**模式，而且请求体是**加密**的，两侧都要校验。回调的 `msg_signature` 是
+对 Token、时间戳、随机数和密文排序拼接后取 SHA-1；它**先于解密**校验，因为来自网络的密文
+是攻击者可选定的输入。随后用 `encoding_aes_key` 做 AES-256-CBC 解密，得到的信封（16 字节
+随机、长度、消息本体、以及它本来要发给谁）**必须以本企业 ID 结尾**，否则从别的企业截获的
+回调不能在这里重放。
+
+回调的应答是空响应体：这是企业微信规定的“不做被动回复”，也是让平台停止重试的原因。真正的
+回复通过应用 API（`message/send`）作为新消息发出，access_token 会缓存到临近过期前再刷新。
+
+调试“发了但没反应”之前，有两件事值得先知道：
+
+* **HTTP 200 不等于成功。** 被拒绝的发送是 `200`，错误在响应体的 `errcode` 里。每次调用都
+  检查它，错误信息里也会带上 `errcode` 及其分类。
+* **自建应用只收到成员发给它的单聊消息。** 因此每个会话都是单聊，由 `dm_policy` 把关，
+  没有“是否提及”可判。群聊是另一种集成（群机器人 Webhook，只能发不能收），不在此范围内。
+
+`max_text_len` 是 2048 **字节**而非字符：一个中文字算三个字节，所以通用分片器会被告知计数
+单位，而不是自行假设。
+
 ### Terminal
 
 ```jsonc
@@ -406,9 +445,10 @@ future channel send --channel <id> --to <会话> --text "..." [--thread <id>] [-
 抢占的回合数；JSON 视图五项都有，文本视图给出前四项。
 
 `test` 从配置构建该通道（因此配置块必须存在）并运行 provider 的自检：Telegram 用 `getMe`、
-Slack 用 `auth.test`、Discord 用 `users/@me`、Mattermost 用 `users/me`、WhatsApp 读回号码、
-Linq 列出账号线路、IRC 真正建立连接并完成注册、Signal 用账号列表且**不会**抽干守护进程的消息
-队列、终端通道什么都不做（它始终可用）。没有自检实现的通道会如实报告，而不是谎报成功。
+Slack 用 `auth.test`、Discord 用 `users/@me`、Mattermost 用 `users/me`、企业微信用换取
+access_token 加读取本应用自身信息、WhatsApp 读回号码、Linq 列出账号线路、IRC 真正建立连接并
+完成注册、Signal 用账号列表且**不会**抽干守护进程的消息队列、终端通道什么都不做（它始终可用）。
+没有自检实现的通道会如实报告，而不是谎报成功。
 
 `send` 是不属于任何会话的出站路径：定时任务、门控通知，或 agent 自己的「完成后通知我」。
 谁负责发通知，就由谁调用这条命令。`--to` 是平台的会话 id，`--thread` 在通道支持时把消息
@@ -474,12 +514,15 @@ Linq 列出账号线路、IRC 真正建立连接并完成注册、Signal 用账�
   形状的尽力而为，并未验证。
 - **WhatsApp 出站受窗口限制。** 超出 24 小时客服窗口时，除非使用模板，发送会永久失败。
 - **Linq 的群回复依赖负载版本**，见上文；在旧版本上只能靠 `require_mention: false` 被作答。
-- **内建 webhook 服务器是明文 HTTP。** Telegram、WhatsApp、Linq 的 webhook 模式需要公网地址；
-  请在 `webhook.addr` 前面用反代终止 TLS。
+- **内建 webhook 服务器是明文 HTTP。** Telegram、WhatsApp、Linq、企业微信的 webhook/回调
+  模式需要公网地址；请在 `webhook.addr` 前面用反代终止 TLS。
 - **`guild_allowlist`（Discord）不生效**，见上面的 Discord 配置块。真正让繁忙服务器保持安静
   的是提及门。
 - **飞书与钉钉不在本页范围内。** 它们都是 `live`，各自运行自己的桥，配置块见
   [通道配置](channels-config.zh-CN.md)。
+- **企业微信只承载文本。** 图片、语音、视频回调会被丢弃，而不是变成一条空提示——本 provider
+  不解析任何附件；但每个回调的签名与信封校验仍然照常执行。
+- **企业微信群聊不可达。** 自建应用收的是单聊消息；群会话需要另一套群机器人集成。
 
 ## 参见
 

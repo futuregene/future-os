@@ -64,6 +64,10 @@ pub const PROVIDERS: &[ProviderEntry] = &[
         provider: crate::providers::email::provider,
     },
     ProviderEntry {
+        definition: &crate::providers::wecom::DEFINITION,
+        provider: crate::providers::wecom::provider,
+    },
+    ProviderEntry {
         definition: &crate::providers::cli::DEFINITION,
         provider: crate::providers::cli::provider,
     },

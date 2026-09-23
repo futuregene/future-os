@@ -75,8 +75,12 @@ python3 scripts/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
 ## 不在本次范围内的行
 
 飞书与钉钉的桥（`channels/src/feishu/`、`channels/src/dingtalk/`）以及 agent
-gRPC 客户端（`channels/src/grpc_client.rs`）另有 25 行未覆盖。它们早于通道框架、
-不属于它；列在这里只是为了避免把整个 crate 的数字误当成框架欠账。
+gRPC 客户端（`channels/src/grpc_client.rs`）另有 **25 或 26** 行未覆盖——这个数字会自己
+变动一行，原因值得知道：`feishu/feishu_ws.rs:254` 是 pong 发送里的 `warn!`，而它的测试
+**刻意**容忍了竞态的两种先后顺序（"要么 pong 发送先报 warn，要么读取先报错"）；只有当
+发送那一边先发生时这行才会执行。所以测到 47 和测到 48 都可能是对的，那里冒出一行并不等于
+某项改动引入了它。它们早于通道框架、不属于它；列在这里只是为了避免把整个 crate 的数字误
+当成框架欠账。
 
 ## 让守卫可测的接缝
 
