@@ -12,6 +12,7 @@ mod records;
 mod review_snapshots;
 mod runs;
 mod schema;
+mod skill_reco;
 mod status;
 mod threads;
 mod util;
@@ -64,6 +65,7 @@ pub use runs::{
 };
 #[cfg(test)]
 pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
+pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_with_files,
     find_thread_by_agent_session, get_or_create_thread_for_agent_session, get_recent_thread,

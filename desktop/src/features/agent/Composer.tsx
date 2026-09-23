@@ -16,7 +16,7 @@ import { listAvailableSkills, listInstalledSkills } from "../../integrations/ski
 import { deleteTempAttachment, readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
-import { onFutureEvent } from "../../lib/futureEvents";
+import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { isLinux, isWindows } from "../../lib/platform";
 import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES, splitFileName } from "./attachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
@@ -63,8 +63,6 @@ export interface SkillRecommendationCard {
 export interface SkillRecommendationProp {
   /** The card to show, or null. */
   card: SkillRecommendationCard | null;
-  /** True while a recommend round-trip is holding submission. */
-  pending: boolean;
   /**
    * Evaluate the draft for a recommendation. Resolve with the card to show
    * (submission is held), or null to submit normally. Never rejects.
@@ -180,8 +178,8 @@ function ComposerImpl({
   // intercept in submitValue; a ref because submitValue isn't a render).
   const recommendPendingRef = useRef(false);
   // Tracks that the user already acted on the current card (install/dismiss),
-  // so the follow-up submitValue() isn't blocked by the still-mounted card
-  // (the parent's setState that clears it hasn't re-rendered yet).
+  // so the follow-up send isn't blocked by the still-mounted card (the parent's
+  // setState that clears it hasn't re-rendered yet).
   const cardHandledRef = useRef(false);
   // The draft text already sent to the recommender, so one draft is asked about
   // at most once (a repeat would spend a second call for the same message).
@@ -373,32 +371,32 @@ function ComposerImpl({
 
     // Skill recommendation: hold the draft while we ask the recommender. A
     // returned card keeps the draft unsubmitted until the user installs or
-    // dismisses it; anything else (timeout, no match, error) falls through to a
-    // normal send.
+    // dismisses it; anything else (timeout, no match, error) sends normally.
     const reco = skillRecommendation;
-    if (reco && !reco.card && !cardHandledRef.current
-      && evaluatedDraftRef.current !== trimmed) {
-      // Ask once per draft: `evaluatedDraftRef` records that this text has been
-      // asked about, so the fall-through below cannot re-enter this branch and
-      // spend a second call for the same message.
-      evaluatedDraftRef.current = trimmed;
-      recommendPendingRef.current = true;
-      reco
-        .onEvaluate(trimmed)
-        .then((card) => {
-          if (!card)
-            sendNow();
-        })
-        .catch(() => sendNow())
-        .finally(() => {
-          recommendPendingRef.current = false;
-        });
-      return;
+    if (reco) {
+      // A card is on screen and not yet acted on: the user decides. The card's
+      // own actions send through `sendNow` directly.
+      if (reco.card && !cardHandledRef.current)
+        return;
+      // Ask once per draft. `evaluatedDraftRef` records that this draft has been
+      // asked, so the fall-through below cannot re-enter this branch and spend a
+      // second call for the same message.
+      if (!cardHandledRef.current && evaluatedDraftRef.current !== trimmed) {
+        evaluatedDraftRef.current = trimmed;
+        recommendPendingRef.current = true;
+        reco
+          .onEvaluate(trimmed)
+          .then((card) => {
+            if (!card)
+              sendNow();
+          })
+          .catch(() => sendNow())
+          .finally(() => {
+            recommendPendingRef.current = false;
+          });
+        return;
+      }
     }
-    // A card is on screen and not yet acted on: ignore bare submits until the
-    // user picks an action (install/dismiss call the real send path directly).
-    if (reco?.card && !cardHandledRef.current)
-      return;
 
     sendNow();
   }
@@ -463,8 +461,15 @@ function ComposerImpl({
     setInstallingSkill(true);
     try {
       const installed = await reco.onInstall(reco.card);
-      if (!installed)
+      if (!installed) {
+        // Install failed: tell the user and keep the card up so they can retry
+        // or send without the skill. The draft is untouched.
+        emitFutureEvent("toast", {
+          message: t("composer.skillRecommend.installFailed"),
+          tone: "error",
+        });
         return;
+      }
       const current = editorRef.current?.getContent() ?? "";
       const separator = current.length > 0 && !current.endsWith(" ") ? " " : "";
       editorRef.current?.restore(`${current}${separator}/${reco.card.name} `);
@@ -747,14 +752,6 @@ function ComposerImpl({
                   {t("composer.skillRecommend.dismissAndSend")}
                 </button>
               </div>
-            </div>
-          )
-        : null}
-      {skillRecommendation?.pending
-        ? (
-            <div className="mb-2 flex items-center gap-2 rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-ink-muted">
-              <Loader2 className="size-3.5 animate-spin" />
-              {t("composer.skillRecommend.checking")}
             </div>
           )
         : null}

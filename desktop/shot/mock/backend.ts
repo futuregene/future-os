@@ -394,6 +394,20 @@ const handlers: Record<string, (args: any) => unknown> = {
   refresh_skills: () => null,
   bootstrap_builtin_skills: () => null,
 
+  // ── Skill recommendation (PRD "技能推荐") ─────────────────────────────
+  // The agent answers `suggest_skill`; the daily-budget state lives in the
+  // Desktop store. Both are simulated here so a scenario can render the
+  // recommendation card without a Jev key. `suggest_skill` returns the first
+  // uninstalled catalogue skill so the card has content to show.
+  suggest_skill: () => {
+    const installedIds = new Set((installedSkills as { id: string }[]).map(row => row.id));
+    const pick = (availableSkills as { id: string; description: string }[])
+      .find(entry => !installedIds.has(entry.id));
+    return pick ? { name: pick.id, description: pick.description } : null;
+  },
+  skill_reco_today: () => ({ count: 0, skillIds: [], messageHashes: [] }),
+  record_skill_reco: () => null,
+
   // ── Remote (phone control) ─────────────────────────────────────────────
   remote_status: () => EMPTY_REMOTE_STATUS,
   remote_pairing_status: () => ({ paired: false, deviceName: null }),

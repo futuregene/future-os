@@ -724,6 +724,9 @@ function ReadyAppShell({
                           onOpenModels={handleOpenModels}
                           onOpenProviders={handleOpenProviders}
                           onToggleLeftPanel={handleToggleLeftPanel}
+                          skillRecommend={appSettings.skillRecommend}
+                          futureSessionStatus={futureSessionStatus}
+                          futureBalance={futureBalance}
                           headerAction={terminalHeaderAction}
                           onPromptConsumed={consumePendingPrompt}
                           onForked={(forkedThreadId: string) => {

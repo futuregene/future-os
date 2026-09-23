@@ -286,6 +286,19 @@ pub enum UiCmd {
         purpose: SessionsPurpose,
     },
     ForkMessagesLoaded(Result<Value, String>),
+    /// The agent answered the recommendation question for `draft`: `Some` is the
+    /// skill to offer, `None` means send the draft unchanged.
+    SkillRecoSuggested {
+        draft: String,
+        suggestion: Option<(String, String)>,
+    },
+    /// A recommended skill finished installing: `true` appends `/skill` to the
+    /// held draft and sends it, `false` reports the failure and keeps the draft.
+    SkillRecoInstalled {
+        draft: String,
+        skill: String,
+        installed: bool,
+    },
     SetModelDone {
         set_result: Result<(), String>,
         state: Option<RpcSessionState>,
@@ -573,12 +586,21 @@ pub struct TuiSettings {
     pub theme_id: Option<String>,
     /// Notification channels (`notify`, camelCase keys). Absent ⇒ defaults.
     pub notify: Option<NotifyConfig>,
+    /// Offer a skill recommendation before sending a message (`skillRecommend`).
+    /// On by default, like the desktop toggle (PRD v1.6 §3); `/skill-recommend
+    /// off` opts out.
+    pub skill_recommend: Option<bool>,
 }
 
 impl TuiSettings {
     /// `bellOnComplete` with the default of `true` when absent.
     pub fn bell_enabled(&self) -> bool {
         self.bell_on_complete.unwrap_or(true)
+    }
+
+    /// `skillRecommend` with the default of `true` when absent.
+    pub fn skill_recommend_enabled(&self) -> bool {
+        self.skill_recommend.unwrap_or(true)
     }
 
     /// The effective notification config for the app loop.
@@ -626,6 +648,9 @@ impl TuiSettings {
                 obj.insert("notify".into(), value);
             }
         }
+        if let Some(recommend) = self.skill_recommend {
+            obj.insert("skillRecommend".into(), Value::Bool(recommend));
+        }
         Value::Object(obj)
     }
 
@@ -656,6 +681,55 @@ impl TuiSettings {
             notify: v
                 .get("notify")
                 .and_then(|value| serde_json::from_value::<NotifyConfig>(value.clone()).ok()),
+            skill_recommend: v.get("skillRecommend").and_then(Value::as_bool),
+        }
+    }
+}
+
+/// True when the draft already names a skill (`/name`), i.e. the user picked
+/// one themselves — the same rule as the desktop composer.
+fn draft_picks_skill(draft: &str) -> bool {
+    draft
+        .split_whitespace()
+        .any(|token| token.len() > 1 && token.starts_with('/'))
+}
+
+/// Skill-recommendation state for the composer.
+///
+/// The client owns the trigger rules (PRD v1.6 §3, §7), so the TUI keeps its
+/// own small state machine: a draft that is being asked about, or a
+/// recommendation waiting for the user to decide. While either is active the
+/// draft is held in the input box un-sent, and `a` / `Esc` decide (PRD §6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillRecoState {
+    /// Nothing in flight; submissions behave normally.
+    Idle,
+    /// The agent is being asked about `draft`.
+    Pending { draft: String },
+    /// A recommendation is on screen; the draft waits for the user.
+    Suggested {
+        draft: String,
+        skill: String,
+        summary: String,
+    },
+}
+
+impl SkillRecoState {
+    /// The line shown above the input, or `None` when there is nothing to show.
+    fn prompt_line(&self) -> Option<String> {
+        match self {
+            SkillRecoState::Idle => None,
+            SkillRecoState::Pending { .. } => Some("Looking for a skill that fits…".to_string()),
+            SkillRecoState::Suggested { skill, summary, .. } => {
+                let detail = if summary.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", summary.trim())
+                };
+                Some(format!(
+                    "Recommended skill  /{skill}{detail}    [a] install & use    [Esc] send without it"
+                ))
+            }
         }
     }
 }
@@ -1354,6 +1428,14 @@ pub struct App<T: TerminalIo> {
     /// row in the panel, but `U` has no row, and two installers writing the
     /// same package directory at once is not something to discover by accident.
     skills_op_running: bool,
+    /// Skill recommendation for the draft being submitted. Whether the feature
+    /// is on comes from `self.tui_settings.skill_recommend_enabled()`.
+    skill_reco: SkillRecoState,
+    /// Set while a held draft is being re-submitted from the recommendation
+    /// flow, so the intercept stands down for exactly one pass.
+    skill_reco_send_through: bool,
+    /// The TUI's own daily budget (`~/.future/tui/skill_reco.json`).
+    skill_reco_path: PathBuf,
     /// `/worktree` — the `git` plumbing. Every call spawns a process, so the
     /// app runs all of them on the blocking pool; the runner is injectable
     /// ([`git_for_host`]) so no unit test needs the real git.
@@ -1383,6 +1465,8 @@ impl<T: TerminalIo> App<T> {
         cli_options: &CliOptions,
         tui_settings_path: PathBuf,
     ) -> Self {
+        // Derived before the path is moved into the struct below.
+        let skill_reco_path = crate::skill_reco::path_for(&tui_settings_path);
         let terminal_width = terminal.columns() as usize;
         let mut chat = ChatArea::new(terminal_width, None);
         let mut footer = Footer::new(terminal_width);
@@ -1435,6 +1519,7 @@ impl<T: TerminalIo> App<T> {
             connection_lost: false,
             tui_settings: TuiSettings::default(),
             tui_settings_path,
+            skill_reco_path,
             slash_commands: Vec::new(),
             session_input_cache: HashMap::new(),
             latest_session_switch: None,
@@ -1483,6 +1568,8 @@ impl<T: TerminalIo> App<T> {
             skills_cli: skills_cli_for_host(),
             skills_upgrade_armed: None,
             skills_op_running: false,
+            skill_reco: SkillRecoState::Idle,
+            skill_reco_send_through: false,
             git_cli: git_for_host(),
             history: HistoryWriter::new(),
             scrollback_pending: false,
@@ -1496,6 +1583,13 @@ impl<T: TerminalIo> App<T> {
     fn setup(&mut self) {
         // Slash commands for autocomplete (with model/session arg flags).
         self.slash_commands = vec![
+            SlashCommand {
+                value: "/skill-recommend".into(),
+                label: "/skill-recommend".into(),
+                description: "offer a fitting skill before sending (on|off)".into(),
+                takes_model_arg: false,
+                takes_session_arg: false,
+            },
             SlashCommand {
                 value: "/cwd".into(),
                 label: "/cwd".into(),
@@ -2750,6 +2844,23 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.request_render(false);
             }
+            UiCmd::SkillRecoSuggested { draft, suggestion } => {
+                self.apply_skill_reco_suggestion(draft, suggestion);
+            }
+            UiCmd::SkillRecoInstalled {
+                draft,
+                skill,
+                installed,
+            } => {
+                if !installed {
+                    // The card stays up so the user can retry or send without
+                    // it; the draft is untouched (PRD v1.6 §6.2).
+                    self.add_system_message(SKILLS_RECO_INSTALL_FAILED.to_string());
+                    self.request_render(false);
+                } else {
+                    self.use_recommended_skill(&draft, &skill);
+                }
+            }
             UiCmd::SkillsDetailRequested => {
                 let width = (self.terminal.columns() as usize).max(1);
                 let lines = self
@@ -3827,6 +3938,13 @@ impl<T: TerminalIo> App<T> {
 
         // Escape — close autocomplete or overlay or clear editor.
         if key == Key::ESCAPE {
+            // A shown recommendation owns the first escape: it means "send the
+            // draft without the skill", not "clear the draft" (which would
+            // discard the very thing the card is holding).
+            if matches!(self.skill_reco, SkillRecoState::Suggested { .. }) {
+                self.send_held_draft();
+                return;
+            }
             if self.autocomplete.is_visible() {
                 self.autocomplete.hide();
                 self.request_render(false);
@@ -3877,6 +3995,18 @@ impl<T: TerminalIo> App<T> {
                 self.apply_autocomplete_selection();
                 return;
             }
+        }
+
+        // A shown recommendation takes `a` (install and use). Checked before
+        // the keybinding manager so it cannot be shadowed by a binding, and
+        // after overlays/escape so a panel in front still wins.
+        if matches!(&self.skill_reco, SkillRecoState::Suggested { .. })
+            && key.eq_ignore_ascii_case("a")
+            && !self.autocomplete.is_visible()
+            && self.overlay_stack.is_empty()
+        {
+            self.accept_skill_recommendation();
+            return;
         }
 
         // Dispatch through keybinding manager (ctrl shortcuts, shift+tab, ...).
@@ -4582,6 +4712,11 @@ const SKILLS_LOADING: &str = "Loading installable skills…";
 /// the panel in front of it (its own confirmation could not be shown either).
 const SKILLS_NO_UPGRADES: &str = "No installed skill has a newer version to upgrade.";
 
+/// Shown when installing a recommended skill fails. The card stays up so the
+/// user can retry or send without the skill (PRD v1.6 §6.2).
+const SKILLS_RECO_INSTALL_FAILED: &str =
+    "Could not install the recommended skill — press Esc to send without it, or a to retry.";
+
 /// Row the `/worktree` panel shows while `git worktree list` is in flight (and
 /// again on a reload). Both git calls are processes, so the panel is open — and
 /// actionable through its create row — before its list exists.
@@ -4788,6 +4923,198 @@ impl<T: TerminalIo> App<T> {
 
     // ─── Submit / slash commands ───────────────────────────────────────
 
+    /// Whether `draft` is a message the recommender should be asked about.
+    ///
+    /// Every gate mirrors the desktop client's (PRD v1.6 §3): the feature on,
+    /// a real message rather than a slash command, the length window, no skill
+    /// already picked in the draft, the day's budget unspent, and this message
+    /// not already asked about. The candidate set must be loaded, because
+    /// asking with no candidates would recommend from nothing.
+    fn recommendation_gates_pass(&self, draft: &str) -> bool {
+        let trimmed = draft.trim();
+        if !self.tui_settings.skill_recommend_enabled() {
+            return false;
+        }
+        // A slash command is a local action, not a message to recommend for.
+        if trimmed.starts_with('/') {
+            return false;
+        }
+        // Length window, in the units the PRD states them: 30 UTF-8 bytes is
+        // 10 汉字 or about 30 ASCII characters.
+        if trimmed.len() < crate::skill_reco::MIN_QUERY_BYTES
+            || trimmed.chars().count() > crate::skill_reco::MAX_QUERY_CHARS
+        {
+            return false;
+        }
+        // The user already chose a skill for this message.
+        if draft_picks_skill(trimmed) {
+            return false;
+        }
+        let day = crate::skill_reco::load_at(&self.skill_reco_path);
+        if day.exhausted() || day.already_evaluated(&crate::skill_reco::message_hash(trimmed)) {
+            return false;
+        }
+        !self.skill_reco_candidates().is_empty()
+    }
+
+    /// The uninstalled skills offered to the recommender: the catalogue minus
+    /// what the agent already loads. `None` when the catalogue has not been
+    /// fetched yet (the panel fetches it), in which case there is nothing to
+    /// recommend from and the message is sent normally.
+    fn skill_reco_candidates(&self) -> Vec<(String, String)> {
+        let Some(catalogue) = self.skills_catalogue.as_ref() else {
+            return Vec::new();
+        };
+        let installed: Vec<&String> = self.state.skills.iter().collect();
+        catalogue
+            .entries
+            .iter()
+            .filter(|entry| !installed.iter().any(|name| **name == entry.id))
+            .map(|entry| {
+                let summary = entry
+                    .summary
+                    .clone()
+                    .or_else(|| entry.summary_zh.clone())
+                    .unwrap_or_default();
+                (entry.id.clone(), summary)
+            })
+            .take(crate::skill_reco::MAX_CANDIDATES)
+            .collect()
+    }
+
+    /// Ask the agent about `draft`, holding it in the input box.
+    ///
+    /// Returns true when the submission is held (the answer arrives as
+    /// [`UiCmd::SkillRecoSuggested`]); false lets `handle_submit` continue.
+    fn maybe_recommend_skill(&mut self, draft: &str) -> bool {
+        // The held draft is re-submitted through this same path; stand down for
+        // that one pass so the send is not intercepted again.
+        if self.skill_reco_send_through {
+            self.skill_reco_send_through = false;
+            return false;
+        }
+        if !matches!(self.skill_reco, SkillRecoState::Idle) {
+            return false;
+        }
+        if !self.recommendation_gates_pass(draft) {
+            return false;
+        }
+        let candidates = self.skill_reco_candidates();
+        self.skill_reco = SkillRecoState::Pending {
+            draft: draft.to_string(),
+        };
+        self.request_render(false);
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        let query = draft.to_string();
+        tokio::spawn(async move {
+            let suggestion = client.suggest_skill(&query, &candidates).await;
+            let _ = tx.send(UiCmd::SkillRecoSuggested {
+                draft: query,
+                suggestion,
+            });
+        });
+        true
+    }
+
+    /// Send the held draft, unchanged, through the normal submission path.
+    ///
+    /// `handle_submit` is re-entered so the send goes through exactly one code
+    /// path (paste expansion, the size cap, attachment handling); the
+    /// send-through flag keeps the intercept out of the way for that pass.
+    fn send_held_draft(&mut self) {
+        let draft = match &self.skill_reco {
+            SkillRecoState::Pending { draft } | SkillRecoState::Suggested { draft, .. } => {
+                draft.clone()
+            }
+            SkillRecoState::Idle => return,
+        };
+        self.skill_reco = SkillRecoState::Idle;
+        self.skill_reco_send_through = true;
+        self.request_render(false);
+        self.handle_submit(&draft);
+    }
+
+    /// `a` on a shown recommendation: install it, then append `/skill` to the
+    /// draft and send that.
+    fn accept_skill_recommendation(&mut self) {
+        let SkillRecoState::Suggested { draft, skill, .. } = self.skill_reco.clone() else {
+            return;
+        };
+        let Some(cli) = self.skills_cli.clone() else {
+            self.add_system_message(SKILLS_NO_BINARY.to_string());
+            return;
+        };
+        let version = self.install_version_for(&skill);
+        self.add_system_message(skill_op_start_message(&SkillOp::Install {
+            id: skill.clone(),
+            version: version.clone(),
+        }));
+        self.request_render(false);
+        let tx = self.op_tx.clone();
+        let skill_for_task = skill.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = cli.run(&SkillOp::Install {
+                id: skill_for_task.clone(),
+                version,
+            });
+            let _ = tx.send(UiCmd::SkillRecoInstalled {
+                draft,
+                skill: skill_for_task,
+                installed: outcome.ok,
+            });
+        });
+    }
+
+    /// Apply the agent's answer to a held draft.
+    fn apply_skill_reco_suggestion(&mut self, draft: String, suggestion: Option<(String, String)>) {
+        // Only the draft that asked may consume the answer.
+        if !matches!(&self.skill_reco, SkillRecoState::Pending { draft: held } if held == &draft) {
+            return;
+        }
+        let Some((skill, summary)) = suggestion else {
+            // No recommendation: send it. This is the common path, and the
+            // reason the call is best-effort.
+            self.send_held_draft();
+            return;
+        };
+        // Re-read the day: the budget may have moved while the call was in
+        // flight, and a skill shown in the meantime must not be shown twice.
+        let day = crate::skill_reco::load_at(&self.skill_reco_path);
+        if day.exhausted() || day.already_recommended(&skill) {
+            self.send_held_draft();
+            return;
+        }
+        // Showing the card spends the budget: it counts when displayed,
+        // whatever the user then does with it (PRD v1.6 §7).
+        crate::skill_reco::record_at(
+            &self.skill_reco_path,
+            &skill,
+            &crate::skill_reco::message_hash(&draft),
+        );
+        self.skill_reco = SkillRecoState::Suggested {
+            draft,
+            skill,
+            summary,
+        };
+        self.request_render(false);
+    }
+
+    /// Append `/skill` to the held draft and send it, after a successful
+    /// install.
+    fn use_recommended_skill(&mut self, draft: &str, skill: &str) {
+        let separator = if draft.ends_with(' ') || draft.is_empty() {
+            ""
+        } else {
+            " "
+        };
+        let composed = format!("{draft}{separator}/{skill} ");
+        self.skill_reco = SkillRecoState::Idle;
+        self.skill_reco_send_through = true;
+        self.input.set_value(&composed, None);
+        self.handle_submit(&composed);
+    }
+
     fn handle_submit(&mut self, value: &str) {
         // A pending `/provider-key` capture owns the next submission: the text
         // is the API key (a blank submission clears the stored key), never a
@@ -4841,6 +5168,13 @@ impl<T: TerminalIo> App<T> {
         // still refers to *before* the box is emptied (an edit drops the
         // attachments whose markers left the draft), and the pending state goes
         // back with the draft on any guard that puts it back.
+        // Skill recommendation (PRD v1.6 §6.1): hold the draft while the agent
+        // is asked whether a skill fits it. Placed before the draft is consumed
+        // below, because holding it means leaving it in the input box.
+        if self.maybe_recommend_skill(value) {
+            return;
+        }
+
         let pending = self.input.take_pending();
         self.input.set_value("", None);
         self.request_render(false);
@@ -4884,6 +5218,7 @@ impl<T: TerminalIo> App<T> {
                     self.select_theme(arg.trim());
                 }
                 "theme" => self.show_theme_menu(),
+                "skill-recommend" => self.set_skill_recommend(&arg),
                 "providers" => self.show_providers(),
                 "skills" => self.show_skills(),
                 "tools" => {
@@ -6664,6 +6999,44 @@ impl<T: TerminalIo> App<T> {
     }
 
     /// Spawn `upsert_provider` and report the outcome.
+    /// `/skill-recommend [on|off]` — the TUI's own toggle, the counterpart of
+    /// the desktop Settings switch. Bare form reports the current state.
+    fn set_skill_recommend(&mut self, arg: &str) {
+        match arg.trim().to_lowercase().as_str() {
+            "on" | "true" => {
+                self.tui_settings.skill_recommend = Some(true);
+                self.save_tui_settings();
+                self.add_system_message(
+                    "Skill recommendation on: a fitting skill may be offered before a message is sent."
+                        .to_string(),
+                );
+            }
+            "off" | "false" => {
+                self.tui_settings.skill_recommend = Some(false);
+                self.save_tui_settings();
+                // Anything held belongs to the feature being switched off.
+                self.skill_reco = SkillRecoState::Idle;
+                self.add_system_message("Skill recommendation off.".to_string());
+            }
+            "" => {
+                let state = if self.tui_settings.skill_recommend_enabled() {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.add_system_message(format!(
+                    "Skill recommendation is {state}. Use /skill-recommend on|off."
+                ));
+            }
+            other => {
+                self.add_system_message(format!(
+                    "Unknown /skill-recommend argument '{other}' — use on or off."
+                ));
+            }
+        }
+        self.request_render(false);
+    }
+
     fn submit_provider(&mut self, input: ProviderInput) {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
@@ -8648,7 +9021,16 @@ impl<T: TerminalIo> App<T> {
         // before the input renders (same frame, no flicker).
         self.input
             .set_image_support(self.current_model_image_support());
-        let editor_lines = self.input.render(w);
+        let mut editor_lines = self.input.render(w);
+        // The recommendation prompt sits directly above the input box and is
+        // counted as editor height, so the chat viewport shrinks by exactly the
+        // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
+        if let Some(line) = self.skill_reco.prompt_line() {
+            editor_lines.insert(
+                0,
+                crate::theme::fg(self.theme.accent as u8, &fit_overlay_row(&line, w)),
+            );
+        }
         let editor_height = editor_lines.len();
 
         // Set chat viewport based on remaining space.
@@ -9023,6 +9405,18 @@ mod tests {
         fn set_exit_signal_callback(&mut self, _cb: Option<Box<dyn FnMut() + Send + 'static>>) {}
     }
 
+    /// A settings path in its own temp directory, so the app's derived state
+    /// files (the skill-recommendation budget lives beside settings) are private
+    /// to one test. A shared path would couple tests through the daily budget.
+    ///
+    /// The directory is created here because several tests seed the settings
+    /// file by hand before the app loads it.
+    fn test_settings_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tui-test-{}", random_id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("settings.json")
+    }
+
     fn make_app(cols: u16, rows: u16) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
         let (op_tx, op_rx) = mpsc::unbounded_channel();
         let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
@@ -9037,7 +9431,7 @@ mod tests {
             Arc::new(client),
             op_tx,
             &CliOptions::default(),
-            std::env::temp_dir().join("tui-test-settings.json"),
+            test_settings_path(),
         );
         (app, op_rx)
     }
@@ -9622,6 +10016,7 @@ mod tests {
             bell_on_complete: None,
             theme_id: None,
             notify: None,
+            skill_recommend: None,
         };
         let json = serde_json::to_string(&settings.to_json()).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -9644,6 +10039,7 @@ mod tests {
             bell_on_complete: None,
             theme_id: None,
             notify: None,
+            skill_recommend: None,
         };
         let json = serde_json::to_string_pretty(&settings.to_json()).unwrap();
         let model_pos = json.find("defaultModel").unwrap();
@@ -12823,7 +13219,7 @@ mod tests {
             Arc::new(client),
             op_tx,
             cli_options,
-            std::env::temp_dir().join(format!("tui-test-settings-{}.json", random_id())),
+            test_settings_path(),
         );
         (app, op_rx)
     }
@@ -14906,6 +15302,292 @@ mod tests {
     /// [`SKILLS_CATALOGUE_JSON`], parsed.
     fn skills_catalogue_fixture() -> SkillCatalogue {
         crate::skills_cli::parse_catalogue(SKILLS_CATALOGUE_JSON).expect("the fixture parses")
+    }
+
+    // ─── Skill recommendation (PRD "技能推荐") ───────────────────────────────
+
+    /// A draft long enough to pass the minimum-length gate (well over 30 bytes).
+    const RECO_DRAFT: &str = "帮我查一下这个基因在人群里的频率并找出引用来源";
+
+    /// An app with a catalogue but a dead client, so the *gates* can be tested
+    /// without a network. `make_app_at` derives a per-test budget path, so these
+    /// tests cannot spend each other's daily budget.
+    fn reco_app() -> App<FakeTerminal> {
+        let (mut app, _rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        // `App::new` derives the budget from the settings file's *directory*,
+        // which every test shares (they all sit in the temp dir). Give each test
+        // its own file so one test's spent budget cannot leak into another's.
+        app.skill_reco_path =
+            std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
+        app
+    }
+
+    #[tokio::test]
+    async fn recommendation_gates_reject_everything_but_a_real_message() {
+        // The happy path: toggle on (default), a long message, a catalogue, no
+        // skill picked, budget unspent.
+        let app = reco_app();
+        assert!(app.recommendation_gates_pass(RECO_DRAFT));
+
+        // The toggle is the user's opt-out.
+        let mut off = reco_app();
+        off.tui_settings.skill_recommend = Some(false);
+        assert!(!off.recommendation_gates_pass(RECO_DRAFT));
+
+        // Slash commands are local actions, not messages.
+        assert!(!app.recommendation_gates_pass("/skills"));
+
+        // The length window, in UTF-8 bytes: 9 汉字 is 27 bytes (too short),
+        // 10 is exactly 30 (allowed).
+        let short = reco_app();
+        assert_eq!("单细胞测序如何分析".len(), 27, "9 汉字 is 27 bytes");
+        assert!(!short.recommendation_gates_pass("单细胞测序如何分析"));
+        assert_eq!("单细胞测序如何分析流".len(), 30, "10 汉字 is 30 bytes");
+        assert!(short.recommendation_gates_pass("单细胞测序如何分析流"));
+
+        // Over-long drafts are sent unrecommended rather than truncated.
+        let long = "字".repeat(crate::skill_reco::MAX_QUERY_CHARS + 1);
+        assert!(!app.recommendation_gates_pass(&long));
+
+        // The user already picked a skill for this message.
+        assert!(!app.recommendation_gates_pass("帮我查一下 /alpha 这个基因"));
+
+        // Nothing to recommend from: the catalogue has not been fetched.
+        let mut empty = reco_app();
+        empty.skills_catalogue = None;
+        assert!(!empty.recommendation_gates_pass(RECO_DRAFT));
+
+        // Every catalogue entry is installed, so the candidate set is empty.
+        let mut all_installed = reco_app();
+        all_installed.state.skills = vec!["alpha".to_string(), "beta".to_string()];
+        assert!(!all_installed.recommendation_gates_pass(RECO_DRAFT));
+    }
+
+    #[tokio::test]
+    async fn installed_skills_are_excluded_from_the_candidates() {
+        let mut app = reco_app();
+        let all = app.skill_reco_candidates();
+        assert_eq!(
+            all.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "an empty installed set offers the whole catalogue"
+        );
+        // `summary` carries the entry's description, which is what the agent
+        // shows the model.
+        assert_eq!(all[0].1, "does alpha things");
+
+        app.state.skills = vec!["alpha".to_string()];
+        let remaining = app.skill_reco_candidates();
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"],
+            "an installed skill is never offered"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_budget_stops_the_question_and_the_message_still_sends() {
+        let app = reco_app();
+        // Three recommendations already shown today.
+        for skill in ["alpha", "beta", "gamma"] {
+            crate::skill_reco::record_at(&app.skill_reco_path, skill, "some-other-message");
+        }
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+
+        // And a message already asked about is not asked about twice, even with
+        // budget left.
+        let app = reco_app();
+        let hash = crate::skill_reco::message_hash(RECO_DRAFT);
+        crate::skill_reco::record_at(&app.skill_reco_path, "alpha", &hash);
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+        assert!(
+            app.recommendation_gates_pass("a completely different question about something else"),
+            "only the message that was already asked about is skipped"
+        );
+    }
+
+    #[test]
+    fn the_prompt_line_names_the_skill_and_both_keys() {
+        assert_eq!(SkillRecoState::Idle.prompt_line(), None);
+        assert!(SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string()
+        }
+        .prompt_line()
+        .unwrap()
+        .contains("Looking"));
+
+        let line = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        }
+        .prompt_line()
+        .unwrap();
+        assert!(
+            line.contains("/alpha"),
+            "the command must be visible: {line}"
+        );
+        assert!(line.contains("does alpha things"));
+        assert!(
+            line.contains("[a]"),
+            "the accept key must be offered: {line}"
+        );
+        assert!(
+            line.contains("Esc"),
+            "the dismiss key must be offered: {line}"
+        );
+    }
+
+    /// The agent declining is the common case and must send the draft, not hold
+    /// it. A dead client answers nothing, which exercises the same path.
+    #[tokio::test]
+    async fn a_declined_recommendation_sends_the_held_draft() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.apply_skill_reco_suggestion(RECO_DRAFT.to_string(), None);
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the hold must be released so the draft can go out"
+        );
+    }
+
+    /// A recommendation spends the budget when it is *shown*, so the card is
+    /// recorded before the user does anything with it.
+    #[tokio::test]
+    async fn showing_a_recommendation_spends_the_budget_once() {
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.apply_skill_reco_suggestion(
+            RECO_DRAFT.to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert!(matches!(
+            app.skill_reco,
+            SkillRecoState::Suggested { ref skill, .. } if skill == "alpha"
+        ));
+        let day = crate::skill_reco::load_at(&app.skill_reco_path);
+        assert_eq!(day.count(), 1);
+        assert!(day.already_recommended("alpha"));
+        assert!(day.already_evaluated(&crate::skill_reco::message_hash(RECO_DRAFT)));
+
+        // The same skill twice in a day is skipped rather than re-shown (and
+        // never swapped for a different skill).
+        let mut again = reco_app();
+        crate::skill_reco::record_at(&again.skill_reco_path, "alpha", "unrelated");
+        again.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        again.apply_skill_reco_suggestion(
+            RECO_DRAFT.to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert_eq!(again.skill_reco, SkillRecoState::Idle);
+        assert_eq!(
+            crate::skill_reco::load_at(&again.skill_reco_path).count(),
+            1,
+            "a skipped duplicate must not spend a second slot"
+        );
+    }
+
+    /// An answer for a draft that is no longer held must not resurrect a card:
+    /// the user may have sent it, or typed something else, while the call was in
+    /// flight.
+    #[tokio::test]
+    async fn a_late_answer_for_a_stale_draft_is_ignored() {
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: "the draft that asked".to_string(),
+        };
+        app.apply_skill_reco_suggestion(
+            "a different draft".to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert!(matches!(app.skill_reco, SkillRecoState::Pending { .. }));
+        assert_eq!(crate::skill_reco::load_at(&app.skill_reco_path).count(), 0);
+    }
+
+    /// Escape on a card sends the original draft, never the skill.
+    #[tokio::test]
+    async fn dismissing_sends_the_draft_without_the_skill() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        };
+        app.send_held_draft();
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app.chat.last_message().expect("the draft was sent");
+        assert_eq!(last.content, RECO_DRAFT);
+        assert!(
+            !last.content.contains("/alpha"),
+            "dismissing must not add the skill: {}",
+            last.content
+        );
+    }
+
+    /// Accepting appends the slash command (after a single separating space) and
+    /// sends that.
+    #[tokio::test]
+    async fn accepting_appends_the_slash_command_and_sends() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.use_recommended_skill(RECO_DRAFT, "alpha");
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app
+            .chat
+            .last_message()
+            .expect("the composed draft was sent");
+        assert_eq!(last.content, format!("{RECO_DRAFT} /alpha "));
+    }
+
+    #[tokio::test]
+    async fn the_slash_command_toggles_and_persists() {
+        let mut app = reco_app();
+        assert!(
+            app.tui_settings.skill_recommend_enabled(),
+            "recommendation is on by default (PRD v1.6 §3)"
+        );
+        app.set_skill_recommend("off");
+        assert!(!app.tui_settings.skill_recommend_enabled());
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+
+        // Persisted: a settings round-trip keeps the opt-out.
+        let json = app.tui_settings.to_json();
+        assert_eq!(
+            json.get("skillRecommend").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(!TuiSettings::from_json(&json).skill_recommend_enabled());
+
+        app.set_skill_recommend("on");
+        assert!(app.tui_settings.skill_recommend_enabled());
+        // A bare form reports rather than changes.
+        app.set_skill_recommend("");
+        assert!(app.tui_settings.skill_recommend_enabled());
+    }
+
+    /// `draft_picks_skill` decides whether the user already chose a skill. A
+    /// bare `/` (or a lone slash-word) must not be mistaken for one.
+    #[test]
+    fn picks_skill_detects_a_slash_token_anywhere_in_the_draft() {
+        assert!(draft_picks_skill("/alpha"));
+        assert!(draft_picks_skill("帮我查一下 /alpha"));
+        assert!(draft_picks_skill("leading text /alpha trailing"));
+        assert!(!draft_picks_skill("帮我查一下这个基因"));
+        assert!(!draft_picks_skill("/"), "a bare slash is not a skill");
+        assert!(!draft_picks_skill("a / b"));
     }
 
     /// A test app talking to a live mock agent, plus that agent's request log —

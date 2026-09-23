@@ -686,6 +686,44 @@ impl GrpcClient {
         self.call("refresh_skills", RpcCommand::default()).await
     }
 
+    /// `suggestSkill(query, candidates)` — at most one recommended skill, or
+    /// `None` when the agent declines, times out, has no key configured, or the
+    /// request fails.
+    ///
+    /// Best-effort by contract: the caller supplies the candidate set
+    /// (catalogue − installed) and every failure means "no recommendation", so
+    /// an error here must never surface to the user or delay a prompt. The agent
+    /// logs the real reason (`grep "skill reco"`).
+    pub async fn suggest_skill(
+        &self,
+        query: &str,
+        candidates: &[(String, String)],
+    ) -> Option<(String, String)> {
+        let cmd = RpcCommand {
+            suggest_query: query.to_string(),
+            suggest_candidates: candidates
+                .iter()
+                .map(|(name, description)| future_rpc::proto::SkillCandidate {
+                    name: name.clone(),
+                    description: description.clone(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let resp = self.call("suggest_skill", cmd).await.ok()?;
+        let skill = resp.get("skill")?;
+        if skill.is_null() {
+            return None;
+        }
+        let name = skill.get("name")?.as_str()?.to_string();
+        let description = skill
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Some((name, description))
+    }
+
     /// `reloadConfig()` — `{skills, contextFiles}`.
     pub async fn reload_config(&self) -> Result<Value, String> {
         self.call("reload_config", RpcCommand::default()).await

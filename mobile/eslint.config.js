@@ -5,6 +5,12 @@ const expoConfig = require("eslint-config-expo/flat");
 module.exports = defineConfig([
   ...fixupConfigRules(expoConfig),
   {
+    // Jest's setup file runs in the test environment, where `jest` and
+    // `require` exist as globals that the app config does not know about.
+    files: ["jest.setup.js"],
+    languageOptions: { globals: { jest: "readonly", require: "readonly", module: "writable" } },
+  },
+  {
     ignores: ["android/**", "ios/**", "coverage/**", "src/version.generated.ts"],
     settings: {
       // Resolve from Expo's config, not from dependencies traversed by import/namespace.

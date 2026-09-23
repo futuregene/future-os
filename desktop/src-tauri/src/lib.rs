@@ -1064,6 +1064,8 @@ mod gui {
                 list_available_skills,
                 get_skill_guide,
                 suggest_skill,
+                skill_reco_today,
+                record_skill_reco,
                 install_skill,
                 uninstall_skill,
                 refresh_skills,

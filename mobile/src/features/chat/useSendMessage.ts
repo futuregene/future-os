@@ -9,7 +9,12 @@ import { showToast } from "./utils";
 type Remote = ReturnType<typeof useRemote>;
 
 export interface SendMessageApi {
-  send: () => Promise<void>;
+  /**
+   * Send the composer's message. `override` sends an explicit text instead —
+   * used after composing a skill command, where the value is not yet in state
+   * (reading `message` in the same tick would send the pre-composition text).
+   */
+  send: (override?: string) => Promise<void>;
   retryMessage: (item: TimelineItem) => void;
   continueMessage: (item: TimelineItem) => void;
 }
@@ -26,9 +31,9 @@ export function useSendMessage(
 ): SendMessageApi {
   const { sendMessage } = remote;
   const compacting = compactionPending || remote.compacting;
-  const send = useCallback(async () => {
+  const send = useCallback(async (override?: string) => {
     if (compacting) { showToast(t("chat.compacting")); return; }
-    const value = message.trim();
+    const value = (override ?? message).trim();
     if (!value && attachments.length === 0) return;
     const pendingAttachments = attachments;
     setTransferProgress(pendingAttachments.length ? 0 : null);

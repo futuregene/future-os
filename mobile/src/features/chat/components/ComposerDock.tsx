@@ -43,9 +43,11 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
+import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
@@ -78,6 +80,10 @@ function ComposerDockView({
   onCompactContext,
   compactionPending = false,
   keyboardHeight = 0,
+  skillSuggestion = null,
+  skillInstalling = false,
+  onInstallSkill,
+  onDismissSkill,
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
@@ -104,6 +110,11 @@ function ComposerDockView({
   onCompactContext?: () => void;
   compactionPending?: boolean;
   keyboardHeight?: number;
+  /** A skill suggestion holding the draft, or null (see the card component). */
+  skillSuggestion?: PendingSuggestion | null;
+  skillInstalling?: boolean;
+  onInstallSkill?: () => void;
+  onDismissSkill?: () => void;
 }) {
   const [contentHeight, setContentHeight] = useState(INPUT_MIN_HEIGHT);
   // The skill whose description is open. Owned here rather than by the picker,
@@ -205,6 +216,15 @@ function ComposerDockView({
           />
         </View>
       ))}
+      {skillSuggestion ? (
+        <SkillSuggestionCard
+          installing={skillInstalling}
+          onDismiss={() => onDismissSkill?.()}
+          onInstall={() => onInstallSkill?.()}
+          suggestion={skillSuggestion}
+          t={t}
+        />
+      ) : null}
       <View style={styles.composerArea}>
         {completion.query && (
           <SkillPicker

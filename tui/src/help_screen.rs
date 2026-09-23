@@ -91,7 +91,7 @@ const GUTTER: usize = 2;
 /// [`SHORTCUTS`] above is deliberately *not* sorted: it is grouped by what the
 /// keys act on (interrupt first, then the cycling keys, then paging), which is
 /// how a key table is read.
-const COMMANDS: [HelpEntry; 42] = [
+const COMMANDS: [HelpEntry; 43] = [
     HelpEntry {
         key: "/agent",
         desc: "agent version and instance info",
@@ -215,6 +215,10 @@ const COMMANDS: [HelpEntry; 42] = [
     HelpEntry {
         key: "/shell <cmd>",
         desc: "run a shell command via the agent",
+    },
+    HelpEntry {
+        key: "/skill-recommend",
+        desc: "offer a fitting skill before sending (on|off)",
     },
     HelpEntry {
         key: "/skills",
@@ -436,7 +440,7 @@ mod tests {
     /// The commands the card must list, as a set the test maintains by hand so
     /// it cannot silently follow a change to `COMMANDS` itself. Membership
     /// only — the order is `command_card_is_sorted_by_command_name`'s business.
-    const EXPECTED_COMMANDS: [&str; 42] = [
+    const EXPECTED_COMMANDS: [&str; 43] = [
         "/model [name]",
         "/new",
         "/sessions",
@@ -458,6 +462,7 @@ mod tests {
         "/providers",
         "/models",
         "/skills",
+        "/skill-recommend",
         "/tools",
         "/usage",
         "/transcript",

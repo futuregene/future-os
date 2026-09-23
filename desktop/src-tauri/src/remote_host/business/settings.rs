@@ -40,6 +40,46 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
+        // The phone asks the desktop's agent for a recommendation. Best-effort
+        // by contract (see `agent_bridge::suggest_skill`): a failure is reported
+        // as "no recommendation" rather than an error, so a phone whose desktop
+        // is mid-upgrade still sends its message.
+        "suggest_skill" => {
+            let candidates = parse_candidates(&cmd.candidates);
+            match crate::agent_bridge::suggest_skill(&cmd.query, candidates).await {
+                Ok(Some(skill)) => {
+                    reply(
+                        sink,
+                        true,
+                        json!({ "skill": { "name": skill.name, "description": skill.description } }),
+                        None,
+                    )
+                    .await;
+                }
+                Ok(None) => reply(sink, true, json!({ "skill": Value::Null }), None).await,
+                Err(error) => {
+                    reply(
+                        sink,
+                        true,
+                        json!({ "skill": Value::Null }),
+                        Some(&error.to_string()),
+                    )
+                    .await
+                }
+            }
+        }
+        "skill_reco_today" => match crate::store::skill_reco_today() {
+            Ok(today) => reply(sink, true, json!({ "today": today }), None).await,
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "record_skill_reco" => {
+            let result = if cmd.skill_id.is_empty() {
+                Err("skill_id is required".into())
+            } else {
+                crate::store::record_skill_reco(&cmd.skill_id, &cmd.message_hash)
+            };
+            reply_unit(sink, result).await;
+        }
         "get_state" => {
             // A remote state request is an active view of this conversation,
             // not a background catalog check.
@@ -168,6 +208,7 @@ struct SettingsPatch {
     auto_upgrade_skills: Option<bool>,
     auto_title_first_turn: Option<bool>,
     auto_connect_remote: Option<bool>,
+    skill_recommend: Option<bool>,
     hidden_models: Option<Vec<String>>,
 }
 
@@ -184,9 +225,40 @@ fn parse_settings_patch(
         auto_upgrade_skills: patch.auto_upgrade_skills,
         auto_title_first_turn: patch.auto_title_first_turn,
         auto_connect_remote: patch.auto_connect_remote,
+        skill_recommend: patch.skill_recommend,
         hidden_models: patch.hidden_models,
         ..Default::default()
     })
+}
+
+/// Skill candidates from an `suggest_skill` command.
+///
+/// A malformed entry is skipped rather than failing the command: the candidate
+/// set is the phone's guess at the catalogue, and a recommendation made from
+/// the entries that did parse is better than none. An entry without a name is
+/// unusable (the name is what the agent matches on), but its description may be
+/// empty.
+fn parse_candidates(value: &Value) -> Vec<crate::agent_bridge::SkillCandidate> {
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(crate::agent_bridge::SkillCandidate {
+                name: name.to_string(),
+                description: item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 async fn reply_settings(
@@ -226,5 +298,54 @@ async fn product_sandbox_available() -> Result<bool, crate::AppError> {
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_candidates, parse_settings_patch};
+    use serde_json::json;
+
+    /// The phone's candidate set is a guess at the catalogue, so a malformed
+    /// entry is skipped rather than failing the whole recommendation: the
+    /// entries that parsed still describe what the user could install.
+    #[test]
+    fn candidates_skip_unusable_entries() {
+        let parsed = parse_candidates(&json!([
+            { "name": "future-web", "description": "search the web" },
+            // No description is fine — the name is what the model matches on.
+            { "name": "future-paper" },
+            // No name is unusable.
+            { "description": "anonymous" },
+            // A blank name is the same as no name.
+            { "name": "   ", "description": "blank" },
+            "not an object",
+        ]));
+        assert_eq!(
+            parsed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["future-web", "future-paper"]
+        );
+        assert_eq!(parsed[0].description, "search the web");
+        assert_eq!(parsed[1].description, "", "a missing description is empty");
+    }
+
+    #[test]
+    fn candidates_tolerate_a_missing_or_wrong_typed_field() {
+        // A client that never sends candidates, or sends the wrong shape, must
+        // not blow up the command.
+        assert!(parse_candidates(&serde_json::Value::Null).is_empty());
+        assert!(parse_candidates(&json!("nope")).is_empty());
+        assert!(parse_candidates(&json!({ "name": "x" })).is_empty());
+    }
+
+    /// The phone can flip the same settings the desktop UI can, including the
+    /// skill-recommendation toggle.
+    #[test]
+    fn settings_patch_accepts_the_recommendation_toggle() {
+        let patch = parse_settings_patch(json!({ "skillRecommend": false })).expect("parses");
+        assert_eq!(patch.skill_recommend, Some(false));
+        // Absent means "leave it alone", not "set it to false".
+        let untouched = parse_settings_patch(json!({})).expect("parses");
+        assert_eq!(untouched.skill_recommend, None);
     }
 }
