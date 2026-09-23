@@ -20,7 +20,7 @@ struct HelpEntry {
     desc: &'static str,
 }
 
-const SHORTCUTS: [HelpEntry; 12] = [
+const SHORTCUTS: [HelpEntry; 13] = [
     HelpEntry {
         key: "ctrl+c",
         desc: "interrupt",
@@ -44,6 +44,10 @@ const SHORTCUTS: [HelpEntry; 12] = [
     HelpEntry {
         key: "ctrl+g",
         desc: "expand/collapse tool output",
+    },
+    HelpEntry {
+        key: "ctrl+d",
+        desc: "compact view (fold tool runs and thinking)",
     },
     HelpEntry {
         key: "ctrl+x",

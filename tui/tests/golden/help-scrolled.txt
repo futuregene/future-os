@@ -32,5 +32,5 @@
 │[39m  [38;5;245m/transcript             full transcript with search and copy[39m                [38;5;245m│
 │[39m  [38;5;245m/tree                   session tree with fork/clone hierarchy[39m              [38;5;245m│
 │[39m  [38;5;245m/usage                  tokens, cost and context usage[39m                      [38;5;245m│
-│[39m  [38;5;245m  ↑ 27 above · ↑↓ scroll[39m                                                    [38;5;245m│
+│[39m  [38;5;245m  ↑ 28 above · ↑↓ scroll[39m                                                    [38;5;245m│
 └──────────────────────────────────────────────────────────────────────────────┘

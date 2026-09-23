@@ -127,6 +127,7 @@ pub const ACTION_GROUPS: [ActionGroup; 5] = [
         descriptions: &[
             "Expand/collapse thinking",
             "Expand/collapse tool output",
+            "Compact view (fold tool runs and thinking)",
             "Clear screen / redraw",
         ],
     },
@@ -764,6 +765,7 @@ mod tests {
             ("shift+tab", "Cycle thinking"),
             ("ctrl+o", "Expand/collapse thinking"),
             ("ctrl+g", "Expand/collapse tool output"),
+            ("ctrl+d", "Compact view (fold tool runs and thinking)"),
             ("ctrl+x", "Copy the last assistant message"),
             ("pageUp", "Scroll chat up"),
             ("pageDown", "Scroll chat down"),
@@ -870,9 +872,9 @@ mod tests {
             ],
         );
         let total: usize = sections.iter().map(|s| s.items.len()).sum();
-        // 12 distinct descriptions (one of them, "Cycle thinking", holds two
+        // 13 distinct descriptions (one of them, "Cycle thinking", holds two
         // keys) plus the reset row.
-        assert_eq!(total, 13);
+        assert_eq!(total, 14);
         // "Cycle thinking" folds its two entries into one row.
         let row = action_row(model.find("Cycle thinking").unwrap(), &model);
         assert_eq!(row.label, "Cycle thinking");

@@ -288,6 +288,12 @@ const PROMPT_ACK_JSON: &str = r#"{
 
 const RUN_ID: &str = "run_mock_1";
 const SESSION_ID: &str = "mock-session-1";
+/// A prompt starting with this asks the mock for a *burst*: three completed
+/// `read` calls with nothing in between — the shape the compact view folds
+/// (`ctrl+d`). Any other prompt gets the fixed single-call reply.
+const BURST_PROMPT_PREFIX: &str = "scan the workspace";
+/// The files the burst reads, one call each.
+const BURST_PATHS: [&str; 3] = ["src/main.rs", "src/lib.rs", "src/cli.rs"];
 /// The session `get_session_entries` has planted history for: the second entry
 /// of `list_sessions`, which the paging scenario switches to. The harness's own
 /// session is deliberately empty, so every other golden is untouched by the
@@ -304,6 +310,10 @@ const TOOL_CALL_ID: &str = "call_mock_1";
 /// Fixed assistant reply (markdown exercises the renderer on both sides).
 const REPLY_TEXT: &str =
     "Hello from the mock agent!\n\nThis is a **deterministic** reply with `code` and a [link](https://example.com).\n";
+
+/// The burst prompt's reply: the same text its `text_chunk`s spell out (the TUI
+/// writes `agent_end`'s `text` over the last assistant message).
+const BURST_REPLY_TEXT: &str = "Scanning the workspace.\n\nEvery file uses the same header.\n";
 
 #[derive(Clone)]
 struct MockAgent {
@@ -500,64 +510,97 @@ impl MockAgent {
         let subs = self.subs.clone();
         let prompt_text = prompt_text.to_string();
         let stream_delay_ms = self.stream_delay_ms;
+        // A prompt that asks for a scan grows the run with a *burst* of calls to
+        // one tool: that is what the compact view (`ctrl+d`) folds, and a burst
+        // cannot be produced by the fixed reply below.
+        let burst = prompt_text.starts_with(BURST_PROMPT_PREFIX);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let events = [
+            let mut events: Vec<(String, String)> = vec![
                 (
-                    "user_message",
+                    "user_message".to_string(),
                     format!(
                         r#"{{"text":{},"sessionId":"{SESSION_ID}"}}"#,
                         serde_json::to_string(&prompt_text).unwrap()
                     ),
                 ),
                 (
-                    "agent_start",
+                    "agent_start".to_string(),
                     format!(r#"{{"started_at_ms":1750000000000,"run_id":"{RUN_ID}"}}"#),
                 ),
-                (
-                    "text_chunk",
+            ];
+            if burst {
+                events.push((
+                    "text_chunk".to_string(),
+                    r#"{"text":"Scanning the workspace.\n\n","delta":true}"#.to_string(),
+                ));
+                for (index, path) in BURST_PATHS.iter().enumerate() {
+                    let id = format!("{TOOL_CALL_ID}-{index}");
+                    events.push((
+                        "tool_start".to_string(),
+                        format!(
+                            r#"{{"tool_id":"{id}","tool_name":"read","tool_args":{{"path":"{path}"}}}}"#
+                        ),
+                    ));
+                    events.push((
+                        "tool_end".to_string(),
+                        format!(r#"{{"tool_id":"{id}","text":"read {path}\n"}}"#),
+                    ));
+                }
+                events.push((
+                    "text_chunk".to_string(),
+                    r#"{"text":"Every file uses the same header.\n","delta":true}"#.to_string(),
+                ));
+            } else {
+                events.push((
+                    "text_chunk".to_string(),
                     r#"{"text":"Hello from the mock agent!\n\n","delta":true}"#.to_string(),
-                ),
-                (
-                    "tool_start",
+                ));
+                events.push((
+                    "tool_start".to_string(),
                     format!(
                         r#"{{"tool_id":"{TOOL_CALL_ID}","tool_name":"edit","tool_args":{{"path":"src/greeting.rs"}}}}"#
                     ),
-                ),
-                (
-                    "tool_end",
+                ));
+                events.push((
+                    "tool_end".to_string(),
                     format!(
                         r#"{{"tool_id":"{TOOL_CALL_ID}","text":{}}}"#,
                         serde_json::to_string(TOOL_DIFF_TEXT).unwrap()
                     ),
-                ),
-                (
-                    "text_chunk",
+                ));
+                events.push((
+                    "text_chunk".to_string(),
                     r#"{"text":"This is a **deterministic** reply with `code` and a [link](https://example.com).\n","delta":true}"#
                         .to_string(),
+                ));
+            }
+            events.push((
+                "agent_end".to_string(),
+                // `state` is what the real agent puts on this event
+                // (`session_prompt.rs`: `"state": terminal_state`, from
+                // `run_journal::RUN_STATE_*`), and the TUI gates the desktop
+                // notification on it. Without it the mock could never
+                // exercise that path at all — the harness would show a
+                // silent terminal for a feature whose whole job is to make
+                // noise when the user is looking elsewhere.
+                //
+                // `text` is the run's final answer, which the TUI writes over
+                // the last assistant message — so it has to be the same text
+                // the chunks above spelled out, exactly as the agent's own
+                // `agent_end` carries the assembled reply.
+                format!(
+                    r#"{{"type":"agent_end","state":"completed","run_id":"{RUN_ID}","duration_ms":500,"usage":{{"prompt_tokens":10,"completion_tokens":20}},"error":null,"text":{}}}"#,
+                    serde_json::to_string(if burst { BURST_REPLY_TEXT } else { REPLY_TEXT }).unwrap()
                 ),
-                (
-                    "agent_end",
-                    // `state` is what the real agent puts on this event
-                    // (`session_prompt.rs`: `"state": terminal_state`, from
-                    // `run_journal::RUN_STATE_*`), and the TUI gates the desktop
-                    // notification on it. Without it the mock could never
-                    // exercise that path at all — the harness would show a
-                    // silent terminal for a feature whose whole job is to make
-                    // noise when the user is looking elsewhere.
-                    format!(
-                        r#"{{"type":"agent_end","state":"completed","run_id":"{RUN_ID}","duration_ms":500,"usage":{{"prompt_tokens":10,"completion_tokens":20}},"error":null,"text":{}}}"#,
-                        serde_json::to_string(REPLY_TEXT).unwrap()
-                    ),
-                ),
-            ];
+            ));
             let senders: Vec<mpsc::UnboundedSender<StreamEvent>> = subs.lock().unwrap().clone();
             for (idx, (ty, data)) in events.iter().enumerate() {
                 if idx > 0 && stream_delay_ms > 0 {
                     tokio::time::sleep(Duration::from_millis(stream_delay_ms)).await;
                 }
                 let event = StreamEvent {
-                    r#type: (*ty).into(),
+                    r#type: ty.clone(),
                     data: data.clone(),
                     run_id: RUN_ID.into(),
                     idx: idx as i64,

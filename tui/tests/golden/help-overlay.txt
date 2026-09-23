@@ -8,6 +8,7 @@
 │[39m  [38;5;245mctrl+t   cycle thinking[39m                                                     [38;5;245m│
 │[39m  [38;5;245mctrl+o   expand/collapse thinking[39m                                           [38;5;245m│
 │[39m  [38;5;245mctrl+g   expand/collapse tool output[39m                                        [38;5;245m│
+│[39m  [38;5;245mctrl+d   compact view (fold tool runs and thinking)[39m                         [38;5;245m│
 │[39m  [38;5;245mctrl+x   copy the last answer[39m                                               [38;5;245m│
 │[39m  [38;5;245mctrl+v   paste clipboard (image or text)[39m                                    [38;5;245m│
 │[39m  [38;5;245mtab      autocomplete[39m                                                       [38;5;245m│
@@ -31,6 +32,5 @@
 │[39m  [38;5;245m/export                 export the session to an HTML file[39m                  [38;5;245m│
 │[39m  [38;5;245m/fork                   fork the current session[39m                            [38;5;245m│
 │[39m  [38;5;245m/help                   show all commands and shortcuts[39m                     [38;5;245m│
-│[39m  [38;5;245m/history <query>        search the session history[39m                          [38;5;245m│
-│[39m  [38;5;245m  ↓ 27 more · ↑↓ scroll[39m                                                     [38;5;245m│
+│[39m  [38;5;245m  ↓ 28 more · ↑↓ scroll[39m                                                     [38;5;245m│
 └──────────────────────────────────────────────────────────────────────────────┘

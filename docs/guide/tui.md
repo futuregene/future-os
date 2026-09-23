@@ -200,6 +200,7 @@ pager (e.g. `No history matches for 'needle'.`).
 | `shift+tab` | Cycle thinking |
 | `ctrl+o` | Expand / collapse thinking |
 | `ctrl+g` | Expand / collapse tool output |
+| `ctrl+d` | Compact view: fold runs of tool calls and thinking |
 | `ctrl+x` | Copy the last assistant message |
 | `ctrl+r` | Browse sessions |
 | `ctrl+c` | Interrupt / exit |
@@ -213,6 +214,23 @@ pager (e.g. `No history matches for 'needle'.`).
 
 While a popup or the pager is open every key goes to that overlay, so the global
 shortcuts above apply to the chat input only.
+
+### Compact view (`ctrl+d`)
+
+A long agent run is mostly calls and reasoning, and each one costs rows. With
+`ctrl+d` an *uninterrupted run* of completed calls to the same tool folds into
+one summary row — `▸ read 3 files`, `▸ $ 4 commands` — and a thinking block
+folds into a one-line marker (`▸ thinking`, `×N` when several blocks run
+together). The same key expands everything again; the compact view is off by
+default, and toggling it back restores the transcript exactly as it was.
+
+A fold never hides something you need to read: a text answer, a user turn, a
+call that is still running or one that failed all break the run, and a failed
+call always keeps its own row and its body. Counting matches the desktop's
+collapsed bursts — file tools count distinct files, shell commands count every
+call. `ctrl+g` (expand every tool body) turns folding off, since asking for the
+bodies and hiding the calls cannot both win; `ctrl+o` still hides thinking
+entirely, marker included.
 
 ### History is paged
 
