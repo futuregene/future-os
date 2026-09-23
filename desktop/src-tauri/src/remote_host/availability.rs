@@ -36,10 +36,9 @@ pub(crate) async fn monitor() {
         let available = matches!(result, Ok(Ok(())));
         let now = Instant::now();
         if previous != Some(available) {
-            if available {
-                eprintln!("remote: Agent availability restored [LC003]");
-            } else if last_warning
-                .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(300))
+            if !available
+                && last_warning
+                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(300))
             {
                 eprintln!("remote: Agent availability probe failed [LC003]: {result:?}");
                 last_warning = Some(now);

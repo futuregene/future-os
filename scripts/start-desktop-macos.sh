@@ -71,6 +71,15 @@ mirror_log() {
   fi
 }
 
+# Keep a direct child PID while isolating it from the terminal's foreground
+# process group. Perl is shipped with macOS; exec preserves the child's PID.
+exec_in_own_session() {
+  exec perl -MPOSIX=setsid -e '
+    setsid() != -1 or die "setsid: $!\n";
+    exec @ARGV or die "exec: $!\n";
+  ' -- "$@"
+}
+
 stop_process_group() {
   local pid="$1"
   local label="$2"
@@ -109,9 +118,6 @@ stop_process() {
 
 cleanup() {
   trap '' INT TERM
-  # Expected SIGTERM during deliberate teardown must not produce job-control
-  # notifications such as "Terminated: 15".
-  set +m
   # Tauri/Vite and the GUI must stop before the endpoint they consume.
   stop_process_group "$DESKTOP_PID" "desktop"
   stop_process "$STARTED_AGENT_PID" "future-agent"
@@ -252,6 +258,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+if ! command -v perl >/dev/null 2>&1; then
+  echo "perl is required to isolate desktop and agent processes on macOS." >&2
+  exit 1
+fi
+
 if [[ "$CLEAN_STALE_APP_TASKS" == "1" ]]; then
   cancel_stale_app_tasks
 fi
@@ -321,12 +332,11 @@ else
   # not a cargo wrapper that could leave an orphan holding the endpoint.
   : >"$AGENT_CONSOLE_LOG"
   (
-    set +m
     cd "$AGENT_DIR"
     if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
-      exec "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
+      exec_in_own_session "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
     else
-      exec "$AGENT_BIN" --log-file
+      exec_in_own_session "$AGENT_BIN" --log-file
     fi
   ) </dev/null > >(tee -a "$AGENT_CONSOLE_LOG" | mirror_log "agent") 2>&1 &
   STARTED_AGENT_PID="$!"
@@ -355,25 +365,22 @@ echo "Starting desktop..."
 echo "Press Ctrl-C here to stop the desktop and the agent started by this script."
 echo "Desktop log: $DESKTOP_CONSOLE_LOG"
 
-# The Agent intentionally remains in the launcher's foreground group. On
-# macOS, putting both background jobs into monitor-mode groups lets Tauri's
-# dev lifecycle terminate the script-owned Agent after its first application
-# launch. Only Desktop needs a group: it owns npm, Vite, Cargo, and the GUI.
-set -m
+# Give Desktop its own session so cleanup can stop npm, Vite, Cargo, and Tauri
+# together. Bash job control (`set -m`) also changes the group of every later
+# `sleep` in the supervisor loop and intermittently fails with setpgid EPERM.
 
 # The launcher owns terminal input; child stdin is detached so no background
 # reader can suspend the Tauri process group with SIGTTIN.
 echo "Live logs: [agent] and [desktop] lines are mirrored here; set LIVE_LOGS=0 to keep file-only logs."
 : >"$DESKTOP_CONSOLE_LOG"
 (
-  set +m
   cd "$DESKTOP_DIR"
   if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
     export FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR"
   else
     unset FUTURE_AGENT_GRPC_ADDR
   fi
-  exec npm run tauri:dev
+  exec_in_own_session npm run tauri:dev
 ) </dev/null > >(tee -a "$DESKTOP_CONSOLE_LOG" | mirror_log "desktop") 2>&1 &
 DESKTOP_PID="$!"
 
