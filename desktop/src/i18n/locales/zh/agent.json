@@ -147,7 +147,8 @@
       "cardTitle": "推荐技能",
       "checking": "正在查找匹配的技能…",
       "installAndUse": "安装并使用",
-      "dismissAndSend": "不用，直接发送"
+      "dismissAndSend": "不用，直接发送",
+      "installFailed": "安装失败，请稍后再试"
     },
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",

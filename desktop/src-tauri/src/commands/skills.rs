@@ -27,9 +27,9 @@ pub async fn list_available_skills() -> Result<Vec<skills::SkillInfo>, crate::Ap
     skills::list_available_skills().await
 }
 
-/// Recommend at most one UNINSTALLED skill for the user's first-turn text via
-/// the agent's Jev recommender. The caller decides when to invoke (new session,
-/// first message, length cap, login/balance) and supplies the candidate set
+/// Recommend at most one UNINSTALLED skill for the user's message via the
+/// agent's Jev recommender. The caller decides when to invoke (toggle, length
+/// bounds, login/balance, daily budget) and supplies the candidate set
 /// (catalog − installed); this only forwards to the agent. Returns `None` on
 /// refusal, timeout, error, or when the feature is unavailable server-side.
 #[tauri::command]
@@ -38,6 +38,24 @@ pub async fn suggest_skill(
     candidates: Vec<agent_bridge::SkillCandidate>,
 ) -> Result<Option<agent_bridge::SkillCandidate>, crate::AppError> {
     agent_bridge::suggest_skill(&query, candidates).await
+}
+
+/// Today's recommendation state (count + already-shown skills and messages),
+/// for the client's daily budget and duplicate checks.
+#[tauri::command]
+pub async fn skill_reco_today() -> Result<crate::store::SkillRecoToday, crate::AppError> {
+    crate::store::skill_reco_today()
+}
+
+/// Record one recommendation that was actually shown to the user. Only shown
+/// recommendations consume the daily budget; calls that recommend nothing must
+/// not call this.
+#[tauri::command]
+pub async fn record_skill_reco(
+    skill_id: String,
+    message_hash: String,
+) -> Result<(), crate::AppError> {
+    crate::store::record_skill_reco(&skill_id, &message_hash)
 }
 
 /// The platform skill-guide config (coach prompt + manual link) for the

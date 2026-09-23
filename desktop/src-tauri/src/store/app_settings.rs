@@ -39,8 +39,8 @@ pub struct AppSettings {
     /// Use the community-edition UI: Future is configured like another
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
-    /// Recommend at most one uninstalled skill on the first message of a new
-    /// conversation (via the agent's Jev recommender). Off by default.
+    /// Recommend at most one uninstalled skill when the user sends a message
+    /// (PRD v1.6 §3). **On by default**; the user can turn it off in Settings.
     pub skill_recommend: bool,
 }
 
@@ -247,7 +247,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         .unwrap_or(false);
     let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
         .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — recommendation is opt-in.
+        .unwrap_or(true); // On by default (PRD v1.6 §3); the Settings toggle opts out.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -326,6 +326,8 @@ mod tests {
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
         assert!(!settings.community_edition);
+        // PRD v1.6 §3: recommendation is on unless the user opts out.
+        assert!(settings.skill_recommend);
     }
 
     #[test]

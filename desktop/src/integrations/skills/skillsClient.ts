@@ -76,18 +76,43 @@ export interface SkillCandidate {
 }
 
 /**
- * Recommend at most one uninstalled skill for the user's first-turn text via
- * the agent's Jev recommender. The caller decides when to invoke (new session,
- * first message, length cap, login/balance) and supplies the candidate set
- * (catalogue − installed). Returns null on refusal, timeout, error, or when the
- * feature is unavailable server-side — recommendation is best-effort, so every
- * failure collapses to "no recommendation" and the caller submits normally.
+ * Recommend at most one uninstalled skill for the user's text via the agent's
+ * Jev recommender. The caller decides when to invoke (length cap, login/balance,
+ * daily budget) and supplies the candidate set (catalogue − installed). Returns
+ * null on refusal, timeout, error, or when the feature is unavailable
+ * server-side — recommendation is best-effort, so every failure collapses to
+ * "no recommendation" and the caller submits normally.
  */
 export function suggestSkill(
   query: string,
   candidates: SkillCandidate[],
 ): Promise<SkillCandidate | null> {
   return invokeCommand<SkillCandidate | null>("suggest_skill", { query, candidates });
+}
+
+/**
+ * Today's recommendation state. `count` is the number of cards actually shown
+ * (the daily budget counts recommendations, not calls); `skillIds` and
+ * `messageHashes` are the duplicate checks.
+ */
+export interface SkillRecoToday {
+  count: number;
+  skillIds: string[];
+  messageHashes: string[];
+}
+
+/** Today's recommendation state, for the daily budget and duplicate checks. */
+export function skillRecoToday(): Promise<SkillRecoToday> {
+  return invokeCommand<SkillRecoToday>("skill_reco_today");
+}
+
+/**
+ * Record one recommendation that was actually shown. Only shown
+ * recommendations consume the daily budget — a call that recommended nothing
+ * must not call this.
+ */
+export function recordSkillReco(skillId: string, messageHash: string): Promise<void> {
+  return invokeCommand<void>("record_skill_reco", { skillId, messageHash });
 }
 
 /** Force-run the built-in skill bootstrap (installs platform skills via CLI). */

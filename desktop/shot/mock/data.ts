@@ -693,6 +693,8 @@ export const appSettings = {
   autoTitleFirstTurn: true,
   titleLanguage: "zh",
   communityEdition: false,
+  // Mirrors the shipped default (PRD v1.6 §3: recommendation is on).
+  skillRecommend: true,
 };
 
 export const buildInfo = {

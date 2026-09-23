@@ -146,7 +146,8 @@
       "cardTitle": "Recommended skill",
       "checking": "Checking for a matching skill…",
       "installAndUse": "Install & use",
-      "dismissAndSend": "Send without it"
+      "dismissAndSend": "Send without it",
+      "installFailed": "Couldn't install the skill. Please try again."
     },
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",

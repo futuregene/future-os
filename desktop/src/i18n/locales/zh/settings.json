@@ -43,7 +43,7 @@
   },
   "skillRecommend": {
     "title": "智能技能推荐",
-    "description": "在新会话的第 1 条消息时，推荐至多一个你尚未安装的技能。默认关闭。"
+    "description": "发送消息时，推荐至多一个你尚未安装的技能。默认开启。"
   },
   "autoTitleFirstTurn": {
     "title": "首轮回答后自动生成标题",

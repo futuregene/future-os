@@ -43,7 +43,7 @@
   },
   "skillRecommend": {
     "title": "Skill recommendations",
-    "description": "On the first message of a new conversation, suggest at most one skill you don't have installed yet. Off by default."
+    "description": "When you send a message, suggest at most one skill you don't have installed yet. On by default."
   },
   "autoTitleFirstTurn": {
     "title": "Generate a title after the first answer",

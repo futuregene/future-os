@@ -589,6 +589,32 @@
             "shot": "d-compact-resume.png"
           }
         ]
+      },
+      "skill-reco-card": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "描述任务，@文件 添加到上下文，按 / 使用工具或技能"
+          },
+          {
+            "type": "帮我查一下这个基因在人群里的频率并找出引用来源"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "const text = document.body.innerText; if (!text.includes('推荐技能')) throw new Error('recommendation card did not render'); if (!text.includes('安装并使用')) throw new Error('card is missing its install action');"
+          },
+          {
+            "shot": "d-skill-reco-card.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

@@ -240,6 +240,20 @@ CREATE TABLE IF NOT EXISTS agent_delete_outbox (
     last_error TEXT
 );
 
+-- One row per skill recommendation actually shown to the user. The client owns
+-- the trigger rules, so their state lives here: `day` answers "how many
+-- recommendations today", `skill_id` answers "has this skill been shown today"
+-- and `message_hash` answers "has this message already produced one". Calls
+-- that recommend nothing leave no row — the daily budget counts
+-- recommendations, not calls (see `store/skill_reco.rs`).
+CREATE TABLE IF NOT EXISTS skill_reco_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    message_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_threads_recent ON threads(status, pinned, last_message_at, updated_at);
 -- idx_threads_agent_session_unique is applied by a versioned migration after
@@ -259,6 +273,8 @@ CREATE INDEX IF NOT EXISTS idx_review_file_changes_changeset ON review_file_chan
 CREATE INDEX IF NOT EXISTS idx_approval_requests_thread ON approval_requests(thread_id);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_run_status ON approval_requests(run_id, status);
 CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, deleted_at);
+-- Every read is "today's rows", so index the day the queries all filter on.
+CREATE INDEX IF NOT EXISTS idx_skill_reco_events_day ON skill_reco_events(day);
 "#;
 
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's

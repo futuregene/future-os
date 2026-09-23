@@ -15,12 +15,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
-import { installSkill, listAvailableSkills, refreshSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { installRecommendedSkill } from "../skills/installRecommendedSkill";
 import { SkillGuideBanner } from "../skills/SkillGuideBanner";
 import { fetchCoachPrompt } from "../skills/skillGuidePrompt";
 import { Composer } from "./Composer";
@@ -217,33 +217,20 @@ export function NewConversation({
     emitFutureEvent("skill-guide-dismissed", undefined);
   }
 
-  // First-turn skill recommendation: the client owns all trigger rules; the
-  // agent only answers suggest_skill.
+  // Skill recommendation on the message being sent: the client owns all
+  // trigger rules; the agent only answers suggest_skill.
   const recommendation = useSkillRecommendation({
     enabled: skillRecommend,
     sessionStatus: futureSessionStatus,
     balance: futureBalance,
   });
 
-  // Install the recommended skill (catalogue latest version), then let the
+  // Install the recommended skill at its latest catalogue version, then let the
   // composer append `/name` and send. Resolve false to leave the card up.
-  const installRecommendedSkill = useCallback(async (card: { name: string; description: string }) => {
-    const candidate = recommendation.candidates.find(c => c.name === card.name);
-    try {
-      // The catalogue id equals the skill name; install its latest version.
-      const catalogue = await listAvailableSkills();
-      const entry = catalogue.find(e => e.id === card.name);
-      const version = entry?.latestVersion ?? candidate?.name ?? "";
-      if (!version)
-        return false;
-      await installSkill(card.name, version);
-      await refreshSkills();
-      return true;
-    }
-    catch {
-      return false;
-    }
-  }, [recommendation.candidates]);
+  const installRecommended = useCallback(
+    (card: { name: string; description: string }) => installRecommendedSkill(card.name),
+    [],
+  );
 
   function handleSend({ attachments, content }: ComposerSendPayload) {
     if (catalogLoading)
@@ -316,7 +303,7 @@ export function NewConversation({
                 card: recommendation.state.recommendation,
                 pending: recommendation.state.pending,
                 onEvaluate: recommendation.evaluate,
-                onInstall: installRecommendedSkill,
+                onInstall: installRecommended,
                 onDismiss: recommendation.dismiss,
               }}
               placeholder={t("newConversation.placeholder")}

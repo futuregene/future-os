@@ -21,6 +21,7 @@ import { forkThread } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
+import { installRecommendedSkill } from "../skills/installRecommendedSkill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
   buildContinuePrompt,
@@ -34,6 +35,7 @@ import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
 import { useComposerInset } from "./useComposerInset";
 import { useMessagePaging } from "./useMessagePaging";
+import { useSkillRecommendation } from "./useSkillRecommendation";
 
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
@@ -71,6 +73,12 @@ interface AgentThreadProps {
   onForked: (threadId: string) => void;
   onThreadActivity: () => void;
   onToggleLeftPanel: () => void;
+  /** Skill-recommendation toggle (appSettings.skillRecommend). */
+  skillRecommend: boolean;
+  /** Future session status; recommendation requires an authenticated session. */
+  futureSessionStatus: string;
+  /** Future balance in credits; recommendation requires a positive balance. */
+  futureBalance: number | null;
   /**
    * Optional header affordance supplied by the shell (e.g. the terminal
    * toggle). Kept as a node so this feature does not depend on the terminal.
@@ -102,6 +110,9 @@ export function AgentThread({
   onForked,
   onThreadActivity,
   onToggleLeftPanel,
+  skillRecommend,
+  futureSessionStatus,
+  futureBalance,
   headerAction,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
@@ -326,6 +337,18 @@ export function AgentThread({
       void handleSend(payload, resolve).then(resolve, reject);
     }),
     [handleSend],
+  );
+  // Skill recommendation on any user message (not just a conversation's first
+  // turn): the client owns the trigger rules, the agent only answers
+  // suggest_skill. One hook instance per open conversation.
+  const recommendation = useSkillRecommendation({
+    enabled: skillRecommend,
+    sessionStatus: futureSessionStatus,
+    balance: futureBalance,
+  });
+  const installRecommended = useCallback(
+    (card: { name: string; description: string }) => installRecommendedSkill(card.name),
+    [],
   );
   const handleCompactContext = useCallback(async () => {
     if (!thread)
@@ -605,6 +628,13 @@ export function AgentThread({
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
               draftKey={thread?.id}
+              skillRecommendation={{
+                card: recommendation.state.recommendation,
+                pending: recommendation.state.pending,
+                onEvaluate: recommendation.evaluate,
+                onInstall: installRecommended,
+                onDismiss: recommendation.dismiss,
+              }}
             />
           </div>
         </div>
