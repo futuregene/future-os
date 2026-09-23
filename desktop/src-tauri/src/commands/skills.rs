@@ -27,6 +27,19 @@ pub async fn list_available_skills() -> Result<Vec<skills::SkillInfo>, crate::Ap
     skills::list_available_skills().await
 }
 
+/// Recommend at most one UNINSTALLED skill for the user's first-turn text via
+/// the agent's Jev recommender. The caller decides when to invoke (new session,
+/// first message, length cap, login/balance) and supplies the candidate set
+/// (catalog − installed); this only forwards to the agent. Returns `None` on
+/// refusal, timeout, error, or when the feature is unavailable server-side.
+#[tauri::command]
+pub async fn suggest_skill(
+    query: String,
+    candidates: Vec<agent_bridge::SkillCandidate>,
+) -> Result<Option<agent_bridge::SkillCandidate>, crate::AppError> {
+    agent_bridge::suggest_skill(&query, candidates).await
+}
+
 /// The platform skill-guide config (coach prompt + manual link) for the
 /// skill-onboarding banner. Unauthenticated platform call.
 #[tauri::command]

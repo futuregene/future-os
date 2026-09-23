@@ -164,6 +164,9 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::Bounded,
         ),
         "sync_future_models" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),
+        // External Jev HTTP call with its own internal deadline; never retry
+        // (a retried suggestion would spend a second model call).
+        "suggest_skill" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),
         "shell" => policy(
             SHELL_RPC_TIMEOUT,
             RetryPolicy::Never,

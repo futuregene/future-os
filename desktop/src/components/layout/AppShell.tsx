@@ -678,6 +678,9 @@ function ReadyAppShell({
                     skillGuideDismissed={appSettings.skillGuideDismissed}
                     onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
                     workspaces={userWorkspaces}
+                    skillRecommend={appSettings.skillRecommend}
+                    futureSessionStatus={futureSessionStatus}
+                    futureBalance={futureBalance}
                   />
                 )
               : section === "skill"
