@@ -7,6 +7,11 @@ use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
+/// A database is worth a full rewrite when more than a quarter of it is free
+/// pages and that is at least this many bytes (over this, incremental
+/// reclamation would take tens of seconds).
+const COMPACT_MIN_FREE_BYTES: i64 = 64 * 1024 * 1024;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 #[derive(Clone)]
@@ -27,6 +32,146 @@ impl Drop for Worker {
                 let _ = thread.join();
             }
         }
+    }
+}
+
+fn busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(inner, _)
+            if inner.code == rusqlite::ErrorCode::DatabaseBusy
+                || inner.code == rusqlite::ErrorCode::DatabaseLocked
+    )
+}
+
+/// Open a write transaction that owns the write lock from the start.
+///
+/// A deferred transaction that reads before it writes fails *immediately* when
+/// another connection commits in between — SQLite returns `SQLITE_BUSY_SNAPSHOT`
+/// instead of waiting, because waiting would break the snapshot those reads were
+/// served from (measured: 0.00 s even with a 5 s `busy_timeout`). That is the
+/// "database is locked" seen when the skill registry wrote this same file.
+/// Taking the lock at `BEGIN` lets `busy_timeout` apply, and this retry covers a
+/// writer that holds it longer than that.
+///
+/// Retrying here rather than around the whole body is deliberate: once the
+/// transaction is open this connection holds the write lock, so no other writer
+/// can interfere, and the body keeps ownership of its (possibly huge) payload
+/// instead of cloning it once per attempt.
+pub(crate) fn begin_immediate(connection: &Connection) -> Result<rusqlite::Transaction<'_>> {
+    const ATTEMPTS: usize = 4;
+    let mut delay = Duration::from_millis(20);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        // `new_unchecked` takes `&Connection` (rusqlite's own API for retry
+        // loops); the checked constructor needs `&mut`, which cannot be
+        // re-borrowed while the returned transaction borrows it.
+        match rusqlite::Transaction::new_unchecked(
+            connection,
+            rusqlite::TransactionBehavior::Immediate,
+        ) {
+            Ok(transaction) => return Ok(transaction),
+            Err(error) if attempt < ATTEMPTS && busy(&error) => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(error) => return Err(error).context("begin immediate transaction"),
+        }
+    }
+}
+
+/// Deleting a session (or pruning a run) frees pages, and without incremental
+/// auto-vacuum those pages stay in the file forever: `agent.db` had reached
+/// 7.4 GB holding 1.5 GB of live rows, 79% of it free pages, which is also what
+/// makes writes slow enough to lose the write-lock race above.
+///
+/// `auto_vacuum` only takes effect after a `VACUUM`, so the migration runs once
+/// per database. It is deliberately not fatal: a machine without room to
+/// rewrite the file keeps working exactly as before and retries next start.
+fn ensure_incremental_auto_vacuum(connection: &Connection) {
+    const INCREMENTAL: i64 = 2;
+    let mode: i64 = match connection.pragma_query_value(None, "auto_vacuum", |row| row.get(0)) {
+        Ok(mode) => mode,
+        Err(error) => {
+            tracing::warn!(%error, "could not read auto_vacuum");
+            return;
+        }
+    };
+    if mode == INCREMENTAL {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let file_pages = |connection: &Connection| -> i64 {
+        connection
+            .query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default()
+    };
+    let before = file_pages(connection);
+    // `VACUUM` cannot run inside a transaction, and this connection has none.
+    if let Err(error) = connection
+        .execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")
+        .context("enable incremental auto-vacuum")
+    {
+        tracing::warn!(
+            %error,
+            "could not compact agent.db; deleted sessions will keep their space until this succeeds"
+        );
+        return;
+    }
+    let after = file_pages(connection);
+    tracing::info!(
+        before_mb = before / 1_048_576,
+        after_mb = after / 1_048_576,
+        took_ms = started.elapsed().as_millis() as u64,
+        "compacted agent.db once and enabled incremental reclamation"
+    );
+}
+
+/// Compact a database whose free pages dominate the file.
+///
+/// Incremental reclamation drains a freelist a page at a time, so a file that
+/// was already bloated when this shipped would take minutes to drain — and it
+/// is exactly the case in the field (7.4 GB holding 1.5 GB of rows). `VACUUM`
+/// rewrites it once instead, at the only moment nobody is waiting on the
+/// database: startup. Guarded by a ratio so a healthy database never pays for
+/// it, and non-fatal like the migration above.
+fn compact_if_bloated(connection: &Connection) {
+    let read = |name: &str| -> i64 {
+        connection
+            .pragma_query_value(None, name, |row| row.get(0))
+            .unwrap_or_default()
+    };
+    let (pages, free, page_size) = (
+        read("page_count"),
+        read("freelist_count"),
+        read("page_size"),
+    );
+    let free_bytes = free * page_size;
+    let bloated = pages > 0 && free * 4 > pages && free_bytes > COMPACT_MIN_FREE_BYTES;
+    if !bloated {
+        return;
+    }
+    let started = std::time::Instant::now();
+    match connection.execute_batch("VACUUM") {
+        Ok(()) => {
+            let after = read("page_count") * page_size;
+            tracing::info!(
+                before_mb = (pages * page_size) / 1_048_576,
+                after_mb = after / 1_048_576,
+                took_ms = started.elapsed().as_millis() as u64,
+                "compacted agent.db; most of it was free pages"
+            );
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            free_mb = free_bytes / 1_048_576,
+            "could not compact agent.db; incremental reclamation will drain it over time"
+        ),
     }
 }
 
@@ -82,6 +227,53 @@ impl Database {
             })?;
         reply_rx.recv().context("SQLite operation interrupted")?
     }
+
+    /// Hand pages freed by a delete back to the filesystem.
+    ///
+    /// `incremental_vacuum` pops free pages **one at a time** off the end of the
+    /// file and stops when the last page is in use — measured at 3291 calls to
+    /// drain a 13 MB freelist (298 ms), while a 6 GB one would take minutes. So
+    /// this loops up to `max_pages` to keep a delete's latency predictable, and
+    /// a database that stays bloated is compacted when it is next opened
+    /// ([`compact_if_bloated`]).
+    ///
+    /// `min_free_pages` keeps the hot paths cheap: below it there is nothing
+    /// worth reclaiming, and the check is a header read.
+    pub(crate) fn reclaim(&self, min_free_pages: i64, max_pages: i64) -> Result<()> {
+        self.call(move |connection| {
+            let free = |connection: &Connection| -> Result<i64> {
+                Ok(connection.pragma_query_value(None, "freelist_count", |row| row.get(0))?)
+            };
+            let mut remaining = free(connection)?;
+            if remaining < min_free_pages {
+                return Ok(());
+            }
+            let page_size: i64 =
+                connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
+            let started = std::time::Instant::now();
+            let mut reclaimed = 0;
+            // One page comes back per call; the budget bounds a delete's worst
+            // case, and the next delete picks up whatever is left.
+            while remaining > 0 && reclaimed < max_pages {
+                connection.execute_batch("PRAGMA incremental_vacuum")?;
+                let now = free(connection)?;
+                if now >= remaining {
+                    break; // the last page is in use: no further progress
+                }
+                reclaimed += remaining - now;
+                remaining = now;
+            }
+            if reclaimed > 0 {
+                tracing::debug!(
+                    reclaimed_mb = (reclaimed * page_size) / 1_048_576,
+                    remaining_mb = (remaining * page_size) / 1_048_576,
+                    took_ms = started.elapsed().as_millis() as u64,
+                    "reclaimed freed pages"
+                );
+            }
+            Ok(())
+        })
+    }
 }
 
 fn open_connection(path: &Path) -> Result<Connection> {
@@ -124,6 +316,9 @@ fn open_connection(path: &Path) -> Result<Connection> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
+    // Before the schema batch: `VACUUM` needs to run with no transaction open.
+    ensure_incremental_auto_vacuum(&connection);
+    compact_if_bloated(&connection);
     let tx = connection.transaction()?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS sessions (
