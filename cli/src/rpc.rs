@@ -12,7 +12,6 @@
 //! golden diff tests accept for remote commands.
 
 use crate::output::Output;
-use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::{AuthUpdate, ProviderUpsert, RpcCommand, StreamEvent, StreamRequest};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -73,7 +72,7 @@ impl RunClient {
         )
         .await
         .map_err(|e| e.to_string())?;
-        let mut client = FutureAgentClient::new(connected.channel);
+        let mut client = future_rpc::transport::agent_client(connected.channel);
         let response = client
             .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
             .await
@@ -467,7 +466,7 @@ impl RunClient {
         )
         .await
         .map_err(|e| e.to_string())?;
-        let mut client = FutureAgentClient::new(connected.channel);
+        let mut client = future_rpc::transport::agent_client(connected.channel);
         let request = StreamRequest {
             session_id: session_id.to_string(),
             ..Default::default()

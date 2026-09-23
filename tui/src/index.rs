@@ -11,7 +11,6 @@
 use crate::app::{App, CliOptions, UiCmd, UiInput};
 use crate::rpc::grpc_client::GrpcClient;
 use crate::version::VERSION;
-use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamRequest};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -287,7 +286,7 @@ async fn execute_unary(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let mut client = FutureAgentClient::new(connected.channel);
+    let mut client = future_rpc::transport::agent_client(connected.channel);
     client
         .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
@@ -634,7 +633,7 @@ async fn run_print_mode(grpc_addr: &str, args: &CliArgs) -> Result<(), String> {
 
     // Subscribe to events BEFORE sending the prompt.
     let channel = dial_channel(grpc_addr).await?;
-    let mut client = FutureAgentClient::new(channel);
+    let mut client = future_rpc::transport::agent_client(channel);
     let mut stream = client
         .stream_events(StreamRequest {
             session_id: session_id.clone(),

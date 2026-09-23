@@ -24,7 +24,6 @@ use crate::rpc::provider_types::{
 use crate::rpc::types::{
     AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionSummary,
 };
-use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
 use parking_lot::Mutex;
 use serde_json::{json, Map, Value};
@@ -992,7 +991,7 @@ async fn execute_unary(addr: &str, cmd: RpcCommand, timeout_secs: u64) -> Result
     )
     .await
     .map_err(|e| e.to_string())?;
-    let mut client = FutureAgentClient::new(connected.channel);
+    let mut client = future_rpc::transport::agent_client(connected.channel);
     let response = client
         .execute_command(future_rpc::command_policy::request_with_timeout(cmd))
         .await
@@ -1245,7 +1244,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
         Ok(connected) => connected,
         Err(_) => return StreamExit::Lost,
     };
-    let mut client = FutureAgentClient::new(connected.channel);
+    let mut client = future_rpc::transport::agent_client(connected.channel);
     let request = StreamRequest {
         session_id: session.to_string(),
         ..Default::default()
@@ -2239,6 +2238,43 @@ mod tests {
         assert_eq!(stats["toolCalls"], 4);
         assert_eq!(stats["tokens"]["total"], 160);
         assert_eq!(stats["cost"], 1.5);
+        client.disconnect();
+    }
+
+    /// A transcript larger than tonic's 4 MiB decoding default must load. This
+    /// is the reported switch-session failure — "its transcript could not be
+    /// loaded (Error, decoded message length too large: found N bytes, the
+    /// limit is: 4194304 bytes)" — where the Agent had encoded a perfectly
+    /// valid `get_messages` response (its own cap is 32 MiB) and only the
+    /// client's untuned decoding limit rejected it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_transcript_loads() {
+        // Past the 4 MiB default, far below the 32 MiB cap.
+        let filler = "x".repeat(6 * 1024 * 1024);
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "get_messages".to_string(),
+                json!({
+                    "messages": [{"role": "user", "blocks": [{"type": "text", "text": filler}]}]
+                })
+                .to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+
+        let messages = client
+            .get_messages()
+            .await
+            .expect("an oversized transcript must decode, not fail the switch");
+        assert_eq!(
+            messages["messages"][0]["blocks"][0]["text"]
+                .as_str()
+                .map(str::len),
+            Some(6 * 1024 * 1024)
+        );
         client.disconnect();
     }
 

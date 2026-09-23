@@ -11,6 +11,7 @@
 
 use crate::rpc::{handle_command_internal, AppState};
 use anyhow::Result;
+use future_rpc::transport::MAX_GRPC_MESSAGE_SIZE;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -21,8 +22,6 @@ use tokio_stream::StreamExt;
 // typed-RPC milestone). Re-exported under the historical module name so call
 // sites keep their `proto::...` paths.
 pub use future_rpc::proto;
-
-const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
 
 fn configure_service(
     service: FutureAgentService,

@@ -4,7 +4,6 @@
 //! launches the unified `future agent` sidecar (or the standalone
 //! `future-agent` fallback) and owns that child until the TUI exits.
 
-use future_rpc::proto::future_agent_client::FutureAgentClient;
 use future_rpc::proto::RpcCommand;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -86,7 +85,7 @@ async fn agent_healthy(configured: &str) -> bool {
     else {
         return false;
     };
-    let mut client = FutureAgentClient::new(connected.channel);
+    let mut client = future_rpc::transport::agent_client(connected.channel);
     client
         .execute_command(RpcCommand {
             id: uuid::Uuid::new_v4().to_string(),
