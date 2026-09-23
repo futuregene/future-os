@@ -731,10 +731,18 @@ pub enum SkillRecoState {
 
 impl SkillRecoState {
     /// The line shown above the input, or `None` when there is nothing to show.
-    fn prompt_line(&self) -> Option<String> {
+    ///
+    /// The pending line carries the frame's spinner glyph, so the wait looks
+    /// like work in progress rather than a stuck box (the input is locked for
+    /// the same window — see [`App::editor_locked_by_reco`]).
+    fn prompt_line(&self, spinner_frame: usize) -> Option<String> {
         match self {
             SkillRecoState::Idle => None,
-            SkillRecoState::Pending { .. } => Some("Looking for a skill that fits…".to_string()),
+            SkillRecoState::Pending { .. } => {
+                let glyph = crate::components::footer::SPINNER_FRAMES
+                    [spinner_frame % crate::components::footer::SPINNER_FRAMES.len()];
+                Some(format!("{glyph} Looking for a skill that fits…"))
+            }
             SkillRecoState::Suggested { skill, summary, .. } => {
                 let detail = if summary.trim().is_empty() {
                     String::new()
@@ -3292,7 +3300,13 @@ impl<T: TerminalIo> App<T> {
             self.render_deadline = None;
             self.last_render_at = now;
             self.do_render();
-            if self.state.streaming || self.state.compacting || self.state.compaction_requested {
+            if self.state.streaming
+                || self.state.compacting
+                || self.state.compaction_requested
+                // Keep repainting while a recommendation is pending: the prompt
+                // line's spinner is what shows the box is busy, not stuck.
+                || matches!(self.skill_reco, SkillRecoState::Pending { .. })
+            {
                 self.request_render(false);
             }
         }
@@ -4093,6 +4107,12 @@ impl<T: TerminalIo> App<T> {
                 self.send_held_draft();
                 return;
             }
+            // While the agent is being asked, escape must not clear either: the
+            // held draft is what the answer belongs to, and dropping it would
+            // leave a card pointing at nothing.
+            if self.editor_locked_by_reco() {
+                return;
+            }
             if self.autocomplete.is_visible() {
                 self.autocomplete.hide();
                 self.request_render(false);
@@ -4198,7 +4218,13 @@ impl<T: TerminalIo> App<T> {
             return;
         }
 
-        // Editor handles the rest.
+        // Editor handles the rest — except while the recommendation flow owns
+        // the box (see `editor_locked_by_reco`): typing into a draft that is
+        // already being evaluated would make the sent text differ from the text
+        // the answer was computed for.
+        if self.editor_locked_by_reco() {
+            return;
+        }
         if self.input.handle_key(key) {
             self.request_render(false);
         }
@@ -5164,13 +5190,31 @@ impl<T: TerminalIo> App<T> {
         let tx = self.op_tx.clone();
         let query = draft.to_string();
         tokio::spawn(async move {
-            let suggestion = client.suggest_skill(&query, &candidates).await;
+            // Bounded here rather than by the gRPC client's 30 s deadline: an
+            // answer that arrives after the user has given up reading is a
+            // card out of nowhere, and the input is locked for this window.
+            let suggestion = tokio::time::timeout(
+                std::time::Duration::from_millis(crate::skill_reco::RECOMMEND_TIMEOUT_MS),
+                client.suggest_skill(&query, &candidates),
+            )
+            .await
+            .unwrap_or(None);
             let _ = tx.send(UiCmd::SkillRecoSuggested {
                 draft: query,
                 suggestion,
             });
         });
         true
+    }
+
+    /// True while the recommendation flow owns the input box.
+    ///
+    /// `Pending` (the agent is being asked) locks it, which is the TUI's
+    /// equivalent of the desktop's disabled send button: the message that goes
+    /// out has to be the one that was evaluated. `Suggested` does not — there
+    /// the card is up and `a` / `Esc` decide.
+    fn editor_locked_by_reco(&self) -> bool {
+        matches!(self.skill_reco, SkillRecoState::Pending { .. })
     }
 
     /// Send the held draft, unchanged, through the normal submission path.
@@ -5328,6 +5372,13 @@ impl<T: TerminalIo> App<T> {
         // is asked whether a skill fits it. Placed before the draft is consumed
         // below, because holding it means leaving it in the input box.
         if self.maybe_recommend_skill(value) {
+            return;
+        }
+        // A second Enter, or Enter on the shown card, is the TUI's "send button
+        // while it is disabled": it does nothing rather than racing the answer
+        // (the card's own `a` / `Esc` re-enter here with the state already back
+        // to Idle, so they still reach the send path).
+        if !matches!(self.skill_reco, SkillRecoState::Idle) {
             return;
         }
 
@@ -7741,6 +7792,10 @@ impl<T: TerminalIo> App<T> {
     /// test pin the platform (and therefore the probe command names) regardless
     /// of the host it runs on.
     fn paste_clipboard_for_os(&mut self, os: &str) {
+        // Paste writes into the editor, so it is blocked wherever typing is.
+        if self.editor_locked_by_reco() {
+            return;
+        }
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_millis() as u64)
@@ -9247,7 +9302,11 @@ impl<T: TerminalIo> App<T> {
                 self.reset_diff_baseline();
             }
         }
-        if self.state.streaming || self.state.compacting || self.state.compaction_requested {
+        if self.state.streaming
+            || self.state.compacting
+            || self.state.compaction_requested
+            || matches!(self.skill_reco, SkillRecoState::Pending { .. })
+        {
             self.state.spinner_frame += 1;
         }
         let w = self.terminal.columns() as usize;
@@ -9302,7 +9361,7 @@ impl<T: TerminalIo> App<T> {
         // The recommendation prompt sits directly above the input box and is
         // counted as editor height, so the chat viewport shrinks by exactly the
         // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
-        if let Some(line) = self.skill_reco.prompt_line() {
+        if let Some(line) = self.skill_reco.prompt_line(self.state.spinner_frame) {
             editor_lines.insert(
                 0,
                 crate::theme::fg(self.theme.accent as u8, &fit_overlay_row(&line, w)),
@@ -16608,20 +16667,27 @@ mod tests {
 
     #[test]
     fn the_prompt_line_names_the_skill_and_both_keys() {
-        assert_eq!(SkillRecoState::Idle.prompt_line(), None);
-        assert!(SkillRecoState::Pending {
-            draft: RECO_DRAFT.to_string()
+        assert_eq!(SkillRecoState::Idle.prompt_line(0), None);
+        let pending = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
         }
-        .prompt_line()
-        .unwrap()
-        .contains("Looking"));
+        .prompt_line(0)
+        .unwrap();
+        assert!(
+            pending.contains("Looking"),
+            "the wait must be described: {pending}"
+        );
+        assert!(
+            pending.starts_with('⠋'),
+            "the wait must spin like the footer does: {pending}"
+        );
 
         let line = SkillRecoState::Suggested {
             draft: RECO_DRAFT.to_string(),
             skill: "alpha".to_string(),
             summary: "does alpha things".to_string(),
         }
-        .prompt_line()
+        .prompt_line(0)
         .unwrap();
         assert!(
             line.contains("/alpha"),
@@ -16636,6 +16702,67 @@ mod tests {
             line.contains("Esc"),
             "the dismiss key must be offered: {line}"
         );
+    }
+
+    /// While the agent is being asked, the input box is the TUI's disabled send
+    /// button: Enter, typing, paste and Escape all leave the held draft alone.
+    ///
+    /// Enter matters most: a second submit used to fall through to the normal
+    /// send path, so the message the answer belonged to went out while the
+    /// answer was still in flight (and a card for it could land afterwards).
+    #[tokio::test]
+    async fn a_pending_recommendation_locks_the_input_box() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        assert!(app.editor_locked_by_reco());
+
+        // Enter: the draft must not race the answer.
+        app.handle_submit(RECO_DRAFT);
+        assert!(
+            matches!(app.skill_reco, SkillRecoState::Pending { .. }),
+            "the draft stays held"
+        );
+        assert!(
+            app.chat.last_message().is_none(),
+            "nothing may be sent while the answer is in flight"
+        );
+
+        // Typing, pasting and Escape all leave the held draft as it is.
+        app.handle_key("x");
+        assert_eq!(app.input.get_value(), RECO_DRAFT);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (capture, programs) = scripted_clipboard(dir.path(), &[], "pasted text");
+        app.clipboard_capture = capture;
+        app.handle_key(Key::CTRL_V);
+        assert_eq!(app.input.get_value(), RECO_DRAFT);
+        assert!(
+            clipboard_programs(&programs).is_empty(),
+            "a locked box must not even read the clipboard"
+        );
+        app.handle_key(Key::ESCAPE);
+        assert_eq!(
+            app.input.get_value(),
+            RECO_DRAFT,
+            "Escape must not clear the draft the answer belongs to"
+        );
+    }
+
+    /// The lock belongs to the wait only: once the flow releases the draft the
+    /// box works normally again.
+    #[tokio::test]
+    async fn the_input_unlocks_once_the_recommendation_flow_ends() {
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.apply_skill_reco_suggestion(RECO_DRAFT.to_string(), None);
+        assert!(!app.editor_locked_by_reco());
+        app.handle_key("x");
+        assert_eq!(app.input.get_value(), "x", "typing works again");
     }
 
     /// The agent declining is the common case and must send the draft, not hold

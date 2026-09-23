@@ -175,9 +175,12 @@ function ComposerImpl({
   const [sendPending, setSendPending] = useState(false);
   const [contextActionPending, setContextActionPending] = useState(false);
   const compactionPending = contextActionPending || compactionInProgress;
-  // True while a recommend round-trip holds submission (mirrors the async
-  // intercept in submitValue; a ref because submitValue isn't a render).
+  // True while a recommend round-trip holds submission. Both a ref and a state:
+  // the ref guards re-entrant submits synchronously (`submitValue` is called
+  // from an event, not a render), the state drives the locked input + spinner
+  // so the wait is visible instead of looking like a dead composer.
   const recommendPendingRef = useRef(false);
+  const [recommendPending, setRecommendPending] = useState(false);
   // Tracks that the user already acted on the current card (install/dismiss),
   // so the follow-up send isn't blocked by the still-mounted card (the parent's
   // setState that clears it hasn't re-rendered yet).
@@ -388,6 +391,7 @@ function ComposerImpl({
       if (!cardHandledRef.current && evaluatedDraftRef.current !== trimmed) {
         evaluatedDraftRef.current = trimmed;
         recommendPendingRef.current = true;
+        setRecommendPending(true);
         reco
           .onEvaluate(trimmed)
           .then((card) => {
@@ -397,6 +401,7 @@ function ComposerImpl({
           .catch(() => sendNow())
           .finally(() => {
             recommendPendingRef.current = false;
+            setRecommendPending(false);
           });
         return;
       }
@@ -823,7 +828,12 @@ function ComposerImpl({
         workspaceId={workspaceId}
         skills={skills}
         contextTools={contextTools}
-        disabled={disabled}
+        // Locked while the recommender is being asked: the message about to be
+        // sent must be the one that was evaluated, and a box that silently
+        // ignores the send button reads as broken (the send button below spins
+        // instead). `disabled` restores the caret afterwards — the autofocus
+        // effect above keys off it.
+        disabled={disabled || recommendPending}
         placeholder={placeholder ?? t("composer.placeholder")}
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
@@ -1025,6 +1035,18 @@ function ComposerImpl({
                         </span>
                       )
                     : null}
+                  {/* The recommendation wait: same reasoning as compaction,
+                      with the spinner on the button itself. */}
+                  {recommendPending
+                    ? (
+                        <span
+                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
+                          role="status"
+                        >
+                          {t("composer.recommending")}
+                        </span>
+                      )
+                    : null}
                   <button
                     className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
                     disabled={
@@ -1032,12 +1054,17 @@ function ComposerImpl({
                       || disabled
                       || sendPending
                       || compactionPending
+                      || recommendPending
                     }
                     type="submit"
-                    aria-label={compactionPending ? t("composer.compacting") : t("composer.send")}
-                    title={compactionPending ? t("composer.compacting") : t("composer.send")}
+                    aria-label={recommendPending
+                      ? t("composer.recommending")
+                      : compactionPending ? t("composer.compacting") : t("composer.send")}
+                    title={recommendPending
+                      ? t("composer.recommending")
+                      : compactionPending ? t("composer.compacting") : t("composer.send")}
                   >
-                    {compactionPending
+                    {recommendPending || compactionPending
                       ? <Loader2 className="size-3.5 animate-spin" />
                       : <ArrowUp className="size-3.5" />}
                   </button>

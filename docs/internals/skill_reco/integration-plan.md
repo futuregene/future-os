@@ -6,7 +6,9 @@
 > the trigger decision lives on the client (desktop / TUI / mobile each implement it, and each keeps
 > its own daily budget); the toggle defaults to **on** (decided later in the PRD, which is what this
 > document calls "default off"); the length gate became **≥30 bytes** (ten Chinese characters); the
-> timeout became **1.5 s**; and Jev has since moved into the Future provider, which retires the
+> timeout became **3 s** (it was 1.5 s, below Jev's measured p95 of ≈1.4 s, so the tail of the
+> distribution was discarded and was indistinguishable from "no skill fits"; all three clients now
+> lock the input and spin the send button for the wait); and Jev has since moved into the Future provider, which retires the
 > "how to configure the temporary key" question (see §Four decisions needed below). **Treat the code
 > and the PRD as authoritative**, not the older numbers here. The evaluation data still holds:
 > [evaluation.md](evaluation.md). Product rules are governed by `skill-recommend-prd-v1.9` (not kept

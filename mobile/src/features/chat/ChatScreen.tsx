@@ -653,6 +653,7 @@ export function ChatScreen() {
                 onCompactContext={compactContext.compact}
                 compactionPending={compactContext.pending}
                 skillSuggestion={skillRecommendation.suggestion}
+                skillEvaluating={skillRecommendation.evaluating}
                 skillInstalling={installingSkill}
                 onInstallSkill={installSuggestedSkill}
                 onDismissSkill={dismissSuggestedSkill}

@@ -33,6 +33,16 @@ pub const MAX_QUERY_CHARS: usize = 2000;
 /// catalogue is truncated rather than chunked (the desktop client has the same
 /// limit and a chunking path this one does not need yet).
 pub const MAX_CANDIDATES: usize = 254;
+/// Hard budget for the whole recommend round-trip, in milliseconds.
+///
+/// 3 s rather than the original 1.5 s: the recommender's measured latency is
+/// p50 ≈ 0.5 s but p95 ≈ 1.4 s (`docs/internals/skill_reco/evaluation.md`), so a
+/// 1.5 s deadline threw away one answer in twenty — and a discarded answer is
+/// indistinguishable from "no skill fits", which is how it looked to the user.
+/// The agent's own HTTP call is capped at 5 s, so this is the binding deadline
+/// for the client; the input stays locked for its duration (see
+/// [`crate::app::SkillRecoState`]).
+pub const RECOMMEND_TIMEOUT_MS: u64 = 3000;
 
 /// One day's record. Only the current day is kept: the file is rewritten with a
 /// fresh record when the day rolls over (nothing older is ever read).

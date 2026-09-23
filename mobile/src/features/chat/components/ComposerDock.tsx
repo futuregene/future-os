@@ -81,6 +81,7 @@ function ComposerDockView({
   compactionPending = false,
   keyboardHeight = 0,
   skillSuggestion = null,
+  skillEvaluating = false,
   skillInstalling = false,
   onInstallSkill,
   onDismissSkill,
@@ -112,6 +113,8 @@ function ComposerDockView({
   keyboardHeight?: number;
   /** A skill suggestion holding the draft, or null (see the card component). */
   skillSuggestion?: PendingSuggestion | null;
+  /** True while the recommender is being asked: locks input + send (spinner). */
+  skillEvaluating?: boolean;
   skillInstalling?: boolean;
   onInstallSkill?: () => void;
   onDismissSkill?: () => void;
@@ -124,9 +127,11 @@ function ComposerDockView({
   const compactToolbar = width < 380 || fontScale > 1.2;
   // A running reply blocks sending, not drafting the next message. Keep the
   // short send/upload busy phase locked so its acknowledgement cannot clear edits.
-  const editable = !remote.busy;
+  // The recommendation wait locks drafting too (see `skillEvaluating`): the
+  // message that goes out must be the one the recommender was asked about.
+  const editable = !remote.busy && !skillEvaluating;
   const compacting = compactionPending || remote.compacting;
-  const canSend = !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
+  const canSend = !skillEvaluating && !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
@@ -477,9 +482,13 @@ function ComposerDockView({
               </Pressable>
             ) : (
               <Pressable
-                accessibilityLabel={t(compacting ? "chat.compacting" : "chat.send")}
+                accessibilityLabel={t(
+                  skillEvaluating
+                    ? "chat.findingSkill"
+                    : compacting ? "chat.compacting" : "chat.send",
+                )}
                 accessibilityRole="button"
-                accessibilityState={{ disabled: !canSend, busy: compacting }}
+                accessibilityState={{ disabled: !canSend, busy: compacting || skillEvaluating }}
                 disabled={!canSend}
                 onPress={() => { if (canSend) void send(); }}
                 style={({ pressed }) => [
@@ -488,7 +497,7 @@ function ComposerDockView({
                   pressed && styles.sendPressed,
                 ]}
               >
-                {compacting ? (
+                {compacting || skillEvaluating ? (
                   <ActivityIndicator color={colors.surface} size="small" />
                 ) : (
                   <Send color={colors.surface} size={17} />

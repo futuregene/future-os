@@ -15,6 +15,7 @@ import {
   MAX_QUERY_CHARS,
   messageHash,
   MIN_QUERY_BYTES,
+  RECOMMEND_TIMEOUT_MS,
   shownDescription,
   useSkillRecommendation,
 } from "./useSkillRecommendation";
@@ -173,7 +174,7 @@ it("returns null on a slow recommender (timeout budget)", async () => {
       const pending = hook.current.evaluate(LONG_ENOUGH).then((r) => {
         resolved = r;
       });
-      return vi.advanceTimersByTimeAsync(1600).then(() => pending);
+      return vi.advanceTimersByTimeAsync(RECOMMEND_TIMEOUT_MS + 50).then(() => pending);
     });
     expect(resolved).toBeNull();
     expect(record).not.toHaveBeenCalled();
@@ -181,6 +182,16 @@ it("returns null on a slow recommender (timeout budget)", async () => {
   finally {
     vi.useRealTimers();
   }
+});
+
+/**
+ * The budget is deliberately wider than the recommender's p95 (≈1.4 s): at
+ * 1.5 s the tail of the latency distribution was silently discarded, and a
+ * discarded answer is indistinguishable from "no skill fits".
+ */
+it("gives the recommender a budget past its p95, not the original 1.5 s", () => {
+  expect(RECOMMEND_TIMEOUT_MS).toBeGreaterThanOrEqual(2000);
+  expect(RECOMMEND_TIMEOUT_MS).toBeLessThanOrEqual(5000);
 });
 
 it("stops calling the recommender once the daily budget is spent", async () => {
