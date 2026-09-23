@@ -194,6 +194,8 @@ pub enum KeyAction {
     ScrollChatDownLine,
     /// `ctrl+g` — expand/collapse tool-output bodies.
     ToggleToolOutput,
+    /// `ctrl+d` — fold runs of tool calls and thinking into compact rows.
+    ToggleCompactActivity,
     /// `ctrl+x` — copy the most recent assistant message to the clipboard.
     CopyLastMessage,
 }
@@ -1293,6 +1295,29 @@ fn tool_call_lines(page: &Value) -> Vec<String> {
     lines
 }
 
+/// Did a `tool_end` event report a failure?
+///
+/// The agent sends the structured result alongside the text (`error`, and for a
+/// shell command `exit_code` with `is_soft_fail` already resolved), so the TUI
+/// does not have to read an exit code back out of the output — and a soft fail
+/// (bare `grep`, `diff`, … exiting 1) stays a completed call, exactly as the
+/// desktop's projection treats it.
+pub fn tool_end_failed(data: &Value) -> bool {
+    if data
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|error| !error.trim().is_empty())
+    {
+        return true;
+    }
+    let exit_code = data.get("exit_code").and_then(Value::as_i64);
+    let soft = data
+        .get("is_soft_fail")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    exit_code.is_some_and(|code| code != 0) && !soft
+}
+
 /// `/tool-output <call-id>` — the untruncated stored output of one tool call.
 fn tool_output_lines(tool_call_id: &str, payload: &Value) -> Vec<String> {
     let output = payload.get("output");
@@ -2101,6 +2126,16 @@ impl<T: TerminalIo> App<T> {
                 true
             }),
             "Expand/collapse tool output",
+            None,
+        );
+        let tx = self.op_tx.clone();
+        self.keybindings.add(
+            Key::CTRL_D,
+            Box::new(move || {
+                let _ = tx.send(UiCmd::KeyAction(KeyAction::ToggleCompactActivity));
+                true
+            }),
+            "Compact view (fold tool runs and thinking)",
             None,
         );
         let tx = self.op_tx.clone();
@@ -3659,7 +3694,8 @@ impl<T: TerminalIo> App<T> {
                     .unwrap_or("")
                     .to_string();
                 let text = event.data.get("text").and_then(Value::as_str);
-                self.chat.finish_tool(&tool_id, text);
+                self.chat
+                    .finish_tool(&tool_id, text, tool_end_failed(&event.data));
                 self.state.active_tool_count = self.state.active_tool_count.saturating_sub(1);
                 if self.state.active_tool_count == 0 {
                     self.state.tool_start_time = None;
@@ -4243,6 +4279,12 @@ impl<T: TerminalIo> App<T> {
                 // Silent on purpose: ctrl+g is a view toggle, and a system
                 // message per press would push the transcript around.
                 self.chat.toggle_tool_output_expanded();
+                self.request_render(false);
+            }
+            KeyAction::ToggleCompactActivity => {
+                // Silent for the same reason as ctrl+g: it is a view toggle,
+                // and the folded rows themselves are the feedback.
+                self.chat.toggle_compact_activity();
                 self.request_render(false);
             }
             KeyAction::CopyLastMessage => self.copy_last_assistant_message(),
@@ -13251,6 +13293,8 @@ mod tests {
             "ctrl+t",
             "shift+tab",
             "ctrl+o",
+            "ctrl+g",
+            "ctrl+d",
             "pageup",
             "pagedown",
             "ctrl+up",
@@ -13261,6 +13305,45 @@ mod tests {
         }
         // ctrl+c interrupted (not streaming) → app stopped.
         assert!(!app.running);
+    }
+
+    /// `ctrl+d` flips the compact view through the same path a real key press
+    /// takes (keybinding closure → `KeyAction` → the chat), and it is a toggle:
+    /// the transcript comes back exactly as it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ctrl_d_toggles_the_compact_view() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.chat.render(100);
+        for path in ["/a.rs", "/b.rs"] {
+            let mut msg = ChatMessage::new(format!("t{path}"), ChatRole::Tool, "body\n");
+            msg.name = Some("read".into());
+            msg.tool = Some(format!("call{path}"));
+            msg.tool_args = Some(format!(r#"{{"path":"{path}"}}"#));
+            msg.tool_status = Some(ToolStatus::Complete);
+            app.chat.add_message(msg);
+        }
+        let plain = |app: &mut App<FakeTerminal>| {
+            crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"))
+        };
+        assert!(!app.chat.compact_activity(), "off by default");
+        let expanded = plain(&mut app);
+        assert!(expanded.contains("read /a.rs"), "{expanded}");
+
+        app.handle_key("ctrl+d");
+        pump(&mut app, &mut rx).await;
+        assert!(app.chat.compact_activity());
+        let folded = plain(&mut app);
+        assert!(folded.contains("▸ read 2 files"), "{folded}");
+        assert!(!folded.contains("/a.rs"), "the calls folded away: {folded}");
+
+        app.handle_key("ctrl+d");
+        pump(&mut app, &mut rx).await;
+        assert!(!app.chat.compact_activity());
+        assert_eq!(
+            plain(&mut app),
+            expanded,
+            "toggling back restores the transcript byte for byte"
+        );
     }
 
     // ─── Startup against a live mock agent ────────────────────────────
@@ -14231,6 +14314,76 @@ mod tests {
             .iter()
             .any(|(t, payload)| t == "set_thinking_level" && payload.starts_with("low")));
         app.stop();
+    }
+
+    /// The event's structured result decides a failure, so a live failed call is
+    /// marked (and can keep its body) the same way a replayed one is.
+    #[test]
+    fn tool_end_failure_comes_from_the_structured_result() {
+        assert!(!tool_end_failed(&json_parse(r#"{"tool_id":"t"}"#)));
+        assert!(!tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","text":"ok","exit_code":0}"#
+        )));
+        // The agent's error field is the primary signal.
+        assert!(tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","error":"permission denied"}"#
+        )));
+        // An empty error is not a failure.
+        assert!(!tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","error":"  "}"#
+        )));
+        // A non-zero exit code is one — unless the agent already resolved it as
+        // a soft fail (bare grep/diff/… exiting 1).
+        assert!(tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","exit_code":2}"#
+        )));
+        assert!(!tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","exit_code":1,"is_soft_fail":true}"#
+        )));
+        assert!(tool_end_failed(&json_parse(
+            r#"{"tool_id":"t","exit_code":1,"is_soft_fail":false}"#
+        )));
+    }
+
+    /// A live failure reaches the chat as a failed call, and the compact view
+    /// leaves it (and its body) alone.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_live_tool_failure_is_marked_and_never_folded() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.chat.set_compact_activity(true);
+        for (id, path) in [("t1", "/a.rs"), ("t2", "/b.rs")] {
+            app.handle_agent_event(&make_event(
+                "tool_start",
+                &format!(
+                    r#"{{"tool_id":"{id}","tool_name":"read","tool_args":{{"path":"{path}"}}}}"#
+                ),
+            ));
+            app.handle_agent_event(&make_event(
+                "tool_end",
+                &format!(r#"{{"tool_id":"{id}","text":"out"}}"#),
+            ));
+        }
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t3","tool_name":"read","tool_args":{"path":"/c.rs"}}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "tool_delta",
+            r#"{"tool_id":"t3","text":"permission denied"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "tool_end",
+            r#"{"tool_id":"t3","error":"permission denied"}"#,
+        ));
+        pump(&mut app, &mut rx).await; // tool_end's refresh fails silently
+
+        let text = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
+        assert!(text.contains("▸ read 2 files"), "{text}");
+        assert!(
+            text.contains("read /c.rs"),
+            "the failure is its own row: {text}"
+        );
+        assert!(text.contains("permission denied"), "{text}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -17957,7 +18110,7 @@ mod tests {
             .add_tool_start("t1", "shell", Some(r#"{"command":"ls"}"#.into()));
         app.chat
             .append_tool_delta("t1", "one\ntwo\nthree\nfour\nfive\nsix\n");
-        app.chat.finish_tool("t1", None);
+        app.chat.finish_tool("t1", None, false);
         let collapsed = app.chat.render_all(100).len();
         assert_eq!(collapsed, 1 + 1, "row + blank");
         app.handle_key_action(KeyAction::ToggleToolOutput);
@@ -21942,7 +22095,7 @@ mod tests {
             .collect();
         catalogued.sort();
         assert_eq!(registered, catalogued);
-        assert_eq!(registered.len(), 12, "13 entries, two of them one action");
+        assert_eq!(registered.len(), 13, "14 entries, two of them one action");
     }
 
     /// No keybindings file, no change: the built-in map is exactly what
@@ -21973,10 +22126,10 @@ mod tests {
             map.get("pageDown").map(Vec::as_slice),
             Some(&["Scroll chat down".to_string()][..])
         );
-        // 13 registrations: 12 actions, one of which ("Cycle thinking") answers
-        // on two keys, so 13 keys with exactly one action each.
+        // 14 registrations: 13 actions, one of which ("Cycle thinking") answers
+        // on two keys, so 14 keys with exactly one action each.
         let owners = app.keybindings.key_owners();
-        assert_eq!(owners.len(), 13);
+        assert_eq!(owners.len(), 14);
         assert!(owners.iter().all(|(_, actions)| actions.len() == 1));
         // …and nothing was created on disk by the read.
         assert_eq!(keybindings_file(dir.path()), "<missing>");

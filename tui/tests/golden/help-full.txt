@@ -2,7 +2,6 @@
 
 [38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse ·[39m
 
-[38;5;245m[skills] code-review, future-slides, future-web[39m
 [38;5;245m┌──────────────────────────────────────────────────────────────────────────────┐
 │[39m  [1m[38;5;252mfuture-tui[0m  [38;5;245mTerminal UI Help[39m                                                [38;5;245m│
 ├──────────────────────────────────────────────────────────────────────────────┤
@@ -13,6 +12,7 @@
 │[39m  [38;5;245mctrl+t   cycle thinking[39m                                                     [38;5;245m│
 │[39m  [38;5;245mctrl+o   expand/collapse thinking[39m                                           [38;5;245m│
 │[39m  [38;5;245mctrl+g   expand/collapse tool output[39m                                        [38;5;245m│
+│[39m  [38;5;245mctrl+d   compact view (fold tool runs and thinking)[39m                         [38;5;245m│
 │[39m  [38;5;245mctrl+x   copy the last answer[39m                                               [38;5;245m│
 │[39m  [38;5;245mctrl+v   paste clipboard (image or text)[39m                                    [38;5;245m│
 │[39m  [38;5;245mtab      autocomplete[39m                                                       [38;5;245m│

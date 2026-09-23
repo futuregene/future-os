@@ -870,6 +870,28 @@ expect_pane_has paste-image-sent "[Image #1]" "the marker is what the message ca
 expect_pane_lacks paste-image-sent "shot.png" "neither path is in the message"
 expect_pane_lacks paste-image-sent "other.png" "neither path is in the message"
 
+# ── Compact view: a burst of calls folds into one row (ctrl+d) ──
+#
+# The mock answers a "scan the workspace…" prompt with three completed reads and
+# nothing in between — the uninterrupted same-tool run `ctrl+d` folds. The
+# assertions are about *shape*, which no golden can state: the folded row is one
+# line where three call rows were, and the same key brings them back.
+submit_cmd "scan the workspace"
+# The run's last paragraph is the sentinel: folding mid-run would make the
+# recorded screen depend on how fast the events arrived.
+step_when burst-expanded "Every file uses the same header."
+expect_pane_has burst-expanded "read src/main.rs" "the burst's calls are individual rows"
+expect_pane_lacks burst-expanded "▸ read" "nothing is folded yet (off by default)"
+
+tmux send-keys -t "$RUST_PANE" C-d
+step_when burst-folded "▸ read 3 files"
+expect_pane_lacks burst-folded "read src/main.rs" "the three calls are one row"
+expect_pane_has burst-folded "Every file uses the same header." "the answer around the fold is still there"
+
+tmux send-keys -t "$RUST_PANE" C-d
+step_when burst-restored "read src/main.rs"
+expect_pane_lacks burst-restored "▸ read 3 files" "the fold is gone again"
+
 # ── Paged history: a switch loads the tail, and PageUp loads older pages ────
 #
 # The transcript is read through the agent's indexed pager
