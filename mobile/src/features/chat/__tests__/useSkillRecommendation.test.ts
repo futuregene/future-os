@@ -5,7 +5,6 @@ import { useRemote } from "../../../remote/RemoteContext";
 import { draftPicksSkill, utf8Length, useSkillRecommendation, type SkillRecommendationApi } from "../useSkillRecommendation";
 import { messageHash } from "../skillRecoBudget";
 
-jest.mock("../../../../src/remote/RemoteContext", () => ({ useRemote: jest.fn() }), { virtual: true });
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("@react-native-async-storage/async-storage", () => {
   const store = new Map<string, string>();
