@@ -62,7 +62,13 @@ struct Endpoint {
 /// `None` means the feature is unavailable (not signed in), which the caller
 /// treats the same as "no recommendation" — the feature is off, not broken.
 fn endpoint() -> Option<Endpoint> {
-    let auth = crate::auth::AuthStore::load();
+    resolve(&crate::auth::AuthStore::load())
+}
+
+/// The resolution itself, over a given credential store. Split out so the tests
+/// can exercise it without touching the process-global HOME (which `load()` reads
+/// and which other tests read concurrently).
+fn resolve(auth: &crate::auth::AuthStore) -> Option<Endpoint> {
     let key = auth.get(FUTURE_PROVIDER)?;
     let base = auth
         .base_url(FUTURE_PROVIDER)
@@ -824,17 +830,24 @@ mod tests {
         assert!(suggest_skill("q", &[]).is_none());
     }
 
-    /// With no credential the feature is simply off. This must not depend on the
-    /// developer's own `auth.json`, so it runs against an isolated home.
+    /// The credential store a signed-in install has, parsed from JSON so the test
+    /// needs no HOME (and so cannot interfere with any other test).
+    fn store(json: &str) -> crate::auth::AuthStore {
+        crate::auth::AuthStore::from_json(json).expect("parses")
+    }
+
+    /// With no credential there is nothing to call: the feature is off, which the
+    /// caller treats the same as "no recommendation".
     #[test]
     fn without_a_credential_the_feature_is_off() {
-        let home = crate::test_support::TestHome::new();
         assert!(
-            endpoint().is_none(),
-            "a fresh home has no Future account credential"
+            resolve(&store("{}")).is_none(),
+            "an install with no Future entry has no Jev endpoint"
         );
-        assert!(suggest_skill("q", &[cand("a")]).is_none());
-        drop(home);
+        // Another provider's key must not be borrowed for this one.
+        assert!(resolve(&store(r#"{"openai":{"type":"api_key","key":"sk-x"}}"#)).is_none());
+        // A Future entry with no key is the same as none.
+        assert!(resolve(&store(r#"{"future":{"type":"api_key","key":""}}"#)).is_none());
     }
 
     /// A call goes to the Future account's gateway, authenticated by that
@@ -842,50 +855,24 @@ mod tests {
     /// follows the provider entry, with the documented origin as the fallback.
     #[test]
     fn the_endpoint_is_the_future_accounts_gateway() {
-        // The provider's own base URL.
-        let home = crate::test_support::TestHome::new();
-        write_auth(home.path(), "acct-key", Some("https://future-os.cn/api"));
-        let resolved = endpoint().expect("the account credential is used");
-        assert_eq!(resolved.key, "acct-key");
-        assert_eq!(resolved.url, "https://future-os.cn/api/v1/systemone");
-        assert_eq!(resolved.model, "jev");
-        drop(home);
+        let with_base = resolve(&store(
+            r#"{"future":{"type":"api_key","key":"acct-key","base_url":"https://future-os.cn/api"}}"#,
+        ))
+        .expect("the account credential is used");
+        assert_eq!(with_base.key, "acct-key");
+        assert_eq!(with_base.url, "https://future-os.cn/api/v1/systemone");
+        assert_eq!(with_base.model, "jev");
 
-        // No base URL configured: the account is still usable, at the default
-        // origin. A custom gateway (staging, self-hosted) keeps its own path.
-        let home = crate::test_support::TestHome::new();
-        write_auth(home.path(), "acct-key", None);
-        assert_eq!(
-            endpoint().expect("resolves").url,
-            "https://future-os.cn/api/v1/systemone"
-        );
-        drop(home);
+        // No base URL configured: still usable, at the default origin.
+        let no_base =
+            resolve(&store(r#"{"future":{"type":"api_key","key":"acct-key"}}"#)).expect("resolves");
+        assert_eq!(no_base.url, "https://future-os.cn/api/v1/systemone");
 
-        let home = crate::test_support::TestHome::new();
-        write_auth(
-            home.path(),
-            "acct-key",
-            Some("https://staging.example.com/gw"),
-        );
-        assert_eq!(
-            endpoint().expect("resolves").url,
-            "https://staging.example.com/gw/v1/systemone"
-        );
-        drop(home);
-    }
-
-    /// Write the `auth.json` a signed-in install has, under an isolated home.
-    fn write_auth(home: &std::path::Path, key: &str, base_url: Option<&str>) {
-        let dir = home.join(".future/agent");
-        std::fs::create_dir_all(&dir).expect("auth dir");
-        let base = match base_url {
-            Some(url) => format!(r#","base_url":"{url}""#),
-            None => String::new(),
-        };
-        std::fs::write(
-            dir.join("auth.json"),
-            format!(r#"{{"future":{{"type":"api_key","key":"{key}"{base}}}}}"#),
-        )
-        .expect("write auth");
+        // A non-production gateway keeps its own path.
+        let staging = resolve(&store(
+            r#"{"future":{"type":"api_key","key":"k","base_url":"https://staging.example.com/gw"}}"#,
+        ))
+        .expect("resolves");
+        assert_eq!(staging.url, "https://staging.example.com/gw/v1/systemone");
     }
 }
