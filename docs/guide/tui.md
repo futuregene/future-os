@@ -207,12 +207,25 @@ pager (e.g. `No history matches for 'needle'.`).
 | `tab` | Autocomplete |
 | `enter` | Submit / accept |
 | `escape` | Close popup |
-| `page up` / `page down` | Scroll chat up/down |
+| `page up` / `page down` | Scroll chat up/down (scrolling up past the top loads older history) |
 | `ctrl+↑` / `ctrl+↓` | Scroll chat up/down (line) |
 | `↑↓` | Scroll / navigate lists |
 
 While a popup or the pager is open every key goes to that overlay, so the global
 shortcuts above apply to the chat input only.
+
+### History is paged
+
+Switching to a session loads the newest ten exchanges; scrolling up past the
+top of the transcript fetches the ten before those, and so on until the session
+begins. Each page is one bounded read (the agent's indexed
+`get_session_entries`), so a long session loads in a fraction of a second
+instead of transferring its whole transcript in one response — and a session too
+large for a single gRPC message is still readable. The older rows go above what
+is on screen and the view shows them, so `page up` at the top is what walks back
+through a conversation; a transcript whose top is the real beginning simply
+stops there. `/transcript` shows the pages loaded so far, and `/export` always
+writes the whole session (the agent reads it from its own store).
 
 A tool call is one row: the call itself (`edit src/a.rs +12 -3`,
 `$ make test`, `read src/main.rs:1-20`), with a diff's `+N -M` badge on that

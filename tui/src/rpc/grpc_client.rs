@@ -22,7 +22,8 @@ use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
 use crate::rpc::types::{
-    AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionSummary,
+    AgentEvent, ModelInfo, ProjectedRunEvent, RpcSessionState, RunAck, SessionEntriesPage,
+    SessionSummary,
 };
 use future_rpc::proto::{Attachment, RpcCommand, StreamEvent, StreamRequest};
 use parking_lot::Mutex;
@@ -52,6 +53,10 @@ const HEARTBEAT_MS: u64 = 10_000;
 const HEARTBEAT_MS: u64 = 50;
 /// How long `call` waits for the event stream to deliver its first frame.
 const CALL_CONNECT_WAIT_MS: u64 = 5_000;
+/// User exchanges per backward history page. Matches the desktop's remote
+/// history page: small enough that a page is far below the wire cap even with
+/// whole (unbounded) tool outputs in it, large enough to fill a screen or two.
+const HISTORY_PAGE_EXCHANGES: i64 = 10;
 
 /// `String(Date.now())` — millisecond epoch, used as the request correlation id.
 fn now_id() -> String {
@@ -540,9 +545,56 @@ impl GrpcClient {
         Ok(state)
     }
 
-    /// `getMessages()` — `{messages: [...]}` (session entry reconstruction).
+    /// `getMessages()` — the session's whole in-memory context in one
+    /// response. Untyped-key read, uncapped: prefer
+    /// [`Self::session_entries_page`] for display history, which the agent
+    /// serves from its index in bounded pages.
     pub async fn get_messages(&self) -> Result<Value, String> {
         self.call("get_messages", RpcCommand::default()).await
+    }
+
+    /// The tail of a session's display history — page 1 of the backward read.
+    pub async fn session_tail_page(&self, session_id: &str) -> Result<SessionEntriesPage, String> {
+        self.session_entries_page(session_id, i64::MAX, HISTORY_PAGE_EXCHANGES)
+            .await
+    }
+
+    /// The page above an already loaded one: same size, resuming at the
+    /// exclusive `before` cursor the previous page returned.
+    pub async fn session_older_page(
+        &self,
+        session_id: &str,
+        before: i64,
+    ) -> Result<SessionEntriesPage, String> {
+        self.session_entries_page(session_id, before, HISTORY_PAGE_EXCHANGES)
+            .await
+    }
+
+    /// One backward page of a session's display history
+    /// (`get_session_entries`).
+    ///
+    /// `get_messages` serializes the session's whole context into a single
+    /// response with no cursor, so a long session costs one huge message (and
+    /// used to fail outright at tonic's 4 MiB decoding default). This reads the
+    /// agent's indexed history instead: `before` is the exclusive backward
+    /// cursor — `i64::MAX` starts at the tail — and `limit` counts *user
+    /// exchanges*, which the agent clamps to 1..=100 (and which it never splits,
+    /// so a page can cost more than a small exchange). `hasMore`/`nextOffset`
+    /// carry the continuation; a page that ends the history reports neither.
+    pub async fn session_entries_page(
+        &self,
+        session_id: &str,
+        before: i64,
+        limit: i64,
+    ) -> Result<SessionEntriesPage, String> {
+        let cmd = RpcCommand {
+            session_id: session_id.to_string(),
+            before: Some(before),
+            limit: Some(limit),
+            ..Default::default()
+        };
+        let page = self.call("get_session_entries", cmd).await?;
+        Ok(SessionEntriesPage::from_value(&page))
     }
 
     /// `setModel(modelId)`.
@@ -2497,6 +2549,139 @@ mod tests {
         restore("FUTURE_AGENT_GRPC_ADDR", None);
         assert_eq!(grpc_addr(), "auto");
         restore("FUTURE_AGENT_GRPC_ADDR", old);
+    }
+
+    /// The history pager's wire shape and cursor arithmetic.
+    ///
+    /// `get_session_entries` is the only history read with a cursor; a TUI that
+    /// asked for it without `before`/`limit` would get the whole session in one
+    /// response, which is the shape this paging exists to avoid.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_paging_asks_for_one_backward_page_and_parses_the_cursor() {
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "get_session_entries".to_string(),
+                r#"{"entries":[{"id":"e1","kind":"user","role":"user","blocks":[{"kind":"text","text":"hi"}]}],"hasMore":true,"nextOffset":42}"#
+                    .to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("other-session");
+
+        // The tail read starts past the end (`i64::MAX`) with a bounded page.
+        let tail = client.session_tail_page("sess-1").await.unwrap();
+        let cmd = last_request(&requests, "get_session_entries");
+        assert_eq!(
+            cmd.session_id, "sess-1",
+            "the page addresses its own session"
+        );
+        assert_eq!(cmd.before, Some(i64::MAX));
+        assert_eq!(cmd.limit, Some(10));
+        assert_eq!(cmd.offset, None, "the forward cursor must not be sent");
+        assert_eq!(tail.entries.len(), 1);
+        assert!(tail.has_more);
+        assert_eq!(tail.next_offset, 42);
+
+        // The next page resumes at the cursor, at the same size.
+        client.session_older_page("sess-1", 42).await.unwrap();
+        let cmd = last_request(&requests, "get_session_entries");
+        assert_eq!(cmd.before, Some(42));
+        assert_eq!(cmd.limit, Some(10));
+        client.disconnect();
+    }
+
+    /// The paged response also travels as a typed payload — that is the shape
+    /// the Agent actually sends (`get_session_entries` is in its typed-command
+    /// list, and a typed response carries no JSON `data` at all). The cursor
+    /// must survive that decode, or the TUI would page a history it can never
+    /// continue past.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_paging_reads_the_typed_page_and_its_cursor() {
+        let mut typed = StdHashMap::new();
+        typed.insert(
+            "get_session_entries".to_string(),
+            ResponsePayload {
+                kind: Some(response_payload::Kind::GetSessionEntries(
+                    future_rpc::proto::SessionEntriesResponse {
+                        entries: vec![future_rpc::proto::SessionEntry {
+                            id: "e1".into(),
+                            role: "user".into(),
+                            kind: "user".into(),
+                            created_at_ms: 1_754_000_000_000,
+                            blocks: vec![future_rpc::proto::MessageBlock {
+                                kind: "text".into(),
+                                text: Some("typed page row".into()),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                        has_more: true,
+                        next_offset: 7,
+                    },
+                )),
+            },
+        );
+        let mock = ApiMock {
+            payload_by_type: typed,
+            // Stale JSON `data` with no cursor: the typed payload must win, or
+            // the page would look like the end of the history.
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([(
+                "get_session_entries".to_string(),
+                r#"{"entries":[]}"#.to_string(),
+            )]))),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+
+        let page = client.session_tail_page("sess-1").await.unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0]["kind"], "user");
+        assert_eq!(page.entries[0]["blocks"][0]["text"], "typed page row");
+        assert!(page.has_more, "the typed cursor survived the decode");
+        assert_eq!(page.next_offset, 7);
+        client.disconnect();
+    }
+
+    /// A response the pager shaped as "nothing older" — a final page, an agent
+    /// that ignores the cursor, or the legacy whole-history `messages` shape —
+    /// parses to a page with paging off, never to an error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_paging_reads_final_legacy_and_empty_pages() {
+        let mock = ApiMock {
+            data_by_type: Arc::new(std::sync::Mutex::new(StdHashMap::from([
+                (
+                    "get_session_entries".to_string(),
+                    r#"{"entries":[]}"#.to_string(),
+                ),
+                (
+                    "get_messages".to_string(),
+                    r#"{"messages":[{"role":"user","blocks":[{"kind":"text","text":"old"}]}]}"#
+                        .to_string(),
+                ),
+            ]))),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("sess-1");
+
+        let page = client.session_tail_page("sess-1").await.unwrap();
+        assert!(page.entries.is_empty());
+        assert!(!page.has_more, "nothing older to ask for");
+        assert_eq!(page.next_offset, 0);
+
+        // The legacy shape carries rows but no cursor: paging stays off.
+        let legacy = client.get_messages().await.unwrap();
+        let page = SessionEntriesPage::from_value(&legacy);
+        assert_eq!(page.entries.len(), 1);
+        assert!(!page.has_more);
+        assert_eq!(page.next_offset, 0);
+        client.disconnect();
     }
 
     #[tokio::test(flavor = "multi_thread")]

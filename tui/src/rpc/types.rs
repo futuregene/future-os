@@ -45,6 +45,70 @@ pub struct RunAck {
     pub queue_position: Option<i64>,
 }
 
+/// One page of display history, plus the continuation cursor a backward read
+/// walks with (`hasMore` + `nextOffset`).
+///
+/// Rows stay untyped JSON: the chat renderer consumes the same block shape
+/// whether it came from this pager or from a live event, and the agent only
+/// ever sends the canonical camelCase projection.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionEntriesPage {
+    pub entries: Vec<serde_json::Value>,
+    /// Older rows exist above this page (`before = next_offset` fetches them).
+    pub has_more: bool,
+    /// Exclusive backward cursor for the next older page.
+    pub next_offset: i64,
+}
+
+impl SessionEntriesPage {
+    /// Parse a history response payload: the pager's shape (`entries` +
+    /// `hasMore`/`nextOffset`) or, as a fallback, the legacy whole-history
+    /// `get_messages` shape (`messages`).
+    ///
+    /// The typed path omits `hasMore`/`nextOffset` on a page that ends the
+    /// history (proto defaults, see `future_rpc::decode::response_data`), so
+    /// both default to "nothing older". That is also the whole truth about a
+    /// `messages` payload: an agent that predates the cursor serves the entire
+    /// history in one response, so there is nothing older to fetch.
+    pub fn from_value(value: &serde_json::Value) -> Self {
+        let rows = |key: &str| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let entries = match rows("entries") {
+            entries if !entries.is_empty() => entries,
+            _ => rows("messages"),
+        };
+        Self {
+            entries,
+            has_more: value
+                .get("hasMore")
+                .or_else(|| value.get("has_more"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            next_offset: value
+                .get("nextOffset")
+                .or_else(|| value.get("next_offset"))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// [`Self::from_value`]'s inverse (always the pager's shape), for the
+    /// app-side plumbing that carries a page between tasks as the same JSON the
+    /// wire used.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "entries": self.entries,
+            "hasMore": self.has_more,
+            "nextOffset": self.next_offset,
+        })
+    }
+}
+
 // ============================================================================
 // RPC State
 // ============================================================================

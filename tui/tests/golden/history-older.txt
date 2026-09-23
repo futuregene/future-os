@@ -1,0 +1,36 @@
+[48;5;59m planted-01
+
+[49m answer-01
+
+[48;5;59m planted-02
+
+[49m answer-02
+
+[48;5;59m planted-03
+
+[49m answer-03
+
+[48;5;59m planted-04
+
+[49m answer-04
+
+[48;5;59m planted-05
+
+[49m answer-05
+
+[48;5;59m planted-06
+
+[49m answer-06
+
+[48;5;59m planted-07
+
+[49m answer-07
+
+[48;5;59m planted-08
+
+[49m answer-08
+
+[48;5;59m planted-09
+
+[49m> [7m [0m
+[38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m

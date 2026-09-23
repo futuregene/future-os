@@ -518,6 +518,13 @@ impl ChatArea {
         }
     }
 
+    /// Is the view following the transcript's tail? False once the reader has
+    /// scrolled up (or back into history), so appended rows land below the
+    /// viewport instead of dragging it down.
+    pub fn auto_scroll(&self) -> bool {
+        self.auto_scroll
+    }
+
     pub fn add_message(&mut self, msg: ChatMessage) {
         self.messages.push(msg);
         if self.last_render_width == -1 {
@@ -838,6 +845,45 @@ impl ChatArea {
         self.set_auto_scroll(true);
     }
 
+    /// Insert `messages` above the transcript, keeping the view anchored on the
+    /// line it was showing. Returns the number of rendered lines the insert
+    /// added above the previous content (0 when there was nothing to add or no
+    /// render to measure).
+    ///
+    /// This is how older history arrives while the user reads it (the journal
+    /// is paged backwards): `viewport_top` is a line index into
+    /// `rendered_lines`, so inserting above it without shifting would silently
+    /// scroll the transcript by the height of everything inserted. Rendering is
+    /// per message, so the pre-existing lines are untouched — the shift is
+    /// exactly the line count the prepended block occupies, read back from the
+    /// fresh layout rather than recomputed from markdown metrics.
+    ///
+    /// `auto_scroll` is left alone: at the tail it still tracks the tail (the
+    /// shift equals the new max offset), and scrolled up it stays anchored.
+    pub fn prepend_messages(&mut self, messages: Vec<ChatMessage>) -> usize {
+        if messages.is_empty() {
+            return 0;
+        }
+        let prepended = messages.len();
+        let mut all = messages;
+        all.extend(std::mem::take(&mut self.messages));
+        self.messages = all;
+        self.rerender();
+        // In the old layout the first pre-existing message started at line 0,
+        // and now it starts at `start` — so `start` is the insertion height.
+        let Some((start, _)) = self.message_line_ranges.get(prepended).copied() else {
+            // No render yet (`rerender` deferred until the first render()
+            // learns the width): the whole transcript is laid out from scratch
+            // anyway, and the viewport is still at its top.
+            return 0;
+        };
+        self.viewport_top = self.viewport_top.saturating_add(start);
+        if let Some(cb) = &mut self.on_change {
+            cb();
+        }
+        start
+    }
+
     pub fn scroll_up(&mut self, lines: usize) -> bool {
         if self.viewport_top == 0 {
             return false;
@@ -864,6 +910,12 @@ impl ChatArea {
 
     pub fn is_at_top(&self) -> bool {
         self.viewport_top == 0
+    }
+
+    /// Rows the viewport shows (`get_height` is the *rendered* height, which is
+    /// smaller while the transcript is still shorter than the terminal).
+    pub fn viewport_height(&self) -> usize {
+        self.viewport_height
     }
 
     pub fn is_at_bottom(&self) -> bool {
@@ -3016,6 +3068,108 @@ mod tests {
         let mut chat = new_chat();
         chat.render(W);
         assert!(!chat.scroll_up(1));
+    }
+
+    /// Prepending older history must leave the reader looking at the same line.
+    ///
+    /// `viewport_top` indexes `rendered_lines`, so an insert above it would
+    /// otherwise scroll the transcript by the height of everything inserted —
+    /// the reader would lose their place exactly when the page they asked for
+    /// arrives.
+    #[test]
+    fn prepend_messages_anchors_the_viewport_and_reports_the_insert_height() {
+        let mut chat = new_chat();
+        set_messages(
+            &mut chat,
+            vec![
+                ChatMessage::new("u1".into(), ChatRole::User, "first question"),
+                ChatMessage::new("a1".into(), ChatRole::Assistant, "first answer"),
+                ChatMessage::new("u2".into(), ChatRole::User, "newest question"),
+                ChatMessage::new("a2".into(), ChatRole::Assistant, "newest answer"),
+            ],
+        );
+        chat.set_viewport_height(3);
+        chat.render(W);
+        chat.scroll_to_bottom();
+        assert!(
+            chat.scroll_up(1),
+            "the transcript is taller than the viewport"
+        );
+        assert!(
+            !chat.auto_scroll,
+            "scrolled up, so the view is not following"
+        );
+        let top_before = chat.viewport_top;
+        let visible_before = chat.render(W);
+
+        let added = chat.prepend_messages(vec![
+            ChatMessage::new("u0".into(), ChatRole::User, "older question"),
+            ChatMessage::new("a0".into(), ChatRole::Assistant, "older answer"),
+        ]);
+
+        assert!(added > 0, "the insert has height");
+        assert_eq!(
+            chat.viewport_top,
+            top_before + added,
+            "the viewport moved down by exactly what was inserted above it"
+        );
+        assert_eq!(
+            chat.render(W),
+            visible_before,
+            "the same lines are still on screen"
+        );
+        assert!(
+            !chat.auto_scroll,
+            "prepending never drags the reader to the tail"
+        );
+        // The inserted rows really are above: scrolling up reveals them.
+        chat.scroll_up(added + 1);
+        assert_eq!(
+            chat.viewport_top,
+            top_before.saturating_sub(1),
+            "scrolling up by the insert height lands one line above where the reader was"
+        );
+        chat.scroll_up(usize::MAX);
+        assert_eq!(
+            chat.viewport_top, 0,
+            "the transcript now starts at the older page"
+        );
+        let revealed = crate::utils::strip_ansi_codes(&chat.render(W).join("\n"));
+        assert!(revealed.contains("older question"), "{revealed}");
+        assert_eq!(chat.messages[0].id, "u0");
+        assert_eq!(chat.messages[1].id, "a0");
+    }
+
+    #[test]
+    fn prepend_messages_with_nothing_to_add_is_a_no_op() {
+        let mut chat = new_chat();
+        set_messages(
+            &mut chat,
+            vec![ChatMessage::new("u1".into(), ChatRole::User, "q")],
+        );
+        chat.set_viewport_height(2);
+        chat.render(W);
+        chat.scroll_up(1);
+        let top = chat.viewport_top;
+        assert_eq!(chat.prepend_messages(Vec::new()), 0);
+        assert_eq!(chat.viewport_top, top);
+        assert_eq!(chat.messages.len(), 1);
+    }
+
+    /// A prepend before the first render cannot measure the insert (the layout
+    /// is deferred until `render` learns the width), and neither can the reader
+    /// have a scroll position yet — the next render lays the whole transcript
+    /// out from its top.
+    #[test]
+    fn prepend_messages_before_the_first_render_defers_the_layout() {
+        let mut chat = new_chat();
+        let added =
+            chat.prepend_messages(vec![ChatMessage::new("u0".into(), ChatRole::User, "early")]);
+        assert_eq!(added, 0);
+        assert!(chat.dirty);
+        assert_eq!(chat.viewport_top, 0);
+        let rendered = crate::utils::strip_ansi_codes(&chat.render(W).join("\n"));
+        assert!(rendered.contains("early"), "{rendered}");
     }
 
     #[test]
