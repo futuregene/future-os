@@ -53,7 +53,9 @@ use crate::notifications::{
 };
 use crate::rpc::grpc_client::GrpcClient;
 use crate::rpc::provider_types::{validate_provider_input, ProviderInfo, ProviderInput};
-use crate::rpc::types::{AgentEvent, ModelInfo, RpcSessionState, SessionSummary, ThinkingLevel};
+use crate::rpc::types::{
+    AgentEvent, ModelInfo, RpcSessionState, SessionEntriesPage, SessionSummary, ThinkingLevel,
+};
 use crate::skills_cli::{
     summarize_outcome, SkillCatalogue, SkillOp, SkillOpOutcome, SkillsCli, SKILL_OP_TIMEOUT,
     TIMEOUT_MARKER,
@@ -353,7 +355,9 @@ pub enum UiCmd {
         switched: bool,
         result: Result<(), String>,
         state: Option<RpcSessionState>,
-        messages: Result<Value, String>,
+        /// The loaded tail page of the target session's history (see
+        /// [`load_history_tail`]).
+        history: Result<Value, String>,
         label: String,
     },
     TreeSelected {
@@ -365,7 +369,7 @@ pub enum UiCmd {
     ForkDone {
         fork_result: Result<Value, String>,
         state: Option<RpcSessionState>,
-        messages: Result<Value, String>,
+        history: Result<Value, String>,
         label: String,
     },
     NewSessionDone {
@@ -375,7 +379,16 @@ pub enum UiCmd {
     CloneDone {
         result: Result<Value, String>,
         state: Option<RpcSessionState>,
-        messages: Result<Value, String>,
+        history: Result<Value, String>,
+    },
+    /// An older page of the displayed session's history, requested by scrolling
+    /// up past the top of the transcript.
+    HistoryPageLoaded {
+        session_id: String,
+        /// The cursor the request asked from — the guard against a page that
+        /// would move the cursor backwards or stall it.
+        before: i64,
+        result: Result<Value, String>,
     },
     ModelSelected(SelectItem),
     /// The provider list (`/providers`) or a mutation's follow-up refresh.
@@ -836,6 +849,93 @@ struct OverlayEntry {
 struct SessionSwitchRequest {
     from: String,
     target: String,
+}
+
+/// Where the transcript on screen sits in its session's history.
+///
+/// The TUI reads display history through the agent's indexed pager
+/// (`get_session_entries` + `before`), never `get_messages`: that one has no
+/// cursor at all, so a long session costs a single unbounded response — the
+/// reason a transcript could not be loaded at all before the message cap was
+/// raised, and still the reason a 10 MB session felt like a stall.
+///
+/// The cursor belongs to one session. A switch replaces it wholesale, so the
+/// struct is keyed by session id rather than reset at every call site: a page
+/// whose request was already in flight when the user moved on must be dropped,
+/// not prepended into another session's transcript.
+#[derive(Debug, Clone, Default)]
+struct HistoryPaging {
+    /// The session `has_more` / `next_before` describe (empty = no transcript).
+    session_id: String,
+    /// Older rows exist above the top of the transcript.
+    has_more: bool,
+    /// Exclusive backward cursor for the next older page.
+    next_before: i64,
+    /// A page request is in flight, so a scroll cannot start a second one.
+    loading: bool,
+}
+
+impl HistoryPaging {
+    /// Forget the cursor: the transcript it described is gone (a switch, a
+    /// fresh load, `/new`) or its session is known to have no history.
+    fn reset(&mut self, session_id: &str) {
+        *self = Self {
+            session_id: session_id.to_string(),
+            ..Self::default()
+        };
+    }
+
+    /// Adopt a loaded page of `session_id`: the older-history cursor moves to
+    /// the page's `hasMore`/`nextOffset`.
+    ///
+    /// A response that claims more history without advancing the cursor is
+    /// treated as the end: the alternative is a scroll-up that fetches the same
+    /// page forever. That is the same guard the desktop's page loop applies to
+    /// a non-advancing `nextOffset`.
+    fn adopt(&mut self, session_id: &str, page: &SessionEntriesPage, requested_before: i64) {
+        self.session_id = session_id.to_string();
+        self.loading = false;
+        self.has_more =
+            page.has_more && !page.entries.is_empty() && page.next_offset < requested_before;
+        self.next_before = page.next_offset;
+    }
+
+    /// [`Self::adopt`] for a request that failed: nothing was prepended, so the
+    /// cursor keeps its position and only the in-flight flag clears (the user
+    /// can scroll again — a retry is one more PageUp).
+    fn failed(&mut self) {
+        self.loading = false;
+    }
+}
+
+/// Load the tail of `session_id`'s display history.
+///
+/// `get_session_entries` is the only read here with a cursor, so it is the one
+/// that keeps a long session from arriving as a single unbounded response. Two
+/// cases still need the older, uncapped `get_messages`:
+///
+/// - an agent that predates backward paging answers with an error (or ignores
+///   `before` and returns no page at all), and
+/// - a session with no persisted history (the agent never wrote it, e.g. an
+///   ephemeral one) still has a live in-memory context.
+///
+/// In both, "the pager came up empty" must not read as "the session is empty":
+/// falling back shows the conversation instead of a blank transcript. Both
+/// responses are accepted by the same parser ([`SessionEntriesPage`]), so the
+/// caller cannot tell them apart — except that the fallback carries no cursor
+/// and paging is off. When the fallback also fails, the pager's error is the
+/// reported one: it names the storage the read actually wanted.
+async fn load_history_tail(client: &GrpcClient, session_id: &str) -> Result<Value, String> {
+    match client.session_tail_page(session_id).await {
+        Ok(page) if !page.entries.is_empty() => Ok(page.to_value()),
+        paged => {
+            let primary = paged.err();
+            client
+                .get_messages()
+                .await
+                .map_err(|fallback| primary.unwrap_or(fallback))
+        }
+    }
 }
 
 /// Stored pending approval (the TS keeps it for reference; the visible
@@ -1444,6 +1544,9 @@ pub struct App<T: TerminalIo> {
     /// ([`crate::insert_history`]) — the watermark that keeps a row from being
     /// inserted twice.
     history: HistoryWriter,
+    /// Backward paging cursor for the transcript on screen: which session it
+    /// describes, whether older rows exist above it, and where to resume.
+    history_paging: HistoryPaging,
     /// A run finished, so the transcript is final: insert its new tail into the
     /// scrollback at the next `do_render` (which owns the screen repaint the
     /// insert would otherwise have to trigger itself).
@@ -1572,6 +1675,7 @@ impl<T: TerminalIo> App<T> {
             skill_reco_send_through: false,
             git_cli: git_for_host(),
             history: HistoryWriter::new(),
+            history_paging: HistoryPaging::default(),
             scrollback_pending: false,
             screen_entered: false,
             start_time: Instant::now(),
@@ -2340,7 +2444,7 @@ impl<T: TerminalIo> App<T> {
                 switched,
                 result,
                 state,
-                messages,
+                history,
                 label,
             } => {
                 match &self.latest_session_switch {
@@ -2383,9 +2487,9 @@ impl<T: TerminalIo> App<T> {
                     // to the session we just left.
                     self.adopt_session_identity(&target);
                     self.restore_session_input();
-                    match messages {
-                        Ok(messages) => {
-                            self.apply_messages(Ok(messages));
+                    match history {
+                        Ok(page) => {
+                            self.apply_history_page(&target, Ok(page));
                             self.add_system_message(format!("Switched to session: {label}"));
                         }
                         Err(err) => {
@@ -2394,7 +2498,7 @@ impl<T: TerminalIo> App<T> {
                             // though the new one could not be loaded — it
                             // would otherwise read as this session's history
                             // while a prompt typed here goes to `target`.
-                            self.chat.clear_messages();
+                            self.clear_transcript(&target);
                             self.add_system_message(format!(
                                 "Switched to session: {label} — its transcript could not be \
                                  loaded ({err})."
@@ -2420,19 +2524,20 @@ impl<T: TerminalIo> App<T> {
                 tokio::spawn(async move {
                     let fork_result = client.fork(&entry_id).await;
                     let mut state = None;
-                    let mut messages = Ok(Value::Null);
+                    let mut history = Ok(Value::Null);
                     if let Ok(ref v) = fork_result {
                         let cancelled =
                             v.get("cancelled").and_then(Value::as_bool).unwrap_or(false);
                         if !cancelled {
                             state = client.get_state().await.ok();
-                            messages = client.get_messages().await;
+                            history =
+                                load_history_tail(&client, &client.get_current_session_id()).await;
                         }
                     }
                     let _ = tx.send(UiCmd::ForkDone {
                         fork_result,
                         state,
-                        messages,
+                        history,
                         label,
                     });
                 });
@@ -2440,7 +2545,7 @@ impl<T: TerminalIo> App<T> {
             UiCmd::ForkDone {
                 fork_result,
                 state,
-                messages,
+                history,
                 label,
             } => {
                 match fork_result {
@@ -2452,7 +2557,8 @@ impl<T: TerminalIo> App<T> {
                                 self.apply_refresh_state(s);
                             }
                             self.restore_session_input();
-                            self.apply_messages(messages);
+                            let session_id = self.state.session_id.clone();
+                            self.apply_history_page(&session_id, history);
                             self.add_system_message(format!("Forked from {label}."));
                         }
                     }
@@ -2469,7 +2575,8 @@ impl<T: TerminalIo> App<T> {
                         // The new session has no history — drop the previous
                         // transcript, or the old conversation stays on screen
                         // and /new looks like it did nothing.
-                        self.chat.clear_messages();
+                        let session_id = self.state.session_id.clone();
+                        self.clear_transcript(&session_id);
                         self.restore_session_input();
                         self.add_system_message("New session started.".into());
                     }
@@ -2479,7 +2586,7 @@ impl<T: TerminalIo> App<T> {
             UiCmd::CloneDone {
                 result,
                 state,
-                messages,
+                history,
             } => match result {
                 Ok(v) => {
                     let cancelled = v.get("cancelled").and_then(Value::as_bool).unwrap_or(false);
@@ -2487,12 +2594,18 @@ impl<T: TerminalIo> App<T> {
                         if let Some(s) = state {
                             self.apply_refresh_state(s);
                         }
-                        self.apply_messages(messages);
+                        let session_id = self.state.session_id.clone();
+                        self.apply_history_page(&session_id, history);
                         self.add_system_message("Session cloned — continue in new branch.".into());
                     }
                 }
                 Err(err) => self.add_system_message(format!("Failed to clone session: {err}")),
             },
+            UiCmd::HistoryPageLoaded {
+                session_id,
+                before,
+                result,
+            } => self.prepend_history_page(&session_id, before, result),
             UiCmd::ModelSelected(item) => {
                 let client = self.client.clone();
                 let tx = self.op_tx.clone();
@@ -3338,12 +3451,11 @@ impl<T: TerminalIo> App<T> {
         }
     }
 
-    /// Awaited session-message load (startup path):
-    /// `await this.loadSessionMessages()`.
+    /// Awaited history load (startup path): `await this.loadSessionMessages()`.
     async fn load_messages_direct(&mut self) {
-        if let Ok(messages) = self.client.get_messages().await {
-            self.apply_messages(Ok(messages));
-        }
+        let session_id = self.state.session_id.clone();
+        let page = load_history_tail(&self.client, &session_id).await;
+        self.apply_history_page(&session_id, page);
     }
 
     pub async fn stop_async(&mut self) {
@@ -4136,6 +4248,7 @@ impl<T: TerminalIo> App<T> {
             KeyAction::CopyLastMessage => self.copy_last_assistant_message(),
             KeyAction::ScrollChatUpPage => {
                 self.chat.scroll_up(self.terminal.rows() as usize);
+                self.maybe_load_older_history();
                 self.request_render(false);
             }
             KeyAction::ScrollChatDownPage => {
@@ -4144,6 +4257,7 @@ impl<T: TerminalIo> App<T> {
             }
             KeyAction::ScrollChatUpLine => {
                 self.chat.scroll_up(3);
+                self.maybe_load_older_history();
                 self.request_render(false);
             }
             KeyAction::ScrollChatDownLine => {
@@ -5294,19 +5408,21 @@ impl<T: TerminalIo> App<T> {
                     tokio::spawn(async move {
                         let result = client.clone_session().await;
                         let mut state = None;
-                        let mut messages = Ok(Value::Null);
+                        let mut history = Ok(Value::Null);
                         if let Ok(ref v) = result {
                             let cancelled =
                                 v.get("cancelled").and_then(Value::as_bool).unwrap_or(false);
                             if !cancelled {
                                 state = client.get_state().await.ok();
-                                messages = client.get_messages().await;
+                                history =
+                                    load_history_tail(&client, &client.get_current_session_id())
+                                        .await;
                             }
                         }
                         let _ = tx.send(UiCmd::CloneDone {
                             result,
                             state,
-                            messages,
+                            history,
                         });
                     });
                 }
@@ -7764,7 +7880,7 @@ impl<T: TerminalIo> App<T> {
     }
 
     /// Switch-session flow (sessions/tree overlays): switch → refresh →
-    /// load messages → message. The overlay hides when the flow completes.
+    /// load history → message. The overlay hides when the flow completes.
     fn spawn_switch_flow(&mut self, session_id: &str, label: String) {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
@@ -7786,18 +7902,65 @@ impl<T: TerminalIo> App<T> {
             });
             let result = outcome.map(|_| ());
             let mut state = None;
-            let mut messages = Ok(Value::Null);
+            let mut history = Ok(Value::Null);
             if switched {
                 state = client.get_state().await.ok();
-                messages = client.get_messages().await;
+                history = load_history_tail(&client, &sid).await;
             }
             let _ = tx.send(UiCmd::SessionSwitched {
                 target: sid,
                 switched,
                 result,
                 state,
-                messages,
+                history,
                 label,
+            });
+        });
+    }
+
+    /// Drop the transcript and its paging/scrollback anchors together.
+    ///
+    /// A transcript that is replaced wholesale has three pieces of state that
+    /// only mean something relative to it: the older-history cursor, the
+    /// scrollback watermark's alignment, and the chat itself. Clearing them in
+    /// one place is what keeps a stale cursor from being applied to the next
+    /// session — or from paging `get_session_entries` for a session nobody is
+    /// looking at.
+    fn clear_transcript(&mut self, session_id: &str) {
+        self.chat.clear_messages();
+        self.history.rebase();
+        self.history_paging.reset(session_id);
+    }
+
+    /// A scroll reached the top of the transcript: fetch the next older page.
+    ///
+    /// Driven by the upward scroll *keys* rather than by the scroll result: a
+    /// tail page shorter than the viewport cannot scroll at all (`scroll_up`
+    /// reports `false` because it is already at the top), and that is exactly
+    /// when a user has nothing else to press. Only the app's own scroll keys
+    /// come through here, so this never fires while reading the middle of the
+    /// transcript.
+    fn maybe_load_older_history(&mut self) {
+        if !self.chat.is_at_top() || !self.history_paging.has_more || self.history_paging.loading {
+            return;
+        }
+        let session_id = self.state.session_id.clone();
+        if self.history_paging.session_id != session_id {
+            return;
+        }
+        let before = self.history_paging.next_before;
+        self.history_paging.loading = true;
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .session_older_page(&session_id, before)
+                .await
+                .map(|page| page.to_value());
+            let _ = tx.send(UiCmd::HistoryPageLoaded {
+                session_id,
+                before,
+                result,
             });
         });
     }
@@ -7962,25 +8125,89 @@ impl<T: TerminalIo> App<T> {
         }
     }
 
-    // ─── Session messages / settings ───────────────────────────────────
+    // ─── Session history / settings ────────────────────────────────────
 
-    /// Reconstruct chat from `get_messages` (TS `loadSessionMessages`).
-    fn apply_messages(&mut self, messages: Result<Value, String>) {
-        let Ok(value) = messages else { return };
-        let list = value
-            .get("messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
+    /// Adopt a freshly loaded page of a session's history: the transcript is
+    /// replaced and the older-history cursor is set from the page.
+    ///
+    /// `page` is the raw `get_session_entries` payload
+    /// (`{entries, hasMore, nextOffset}`); an error leaves the transcript
+    /// alone (the caller reports it) because a failed load is not an empty
+    /// session.
+    fn apply_history_page(&mut self, session_id: &str, page: Result<Value, String>) {
+        let Ok(page) = page else { return };
+        let parsed = SessionEntriesPage::from_value(&page);
         self.chat.clear_messages();
+        // The transcript is rebuilt from scratch, so the scrollback watermark
+        // anchors to the new render's own first row again.
+        self.history.rebase();
+        self.push_history_rows(&parsed.entries);
+        self.history_paging.adopt(session_id, &parsed, i64::MAX);
+        self.request_render(true);
+    }
 
+    /// Prepend an older page above the transcript, keeping the user's place.
+    fn prepend_history_page(&mut self, session_id: &str, before: i64, page: Result<Value, String>) {
+        if session_id != self.state.session_id || session_id != self.history_paging.session_id {
+            // The user moved on while this page was in flight; its rows belong
+            // to a transcript that is no longer on screen.
+            return;
+        }
+        let parsed = match page {
+            Ok(page) => SessionEntriesPage::from_value(&page),
+            Err(err) => {
+                self.history_paging.failed();
+                self.add_system_message(format!("Failed to load older history: {err}"));
+                return;
+            }
+        };
+        let messages = Self::history_rows_to_messages(&parsed.entries);
+        // A load is triggered by scrolling up at the top, so the reader is
+        // normally still there when the page lands: anchoring the viewport (what
+        // `prepend_messages` does) would leave the screen unchanged and the
+        // loaded rows invisible above it. Show them instead — one viewport of
+        // older content, the way the terminal's own scrollback pages. A reader
+        // who moved in the meantime is anchored, not yanked.
+        let was_at_top = self.chat.is_at_top();
+        let added = self.chat.prepend_messages(messages);
+        // Those rows sit above everything already handed to the scrollback,
+        // which is append-only — realign the watermark so the next flush does
+        // not take the transcript for new content and write it twice.
+        self.history.shift(added);
+        if was_at_top {
+            // Reading back is not following the tail any more: without this the
+            // next streamed row would drag the view away from the page the
+            // reader just asked for.
+            self.chat.set_auto_scroll(false);
+            self.chat.scroll_up(self.chat.viewport_height());
+        }
+        self.history_paging.adopt(session_id, &parsed, before);
+        self.request_render(true);
+    }
+
+    /// Append history rows to the transcript (first load / whole-session
+    /// rebuild), in order.
+    fn push_history_rows(&mut self, rows: &[Value]) {
+        for message in Self::history_rows_to_messages(rows) {
+            self.chat.add_message(message);
+        }
+    }
+
+    /// Map journal/history rows to chat messages.
+    ///
+    /// The rows are the agent's display projection in either shape it serves:
+    /// `get_session_entries` rows (`kind` + `blocks`) or the legacy
+    /// `get_messages` LLM rows (`role` + `blocks`). Both carry the same block
+    /// vocabulary, so one mapper renders history and today's live/replayed
+    /// conversation identically. Rows the transcript has no place for
+    /// (`session_info`, run markers, empty bodies) are dropped.
+    fn history_rows_to_messages(rows: &[Value]) -> Vec<ChatMessage> {
         // A `tool_result` block carries only the call id — the display name and
         // arguments live on the matching `tool_call` block. Index those first so
         // replayed tool messages render like live ones instead of falling back
         // to the raw call id (`call_00_...`).
         let mut tool_calls: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-        for msg in &list {
+        for msg in rows {
             let Some(blocks) = msg.get("blocks").and_then(Value::as_array) else {
                 continue;
             };
@@ -8007,11 +8234,12 @@ impl<T: TerminalIo> App<T> {
             }
         }
 
-        for msg in list {
+        let mut messages = Vec::new();
+        for msg in rows {
             let Some(obj) = msg.as_object() else { continue };
             if obj.get("kind").and_then(Value::as_str) == Some("compaction") {
                 let checkpoint = &obj["checkpoint"];
-                self.chat.add_message(ChatMessage::new(
+                messages.push(ChatMessage::new(
                     obj.get("id")
                         .and_then(Value::as_str)
                         .unwrap_or("compaction")
@@ -8095,10 +8323,9 @@ impl<T: TerminalIo> App<T> {
                     },
                 );
             }
-            self.chat.add_message(cm);
+            messages.push(cm);
         }
-
-        self.request_render(true);
+        messages
     }
 
     fn load_tui_settings(&mut self) {
@@ -11260,6 +11487,16 @@ mod tests {
         system_messages(app).last().cloned().unwrap_or_default()
     }
 
+    /// The whole transcript as plain text, for substring assertions.
+    fn plain_text(app: &App<FakeTerminal>) -> String {
+        app.chat
+            .plain_messages()
+            .into_iter()
+            .map(|(_, content)| content)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn sample_models() -> Vec<ModelInfo> {
         vec![
             serde_json::from_value(json_parse(
@@ -11411,7 +11648,12 @@ mod tests {
     #[tokio::test]
     async fn compaction_checkpoints_are_visible_in_reloaded_history() {
         let (mut app, _rx) = make_app(100, 30);
-        app.apply_messages(Ok(json_parse(r#"{"messages":[{"id":"cp","kind":"compaction","role":"system","checkpoint":{"tokensBefore":33064,"tokensAfter":11900}}]}"#)));
+        app.apply_history_page(
+            "s1",
+            Ok(json_parse(
+                r#"{"entries":[{"id":"cp","kind":"compaction","role":"system","checkpoint":{"tokensBefore":33064,"tokensAfter":11900}}]}"#,
+            )),
+        );
         assert!(last_system(&app).contains("33064 → 11900"));
     }
 
@@ -11658,7 +11900,7 @@ mod tests {
             switched: false,
             result: Err("nope".into()),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
             label: "l".into(),
         });
         assert!(last_system(&app).contains("Failed to switch session"));
@@ -11668,7 +11910,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(
+            history: Ok(json_parse(
                 r#"{"messages":[{"id":"m1","role":"user","content":"hi"}]}"#,
             )),
             label: "target".into(),
@@ -11711,20 +11953,20 @@ mod tests {
         app.handle_cmd(UiCmd::ForkDone {
             fork_result: Ok(json_parse(r#"{"cancelled":true}"#)),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
             label: "l".into(),
         });
         app.handle_cmd(UiCmd::ForkDone {
             fork_result: Ok(json_parse(r#"{"cancelled":false}"#)),
             state: Some(sample_state()),
-            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            history: Ok(json_parse(r#"{"messages":[]}"#)),
             label: "l".into(),
         });
         assert!(last_system(&app).contains("Forked from l."));
         app.handle_cmd(UiCmd::ForkDone {
             fork_result: Err("x".into()),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
             label: "l".into(),
         });
         assert!(last_system(&app).contains("Failed to fork"));
@@ -11749,18 +11991,18 @@ mod tests {
         app.handle_cmd(UiCmd::CloneDone {
             result: Ok(json_parse(r#"{"cancelled":true}"#)),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
         });
         app.handle_cmd(UiCmd::CloneDone {
             result: Ok(json_parse(r#"{"cancelled":false}"#)),
             state: Some(sample_state()),
-            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            history: Ok(json_parse(r#"{"messages":[]}"#)),
         });
         assert!(last_system(&app).contains("Session cloned"));
         app.handle_cmd(UiCmd::CloneDone {
             result: Err("x".into()),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
         });
         assert!(last_system(&app).contains("Failed to clone session"));
 
@@ -11843,7 +12085,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Err("boom".into()),
+            history: Err("boom".into()),
             label: "target".into(),
         });
         let texts: Vec<String> = app
@@ -11885,7 +12127,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: None,
-            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            history: Ok(json_parse(r#"{"messages":[]}"#)),
             label: "target".into(),
         });
         assert_eq!(app.state.session_id, "target");
@@ -11920,7 +12162,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(&format!(
+            history: Ok(json_parse(&format!(
                 r#"{{"messages":[{}]}}"#,
                 new_messages.join(",")
             ))),
@@ -11954,7 +12196,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(
+            history: Ok(json_parse(
                 r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
             )),
             label: "first".into(),
@@ -11982,7 +12224,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(
+            history: Ok(json_parse(
                 r#"{"messages":[{"id":"s1","role":"user","blocks":[{"kind":"text","text":"second-session-question"}]}]}"#,
             )),
             label: "second".into(),
@@ -12031,7 +12273,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(
+            history: Ok(json_parse(
                 r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
             )),
             label: "first".into(),
@@ -12068,7 +12310,7 @@ mod tests {
             switched: false,
             result: Ok(()),
             state: None,
-            messages: Ok(Value::Null),
+            history: Ok(Value::Null),
             label: "target".into(),
         });
         let texts: Vec<String> = app
@@ -12158,7 +12400,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(sample_state()),
-            messages: Ok(json_parse(
+            history: Ok(json_parse(
                 r#"{"messages":[{"id":"p1","role":"user","blocks":[{"kind":"text","text":"picked-session-question"}]}]}"#,
             )),
             label: "picked".into(),
@@ -12198,7 +12440,7 @@ mod tests {
             switched: true,
             result: Ok(()),
             state: Some(state),
-            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            history: Ok(json_parse(r#"{"messages":[]}"#)),
             label: "target".into(),
         });
         assert_eq!(app.state.session_name.as_deref(), Some("target name"));
@@ -12873,18 +13115,23 @@ mod tests {
         assert!(joined.contains("[skills] alpha, beta"));
         assert!(joined.contains("[Extensions]"));
 
-        // apply_messages reconstructs user/assistant/tool + skips the rest.
-        app.apply_messages(Ok(json_parse(
-            r#"{"messages":[
-              {"id":"m1","role":"user","blocks":[{"kind":"text","text":"q"}]},
-              {"id":"m2","role":"assistant","blocks":[{"kind":"text","text":"a1"},{"kind":"text","text":"a2"},{"kind":"tool_call","toolCallId":"call","name":"read","arguments":{"path":"/tmp/notes.txt"}}]},
-              {"id":"m3","role":"tool","blocks":[{"kind":"tool_result","text":"tool out","toolCallId":"call","isError":false}]},
-              {"id":"m4","role":"system","blocks":[{"kind":"text","text":"skipped"}]},
-              {"id":"m5","role":"assistant"},
-              {"role":"user","blocks":[{"kind":"text","text":"no id"}]},
-              {"id":"m6","role":"user","blocks":[]}
+        // The history mapper rebuilds user/assistant/tool + skips the rest.
+        // Rows arrive entries-shaped (`kind`) or as the legacy `messages`
+        // shape; both go through the same mapper.
+        app.apply_history_page(
+            "s1",
+            Ok(json_parse(
+                r#"{"entries":[
+              {"id":"m1","kind":"user","role":"user","blocks":[{"kind":"text","text":"q"}]},
+              {"id":"m2","kind":"assistant","role":"assistant","blocks":[{"kind":"text","text":"a1"},{"kind":"text","text":"a2"},{"kind":"tool_call","toolCallId":"call","name":"read","arguments":{"path":"/tmp/notes.txt"}}]},
+              {"id":"m3","kind":"tool","role":"tool","blocks":[{"kind":"tool_result","text":"tool out","toolCallId":"call","isError":false}]},
+              {"id":"m4","kind":"session_info","role":"system","blocks":[{"kind":"text","text":"skipped"}]},
+              {"id":"m5","kind":"assistant","role":"assistant"},
+              {"kind":"user","role":"user","blocks":[{"kind":"text","text":"no id"}]},
+              {"id":"m6","kind":"user","role":"user","blocks":[]}
             ]}"#,
-        )));
+            )),
+        );
         let texts: Vec<String> = app
             .chat
             .plain_messages()
@@ -12900,11 +13147,11 @@ mod tests {
         let rendered = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
         assert!(rendered.contains("read /tmp/notes.txt"), "{rendered}");
         assert!(!rendered.contains(" call"), "{rendered}");
-        // apply_messages with an error is a no-op; an empty list clears.
+        // apply_history_page with an error is a no-op; an empty page clears.
         let before = app.chat.plain_messages().len();
-        app.apply_messages(Err("x".into()));
+        app.apply_history_page("s1", Err("x".into()));
         assert_eq!(app.chat.plain_messages().len(), before);
-        app.apply_messages(Ok(json_parse(r#"{"messages":[]}"#)));
+        app.apply_history_page("s1", Ok(json_parse(r#"{"entries":[]}"#)));
         assert!(app.chat.plain_messages().is_empty());
     }
 
@@ -13044,6 +13291,35 @@ mod tests {
         /// SYNs sent to a just-closed port until the next listener binds,
         /// which made the retry setup connect on its very first attempt.)
         not_ready: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// Page script for `get_session_entries`, keyed by the `before` cursor
+        /// the client sent (`i64::MAX` = the tail read). A cursor the script
+        /// does not mention answers an empty final page; no script at all is an
+        /// agent with no indexed history for the session, which is also how the
+        /// `get_messages` fallback is reached.
+        history_pages:
+            Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i64, String>>>>,
+    }
+
+    /// `get_session_entries` page payload: `entries` of `(id, role, text)` plus
+    /// the continuation cursor.
+    fn entries_page(rows: &[(&str, &str, &str)], has_more: bool, next_offset: i64) -> String {
+        let entries: Vec<Value> = rows
+            .iter()
+            .map(|(id, role, text)| {
+                serde_json::json!({
+                    "id": id,
+                    "kind": role,
+                    "role": role,
+                    "blocks": [{"kind": "text", "text": text}],
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "entries": entries,
+            "hasMore": has_more,
+            "nextOffset": next_offset,
+        })
+        .to_string()
     }
 
     #[tonic::async_trait]
@@ -13109,6 +13385,35 @@ mod tests {
                     success: false,
                     error: "agent starting".into(),
                     ..Default::default()
+                }));
+            }
+            // Paged history: the cursor the client sent picks the page (see
+            // `history_pages`). A cursor the script does not mention is an agent
+            // with no indexed history for this session — empty, not an error,
+            // which is also how the `get_messages` fallback is reached.
+            if cmd.r#type == "get_session_entries" {
+                let fail = self.fail.contains(&cmd.r#type);
+                let data = self
+                    .history_pages
+                    .as_ref()
+                    .and_then(|pages| {
+                        pages
+                            .lock()
+                            .unwrap()
+                            .get(&cmd.before.unwrap_or(i64::MAX))
+                            .cloned()
+                    })
+                    .unwrap_or_else(|| r#"{"entries":[]}"#.to_string());
+                return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: !fail,
+                    data,
+                    error: if fail { "nope".into() } else { String::new() },
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
                 }));
             }
             let fail = self.fail.contains(&cmd.r#type);
@@ -13244,6 +13549,598 @@ mod tests {
         assert!(joined.contains("[Extensions]"));
         app.stop();
         assert!(!app.is_running());
+    }
+
+    // ─── Paged history ───────────────────────────────────────────────
+
+    /// A `--session` startup reads the session's history as one backward page:
+    /// `get_session_entries` with the tail cursor, never `get_messages` (whose
+    /// response has no cursor and has to carry the whole session).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_loads_the_history_tail_through_the_pager() {
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([(
+                    i64::MAX,
+                    entries_page(&[("e1", "user", "old question")], true, 3),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+
+        let history: Vec<_> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "get_session_entries")
+            .map(|cmd| (cmd.before, cmd.limit, cmd.session_id.clone()))
+            .collect();
+        assert_eq!(history, vec![(Some(i64::MAX), Some(10), "s1".to_string())]);
+        assert!(
+            !requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|cmd| cmd.r#type == "get_messages"),
+            "a page was served, so the uncapped read is never asked for"
+        );
+        let joined = plain_text(&app);
+        assert!(joined.contains("old question"), "{joined}");
+        // The cursor is live: there is more above.
+        assert!(app.history_paging.has_more);
+        assert_eq!(app.history_paging.next_before, 3);
+        app.stop();
+    }
+
+    /// Scrolling up at the top of the transcript fetches the next older page and
+    /// shows it — the pages are what makes a long session scrollable instead of
+    /// one unbounded response.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scrolling_up_at_the_top_prepends_the_older_page() {
+        // Enough rows that the tail page cannot fit the app's viewport, so the
+        // reader has somewhere to scroll to before the load can trigger.
+        let tail_rows: Vec<(String, String, String)> = (0..20)
+            .map(|i| {
+                (
+                    format!("t{i}"),
+                    if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                    format!("tail-{i}"),
+                )
+            })
+            .collect();
+        let tail_refs: Vec<(&str, &str, &str)> = tail_rows
+            .iter()
+            .map(|(id, role, text)| (id.as_str(), role.as_str(), text.as_str()))
+            .collect();
+        let older_refs: Vec<(&str, &str, &str)> = vec![
+            ("o0", "user", "old-0"),
+            ("o1", "assistant", "old-1"),
+            ("o2", "user", "old-2"),
+            ("o3", "assistant", "old-3"),
+        ];
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([
+                    (i64::MAX, entries_page(&tail_refs, true, 2)),
+                    (2, entries_page(&older_refs, false, 0)),
+                ]),
+            ))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.chat.render(100);
+        app.chat.scroll_to_bottom();
+        assert!(!app.chat.is_at_top(), "the tail page exceeds the viewport");
+        // Walk to the very top (the number of page-ups depends on the terminal
+        // height, which is not what this test is about).
+        while app.chat.scroll_up(1_000) {}
+        assert!(app.chat.is_at_top());
+
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+
+        let cursors: Vec<_> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "get_session_entries")
+            .map(|cmd| cmd.before)
+            .collect();
+        assert_eq!(cursors, vec![Some(i64::MAX), Some(2)]);
+        let transcript = plain_text(&app);
+        assert!(
+            transcript.contains("old-0"),
+            "the older page arrived: {transcript}"
+        );
+        let old = transcript.find("old-0").unwrap();
+        let tail = transcript.find("tail-0").unwrap();
+        assert!(old < tail, "the older rows go above the tail page");
+        // The reader is looking at history, not at the tail.
+        assert!(
+            !app.chat.auto_scroll(),
+            "the view is not following the tail"
+        );
+        // The final page carries no continuation, so paging stops — and another
+        // scroll-up past the top must not ask again.
+        assert!(!app.history_paging.has_more);
+        assert!(!app.history_paging.loading);
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|cmd| cmd.r#type == "get_session_entries")
+                .count(),
+            2
+        );
+        app.stop();
+    }
+
+    /// The loaded page must be *visible*: a reader pinned at the top who gets
+    /// their transcript anchored would see no change at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_loaded_page_is_revealed_not_hidden_above_the_viewport() {
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([
+                    (i64::MAX, entries_page(&[("t0", "user", "tail-0")], true, 1)),
+                    (
+                        1,
+                        entries_page(
+                            &[("o0", "user", "old-0"), ("o1", "assistant", "old-1")],
+                            false,
+                            0,
+                        ),
+                    ),
+                ]),
+            ))),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.chat.render(100);
+        assert!(
+            app.chat.is_at_top(),
+            "the short tail page fits the viewport"
+        );
+
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+
+        let visible = crate::utils::strip_ansi_codes(&app.chat.render(100).join("\n"));
+        assert!(
+            visible.contains("old-0") && visible.contains("old-1"),
+            "the loaded page is on screen: {visible}"
+        );
+        // Reading back stops following the tail, or the next streamed row would
+        // drag the reader away from the page they just loaded.
+        assert!(
+            !app.chat.auto_scroll(),
+            "the reader is not following the tail"
+        );
+        app.chat.add_message(ChatMessage::new(
+            "n1".into(),
+            ChatRole::Assistant,
+            "streamed",
+        ));
+        assert!(
+            !app.chat.auto_scroll(),
+            "a new row does not re-arm the follow"
+        );
+        app.stop();
+    }
+
+    /// A transcript shorter than the viewport cannot scroll, and `scroll_up`
+    /// then reports `false` — the page request is driven by the key, not by that
+    /// result, or the rest of the history would be unreachable.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_short_transcript_still_pages_from_the_top() {
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([
+                    (
+                        i64::MAX,
+                        entries_page(&[("e2", "user", "newest question")], true, 1),
+                    ),
+                    (
+                        1,
+                        entries_page(&[("e1", "user", "oldest question")], false, 0),
+                    ),
+                ]),
+            ))),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.chat.render(100);
+        assert!(
+            app.chat.is_at_top(),
+            "everything fits, so there is nothing to scroll"
+        );
+        assert!(!app.chat.scroll_up(1), "and the scroll reports it");
+
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+        let visible = crate::utils::strip_ansi_codes(&app.chat.render(100).join("\n"));
+        assert!(visible.contains("oldest question"), "{visible}");
+        assert!(!app.history_paging.has_more);
+        app.stop();
+    }
+
+    /// A scroll that has not reached the top must not fetch: the middle of a
+    /// transcript is not a page boundary.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scrolling_up_in_the_middle_does_not_page() {
+        // Tall enough that scrolling a few lines from the tail stays inside the
+        // transcript instead of reaching its top.
+        let rows: Vec<(String, String, String)> = (0..20)
+            .map(|i| {
+                (
+                    format!("t{i}"),
+                    if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                    format!("tail-{i}"),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|(id, role, text)| (id.as_str(), role.as_str(), text.as_str()))
+            .collect();
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([(
+                    i64::MAX,
+                    // A page that *would* continue, so only the scroll position
+                    // can explain a missing request.
+                    entries_page(&refs, true, 9),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.chat.render(100);
+        app.chat.scroll_to_bottom();
+        assert!(app.chat.scroll_up(3), "three lines above the tail");
+        assert!(
+            !app.chat.is_at_top() && !app.chat.is_at_bottom(),
+            "the reader is inside the transcript"
+        );
+
+        app.handle_key_action(KeyAction::ScrollChatUpLine);
+        pump(&mut app, &mut rx).await;
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|cmd| cmd.r#type == "get_session_entries")
+                .count(),
+            1,
+            "no page request while the reader is inside the transcript"
+        );
+        assert!(app.history_paging.has_more, "the cursor is untouched");
+        app.stop();
+    }
+
+    /// An agent that answers the pager with nothing still has the conversation
+    /// in its live context: the fallback read is what keeps a session from
+    /// rendering as an empty transcript.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_page_falls_back_to_the_context_messages() {
+        // No `history_pages` script: the pager answers `{"entries": []}`.
+        // (`get_messages` without `blocks` renders nothing, see `AppMockAgent`.)
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert(
+            "get_messages".to_string(),
+            r#"{"messages":[{"role":"user","blocks":[{"kind":"text","text":"from the context"}]}]}"#
+                .to_string(),
+        );
+        let mock = AppMockAgent {
+            overrides,
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+
+        let seen: Vec<_> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|cmd| cmd.r#type.clone())
+            .collect();
+        assert!(
+            seen.iter().any(|t| t == "get_messages"),
+            "the fallback ran: {seen:?}"
+        );
+        let joined = plain_text(&app);
+        assert!(joined.contains("from the context"), "{joined}");
+        // A single whole-history response carries no cursor: paging is off.
+        assert!(!app.history_paging.has_more);
+        app.stop();
+    }
+
+    /// An agent that predates the pager (or cannot read its index) fails the
+    /// command — the same fallback applies, so version skew cannot blank a
+    /// transcript.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failing_pager_falls_back_to_the_context_messages() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert(
+            "get_messages".to_string(),
+            r#"{"messages":[{"role":"user","blocks":[{"kind":"text","text":"legacy context"}]}]}"#
+                .to_string(),
+        );
+        let mock = AppMockAgent {
+            overrides,
+            fail: std::collections::HashSet::from(["get_session_entries".to_string()]),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        let joined = plain_text(&app);
+        assert!(joined.contains("legacy context"), "{joined}");
+        assert!(!app.history_paging.has_more);
+        app.stop();
+    }
+
+    /// Both reads failing is a real failure: the switch reports it (keeping the
+    /// pager's error, which names the storage it wanted) and the previous
+    /// session's transcript comes off the screen — a stale conversation under a
+    /// prompt that now addresses another session is worse than a blank one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_history_load_is_reported_and_leaves_no_stale_transcript() {
+        let mut fail = std::collections::HashSet::new();
+        fail.insert("get_session_entries".to_string());
+        fail.insert("get_messages".to_string());
+        let mock = AppMockAgent {
+            fail,
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        // The pager failed and its fallback failed too, so there is no history
+        // and, crucially, no cursor pretending there is.
+        assert!(!app.history_paging.has_more);
+        assert!(!app.history_paging.loading);
+        assert!(!plain_text(&app).contains("question"));
+
+        // A transcript was on screen (the reader switched away from it): the
+        // switch failure must clear it rather than label it as the new session's.
+        app.apply_history_page(
+            "old-session",
+            Ok(json_parse(&entries_page(
+                &[("e1", "user", "stale question")],
+                false,
+                0,
+            ))),
+        );
+        assert!(plain_text(&app).contains("stale question"));
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "s1".into(),
+            switched: true,
+            result: Ok(()),
+            state: None,
+            history: Err("get_session_entries failed: nope".into()),
+            label: "other".into(),
+        });
+        assert!(!plain_text(&app).contains("stale question"));
+        let notice = last_system(&app);
+        assert!(notice.contains("could not be loaded"), "{notice}");
+        assert!(
+            notice.contains("get_session_entries failed: nope"),
+            "{notice}"
+        );
+        // And the transcript does not keep offering to page the old session.
+        assert!(!app.history_paging.has_more);
+        app.stop();
+    }
+
+    /// A page that claims more history without moving the cursor is the end of
+    /// the line: paging stops instead of re-fetching the same page on every
+    /// scroll.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_non_advancing_page_stops_paging() {
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([(
+                    i64::MAX,
+                    // `hasMore` but the cursor stays where the request started.
+                    entries_page(&[("e9", "user", "last question")], true, i64::MAX),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        assert!(
+            !app.history_paging.has_more,
+            "a stalled cursor is not a continuation"
+        );
+
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+        assert_eq!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|cmd| cmd.r#type == "get_session_entries")
+                .count(),
+            1,
+            "the stalled cursor is never re-requested"
+        );
+        app.stop();
+    }
+
+    /// A page whose session is no longer on screen is dropped: its rows belong
+    /// to a transcript the user has left.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_page_for_a_left_session_is_dropped() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "current".into();
+        app.chat
+            .add_message(ChatMessage::new("e1".into(), ChatRole::User, "on screen"));
+        app.history_paging.session_id = "current".into();
+        app.history_paging.has_more = true;
+        app.history_paging.next_before = 4;
+        app.history_paging.loading = true;
+
+        app.handle_cmd(UiCmd::HistoryPageLoaded {
+            session_id: "left-behind".into(),
+            before: 4,
+            result: Ok(json_parse(&entries_page(
+                &[("old", "user", "older")],
+                false,
+                0,
+            ))),
+        });
+        assert_eq!(app.chat.plain_messages().len(), 1);
+        assert!(!last_system(&app).contains("older"));
+        // An in-flight request that failed is the only thing that clears the
+        // loading flag for its own session.
+        assert!(app.history_paging.loading, "a foreign page changes nothing");
+
+        app.handle_cmd(UiCmd::HistoryPageLoaded {
+            session_id: "current".into(),
+            before: 4,
+            result: Err("pager down".into()),
+        });
+        assert!(!app.history_paging.loading, "the retry is unblocked");
+        assert!(app.history_paging.has_more, "the cursor keeps its position");
+        assert!(last_system(&app).contains("Failed to load older history: pager down"));
+    }
+
+    /// The scrollback is append-only, so rows loaded above it can never be
+    /// written there — but they must not make the next flush re-emit the whole
+    /// transcript either.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepending_history_does_not_duplicate_the_scrollback() {
+        let mock = AppMockAgent {
+            history_pages: Some(std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::from([
+                    (
+                        i64::MAX,
+                        entries_page(&[("e2", "user", "second question")], true, 1),
+                    ),
+                    (
+                        1,
+                        entries_page(&[("e1", "user", "first question")], false, 0),
+                    ),
+                ]),
+            ))),
+            ..Default::default()
+        };
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(
+            &addr,
+            &CliOptions {
+                session: Some("s1".into()),
+                ..Default::default()
+            },
+        );
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        app.flush_scrollback(false);
+        let first = app.history.watermark_len();
+        assert!(first > 0, "the tail page reached the scrollback");
+
+        app.chat.set_viewport_height(40);
+        app.chat.render(100);
+        app.handle_key_action(KeyAction::ScrollChatUpPage);
+        pump(&mut app, &mut rx).await;
+        assert!(plain_text(&app).contains("first question"));
+
+        app.flush_scrollback(false);
+        assert_eq!(
+            app.history.watermark_len(),
+            first,
+            "the older rows are above the scrollback, and nothing was re-emitted"
+        );
+        app.stop();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -14142,10 +15039,13 @@ mod tests {
         app.handle_key("escape"); // → OverlayCancel through the channel
         pump_until_no_overlay(&mut app, &mut rx).await;
 
-        // apply_messages: tool message with an Error prefix.
-        app.apply_messages(Ok(json_parse(
-            r#"{"messages":[{"id":"t1","role":"tool","blocks":[{"kind":"tool_result","text":"Error: failed","toolCallId":"call","isError":true}]}]}"#,
-        )));
+        // A replayed tool message with an Error prefix.
+        app.apply_history_page(
+            "s1",
+            Ok(json_parse(
+                r#"{"entries":[{"id":"t1","kind":"tool","role":"tool","blocks":[{"kind":"tool_result","text":"Error: failed","toolCallId":"call","isError":true}]}]}"#,
+            )),
+        );
         let last = app.chat.plain_messages().last().unwrap().clone();
         assert!(last.1.contains("Error: failed"));
 
@@ -18620,13 +19520,16 @@ mod tests {
     #[tokio::test]
     async fn session_replay_accepts_string_arguments_and_skips_blockless_messages() {
         let (mut app, _rx) = make_app(100, 30);
-        app.apply_messages(Ok(json_parse(
-            r#"{"messages":[
-              {"id":"m0","role":"user","blocks":"not-an-array"},
-              {"id":"m1","role":"assistant","blocks":[{"kind":"tool_call","toolCallId":"c1","name":"read","arguments":"{\"path\":\"/tmp/x\"}"},{"kind":"tool_call","name":"ghost"},{"kind":"tool_call","toolCallId":"","name":"ghost"}]},
-              {"id":"m2","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"c1","text":"tool out","isError":false}]}
+        app.apply_history_page(
+            "s1",
+            Ok(json_parse(
+                r#"{"entries":[
+              {"id":"m0","kind":"user","role":"user","blocks":"not-an-array"},
+              {"id":"m1","kind":"assistant","role":"assistant","blocks":[{"kind":"tool_call","toolCallId":"c1","name":"read","arguments":"{\"path\":\"/tmp/x\"}"},{"kind":"tool_call","name":"ghost"},{"kind":"tool_call","toolCallId":"","name":"ghost"}]},
+              {"id":"m2","kind":"tool","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"c1","text":"tool out","isError":false}]}
             ]}"#,
-        )));
+            )),
+        );
         // The body is only in the transcript once it is asked for (`ctrl+g`).
         app.chat.set_tool_output_expanded(true);
         let text = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));

@@ -19,6 +19,7 @@
 //! "no data" answers look like; a client that reads a field it needs would
 //! then report "-"/"(none)" rather than failing the scenario.
 
+use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -287,6 +288,15 @@ const PROMPT_ACK_JSON: &str = r#"{
 
 const RUN_ID: &str = "run_mock_1";
 const SESSION_ID: &str = "mock-session-1";
+/// The session `get_session_entries` has planted history for: the second entry
+/// of `list_sessions`, which the paging scenario switches to. The harness's own
+/// session is deliberately empty, so every other golden is untouched by the
+/// TUI's move to the paged history read.
+const HISTORY_SESSION: &str = "mock-session-2";
+/// User exchanges the planted history holds: more than one page of ten (the
+/// page size `tui/src/rpc/grpc_client.rs` asks for), so a switch loads a tail
+/// that cannot contain the oldest row.
+const HISTORY_EXCHANGES: usize = 14;
 /// The tool call the streamed reply makes, and the id `/tool-output <id>`
 /// addresses.
 const TOOL_CALL_ID: &str = "call_mock_1";
@@ -340,6 +350,56 @@ impl MockAgent {
         // succeeds so a read-only /tmp cannot fail the scenario.
         let _ = std::fs::write(EXPORT_PATH, EXPORT_HTML);
         serde_json::json!({ "path": EXPORT_PATH }).to_string()
+    }
+
+    /// `get_session_entries` data — the display-history pager.
+    ///
+    /// Only [`HISTORY_SESSION`] has history: the harness's own session stays
+    /// empty, so its screens (and goldens) are exactly what they were before the
+    /// TUI read history through this pager instead of `get_messages`. The
+    /// planted session is longer than one page, and the cursor arithmetic is the
+    /// agent's (`agent/src/session/history_index.rs::read_page`): `before` is an
+    /// exclusive backward cursor, `limit` counts *user exchanges*, and the page
+    /// starts at the `limit`-th user row above `before` (or at zero).
+    fn session_entries_response(&self, cmd: &RpcCommand) -> String {
+        if cmd.session_id != HISTORY_SESSION {
+            return r#"{"entries":[]}"#.to_string();
+        }
+        let rows: Vec<Value> = (1..=HISTORY_EXCHANGES)
+            .flat_map(|i| {
+                [
+                    ("user", format!("planted-{i:02}")),
+                    ("assistant", format!("answer-{i:02}")),
+                ]
+            })
+            .enumerate()
+            .map(|(ordinal, (role, text))| {
+                serde_json::json!({
+                    "id": format!("planted-{ordinal}"),
+                    "kind": role,
+                    "role": role,
+                    "createdAtMs": 1_754_000_000_000_i64 + ordinal as i64,
+                    "blocks": [{"kind": "text", "text": text}],
+                })
+            })
+            .collect();
+        let end = cmd.before.unwrap_or(i64::MAX).clamp(0, rows.len() as i64) as usize;
+        let count = cmd.limit.unwrap_or(10).clamp(1, 100) as usize;
+        // The `count`-th user row above `before` (or the start of the history).
+        let start = rows[..end]
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row["role"] == "user")
+            .map(|(ordinal, _)| ordinal)
+            .rev()
+            .nth(count - 1)
+            .unwrap_or(0);
+        serde_json::json!({
+            "entries": &rows[start..end],
+            "hasMore": start > 0,
+            "nextOffset": start as i64,
+        })
+        .to_string()
     }
 
     /// `get_tool_output` data (`tools.rs::tool_output`): the stored result of
@@ -532,6 +592,7 @@ impl FutureAgent for MockAgent {
                     .to_string()
             }
             "get_messages" => r#"{"messages":[]}"#.to_string(),
+            "get_session_entries" => self.session_entries_response(&cmd),
             "list_sessions" => SESSIONS_JSON.to_string(),
             "prompt" => {
                 self.schedule_prompt_events(&cmd.message);

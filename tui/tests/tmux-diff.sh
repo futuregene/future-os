@@ -870,6 +870,29 @@ expect_pane_has paste-image-sent "[Image #1]" "the marker is what the message ca
 expect_pane_lacks paste-image-sent "shot.png" "neither path is in the message"
 expect_pane_lacks paste-image-sent "other.png" "neither path is in the message"
 
+# ── Paged history: a switch loads the tail, and PageUp loads older pages ────
+#
+# The transcript is read through the agent's indexed pager
+# (`get_session_entries` + a backward `before` cursor), not `get_messages`:
+# one switch loads the newest ten exchanges, and scrolling up past the top
+# fetches the rest. The mock plants fourteen exchanges in the *other* session
+# (`HISTORY_SESSION`), so this is also the only scenario whose screen is not the
+# harness session's own — which is why it runs last, just before the exit.
+submit_cmd "/sessions"
+require_text history-tail "Sessions"
+tmux send-keys -t "$RUST_PANE" Down
+tmux send-keys -t "$RUST_PANE" Enter
+# The newest planted exchange is on screen; the oldest one is one page up.
+step_when history-tail "planted-14"
+expect_pane_lacks history-tail "planted-01" "the tail page is not the whole history"
+# At the top of the loaded page, PageUp fetches the older one. Twice: the first
+# press walks to the top of a long page, the second starts the load.
+tmux send-keys -t "$RUST_PANE" PageUp
+tmux send-keys -t "$RUST_PANE" PageUp
+step_when history-older "planted-01"
+step history-older
+expect_pane_has history-older "planted-02" "the whole older page arrived, not one row"
+
 # ── Ctrl+C exit ─────────────────────────────────────────────────────────────
 tmux send-keys -t "$RUST_PANE" C-c
 sleep 4

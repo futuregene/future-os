@@ -248,6 +248,9 @@ pub fn write_history<S: HistoryScreen + ?Sized>(
 /// transcript row is never written twice.
 #[derive(Debug, Default)]
 pub struct HistoryWriter {
+    /// Index in the render the watermark starts at. Zero unless content was
+    /// inserted *above* everything already written (see [`Self::shift`]).
+    base: usize,
     /// Visible text (ANSI stripped) of every row already inserted, in order —
     /// the watermark. Stored stripped so a palette change (`/theme` repaints
     /// every row in a different color) is not mistaken for new content.
@@ -270,7 +273,28 @@ impl HistoryWriter {
     pub fn pending<'a>(&mut self, rows: &'a [String]) -> &'a [String] {
         let common = self.common_prefix(rows);
         self.written.truncate(common);
-        &rows[common.min(rows.len())..]
+        let start = (self.base + common).min(rows.len());
+        &rows[start..]
+    }
+
+    /// Re-anchor the watermark after `delta` rows appeared *above* every row it
+    /// covers.
+    ///
+    /// Older journal history loads into the transcript as the user reads back
+    /// through it, which inserts rows above the ones already in the scrollback.
+    /// The scrollback is append-only, so those rows can never be emitted there
+    /// — but without this shift the watermark would no longer line up with the
+    /// render, and the next flush would mistake the whole transcript for new
+    /// content and append a second copy of it.
+    pub fn shift(&mut self, delta: usize) {
+        self.base = self.base.saturating_add(delta);
+    }
+
+    /// Forget the alignment: the transcript was rebuilt from scratch (a session
+    /// switch, a fresh history load), so the watermark is measured against the
+    /// new render's own row 0 again.
+    pub fn rebase(&mut self) {
+        self.base = 0;
     }
 
     /// Record the slice [`Self::pending`] handed out, and how many screen rows it
@@ -311,8 +335,10 @@ impl HistoryWriter {
 
     fn common_prefix(&self, rows: &[String]) -> usize {
         let mut i = 0;
-        while i < self.written.len() && i < rows.len() {
-            if rows[i] != self.written[i] && strip_ansi_codes(&rows[i]) != self.written[i] {
+        while i < self.written.len() && self.base + i < rows.len() {
+            if rows[self.base + i] != self.written[i]
+                && strip_ansi_codes(&rows[self.base + i]) != self.written[i]
+            {
                 break;
             }
             i += 1;
@@ -625,6 +651,66 @@ mod tests {
         // The watermark still advanced, so the blank row is not re-considered.
         assert_eq!(history.watermark_len(), 1);
         assert!(history.first_insert());
+    }
+
+    /// Older history arrives *above* everything already in the scrollback.
+    ///
+    /// The scrollback is append-only, so those rows can never be written there
+    /// — but the watermark must not mistake the shifted transcript for new
+    /// content either, which is exactly what would happen without `shift`: the
+    /// next flush would append a second copy of the whole transcript.
+    #[test]
+    fn shift_keeps_the_watermark_aligned_after_rows_are_inserted_above_it() {
+        let mut history = HistoryWriter::new();
+        history.commit(&rows(&["tail-1", "tail-2"]), 2);
+
+        // A page of two older rows arrives above the transcript, and the next
+        // flush runs with the streamed tail appended.
+        history.shift(2);
+        let page1 = rows(&["old-1", "old-2", "tail-1", "tail-2", "tail-3"]);
+        assert_eq!(
+            history.pending(&page1),
+            &["tail-3".to_string()][..],
+            "only the genuinely new row is pending"
+        );
+        history.commit(&rows(&["tail-3"]), 1);
+        assert_eq!(history.inserts(), 2);
+        assert!(
+            history.pending(&page1).is_empty(),
+            "and nothing below the watermark is written twice"
+        );
+
+        // A second older page: the same realignment, still nothing to emit.
+        history.shift(2);
+        let page2 = rows(&[
+            "older-1", "older-2", "old-1", "old-2", "tail-1", "tail-2", "tail-3",
+        ]);
+        assert!(
+            history.pending(&page2).is_empty(),
+            "the prepended rows are above the scrollback"
+        );
+        // A new row below them is still emitted.
+        let grown = rows(&[
+            "older-1", "older-2", "old-1", "old-2", "tail-1", "tail-2", "tail-3", "tail-4",
+        ]);
+        assert_eq!(history.pending(&grown), &["tail-4".to_string()][..]);
+    }
+
+    /// A rebuilt transcript (`clear_messages` + a fresh page) starts over:
+    /// there is no offset to remember.
+    #[test]
+    fn rebase_forgets_the_alignment_of_a_rebuilt_transcript() {
+        let mut history = HistoryWriter::new();
+        history.commit(&rows(&["a", "b"]), 2);
+        history.shift(3);
+        history.rebase();
+
+        // The new transcript shares no prefix with the watermark, so it is
+        // written in full — the same behaviour as before any paging existed.
+        let fresh = rows(&["x", "y"]);
+        assert_eq!(history.pending(&fresh), &fresh[..]);
+        history.commit(&fresh, 2);
+        assert_eq!(history.watermark_len(), 2);
     }
 
     #[test]

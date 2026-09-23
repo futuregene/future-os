@@ -32,5 +32,5 @@
 │[39m  [38;5;245m/fork                   fork the current session[39m                            [38;5;245m│
 │[39m  [38;5;245m/help                   show all commands and shortcuts[39m                     [38;5;245m│
 │[39m  [38;5;245m/history <query>        search the session history[39m                          [38;5;245m│
-│[39m  [38;5;245m  ↓ 26 more · ↑↓ scroll[39m                                                     [38;5;245m│
+│[39m  [38;5;245m  ↓ 27 more · ↑↓ scroll[39m                                                     [38;5;245m│
 └──────────────────────────────────────────────────────────────────────────────┘
