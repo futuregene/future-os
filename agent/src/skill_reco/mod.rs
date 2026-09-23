@@ -13,8 +13,7 @@
 //! credential. The gateway's request shape differs from TypeSafe's public API
 //! (see [`build_request`]).
 //!
-//! Design constraints carried over from the offline evaluation
-//! (`demos/jev-skill-suggest/bench/REPORT.md`):
+//! Design constraints measured during the offline evaluation:
 //! - Jev never self-refuses, so refusal is the caller's job: we add a
 //!   `none_of_these` option and treat "its probability >= gate" as "no
 //!   recommendation".
