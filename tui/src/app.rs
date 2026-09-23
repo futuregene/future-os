@@ -16377,7 +16377,7 @@ mod tests {
             .append_tool_delta("t1", "one\ntwo\nthree\nfour\nfive\nsix\n");
         app.chat.finish_tool("t1", None);
         let collapsed = app.chat.render_all(100).len();
-        assert_eq!(collapsed, 1 + 4 + 1 + 1, "row + 4 lines + marker + blank");
+        assert_eq!(collapsed, 1 + 1, "row + blank");
         app.handle_key_action(KeyAction::ToggleToolOutput);
         assert!(app.chat.tool_output_expanded());
         let expanded = app.chat.render_all(100).len();
@@ -17945,6 +17945,8 @@ mod tests {
               {"id":"m2","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"c1","text":"tool out","isError":false}]}
             ]}"#,
         )));
+        // The body is only in the transcript once it is asked for (`ctrl+g`).
+        app.chat.set_tool_output_expanded(true);
         let text = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
         assert!(text.contains("tool out"), "{text}");
         assert!(
