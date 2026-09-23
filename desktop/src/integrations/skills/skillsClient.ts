@@ -23,14 +23,81 @@ export interface AvailableSkill {
   upgradeAvailable?: boolean;
 }
 
+/**
+ * The two lists, shared by every reader in this renderer.
+ *
+ * Three screens need them — the composer's mention completion, the skills page,
+ * and the recommendation hook — and each read is an RPC that opens the agent's
+ * database on the other side. Sending one message used to fire four of them
+ * (two as the composer mounted, two from the recommender), and the burst
+ * competed with session persistence for the agent's write lock: the agent
+ * logged `Session persistence failed: database is locked` immediately after a
+ * run of `list_installed_skills` / `list_available_skills`.
+ *
+ * Readers in the same tick share one in-flight request, and the resolved lists
+ * are reused until a mutation clears them (see `invalidateSkillCatalog`, called
+ * by every function below that changes what is installed). The agent stays the
+ * single source of truth: this holds no state of its own, only the answer to a
+ * question that cannot have changed in between.
+ */
+let catalog: { installed: Promise<InstalledSkill[]>; catalogue: Promise<AvailableSkill[]> } | null
+  = null;
+
 /** Installed skills, as reconciled by the Agent SkillManager. */
 export function listInstalledSkills(): Promise<InstalledSkill[]> {
-  return invokeCommand<InstalledSkill[]>("list_installed_skills");
+  return loadSkillCatalog().installed;
 }
 
 /** The platform skill catalogue. Requires the platform to be reachable. */
 export function listAvailableSkills(): Promise<AvailableSkill[]> {
-  return invokeCommand<AvailableSkill[]>("list_available_skills");
+  return loadSkillCatalog().catalogue;
+}
+
+/**
+ * Both lists, fetched together and reused until invalidated.
+ *
+ * The catalogue can fail on its own (it needs the platform); that rejection is
+ * passed through, because each caller tolerates it differently, and it clears
+ * the cache so the next call retries rather than handing every later caller the
+ * same failure.
+ */
+export function loadSkillCatalog(): {
+  installed: Promise<InstalledSkill[]>;
+  catalogue: Promise<AvailableSkill[]>;
+} {
+  if (catalog)
+    return catalog;
+  const entry = {
+    installed: invokeCommand<InstalledSkill[]>("list_installed_skills"),
+    catalogue: invokeCommand<AvailableSkill[]>("list_available_skills"),
+  };
+  // Attaching a handler (here, clearing the cache) also marks the rejection as
+  // observed, so a caller that never awaits the catalogue cannot crash the app.
+  entry.installed.catch(() => forget(entry));
+  entry.catalogue.catch(() => forget(entry));
+  catalog = entry;
+  return entry;
+}
+
+/** Drop the cached lists. Called by every mutation, so no caller can forget. */
+export function invalidateSkillCatalog(): void {
+  catalog = null;
+}
+
+/**
+ * Clear the cache once a mutation settles.
+ *
+ * Clearing *before* the call would leave a window in which a read started
+ * mid-install is cached and then outlives the install; clearing on settle means
+ * a stale list can never survive the mutation that changed it.
+ */
+function invalidateAfter<T>(call: Promise<T>): Promise<T> {
+  return call.finally(invalidateSkillCatalog);
+}
+
+function forget(entry: { installed: unknown; catalogue: unknown }): void {
+  if (catalog === entry)
+    catalog = null;
 }
 
 /** A zh/en text pair from the platform guide config. */
@@ -57,7 +124,7 @@ export function getSkillGuide(): Promise<SkillGuide> {
 
 /** Download + unpack a skill version into the app scope. */
 export function installSkill(id: string, version: string): Promise<void> {
-  return invokeCommand<void>("install_skill", { id, version });
+  return invalidateAfter(invokeCommand<void>("install_skill", { id, version }));
 }
 
 export interface SkillSyncResult {
@@ -69,17 +136,17 @@ export interface SkillSyncResult {
 
 /** Upgrade managed installs and add unseen builtins on this host. */
 export function syncSkills(): Promise<SkillSyncResult> {
-  return invokeCommand<SkillSyncResult>("sync_skills");
+  return invalidateAfter(invokeCommand<SkillSyncResult>("sync_skills"));
 }
 
 /** Remove a skill from every scope it's installed in. */
 export function uninstallSkill(id: string): Promise<boolean> {
-  return invokeCommand<boolean>("uninstall_skill", { id });
+  return invalidateAfter(invokeCommand<boolean>("uninstall_skill", { id }));
 }
 
 /** Tell the agent to drop its skills cache and re-discover immediately. */
 export function refreshSkills(): Promise<void> {
-  return invokeCommand<void>("refresh_skills");
+  return invalidateAfter(invokeCommand<void>("refresh_skills"));
 }
 
 /** One skill candidate offered to the recommender, and the recommendation shape. */
