@@ -405,7 +405,8 @@ function ComposerImpl({
    * The real send path, reached only once no recommendation is holding the
    * draft. Kept separate from `submitValue` so the intercept can fall through to
    * it without re-running the evaluation — calling `submitValue` recursively
-   * would both re-enter the intercept and be refused by the in-flight guard,
+   * would both re-enter the intercept and be refused by the in-flight guard
+   * (`recommendPendingRef`, still set while the promise chain is resolving),
    * silently swallowing the send.
    */
   function sendNow() {

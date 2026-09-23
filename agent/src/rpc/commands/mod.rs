@@ -14,6 +14,7 @@ mod run_control;
 mod session_lifecycle;
 mod session_title;
 mod settings;
+mod skills;
 
 #[cfg(test)]
 mod test_support;
@@ -104,6 +105,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "delete_session" => return session_lifecycle::cmd_delete_session(state, &cmd, id),
         "get_fork_messages" => return session_lifecycle::cmd_get_fork_messages(state, &cmd, id),
         "get_commands" => return session_lifecycle::cmd_get_commands(id),
+        "list_installed_skills"
+        | "list_available_skills"
+        | "install_skill"
+        | "uninstall_skill"
+        | "sync_skills" => return skills::handle(state, &cmd),
         // System-wide, no session needed: invalidates the skills discovery cache.
         "refresh_skills" => return providers::cmd_refresh_skills(state, id),
         // Recommend at most one uninstalled skill via Jev; sessionless.

@@ -20,9 +20,10 @@ export interface AvailableSkill {
   category: string;
   categoryZh: string;
   latestVersion: string | null;
+  upgradeAvailable?: boolean;
 }
 
-/** Installed skills, as seen by the agent (`get_commands`). */
+/** Installed skills, as reconciled by the Agent SkillManager. */
 export function listInstalledSkills(): Promise<InstalledSkill[]> {
   return invokeCommand<InstalledSkill[]>("list_installed_skills");
 }
@@ -57,6 +58,18 @@ export function getSkillGuide(): Promise<SkillGuide> {
 /** Download + unpack a skill version into the app scope. */
 export function installSkill(id: string, version: string): Promise<void> {
   return invokeCommand<void>("install_skill", { id, version });
+}
+
+export interface SkillSyncResult {
+  installed: string[];
+  upgraded: string[];
+  skipped: string[];
+  failed: string[];
+}
+
+/** Upgrade managed installs and add unseen builtins on this host. */
+export function syncSkills(): Promise<SkillSyncResult> {
+  return invokeCommand<SkillSyncResult>("sync_skills");
 }
 
 /** Remove a skill from every scope it's installed in. */

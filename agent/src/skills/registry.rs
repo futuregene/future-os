@@ -1,26 +1,26 @@
-//! Skill install/uninstall bookkeeping in agent.db.
+//! Skill inventory, history, and operation journal in agent.db.
 //!
-//! The agent itself never installs or removes skills (it only discovers
-//! them), but it owns agent.db where the bookkeeping lives: every mutator —
-//! the CLI (`future skills …`, `future init`) and the desktop Skills panel —
-//! records the outcome here so skill state survives the filesystem.
+//! The host-local SkillManager owns filesystem mutation and these tables.
+//! Desktop and mobile use Agent RPC; one-shot CLI calls the same manager.
 //!
 //! The row for an uninstalled skill is deliberately kept as a tombstone
-//! (`deleted = 1`): builtin-skill bootstrap re-installs anything missing from
-//! disk, so without the tombstone a skill the user removed would come back on
-//! the next `future init`.
+//! (`deleted = 1`): an unseen builtin may be installed automatically, while a
+//! skill the user removed must stay removed.
 //!
 //! The table is created by the agent's schema batch ([`SKILLS_TABLE_SQL`] is
 //! part of it) and, when a mutator runs before any agent has started, by
 //! [`open_registry`] with the same `application_id`/`user_version` stamps so
-//! the agent accepts the file afterwards. The desktop carries a mirrored copy
-//! of this module's SQL (it cannot link the agent crate); keep the two in
-//! sync.
+//! the agent accepts the file afterwards.
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection};
+#[cfg(test)]
+use rusqlite::params;
+use rusqlite::Connection;
+#[cfg(test)]
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// `application_id` shared with the session schema (`session::database`) —
@@ -29,19 +29,36 @@ use std::time::Duration;
 const APPLICATION_ID: i64 = 0x46555452;
 
 /// The `skills` table DDL — the canonical copy. `session::database` includes
-/// it in the agent's schema batch; the desktop mirrors it (see the module
-/// docs) because it must not depend on this crate.
+/// it in the agent's schema batch.
 pub(crate) const SKILLS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS skills (
     name TEXT PRIMARY KEY NOT NULL,
     version TEXT,
     deleted INTEGER NOT NULL DEFAULT 0 CHECK(deleted IN (0,1)),
     installed_at_ms INTEGER,
     updated_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_installations (
+    location TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK(scope IN ('app','global')),
+    source TEXT NOT NULL CHECK(source IN ('managed','external')),
+    version TEXT,
+    package_sha256 TEXT,
+    observed_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS skill_installations_name ON skill_installations(name);
+CREATE TABLE IF NOT EXISTS skill_operations (
+    name TEXT PRIMARY KEY NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('install','uninstall')),
+    version TEXT,
+    phase TEXT NOT NULL CHECK(phase IN ('prepared','replaced')),
+    started_at_ms INTEGER NOT NULL
 );";
 
 /// One registry row: a skill's name (the install directory name, equal to the
 /// catalogue id and the SKILL.md `name`), the last version recorded for it,
 /// and whether it was uninstalled (tombstone).
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillRecord {
     pub name: String,
@@ -53,12 +70,14 @@ pub struct SkillRecord {
 
 /// agent.db, next to the default sessions directory (`~/.future/agent`). The
 /// same file the session [`Manager`](crate::session::Manager) owns.
+#[cfg(test)]
 pub fn registry_db_path() -> PathBuf {
     crate::utils::future_home().join("agent").join("agent.db")
 }
 
 /// Record an install (or upgrade — same path) of `name` at `version`,
 /// clearing any uninstall tombstone.
+#[cfg(test)]
 pub fn record_skill_installed(name: &str, version: Option<&str>) -> Result<()> {
     let connection = open_registry(&registry_db_path())?;
     let now = now_ms();
@@ -81,6 +100,7 @@ pub fn record_skill_installed(name: &str, version: Option<&str>) -> Result<()> {
 /// Record an uninstall of `name`: keep the row (and its last-known version)
 /// as a tombstone so bootstrap does not re-install the skill later. An
 /// explicit install clears the tombstone again.
+#[cfg(test)]
 pub fn record_skill_uninstalled(name: &str) -> Result<()> {
     let connection = open_registry(&registry_db_path())?;
     let now = now_ms();
@@ -99,6 +119,7 @@ pub fn record_skill_uninstalled(name: &str) -> Result<()> {
 
 /// Names with an uninstall tombstone — the set builtin bootstrap must not
 /// auto-install.
+#[cfg(test)]
 pub fn deleted_skill_names() -> Result<HashSet<String>> {
     let connection = open_registry(&registry_db_path())?;
     let mut statement = connection
@@ -113,6 +134,7 @@ pub fn deleted_skill_names() -> Result<HashSet<String>> {
 
 /// Every registry row, ordered by name. Diagnostics/tests; the interesting
 /// readers use [`deleted_skill_names`].
+#[cfg(test)]
 pub fn list_skill_records() -> Result<Vec<SkillRecord>> {
     let connection = open_registry(&registry_db_path())?;
     let mut statement = connection
@@ -140,13 +162,11 @@ pub fn list_skill_records() -> Result<Vec<SkillRecord>> {
 /// missing. Runs in mutator processes (CLI, desktop) beside a possibly
 /// running agent, so it follows the same recognition rules as the session
 /// schema's `open_connection`: refuse foreign or unrecognized files, accept
-/// the schema versions this build knows (0, 2, 3).
+/// the schema versions this build knows (0, 2, 3, 4).
 ///
-/// A file created here is stamped `application_id` + `user_version = 3`; an
-/// existing database keeps its declared version (the agent's schema batch
-/// owns migrations, and an older agent must keep opening a v2 file it can
-/// still fully serve).
-fn open_registry(path: &Path) -> Result<Connection> {
+/// A file created here is stamped `application_id` + `user_version = 4`; an
+/// existing v3 database moves to v4 after the new tables are created.
+pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
     }
@@ -168,7 +188,7 @@ fn open_registry(path: &Path) -> Result<Connection> {
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
-    } else if version != 0 && version != 2 && version != 3 {
+    } else if version != 0 && version != 2 && version != 3 && version != 4 {
         bail!("unsupported Agent database schema version {version}");
     }
     connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -177,13 +197,16 @@ fn open_registry(path: &Path) -> Result<Connection> {
     if fresh {
         tx.execute_batch(&format!(
             "PRAGMA application_id = {APPLICATION_ID};
-             PRAGMA user_version = 3;"
+             PRAGMA user_version = 4;"
         ))?;
+    } else if version == 3 {
+        tx.execute_batch("PRAGMA user_version = 4;")?;
     }
     tx.commit()?;
     Ok(connection)
 }
 
+#[cfg(test)]
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -275,7 +298,7 @@ mod tests {
             check
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            3
+            4
         );
         assert_eq!(
             check

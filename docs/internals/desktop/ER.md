@@ -738,10 +738,13 @@ Notes:
 > created by early schemas but never wired to any CRUD code:
 > - The **Data module** (CSV/TSV/MySQL data sources) was not in the first
 >   version and is now deprecated.
-> - **Skill** moved to the **official platform catalog + filesystem** route
->   (`GET {platform}/client/v1/skills` → download and install into
->   `~/.future/agent/skills`), not stored in the database; semantics in
->   PRODUCT.md §4.8, implementation in `src-tauri/src/skills.rs`.
+> - **Skill** moved to the official platform catalog and the host-local Agent
+>   SkillManager. Agent RPC and the CLI use the same installer; Desktop holds no
+>   independent install state. Packages live in `~/.future/agent/skills`, and
+>   `agent.db` records the observed installation, version, uninstall history,
+>   and recoverable filesystem operations. These are distinct from the old
+>   Desktop `skills` and `skill_enablements` tables. See PRODUCT.md §4.8 and
+>   `agent/src/skills/manager.rs`.
 >
 > `apply_schema` clears them from old databases via `DROPPED_TABLES`
 > (`store/schema.rs`) with `DROP TABLE IF EXISTS`. Restarting the Data feature

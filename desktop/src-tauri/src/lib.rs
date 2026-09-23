@@ -40,7 +40,6 @@ mod shadow_review;
 mod skills;
 #[cfg(feature = "gui")]
 mod skills_bootstrap;
-mod skills_registry;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod store;
 #[cfg(feature = "gui")]
@@ -1070,6 +1069,7 @@ mod gui {
                 install_skill,
                 uninstall_skill,
                 refresh_skills,
+                sync_skills,
                 bootstrap_builtin_skills,
                 remote_start,
                 remote_stop,
