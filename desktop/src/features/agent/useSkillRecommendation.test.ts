@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { listAvailableSkills, listInstalledSkills, suggestSkill } from "../../integrations/skills/skillsClient";
 import { renderHook } from "../../test/renderHook";
 import { MAX_QUERY_CHARS, useSkillRecommendation } from "./useSkillRecommendation";
 
@@ -9,8 +10,6 @@ vi.mock("../../integrations/skills/skillsClient", () => ({
   listInstalledSkills: vi.fn(),
   suggestSkill: vi.fn(),
 }));
-
-import { listAvailableSkills, listInstalledSkills, suggestSkill } from "../../integrations/skills/skillsClient";
 
 const available = vi.mocked(listAvailableSkills);
 const installed = vi.mocked(listInstalledSkills);
