@@ -19,6 +19,12 @@ jest.mock("react-i18next", () => {
     "chat.stepTool": "Tool calls",
     "chat.stepThink": "Thought",
     "chat.stepsFailed": "{{count}} failed",
+    // The compaction divider's copy, so the rendered label is assertable instead
+    // of being the bare i18n key.
+    "chat.compacted": "Context compacted",
+    "chat.compactedTokens": "Context compacted · {{formattedCount}} tokens",
+    "chat.compactedTokensDelta": "Context compacted · {{before}} → {{after}} tokens (estimated)",
+    "chat.manuallyCompactedTokensDelta": "Manually compacted · {{before}} → {{after}} tokens (estimated)",
   };
   return {
     useTranslation: () => ({
@@ -438,4 +444,31 @@ test("terminal update replaces the timer with copy and authoritative duration", 
 test("legacy history without timing metadata shows completed instead of a blank footer", () => {
   render(reply({}));
   expect(hasText("chat.responseCompleted")).toBe(true);
+});
+
+const compaction = (fields: Partial<Extract<TimelineSegment, { kind: "compaction" }>> = {}): TimelineSegment => ({
+  id: "cp",
+  kind: "compaction",
+  status: "completed",
+  ...fields,
+});
+
+test("a committed compaction divider reports both token counts", () => {
+  render(reply({
+    segments: [compaction({ tokensBefore: 190_000, tokensAfter: 20_000 })],
+  }));
+  expect(hasText("Context compacted · 190,000 → 20,000 tokens (estimated)")).toBe(true);
+});
+
+test("a compaction divider with no post-compaction estimate keeps the count it has", () => {
+  // A released run journal's `compaction_end` carries only `tokens_before`.
+  render(reply({ segments: [compaction({ tokensBefore: 190_000 })] }));
+  expect(hasText("Context compacted · 190,000 tokens")).toBe(true);
+});
+
+test("a manual compaction divider reports both counts too", () => {
+  render(reply({
+    segments: [compaction({ tokensBefore: 33_064, tokensAfter: 9_250, trigger: "manual" })],
+  }));
+  expect(hasText("Manually compacted · 33,064 → 9,250 tokens (estimated)")).toBe(true);
 });

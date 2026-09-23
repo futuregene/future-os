@@ -63,6 +63,8 @@ type Slot
         /** Checkpoint the committed divider renders (absent while it is pending). */
         checkpointId?: string;
         tokensBefore: number;
+        /** Agent estimate of the next turn's input tokens (0 until committed). */
+        tokensAfter: number;
         trigger?: string;
         status: "running" | "completed" | "failed";
         error?: string;
@@ -295,6 +297,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         type: "compaction",
         id,
         tokensBefore: 0,
+        tokensAfter: 0,
         ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
         status: "running",
       });
@@ -322,6 +325,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           if (record && typeof record.checkpoint_id === "string")
             pending.checkpointId = record.checkpoint_id;
           pending.tokensBefore = numberFromPayload(payload, ["tokens_before", "tokensBefore"]);
+          pending.tokensAfter = numberFromPayload(payload, ["tokens_after", "tokensAfter"]);
           if (record && typeof record.trigger === "string")
             pending.trigger = record.trigger;
           pending.status = "completed";
@@ -334,6 +338,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
               ? { checkpointId: record.checkpoint_id }
               : {}),
             tokensBefore: numberFromPayload(payload, ["tokens_before", "tokensBefore"]),
+            tokensAfter: numberFromPayload(payload, ["tokens_after", "tokensAfter"]),
             ...(record && typeof record.trigger === "string" ? { trigger: record.trigger } : {}),
             status: "completed",
           });
@@ -369,6 +374,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           type: "compaction",
           id: operationId,
           tokensBefore: 0,
+          tokensAfter: 0,
           ...(isRecord(payload) && typeof payload.trigger === "string" ? { trigger: payload.trigger } : {}),
           status: "failed",
           ...(error ? { error } : {}),
@@ -636,6 +642,7 @@ function buildSegments(
         id: slot.id,
         ...(slot.checkpointId ? { checkpointId: slot.checkpointId } : {}),
         ...(slot.tokensBefore > 0 ? { tokensBefore: slot.tokensBefore } : {}),
+        ...(slot.tokensAfter > 0 ? { tokensAfter: slot.tokensAfter } : {}),
         ...(slot.trigger ? { trigger: slot.trigger } : {}),
         ...(slot.status !== "completed" ? { status: slot.status } : {}),
         ...(slot.error ? { error: slot.error } : {}),

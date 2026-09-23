@@ -49,6 +49,15 @@ export type MessageSegment
          */
         checkpointId?: string;
         tokensBefore?: number;
+        /**
+         * The agent's **estimate** of the prompt input tokens the next turn
+         * starts from once the summary replaces the covered history (the
+         * checkpoint's `tokens_after`). Estimated, not provider-reported: it
+         * sums the local per-message estimate of the kept history plus the
+         * fixed system/tools overhead. Absent when no checkpoint was committed
+         * (a running/failed divider, a released run journal).
+         */
+        tokensAfter?: number;
         /** Why the checkpoint was created; `manual` marks an explicit user action. */
         trigger?: string;
         status?: "running" | "completed" | "failed";
