@@ -6,19 +6,15 @@
 
 ## 跑起来
 
-**前置条件（三步，缺一不可）**
+**前置条件（两步，缺一不可）**
 
 ```bash
-# 1) 取到分支 —— 这个 demo 还没合进 main
-git fetch origin feat/skill-reco-demo && git checkout feat/skill-reco-demo
-#    全新 clone 可以一步到位：
-#    git clone --recurse-submodules --branch feat/skill-reco-demo \
-#      https://github.com/futuregene/future-os.git
+# 1) 取到代码，带上子模块 —— 141 个技能目录来自它
+git clone --recurse-submodules https://github.com/futuregene/future-os.git
+#    已有的 checkout 则拉 main 并初始化子模块：
+#    git fetch origin main && git checkout main && git submodule update --init skills
 
-# 2) 初始化 skills 子模块 —— 141 个技能目录来自它
-git submodule update --init skills
-
-# 3) 启动 —— 凭据自动取自 Future 账号（~/.future/agent/auth.json），无需任何参数
+# 2) 启动 —— 凭据自动取自 Future 账号（~/.future/agent/auth.json），无需任何参数
 cd scripts/skill_reco
 node server.mjs                                   # 默认 http://127.0.0.1:8791
 ```

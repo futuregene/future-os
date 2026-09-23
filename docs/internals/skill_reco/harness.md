@@ -7,19 +7,15 @@ Suggests a skill as you type: given a request, one TypeSafe Jev call (the System
 
 ## Running it
 
-**Prerequisites (three steps; none is optional)**
+**Prerequisites (two steps; neither is optional)**
 
 ```bash
-# 1) Get the branch — the demo is not on main yet
-git fetch origin feat/skill-reco-demo && git checkout feat/skill-reco-demo
-#    A fresh clone can do it in one step:
-#    git clone --recurse-submodules --branch feat/skill-reco-demo \
-#      https://github.com/futuregene/future-os.git
+# 1) Get the code, with the submodule — the 141 skill directories come from it
+git clone --recurse-submodules https://github.com/futuregene/future-os.git
+#    In an existing checkout, fetch main and initialise the submodule instead:
+#    git fetch origin main && git checkout main && git submodule update --init skills
 
-# 2) Initialise the skills submodule — the 141 skill directories come from it
-git submodule update --init skills
-
-# 3) Start it — the credential comes from the Future account
+# 2) Start it — the credential comes from the Future account
 #    (~/.future/agent/auth.json); no arguments needed
 cd scripts/skill_reco
 node server.mjs                                   # defaults to http://127.0.0.1:8791
