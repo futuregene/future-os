@@ -583,7 +583,7 @@
             "wait": 700
           },
           {
-            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩 · 613,994 → 51,081')) throw new Error('in-turn checkpoint divider missing its token pair'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
           },
           {
             "shot": "d-compact-resume.png"
@@ -732,7 +732,7 @@
           { "wait": 2000 },
           { "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('ACK incorrectly unlocked sends'); window.dispatchEvent(new Event('shot:complete-compaction')); }" },
           { "wait": 500 },
-          { "eval": "{ const b = document.querySelector('[aria-label=\"发送\"]'); if (!b || b.getAttribute('aria-disabled') === 'true') throw new Error('send did not recover'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('completion consumed draft'); if (document.body.innerText.includes('正在生成')) throw new Error('compaction revived reply'); if (!document.body.innerText.includes('你手动压缩了此对话的上下文')) throw new Error('batch dropped checkpoint'); }" },
+          { "eval": "{ const b = document.querySelector('[aria-label=\"发送\"]'); if (!b || b.getAttribute('aria-disabled') === 'true') throw new Error('send did not recover'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('completion consumed draft'); if (document.body.innerText.includes('正在生成')) throw new Error('compaction revived reply'); if (!document.body.innerText.includes('已手动压缩上下文 · 33,064 → 9,250')) throw new Error('batch dropped checkpoint'); }" },
           { "shot": "m-compaction-ready.png" }
         ]
       },
@@ -758,7 +758,7 @@
             "tapText": "整理两篇文献的结论对比表"
           },
           {
-            "eval": "const text = document.body.innerText; if (!text.includes('你手动压缩了此对话的上下文')) throw new Error('committed compaction divider missing'); if (text.includes('正在生成')) throw new Error('committed compaction left the reply generating'); if (!document.querySelector('[aria-label=\"发送\"]')) throw new Error('composer did not return to its send state');"
+            "eval": "const text = document.body.innerText; if (!text.includes('已手动压缩上下文 · 33,064 → 9,250')) throw new Error('committed compaction divider missing its token pair'); if (text.includes('正在生成')) throw new Error('committed compaction left the reply generating'); if (!document.querySelector('[aria-label=\"发送\"]')) throw new Error('composer did not return to its send state');"
           },
           {
             "shot": "m-compact-committed.png"
@@ -801,7 +801,7 @@
             "wait": 900
           },
           {
-            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩')) throw new Error('in-turn checkpoint divider missing'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
+            "eval": "const text = document.body.innerText; if (!text.includes('前三步已经跑完')) throw new Error('pre-checkpoint text missing'); if (!text.includes('上下文已压缩 · 613,994 → 51,081')) throw new Error('in-turn checkpoint divider missing its token pair'); if (!text.includes('压缩之后我把最后一步做完了')) throw new Error('reply after the checkpoint was dropped'); if (!text.includes('要不要我把这四步写成一份设计文档')) throw new Error('reply tail after the checkpoint was dropped');"
           },
           {
             "shot": "m-compact-resume.png"

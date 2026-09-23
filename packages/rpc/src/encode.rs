@@ -33,6 +33,7 @@ pub fn response_payload(command: &str, data: &Value) -> Option<proto::ResponsePa
         "cycle_model" => cycle_model(data).map(Kind::CycleModel),
         "sync_future_models" => sync_future_models(data).map(Kind::SyncFutureModels),
         "refresh_skills" => refresh_skills(data).map(Kind::RefreshSkills),
+        "suggest_skill" => suggest_skill(data).map(Kind::SuggestSkill),
         "get_session_stats" => get_session_stats(data).map(Kind::GetSessionStats),
         "get_runtime_metrics" => get_runtime_metrics(data).map(Kind::GetRuntimeMetrics),
         "get_session_events_since" => {
@@ -658,6 +659,19 @@ fn refresh_skills(data: &Value) -> Option<proto::RefreshSkillsResult> {
         skills_count: payload.skills_count as u64,
         skills: payload.skills,
         refreshed: payload.refreshed,
+    })
+}
+
+// ── suggest_skill ────────────────────────────────────────────────────────────
+
+fn suggest_skill(data: &Value) -> Option<proto::SuggestSkillResult> {
+    let payload: crate::payloads_ext::SuggestSkillPayload =
+        serde_json::from_value(data.clone()).ok()?;
+    Some(proto::SuggestSkillResult {
+        skill: payload.skill.map(|c| proto::SkillCandidate {
+            name: c.name,
+            description: c.description,
+        }),
     })
 }
 

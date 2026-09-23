@@ -166,6 +166,15 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
     entry.checkpoint.tokensBefore > 0
       ? entry.checkpoint.tokensBefore
       : undefined;
+  // The agent's own estimate of where the next turn starts after the summary
+  // replaces the covered history. Rendered next to `tokensBefore` so a divider
+  // shows what the compaction actually bought; a legacy row that carries no
+  // count simply keeps the before-only label.
+  const tokensAfter =
+    typeof entry.checkpoint?.tokensAfter === "number" &&
+    entry.checkpoint.tokensAfter > 0
+      ? entry.checkpoint.tokensAfter
+      : undefined;
   return {
     id: `m_${key}`,
     role: "assistant",
@@ -183,6 +192,7 @@ function dividerMessage(entry: SessionEntry, now: string): AgentMessage {
           ? { checkpointId: entry.checkpoint.checkpointId }
           : {}),
         ...(tokensBefore ? { tokensBefore } : {}),
+        ...(tokensAfter ? { tokensAfter } : {}),
         ...(entry.checkpoint?.trigger
           ? { trigger: entry.checkpoint.trigger }
           : {}),

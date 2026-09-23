@@ -143,6 +143,12 @@
   },
   "composer": {
     "placeholder": "描述任务，@文件 添加到上下文，按 / 使用工具或技能",
+    "skillRecommend": {
+      "cardTitle": "推荐技能",
+      "checking": "正在查找匹配的技能…",
+      "installAndUse": "安装并使用",
+      "dismissAndSend": "不用，直接发送"
+    },
     "attachFiles": "添加附件",
     "attachFilesHint": "添加附件（图片、PDF、文本）",
     "attachLimitReached": "已达到附件上限（每条消息 4 个）",
@@ -290,7 +296,9 @@
     "manualCompactionFailed": "你发起的上下文压缩失败",
     "compacted": "上下文已压缩",
     "manuallyCompacted": "你手动压缩了此对话的上下文",
-    "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens"
+    "compactedTokens": "上下文已压缩 · {{formattedCount}} tokens",
+    "compactedTokensDelta": "上下文已压缩 · {{before}} → {{after}} tokens（预估）",
+    "manuallyCompactedTokensDelta": "你手动压缩了此对话的上下文 · {{before}} → {{after}} tokens（预估）"
   },
   "skillGuide": {
     "title": "5 分钟技能上手",

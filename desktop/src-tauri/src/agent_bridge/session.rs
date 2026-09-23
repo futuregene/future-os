@@ -748,6 +748,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: None,
+            skill_recommend: None,
         })
         .expect("update settings");
         mock.push("set_sandbox_policy", Reply::Data("{}".to_string()));

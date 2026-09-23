@@ -42,6 +42,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: Some(true),
+            skill_recommend: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "manual");

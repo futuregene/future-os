@@ -49,6 +49,36 @@ export interface ComposerSendPayload {
 /** Drag-over verdict for the drop zone. */
 export type ComposerDragState = "accept" | "reject" | null;
 
+/** A skill recommendation shown above the composer (new-conversation first turn). */
+export interface SkillRecommendationCard {
+  name: string;
+  description: string;
+}
+
+/**
+ * Optional skill-recommendation wiring (new-conversation first turn only).
+ * When present, submit is first routed through `onEvaluate`; a returned card
+ * holds submission until the user installs or dismisses it.
+ */
+export interface SkillRecommendationProp {
+  /** The card to show, or null. */
+  card: SkillRecommendationCard | null;
+  /** True while a recommend round-trip is holding submission. */
+  pending: boolean;
+  /**
+   * Evaluate the draft for a recommendation. Resolve with the card to show
+   * (submission is held), or null to submit normally. Never rejects.
+   */
+  onEvaluate: (draft: string) => Promise<SkillRecommendationCard | null>;
+  /**
+   * Install the recommended skill. Resolve true on success; the composer then
+   * appends `/name` to the draft and sends. Resolve false to leave the card up.
+   */
+  onInstall: (skill: SkillRecommendationCard) => Promise<boolean>;
+  /** Dismiss the card and send the original draft. */
+  onDismiss: () => void;
+}
+
 interface ComposerProps {
   /**
    * Resolve when the message is accepted, not when the assistant finishes.
@@ -82,6 +112,8 @@ interface ComposerProps {
   onCompactContext?: () => void | Promise<void>;
   /** A compaction reported by the agent is still running (survives reloads). */
   compactionInProgress?: boolean;
+  /** First-turn skill recommendation (new-conversation only). */
+  skillRecommendation?: SkillRecommendationProp;
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
@@ -117,6 +149,7 @@ function ComposerImpl({
   onAbort,
   onCompactContext,
   compactionInProgress,
+  skillRecommendation,
   placeholder,
   textareaClassName,
   workspaceId,
@@ -143,6 +176,15 @@ function ComposerImpl({
   const [sendPending, setSendPending] = useState(false);
   const [contextActionPending, setContextActionPending] = useState(false);
   const compactionPending = contextActionPending || compactionInProgress;
+  // True while a recommend round-trip holds submission (mirrors the async
+  // intercept in submitValue; a ref because submitValue isn't a render).
+  const recommendPendingRef = useRef(false);
+  // Tracks that the user already acted on the current card (install/dismiss),
+  // so the follow-up submitValue() isn't blocked by the still-mounted card
+  // (the parent's setState that clears it hasn't re-rendered yet).
+  const cardHandledRef = useRef(false);
+  // True while the recommended skill is installing (disables the card buttons).
+  const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
 
   const contextTools = useMemo<ContextToolOption[]>(() => {
@@ -321,9 +363,35 @@ function ComposerImpl({
       || sendPending
       || sending
       || compactionPending
+      || recommendPendingRef.current
     ) {
       return;
     }
+
+    // First-turn skill recommendation: hold submission while we ask the
+    // recommender. A returned card keeps the draft unsubmitted until the user
+    // installs or dismisses it; anything else (timeout, no match, error)
+    // falls through to a normal send. The card's own actions call the real
+    // send path directly, so this intercept runs at most once per draft.
+    if (skillRecommendation && !skillRecommendation.card) {
+      recommendPendingRef.current = true;
+      skillRecommendation
+        .onEvaluate(trimmed)
+        .then((card) => {
+          if (!card)
+            submitValue();
+        })
+        .catch(() => submitValue())
+        .finally(() => {
+          recommendPendingRef.current = false;
+        });
+      return;
+    }
+    // A card is on screen and not yet acted on: ignore bare submits until the
+    // user picks an action (install/dismiss call the real send path directly).
+    if (skillRecommendation?.card && !cardHandledRef.current)
+      return;
+
     const submittedText = editorRef.current?.getContent() ?? "";
     const submittedDraftKey = draftKeyRef.current;
     const submittedAttachments = attachments;
@@ -356,6 +424,46 @@ function ComposerImpl({
       return;
     }
     clearComposer();
+  }
+
+  // Reset the handled flag whenever a fresh card appears, so its actions arm.
+  const recoCardName = skillRecommendation?.card?.name ?? null;
+  useEffect(() => {
+    cardHandledRef.current = false;
+  }, [recoCardName]);
+
+  // Install the recommended skill, then append `/name` to the draft and send.
+  // The card stays up (with its buttons disabled) while the install runs; a
+  // failed install leaves the card so the user can retry or dismiss.
+  async function installRecommendedSkill() {
+    const reco = skillRecommendation;
+    if (!reco?.card || installingSkill)
+      return;
+    setInstallingSkill(true);
+    try {
+      const installed = await reco.onInstall(reco.card);
+      if (!installed)
+        return;
+      const current = editorRef.current?.getContent() ?? "";
+      const separator = current.length > 0 && !current.endsWith(" ") ? " " : "";
+      editorRef.current?.restore(`${current}${separator}/${reco.card.name} `);
+      cardHandledRef.current = true;
+      reco.onDismiss();
+      // The card is handled; submitValue now takes the normal send path.
+      submitValue();
+    }
+    finally {
+      setInstallingSkill(false);
+    }
+  }
+
+  // Dismiss the card and send the original draft unchanged.
+  function dismissRecommendedSkill() {
+    if (!skillRecommendation?.card)
+      return;
+    cardHandledRef.current = true;
+    skillRecommendation.onDismiss();
+    submitValue();
   }
 
   const addAttachmentPaths = useCallback(async (paths: string[], temporary = false, names?: Map<string, string>) => {
@@ -584,6 +692,51 @@ function ComposerImpl({
       )}
       onSubmit={handleSubmit}
     >
+      {skillRecommendation?.card
+        ? (
+            <div className="mb-2 flex items-start gap-3 rounded-md border border-focus/40 bg-focus-soft px-3 py-2.5">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-ink">
+                  <span className="text-focus">{t("composer.skillRecommend.cardTitle")}</span>
+                  <span className="font-mono text-ink">
+                    /
+                    {skillRecommendation.card.name}
+                  </span>
+                </div>
+                <p className="mt-0.5 line-clamp-2 text-xs text-ink-muted">
+                  {skillRecommendation.card.description}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  className="inline-flex items-center gap-1 rounded-md bg-focus px-2.5 py-1 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:opacity-60"
+                  type="button"
+                  disabled={installingSkill}
+                  onClick={() => void installRecommendedSkill()}
+                >
+                  {installingSkill ? <Loader2 className="size-3 animate-spin" /> : null}
+                  {t("composer.skillRecommend.installAndUse")}
+                </button>
+                <button
+                  className="rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted transition hover:bg-surface-raised disabled:opacity-60"
+                  type="button"
+                  disabled={installingSkill}
+                  onClick={dismissRecommendedSkill}
+                >
+                  {t("composer.skillRecommend.dismissAndSend")}
+                </button>
+              </div>
+            </div>
+          )
+        : null}
+      {skillRecommendation?.pending
+        ? (
+            <div className="mb-2 flex items-center gap-2 rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-ink-muted">
+              <Loader2 className="size-3.5 animate-spin" />
+              {t("composer.skillRecommend.checking")}
+            </div>
+          )
+        : null}
       {drawOwnHighlight && dragState === "reject"
         ? (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-danger-soft">

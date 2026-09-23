@@ -375,6 +375,15 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                     clear_api_key: config.clear_api_key,
                 }
             }),
+            suggest_query: cmd.suggest_query,
+            suggest_candidates: cmd
+                .suggest_candidates
+                .into_iter()
+                .map(|c| crate::skill_reco::SkillCandidate {
+                    name: c.name,
+                    description: c.description,
+                })
+                .collect(),
         };
 
         // The command dispatcher still contains legacy synchronous JSONL and

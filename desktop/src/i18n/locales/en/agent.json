@@ -142,6 +142,12 @@
   },
   "composer": {
     "placeholder": "Describe the task, @ to add files, / for tools and skills",
+    "skillRecommend": {
+      "cardTitle": "Recommended skill",
+      "checking": "Checking for a matching skill…",
+      "installAndUse": "Install & use",
+      "dismissAndSend": "Send without it"
+    },
     "attachFiles": "Attach files",
     "attachFilesHint": "Attach files (images, PDF, text)",
     "attachLimitReached": "Attachment limit reached (4 per message)",
@@ -289,7 +295,9 @@
     "manualCompactionFailed": "Your context compaction failed",
     "compacted": "Context compacted",
     "manuallyCompacted": "You compacted this conversation's context",
-    "compactedTokens": "Context compacted · {{formattedCount}} tokens"
+    "compactedTokens": "Context compacted · {{formattedCount}} tokens",
+    "compactedTokensDelta": "Context compacted · {{before}} → {{after}} tokens (estimated)",
+    "manuallyCompactedTokensDelta": "You compacted this conversation's context · {{before}} → {{after}} tokens (estimated)"
   },
   "skillGuide": {
     "title": "5-Minute Skill Onboarding",

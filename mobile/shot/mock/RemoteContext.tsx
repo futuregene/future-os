@@ -110,7 +110,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const manualRun = "run_1";
     return applyStreamEvents(history, [
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
-      { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064 }) },
+      { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
     ]);
   }, [scriptedCompaction]);
   const timeline = useMemo(

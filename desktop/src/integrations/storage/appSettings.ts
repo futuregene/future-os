@@ -39,6 +39,11 @@ export interface AppSettings {
   titleLanguage: "en" | "zh";
   /** Community-edition UI hides billing surfaces and treats Future like a normal builtin provider. */
   communityEdition: boolean;
+  /**
+   * Recommend at most one uninstalled skill on the first message of a new
+   * conversation (via the agent's Jev recommender). Off by default.
+   */
+  skillRecommend: boolean;
 }
 
 /** Fallback used before the persisted settings load. */
@@ -53,6 +58,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoTitleFirstTurn: true,
   titleLanguage: "en",
   communityEdition: false,
+  skillRecommend: false,
 };
 
 export async function getAppSettings() {
@@ -70,6 +76,7 @@ export async function updateAppSettings(input: {
   autoTitleFirstTurn?: boolean;
   titleLanguage?: "en" | "zh";
   communityEdition?: boolean;
+  skillRecommend?: boolean;
 }) {
   return invokeCommand<AppSettings>("update_app_settings", { input });
 }

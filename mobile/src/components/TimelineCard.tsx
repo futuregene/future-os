@@ -382,18 +382,28 @@ function useCopyState(resetMs = 1400) {
 // Inline divider marking where the agent auto-compacted the conversation
 // (history summarized to fit the context window). A hairline rule with a small
 // muted label — the only surfacing of compaction in the UI, since the agent
-// otherwise continues silently. Shows the pre-compaction token count when known.
+// otherwise continues silently. Shows the pre-compaction token count and the
+// agent's estimate for the next turn when known.
 function CompactionDivider({
   tokensBefore,
+  tokensAfter,
   status = "completed",
   trigger,
 }: {
   tokensBefore?: number;
+  tokensAfter?: number;
   status?: "running" | "completed" | "failed";
   trigger?: string;
 }) {
   const { t, i18n } = useTranslation();
   const manual = trigger === "manual";
+  const format = (count: number) => new Intl.NumberFormat(i18n.language).format(count);
+  // Both counts come from the committed checkpoint and are only meaningful as a
+  // pair — a lone `tokensBefore` (released journal, legacy row) keeps the
+  // older label.
+  const delta = tokensBefore && tokensBefore > 0 && tokensAfter && tokensAfter > 0
+    ? { before: format(tokensBefore), after: format(tokensAfter) }
+    : null;
   const label =
     status === "running"
       ? manual
@@ -403,13 +413,13 @@ function CompactionDivider({
         ? manual
           ? t("chat.manualCompactionFailed")
           : t("chat.compactionFailed")
-        : manual
-          ? t("chat.manuallyCompacted")
-          : tokensBefore && tokensBefore > 0
-            ? t("chat.compactedTokens", {
-                formattedCount: new Intl.NumberFormat(i18n.language).format(tokensBefore),
-              })
-            : t("chat.compacted");
+        : delta
+          ? t(manual ? "chat.manuallyCompactedTokensDelta" : "chat.compactedTokensDelta", delta)
+          : manual
+            ? t("chat.manuallyCompacted")
+            : tokensBefore && tokensBefore > 0
+              ? t("chat.compactedTokens", { formattedCount: format(tokensBefore) })
+              : t("chat.compacted");
   return <StatusDivider failed={status === "failed"} label={label} />;
 }
 
@@ -785,6 +795,7 @@ function SegmentBlock({
   return (
     <CompactionDivider
       status={segment.status}
+      tokensAfter={segment.tokensAfter}
       tokensBefore={segment.tokensBefore}
       trigger={segment.trigger}
     />
