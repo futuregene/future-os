@@ -95,7 +95,7 @@ impl AgentClient {
         )
         .await
         .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
-        let inner = FutureAgentClient::new(connected.channel);
+        let inner = future_rpc::transport::agent_client(connected.channel);
         Ok(Self {
             inner,
             active_runs: Arc::new(Mutex::new(HashMap::new())),

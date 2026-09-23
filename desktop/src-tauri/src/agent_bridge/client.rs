@@ -68,11 +68,6 @@ impl std::ops::DerefMut for AgentClient {
 /// overlapping calls, and a late failure could clobber fresh state.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// gRPC message-size cap, above tonic's 4MB default (large session responses).
-/// Image bytes no longer travel over the wire — the agent reads them from the
-/// path — so this need not accommodate base64 payloads. Matches the server.
-const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
-
 /// Explicit TCP override or `auto` for per-user local IPC. Shared with the
 /// bundled-agent supervisor.
 pub(crate) fn raw_agent_addr() -> String {
@@ -152,11 +147,9 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
         let cached = AGENT_CHANNEL.lock().await;
         if let Some((addr, channel)) = cached.as_ref() {
             if addr == &configured {
-                return Ok(AgentClient::new(
-                    FutureAgentClient::new(channel.clone())
-                        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
-                ));
+                return Ok(AgentClient::new(future_rpc::transport::agent_client(
+                    channel.clone(),
+                )));
             }
         }
     }
@@ -176,22 +169,16 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
             })?;
             let label = connected.endpoint.label();
             let ch = connected.channel;
-            let mut client = AgentClient::new(
-                FutureAgentClient::new(ch.clone())
-                    .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-                    .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
-            );
+            let mut client = AgentClient::new(future_rpc::transport::agent_client(ch.clone()));
             health_check(&mut client, &label).await?;
             Ok::<Channel, crate::AppError>(ch)
         })
         .await
         .expect("agent channel task: pinned runtime outlives the process")?;
     *AGENT_CHANNEL.lock().await = Some((configured, channel.clone()));
-    Ok(AgentClient::new(
-        FutureAgentClient::new(channel)
-            .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
-            .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE),
-    ))
+    Ok(AgentClient::new(future_rpc::transport::agent_client(
+        channel,
+    )))
 }
 
 /// Complete a real command round-trip and return the running Agent's build

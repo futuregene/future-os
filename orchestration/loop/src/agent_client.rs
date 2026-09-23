@@ -132,7 +132,7 @@ impl AgentClient {
         .await
         .map_err(|e| anyhow!("Failed to connect to agent: {e}"))?;
         Ok(Self {
-            inner: FutureAgentClient::new(connected.channel),
+            inner: future_rpc::transport::agent_client(connected.channel),
         })
     }
 

@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use crate::proto::future_agent_client::FutureAgentClient;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_stream::Stream;
@@ -19,6 +20,28 @@ use tower::service_fn;
 
 /// Sentinel used by CLI/config surfaces that want automatic local discovery.
 pub const AUTO_ENDPOINT: &str = "auto";
+
+/// gRPC message-size cap, shared by the Agent server and every client.
+///
+/// tonic's default *decoding* limit is 4 MiB, which one `get_messages`
+/// response (a whole session transcript) routinely exceeds: the server encodes
+/// it happily and the client then fails the call with `decoded message length
+/// too large: found N bytes, the limit is: 4194304 bytes`. Client *encoding*
+/// and server *decoding* are capped at the same value so a large request can
+/// never be sent either. Build clients through [`agent_client`] to inherit it.
+pub const MAX_GRPC_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+
+/// A typed Agent client over `channel`, carrying the shared message-size cap.
+///
+/// Nothing else reapplies [`MAX_GRPC_MESSAGE_SIZE`] — the generated client's
+/// builder keeps tonic's 4 MiB decoding default — so constructing
+/// `FutureAgentClient` directly silently reintroduces the too-large-response
+/// failure in whichever call happens to return a large session payload.
+pub fn agent_client(channel: Channel) -> FutureAgentClient<Channel> {
+    FutureAgentClient::new(channel)
+        .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+        .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+}
 
 /// A concrete transport that clients may try.
 #[derive(Debug, Clone, PartialEq, Eq)]
