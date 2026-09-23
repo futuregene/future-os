@@ -5,9 +5,8 @@ file at `~/.future/channels/config.json`. It connects to the agent over gRPC
 and exposes it through the configured channels. Start it with `future channel`
 (the unified CLI entry; identical to the standalone `future-channel` binary).
 
-The channels that run on the shared bridge (Telegram, Slack, Discord,
-Mattermost, Signal, WhatsApp, QQ, Linq, iMessage, IRC, Email, Terminal) are
-configured under a `providers` key and documented in
+The channels that run on the shared bridge are configured under a `providers`
+key, and are listed with their capabilities in
 [Channel providers](channels-providers.md); this page covers the file itself,
 the shared `agent` block, and the two self-bridged channels (Feishu and
 DingTalk).

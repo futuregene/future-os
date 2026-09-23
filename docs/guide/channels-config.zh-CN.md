@@ -5,8 +5,7 @@
 为所配置的各渠道。用 `future channel` 启动（统一 CLI 入口，与独立二进制
 `future-channel` 完全一致）。
 
-运行在共享桥上的渠道（Telegram、Slack、Discord、Mattermost、Signal、WhatsApp、
-QQ、Linq、iMessage、IRC、Email、Terminal）配置在 `providers` 键下，见
+运行在共享桥上的渠道配置在 `providers` 键下，其能力清单见
 [通道 provider 参考](channels-providers.zh-CN.md)；本页讲文件本身、共用的
 `agent` 块，以及两个自带桥的渠道（飞书与钉钉）。
 
