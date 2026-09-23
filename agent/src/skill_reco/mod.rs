@@ -1,11 +1,17 @@
 //! Jev-based skill recommendation.
 //!
-//! The agent exposes one RPC (`suggest_skill`) that, given the user's
-//! first-turn text and a set of UNINSTALLED skill candidates, asks Jev
-//! (TypeSafe System One) which single skill — if any — best matches. All
-//! trigger logic (new session, first message, length cap, login/balance,
-//! "user already picked a skill") lives in the calling client; this module
-//! only performs the Jev call and the refusal gate.
+//! The agent exposes one RPC (`suggest_skill`) that, given the user's message
+//! and a set of UNINSTALLED skill candidates, asks Jev which single skill — if
+//! any — best matches. All trigger logic (any turn, length caps, login/balance,
+//! daily budget, "user already picked a skill") lives in the calling client;
+//! this module only performs the Jev call and the refusal gate.
+//!
+//! **Endpoint**: FutureOS hosts Jev at `{future_base_url}/v1/systemone`
+//! (`https://future-os.cn/api` + `/v1/systemone`), billed at the provider's
+//! cost, and authenticated with the *Future provider* credential from
+//! `auth.json` — so a separately configured key is no longer needed. The
+//! gateway's request shape differs from TypeSafe's public API (see
+//! [`build_request`]).
 //!
 //! Design constraints carried over from the offline evaluation
 //! (`demos/jev-skill-suggest/bench/REPORT.md`):
@@ -19,10 +25,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Jev System One endpoint.
-const JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
-/// Model id passed in each request.
-const JEV_MODEL: &str = "jev-latest";
+/// Model id the gateway resolves (`jev` → `typesafe/jev-1.13-…`).
+const JEV_MODEL: &str = "jev";
+/// Fallback origin when the Future provider has no `base_url` configured.
+const DEFAULT_FUTURE_BASE: &str = "https://future-os.cn/api";
+/// The provider whose credential authenticates the call.
+const FUTURE_PROVIDER: &str = "future";
 /// Refusal gate: `none_of_these` probability at or above this means "no
 /// recommendation" (caller-side, because Jev never self-refuses).
 const NONE_GATE_THRESHOLD: f64 = 0.15;
@@ -36,11 +44,62 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The Jev option text is `name + " " + description`, truncated to this many
 /// chars (the measured knee: shorter loses answers, longer buys nothing).
 const DESC_CHARS: usize = 220;
-/// Environment variable holding the Jev API key. Absent key ⇒ silently
-/// unavailable (returns None) so the feature is off by default.
+
+/// Overrides for the endpoint, credential and model. Unset means "use the
+/// Future provider's own credential and base URL", which is the shipped path;
+/// they exist so a development build can point at another gateway (all three
+/// must speak the gateway's request shape).
 const KEY_ENV: &str = "FUTURE_SKILL_RECO_JEV_KEY";
+const URL_ENV: &str = "FUTURE_SKILL_RECO_JEV_URL";
+const MODEL_ENV: &str = "FUTURE_SKILL_RECO_JEV_MODEL";
 
 const NONE_OPTION: &str = "none_of_these";
+
+/// Where a call goes and what authenticates it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Endpoint {
+    url: String,
+    key: String,
+    model: String,
+}
+
+/// Resolve the endpoint: the Future provider's credential and base URL, with
+/// environment overrides for development.
+///
+/// `None` means the feature is unavailable (no credential), which the caller
+/// treats the same as "no recommendation" — the feature is off, not broken.
+fn endpoint() -> Option<Endpoint> {
+    let auth = crate::auth::AuthStore::load();
+    let key = std::env::var(KEY_ENV)
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+        .or_else(|| auth.get(FUTURE_PROVIDER))?;
+    let base = std::env::var(URL_ENV)
+        .ok()
+        .filter(|url| !url.trim().is_empty())
+        .or_else(|| auth.base_url(FUTURE_PROVIDER))
+        .unwrap_or_else(|| DEFAULT_FUTURE_BASE.to_string());
+    let model = std::env::var(MODEL_ENV)
+        .ok()
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| JEV_MODEL.to_string());
+    Some(Endpoint {
+        url: systemone_url(&base),
+        key,
+        model,
+    })
+}
+
+/// `{base}/v1/systemone`, tolerating a base with or without a trailing slash or
+/// an already-appended `/v1`.
+fn systemone_url(base: &str) -> String {
+    let trimmed = base.trim().trim_end_matches('/');
+    if trimmed.ends_with("/v1/systemone") {
+        return trimmed.to_string();
+    }
+    let origin = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    format!("{origin}/v1/systemone")
+}
 
 /// One skill candidate offered to Jev (also the recommendation shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,13 +134,27 @@ enum Outcome {
     Failed { reason: String },
 }
 
+/// What a call actually consumed and produced. Both fields come from the
+/// response, so an operator can tell a routed call from a direct one.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Attempt {
+    /// Token counts and the charged amount, when the response carried `usage`.
+    usage: Option<JevUsage>,
+    /// The backend that answered (`typesafe/jev-1.13-…`), when reported.
+    served_by: Option<String>,
+}
+
 /// Input/output token counts Jev reports for one call (used to price it).
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
 struct JevUsage {
     #[serde(default)]
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    /// What the provider charged for this call, in USD. The gateway reports it,
+    /// which beats estimating from a price list — Jev's rate changes upstream.
+    #[serde(default)]
+    cost: Option<f64>,
 }
 
 /// Shared blocking client. Initialize lazily on first use, on a blocking
@@ -106,8 +179,8 @@ static HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
 ///
 pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<SkillCandidate> {
     let started = std::time::Instant::now();
-    let (outcome, usage) = attempt(query, candidates);
-    log_outcome(&outcome, usage, query, started.elapsed());
+    let (outcome, attempt) = attempt(query, candidates);
+    log_outcome(&outcome, attempt, query, started.elapsed());
     match outcome {
         Outcome::Recommended { skill, .. } => candidates
             .iter()
@@ -119,13 +192,10 @@ pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<Skill
 
 /// Runs one attempt and reports how it ended, with the token usage when the
 /// call actually reached Jev.
-fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Option<JevUsage>) {
+fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
     let query_bytes = query.trim().len();
-    let Some(key) = std::env::var(KEY_ENV)
-        .ok()
-        .filter(|key| !key.trim().is_empty())
-    else {
-        return (Outcome::NoKey, None);
+    let Some(endpoint) = endpoint() else {
+        return (Outcome::NoKey, Attempt::default());
     };
     // Defensive cap: the caller is expected to pre-truncate, but a Choice
     // would hard-400 above 255 options, so clamp here too.
@@ -136,14 +206,14 @@ fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Option<JevUs
                 query_bytes,
                 candidates: candidates.len(),
             },
-            None,
+            Attempt::default(),
         );
     }
 
-    let request = build_request(query, candidates);
+    let request = build_request(query, candidates, &endpoint.model);
     let response = match HTTP_CLIENT
-        .post(JEV_URL)
-        .bearer_auth(key)
+        .post(&endpoint.url)
+        .bearer_auth(&endpoint.key)
         .json(&request)
         .send()
     {
@@ -159,7 +229,7 @@ fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Option<JevUs
                         error.to_string()
                     },
                 },
-                None,
+                Attempt::default(),
             )
         }
     };
@@ -176,7 +246,7 @@ fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Option<JevUs
                     crate::session::truncate_visible(body.trim(), 300)
                 ),
             },
-            None,
+            Attempt::default(),
         );
     }
     let body: JevResponse = match response.json() {
@@ -186,12 +256,15 @@ fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Option<JevUs
                 Outcome::Failed {
                     reason: format!("unreadable response: {error}"),
                 },
-                None,
+                Attempt::default(),
             )
         }
     };
-    let usage = body.usage;
-    (decide(&body, candidates), usage)
+    let attempt = Attempt {
+        usage: body.usage,
+        served_by: body.model.clone(),
+    };
+    (decide(&body, candidates), attempt)
 }
 
 /// Apply the refusal gate and pick the top-1 skill, as an [`Outcome`].
@@ -240,29 +313,35 @@ const USD_PER_MTOK_INPUT: f64 = 0.042;
 const USD_TO_CNY: f64 = 7.2;
 
 fn cost_cny(usage: JevUsage) -> f64 {
-    let cost = usage.input_tokens as f64 / 1_000_000.0 * USD_PER_MTOK_INPUT * USD_TO_CNY;
-    // Round to 0.01 厘: the raw product carries float noise
-    // (0.0026611200000000003) that only makes the log harder to read, while
-    // coarser rounding would misreport the price.
-    (cost * 10_000.0).round() / 10_000.0
+    // The gateway's own figure wins: it is what was actually charged, and it
+    // stays right if the upstream price moves. The rate below is the documented
+    // fallback for a response that omits `cost`.
+    let cost = match usage.cost {
+        Some(cost) => cost * USD_TO_CNY,
+        None => usage.input_tokens as f64 / 1_000_000.0 * USD_PER_MTOK_INPUT * USD_TO_CNY,
+    };
+    // Round away float noise (0.0026611200000000003) without losing the value:
+    // one call costs a fraction of a 厘, so the previous 0.01-厘 step reported
+    // 0.000137 CNY as 0.0001 — a quarter of the price.
+    (cost * 1_000_000.0).round() / 1_000_000.0
 }
 
 /// Emit the attempt's outcome. `info` for real decisions and failures (the
 /// default filter keeps those), `debug` for "the feature is not on / nothing to
 /// ask", which would otherwise log on every single message.
-fn log_outcome(
-    outcome: &Outcome,
-    usage: Option<JevUsage>,
-    query: &str,
-    elapsed: std::time::Duration,
-) {
+fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::time::Duration) {
     let latency_ms = elapsed.as_millis() as u64;
-    let (input_tokens, output_tokens, cost) = usage
+    let (input_tokens, output_tokens, cost) = attempt
+        .usage
         .map(|usage| (usage.input_tokens, usage.output_tokens, cost_cny(usage)))
         .unwrap_or((0, 0, 0.0));
+    // Which backend answered: a gateway can route the same request elsewhere,
+    // and that is invisible in the reply's shape.
+    let served_by = attempt.served_by.as_deref().unwrap_or("-");
     match outcome {
         Outcome::NoKey => tracing::debug!(
-            "skill reco: FUTURE_SKILL_RECO_JEV_KEY is not set; recommendation is off"
+            "skill reco: no Future account credential (and no {} override); recommendation is off",
+            KEY_ENV
         ),
         Outcome::NoInput {
             query_bytes,
@@ -279,6 +358,7 @@ fn log_outcome(
             latency_ms,
             input_tokens,
             output_tokens,
+            served_by = %served_by,
             cost_cny = cost,
             "skill reco: nothing in the list fits (no card shown)"
         ),
@@ -293,6 +373,7 @@ fn log_outcome(
             latency_ms,
             input_tokens,
             output_tokens,
+            served_by = %served_by,
             cost_cny = cost,
             query = %crate::session::truncate_visible(query.trim(), 40),
             "skill reco: recommended a skill"
@@ -302,6 +383,7 @@ fn log_outcome(
             latency_ms,
             input_tokens,
             output_tokens,
+            served_by = %served_by,
             "skill reco: call failed; the message is sent without a card"
         ),
     }
@@ -309,7 +391,12 @@ fn log_outcome(
 
 /// Build the System One request body: one Choice over the candidates plus
 /// `none_of_these`.
-fn build_request(query: &str, candidates: &[SkillCandidate]) -> serde_json::Value {
+///
+/// The FutureOS gateway's shape differs from TypeSafe's public API, which the
+/// evaluation used: the question goes in `instructions` (not `question`), and
+/// `criteria` **is** the option map — nesting it under `options` is silently
+/// taken as a choice named "options". Verified against the live gateway.
+fn build_request(query: &str, candidates: &[SkillCandidate], model: &str) -> serde_json::Value {
     let mut options = serde_json::Map::new();
     for c in candidates {
         options.insert(c.name.clone(), serde_json::Value::String(option_text(c)));
@@ -321,15 +408,16 @@ fn build_request(query: &str, candidates: &[SkillCandidate]) -> serde_json::Valu
 
     serde_json::json!({
         "state": { "request": query },
-        "model": JEV_MODEL,
+        "model": model,
         "questions": {
             "chunk_0": {
                 "type": "choice",
-                "question": "The request in `request` needs a skill from `criteria`. Which one, or does none of them help?",
-                "criteria": {
-                    "options": options,
-                    "how_to_judge": "Pick the closest match if any is plausible, otherwise choose none_of_these. Choosing it is a normal answer here, not a fallback."
-                }
+                // The judging guidance rides in `instructions`: the gateway takes
+                // no separate criteria text, and the load-bearing sentence
+                // ("choosing none is a normal answer, not a fallback") must reach
+                // the model (see the evaluation: dropping it collapsed refusal).
+                "instructions": "The request in `request` needs a skill from `criteria`. Which one, or does none of them help? Pick the closest match if any is plausible, otherwise choose none_of_these. Choosing it is a normal answer here, not a fallback.",
+                "criteria": options
             }
         }
     })
@@ -367,6 +455,10 @@ struct JevResponse {
     /// Token counts for this call; absent on a response that omits `usage`.
     #[serde(default)]
     usage: Option<JevUsage>,
+    /// The backend that answered, as the gateway names it
+    /// (`typesafe/jev-1.13-20260917`).
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,6 +489,7 @@ mod tests {
         JevResponse {
             answers: map,
             usage: None,
+            model: None,
         }
     }
 
@@ -445,6 +538,7 @@ mod tests {
                 &JevResponse {
                     answers: std::collections::HashMap::new(),
                     usage: None,
+                    model: None,
                 },
                 &cands,
             ),
@@ -492,9 +586,13 @@ mod tests {
             .with_max_level(tracing::Level::DEBUG)
             .finish();
 
-        let usage = JevUsage {
-            input_tokens: 8_800,
-            output_tokens: 20,
+        let attempt = Attempt {
+            usage: Some(JevUsage {
+                input_tokens: 8_800,
+                output_tokens: 20,
+                cost: None,
+            }),
+            served_by: Some("typesafe/jev-1.13-20260917".to_string()),
         };
         let elapsed = std::time::Duration::from_millis(487);
         tracing::subscriber::with_default(subscriber, || {
@@ -504,7 +602,7 @@ mod tests {
                     probability: 0.97,
                     none_probability: 0.01,
                 },
-                Some(usage),
+                attempt.clone(),
                 "帮我把这张照片转成水彩风格",
                 elapsed,
             );
@@ -512,7 +610,7 @@ mod tests {
                 &Outcome::Refused {
                     none_probability: 0.61,
                 },
-                Some(usage),
+                attempt.clone(),
                 "今天天气怎么样",
                 elapsed,
             );
@@ -520,11 +618,11 @@ mod tests {
                 &Outcome::Failed {
                     reason: "HTTP 402 Payment Required".to_string(),
                 },
-                None,
+                Attempt::default(),
                 "whatever",
                 elapsed,
             );
-            log_outcome(&Outcome::NoKey, None, "whatever", elapsed);
+            log_outcome(&Outcome::NoKey, Attempt::default(), "whatever", elapsed);
         });
 
         let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
@@ -539,7 +637,9 @@ mod tests {
             "threshold=0.15",
             "HTTP 402 Payment Required",
             "skill reco: call failed",
-            "FUTURE_SKILL_RECO_JEV_KEY is not set",
+            // Which backend answered, and the fallback when none reported.
+            "served_by=typesafe/jev-1.13-20260917",
+            "no Future account credential",
         ] {
             assert!(
                 logged.contains(expected),
@@ -566,24 +666,78 @@ mod tests {
     }
 
     #[test]
-    fn prices_a_call_from_its_input_tokens() {
+    fn prices_a_call_from_its_input_tokens_when_the_gateway_omits_the_cost() {
         // 8.8k input tokens is the measured shape of a 141-skill catalogue:
         // about 2.7 厘 (0.0027 CNY) at $0.042/Mtok.
         let cost = cost_cny(JevUsage {
             input_tokens: 8_800,
             output_tokens: 20,
+            cost: None,
         });
         assert!((cost - 0.0027).abs() < 0.0002, "unexpected cost: {cost}");
-        // Rounded only enough to strip float noise, so the log reads as a price
-        // without misreporting it.
-        assert_eq!(cost, 0.0027, "unexpected rounding: {cost}");
+        // Rounded only enough to strip float noise (the raw product is
+        // 0.0026611200000000003), so the log reads as a price without
+        // misreporting it.
+        assert_eq!(cost, 0.002661, "unexpected rounding: {cost}");
         // Output tokens are free, so they must not change the price.
         assert_eq!(
             cost,
             cost_cny(JevUsage {
                 input_tokens: 8_800,
                 output_tokens: 0,
+                cost: None,
             })
+        );
+    }
+
+    /// The gateway reports what it actually charged; that figure wins over the
+    /// published rate (which only has to be right when `cost` is absent).
+    #[test]
+    fn prices_a_call_from_the_reported_cost_when_present() {
+        // A live gateway response: 447 in / 54 out charged $1.8774e-05, exactly
+        // the input-only rate. The log must show ~0.000135 CNY — the 0.01-厘
+        // step this replaced would have printed 0.0001, a quarter of the price.
+        let reported = cost_cny(JevUsage {
+            input_tokens: 447,
+            output_tokens: 54,
+            cost: Some(1.8774e-05),
+        });
+        assert_eq!(reported, 0.000135, "unexpected rounding: {reported}");
+
+        // A cost that disagrees with the rate must be believed, not averaged:
+        // this is the number the provider billed.
+        let billed = cost_cny(JevUsage {
+            input_tokens: 8_800,
+            output_tokens: 0,
+            cost: Some(0.5),
+        });
+        assert_eq!(billed, 3.6, "the reported cost must win: {billed}");
+    }
+
+    /// The gateway's URL is derived from the Future provider's base URL, which
+    /// may or may not already carry a path suffix.
+    #[test]
+    fn the_systemone_url_is_derived_from_whatever_base_is_configured() {
+        for base in [
+            "https://future-os.cn/api",
+            "https://future-os.cn/api/",
+            "https://future-os.cn/api/v1",
+            "https://future-os.cn/api/v1/systemone",
+        ] {
+            assert_eq!(
+                systemone_url(base),
+                "https://future-os.cn/api/v1/systemone",
+                "base {base}"
+            );
+        }
+        // A bare origin is fine too, and a staging host keeps its own path.
+        assert_eq!(
+            systemone_url("https://staging.example.com"),
+            "https://staging.example.com/v1/systemone"
+        );
+        assert_eq!(
+            systemone_url("https://staging.example.com/gw"),
+            "https://staging.example.com/gw/v1/systemone"
         );
     }
 
@@ -623,6 +777,7 @@ mod tests {
         let body = JevResponse {
             answers: std::collections::HashMap::new(),
             usage: None,
+            model: None,
         };
         assert!(pick_from_response(&body, &cands).is_none());
     }
@@ -639,14 +794,45 @@ mod tests {
         assert!(text.len() <= 2 + DESC_CHARS + 1);
     }
 
+    /// The gateway's shape: `instructions` carries the question, and `criteria`
+    /// **is** the option map. Nesting the options under an `options` key is not
+    /// an error there — the model reads "options" as a choice name — so this
+    /// pins the flat form.
     #[test]
-    fn build_request_has_none_option_and_state() {
+    fn build_request_matches_the_gateway_shape() {
         let cands = vec![cand("a"), cand("b")];
-        let req = build_request("hello", &cands);
-        let opts = &req["questions"]["chunk_0"]["criteria"]["options"];
-        assert!(opts.get(NONE_OPTION).is_some());
+        let req = build_request("hello", &cands, "jev");
+        let question = &req["questions"]["chunk_0"];
+        let opts = &question["criteria"];
+        assert!(
+            opts.get(NONE_OPTION).is_some(),
+            "the none option is offered"
+        );
         assert!(opts.get("a").is_some() && opts.get("b").is_some());
+        assert!(
+            opts.get("options").is_none(),
+            "the option map must not be nested — the gateway would answer with a \
+             literal choice named \"options\""
+        );
+        assert_eq!(question["type"], serde_json::json!("choice"));
+        assert!(
+            question["instructions"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "the question travels in `instructions`"
+        );
+        assert!(
+            question.get("question").is_none(),
+            "the official API's `question` field is not what this gateway reads"
+        );
+        // The load-bearing sentence from the evaluation must survive.
+        let instructions = question["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains("not a fallback"),
+            "dropping this collapsed refusal in the evaluation: {instructions}"
+        );
         assert_eq!(req["state"]["request"], serde_json::json!("hello"));
+        assert_eq!(req["model"], serde_json::json!("jev"));
     }
 
     #[test]
@@ -655,10 +841,64 @@ mod tests {
         assert!(suggest_skill("q", &[]).is_none());
     }
 
+    /// Clear the endpoint overrides. They are process-global, so a test that
+    /// sets one must clear it before it ends.
+    fn clear_endpoint_env() {
+        for key in [KEY_ENV, URL_ENV, MODEL_ENV] {
+            std::env::remove_var(key);
+        }
+    }
+
+    /// With no credential anywhere the feature is simply off — and the check
+    /// must not depend on the developer's own `auth.json`, so these run against
+    /// an isolated home rather than the real one.
     #[test]
-    fn no_key_returns_none() {
-        // Ensure the env key is absent for this test.
-        std::env::remove_var(KEY_ENV);
+    fn without_a_credential_the_feature_is_off() {
+        let home = crate::test_support::TestHome::new();
+        clear_endpoint_env();
+        assert!(
+            endpoint().is_none(),
+            "a fresh home has no Future provider credential"
+        );
         assert!(suggest_skill("q", &[cand("a")]).is_none());
+        drop(home);
+    }
+
+    /// The shipped path authenticates with the Future provider's own credential:
+    /// no separately configured key. The environment still overrides each part,
+    /// so a development build can point at another gateway.
+    #[test]
+    fn the_endpoint_comes_from_the_future_provider_and_the_env_wins() {
+        let home = crate::test_support::TestHome::new();
+        clear_endpoint_env();
+        assert!(endpoint().is_none(), "no credential yet");
+
+        // An entry of the shape a logged-in install writes.
+        let auth_dir = home.path().join(".future/agent");
+        std::fs::create_dir_all(&auth_dir).expect("auth dir");
+        std::fs::write(
+            auth_dir.join("auth.json"),
+            r#"{"future":{"type":"api_key","key":"provider-key","base_url":"https://future-os.cn/api"}}"#,
+        )
+        .expect("write auth");
+
+        let resolved = endpoint().expect("the provider credential is used");
+        assert_eq!(resolved.key, "provider-key");
+        assert_eq!(resolved.url, "https://future-os.cn/api/v1/systemone");
+        assert_eq!(resolved.model, "jev");
+
+        std::env::set_var(KEY_ENV, "env-key");
+        std::env::set_var(URL_ENV, "https://staging.example.com/gw");
+        std::env::set_var(MODEL_ENV, "jev-preview");
+        let overridden = endpoint().expect("resolves");
+        assert_eq!(overridden.key, "env-key");
+        assert_eq!(
+            overridden.url,
+            "https://staging.example.com/gw/v1/systemone"
+        );
+        assert_eq!(overridden.model, "jev-preview");
+
+        clear_endpoint_env();
+        drop(home);
     }
 }
