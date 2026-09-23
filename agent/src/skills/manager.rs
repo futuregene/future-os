@@ -145,7 +145,7 @@ impl SkillManager {
         let mut catalogue = self.catalogue()?;
         self.locked(|db| {
             self.recover(db)?;
-            self.reconcile(db)?;
+            self.reconcile_once(db)?;
             for skill in &mut catalogue {
                 let installed: Option<(String, Option<String>)> = db
                     .query_row(
@@ -168,7 +168,7 @@ impl SkillManager {
     pub fn list_installed(&self) -> Result<Vec<InstalledSkill>> {
         self.locked(|db| {
             self.recover(db)?;
-            self.reconcile(db)?;
+            self.reconcile_once(db)?;
             let mut statement = db.prepare(
                 "SELECT name,version,scope,source,location FROM skill_installations
                  ORDER BY name, CASE scope WHEN 'app' THEN 0 ELSE 1 END",
@@ -258,7 +258,7 @@ impl SkillManager {
                 removed = true;
             }
         }
-        let tx = db.transaction()?;
+        let tx = crate::session::database::begin_immediate(db)?;
         tx.execute(
             "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms)
             VALUES(?1,NULL,1,NULL,?2)
@@ -426,7 +426,7 @@ impl SkillManager {
     }
 
     fn finish_install(&self, db: &mut Connection, receipt: &Receipt, dest: &Path) -> Result<()> {
-        let tx = db.transaction()?;
+        let tx = crate::session::database::begin_immediate(db)?;
         let now = now_ms();
         tx.execute(
             "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms) VALUES(?1,?2,0,?3,?3)
@@ -506,7 +506,7 @@ impl SkillManager {
         } else {
             std::collections::HashSet::new()
         };
-        let tx = db.transaction()?;
+        let tx = crate::session::database::begin_immediate(db)?;
         tx.execute("DELETE FROM skill_installations", [])?;
         // App installs take precedence in both the list and the historical
         // version row when an id also exists in the global scope.
@@ -556,8 +556,34 @@ impl SkillManager {
                 )?;
             }
         }
+        tx.execute(
+            "INSERT INTO skills_meta(key,value) VALUES('reconciled','1')
+             ON CONFLICT(key) DO UPDATE SET value='1'",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Reconcile at most once per database.
+    ///
+    /// Reconciling rewrites `skill_installations` wholesale, which made a
+    /// read-only RPC ("list the skills") a writer of the session database —
+    /// the contention behind "session persistence ... database is locked".
+    /// It is still needed to adopt skill directories that exist on disk with no
+    /// registry row (the v3 → v4 upgrade, or a directory placed by hand), so it
+    /// runs once, and afterwards only on the mutating operations, where its cost
+    /// is invisible next to the install itself.
+    fn reconcile_once(&self, db: &mut Connection) -> Result<()> {
+        let already: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM skills_meta WHERE key='reconciled')",
+            [],
+            |row| row.get(0),
+        )?;
+        if already {
+            return Ok(());
+        }
+        self.reconcile(db)
     }
 
     fn download(&self, id: &str, version: &str) -> Result<Vec<u8>> {
@@ -961,5 +987,56 @@ mod tests {
         assert!(!newer("1.2.0", "1.2.0"));
         assert!(!newer("1.2", "1.1.0"));
         assert!(!newer("1.2.0", "1.1"));
+    }
+}
+
+/// The registry shares `agent.db` with the session store, and the write lock it
+/// takes there must not be needed by a read.
+///
+/// `list_installed` and `catalogue_with_status` used to run `reconcile` on every
+/// call, which deletes and rewrites `skill_installations` — so "show me the
+/// skills" was a writer of the session database. Logged as:
+/// `Session persistence command failed: database is locked`, right after a burst
+/// of `list_installed_skills` / `list_available_skills` from the desktop.
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+
+    /// Hold the write lock, then read. A pure read succeeds; anything that writes
+    /// blocks until `busy_timeout` (5 s) and then fails with "database is locked".
+    #[test]
+    fn listing_skills_does_not_need_the_write_lock() {
+        let _home = crate::test_support::TestHome::new();
+        let manager = SkillManager::local().unwrap();
+        // The first call may reconcile once (creating the marker); the one under
+        // test is a settled database, which is what the desktop hits per message.
+        manager.list_installed().unwrap();
+        manager.catalogue_with_status().unwrap();
+
+        let holder = Connection::open(manager.db_path()).unwrap();
+        holder
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        holder
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 INSERT OR REPLACE INTO skills_meta(key,value) VALUES('held','1');",
+            )
+            .unwrap();
+
+        let listed = manager.list_installed();
+        let catalogue = manager.catalogue_with_status();
+        holder.execute_batch("ROLLBACK").unwrap();
+
+        assert!(
+            listed.is_ok(),
+            "listing installed skills must not write: {:?}",
+            listed.err()
+        );
+        assert!(
+            catalogue.is_ok(),
+            "listing the catalogue must not write: {:?}",
+            catalogue.err()
+        );
     }
 }

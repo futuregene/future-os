@@ -6,6 +6,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::path::Path;
 
+/// Free pages at or above which a delete is worth reclaiming (1024 × 4 KiB =
+/// 4 MiB). Below it the gain is invisible and the hot paths stay a header read.
+const FREELIST_RECLAIM_PAGES: i64 = 1024;
+
+/// How many pages one delete may reclaim. Each page costs a separate
+/// `incremental_vacuum` call (~90 µs), so this bounds the worst case at roughly
+/// a third of a second; the remainder is drained by later deletes, or by the
+/// compaction at startup if the file stays bloated.
+const RECLAIM_STEP_PAGES: i64 = 4096;
+
 struct StoredEvent {
     session_id: String,
     run_id: String,
@@ -90,18 +100,44 @@ impl SqliteStore {
 
     pub fn replace(&self, session: &str, entries: Vec<Value>) -> Result<()> {
         let session = session.to_owned();
-        self.db.call(move |db| {
-            let tx = db.transaction()?;
-            let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&session], |r| r.get(0))?;
-            if skipped { bail!("session migration was skipped; retry import before modifying it"); }
-            tx.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [&session])?;
-            tx.execute("DELETE FROM entries WHERE session_id=?1", [&session])?;
-            tx.execute("DELETE FROM runs WHERE session_id=?1", [&session])?;
-            tx.execute("UPDATE sessions SET current_metadata_json=NULL WHERE id=?1", [&session])?;
-            insert_entries(&tx, &session, entries)?;
-            tx.commit()?;
-            Ok(())
-        })
+        let result = self.db.call(move |db| {
+            // Reads `legacy_imports` before writing, so the transaction must own
+            // the write lock from the start: a deferred read-then-upgrade fails
+            // instantly (SQLITE_BUSY_SNAPSHOT) when another connection commits
+            // in between, which is exactly the "database is locked" seen while
+            // the skill registry wrote this same file.
+            {
+                let tx = crate::session::database::begin_immediate(db)?;
+                let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&session], |r| r.get(0))?;
+                if skipped { bail!("session migration was skipped; retry import before modifying it"); }
+                tx.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [&session])?;
+                tx.execute("DELETE FROM entries WHERE session_id=?1", [&session])?;
+                tx.execute("DELETE FROM runs WHERE session_id=?1", [&session])?;
+                tx.execute("UPDATE sessions SET current_metadata_json=NULL WHERE id=?1", [&session])?;
+                insert_entries(&tx, &session, entries)?;
+                tx.commit()?;
+                Ok(())
+            }
+        });
+        // A rewrite can drop a large amount of history (compaction), which would
+        // otherwise stay in the file as free pages forever. Separate job: the
+        // worker is one ordered thread, so this cannot nest inside the call above.
+        self.reclaim_after(result.is_ok());
+        result
+    }
+
+    /// Hand pages freed by a delete back to the filesystem.
+    ///
+    /// Never fails the operation it follows: a machine without room (or with a
+    /// database opened read-only) should still delete the session, and the free
+    /// pages are reclaimed on the next delete that succeeds.
+    fn reclaim_after(&self, operation_succeeded: bool) {
+        if !operation_succeeded {
+            return;
+        }
+        if let Err(error) = self.db.reclaim(FREELIST_RECLAIM_PAGES, RECLAIM_STEP_PAGES) {
+            tracing::warn!(%error, "could not reclaim freed pages");
+        }
     }
 
     pub fn append(&self, session: &str, entries: Vec<Value>) -> Result<()> {
@@ -113,7 +149,7 @@ impl SqliteStore {
     pub fn commit(&self, session: &str, entries: Vec<Value>, events: Vec<Value>) -> Result<()> {
         let session = session.to_owned();
         self.db.call(move |db| {
-            let tx = db.transaction()?;
+            let tx = crate::session::database::begin_immediate(db)?;
             if tx.execute(
                 "UPDATE sessions SET revision=revision+1 WHERE id=?1 AND revision>=0",
                 [&session],
@@ -155,8 +191,8 @@ impl SqliteStore {
 
     pub fn delete(&self, session: &str) -> Result<()> {
         let session = session.to_owned();
-        self.db.call(move |db| {
-            let tx = db.transaction()?;
+        let result = self.db.call(move |db| {
+            let tx = crate::session::database::begin_immediate(db)?;
             tx.execute("DELETE FROM sessions WHERE id=?1", [&session])?;
             tx.execute(
                 "UPDATE legacy_imports SET status='deleted' WHERE session_id=?1",
@@ -164,7 +200,11 @@ impl SqliteStore {
             )?;
             tx.commit()?;
             Ok(())
-        })
+        });
+        // A session's events are its largest storage, and a delete frees all of
+        // them: this is the case the reclamation exists for.
+        self.reclaim_after(result.is_ok());
+        result
     }
 
     pub fn events(&self, session: &str, run: &str) -> Result<Vec<Value>> {
@@ -267,7 +307,7 @@ impl SqliteStore {
     pub(crate) fn append_events(&self, session: &str, events: Vec<Value>) -> Result<()> {
         let session = session.to_owned();
         self.db.call(move |db| {
-            let tx = db.transaction()?;
+            let tx = crate::session::database::begin_immediate(db)?;
             for event in events {
                 insert_event(&tx, &session, event)?;
             }
@@ -300,13 +340,17 @@ impl SqliteStore {
 
     pub fn prune_events(&self, session: &str, run: &str) -> Result<()> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        self.db.call(move |db| {
-            db.execute(
+        let result = self.db.call(move |db| {
+            let tx = crate::session::database::begin_immediate(db)?;
+            tx.execute(
                 "DELETE FROM run_events WHERE session_id=?1 AND run_id=?2",
                 params![session, run],
             )?;
+            tx.commit()?;
             Ok(())
-        })
+        });
+        self.reclaim_after(result.is_ok());
+        result
     }
 }
 
@@ -766,5 +810,231 @@ mod replay_cursor_tests {
                 Ok(())
             })
             .unwrap();
+    }
+}
+
+/// The workspace grew to 7.4 GB holding 1.5 GB of live rows: deletes only moved
+/// pages to the freelist, and nothing ever freed them. These pin the fix.
+#[cfg(test)]
+mod reclamation_tests {
+    use super::*;
+
+    /// Live + free pages of the database file, in pages.
+    fn pages(store: &SqliteStore) -> (i64, i64) {
+        store
+            .db
+            .call(|db| {
+                let count: i64 = db.pragma_query_value(None, "page_count", |row| row.get(0))?;
+                let free: i64 = db.pragma_query_value(None, "freelist_count", |row| row.get(0))?;
+                Ok((count, free))
+            })
+            .unwrap()
+    }
+
+    fn event(idx: i64) -> Value {
+        serde_json::json!({
+            "run_id": "run",
+            "idx": idx,
+            "epoch": 1,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "kind": "text",
+            "payload": "x".repeat(400),
+        })
+    }
+
+    /// Opening a database switches it to incremental auto-vacuum, which is what
+    /// makes later deletes reclaimable at all.
+    #[test]
+    fn opening_enables_incremental_auto_vacuum() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+        let mode: i64 = store
+            .db
+            .call(|db| Ok(db.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(mode, 2, "INCREMENTAL");
+    }
+
+    /// Page counts read with a raw connection: opening a `SqliteStore` now
+    /// compacts, so measuring through it would hide the very state under test.
+    fn pages_raw(path: &std::path::Path) -> (i64, i64) {
+        let connection = Connection::open(path).unwrap();
+        (
+            connection
+                .pragma_query_value(None, "page_count", |row| row.get(0))
+                .unwrap(),
+            connection
+                .pragma_query_value(None, "freelist_count", |row| row.get(0))
+                .unwrap(),
+        )
+    }
+
+    /// Build a database with a large freelist, the way SQLite leaves one: delete
+    /// rows without ever calling `incremental_vacuum`.
+    fn bloat(path: &std::path::Path, rows: i64, blob: usize, mode: &str) {
+        let mode = mode.to_owned();
+        let store = SqliteStore::open(path).unwrap();
+        store
+            .db
+            .call(move |db| {
+                db.execute_batch(&format!("PRAGMA auto_vacuum = {mode}; VACUUM;"))?;
+                db.execute_batch("CREATE TABLE IF NOT EXISTS bloat (payload TEXT)")?;
+                db.execute_batch(&format!(
+                    "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i<{rows})
+                     INSERT INTO bloat SELECT hex(randomblob({blob})) FROM c"
+                ))?;
+                db.execute_batch("DELETE FROM bloat")?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// A database written before this change (`auto_vacuum = 0`) is bloated with
+    /// free pages, and only a `VACUUM` can both reclaim them and switch on
+    /// incremental reclamation. Both have to happen on the next open.
+    ///
+    /// Asserted on the logical page count: `VACUUM` writes through the WAL, so the
+    /// bytes on disk only follow once the last connection closes.
+    #[test]
+    fn opening_compacts_a_database_written_before_this_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        bloat(&path, 20_000, 400, "NONE");
+        let (pages_before, free_before) = pages_raw(&path);
+        assert!(free_before > 2_000, "fixture freelist: {free_before}");
+
+        let reopened = SqliteStore::open(&path).unwrap();
+        let (pages_after, free_after) = pages(&reopened);
+        assert!(
+            pages_after < pages_before / 2,
+            "reopening compacts: {pages_before} → {pages_after} pages"
+        );
+        assert!(
+            free_after < FREELIST_RECLAIM_PAGES,
+            "{free_after} still free"
+        );
+        let mode: i64 = reopened
+            .db
+            .call(|db| Ok(db.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?))
+            .unwrap();
+        assert_eq!(mode, 2, "and leaves incremental reclamation on");
+    }
+
+    /// A database that is *already* incremental but disproportionately free pages
+    /// (a big delete before the incremental drain finished) is compacted on the
+    /// next open, rather than draining a page at a time over minutes.
+    #[test]
+    fn opening_compacts_a_bloated_incremental_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        // Over COMPACT_MIN_FREE_BYTES, and more than a quarter of the file.
+        bloat(&path, 20_000, 4_000, "INCREMENTAL");
+        let (pages_before, free_before) = pages_raw(&path);
+        let mode: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, 2, "the fixture is already incremental");
+        assert!(
+            free_before * 4_096 > 64 * 1024 * 1024,
+            "fixture should exceed the compaction floor: {free_before} pages"
+        );
+
+        let reopened = SqliteStore::open(&path).unwrap();
+        let (pages_after, _) = pages(&reopened);
+        assert!(
+            pages_after < pages_before / 2,
+            "reopening compacts: {pages_before} → {pages_after} pages"
+        );
+    }
+
+    /// The reported symptom: a session delete freed its events but the file kept
+    /// every page. Deleting the largest storage a session has must shrink it.
+    #[test]
+    fn deleting_a_session_returns_its_pages_to_the_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+        store.bind_events("doomed").unwrap();
+        // Past the 4 MiB reclaiming threshold, in one transaction.
+        store
+            .append_events("doomed", (0..24_000).map(event).collect())
+            .unwrap();
+        let (with_session, free_before) = pages(&store);
+        assert!(free_before < FREELIST_RECLAIM_PAGES);
+
+        store.delete("doomed").unwrap();
+        let (after, free_after) = pages(&store);
+        assert!(
+            after < with_session,
+            "the file must shrink: {with_session} → {after} pages"
+        );
+        assert!(
+            free_after < FREELIST_RECLAIM_PAGES,
+            "and not just hand the pages to the freelist: {free_after} free"
+        );
+    }
+
+    /// Pruning a run is the other path that frees bulk storage.
+    #[test]
+    fn pruning_run_events_reclaims_their_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+        store.bind_events("keeps").unwrap();
+        store
+            .append_events("keeps", (0..24_000).map(event).collect())
+            .unwrap();
+        let (peak, _) = pages(&store);
+
+        store.prune_events("keeps", "run").unwrap();
+        let (after, free) = pages(&store);
+        assert!(
+            after < peak,
+            "pruning must shrink the file: {peak} → {after}"
+        );
+        assert!(free < FREELIST_RECLAIM_PAGES, "{free} pages still free");
+    }
+
+    /// The failure from the log. `replace` reads `legacy_imports` before it
+    /// writes, so a deferred transaction loses its snapshot the instant another
+    /// connection commits — SQLite answers `SQLITE_BUSY_SNAPSHOT` immediately
+    /// rather than waiting out `busy_timeout`, and the append failed with
+    /// "database is locked" while the skill registry was writing this file.
+    /// Owning the write lock at `BEGIN` makes the wait happen instead.
+    #[test]
+    fn a_session_write_waits_out_a_competing_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.db");
+        let store = SqliteStore::open(&path).unwrap();
+
+        let holder = Connection::open(&path).unwrap();
+        holder
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        holder
+            .execute_batch("BEGIN IMMEDIATE; INSERT OR REPLACE INTO storage_meta(key,value) VALUES('held','1');")
+            .unwrap();
+
+        // Release well inside the timeout, from another thread.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            holder.execute_batch("COMMIT").unwrap();
+        });
+
+        let entry = serde_json::json!({
+            "id": "u",
+            "type": "user",
+            "role": "user",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "content": "hello",
+            "meta": {"run_id": ""},
+        });
+        store
+            .replace("session", vec![entry])
+            .expect("the write should wait for the competing writer, not fail");
+        handle.join().unwrap();
+
+        // And it really landed, rather than being dropped along the way.
+        let entries: Vec<Value> = store.entries("session").unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

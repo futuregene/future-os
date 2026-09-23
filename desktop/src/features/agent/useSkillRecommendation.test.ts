@@ -18,6 +18,12 @@ import {
 } from "./useSkillRecommendation";
 
 vi.mock("../../integrations/skills/skillsClient", () => ({
+  // The hook goes through the shared cache, which assembles both lists from the
+  // per-call mocks below, so a test still drives the lists it cares about.
+  loadSkillCatalog: () => ({
+    installed: listInstalledSkills(),
+    catalogue: listAvailableSkills(),
+  }),
   listAvailableSkills: vi.fn(),
   listInstalledSkills: vi.fn(),
   suggestSkill: vi.fn(),

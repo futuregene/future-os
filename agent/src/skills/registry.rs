@@ -37,6 +37,10 @@ pub(crate) const SKILLS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS skills (
     installed_at_ms INTEGER,
     updated_at_ms INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS skills_meta (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS skill_installations (
     location TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,

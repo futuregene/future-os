@@ -1,8 +1,7 @@
 import type { SkillCandidate, SkillRecoToday } from "../../integrations/skills/skillsClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  listAvailableSkills,
-  listInstalledSkills,
+  loadSkillCatalog,
   recordSkillReco,
   skillRecoToday,
   suggestSkill,
@@ -127,20 +126,20 @@ export function useSkillRecommendation({
   const active = enabled && loggedIn && hasBalance;
 
   // Load the candidate set (catalogue − installed) once the feature is active.
+  // Both lists come from the shared cache, so this costs nothing when the
+  // composer on the same screen has already read them.
   useEffect(() => {
     if (!active)
       return;
     let cancelled = false;
-    Promise.all([
-      listAvailableSkills().catch(() => [] as Awaited<ReturnType<typeof listAvailableSkills>>),
-      listInstalledSkills().catch(() => [] as Awaited<ReturnType<typeof listInstalledSkills>>),
-    ])
-      .then(([catalogue, installed]) => {
+    const { installed, catalogue } = loadSkillCatalog();
+    Promise.all([catalogue.catch(() => []), installed.catch(() => [])])
+      .then(([all, mine]) => {
         if (cancelled)
           return;
-        const installedIds = new Set(installed.map(s => s.id));
+        const installedIds = new Set(mine.map(s => s.id));
         setCandidates(
-          catalogue
+          all
             .filter(entry => !installedIds.has(entry.id))
             .map(entry => ({ name: entry.id, description: entry.description })),
         );

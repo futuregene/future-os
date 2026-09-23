@@ -22,7 +22,7 @@ mod checkpoint;
 pub(crate) mod compaction_ops;
 #[cfg(test)]
 mod compaction_ops_tests;
-mod database;
+pub(crate) mod database;
 pub(crate) mod display;
 mod history_index;
 mod history_query;

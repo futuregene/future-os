@@ -1,6 +1,7 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { listAvailableSkills } from "../../integrations/skills/skillsClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -12,7 +13,7 @@ import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
-import { listAvailableSkills, listInstalledSkills } from "../../integrations/skills/skillsClient";
+import { loadSkillCatalog } from "../../integrations/skills/skillsClient";
 import { deleteTempAttachment, readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatBytes } from "../../lib/format";
@@ -216,11 +217,14 @@ function ComposerImpl({
   useEffect(() => {
     let cancelled = false;
     const useZh = i18n.language !== "en";
+    // Through the shared cache: the recommender on this screen reads the same
+    // two lists, and an uncached read here would double the RPCs per message.
+    const { installed: installedCall, catalogue: catalogueCall } = loadSkillCatalog();
     Promise.all([
-      listInstalledSkills(),
+      installedCall,
       // Best-effort: the catalogue needs the platform; offline it just
       // contributes no zh fallback.
-      listAvailableSkills().catch(() => [] as Awaited<ReturnType<typeof listAvailableSkills>>),
+      catalogueCall.catch(() => [] as Awaited<ReturnType<typeof listAvailableSkills>>),
     ])
       .then(([installed, catalogue]) => {
         if (cancelled)
