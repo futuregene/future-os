@@ -8311,11 +8311,25 @@ impl<T: TerminalIo> App<T> {
                 .filter_map(|b| b["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("");
-            if content.is_empty()
-                && !blocks
-                    .iter()
-                    .any(|b| matches!(b["kind"].as_str(), Some("tool_call" | "reasoning")))
-            {
+            let thinking = blocks
+                .iter()
+                .filter(|b| b["kind"] == "reasoning")
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("");
+            // A row the transcript would render as nothing is dropped.
+            //
+            // The agent stores a tool-using turn as one assistant entry per call
+            // (the `tool_call` step, which carries no text) followed by the
+            // call's own `tool` entry, so those steps are structural, not
+            // content: kept as messages they render no row of their own while
+            // still taking a separator (a second blank line between calls the
+            // live view does not have) and breaking every run of consecutive
+            // calls, so a loaded session never folded. A call row is never
+            // dropped on that ground — it has a row of its own to render, and
+            // the live view shows it too even when the call returned nothing.
+            let renders_something = role == "tool" || !content.is_empty() || !thinking.is_empty();
+            if !renders_something {
                 continue;
             }
             // (Pre-filtered above to user/assistant/tool.)
@@ -8349,12 +8363,6 @@ impl<T: TerminalIo> App<T> {
                 Some(other) => Some(other.to_string()),
                 None => known_call.and_then(|(_, args)| args.clone()),
             };
-            let thinking = blocks
-                .iter()
-                .filter(|b| b["kind"] == "reasoning")
-                .filter_map(|b| b["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("");
             cm.thinking = (!thinking.is_empty()).then_some(thinking);
             if role == "tool" {
                 cm.tool_status = Some(
@@ -11368,6 +11376,30 @@ mod tests {
         }
     }
 
+    /// Pump until a triggered history page has settled (its RPC answered), so a
+    /// paging test waits for the page instead of for a wall-clock window — a
+    /// loaded host can take far longer than `pump`'s quiesce window to answer.
+    ///
+    /// The request is started synchronously by the scroll key (it sets
+    /// `loading`), so "not loading" means the answer arrived; when the key was
+    /// not supposed to fetch anything, this returns at once and the assertion
+    /// after it explains why.
+    async fn pump_until_history_settled(
+        app: &mut App<FakeTerminal>,
+        op_rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+    ) {
+        for _ in 0..PUMP_BUDGET_ITERS {
+            while let Ok(cmd) = op_rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if !app.history_paging.loading {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(PUMP_INTERVAL_MS)).await;
+        }
+        panic!("the history page never settled");
+    }
+
     /// Pump until a system message containing `needle` appears (bounded).
     /// Deterministic alternative to fixed-window pumping for live-agent
     /// flows under parallel load.
@@ -13636,6 +13668,117 @@ mod tests {
 
     // ─── Paged history ───────────────────────────────────────────────
 
+    /// One page in the shape the agent actually stores a tool-using turn in:
+    /// an assistant entry carrying the `tool_call` step, then the `tool` entry
+    /// with its result — repeated, with a reasoning-only assistant entry first.
+    fn tool_run_page() -> Value {
+        let mut rows = vec![serde_json::json!({
+            "id": "e0",
+            "kind": "assistant",
+            "role": "assistant",
+            "blocks": [{"kind": "reasoning", "text": "I should read the parser first."}],
+        })];
+        for (index, path) in ["/a.rs", "/b.rs", "/c.rs"].iter().enumerate() {
+            let call_id = format!("call_{index}");
+            rows.push(serde_json::json!({
+                "id": format!("e{index}a"),
+                "kind": "assistant",
+                "role": "assistant",
+                "blocks": [{
+                    "kind": "tool_call",
+                    "toolCallId": call_id,
+                    "name": "read",
+                    "arguments": {"path": path},
+                }],
+            }));
+            rows.push(serde_json::json!({
+                "id": format!("e{index}t"),
+                "kind": "tool",
+                "role": "tool",
+                "blocks": [{
+                    "kind": "tool_result",
+                    "toolCallId": call_id,
+                    "text": format!("body of {path}\n"),
+                    "isError": false,
+                }],
+            }));
+        }
+        serde_json::json!({"entries": rows})
+    }
+
+    /// A loaded run folds exactly like a live one.
+    ///
+    /// The agent stores a tool-using turn as an assistant entry per call (the
+    /// `tool_call` step, no text) followed by the call's `tool` entry. Those
+    /// assistant steps used to become empty chat messages: they rendered no row
+    /// of their own but still separated the calls, so a loaded session never
+    /// folded and every pair of calls carried an extra blank line the live view
+    /// does not have.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_loaded_run_folds_like_a_live_one() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.chat.render(100);
+        app.chat.set_compact_activity(true);
+        app.apply_history_page("s1", Ok(tool_run_page()));
+
+        let lines: Vec<String> = app
+            .chat
+            .render_all(100)
+            .iter()
+            .map(|line| crate::utils::strip_ansi_codes(line).trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(lines, vec!["▸ thinking", "▸ read 3 files"], "{lines:?}");
+
+        // The same page without the compact view: three call rows, each a single
+        // blank line apart — the spacing the live view has.
+        app.chat.set_compact_activity(false);
+        let raw = app.chat.render_all(100);
+        let plain: Vec<String> = raw
+            .iter()
+            .map(|l| crate::utils::strip_ansi_codes(l))
+            .collect();
+        let text = plain.join("\n");
+        assert!(text.contains("I should read the parser first."), "{text}");
+        for path in ["/a.rs", "/b.rs", "/c.rs"] {
+            assert!(text.contains(path), "{text}");
+        }
+        let calls = plain
+            .iter()
+            .position(|line| line.contains("read /a.rs"))
+            .expect("the first call row");
+        let blank = plain[calls + 1].trim().is_empty();
+        assert!(blank, "a blank line separates the calls");
+        assert!(
+            !plain[calls + 2].trim().is_empty(),
+            "exactly one blank line: {plain:?}"
+        );
+        assert!(plain[calls + 2].contains("read /b.rs"), "{plain:?}");
+    }
+
+    /// A call that returned nothing is still a call: the live view shows the
+    /// row while it runs, so a reload must not make it disappear.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_loaded_call_with_no_output_keeps_its_row() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.chat.render(100);
+        app.apply_history_page(
+            "s1",
+            Ok(serde_json::json!({"entries": [
+                {"id": "a1", "kind": "assistant", "role": "assistant",
+                 "blocks": [{"kind": "tool_call", "toolCallId": "c1", "name": "shell",
+                              "arguments": {"command": "true"}}]},
+                {"id": "t1", "kind": "tool", "role": "tool",
+                 "blocks": [{"kind": "tool_result", "toolCallId": "c1", "text": "", "isError": false}]}
+            ]})),
+        );
+        let rendered = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
+        assert!(
+            rendered.contains("$ true"),
+            "the call row survived: {rendered}"
+        );
+    }
+
     /// A `--session` startup reads the session's history as one backward page:
     /// `get_session_entries` with the tail cursor, never `get_messages` (whose
     /// response has no cursor and has to carry the whole session).
@@ -13741,7 +13884,7 @@ mod tests {
         assert!(app.chat.is_at_top());
 
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
 
         let cursors: Vec<_> = requests
             .lock()
@@ -13769,7 +13912,7 @@ mod tests {
         assert!(!app.history_paging.has_more);
         assert!(!app.history_paging.loading);
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
         assert_eq!(
             requests
                 .lock()
@@ -13882,7 +14025,7 @@ mod tests {
         assert!(!app.chat.scroll_up(1), "and the scroll reports it");
 
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
         let visible = crate::utils::strip_ansi_codes(&app.chat.render(100).join("\n"));
         assert!(visible.contains("oldest question"), "{visible}");
         assert!(!app.history_paging.has_more);
@@ -14214,7 +14357,7 @@ mod tests {
         app.chat.set_viewport_height(40);
         app.chat.render(100);
         app.handle_key_action(KeyAction::ScrollChatUpPage);
-        pump(&mut app, &mut rx).await;
+        pump_until_history_settled(&mut app, &mut rx).await;
         assert!(plain_text(&app).contains("first question"));
 
         app.flush_scrollback(false);
