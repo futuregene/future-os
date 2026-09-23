@@ -18,6 +18,7 @@
 - [[手机远程|Remote]]
 - [[飞书集成|Feishu]]
 - [[钉钉集成|DingTalk]]
+- 其他通道：[通道 provider](../../guide/channels-providers.zh-CN.md)
 
 **帮助**
 - [[常见问题|FAQ]]

@@ -22,6 +22,10 @@ import sys
 
 PROVIDERS = pathlib.Path("channels/src/providers")
 MATRIX = pathlib.Path("docs/guide/channels-providers.md")
+REGISTRY = pathlib.Path("channels/src/providers/registry.rs")
+
+# `ProviderEntry { definition: &crate::providers::<module>::DEFINITION, … }`
+REGISTERED = re.compile(r"&crate::providers::(\w+)::DEFINITION")
 
 # | Channel | `id` | maturity | inbound | edit | threads | typing | reactions | media | gate | max | requires |
 ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*`([a-z]+)`\s*\|\s*(\w+)\s*\|\s*([^|]+?)\s*\|(.+)\|\s*$")
@@ -54,9 +58,31 @@ def read_definition(provider: pathlib.Path) -> dict | None:
     }
 
 
+def check_every_provider_has_a_row(rows: set[str]) -> int:
+    """Every registered channel must appear in the table.
+
+    The row loop in `main` iterates the *table* and skips a provider it has no
+    row for, so on its own it cannot notice a channel that was added without
+    one — the reader's page would simply be missing a channel. This is the
+    other direction, and it is the mistake that is easy to make: the code, the
+    registry and `future channel list` are all consistent while the table a
+    person scans is not.
+
+    Only the framework registry is consulted; the self-bridged pair (Feishu,
+    DingTalk) is deliberately not in this table.
+    """
+    problems = 0
+    for module in sorted(set(REGISTERED.findall(REGISTRY.read_text()))):
+        if module not in rows:
+            problems += 1
+            print(f"MISSING {module}: registered but has no row in the matrix")
+    return problems
+
+
 def main() -> int:
     problems = 0
     checked = 0
+    documented: set[str] = set()
     for line in MATRIX.read_text().splitlines():
         match = ROW.match(line)
         if match is None or match.group(1).strip() == "Channel":
@@ -65,6 +91,7 @@ def main() -> int:
         cells = [cell.strip() for cell in match.group(5).split("|")]
         if len(cells) < 7:
             continue
+        documented.add(channel_id)
         provider = PROVIDERS / f"{channel_id}.rs"
         if not provider.exists():
             continue
@@ -87,10 +114,16 @@ def main() -> int:
             problems += 1
             print(f"MISMATCH {channel_id} maturity: page={maturity} code={declared['maturity']}")
 
+    missing_rows = check_every_provider_has_a_row(documented)
+    problems += missing_rows
+
     if problems:
         print(f"{problems} mismatch(es) across {checked} provider row(s)")
         return 1
-    print(f"provider matrix matches the code ({checked} rows)")
+    print(
+        f"provider matrix matches the code ({checked} rows, every registered "
+        f"provider has one)"
+    )
     return 0
 
 
