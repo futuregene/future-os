@@ -214,10 +214,14 @@ pager (e.g. `No history matches for 'needle'.`).
 While a popup or the pager is open every key goes to that overlay, so the global
 shortcuts above apply to the chat input only.
 
-Tool results render with their content. Each tool call line carries a one-line
-summary (`edit src/a.rs +12 -3`, or `write 3 files +40 -2`), and the body is
-collapsed beneath it to a 4-row window plus a `… N more lines · ctrl+g to
-expand` marker; `ctrl+g` expands it (up to 200 rows). Unified diffs
+A tool call is one row: the call itself (`edit src/a.rs +12 -3`,
+`$ make test`, `read src/main.rs:1-20`), with a diff's `+N -M` badge on that
+same row — a transcript of twenty calls is twenty rows, not twenty previews.
+`ctrl+g` expands the body beneath its row (up to 200 rows, with a
+`… N more lines · truncated` marker at the cap) and collapses it again; a call
+that *failed* keeps its body while collapsed, so the reason is readable without
+knowing a key. `/tool-output <call-id>` prints one call's stored output in full.
+Unified diffs
 (`---`/`+++` headers, `@@` hunks) and `apply_patch` envelopes (the FREEFORM
 provider tool whose grammar is captured under
 `tests/provider-protocol/fixtures/`) get a line-number gutter and tinted
