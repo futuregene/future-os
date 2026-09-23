@@ -81,9 +81,14 @@ async function readHistoryPage(
   sessionId: string,
   before: number,
   isCurrent: () => boolean,
+  untrimmed = false,
 ): Promise<EntriesData> {
   const response = await requestReadPage<EntriesData>(client, {
     type: "get_session_entries", sessionId, before, limit: HISTORY_PAGE_USER_EXCHANGES,
+    // The bridge's byte-budget trim sheds whole oldest exchanges from a
+    // backward page; the gap-fill integrity check below needs the page to
+    // end flush with the requested cursor, so it opts out explicitly.
+    ...(untrimmed ? { untrimmed: true } : {}),
   }, sessionId, isCurrent);
   return response.data;
 }
@@ -451,9 +456,38 @@ export function useTimelineController({
         const older = await readHistoryPage(client, sessionId, nextBefore, isCurrent);
         const olderEntries = older.entries ?? [];
         const start = older.nextOffset ?? 0;
-        if (!Number.isSafeInteger(start) || start < 0 || start >= nextBefore ||
-          start + olderEntries.length !== nextBefore) {
+        // A cursor that does not advance (or points outside the requested
+        // window) means the durable history shifted underneath the read —
+        // the page cannot be trusted and the whole refresh must retry later.
+        if (!Number.isSafeInteger(start) || start < 0 || start >= nextBefore) {
           throw new Error("history_gap_cursor_invalid");
+        }
+        if (start + olderEntries.length !== nextBefore) {
+          // A gap page must end flush with the requested `before`. The one
+          // legitimate exception is the desktop bridge's byte-budget trim
+          // (prepare_backward_entries_page_with_cap): it sheds whole oldest
+          // exchanges, advances the cursor past them, and always marks the
+          // page hasMore. The same range is available untrimmed on request,
+          // so bridge the gap from that re-read instead of failing the
+          // refresh — failing it is what stranded older history: the
+          // conversation collapsed to the tail and the paging cursor could
+          // never rejoin it. A short page without hasMore is genuine journal
+          // corruption: fail and retry.
+          if (older.hasMore !== true) {
+            throw new Error("history_gap_cursor_invalid");
+          }
+          const untrimmed = await readHistoryPage(client, sessionId, nextBefore, isCurrent, true);
+          const untrimmedEntries = untrimmed.entries ?? [];
+          const untrimmedStart = untrimmed.nextOffset ?? 0;
+          if (!Number.isSafeInteger(untrimmedStart) || untrimmedStart < 0 ||
+            untrimmedStart >= nextBefore ||
+            untrimmedStart + untrimmedEntries.length !== nextBefore) {
+            throw new Error("history_gap_cursor_invalid");
+          }
+          entries = [...untrimmedEntries, ...entries];
+          nextBefore = untrimmedStart;
+          hasMore = untrimmed.hasMore === true && untrimmedStart > 0;
+          continue;
         }
         entries = [...olderEntries, ...entries];
         nextBefore = start;
@@ -465,18 +499,27 @@ export function useTimelineController({
         ? retainOlderHistoryPrefix(
             syncEngineRef.current?.timelineFor(sessionId) ?? null,
             latest,
+            // Exact joins are adjacent. A bridged gap needs no prefix
+            // retention: the gap fill already folded those rows into the
+            // fresh window.
             retained.endOffset === nextBefore,
           )
         : latest;
-      // Only retain the cursor when the old prefix actually joined this page.
-      // Otherwise the latest page starts a new contiguous history window.
-      const retainedOlderPages = history !== latest ? retained : null;
+      // The retained cursor survives while the fresh window actually joined
+      // the retained prefix into one contiguous window (an exact join, or a
+      // gap bridged back over it). A fresh window that replaced the visible
+      // conversation wholesale (restart on changed history) or that grew
+      // past the retained page bottom hands paging over to its own cursor.
+      const keepRetainedCursor =
+        retained && history !== latest && nextBefore <= retained.endOffset;
       return {
         ...history,
         historyWindow: {
-          nextBefore: retainedOlderPages?.nextBefore ?? nextBefore,
+          nextBefore: keepRetainedCursor ? retained!.nextBefore : nextBefore,
           endOffset,
-          hasMore: retainedOlderPages?.hasMore ?? hasMore,
+          hasMore: keepRetainedCursor
+            ? retained!.hasMore && retained!.nextBefore > 0
+            : hasMore,
         },
       };
     },
@@ -992,5 +1035,12 @@ export function useTimelineController({
     resetTimeline,
     ensureDraftTimeline,
     retryTimeline,
+    // Test-only seam: lets controller tests seed a retained older-history
+    // window without driving several real paging round trips.
+    seedHistoryPaging: (sessionId: string, window: HistoryPagingState) => {
+      historyPagingRef.current[sessionId] = window;
+      setHistoryPaging((previous) => ({ ...previous, [sessionId]: window }));
+    },
+    historyPaging,
   };
 }
