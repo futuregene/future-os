@@ -978,6 +978,7 @@ fn inflate_optional_json(raw: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encode;
     use crate::proto::response_payload::Kind;
 
     fn resp_with_payload(kind: Kind) -> proto::RpcResponse {
@@ -1252,6 +1253,48 @@ mod tests {
         let value = response_data(&resp);
         assert_eq!(value["runId"], json!("r1"));
         assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    }
+
+    /// The desktop and the mobile relay both parse the recommendation out of
+    /// this payload, and neither sends a session: the agent's handler answers
+    /// `{"skill": {...}}` for a hit and `{"skill": null}` for every
+    /// non-answer (refused, timed out, not signed in) — the client's
+    /// `Option<SkillCandidate>` depends on the null being present rather than
+    /// the field going missing.
+    ///
+    /// No test covered this pair until now, so a rename on either side would
+    /// have surfaced only as "the card never appears".
+    #[test]
+    fn suggest_skill_round_trips_between_typed_payload_and_json() {
+        let hit = json!({
+            "skill": {"name": "future-image", "description": "Generate and edit images"}
+        });
+        let payload = encode::response_payload("suggest_skill", &hit)
+            .expect("a hit encodes to a typed payload");
+        let decoded = response_data(&resp_with_payload(payload.kind.unwrap()));
+        assert_eq!(decoded["skill"]["name"], json!("future-image"));
+        assert_eq!(
+            decoded["skill"]["description"],
+            json!("Generate and edit images")
+        );
+    }
+
+    #[test]
+    fn suggest_skill_round_trips_an_empty_answer_as_a_null_skill() {
+        let none = json!({"skill": null});
+        let payload = encode::response_payload("suggest_skill", &none)
+            .expect("an empty answer still encodes");
+        let decoded = response_data(&resp_with_payload(payload.kind.unwrap()));
+        // `null`, not an absent key: the client's `#[serde(default)] Option`
+        // tolerates either, but the contract is the null the handler writes.
+        assert!(
+            decoded.get("skill").is_some(),
+            "skill key must be present: {decoded}"
+        );
+        assert!(
+            decoded["skill"].is_null(),
+            "skill must decode as null: {decoded}"
+        );
     }
 
     #[test]
