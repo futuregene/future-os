@@ -1,5 +1,6 @@
 import type { SkillCandidate, SkillRecoToday } from "../../integrations/skills/skillsClient";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   loadSkillCatalog,
   recordSkillReco,
@@ -24,6 +25,9 @@ import {
  * to show (submit is held), or `null` (submit proceeds). A hard budget
  * (`RECOMMEND_TIMEOUT_MS`) bounds the round-trip — on timeout/error/no-match the
  * caller just sends.
+ *
+ * The card's text (`shownDescription`) follows the UI language; the candidates
+ * sent to the recommender do not — see that function for why.
  */
 
 /** Below this many UTF-8 bytes the draft is too short to mean anything (10 汉字). */
@@ -82,6 +86,29 @@ export function messageHash(text: string): string {
   return hash.toString(16).padStart(16, "0");
 }
 
+/**
+ * The text the card shows for a recommendation.
+ *
+ * The candidate sent to the recommender is always the catalogue's English
+ * description: that payload is exactly what the 100-question evaluation measured
+ * (`docs/internals/skill_reco/evaluation.md`, `stage1-zh.mjs`), and a display
+ * decision must not move the numbers it was tuned on. The card therefore
+ * follows the UI language here, on the way out, falling back to the English
+ * text the agent echoed whenever the catalogue has no Chinese line for that
+ * skill.
+ */
+export function shownDescription(
+  card: SkillCandidate,
+  language: string,
+  zhById: Map<string, string>,
+): string {
+  // Matches `SkillsView`: anything that is not explicitly English is Chinese.
+  if (language === "en")
+    return card.description;
+  const zh = zhById.get(card.name);
+  return zh && zh.trim().length > 0 ? zh : card.description;
+}
+
 /** The empty day state, used before the first store read resolves. */
 const EMPTY_TODAY: SkillRecoToday = { count: 0, skillIds: [], messageHashes: [] };
 
@@ -110,6 +137,7 @@ export function useSkillRecommendation({
   sessionStatus,
   balance,
 }: Options): SkillRecommendationControls {
+  const { i18n } = useTranslation();
   const [recommendation, setRecommendation] = useState<SkillCandidate | null>(null);
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   // Live mirror so evaluate() reads the latest gate values regardless of render
@@ -120,6 +148,12 @@ export function useSkillRecommendation({
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
   const inFlightRef = useRef(false);
+  // The catalogue's Chinese descriptions, keyed by skill id, and the current
+  // language — both read through refs because `evaluate` is created once and
+  // must see the latest values (same reason as `gateRef` above).
+  const zhDescriptionsRef = useRef<Map<string, string>>(new Map());
+  const languageRef = useRef(i18n.language);
+  languageRef.current = i18n.language;
 
   const loggedIn = sessionStatus === "authenticated" || sessionStatus === "unavailable";
   const hasBalance = balance === null || balance > 0;
@@ -142,6 +176,9 @@ export function useSkillRecommendation({
           all
             .filter(entry => !installedIds.has(entry.id))
             .map(entry => ({ name: entry.id, description: entry.description })),
+        );
+        zhDescriptionsRef.current = new Map(
+          all.map(entry => [entry.id, entry.descriptionZh]),
         );
       })
       .catch(() => {});
@@ -204,8 +241,16 @@ export function useSkillRecommendation({
       // Record before showing: the card counts towards the daily budget the
       // moment it is displayed, regardless of what the user does with it.
       await recordSkillReco(result.name, hash).catch(() => {});
-      setRecommendation(result);
-      return result;
+      const shown = {
+        ...result,
+        description: shownDescription(
+          result,
+          languageRef.current,
+          zhDescriptionsRef.current,
+        ),
+      };
+      setRecommendation(shown);
+      return shown;
     }
     finally {
       inFlightRef.current = false;

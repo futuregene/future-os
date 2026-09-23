@@ -97,7 +97,7 @@ function TimelineFlexSpacer() {
 }
 
 export function ChatScreen() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const remote = useRemote();
   const controls = useRemoteControls();
   const connection = controls.connectionPresentation;
@@ -269,6 +269,7 @@ export function ChatScreen() {
   const skillRecommendation = useSkillRecommendation(
     desktopSettings.data?.skillRecommend ?? true,
     remote.desktopOnline,
+    i18n.language,
   );
   const { suggestion: skillSuggestion } = skillRecommendation;
   const sendFromComposer = useCallback(async () => {
