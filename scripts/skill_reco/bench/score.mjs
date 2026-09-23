@@ -20,6 +20,7 @@
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, ROSTER_FILE, cacheFor, readJson, writeJson } from "./common.mjs";
 import { FITS_THRESHOLD } from "./second-call.mjs";
+import { USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 
 const questions = readJson(QUESTIONS_FILE).questions;
 const roster = readJson(ROSTER_FILE).skills;
@@ -69,7 +70,7 @@ const systems = {
     answer: (id) => jev.get(id).gate.slice(0, 1),
     cost: (id) => ({
       tokens: jev.get(id).stage1_tokens,
-      usd: ((jev.get(id).stage1_tokens ?? 0) * 0.042) / 1e6,
+      usd: ((jev.get(id).stage1_tokens ?? 0) * USD_PER_MTOK_INPUT) / 1e6,
       ms: jev.get(id).stage1_ms,
     }),
   },
@@ -87,7 +88,7 @@ const systems = {
       const paidStage2 = row.gate.length > 0;
       const tokens = (row.stage1_tokens ?? 0) + (paidStage2 ? row.stage2_tokens ?? 0 : 0);
       const ms = (row.stage1_ms ?? 0) + (paidStage2 ? row.stage2_ms ?? 0 : 0);
-      return { tokens, usd: (tokens * 0.042) / 1e6, ms };
+      return { tokens, usd: (tokens * USD_PER_MTOK_INPUT) / 1e6, ms };
     },
   },
   embed: {

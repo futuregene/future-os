@@ -36,7 +36,14 @@ export function parseFrontmatter(md) {
 
 const oneLine = (text) => (text || "").replace(/\s+/g, " ").trim();
 
-export function loadRoster(skillsRoot, { excerptChars = 900, descChars = 220 } = {}) {
+/**
+ * How much of a skill's description goes into its Jev option text. The agent
+ * truncates at the same width (`DESC_CHARS`) — it is the measured knee, so the
+ * two implementations must not drift apart. Exported for `bench/check-parity.mjs`.
+ */
+export const DEFAULT_DESC_CHARS = 220;
+
+export function loadRoster(skillsRoot, { excerptChars = 900, descChars = DEFAULT_DESC_CHARS } = {}) {
   const catalogPath = path.join(skillsRoot, "skills.json");
   const catalog = existsSync(catalogPath)
     ? JSON.parse(readFileSync(catalogPath, "utf8"))

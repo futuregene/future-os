@@ -10,7 +10,7 @@
 //
 // Only a few questions are needed: the table size does not depend on the question, so the marginal
 // cost is the same for all of them and the spread across questions is pure noise.
-import { JevClient } from "../jev.mjs";
+import { JevClient, USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 import { loadRoster } from "../roster.mjs";
 import { NONE_OF_THESE } from "../suggest.mjs";
 import { QUESTIONS_FILE, readJson } from "./common.mjs";
@@ -76,7 +76,7 @@ console.log("描述截断 | 选项表字符数 | 每题中位 token | 相对 220
 console.log("--------|------------|--------------|---------|---------|-----------");
 for (const r of rows) {
   const delta = r.median - base.median;
-  const cost = (r.median / 1e6) * 0.042 * 7.2;
+  const cost = (r.median / 1e6) * USD_PER_MTOK_INPUT * USD_TO_CNY;
   console.log(
     `${String(r.chars || "不截断").padStart(7)} | ${String(r.tableChars).padStart(11)} | ` +
       `${String(r.median).padStart(12)} | ${(delta >= 0 ? "+" : "") + delta} | ¥${cost.toFixed(4)} | ¥${Math.round(cost * 100000).toLocaleString()}`,

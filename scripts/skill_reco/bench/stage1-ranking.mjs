@@ -20,7 +20,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
-import { JevClient } from "../jev.mjs";
+import { JevClient, USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 import { loadRoster } from "../roster.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -44,7 +44,7 @@ const median = (values) => {
 };
 const sum = (values) => values.reduce((a, b) => a + (b ?? 0), 0);
 const pct = (x, n) => `${((x / n) * 100).toFixed(1)}%`;
-const money = (tokens) => `$${((tokens * 0.042) / 1e6).toFixed(5)}`;
+const money = (tokens) => `$${((tokens * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}`;
 
 // ------------------------------------------------------- 1. genuine ranking: Noul fan-out
 //
@@ -176,12 +176,12 @@ const s2Measured = sum(stage2All);
 const perQ = ids.map((id) => (pipeline.get(id)?.stage1_tokens ?? 0) + (choiceGatePasses(id) ? pipeline.get(id)?.stage2_tokens ?? 0 : 0));
 const mean = (values) => sum(values) / values.length;
 
-console.log(`\n=== 成本拆分（token 全部取自 API 返回的 usage.input_tokens，$0.042/Mtok、输出免费）===`);
+console.log(`\n=== 成本拆分（token 全部取自 API 返回的 usage.input_tokens，$${USD_PER_MTOK_INPUT}/Mtok、输出免费）===`);
 console.log(`  阶段                                     每题中位   每题均值   100 题合计    占比    费用（100 题）`);
 console.log(`  stage 1（1 个 Choice，141 选项 + none）  ${String(median(stage1)).padStart(8)}  ${String(Math.round(mean(stage1))).padStart(8)}  ${String(s1).padStart(10)}   ${pct(s1, s1 + s2).padStart(6)}  ${money(s1)}`);
 console.log(`  stage 2（3 道 fit noul，只对放行的题）   ${String(median(stage2Shipped)).padStart(8)}  ${String(Math.round(mean(stage2Shipped))).padStart(8)}  ${String(s2).padStart(10)}   ${pct(s2, s1 + s2).padStart(6)}  ${money(s2)}`);
 console.log(`  合计（= 真实服务成本）                   ${String(median(perQ)).padStart(8)}  ${String(Math.round(mean(perQ))).padStart(8)}  ${String(s1 + s2).padStart(10)}   100.0%  ${money(s1 + s2)}`);
-console.log(`  换算：每题 ${Math.round(mean(perQ)).toLocaleString()} token × $0.042/Mtok × ¥7.2/$ = ¥${((mean(perQ) * 0.042 * 7.2) / 1e6).toFixed(5)}`);
+console.log(`  换算：每题 ${Math.round(mean(perQ)).toLocaleString()} token × $${USD_PER_MTOK_INPUT}/Mtok × ¥${USD_TO_CNY}/$ = ¥${((mean(perQ) * USD_PER_MTOK_INPUT * USD_TO_CNY) / 1e6).toFixed(5)}`);
 console.log(`\n  对照 · 评测脚本的开销：predict-jev 对每道题都跑 stage 2（好让门控能离线评估）`);
 console.log(`    stage 2 全量 ${s2Measured.toLocaleString()} token vs 服务只需 ${s2.toLocaleString()} token（多算 ${pct(s2Measured - s2, s2Measured)}）`);
 console.log(`    评测 ${(s1 + s2Measured).toLocaleString()} token vs 服务 ${(s1 + s2).toLocaleString()} token`);

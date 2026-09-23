@@ -6,6 +6,7 @@
 // Also sweeps the shipped pipeline's own gate over the same questions, so the comparison is
 // tuned-vs-tuned rather than tuned-vs-guessed.
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
+import { USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 
 const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
@@ -100,8 +101,8 @@ console.log(`  最优阈值 ${bestShipped.gate}（首答正确 ${bestShipped.fir
 console.log(`\n=== 调优后的正面对比（两边都用各自的最优阈值）===`);
 const tokensShipped = 21357;
 const tokensChunked = 11402;
-console.log(`  现在发布：首答正确 ${bestShipped.firstCorrect}/65 = ${pct(bestShipped.firstCorrect, 65)}，总一致 ${bestShipped.agreement}/100，${tokensShipped} token/题（$${((tokensShipped * 0.042) / 1e6).toFixed(5)}）`);
-console.log(`  分块+none：首答正确 ${bestChunked.firstCorrect}/65 = ${pct(bestChunked.firstCorrect, 65)}，总一致 ${bestChunked.agreement}/100，${tokensChunked} token/题（$${((tokensChunked * 0.042) / 1e6).toFixed(5)}）`);
+console.log(`  现在发布：首答正确 ${bestShipped.firstCorrect}/65 = ${pct(bestShipped.firstCorrect, 65)}，总一致 ${bestShipped.agreement}/100，${tokensShipped} token/题（$${((tokensShipped * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}）`);
+console.log(`  分块+none：首答正确 ${bestChunked.firstCorrect}/65 = ${pct(bestChunked.firstCorrect, 65)}，总一致 ${bestChunked.agreement}/100，${tokensChunked} token/题（$${((tokensChunked * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}）`);
 console.log(`  → 分块方案${bestChunked.firstCorrect > bestShipped.firstCorrect ? "更准" : bestChunked.firstCorrect === bestShipped.firstCorrect ? "打平" : "更差"}，成本 ${((tokensChunked / tokensShipped) * 100).toFixed(0)}%`);
 
 // ---------------------------------------------------------------- per-question disagreement

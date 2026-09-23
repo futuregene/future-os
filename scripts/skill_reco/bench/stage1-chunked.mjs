@@ -19,7 +19,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
-import { JevClient } from "../jev.mjs";
+import { JevClient, USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 import { Suggester } from "../suggest.mjs";
 import { verifySecondCall } from "./second-call.mjs";
 
@@ -222,7 +222,7 @@ const shippedTokens = median(questions.map((q) => {
 console.log(`\n=== 质量与成本（100 题：65 有答案 / 35 无答案）===`);
 console.log("  方案                                首答正确        正确拒答       误拒  误推  总一致  每题 token  费用/题");
 const line = (label, s, tokens) =>
-  `  ${label.padEnd(34)} ${String(s.firstCorrect).padStart(2)}/65 = ${pct(s.firstCorrect, 65).padStart(6)}  ${String(s.correctRefusal).padStart(2)}/35 = ${pct(s.correctRefusal, 35).padStart(6)}  ${String(s.falseRefusal).padStart(3)}  ${String(s.falseSuggest).padStart(3)}  ${String(s.agreement).padStart(2)}/100  ${String(tokens).padStart(8)}   $${((tokens * 0.042) / 1e6).toFixed(5)}`;
+  `  ${label.padEnd(34)} ${String(s.firstCorrect).padStart(2)}/65 = ${pct(s.firstCorrect, 65).padStart(6)}  ${String(s.correctRefusal).padStart(2)}/35 = ${pct(s.correctRefusal, 35).padStart(6)}  ${String(s.falseRefusal).padStart(3)}  ${String(s.falseSuggest).padStart(3)}  ${String(s.agreement).padStart(2)}/100  ${String(tokens).padStart(8)}   $${((tokens * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}`;
 
 console.log(line("A 现在：141 道 noul", shippedScore, shippedTokens));
 console.log(line("D 分块 Choice + 最终 Choice", score((row) => row.answer_D), median(questions.map((q) => rows.get(q.id).tokens_D))));

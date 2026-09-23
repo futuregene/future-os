@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, RUNS_DIR, cacheFor, readJson } from "./common.mjs";
-import { JevClient } from "../jev.mjs";
+import { JevClient, USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 import { loadRoster } from "../roster.mjs";
 import { NONE_GATE_THRESHOLD, NONE_OF_THESE } from "../suggest.mjs";
 import { FITS_THRESHOLD } from "./second-call.mjs";
@@ -188,7 +188,7 @@ console.log("  信号 / 阈值            复核   首答正确   token/题   �
 const baseline = (() => {
   const tok = S1_TOK + S2_TOK;
   const ms = medianMs(ids.map((id) => (pipeline.get(id)?.stage1_ms ?? 0) + ((pipeline.get(id)?.gate?.length ?? 0) ? pipeline.get(id)?.stage2_ms ?? 0 : 0)));
-  return { tok: tok / 100, cost: (tok / 100) * 0.042 * 7.2 / 1e6, ms };
+  return { tok: tok / 100, cost: (tok / 100) * USD_PER_MTOK_INPUT * USD_TO_CNY / 1e6, ms };
 })();
 console.log(
   `  发布版（总是复核）       66/66   63/65     ${Math.round(baseline.tok)}    ¥${baseline.cost.toFixed(5)}   ${baseline.ms} ms`,
@@ -211,7 +211,7 @@ for (const name of ["top-1 概率", "1–2 名差距", "confidence"]) {
       }),
     );
     console.log(
-      `  ${name} ≥ ${T.toFixed(2)} 跳过    ${String(verify.length).padStart(2)}/66   63/65     ${Math.round(tok)}    ¥${((tok * 0.042 * 7.2) / 1e6).toFixed(5)}   ${ms} ms`,
+      `  ${name} ≥ ${T.toFixed(2)} 跳过    ${String(verify.length).padStart(2)}/66   63/65     ${Math.round(tok)}    ¥${((tok * USD_PER_MTOK_INPUT * USD_TO_CNY) / 1e6).toFixed(5)}   ${ms} ms`,
     );
   }
 }

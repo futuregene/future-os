@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, RUNS_DIR, readJson } from "./common.mjs";
 import { loadRoster } from "../roster.mjs";
 import { FITS_THRESHOLD } from "./second-call.mjs";
+import { USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
@@ -121,7 +122,7 @@ for (const [label, ms, tok] of [
   const meanMs = ms.reduce((a, b) => a + b, 0) / ms.length;
   const meanTok = tok.reduce((a, b) => a + b, 0) / tok.length;
   console.log(
-    `  ${label.padEnd(18)}${String(quantile(ms, 0.5)).padStart(5)} ${String(quantile(ms, 0.9)).padStart(7)} ${String(quantile(ms, 0.95)).padStart(7)} ${String(quantile(ms, 0.99)).padStart(7)} ${String(Math.round(meanMs)).padStart(7)} ${String(Math.round(meanTok)).padStart(17)} ${("¥" + ((meanTok * 0.042 * 7.2) / 1e6).toFixed(5)).padStart(9)}`,
+    `  ${label.padEnd(18)}${String(quantile(ms, 0.5)).padStart(5)} ${String(quantile(ms, 0.9)).padStart(7)} ${String(quantile(ms, 0.95)).padStart(7)} ${String(quantile(ms, 0.99)).padStart(7)} ${String(Math.round(meanMs)).padStart(7)} ${String(Math.round(meanTok)).padStart(17)} ${("¥" + ((meanTok * USD_PER_MTOK_INPUT * USD_TO_CNY) / 1e6).toFixed(5)).padStart(9)}`,
   );
 }
 const dMs = (f) => quantile(twoMs, f) - quantile(oneMs, f);
@@ -144,7 +145,7 @@ for (const [label, sc, calls, ms, tok] of [
 ]) {
   const meanTok = tok.reduce((a, b) => a + b, 0) / tok.length;
   console.log(
-    `  ${label.padEnd(28)} ${String(sc.top1).padStart(2)}/65 = ${pct(sc.top1, 65).padStart(6)}   ${String(sc.inRef).padStart(2)}/65 = ${pct(sc.inRef, 65).padStart(6)}   ${String(calls).padStart(2)}/65       ${String(quantile(ms, 0.5)).padStart(5)} ${String(quantile(ms, 0.9)).padStart(5)} ${String(quantile(ms, 0.95)).padStart(6)}    ¥${((meanTok * 0.042 * 7.2) / 1e6).toFixed(5)}`,
+    `  ${label.padEnd(28)} ${String(sc.top1).padStart(2)}/65 = ${pct(sc.top1, 65).padStart(6)}   ${String(sc.inRef).padStart(2)}/65 = ${pct(sc.inRef, 65).padStart(6)}   ${String(calls).padStart(2)}/65       ${String(quantile(ms, 0.5)).padStart(5)} ${String(quantile(ms, 0.9)).padStart(5)} ${String(quantile(ms, 0.95)).padStart(6)}    ¥${((meanTok * USD_PER_MTOK_INPUT * USD_TO_CNY) / 1e6).toFixed(5)}`,
   );
 }
 const missedByOne = ids.filter((id) => middleAnswer(id)[0] !== shippedAnswer(id)[0]);

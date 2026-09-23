@@ -227,7 +227,8 @@ noul 那一行才是真正的排序（每个技能一个独立概率，中位 10
 | ~~`chinese_description`~~ | 技能目录 `skills.json` 的 `description_zh` | 34 | **已删**：成对 A/B（198 个「题×候选」配对）差值中位 0.000、端到端 0 道题变化；放进路由的选项表反而多出 1 道误拒 |
 | ~~`tagline`~~ | — | — | **已删**：141/141 个技能里它都是 `description` 的字节前缀，纯重复 |
 
-（`bench/stage2-zh.mjs`、`bench/stage1-zh.mjs`、`bench/payload-ablation.mjs`、`bench/excerpt-shape.mjs`）
+（`bench/stage2-zh.mjs`、`bench/stage1-zh.mjs`。测得 `instructions_excerpt` 与 `tagline` 两行的载荷实验
+已随它们所研究的那次调用一起删除，结论保留在上表；本目录已没有脚本能复现那两个取舍。）
 
 ### 2.2.5 为什么只剩一次调用
 
@@ -900,7 +901,7 @@ CI [65.4%, 85.5%]。）
 ## 7. 复现
 
 ```bash
-cd demos/jev-skill-suggest/bench
+cd scripts/skill_reco/bench
 node build-dataset.mjs                      # 生成 65 道不含技能名的题 + 35 道手写题
 node check-dataset.mjs                      # 独立复查：题目里不许出现技能名
 node ground-truth.mjs                       # kimi-k3 产生参照答案

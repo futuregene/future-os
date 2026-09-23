@@ -4,6 +4,7 @@
 //
 // Reads runs/stage1-onechunk and runs/stage1-chunked-raw-18.
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
+import { USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 
 const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
@@ -104,7 +105,7 @@ for (const [label, rows, cfg, tokens] of rowsFor) {
   const s = scoreConfig(rows, cfg, 1);
   const [low, high] = wilson(s.first, s.positives);
   console.log(
-    `  ${label.padEnd(34)} ${String(s.first).padStart(2)}/${s.positives} = ${pct(s.first, s.positives).padStart(6)}      [${(low * 100).toFixed(1)}%, ${(high * 100).toFixed(1)}%]   ${String(s.falseSuggest).padStart(2)}/${s.negatives}    ${String(tokens).padStart(8)}   $${((tokens * 0.042) / 1e6).toFixed(5)}`,
+    `  ${label.padEnd(34)} ${String(s.first).padStart(2)}/${s.positives} = ${pct(s.first, s.positives).padStart(6)}      [${(low * 100).toFixed(1)}%, ${(high * 100).toFixed(1)}%]   ${String(s.falseSuggest).padStart(2)}/${s.negatives}    ${String(tokens).padStart(8)}   $${((tokens * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}`,
   );
 }
 

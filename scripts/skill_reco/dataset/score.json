@@ -1,5 +1,5 @@
 {
-  "scored_at": "2026-09-22T14:28:52.184Z",
+  "scored_at": "2026-09-23T07:58:40.868Z",
   "metric": "top-1 only: refusal decision, or the first skill returned",
   "gold_model": "future/kimi-k3",
   "totals": {

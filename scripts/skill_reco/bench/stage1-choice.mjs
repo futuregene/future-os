@@ -17,7 +17,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
-import { JevClient } from "../jev.mjs";
+import { JevClient, USD_PER_MTOK_INPUT, USD_TO_CNY } from "../jev.mjs";
 import { Suggester } from "../suggest.mjs";
 import { FITS_THRESHOLD } from "./second-call.mjs";
 
@@ -220,7 +220,7 @@ for (const [key, variant] of Object.entries(VARIANTS)) {
   const s2 = median(questions.map((q) => rows.get(q.id).stage2_tokens));
   const total = median(questions.map((q) => (rows.get(q.id).stage1_tokens ?? 0) + (rows.get(q.id).stage2_tokens ?? 0)));
   console.log(
-    `  ${variant.label.padEnd(28)} ${String(s1).padStart(10)}   ${String(s2).padStart(10)}   ${String(total).padStart(6)}  ${((total / baseTokens) * 100).toFixed(0).padStart(5)}%   $${((total * 0.042) / 1e6).toFixed(5)}`,
+    `  ${variant.label.padEnd(28)} ${String(s1).padStart(10)}   ${String(s2).padStart(10)}   ${String(total).padStart(6)}  ${((total / baseTokens) * 100).toFixed(0).padStart(5)}%   $${((total * USD_PER_MTOK_INPUT) / 1e6).toFixed(5)}`,
   );
 }
 

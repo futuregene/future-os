@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 export class JevError extends Error {
-  constructor(status, body, path = "/v1/systemone") {
+  constructor(status, body, path = JEV_PATH) {
     super(`System One gateway ${status} on ${path}: ${typeof body === "string" ? body : JSON.stringify(body)}`);
     this.name = "JevError";
     this.status = status;
@@ -24,9 +24,22 @@ export class JevError extends Error {
 const RETRYABLE = new Set([429, 500, 502, 503, 529]);
 
 /** The gateway's origin when the account has no `base_url` of its own. */
-const DEFAULT_FUTURE_BASE = "https://future-os.cn/api";
+export const DEFAULT_FUTURE_BASE = "https://future-os.cn/api";
 /** The model id the gateway resolves to a Jev build. */
-const DEFAULT_JEV_MODEL = "jev";
+export const DEFAULT_JEV_MODEL = "jev";
+/** The `auth.json` entry that authorises the call — the Future account itself. */
+export const FUTURE_PROVIDER = "future";
+/** The system-one endpoint under the gateway origin. */
+export const JEV_PATH = "/v1/systemone";
+
+/**
+ * Cost model, the same numbers the agent prices with. Exported so every script
+ * that prints money derives it from one place *and* so `bench/check-parity.mjs`
+ * can hold it against the agent's constants — a report quoting a stale rate is
+ * worse than one quoting no rate at all.
+ */
+export const USD_PER_MTOK_INPUT = 0.042;
+export const USD_TO_CNY = 7.2;
 
 /**
  * The Future account's `auth.json` entry, or null when it cannot be read.
@@ -47,7 +60,7 @@ function futureAccount() {
   ];
   for (const file of candidates) {
     try {
-      const entry = JSON.parse(fs.readFileSync(file, "utf8"))?.future;
+      const entry = JSON.parse(fs.readFileSync(file, "utf8"))?.[FUTURE_PROVIDER];
       if (entry?.key) return { key: entry.key, base: entry.base_url };
     } catch {
       // Missing or unreadable: try the next location.
@@ -124,7 +137,7 @@ export class JevClient {
   /** `questions` is a plain map of id -> typed question. Returns the typed answers. */
   async systemOne({ state, questions, model }) {
     const payload = { state, model: model || this.model, questions };
-    const { data, ms, attempts } = await this.#call("/v1/systemone", { method: "POST", body: payload });
+    const { data, ms, attempts } = await this.#call(JEV_PATH, { method: "POST", body: payload });
     return { answers: data?.answers ?? {}, model: data?.model, usage: data?.usage, ms, attempts, request: payload, raw: data };
   }
 }

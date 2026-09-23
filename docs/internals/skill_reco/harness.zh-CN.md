@@ -1,8 +1,8 @@
 # Jev 技能推荐 demo
 
 一边打字一边推荐技能：输入问题，用 TypeSafe Jev（System One 模型，`POST /v1/systemone`）
-两次调用，从 `skills/` 子模块的**全部 141 个技能**（15 内置 + 126 第三方）里挑出最合适的那个，
-或者明确判定"没有合适的技能"。带 100 道题的评测：**[bench/REPORT.md](bench/REPORT.md)**。
+**一次调用**，从 `skills/` 子模块的**全部 141 个技能**（15 内置 + 126 第三方）里挑出最合适的那个，
+或者明确判定"没有合适的技能"。带 100 道题的评测：**[evaluation.md](evaluation.md)**。
 
 ## 跑起来
 
@@ -19,7 +19,7 @@ git fetch origin feat/skill-reco-demo && git checkout feat/skill-reco-demo
 git submodule update --init skills
 
 # 3) 启动 —— 凭据自动取自 Future 账号（~/.future/agent/auth.json），无需任何参数
-cd demos/jev-skill-suggest
+cd scripts/skill_reco
 node server.mjs                                   # 默认 http://127.0.0.1:8791
 ```
 
@@ -64,7 +64,7 @@ FUTURE_API_KEY=你的key node probe.mjs                        # 验证 key + �
 FUTURE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
 ```
 
-浏览器里：输入 ≥ 6 个字符开始推荐；停顿后自动跑第二次调用（也可 ⌘/Ctrl+Enter 立即触发）。
+浏览器里：输入 ≥ 6 个字符开始推荐；停顿后自动发起那次调用（也可 ⌘/Ctrl+Enter 立即触发）。
 右上角徽标显示当前后端，`本地回退` 表示没走 Jev。底部三个 tab：候选 / 全部排名 /
 调用详情（真实请求 JSON 与 usage）。
 
@@ -94,7 +94,7 @@ FUTURE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
 
 **注意 ② 在本次数据上严格优于 ①**：同样的质量，只比 ① 多 38 ms 中位延迟——因为那 3 道被改判的题，
 路由 top-1 概率只有 0.77 / 0.36 / 0.39，全都远低于 0.95，② 一次不落全抓到了。本版按"只保留一次调用"
-发布；恢复 ② 是一处改动，完整证据在 [bench/REPORT.md](bench/REPORT.md) §2.2.5 与 §4.5。
+发布；恢复 ② 是一处改动，完整证据在 [evaluation.md](evaluation.md) §2.2.5 与 §4.5。
 
 **一个要一起读的限定**：那 3 道里有 2 道（p019、p035）的题面用词与获胜技能的 SKILL.md 正文重合、
 而与它的 description 不重合（p019：cloud / platform / sciences）。参考答案是照 SKILL.md 出的，题面
@@ -104,7 +104,7 @@ FUTURE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
 （这样运行波动会抵消，见下），没有一个比现在的写法更好——更短的提问会丢 4 道拒答（"选 none 不算
 兜底"那句许可是承重的）、把提问写中立会丢 2 道拒答、把 none 选项写详细反而多推 2 道、描述减半会丢
 4 道答案，而 description 长度扫过 110/150/180/190/220/240/不截断，**220 正好是拐点**（再短一道一道
-丢答案，再长一道不多）。见 [bench/REPORT.md](bench/REPORT.md) §2.2.6。
+丢答案，再长一道不多）。见 [evaluation.md](evaluation.md) §2.2.6。
 
 所以**剩余与两次调用版的差距是信息差，不是措辞差**：那几道题需要读 SKILL.md 正文，而选项表里只有
 description。要补回来只有把第二次调用加回去这一条路。
@@ -149,7 +149,7 @@ none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另
 
 ## 100 题上的成绩
 
-评测细节、题集构造、成本口径、局限都在 [bench/REPORT.md](bench/REPORT.md)
+评测细节、题集构造、成本口径、局限都在 [evaluation.md](evaluation.md)
 （100 道题：65 道从技能文档生成、35 道手写"无技能可用"；参照答案由 `future/kimi-k3` 给出；
 只评 top-1）。
 
@@ -166,9 +166,9 @@ none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另
 **⚠️ 这些分数的精度上限**：同一套代码三次独立运行给出的首答正确率是 93.8% / 93.8% / **90.8%**
 ——约 ±2 道题的波动。所以"Jev 与 deepseek-flash 孰高孰低"在这个题量上分不出来；报告里所有
 "多个 X 就多对几道"的结论都是同批记录内的**配对**比较，不受此影响。
-见 [bench/REPORT.md](bench/REPORT.md) §5.6。
+见 [evaluation.md](evaluation.md) §5.6。
 
-错题都逐道查过根因（[bench/REPORT.md](bench/REPORT.md) §3.3）：7 道里只有 3 道是真正的推荐错误
+错题都逐道查过根因（[evaluation.md](evaluation.md) §3.3）：7 道里只有 3 道是真正的推荐错误
 ——两道是两个同族库而题面不足以区分、一道是"问该用什么工具"的标注歧义；另有两道的预测其实落在
 参照集合内（是评分只比第一个造成的假错），还有两道是被移除的那次调用当时能改对的。
 
@@ -179,7 +179,7 @@ none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另
 ## 代码结构
 
 ```
-demos/jev-skill-suggest/
+scripts/skill_reco/
 ├── server.mjs        本地 HTTP 服务：静态页 + /api/suggest（key 只留在这个进程里）
 ├── roster.mjs        从 skills/builtin + skills/third-party 读 SKILL.md，拼出技能目录
 ├── suggest.mjs       一次 Choice + 一个门控阈值（Jev 与本地回退共用同一套判定）
@@ -192,10 +192,24 @@ demos/jev-skill-suggest/
 └── bench/            100 题评测（题集生成 / 参照答案 / 各系统作答 / 打分 / 报告）
                      读任何对比前先看 stage1-stability.mjs：同一套代码的运行间波动 ±2 道题
                      stage1-prompt.mjs 是提示词变体实验（同请求内配对，§2.2.6）
+                     check-parity.mjs 断言本目录与 agent 的机制逐项一致（见下节）
 ```
 
 `bench/` 里每一步都按题目 id 缓存，重跑只补缺失的题；缓存带配置指纹，改了阈值或请求形状
 会自动重跑，不会把旧答案当新结果。
+
+**两个守卫，改完这个目录应该跑一遍：**
+
+```bash
+node check-doc-refs.mjs                                     # 文档里提到的脚本必须都存在
+AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
+  node bench/check-parity.mjs                               # 本目录与 agent 的机制逐项一致
+```
+
+两个都会在发现问题时退出码非 0，并且——这一点同样重要——**在"什么都没测到"时也报错**
+（读不到文档、读不到 agent 源码），而不是打印一个通过。`check-doc-refs.mjs` 写完当天就抓出两个
+引用已删脚本的悬空引用，`check-parity.mjs` 的默认路径也曾经少算一层、只有在显式传
+`AGENT_SKILL_RECO` 时才工作。
 
 ## 与生产代码的关系
 
@@ -207,7 +221,7 @@ demos/jev-skill-suggest/
 分块大小、门控阈值、选项集合。如果它们跑生产代码，就一个旋钮都没有——那么现在的这些常量
 （0.15 / 254 / 220）**根本推导不出来**。它们是造出生产的工厂，不是产品本身。
 
-**服务路径（`suggest.mjs` + `jev.mjs`）与生产对齐，并有一个守卫盯着。** 两边今天一致：
+**服务路径（`suggest.mjs` + `jev.mjs` + `roster.mjs`）与生产对齐，并由守卫逐项盯着。** 两边今天一致：
 
 | 项 | demo | 生产 | |
 |---|---|---|---|
@@ -218,19 +232,29 @@ demos/jev-skill-suggest/
 | 候选上限 / 描述长度 | 254 / 220 | 254 / 220 | 一致 |
 | none 选项文案 | 逐字相同 | 逐字相同 | 一致 |
 | `instructions` | 逐字相同的字符串 | 同 | 一致 |
+| 计价 | `$0.042/Mtok`、`¥7.2/$` | 同 | 一致 |
 
-最后一项曾经**不一致**：demo 发的是对象 `{question, how_to_judge}`，生产发的是单个字符串。网关两种
-都接受，所以不会报错——但也意味着 demo 不是生产的忠实替身，两边可以静默漂移。现在 demo 用
-`suggest.mjs` 导出的 `INSTRUCTIONS`，与生产的字面量逐字相同，并由一个跨语言守卫盯着：
+`instructions` 那一项曾经**不一致**：demo 发的是对象 `{question, how_to_judge}`，生产发的是单个
+字符串。网关两种都接受，所以不会报错——但也意味着 demo 不是生产的忠实替身，两边可以静默漂移。
+
+现在这些值由 `bench/check-parity.mjs` **从两侧源码读出后逐项比对**（不是两边各写一个测试各自断言
+自己的副本——两个都绿的测试互相矛盾，正是它要抓的失败）：
 
 ```bash
-# 断言 demo 的 instructions 与 agent 源码里的字面量完全相同
-AGENT_SKILL_RECO=/path/to/agent/src/skill_reco/mod.rs node bench/check-instructions.mjs
-# 漂移时退出码 1，并报出第一个不同的字符位置
+AGENT_SKILL_RECO=/path/to/agent/src/skill_reco/mod.rs node bench/check-parity.mjs
+# 打印 11 项 + 一条上限不变式；任何一项漂移则退出码 1
+# 默认路径是 <repo>/agent/src/skill_reco/mod.rs（两个分支都进 main 之后的位置）
 ```
+
+守卫还查一条**内部不变式**：`CHUNK_SIZE + 1 == MAX_CHOICE_OPTIONS`（254 候选 + 1 个 none = 255，
+正好是 API 上限）——两个数分处两个文件，靠这条把"改了一个忘了另一个"挡住。
+
+demo 里的价格数字原本**散落在 9 个脚本里内联**（`0.042`、`7.2` 共 15 处）。这些也一起收敛到了
+`jev.mjs` 导出的 `USD_PER_MTOK_INPUT` / `USD_TO_CNY`：报告里的钱数一旦用了过期单价，比不写钱数更糟，
+而单价现在只有一处可改、且被守卫盯着。
 
 **关于"能不能直接用生产代码"**：服务路径可以，但代价是 demo 会失去它最有用的部分——
 `suggest_skill` 只返回**最终那一个技能**，不返回 top-3、概率和门控值（那些只在 agent 日志里）。
 demo 的界面正是靠这些数字说明"为什么推荐它"。所以要把 demo 换成直接调 agent，就得同时给 RPC 加上
 这些诊断字段（附加字段、不破坏兼容），否则界面只剩一行结论。**当前取舍：保留 JS 服务路径（能看排序
-与门控），并用上面的守卫保证请求与生产逐字一致。**
+与门控），并用上面的守卫保证机制与生产逐项一致。**
