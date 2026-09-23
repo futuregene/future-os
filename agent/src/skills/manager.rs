@@ -953,4 +953,13 @@ mod tests {
                 .upgrade_available
         );
     }
+
+    #[test]
+    fn upgrade_order_uses_semver_including_prereleases() {
+        assert!(newer("1.2.0", "1.2.0-rc.1"));
+        assert!(newer("1.10.0", "1.9.0"));
+        assert!(!newer("1.2.0", "1.2.0"));
+        assert!(!newer("1.2", "1.1.0"));
+        assert!(!newer("1.2.0", "1.1"));
+    }
 }
