@@ -57,7 +57,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "signal",
     display_name: "Signal",
     description: "Signal via a local signal-cli daemon (HTTP interface).",
-    docs: "docs/guide/channels-signal.md",
+    docs: "docs/guide/channels-providers.md#signal",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,
@@ -931,9 +931,6 @@ fn classify(status: u16, text: &str) -> HttpResponse {
 fn describe_failure(operation: &str, response: &HttpResponse) -> anyhow::Error {
     let message = response.error_message();
     let class = classify_failure(response.status, &message);
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     anyhow!("signal {operation} failed: {message} ({label} error)")
 }

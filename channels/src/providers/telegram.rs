@@ -47,7 +47,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "telegram",
     display_name: "Telegram",
     description: "Telegram bot: long polling or webhook, streamed replies, group mention gate.",
-    docs: "docs/guide/channels-telegram.md",
+    docs: "docs/guide/channels-providers.md#telegram",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

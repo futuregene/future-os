@@ -1406,6 +1406,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_turn_that_cannot_be_dispatched_is_logged_and_leaves_the_bridge_routable() {
+        // The other failure shape, and the one that has no connection problem
+        // in it: the agent is reachable, so the bridge holds a connection, but
+        // it refuses the prompt. The failure comes back from the turn rather
+        // than from the connection, and the bridge must report it rather than
+        // treat it as silence.
+        let refused = vec!["prompt".to_string()].into_iter().collect();
+        let (ctx, sender, _state) = ctx_with_state(
+            "bridge-turn-refused",
+            ts::MockState {
+                fail_commands: refused,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            ctx.handle(Inbound::new_direct("m1", "u1", "c1", "hi"), sender.clone())
+                .await,
+            HandleOutcome::Accepted
+        );
+        let sent = wait_for_reply(&sender).await;
+        assert!(
+            sent.concat().contains("did not finish"),
+            "a turn that cannot be dispatched must be explained: {sent:?}"
+        );
+        // The connection was never the problem, so it is still held — and the
+        // conversation is still routable for the next message.
+        assert!(
+            ctx.bridge().is_connected(),
+            "a refused turn must not drop a healthy connection"
+        );
+        assert_eq!(ctx.bridge().conversations().len().await, 1);
+    }
+
+    #[tokio::test]
     async fn an_approval_answer_the_agent_rejects_is_retryable() {
         // If delivering the decision fails, the user's answer must not be
         // swallowed: the route goes back so saying "yes" again works.

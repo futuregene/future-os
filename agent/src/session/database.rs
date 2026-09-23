@@ -93,7 +93,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if version != 0 && version != 2 {
+    if version != 0 && version != 2 && version != 3 {
         bail!("unsupported Agent database schema version {version}");
     }
     if application != 0 && application != 0x46555452 {
@@ -261,8 +261,9 @@ fn open_connection(path: &Path) -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS history_users ON history_display(session_id,is_user,ordinal);
         PRAGMA application_id = 1179997266;
-        PRAGMA user_version = 2;",
+        PRAGMA user_version = 3;",
     )?;
+    tx.execute_batch(crate::skills::registry::SKILLS_TABLE_SQL)?;
     tx.execute_batch(super::records::VIEWS)?;
     tx.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS run_events_custom_id
@@ -427,6 +428,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(created_at_ms, 200);
+    }
+
+    #[test]
+    fn v2_database_is_upgraded_to_v3_with_the_skills_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        // A v2 database from the previous release: recognized application_id,
+        // current v2 layout, no skills table yet.
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE entries (
+                    session_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    entry_id TEXT NOT NULL,
+                    entry_type TEXT NOT NULL,
+                    run_id TEXT,
+                    metadata_json TEXT NOT NULL,
+                    PRIMARY KEY(session_id, position)
+                );
+                 CREATE TABLE runs (
+                    session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    run_sequence INTEGER,
+                    PRIMARY KEY(session_id,run_id)
+                 );
+                 PRAGMA application_id = 1179997266;
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let db = Database::open(&path).unwrap();
+        db.call(|connection| {
+            let version: i64 =
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            let skills: i64 =
+                connection.query_row("SELECT count(*) FROM skills", [], |row| row.get(0))?;
+            assert_eq!((version, skills), (3, 0));
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

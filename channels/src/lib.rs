@@ -196,28 +196,13 @@ pub fn start_all(
     let mut started_providers = 0usize;
     for entry in registry::all() {
         let definition = entry.definition;
-        let id = definition.id;
-        let Some(block) = config.provider_config(id) else {
-            status.set_state(id, ChannelState::Disabled, None);
-            continue;
+        let block = match entry_action(definition, config, &status) {
+            EntryAction::Skip => continue,
+            EntryAction::Start(block) => block,
         };
-        if !config::ChannelConfig::provider_enabled(&block) {
-            status.set_state(id, ChannelState::Disabled, None);
-            continue;
-        }
-        if !definition.is_implemented() {
-            // Enabled but not built: say so loudly instead of appearing to run.
-            let reason = definition
-                .ensure_usable()
-                .err()
-                .unwrap_or_else(|| "unsupported".to_string());
-            warn!("{reason}");
-            status.set_state(id, ChannelState::Unsupported, Some(reason));
-            continue;
-        }
         info!("Starting {} channel...", definition.display_name);
         started_providers += 1;
-        status.set_state(id, ChannelState::Starting, None);
+        status.set_state(definition.id, ChannelState::Starting, None);
         handles.push(spawn_provider(
             entry,
             block,
@@ -234,6 +219,46 @@ pub fn start_all(
         shutdown,
         started_providers,
     })
+}
+
+/// What the starter does with one registered channel.
+enum EntryAction {
+    /// Nothing to run; the state to report has been published already.
+    Skip,
+    /// Spawn a supervisor with this configuration block.
+    Start(serde_json::Value),
+}
+
+/// Decide one registered channel's fate, publishing the state a skipped
+/// channel reports.
+///
+/// Split out of the loop so the "enabled but not built" contract — the channel
+/// is reported instead of silently skipped — is exercisable without the build
+/// having to ship a planned channel.
+fn entry_action(
+    definition: &providers::traits::ChannelDefinition,
+    config: &config::ChannelConfig,
+    status: &StatusBoard,
+) -> EntryAction {
+    let Some(block) = config.provider_config(definition.id) else {
+        status.set_state(definition.id, ChannelState::Disabled, None);
+        return EntryAction::Skip;
+    };
+    if !config::ChannelConfig::provider_enabled(&block) {
+        status.set_state(definition.id, ChannelState::Disabled, None);
+        return EntryAction::Skip;
+    }
+    if !definition.is_implemented() {
+        // Enabled but not built: say so loudly instead of appearing to run.
+        let reason = definition
+            .ensure_usable()
+            .err()
+            .unwrap_or_else(|| "unsupported".to_string());
+        warn!("{reason}");
+        status.set_state(definition.id, ChannelState::Unsupported, Some(reason));
+        return EntryAction::Skip;
+    }
+    EntryAction::Start(block)
 }
 
 async fn run_async() -> Result<()> {
@@ -484,15 +509,15 @@ mod tests {
                     assert_eq!(entry.state, Some(ChannelState::Disabled), "{}", row.id)
                 }
                 // Enabled and implemented: a supervisor is running it.
-                _ => assert!(
-                    matches!(
-                        entry.state,
-                        Some(ChannelState::Starting) | Some(ChannelState::Running)
-                    ),
-                    "{} should be running, got {:?}",
-                    row.id,
-                    entry.state
-                ),
+                _ => {
+                    let running = entry.state == Some(ChannelState::Starting)
+                        || entry.state == Some(ChannelState::Running);
+                    assert!(
+                        running,
+                        "{} should be running, got {:?}",
+                        row.id, entry.state
+                    );
+                }
             }
         }
 
@@ -559,6 +584,100 @@ mod tests {
         shutdown.trigger();
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), flusher).await;
         assert!(stopped.is_ok(), "the flusher must stop on shutdown");
+    }
+
+    #[tokio::test]
+    async fn an_enabled_channel_that_is_not_built_is_reported_and_skipped() {
+        // No planned channel ships in this build, so the contract that keeps a
+        // declared-but-unbuilt channel from being silently skipped is exercised
+        // through a definition of its own.
+        static NOT_BUILT: providers::traits::ChannelDefinition =
+            providers::traits::ChannelDefinition {
+                id: "not-built",
+                display_name: "Not built",
+                description: "recognized but not implemented in this build",
+                docs: "docs/guide/channels-providers.md",
+                maturity: providers::traits::Maturity::Planned,
+                capabilities: providers::traits::Capabilities {
+                    receive: false,
+                    send: false,
+                    edit: false,
+                    threads: false,
+                    typing: false,
+                    reactions: false,
+                    media_in: false,
+                    media_out: false,
+                    mention_gate: false,
+                },
+                max_text_len: 1024,
+                length_unit: crate::transport::LengthUnit::Chars,
+                config_example: r#"{ "enabled": true }"#,
+                requires: &[],
+            };
+
+        let root = crate::test_support::temp_dir("lib-not-built");
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let config = config_with(&[(NOT_BUILT.id, true)]);
+        assert!(matches!(
+            entry_action(&NOT_BUILT, &config, &status),
+            EntryAction::Skip
+        ));
+        status.flush().unwrap();
+
+        // Reported, not silently skipped.
+        let snapshot = StatusSnapshot::load(&root.join("status.json"));
+        let channel = snapshot.channels.get("not-built").expect("published");
+        assert_eq!(channel.state, Some(ChannelState::Unsupported));
+        assert_eq!(
+            channel.last_error.as_deref(),
+            Some("the not-built channel is not implemented in this build")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wedged_data_directory_does_not_stop_the_supervisor_loop() {
+        // A file where the channel's data directory should be: the failure is
+        // reported, the channel is still attempted (it is not fatal), and the
+        // supervisor returns cleanly when it is asked to stop.
+        //
+        // The reported state is the proof: it is only published after the
+        // directory warning, so seeing it means the loop got past the failure.
+        let entry = registry::find("telegram").expect("telegram is registered");
+        let root = crate::test_support::temp_dir("lib-supervisor-wedged");
+        std::fs::write(root.join("telegram"), b"not a directory").unwrap();
+        let status = Arc::new(StatusBoard::new(root.join("status.json")));
+        let shutdown = Shutdown::new();
+        let handle = spawn_provider(
+            entry,
+            serde_json::json!({ "enabled": true }),
+            Arc::new(config::AgentConfig::default()),
+            root.clone(),
+            status.clone(),
+            shutdown.clone(),
+        );
+
+        // No token in the block, so the provider fails fast and offline: the
+        // point is that it was reached at all.
+        let reported = crate::test_support::wait_until(
+            || {
+                let _ = status.flush();
+                StatusSnapshot::load(&root.join("status.json"))
+                    .channels
+                    .get("telegram")
+                    .and_then(|channel| channel.state.clone())
+                    == Some(ChannelState::Error)
+            },
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        assert!(
+            reported,
+            "the supervisor must report the provider failure instead of dying"
+        );
+
+        shutdown.trigger();
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        assert!(stopped.is_ok(), "the supervisor must stop when asked");
     }
 
     #[tokio::test]

@@ -50,7 +50,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "whatsapp",
     display_name: "WhatsApp (Cloud API)",
     description: "WhatsApp Business Cloud API: verified webhook inbound, Graph API outbound.",
-    docs: "docs/guide/channels-whatsapp.md",
+    docs: "docs/guide/channels-providers.md#whatsapp",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,
@@ -457,10 +457,7 @@ fn send_error(action: &str, response: &HttpResponse) -> anyhow::Error {
         Some(190) => " (the access token is invalid or expired)",
         _ => "",
     };
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     anyhow!(
         "whatsapp `{action}` rejected ({label}): {}{hint}",
         response.error_message()

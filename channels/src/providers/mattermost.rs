@@ -43,7 +43,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "mattermost",
     display_name: "Mattermost",
     description: "Mattermost server: websocket events, threaded posts, channel allowlist.",
-    docs: "docs/guide/channels-mattermost.md",
+    docs: "docs/guide/channels-providers.md#mattermost",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,
@@ -262,7 +262,7 @@ pub(crate) fn parse_ws_event(raw: &Value) -> Option<PostedEvent> {
 
 /// Normalize one `posted` event into an inbound message.
 ///
-/// Returns `Ok(None)` for everything that is not a fresh user prompt: posts
+/// Returns `None` for everything that is not a fresh user prompt: posts
 /// the bot wrote itself (otherwise its own replies loop back as prompts),
 /// edits (an edited post arrives as `post_edited`, but a `root_id` post by
 /// someone else is still a fresh prompt), empty messages, and channels the
@@ -271,28 +271,26 @@ pub(crate) fn parse_posted(
     event: &PostedEvent,
     bot_user_id: &str,
     allowlist: &HashSet<String>,
-) -> Result<Option<Inbound>> {
+) -> Option<Inbound> {
     let post = &event.post;
     let post_id = post
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty());
-    let Some(post_id) = post_id else {
-        return Ok(None);
-    };
+    let post_id = post_id?;
     let user_id = post
         .get("user_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if user_id.is_empty() || user_id == bot_user_id {
-        return Ok(None);
+        return None;
     }
     let channel_id = post
         .get("channel_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if !allowlist.is_empty() && !allowlist.contains(channel_id) {
-        return Ok(None);
+        return None;
     }
     let text = post
         .get("message")
@@ -301,7 +299,7 @@ pub(crate) fn parse_posted(
         .trim()
         .to_string();
     if text.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let kind = match event.channel_type.as_str() {
@@ -323,7 +321,7 @@ pub(crate) fn parse_posted(
     let created_at_ms = post.get("create_at").and_then(Value::as_i64);
     let display = (!event.sender_name.is_empty()).then(|| event.sender_name.clone());
 
-    Ok(Some(Inbound {
+    Some(Inbound {
         message_id: post_id.to_string(),
         sender: SenderRef {
             id: user_id.to_string(),
@@ -339,7 +337,7 @@ pub(crate) fn parse_posted(
         addressed_to_bot,
         created_at_ms,
         raw: None,
-    }))
+    })
 }
 
 /// Build the `POST /posts` body. A threaded reply must carry `root_id`;
@@ -569,13 +567,8 @@ async fn dispatch_posted(
     bot_user_id: &str,
     allowlist: &HashSet<String>,
 ) {
-    let inbound = match parse_posted(posted, bot_user_id, allowlist) {
-        Ok(Some(inbound)) => inbound,
-        Ok(None) => return,
-        Err(error) => {
-            tracing::debug!(channel = "mattermost", %error, "dropping an unparseable post");
-            return;
-        }
+    let Some(inbound) = parse_posted(posted, bot_user_id, allowlist) else {
+        return;
     };
     let message_id = inbound.message_id.clone();
     let conversation = inbound.conversation.clone();

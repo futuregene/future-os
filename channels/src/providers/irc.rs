@@ -53,7 +53,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     display_name: "IRC",
     description:
         "IRC over TCP or TLS: SASL authentication, channel allowlist, byte-capped messages.",
-    docs: "docs/guide/channels-irc.md",
+    docs: "docs/guide/channels-providers.md#irc",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,

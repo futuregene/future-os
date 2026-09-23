@@ -94,7 +94,12 @@ let outcome = ctx.handle(inbound, sender.clone()).await;
 `#[serde(default)]`，并且**不要**加 `#[serde(deny_unknown_fields)]`——策略键不是你的。
 用 `ctx.config::<MyConfig>()?` 读取，字段格式错误时错误信息会点出通道名。
 让 `DEFINITION.config_example` 与实际读取保持一致，并在
-[通道 provider 参考](channels-providers.zh-CN.md) 中记录该配置块。
+[通道 provider 参考](channels-providers.zh-CN.md) 中记录该配置块：在那里为该通道加一节，
+并让 `DEFINITION.docs` 指向它（带锚点，写英文页路径
+`docs/guide/channels-providers.md#my-channel`）。`docs` 就是
+`future channel list --json` 报出来的值，所以指向一个不存在的路径等于"看起来像文档、
+其实哪里也去不了"——`every_channel_documents_itself_somewhere_that_exists` 会在任何
+通道的目标（含锚点）不存在时让构建失败。
 
 ## 错误
 
@@ -104,6 +109,11 @@ let outcome = ctx.handle(inbound, sender.clone()).await;
 * 尊重 `Retry-After`——HTTP 助手已经处理。
 * 机器人被封、会话被删、凭据无效都是永久错误。
 * 除非平台提供幂等键，否则不要重试可能重复产生用户可见消息的发送。
+* **把分类写进消息文本**（`ErrorClass::label`）。持久化队列只存文本、不存别的，
+  所以没进文本的分类等于丢了——它会退回去匹配平台自己的措辞，而那套措辞并不
+  认识你刚分类过的错误码。永久的 `channel_not_found` 与队列里的 "channel not
+  found" 没有一个共同词，于是会被重试到次数上限。要像 Signal 的
+  `a_classified_failure_is_readable_by_the_delivery_queue` 那样断言它。
 
 ## 测试
 
@@ -114,7 +124,8 @@ let outcome = ctx.handle(inbound, sender.clone()).await;
   `transport::text` 覆盖；
 * 寻址规则（提及判定、回复机器人、私聊）；
 * webhook 型 provider 的签名校验（正确、错误、缺失）；
-* 错误分类；
+* 错误分类，包括该分类确实到达持久化队列（对真实消息文本调用
+  `delivery::is_permanent_error`）；
 * 配置默认值，以及配置块格式错误时给出可读错误。
 
 用 `crate::test_support`（`temp_dir`、`home_lock`、`spawn_mock_grpc`、`spawn_http`、

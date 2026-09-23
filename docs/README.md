@@ -37,6 +37,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Response outcomes](architecture/response-outcomes.zh-CN.md) | End-of-response outcome semantics (stop / refusal / filter / pause) (zh only for now) |
 | [loop/](architecture/loop/README.md) | The `future-loop` crate: [architecture](architecture/loop/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/loop/UPSTREAM.md), [decision-kernel snapshot](architecture/loop/snapshots.md) |
 | [Shared packages](architecture/packages.md) | `packages/` conventions: npm/workspace packages and crate boundaries |
+| [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
 ## Internals (`internals/`)

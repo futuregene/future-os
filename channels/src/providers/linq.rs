@@ -52,7 +52,7 @@ pub static DEFINITION: ChannelDefinition = ChannelDefinition {
     id: "linq",
     display_name: "Linq (iMessage / RCS)",
     description: "Hosted iMessage and RCS messaging: signed webhook inbound, REST outbound.",
-    docs: "docs/guide/channels-linq.md",
+    docs: "docs/guide/channels-providers.md#linq",
     maturity: Maturity::Preview,
     capabilities: Capabilities {
         receive: true,
@@ -549,10 +549,7 @@ fn send_error(action: &str, response: &HttpResponse) -> anyhow::Error {
     let class = code
         .and_then(classify_error_code)
         .unwrap_or_else(|| response.class());
-    let label = match class {
-        ErrorClass::Permanent => "permanent",
-        ErrorClass::Transient => "transient",
-    };
+    let label = class.label();
     let retry = match retry_after_hint(response) {
         Some(seconds) => format!(", retry after {seconds}s"),
         None => String::new(),
