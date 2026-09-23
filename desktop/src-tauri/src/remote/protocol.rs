@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct IncomingCmd {
     pub(crate) chunked_read: bool,
     pub(crate) prefer_snapshot: bool,
+    /// Mobile gap-fill integrity reads need the backward page to end flush
+    /// with the requested cursor; a chunked reader reassembles the reply, so
+    /// it can opt out of the bridge's byte-budget trim explicitly.
+    pub(crate) untrimmed: bool,
     pub(crate) reply_id: String,
     pub(crate) replay_until_idx: Option<i64>,
     pub(crate) bridge_instance_id: String,
@@ -84,6 +88,7 @@ impl Default for IncomingCmd {
         Self {
             chunked_read: false,
             prefer_snapshot: false,
+            untrimmed: false,
             reply_id: String::new(),
             replay_until_idx: None,
             bridge_instance_id: String::new(),

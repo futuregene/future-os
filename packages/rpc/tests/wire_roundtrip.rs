@@ -114,6 +114,99 @@ async fn execute_command_and_stream_events_roundtrip() {
     assert_eq!(event.r#type, "ping");
 }
 
+/// An agent answering with a response above tonic's 4 MiB decoding default —
+/// one `get_messages` for a long session — is decoded by
+/// [`future_rpc::transport::agent_client`] and rejected by a plain generated
+/// client. That asymmetry is the bug the TUI reported as "Switched to session:
+/// … — its transcript could not be loaded (Error, decoded message length too
+/// large: found 10342115 bytes, the limit is: 4194304 bytes)": the Agent's own
+/// encoding cap is `MAX_GRPC_MESSAGE_SIZE`, so the 4 MiB limit is purely the
+/// client's, and only clients built through the helper inherit the raised one.
+#[tokio::test]
+async fn agent_client_decodes_a_response_past_tonics_default_limit() {
+    /// Past the 4 MiB decoding default, far below the 32 MiB cap.
+    const FILLER_BYTES: usize = 5 * 1024 * 1024;
+
+    struct BigAgent;
+
+    #[tonic::async_trait]
+    impl FutureAgent for BigAgent {
+        async fn execute_command(
+            &self,
+            request: Request<proto::RpcCommand>,
+        ) -> Result<Response<proto::RpcResponse>, Status> {
+            let command = request.into_inner();
+            Ok(Response::new(proto::RpcResponse {
+                id: command.id,
+                r#type: "response".to_string(),
+                command: command.r#type,
+                success: true,
+                data: format!(
+                    r#"{{"messages":[{{"role":"user","blocks":[{{"type":"text","text":"{}"}}]}}]}}"#,
+                    "x".repeat(FILLER_BYTES)
+                ),
+                ..Default::default()
+            }))
+        }
+
+        type StreamEventsStream = ReceiverStream<Result<proto::StreamEvent, Status>>;
+
+        async fn stream_events(
+            &self,
+            _request: Request<proto::StreamRequest>,
+        ) -> Result<Response<Self::StreamEventsStream>, Status> {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            drop(tx);
+            Ok(Response::new(ReceiverStream::new(rx)))
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(FutureAgentServer::new(BigAgent))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    let command = proto::RpcCommand {
+        id: "req-1".to_string(),
+        r#type: "get_messages".to_string(),
+        ..Default::default()
+    };
+
+    // Untuned client: its 4 MiB decoding default rejects the response.
+    let mut plain = FutureAgentClient::connect(format!("http://{addr}"))
+        .await
+        .expect("connect to in-process server");
+    let error = plain
+        .execute_command(command.clone())
+        .await
+        .expect_err("a 5 MiB response cannot fit tonic's default decoding cap");
+    assert!(
+        error.message().contains("decoded message length too large"),
+        "{error}"
+    );
+
+    // The shared client carries the cap, so the same call succeeds.
+    let connected = future_rpc::transport::connect_channel(
+        Some(&format!("http://{addr}")),
+        std::time::Duration::from_secs(5),
+        None,
+    )
+    .await
+    .expect("discover the in-process server");
+    let mut client = future_rpc::transport::agent_client(connected.channel);
+    let response = client
+        .execute_command(command)
+        .await
+        .expect("the shared client decodes the oversized response")
+        .into_inner();
+    assert!(response.success);
+    assert!(response.data.len() > FILLER_BYTES);
+}
+
 /// Every generated client tuning method, then the not-ready error mapping
 /// for both RPCs.
 #[tokio::test]

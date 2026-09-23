@@ -92,14 +92,23 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         // non-chunked page, which must still fit one reply — an
                         // unbounded one is rejected as `remote_reply_too_large`,
                         // so a legacy client would lose the page entirely.
+                        //
+                        // A chunked reader may also ask for the untrimmed page
+                        // explicitly: the mobile gap-fill integrity check needs
+                        // the page to end flush with the requested cursor, and
+                        // it reassembles the full reply from chunks anyway.
                         let enforce_page_bytes =
-                            enforce_backward_page_bytes(cmd.chunked_read, cmd.before);
-                        let page = prepare_backward_entries_page_with_cap(
+                            enforce_backward_page_bytes(cmd.chunked_read, cmd.before)
+                                && !cmd.untrimmed;
+                        let mut page = prepare_backward_entries_page_with_cap(
                             &cmd.session_id,
                             data,
                             !cmd.chunked_read,
                             enforce_page_bytes,
                         );
+                        if cmd.untrimmed {
+                            page["untrimmed"] = json!(true);
+                        }
                         reply(sink, true, page, None).await;
                     }
                     Err(e) if missing_session(&e) => {
