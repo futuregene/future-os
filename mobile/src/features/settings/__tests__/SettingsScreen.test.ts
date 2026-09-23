@@ -267,6 +267,7 @@ test("subpages use the shared back control and rounded card styling", async () =
 test("preferences auto-load without a persistent refresh button", async () => {
   await openPreferences();
   expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
+  // auto-upgrade, auto-title, skill recommendation, auto-connect.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(4);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });

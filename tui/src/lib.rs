@@ -53,6 +53,7 @@ pub mod notifications;
 pub mod paste;
 pub mod paste_burst;
 pub mod rpc;
+pub mod skill_reco;
 pub mod skills_cli;
 pub mod stdin_buffer;
 pub mod terminal;

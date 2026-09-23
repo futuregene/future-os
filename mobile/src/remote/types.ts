@@ -117,6 +117,11 @@ export interface DesktopSettings {
   autoTitleFirstTurn: boolean;
   autoConnectRemote: boolean;
   hiddenModels: string[];
+  /**
+   * Offer a fitting skill before sending a message (PRD v1.6 §3). On by
+   * default, so an older desktop that omits it must not read as "off".
+   */
+  skillRecommend?: boolean;
 }
 
 /**
@@ -510,6 +515,11 @@ export interface RemoteCommand {
   provider?: CustomProviderUpsert | BuiltinProviderUpdate;
   skillId?: string;
   version?: string;
+  /** suggest_skill: the draft to recommend for, and the candidates to choose from. */
+  query?: string;
+  candidates?: { name: string; description: string }[];
+  /** record_skill_reco: the message that produced a shown recommendation. */
+  messageHash?: string;
   name?: string;
   transferName?: string;
   workspaceId?: string;

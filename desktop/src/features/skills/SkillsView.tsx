@@ -1,6 +1,6 @@
 import type { AvailableSkill, InstalledSkill } from "../../integrations/skills/skillsClient";
 import type { CategoryOption, SkillFilters } from "./skillsFilter";
-import { ArrowUpCircle, Blocks, Download, RotateCcw, Search, Trash2 } from "lucide-react";
+import { ArrowUpCircle, Blocks, Download, Loader2, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -31,8 +31,23 @@ import {
 } from "./skillsFilter";
 
 type SkillsTab = "installed" | "all";
+type SkillOperation
+  = | { kind: "install" | "upgrade" }
+    | { kind: "uninstall" | "exiting"; skill: InstalledSkill; index: number };
 
 const emptyFilters: SkillFilters = { category: allCategoriesValue, query: "" };
+const minimumBusyMs = 1_000;
+const skillRowExitMs = 300;
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+function removeOperation(operations: Record<string, SkillOperation>, id: string): Record<string, SkillOperation> {
+  const remaining = { ...operations };
+  delete remaining[id];
+  return remaining;
+}
 
 export function SkillsView({
   leftPanelExpanded,
@@ -55,23 +70,35 @@ export function SkillsView({
   const [loading, setLoading] = useState(true);
   const [installedError, setInstalledError] = useState<string | null>(null);
   const [availableError, setAvailableError] = useState<string | null>(null);
-  // Skill ids with an install/uninstall in flight (disables their buttons).
-  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  // Operations also own the temporary display state while the Agent and the
+  // row animation finish. A background refresh must not change their buttons.
+  const [operations, setOperations] = useState<Record<string, SkillOperation>>({});
   const hasResolvedInitialTabRef = useRef(false);
   // Bumped per refresh so an earlier in-flight load (rapid install/uninstall
   // clicks, or unmount) can't overwrite a newer refresh's results.
   const refreshEpochRef = useRef(0);
 
+  const displayedInstalled = useMemo(() => {
+    const visible = installed.filter(skill => operations[skill.id]?.kind !== "install");
+    for (const operation of Object.values(operations)) {
+      if ((operation.kind === "uninstall" || operation.kind === "exiting")
+        && !visible.some(skill => skill.id === operation.skill.id)) {
+        visible.splice(Math.min(operation.index, visible.length), 0, operation.skill);
+      }
+    }
+    return visible;
+  }, [installed, operations]);
+
   const installedIds = useMemo(
-    () => new Set(installed.map(skill => skill.id)),
-    [installed],
+    () => new Set(displayedInstalled.map(skill => skill.id)),
+    [displayedInstalled],
   );
 
   // Installed skill by id, so the "All" tab can compare the installed version
   // against the catalogue's latest to decide whether to offer an upgrade.
   const installedById = useMemo(
-    () => new Map(installed.map(skill => [skill.id, skill] as const)),
-    [installed],
+    () => new Map(displayedInstalled.map(skill => [skill.id, skill] as const)),
+    [displayedInstalled],
   );
 
   const allCategories = useMemo(
@@ -89,15 +116,15 @@ export function SkillsView({
 
   // Categories that have at least one installed skill (matched via catalogue).
   const installedCategories = useMemo(() => {
-    const catalogueEntries = installed
+    const catalogueEntries = displayedInstalled
       .map(skill => availableById.get(skill.id))
       .filter((skill): skill is AvailableSkill => Boolean(skill));
     return categoryOptions(catalogueEntries, useChinese);
-  }, [installed, availableById, useChinese]);
+  }, [displayedInstalled, availableById, useChinese]);
 
   const filteredInstalled = useMemo(
-    () => installed.filter(skill => matchesInstalledSkill(skill, installedFilters, availableById.get(skill.id))),
-    [installed, installedFilters, availableById],
+    () => displayedInstalled.filter(skill => matchesInstalledSkill(skill, installedFilters, availableById.get(skill.id))),
+    [displayedInstalled, installedFilters, availableById],
   );
 
   const filteredAvailable = useMemo(
@@ -109,8 +136,8 @@ export function SkillsView({
   // tab's "Upgrade all" button (disabled when empty). Computed over the full
   // installed set, not the filtered view.
   const skillUpgrades = useMemo(
-    () => computeSkillUpgrades(installed, available),
-    [installed, available],
+    () => computeSkillUpgrades(displayedInstalled, available),
+    [displayedInstalled, available],
   );
 
   const refresh = useCallback(async () => {
@@ -160,25 +187,60 @@ export function SkillsView({
   // open view reflects them.
   useEffect(() => onFutureEvent("skills-changed", () => void refresh()), [refresh]);
 
-  // Install/uninstall actions broadcast "skills-changed": the left rail
-  // re-reads its badge from it, and this view reloads via its own listener
-  // above (same pattern as the silent auto-upgrade). No explicit refresh here
-  // — the listener already covers it.
-  const runAction = useCallback(async (id: string, action: () => Promise<unknown>) => {
-    setBusy(current => ({ ...current, [id]: true }));
+  const runInstall = useCallback(async (id: string, version: string, kind: "install" | "upgrade") => {
+    setOperations(current => ({ ...current, [id]: { kind } }));
     try {
-      await action();
+      const [outcome] = await Promise.allSettled([installSkill(id, version), wait(minimumBusyMs)]);
+      if (outcome.status === "rejected")
+        throw outcome.reason;
+      const snapshot = await listInstalledSkills();
+      if (!snapshot.some(skill => skill.id === id))
+        throw new Error(`Installed skill ${id} was not returned by the Agent`);
+
+      // Replace the list and its temporary action in one render. The button
+      // changes directly from "Installing" to "Uninstall".
+      refreshEpochRef.current++;
+      setInstalled(snapshot);
+      setOperations(current => removeOperation(current, id));
+      setLoading(false);
       emitFutureEvent("skills-changed", undefined);
     }
     catch (error) {
-      // Every caller is `void runAction(...)`, so a rejected install/uninstall
-      // would otherwise vanish — surface it as a toast.
+      setOperations(current => removeOperation(current, id));
       emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
     }
-    finally {
-      setBusy(current => ({ ...current, [id]: false }));
-    }
   }, [t]);
+
+  const runUninstall = useCallback(async (id: string) => {
+    const skill = displayedInstalled.find(item => item.id === id);
+    if (!skill)
+      return;
+    const index = displayedInstalled.indexOf(skill);
+    setOperations(current => ({ ...current, [id]: { kind: "uninstall", skill, index } }));
+    try {
+      const [outcome] = await Promise.allSettled([
+        uninstallSkill(id),
+        wait(minimumBusyMs),
+      ]);
+      if (outcome.status === "rejected")
+        throw outcome.reason;
+      const snapshot = await listInstalledSkills();
+      if (snapshot.some(item => item.id === id))
+        throw new Error(`Uninstalled skill ${id} is still returned by the Agent`);
+
+      setOperations(current => ({ ...current, [id]: { kind: "exiting", skill, index } }));
+      await wait(skillRowExitMs);
+      refreshEpochRef.current++;
+      setInstalled(snapshot);
+      setOperations(current => removeOperation(current, id));
+      setLoading(false);
+      emitFutureEvent("skills-changed", undefined);
+    }
+    catch (error) {
+      setOperations(current => removeOperation(current, id));
+      emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
+    }
+  }, [displayedInstalled, t]);
 
   // Agent owns the version decision and the install transaction. The local
   // comparison only controls the button's count and busy presentation.
@@ -186,18 +248,29 @@ export function SkillsView({
     if (skillUpgrades.length === 0)
       return;
     const ids = skillUpgrades.map(u => u.id);
-    setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, true])) }));
+    setOperations(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, { kind: "upgrade" as const }])) }));
     try {
-      const result = await syncSkills();
+      const [outcome] = await Promise.allSettled([syncSkills(), wait(minimumBusyMs)]);
+      if (outcome.status === "rejected")
+        throw outcome.reason;
+      const result = outcome.value;
       if (result.failed.length > 0)
         throw new Error(result.failed.join("; "));
+      const [installedSnapshot, availableSnapshot] = await Promise.all([
+        listInstalledSkills(),
+        listAvailableSkills(),
+      ]);
+      refreshEpochRef.current++;
+      setInstalled(installedSnapshot);
+      setAvailable(availableSnapshot);
+      setLoading(false);
       emitFutureEvent("skills-changed", undefined);
     }
     catch (error) {
       emitFutureEvent("toast", { message: t("actionFailed", { message: errorMessage(error) }), tone: "error" });
     }
     finally {
-      setBusy(current => ({ ...current, ...Object.fromEntries(ids.map(id => [id, false])) }));
+      setOperations(current => ids.reduce(removeOperation, current));
     }
   }, [skillUpgrades, t]);
 
@@ -235,14 +308,14 @@ export function SkillsView({
                   onFiltersChange={setInstalledFilters}
                   resultCount={filteredInstalled.length}
                   skills={filteredInstalled}
-                  totalCount={installed.length}
+                  totalCount={displayedInstalled.length}
                   error={installedError}
-                  busy={busy}
+                  operations={operations}
                   catalogue={available}
                   upgradeCount={skillUpgrades.length}
                   onTrySkill={onTrySkill}
-                  onUninstall={id => void runAction(id, () => uninstallSkill(id))}
-                  onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
+                  onUninstall={id => void runUninstall(id)}
+                  onUpgrade={(id, version) => void runInstall(id, version, "upgrade")}
                   onUpgradeAll={() => void upgradeAll()}
                   onRetry={() => void refresh()}
                 />
@@ -259,10 +332,10 @@ export function SkillsView({
                   installedIds={installedIds}
                   installedById={installedById}
                   error={availableError}
-                  busy={busy}
-                  onInstall={(id, version) => void runAction(id, () => installSkill(id, version))}
-                  onUninstall={id => void runAction(id, () => uninstallSkill(id))}
-                  onUpgrade={(id, version) => void runAction(id, () => installSkill(id, version))}
+                  operations={operations}
+                  onInstall={(id, version) => void runInstall(id, version, "install")}
+                  onUninstall={id => void runUninstall(id)}
+                  onUpgrade={(id, version) => void runInstall(id, version, "upgrade")}
                   onRetry={() => void refresh()}
                 />
               )}
@@ -288,12 +361,12 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
 }
 
 function InstalledTab({
-  busy,
   catalogue,
   categories,
   error,
   filters,
   loading,
+  operations,
   onFiltersChange,
   onRetry,
   onTrySkill,
@@ -305,12 +378,12 @@ function InstalledTab({
   totalCount,
   upgradeCount,
 }: {
-  busy: Record<string, boolean>;
   catalogue: AvailableSkill[];
   categories: CategoryOption[];
   error: string | null;
   filters: SkillFilters;
   loading: boolean;
+  operations: Record<string, SkillOperation>;
   onFiltersChange: (filters: SkillFilters) => void;
   onRetry: () => void;
   onTrySkill: (skillName: string) => void;
@@ -350,7 +423,7 @@ function InstalledTab({
   if (totalCount === 0)
     return <EmptyState title={t("installed.emptyTitle")} detail={t("installed.emptyDetail")} />;
 
-  const anyBusy = skills.some(skill => busy[skill.id]);
+  const anyBusy = skills.some(skill => Boolean(operations[skill.id]));
   return (
     <>
       <SkillFiltersBar
@@ -375,55 +448,58 @@ function InstalledTab({
       {skills.length === 0
         ? <EmptyState title={t("filter.emptyTitle")} detail={t("filter.emptyDetail")} />
         : null}
-      {skills.map((skill) => {
-        const cat = catalogueByName.get(skill.id);
-        const zh = useChinese && (cat?.nameZh || skill.nameZh);
-        const name = zh ? `${cat?.name || skill.name}（${zh}）` : (cat?.name || skill.name);
-        const description = useChinese
-          ? cat?.descriptionZh || skill.descriptionZh || skill.description
-          : cat?.description || skill.description;
-        const category = (useChinese && cat?.categoryZh ? cat.categoryZh : cat?.category) || undefined;
-        const latest = cat?.latestVersion ?? null;
-        const canUpgrade = Boolean(cat?.upgradeAvailable && latest);
-        return (
-          <SkillRow
-            key={skill.id}
-            name={name || skill.id}
-            description={description}
-            version={skill.version}
-            meta={category}
-            action={(
-              <div className="flex items-center gap-2">
-                <Button onClick={() => onTrySkill(skill.name)} size="sm" variant="secondary">
-                  {t("tryIt")}
-                </Button>
-                <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
-                {canUpgrade && latest
-                  ? (
-                      <UpgradeButton
-                        busy={busy[skill.id]}
-                        version={latest}
-                        onClick={() => onUpgrade(skill.id, latest)}
-                      />
-                    )
-                  : null}
-              </div>
-            )}
-          />
-        );
-      })}
+      <div>
+        {skills.map((skill) => {
+          const cat = catalogueByName.get(skill.id);
+          const zh = useChinese && (cat?.nameZh || skill.nameZh);
+          const name = zh ? `${cat?.name || skill.name}（${zh}）` : (cat?.name || skill.name);
+          const description = useChinese
+            ? cat?.descriptionZh || skill.descriptionZh || skill.description
+            : cat?.description || skill.description;
+          const category = (useChinese && cat?.categoryZh ? cat.categoryZh : cat?.category) || undefined;
+          const latest = cat?.latestVersion ?? null;
+          const canUpgrade = Boolean(cat?.upgradeAvailable && latest);
+          return (
+            <SkillRowTransition key={skill.id} exiting={operations[skill.id]?.kind === "exiting"} skillId={skill.id}>
+              <SkillRow
+                name={name || skill.id}
+                description={description}
+                version={skill.version}
+                meta={category}
+                action={(
+                  <div className="flex items-center gap-2">
+                    <Button onClick={() => onTrySkill(skill.name)} size="sm" variant="secondary">
+                      {t("tryIt")}
+                    </Button>
+                    <UninstallButton operation={operations[skill.id]} onClick={() => onUninstall(skill.id)} />
+                    {canUpgrade && latest
+                      ? (
+                          <UpgradeButton
+                            busy={Boolean(operations[skill.id])}
+                            version={latest}
+                            onClick={() => onUpgrade(skill.id, latest)}
+                          />
+                        )
+                      : null}
+                  </div>
+                )}
+              />
+            </SkillRowTransition>
+          );
+        })}
+      </div>
     </>
   );
 }
 
 function AllTab({
-  busy,
   categories,
   error,
   filters,
   installedById,
   installedIds,
   loading,
+  operations,
   onFiltersChange,
   onInstall,
   onRetry,
@@ -433,13 +509,13 @@ function AllTab({
   skills,
   totalCount,
 }: {
-  busy: Record<string, boolean>;
   categories: CategoryOption[];
   error: string | null;
   filters: SkillFilters;
   installedById: Map<string, InstalledSkill>;
   installedIds: Set<string>;
   loading: boolean;
+  operations: Record<string, SkillOperation>;
   onFiltersChange: (filters: SkillFilters) => void;
   onInstall: (id: string, version: string) => void;
   onRetry: () => void;
@@ -495,34 +571,44 @@ function AllTab({
             description={description}
             version={skill.latestVersion}
             meta={(useChineseCatalogueText && skill.categoryZh ? skill.categoryZh : skill.category) || undefined}
-            action={
-              isInstalled
-                ? (
-                    <div className="flex items-center gap-2">
-                      <UninstallButton busy={busy[skill.id]} onClick={() => onUninstall(skill.id)} />
-                      {canUpgrade && skill.latestVersion
-                        ? (
-                            <UpgradeButton
-                              busy={busy[skill.id]}
-                              version={skill.latestVersion}
-                              onClick={() => skill.latestVersion && onUpgrade(skill.id, skill.latestVersion)}
-                            />
-                          )
-                        : null}
-                    </div>
-                  )
-                : (
-                    <Button
-                      disabled={busy[skill.id] || !canInstall}
-                      leftIcon={<Download className="size-3.5" />}
-                      onClick={() => skill.latestVersion && onInstall(skill.id, skill.latestVersion)}
-                      size="sm"
-                      variant="primary"
-                    >
-                      {busy[skill.id] ? t("install.installing") : canInstall ? t("install.install") : t("install.noVersion")}
-                    </Button>
-                  )
-            }
+            action={(
+              <div
+                className={cn(
+                  "transition-[opacity,transform] duration-300 ease-out motion-reduce:transition-none",
+                  operations[skill.id]?.kind === "exiting" ? "translate-y-1 opacity-0" : "translate-y-0 opacity-100",
+                )}
+                data-skill-action-id={skill.id}
+              >
+                {isInstalled
+                  ? (
+                      <div className="flex items-center gap-2">
+                        <UninstallButton operation={operations[skill.id]} onClick={() => onUninstall(skill.id)} />
+                        {canUpgrade && skill.latestVersion
+                          ? (
+                              <UpgradeButton
+                                busy={Boolean(operations[skill.id])}
+                                version={skill.latestVersion}
+                                onClick={() => skill.latestVersion && onUpgrade(skill.id, skill.latestVersion)}
+                              />
+                            )
+                          : null}
+                      </div>
+                    )
+                  : (
+                      <Button
+                        disabled={Boolean(operations[skill.id]) || !canInstall}
+                        leftIcon={operations[skill.id]
+                          ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+                          : <Download className="size-3.5" />}
+                        onClick={() => skill.latestVersion && onInstall(skill.id, skill.latestVersion)}
+                        size="sm"
+                        variant="primary"
+                      >
+                        {operations[skill.id] ? t("install.installing") : canInstall ? t("install.install") : t("install.noVersion")}
+                      </Button>
+                    )}
+              </div>
+            )}
           />
         );
       })}
@@ -627,12 +713,37 @@ function SkillRow({
   );
 }
 
+function SkillRowTransition({
+  children,
+  exiting,
+  skillId,
+}: {
+  children: React.ReactNode;
+  exiting: boolean;
+  skillId: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid transition-[grid-template-rows,opacity,transform,margin] duration-300 ease-out motion-reduce:transition-none",
+        exiting ? "mb-0 -translate-y-1 grid-rows-[0fr] opacity-0" : "mb-3 grid-rows-[1fr] opacity-100",
+      )}
+      data-exiting={exiting ? "true" : "false"}
+      data-skill-id={skillId}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
 function UpgradeButton({ busy, onClick, version }: { busy?: boolean; onClick: () => void; version: string }) {
   const { t } = useTranslation("skills");
   return (
     <Button
       disabled={busy}
-      leftIcon={<ArrowUpCircle className="size-3.5" />}
+      leftIcon={busy
+        ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+        : <ArrowUpCircle className="size-3.5" />}
       onClick={onClick}
       size="sm"
       title={t("upgrade.available", { version })}
@@ -643,19 +754,23 @@ function UpgradeButton({ busy, onClick, version }: { busy?: boolean; onClick: ()
   );
 }
 
-function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => void }) {
+function UninstallButton({ operation, onClick }: { operation?: SkillOperation; onClick: () => void }) {
   const { t } = useTranslation("skills");
   const [confirming, setConfirming] = useState(false);
+  const busy = Boolean(operation);
+  const uninstalling = operation?.kind === "uninstall" || operation?.kind === "exiting";
   if (!confirming) {
     return (
       <Button
         disabled={busy}
-        leftIcon={<Trash2 className="size-3.5" />}
+        leftIcon={uninstalling
+          ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+          : <Trash2 className="size-3.5" />}
         onClick={() => setConfirming(true)}
         size="sm"
         variant="danger-soft"
       >
-        {busy ? t("uninstall.uninstalling") : t("uninstall.uninstall")}
+        {uninstalling ? t("uninstall.uninstalling") : t("uninstall.uninstall")}
       </Button>
     );
   }
@@ -664,8 +779,16 @@ function UninstallButton({ busy, onClick }: { busy?: boolean; onClick: () => voi
       <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="ghost">
         {t("uninstall.cancel")}
       </Button>
-      <Button disabled={busy} onClick={onClick} size="sm" variant="danger">
-        {busy ? t("uninstall.uninstalling") : t("uninstall.confirm")}
+      <Button
+        disabled={busy}
+        leftIcon={uninstalling
+          ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin motion-reduce:animate-none" />
+          : undefined}
+        onClick={onClick}
+        size="sm"
+        variant="danger"
+      >
+        {uninstalling ? t("uninstall.uninstalling") : t("uninstall.confirm")}
       </Button>
     </div>
   );

@@ -188,9 +188,11 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 
 弹窗或分页浮层打开时所有按键都交给该浮层，因此上述全局快捷键只作用于对话输入框。
 
-工具结果会连同内容一起渲染。每个工具调用行带一行摘要（如 `edit src/a.rs +12 -3`、
-`write 3 files +40 -2`），正文折叠在其下：默认显示 4 行窗口，并给出
-`… N more lines · ctrl+g to expand` 提示行；`ctrl+g` 展开（最多 200 行）。
+每次工具调用只占一行：只显示调用本身（如 `edit src/a.rs +12 -3`、`$ make test`、
+`read src/main.rs:1-20`），diff 的 `+N -M` 徽标也在这一行上——二十次调用就是二十行，
+而不是二十段预览。`ctrl+g` 才在该行下方展开正文（最多 200 行，到上限时给出
+`… N more lines · truncated` 提示行），再按一次收起；调用**失败**时正文默认仍显示，
+这样不必按键就能看到失败原因。`/tool-output <call-id>` 可打印某次调用的完整输出。
 统一 diff（`---`/`+++` 头、`@@` 块）与 `apply_patch` 包裹（模型厂商的 FREEFORM
 工具，其语法定义收录在 `tests/provider-protocol/fixtures/`）会显示行号栏
 并对增/删行着色。工具输出中的原始 ANSI 转义会被剥离，避免破坏屏幕——颜色只由

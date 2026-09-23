@@ -37,6 +37,14 @@ pub(crate) struct IncomingCmd {
     pub(crate) settings: serde_json::Value,
     pub(crate) skill_id: String,
     pub(crate) version: String,
+    // suggest_skill: the draft to recommend for, and the UNINSTALLED skill
+    // candidates the phone offers. The candidates travel from the phone because
+    // the catalogue is the client's to fetch; the desktop only forwards them to
+    // the agent.
+    pub(crate) query: String,
+    pub(crate) candidates: serde_json::Value,
+    // record_skill_reco: the message that produced a shown recommendation.
+    pub(crate) message_hash: String,
     // Provider configuration: one whole provider write (see `list_providers`
     // in `remote_host::business`).
     pub(crate) provider: serde_json::Value,
@@ -103,6 +111,9 @@ impl Default for IncomingCmd {
             settings: serde_json::Value::Null,
             skill_id: String::new(),
             version: String::new(),
+            query: String::new(),
+            candidates: serde_json::Value::Null,
+            message_hash: String::new(),
             provider: serde_json::Value::Null,
             name: String::new(),
             transfer_name: String::new(),

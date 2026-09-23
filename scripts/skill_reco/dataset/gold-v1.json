@@ -1,0 +1,1895 @@
+{
+  "model": "future/kimi-k3",
+  "prompt_variant": "v1",
+  "note": "reference answers only; the refusal judgment and first choice are stable across passes (see bench/gold-stability.mjs)",
+  "answers": [
+    {
+      "id": "n001",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Casual greeting with no task; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5913,
+      "usage": {
+        "prompt_tokens": 25130,
+        "completion_tokens": 128,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 30,
+        "credit_cost": 0.501576
+      }
+    },
+    {
+      "id": "n002",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Casual request for a programmer joke; no scientific or technical catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5556,
+      "usage": {
+        "prompt_tokens": 25130,
+        "completion_tokens": 273,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 97,
+        "credit_cost": 0.516076
+      }
+    },
+    {
+      "id": "n003",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Casual dinner question; no scientific or technical catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5750,
+      "usage": {
+        "prompt_tokens": 25130,
+        "completion_tokens": 126,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 28,
+        "credit_cost": 0.501376
+      }
+    },
+    {
+      "id": "n004",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "User is just expressing thanks; no task requiring a skill.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 4797,
+      "usage": {
+        "prompt_tokens": 25138,
+        "completion_tokens": 137,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 31,
+        "credit_cost": 0.502636
+      }
+    },
+    {
+      "id": "n005",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Meta question about session memory; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 8133,
+      "usage": {
+        "prompt_tokens": 25138,
+        "completion_tokens": 174,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 54,
+        "credit_cost": 0.506336
+      }
+    },
+    {
+      "id": "n006",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Conceptual question about monads (functional programming) — no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5441,
+      "usage": {
+        "prompt_tokens": 25134,
+        "completion_tokens": 167,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 42,
+        "credit_cost": 0.505556
+      }
+    },
+    {
+      "id": "n007",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Trivial factual question (George Eliot); no catalog skill needed.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5419,
+      "usage": {
+        "prompt_tokens": 25128,
+        "completion_tokens": 184,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 56,
+        "credit_cost": 0.507136
+      }
+    },
+    {
+      "id": "n008",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Simple factual question about Rayleigh scattering; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 4679,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 122,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 26,
+        "credit_cost": 0.501036
+      }
+    },
+    {
+      "id": "n009",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General history summary request; no scientific or computational catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 5364,
+      "usage": {
+        "prompt_tokens": 25140,
+        "completion_tokens": 158,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 44,
+        "credit_cost": 0.504776
+      }
+    },
+    {
+      "id": "n010",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General networking concept question; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 6348,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 152,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 44,
+        "credit_cost": 0.504036
+      }
+    },
+    {
+      "id": "n011",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Routine find-and-rename refactor; no catalog skill covers generic code edits.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 10248,
+      "usage": {
+        "prompt_tokens": 25139,
+        "completion_tokens": 346,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 134,
+        "credit_cost": 0.5235559999999999
+      }
+    },
+    {
+      "id": "n012",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "CSS Grid/Safari 兼容性调试属于前端开发问题，目录中没有适用的技能",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 4917,
+      "usage": {
+        "prompt_tokens": 25144,
+        "completion_tokens": 182,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 45,
+        "credit_cost": 0.5072559999999999
+      }
+    },
+    {
+      "id": "n013",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Generic REST endpoint pagination is ordinary coding; no catalog skill covers web API development.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 10501,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 275,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 99,
+        "credit_cost": 0.516336
+      }
+    },
+    {
+      "id": "n014",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Routine Python refactoring task with known steps; no scientific/domain skill in the catalog applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 11092,
+      "usage": {
+        "prompt_tokens": 25152,
+        "completion_tokens": 200,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 59,
+        "credit_cost": 0.509216
+      }
+    },
+    {
+      "id": "n015",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Simple git hook setup with prettier; no scientific/ML catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 6856,
+      "usage": {
+        "prompt_tokens": 25142,
+        "completion_tokens": 173,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 47,
+        "credit_cost": 0.506316
+      }
+    },
+    {
+      "id": "n016",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Go 服务错误处理审查属通用代码审查，技能目录中没有对应技能",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 10425,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 450,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 175,
+        "credit_cost": 0.533836
+      }
+    },
+    {
+      "id": "n017",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General Docker build performance question; no catalog skill covers Docker/build optimization.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 7484,
+      "usage": {
+        "prompt_tokens": 25141,
+        "completion_tokens": 198,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 63,
+        "credit_cost": 0.508796
+      }
+    },
+    {
+      "id": "n018",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No flight-booking or travel skill exists in the catalog.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 24523,
+      "usage": {
+        "prompt_tokens": 25139,
+        "completion_tokens": 754,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 338,
+        "credit_cost": 0.5643560000000001
+      }
+    },
+    {
+      "id": "n019",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No catalog skill covers Trello integration; also the three cards' content was not provided.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 13252,
+      "usage": {
+        "prompt_tokens": 25141,
+        "completion_tokens": 313,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 115,
+        "credit_cost": 0.520296
+      }
+    },
+    {
+      "id": "n020",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No catalog skill covers Mastodon or social-media posting.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 14173,
+      "usage": {
+        "prompt_tokens": 25145,
+        "completion_tokens": 276,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 104,
+        "credit_cost": 0.516676
+      }
+    },
+    {
+      "id": "n021",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No catalog skill covers Spotify API or music playlist management; all skills are science/research oriented.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 14297,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 554,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 236,
+        "credit_cost": 0.5442359999999999
+      }
+    },
+    {
+      "id": "n022",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Catalog contains no Slack/messaging integration skill.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 6322,
+      "usage": {
+        "prompt_tokens": 25136,
+        "completion_tokens": 257,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 97,
+        "credit_cost": 0.514596
+      }
+    },
+    {
+      "id": "n023",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No catalog skill covers Concur or expense-report filing; generic browser use isn't a scientific skill.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 20515,
+      "usage": {
+        "prompt_tokens": 25145,
+        "completion_tokens": 912,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 412,
+        "credit_cost": 0.580276
+      }
+    },
+    {
+      "id": "n024",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "No catalog skill covers calendar or Notion integration/sync; available skills are scientific/data-focused.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 10128,
+      "usage": {
+        "prompt_tokens": 25147,
+        "completion_tokens": 210,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 64,
+        "credit_cost": 0.510116
+      }
+    },
+    {
+      "id": "n025",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Ordering coffee beans is a personal shopping errand with no matching scientific or technical skill in the catalog.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 9509,
+      "usage": {
+        "prompt_tokens": 25135,
+        "completion_tokens": 256,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 85,
+        "credit_cost": 0.514476
+      }
+    },
+    {
+      "id": "n026",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "BRCA1 功能是通用生物学知识，可直接回答，无需调用数据库或分析工具",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 11338,
+      "usage": {
+        "prompt_tokens": 25152,
+        "completion_tokens": 515,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 200,
+        "credit_cost": 0.540716
+      }
+    },
+    {
+      "id": "n027",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "High-level conceptual explanation; no data analysis, tooling, or file work required.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 7448,
+      "usage": {
+        "prompt_tokens": 25138,
+        "completion_tokens": 313,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 118,
+        "credit_cost": 0.520236
+      }
+    },
+    {
+      "id": "n028",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General health/science knowledge question about whether cold exposure causes colds; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 9733,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 342,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 128,
+        "credit_cost": 0.5230360000000001
+      }
+    },
+    {
+      "id": "n029",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General advice question about reading technique; no catalog skill teaches paper-reading strategy.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 10530,
+      "usage": {
+        "prompt_tokens": 25138,
+        "completion_tokens": 334,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 129,
+        "credit_cost": 0.522336
+      }
+    },
+    {
+      "id": "n030",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General conceptual question about research question quality; no catalog skill execution needed.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 12413,
+      "usage": {
+        "prompt_tokens": 25148,
+        "completion_tokens": 678,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 296,
+        "credit_cost": 0.556936
+      }
+    },
+    {
+      "id": "n031",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General textbook recommendation; no catalog skill needed for book suggestions.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 9006,
+      "usage": {
+        "prompt_tokens": 25132,
+        "completion_tokens": 138,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 35,
+        "credit_cost": 0.5026160000000001
+      }
+    },
+    {
+      "id": "n032",
+      "gold": [
+        "future-web"
+      ],
+      "needs_skill": true,
+      "reason": "询问蛋白质折叠领域最新进展，属于时效性事实问题，需联网核实当前动态",
+      "raw": [
+        "future-web"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11829,
+      "usage": {
+        "prompt_tokens": 25157,
+        "completion_tokens": 566,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 216,
+        "credit_cost": 0.5459160000000001
+      }
+    },
+    {
+      "id": "n033",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "General capability question; no specific task requiring a catalog skill.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 6170,
+      "usage": {
+        "prompt_tokens": 25136,
+        "completion_tokens": 242,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 87,
+        "credit_cost": 0.513096
+      }
+    },
+    {
+      "id": "n034",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "User preference for shorter replies; no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 11415,
+      "usage": {
+        "prompt_tokens": 25145,
+        "completion_tokens": 482,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 208,
+        "credit_cost": 0.537276
+      }
+    },
+    {
+      "id": "n035",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Model switching is a harness/CLI setting, not covered by any catalog skill.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 6392,
+      "usage": {
+        "prompt_tokens": 25133,
+        "completion_tokens": 165,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 44,
+        "credit_cost": 0.505336
+      }
+    },
+    {
+      "id": "p001",
+      "gold": [
+        "future-account"
+      ],
+      "needs_skill": true,
+      "reason": "User asks about remaining credits/balance and account sign-up email, which the future-account skill covers via Future CLI.",
+      "raw": [
+        "future-account"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12364,
+      "usage": {
+        "prompt_tokens": 25148,
+        "completion_tokens": 260,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 81,
+        "credit_cost": 0.5289600000000001
+      }
+    },
+    {
+      "id": "p002",
+      "gold": [
+        "future-browser"
+      ],
+      "needs_skill": true,
+      "reason": "Task requires controlling a local visible browser: opening localhost:3000, clicking login, typing credentials, screenshotting, and reading console errors.",
+      "raw": [
+        "future-browser"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10814,
+      "usage": {
+        "prompt_tokens": 25217,
+        "completion_tokens": 385,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 138,
+        "credit_cost": 0.54284
+      }
+    },
+    {
+      "id": "p003",
+      "gold": [
+        "future-database-lookup",
+        "future-paper"
+      ],
+      "needs_skill": true,
+      "reason": "Query ClinVar-style variant databases for BRCA1 pathogenic variants and retrieve cited literature by PMID/DOI with reproducible sources and dates.",
+      "raw": [
+        "future-database-lookup",
+        "future-paper"
+      ],
+      "parse_mode": "json",
+      "durationMs": 14900,
+      "usage": {
+        "prompt_tokens": 25243,
+        "completion_tokens": 489,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 183,
+        "credit_cost": 0.55376
+      }
+    },
+    {
+      "id": "p004",
+      "gold": [
+        "future-deep-research"
+      ],
+      "needs_skill": true,
+      "reason": "需要证据驱动、可溯源出处的深度调研（一手公告/论文原文核实与转载内容区分），正是 future-deep-research 的用途。",
+      "raw": [
+        "future-deep-research"
+      ],
+      "parse_mode": "json",
+      "durationMs": 18592,
+      "usage": {
+        "prompt_tokens": 25340,
+        "completion_tokens": 741,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 299,
+        "credit_cost": 0.5809
+      }
+    },
+    {
+      "id": "p005",
+      "gold": [
+        "future-document"
+      ],
+      "needs_skill": true,
+      "reason": "Extract text content from a PDF product manual into structured Markdown for note-taking.",
+      "raw": [
+        "future-document"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8341,
+      "usage": {
+        "prompt_tokens": 25201,
+        "completion_tokens": 160,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 40,
+        "credit_cost": 0.5200199999999999
+      }
+    },
+    {
+      "id": "p006",
+      "gold": [
+        "future-experimental-design"
+      ],
+      "needs_skill": true,
+      "reason": "Pre-data-collection design of a factorial (3 watering × 2 soil) greenhouse trial with randomization, blocking, and causal-inference structure.",
+      "raw": [
+        "future-experimental-design"
+      ],
+      "parse_mode": "json",
+      "durationMs": 16208,
+      "usage": {
+        "prompt_tokens": 25223,
+        "completion_tokens": 283,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 85,
+        "credit_cost": 0.53276
+      }
+    },
+    {
+      "id": "p007",
+      "gold": [
+        "future-image"
+      ],
+      "needs_skill": true,
+      "reason": "Image style transfer (photo to watercolor) plus image analysis/OCR of sign text matches the future-image skill.",
+      "raw": [
+        "future-image"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10982,
+      "usage": {
+        "prompt_tokens": 25204,
+        "completion_tokens": 161,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 33,
+        "credit_cost": 0.506356
+      }
+    },
+    {
+      "id": "p008",
+      "gold": [
+        "future-loop"
+      ],
+      "needs_skill": true,
+      "reason": "Cross-reply repo task tracking with todos, artifacts, and human gates matches future-loop.",
+      "raw": [
+        "future-loop"
+      ],
+      "parse_mode": "json",
+      "durationMs": 18092,
+      "usage": {
+        "prompt_tokens": 25188,
+        "completion_tokens": 512,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 213,
+        "credit_cost": 0.5411360000000001
+      }
+    },
+    {
+      "id": "p009",
+      "gold": [
+        "future-paper"
+      ],
+      "needs_skill": true,
+      "reason": "Task requires searching recent literature on BRCA1 variant classification guidelines and retrieving full text of the most relevant paper.",
+      "raw": [
+        "future-paper"
+      ],
+      "parse_mode": "json",
+      "durationMs": 13255,
+      "usage": {
+        "prompt_tokens": 25182,
+        "completion_tokens": 349,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 128,
+        "credit_cost": 0.524716
+      }
+    },
+    {
+      "id": "p010",
+      "gold": [
+        "future-peer-review"
+      ],
+      "needs_skill": true,
+      "reason": "User requests a referee-style critical assessment of a manuscript's claims, methods, and evidence before journal submission.",
+      "raw": [
+        "future-peer-review"
+      ],
+      "parse_mode": "json",
+      "durationMs": 7421,
+      "usage": {
+        "prompt_tokens": 25232,
+        "completion_tokens": 299,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 102,
+        "credit_cost": 0.520716
+      }
+    },
+    {
+      "id": "p011",
+      "gold": [
+        "future-scientific-writing"
+      ],
+      "needs_skill": true,
+      "reason": "Composing a submission-ready evidence-linked clinical article from notes/figures with gap listing matches the scientific-writing skill.",
+      "raw": [
+        "future-scientific-writing"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9502,
+      "usage": {
+        "prompt_tokens": 25190,
+        "completion_tokens": 327,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 113,
+        "credit_cost": 0.522676
+      }
+    },
+    {
+      "id": "p012",
+      "gold": [
+        "future-skill-creator"
+      ],
+      "needs_skill": true,
+      "reason": "创建自定义能力包（SKILL.md 入口 + 资源文件），默认装到应用级目录 ~/.future/agent/skills 而非共享目录。",
+      "raw": [
+        "future-skill-creator"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11884,
+      "usage": {
+        "prompt_tokens": 25233,
+        "completion_tokens": 546,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 204,
+        "credit_cost": 0.545436
+      }
+    },
+    {
+      "id": "p013",
+      "gold": [
+        "future-slides"
+      ],
+      "needs_skill": true,
+      "reason": "User requests a ready-to-present ~10-page slide deck from their text, with upfront clarification of output format (PNG/PDF vs editable PPTX) — exactly the future-slides skill's scope.",
+      "raw": [
+        "future-slides"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8790,
+      "usage": {
+        "prompt_tokens": 25237,
+        "completion_tokens": 398,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 131,
+        "credit_cost": 0.530716
+      }
+    },
+    {
+      "id": "p014",
+      "gold": [
+        "future-software-install"
+      ],
+      "needs_skill": true,
+      "reason": "User wants to check for, install, and verify a lightweight CLI JSON tool (e.g. jq) on this machine.",
+      "raw": [
+        "future-software-install"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8416,
+      "usage": {
+        "prompt_tokens": 25202,
+        "completion_tokens": 357,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 127,
+        "credit_cost": 0.525916
+      }
+    },
+    {
+      "id": "p015",
+      "gold": [
+        "future-web",
+        "future-paper"
+      ],
+      "needs_skill": true,
+      "reason": "Find recent BRCA1 guideline articles via web/literature search and fetch full text of the two most relevant pages.",
+      "raw": [
+        "future-web",
+        "future-paper"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8636,
+      "usage": {
+        "prompt_tokens": 25173,
+        "completion_tokens": 541,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 220,
+        "credit_cost": 0.543736
+      }
+    },
+    {
+      "id": "p016",
+      "gold": [
+        "adaptyv"
+      ],
+      "needs_skill": true,
+      "reason": "Adaptyv Foundry API handles protein sequence submission for binding (BLI/SPR) and thermostability assays with results retrieval.",
+      "raw": [
+        "adaptyv"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8657,
+      "usage": {
+        "prompt_tokens": 25267,
+        "completion_tokens": 290,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 85,
+        "credit_cost": 0.520516
+      }
+    },
+    {
+      "id": "p017",
+      "gold": [
+        "anndata"
+      ],
+      "needs_skill": true,
+      "reason": "用户需要将单细胞数据存为带注释的矩阵格式并做子集筛选、批次合并和稀疏存储，正是 anndata 的核心场景。",
+      "raw": [
+        "anndata"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9144,
+      "usage": {
+        "prompt_tokens": 25274,
+        "completion_tokens": 331,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 97,
+        "credit_cost": 0.524756
+      }
+    },
+    {
+      "id": "p018",
+      "gold": [
+        "astropy"
+      ],
+      "needs_skill": true,
+      "reason": "ICRS→Galactic coordinate transformation and redshift→luminosity distance both map directly to astropy.coordinates and astropy.cosmology.",
+      "raw": [
+        "astropy"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9328,
+      "usage": {
+        "prompt_tokens": 25225,
+        "completion_tokens": 271,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 82,
+        "credit_cost": 0.517776
+      }
+    },
+    {
+      "id": "p019",
+      "gold": [
+        "benchling-integration",
+        "biopython"
+      ],
+      "needs_skill": true,
+      "reason": "Cloud R&D platform with registered DNA sequences = Benchling registry (SDK export), plus GenBank file writing via Biopython.",
+      "raw": [
+        "benchling-integration",
+        "biopython"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8338,
+      "usage": {
+        "prompt_tokens": 25195,
+        "completion_tokens": 342,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 111,
+        "credit_cost": 0.524276
+      }
+    },
+    {
+      "id": "p020",
+      "gold": [
+        "bioservices",
+        "gget",
+        "biopython"
+      ],
+      "needs_skill": true,
+      "reason": "Batch protein sequence/annotation download plus cross-database ID mapping fits bioservices (multi-database ID mapping), with gget/biopython for quick lookups and batch sequence retrieval.",
+      "raw": [
+        "bioservices",
+        "gget",
+        "biopython"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12692,
+      "usage": {
+        "prompt_tokens": 25226,
+        "completion_tokens": 574,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 214,
+        "credit_cost": 0.5480959999999999
+      }
+    },
+    {
+      "id": "p021",
+      "gold": [
+        "cellxgene-census",
+        "anndata"
+      ],
+      "needs_skill": true,
+      "reason": "CELLxGENE Census 支援按組織/細胞類型切片查詢並直接回傳 AnnData，無需下載完整數據集",
+      "raw": [
+        "cellxgene-census",
+        "anndata"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12640,
+      "usage": {
+        "prompt_tokens": 25298,
+        "completion_tokens": 596,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 220,
+        "credit_cost": 0.551736
+      }
+    },
+    {
+      "id": "p022",
+      "gold": [
+        "cobrapy"
+      ],
+      "needs_skill": true,
+      "reason": "Loading SBML models, FBA growth-rate simulation, and single-gene knockout essentiality analysis are core COBRApy workflows.",
+      "raw": [
+        "cobrapy"
+      ],
+      "parse_mode": "json",
+      "durationMs": 7769,
+      "usage": {
+        "prompt_tokens": 25228,
+        "completion_tokens": 203,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 49,
+        "credit_cost": 0.511036
+      }
+    },
+    {
+      "id": "p023",
+      "gold": [
+        "dask"
+      ],
+      "needs_skill": true,
+      "reason": "200GB CSV 超出内存，需要 pandas 式 API 的单机分块并行处理并可平滑扩展到集群，正是 Dask 的核心场景。",
+      "raw": [
+        "dask"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9955,
+      "usage": {
+        "prompt_tokens": 25310,
+        "completion_tokens": 352,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 111,
+        "credit_cost": 0.527576
+      }
+    },
+    {
+      "id": "p024",
+      "gold": [
+        "deeptools"
+      ],
+      "needs_skill": true,
+      "reason": "ChIP-seq BAM→bigWig normalization, sample correlation, and TSS heatmap/profile plots are deeptools' core workflow.",
+      "raw": [
+        "deeptools"
+      ],
+      "parse_mode": "json",
+      "durationMs": 5425,
+      "usage": {
+        "prompt_tokens": 25292,
+        "completion_tokens": 193,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 42,
+        "credit_cost": 0.511316
+      }
+    },
+    {
+      "id": "p025",
+      "gold": [
+        "dhdna-profiler"
+      ],
+      "needs_skill": true,
+      "reason": "用户要求从匿名文字提取认知模式与思维指纹画像，正是 dhdna-profiler 的用途。",
+      "raw": [
+        "dhdna-profiler"
+      ],
+      "parse_mode": "json",
+      "durationMs": 6099,
+      "usage": {
+        "prompt_tokens": 25279,
+        "completion_tokens": 186,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 36,
+        "credit_cost": 0.510356
+      }
+    },
+    {
+      "id": "p026",
+      "gold": [
+        "esm",
+        "tamarind"
+      ],
+      "needs_skill": true,
+      "reason": "esm covers ESM3 generation + ESMC embeddings; tamarind provides all-atom structure prediction (Boltz/Chai/AlphaFold).",
+      "raw": [
+        "esm",
+        "tamarind"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10096,
+      "usage": {
+        "prompt_tokens": 25187,
+        "completion_tokens": 498,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 186,
+        "credit_cost": 0.539716
+      }
+    },
+    {
+      "id": "p027",
+      "gold": [
+        "exploratory-data-analysis"
+      ],
+      "needs_skill": true,
+      "reason": "科学数据文件的格式识别、结构/统计检查、缺失与异常检测并生成归档报告，正是 EDA 技能的范围。",
+      "raw": [
+        "exploratory-data-analysis"
+      ],
+      "parse_mode": "json",
+      "durationMs": 17729,
+      "usage": {
+        "prompt_tokens": 25248,
+        "completion_tokens": 834,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 350,
+        "credit_cost": 0.5745359999999999
+      }
+    },
+    {
+      "id": "p028",
+      "gold": [
+        "future-explore"
+      ],
+      "needs_skill": true,
+      "reason": "Evidence-driven comparison of two caching approaches via targeted measurements against a real workload — method comparison and experimentation with an unknown answer.",
+      "raw": [
+        "future-explore"
+      ],
+      "parse_mode": "json",
+      "durationMs": 26100,
+      "usage": {
+        "prompt_tokens": 25216,
+        "completion_tokens": 758,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 328,
+        "credit_cost": 0.5662959999999999
+      }
+    },
+    {
+      "id": "p029",
+      "gold": [
+        "geomaster"
+      ],
+      "needs_skill": true,
+      "reason": "Sentinel-2 NDVI 计算、GeoTIFF 输出与栅格重投影属于 geomaster 的遥感/栅格处理范围。",
+      "raw": [
+        "geomaster"
+      ],
+      "parse_mode": "json",
+      "durationMs": 14696,
+      "usage": {
+        "prompt_tokens": 25244,
+        "completion_tokens": 235,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 57,
+        "credit_cost": 0.514556
+      }
+    },
+    {
+      "id": "p030",
+      "gold": [
+        "gget"
+      ],
+      "needs_skill": true,
+      "reason": "gget covers gene info, transcript sequence fetching, and 8cube mouse tissue specificity/expression data, matching all parts of the request.",
+      "raw": [
+        "gget"
+      ],
+      "parse_mode": "json",
+      "durationMs": 16668,
+      "usage": {
+        "prompt_tokens": 25211,
+        "completion_tokens": 370,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 130,
+        "credit_cost": 0.527396
+      }
+    },
+    {
+      "id": "p031",
+      "gold": [
+        "glycoengineering"
+      ],
+      "needs_skill": true,
+      "reason": "Task is scanning for N-glycosylation sequons and engineering glycan sites, which matches the glycoengineering skill.",
+      "raw": [
+        "glycoengineering"
+      ],
+      "parse_mode": "json",
+      "durationMs": 13388,
+      "usage": {
+        "prompt_tokens": 25256,
+        "completion_tokens": 252,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 73,
+        "credit_cost": 0.5164960000000001
+      }
+    },
+    {
+      "id": "p032",
+      "gold": [
+        "hugging-science"
+      ],
+      "needs_skill": true,
+      "reason": "User wants a curated index of open scientific ML datasets, models, and interactive demos for protein design — exactly Hugging Science's scope.",
+      "raw": [
+        "hugging-science"
+      ],
+      "parse_mode": "json",
+      "durationMs": 16293,
+      "usage": {
+        "prompt_tokens": 25211,
+        "completion_tokens": 353,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 122,
+        "credit_cost": 0.5256959999999999
+      }
+    },
+    {
+      "id": "p033",
+      "gold": [
+        "hypothesis-generation",
+        "future-experimental-design"
+      ],
+      "needs_skill": true,
+      "reason": "User has observations needing testable hypotheses plus a controlled experiment design with predicted outcomes.",
+      "raw": [
+        "hypothesis-generation",
+        "future-experimental-design"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10324,
+      "usage": {
+        "prompt_tokens": 25227,
+        "completion_tokens": 234,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 69,
+        "credit_cost": 0.514116
+      }
+    },
+    {
+      "id": "p034",
+      "gold": [
+        "labarchive-integration"
+      ],
+      "needs_skill": true,
+      "reason": "LabArchives ELN API covers nightly notebook backups with attachments and programmatic creation of dated entries for instrument data.",
+      "raw": [
+        "labarchive-integration"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10735,
+      "usage": {
+        "prompt_tokens": 25213,
+        "completion_tokens": 429,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 162,
+        "credit_cost": 0.533336
+      }
+    },
+    {
+      "id": "p035",
+      "gold": [
+        "latchbio-integration"
+      ],
+      "needs_skill": true,
+      "reason": "Latch SDK turns Python steps into serverless cloud workflows with automatic containerization, a no-code UI, and LatchFile/LatchDir remote I/O.",
+      "raw": [
+        "latchbio-integration"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9796,
+      "usage": {
+        "prompt_tokens": 25221,
+        "completion_tokens": 298,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 89,
+        "credit_cost": 0.520396
+      }
+    },
+    {
+      "id": "p036",
+      "gold": [
+        "market-research-reports"
+      ],
+      "needs_skill": true,
+      "reason": "用户要求顶级咨询风格、几十页以上的行业深度研究报告（竞争格局、政策、供应链、投资机会），market-research-reports 直接匹配并内建数据调研与图表生成编排。",
+      "raw": [
+        "market-research-reports"
+      ],
+      "parse_mode": "json",
+      "durationMs": 21386,
+      "usage": {
+        "prompt_tokens": 25306,
+        "completion_tokens": 966,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 394,
+        "credit_cost": 0.588896
+      }
+    },
+    {
+      "id": "p037",
+      "gold": [],
+      "needs_skill": false,
+      "reason": "Routine NumPy task (np.linalg.inv + np.trapezoid/np.linspace); sympy skill itself defers to NumPy for floating-point numerics, so no catalog skill applies.",
+      "raw": [],
+      "parse_mode": "json",
+      "durationMs": 13137,
+      "usage": {
+        "prompt_tokens": 25233,
+        "completion_tokens": 501,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 189,
+        "credit_cost": 0.5409360000000001
+      }
+    },
+    {
+      "id": "p038",
+      "gold": [
+        "modal"
+      ],
+      "needs_skill": true,
+      "reason": "Modal 提供按需 GPU、自动扩缩容且空闲缩容到零不计费的无服务器推理部署能力",
+      "raw": [
+        "modal"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9053,
+      "usage": {
+        "prompt_tokens": 25218,
+        "completion_tokens": 277,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 84,
+        "credit_cost": 0.518236
+      }
+    },
+    {
+      "id": "p039",
+      "gold": [
+        "molfeat",
+        "scikit-learn"
+      ],
+      "needs_skill": true,
+      "reason": "molfeat provides pre-trained neural embeddings (e.g. ChemBERTa) from SMILES with built-in caching, for training scikit-learn solubility models.",
+      "raw": [
+        "molfeat",
+        "scikit-learn"
+      ],
+      "parse_mode": "json",
+      "durationMs": 15219,
+      "usage": {
+        "prompt_tokens": 25239,
+        "completion_tokens": 565,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 216,
+        "credit_cost": 0.5474559999999999
+      }
+    },
+    {
+      "id": "p040",
+      "gold": [
+        "neuropixels-analysis"
+      ],
+      "needs_skill": true,
+      "reason": "User has Neuropixels SpikeGLX raw data (.ap.bin/.lf.bin/.meta) and wants end-to-end preprocessing, Kilosort spike sorting, QC and manual curation per Allen/IBL best practices — exactly the neuropixels-analysis skill's scope.",
+      "raw": [
+        "neuropixels-analysis"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10443,
+      "usage": {
+        "prompt_tokens": 25333,
+        "completion_tokens": 304,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 70,
+        "credit_cost": 0.523236
+      }
+    },
+    {
+      "id": "p041",
+      "gold": [
+        "onekgpd"
+      ],
+      "needs_skill": true,
+      "reason": "按基因组区段筛选低频（AF<1%）、预测可能致病且临床意义明确的SNV并列出携带个体及基因型，正是1000 Genomes个体级变异查询场景。",
+      "raw": [
+        "onekgpd"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10367,
+      "usage": {
+        "prompt_tokens": 25258,
+        "completion_tokens": 476,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 157,
+        "credit_cost": 0.5389360000000001
+      }
+    },
+    {
+      "id": "p042",
+      "gold": [
+        "opentrons-integration"
+      ],
+      "needs_skill": true,
+      "reason": "Opentrons Protocol API covers 96-well serial dilution, Heater-Shaker module control, multi-channel pipetting, and pre-run simulation.",
+      "raw": [
+        "opentrons-integration"
+      ],
+      "parse_mode": "json",
+      "durationMs": 13773,
+      "usage": {
+        "prompt_tokens": 25325,
+        "completion_tokens": 425,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 151,
+        "credit_cost": 0.5351760000000001
+      }
+    },
+    {
+      "id": "p043",
+      "gold": [
+        "paperzilla"
+      ],
+      "needs_skill": true,
+      "reason": "查询所跟踪研究项目的最新论文推荐并筛选整理，正是 Paperzilla 技能的项目推荐与摘要功能",
+      "raw": [
+        "paperzilla"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12200,
+      "usage": {
+        "prompt_tokens": 25219,
+        "completion_tokens": 562,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 215,
+        "credit_cost": 0.546756
+      }
+    },
+    {
+      "id": "p044",
+      "gold": [
+        "pathway-enrichment"
+      ],
+      "needs_skill": true,
+      "reason": "用户想在差异表达分析后对显著基因/排序列表做富集分析（ORA vs GSEA），完全匹配 pathway-enrichment 技能。",
+      "raw": [
+        "pathway-enrichment"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8070,
+      "usage": {
+        "prompt_tokens": 25247,
+        "completion_tokens": 194,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 30,
+        "credit_cost": 0.510516
+      }
+    },
+    {
+      "id": "p045",
+      "gold": [
+        "polars"
+      ],
+      "needs_skill": true,
+      "reason": "User wants a lazy, expression-API DataFrame library for a multi-million-row CSV — exactly the polars skill's scope (scan_csv, filter, group_by aggregation).",
+      "raw": [
+        "polars"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8590,
+      "usage": {
+        "prompt_tokens": 25245,
+        "completion_tokens": 215,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 48,
+        "credit_cost": 0.5125759999999999
+      }
+    },
+    {
+      "id": "p046",
+      "gold": [
+        "primekg",
+        "gget"
+      ],
+      "needs_skill": true,
+      "reason": "药物重定位需查药物-基因/蛋白-疾病关联：primekg 知识图谱为主，gget 可查 OpenTargets 等补充证据。",
+      "raw": [
+        "primekg",
+        "gget"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11203,
+      "usage": {
+        "prompt_tokens": 25226,
+        "completion_tokens": 560,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 201,
+        "credit_cost": 0.5466960000000001
+      }
+    },
+    {
+      "id": "p047",
+      "gold": [
+        "pydeseq2"
+      ],
+      "needs_skill": true,
+      "reason": "用户已有bulk RNA-seq计数矩阵，需用PyDESeq2做含批次协变量的差异表达分析及FDR多重检验校正。",
+      "raw": [
+        "pydeseq2"
+      ],
+      "parse_mode": "json",
+      "durationMs": 8082,
+      "usage": {
+        "prompt_tokens": 25241,
+        "completion_tokens": 325,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 93,
+        "credit_cost": 0.523496
+      }
+    },
+    {
+      "id": "p048",
+      "gold": [
+        "pyhealth"
+      ],
+      "needs_skill": true,
+      "reason": "用户需要基于ICU病历数据（诊断/用药/时序）搭建数据集→任务→模型→评估的端到端深度学习流程，正是PyHealth技能覆盖的场景。",
+      "raw": [
+        "pyhealth"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12200,
+      "usage": {
+        "prompt_tokens": 25404,
+        "completion_tokens": 522,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 187,
+        "credit_cost": 0.546456
+      }
+    },
+    {
+      "id": "p049",
+      "gold": [
+        "pymc"
+      ],
+      "needs_skill": true,
+      "reason": "Bayesian conversion-rate modeling with uncertainty intervals and probabilistic A/B comparison fits PyMC inference.",
+      "raw": [
+        "pymc"
+      ],
+      "parse_mode": "json",
+      "durationMs": 7215,
+      "usage": {
+        "prompt_tokens": 25227,
+        "completion_tokens": 217,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 64,
+        "credit_cost": 0.512416
+      }
+    },
+    {
+      "id": "p050",
+      "gold": [
+        "pyopenms"
+      ],
+      "needs_skill": true,
+      "reason": "mzML loading, noise filtering, LC-MS/MS feature detection and label-free quantification are core pyopenms proteomics workflows.",
+      "raw": [
+        "pyopenms"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9311,
+      "usage": {
+        "prompt_tokens": 25221,
+        "completion_tokens": 407,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 149,
+        "credit_cost": 0.531296
+      }
+    },
+    {
+      "id": "p051",
+      "gold": [
+        "pytorch-lightning"
+      ],
+      "needs_skill": true,
+      "reason": "重构 PyTorch 样板代码为 LightningModule、多 GPU 分布式训练、checkpoint 与日志最佳实践正是 pytorch-lightning 技能的范畴",
+      "raw": [
+        "pytorch-lightning"
+      ],
+      "parse_mode": "json",
+      "durationMs": 6426,
+      "usage": {
+        "prompt_tokens": 25351,
+        "completion_tokens": 235,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 50,
+        "credit_cost": 0.516696
+      }
+    },
+    {
+      "id": "p052",
+      "gold": [
+        "datamol",
+        "rdkit"
+      ],
+      "needs_skill": true,
+      "reason": "Standard cheminformatics workflow: SMILES parsing, MW/logP descriptors, nitro substructure search, and 2D depiction images.",
+      "raw": [
+        "datamol",
+        "rdkit"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11211,
+      "usage": {
+        "prompt_tokens": 25234,
+        "completion_tokens": 601,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 245,
+        "credit_cost": 0.550956
+      }
+    },
+    {
+      "id": "p053",
+      "gold": [
+        "scanpy",
+        "anndata",
+        "scvelo"
+      ],
+      "needs_skill": true,
+      "reason": "单细胞RNA-seq标准流程(QC/归一化/降维/分群/标志物/轨迹)核心由scanpy+anndata覆盖，轨迹推断可用scvelo补充",
+      "raw": [
+        "scanpy",
+        "anndata",
+        "scvelo"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10153,
+      "usage": {
+        "prompt_tokens": 25253,
+        "completion_tokens": 390,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 107,
+        "credit_cost": 0.5302359999999999
+      }
+    },
+    {
+      "id": "p054",
+      "gold": [
+        "scientific-brainstorming"
+      ],
+      "needs_skill": true,
+      "reason": "开放式科研头脑风暴、挑战默认前提与跨领域思路探索，正匹配该技能的触发场景。",
+      "raw": [
+        "scientific-brainstorming"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11457,
+      "usage": {
+        "prompt_tokens": 25261,
+        "completion_tokens": 635,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 245,
+        "credit_cost": 0.5548960000000001
+      }
+    },
+    {
+      "id": "p055",
+      "gold": [
+        "scientific-visualization"
+      ],
+      "needs_skill": true,
+      "reason": "需要论文级多子图、误差线、显著性标记、色盲友好配色及高分辨率PDF/TIFF导出，完全匹配该技能",
+      "raw": [
+        "scientific-visualization"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10008,
+      "usage": {
+        "prompt_tokens": 25247,
+        "completion_tokens": 388,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 129,
+        "credit_cost": 0.529916
+      }
+    },
+    {
+      "id": "p056",
+      "gold": [
+        "scikit-learn"
+      ],
+      "needs_skill": true,
+      "reason": "Train/test split, scaling, classifier training, cross-validation, and confusion matrix are core scikit-learn workflows.",
+      "raw": [
+        "scikit-learn"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12446,
+      "usage": {
+        "prompt_tokens": 25234,
+        "completion_tokens": 410,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 152,
+        "credit_cost": 0.531856
+      }
+    },
+    {
+      "id": "p057",
+      "gold": [
+        "scvi-tools",
+        "scanpy"
+      ],
+      "needs_skill": true,
+      "reason": "scVI/scANVI for batch correction, latent space, and reference-based annotation plus DE; scanpy for standard preprocessing.",
+      "raw": [
+        "scvi-tools",
+        "scanpy"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10245,
+      "usage": {
+        "prompt_tokens": 25225,
+        "completion_tokens": 298,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 93,
+        "credit_cost": 0.5204759999999999
+      }
+    },
+    {
+      "id": "p058",
+      "gold": [
+        "shap"
+      ],
+      "needs_skill": true,
+      "reason": "用户需解释风控模型单个申请人的拒贷原因，并绘制各特征贡献方向与幅度的图，正是 SHAP 值与 waterfall 图的核心场景。",
+      "raw": [
+        "shap"
+      ],
+      "parse_mode": "json",
+      "durationMs": 14441,
+      "usage": {
+        "prompt_tokens": 25219,
+        "completion_tokens": 390,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 122,
+        "credit_cost": 0.529556
+      }
+    },
+    {
+      "id": "p059",
+      "gold": [
+        "statistical-analysis"
+      ],
+      "needs_skill": true,
+      "reason": "Guided test selection (ANOVA + regression), assumption checks, effect sizes, and APA-formatted reporting for a psych journal.",
+      "raw": [
+        "statistical-analysis"
+      ],
+      "parse_mode": "json",
+      "durationMs": 15849,
+      "usage": {
+        "prompt_tokens": 25248,
+        "completion_tokens": 319,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 107,
+        "credit_cost": 0.5230360000000001
+      }
+    },
+    {
+      "id": "p060",
+      "gold": [
+        "statsmodels"
+      ],
+      "needs_skill": true,
+      "reason": "Multiple regression with confidence intervals and assumption diagnostics (residuals, heteroskedasticity, autocorrelation) is statsmodels' core use case.",
+      "raw": [
+        "statsmodels"
+      ],
+      "parse_mode": "json",
+      "durationMs": 22631,
+      "usage": {
+        "prompt_tokens": 25238,
+        "completion_tokens": 964,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 424,
+        "credit_cost": 0.587336
+      }
+    },
+    {
+      "id": "p061",
+      "gold": [
+        "tiledbvcf"
+      ],
+      "needs_skill": true,
+      "reason": "TileDB-VCF provides incremental sample ingestion and fast region queries over cloud-stored cohort variant data.",
+      "raw": [
+        "tiledbvcf"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10722,
+      "usage": {
+        "prompt_tokens": 25224,
+        "completion_tokens": 372,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 138,
+        "credit_cost": 0.527856
+      }
+    },
+    {
+      "id": "p062",
+      "gold": [
+        "torch-geometric"
+      ],
+      "needs_skill": true,
+      "reason": "User wants PyTorch Geometric: message passing layers, neighbor sampling, heterogeneous graphs, node classification example.",
+      "raw": [
+        "torch-geometric"
+      ],
+      "parse_mode": "json",
+      "durationMs": 12041,
+      "usage": {
+        "prompt_tokens": 25303,
+        "completion_tokens": 286,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 93,
+        "credit_cost": 0.520836
+      }
+    },
+    {
+      "id": "p063",
+      "gold": [
+        "treatment-plans"
+      ],
+      "needs_skill": true,
+      "reason": "请求生成3-4页、带SMART目标和随访时间表的慢病（糖尿病+高血压）治疗计划PDF并符合HIPAA规范，正匹配treatment-plans技能。",
+      "raw": [
+        "treatment-plans"
+      ],
+      "parse_mode": "json",
+      "durationMs": 10402,
+      "usage": {
+        "prompt_tokens": 25291,
+        "completion_tokens": 433,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 134,
+        "credit_cost": 0.535296
+      }
+    },
+    {
+      "id": "p064",
+      "gold": [
+        "usfiscaldata"
+      ],
+      "needs_skill": true,
+      "reason": "U.S. Treasury Fiscal Data API provides Debt to the Penny (total public debt outstanding) with as-of dates, no API key needed.",
+      "raw": [
+        "usfiscaldata"
+      ],
+      "parse_mode": "json",
+      "durationMs": 11887,
+      "usage": {
+        "prompt_tokens": 25164,
+        "completion_tokens": 295,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 91,
+        "credit_cost": 0.518956
+      }
+    },
+    {
+      "id": "p065",
+      "gold": [
+        "what-if-oracle"
+      ],
+      "needs_skill": true,
+      "reason": "Speculative what-if question asking for multiple branched timelines with rough likelihoods — exactly the what-if-oracle scenario-analysis pattern.",
+      "raw": [
+        "what-if-oracle"
+      ],
+      "parse_mode": "json",
+      "durationMs": 9027,
+      "usage": {
+        "prompt_tokens": 25202,
+        "completion_tokens": 392,
+        "cache_read_tokens": 768,
+        "reasoning_tokens": 143,
+        "credit_cost": 0.529416
+      }
+    }
+  ]
+}

@@ -286,6 +286,19 @@ pub enum UiCmd {
         purpose: SessionsPurpose,
     },
     ForkMessagesLoaded(Result<Value, String>),
+    /// The agent answered the recommendation question for `draft`: `Some` is the
+    /// skill to offer, `None` means send the draft unchanged.
+    SkillRecoSuggested {
+        draft: String,
+        suggestion: Option<(String, String)>,
+    },
+    /// A recommended skill finished installing: `true` appends `/skill` to the
+    /// held draft and sends it, `false` reports the failure and keeps the draft.
+    SkillRecoInstalled {
+        draft: String,
+        skill: String,
+        installed: bool,
+    },
     SetModelDone {
         set_result: Result<(), String>,
         state: Option<RpcSessionState>,
@@ -330,6 +343,14 @@ pub enum UiCmd {
     /// past the message-length cap).
     InputNotice(String),
     SessionSwitched {
+        /// The session the flow asked for. A result whose target is not the
+        /// newest request was superseded by another pick (see
+        /// `App::latest_session_switch`) and must not be applied.
+        target: String,
+        /// False when the agent declined the switch (it never does today, but
+        /// the wire contract has the field): nothing changed on the wire, so
+        /// the transcript on screen is still the current session's.
+        switched: bool,
         result: Result<(), String>,
         state: Option<RpcSessionState>,
         messages: Result<Value, String>,
@@ -565,12 +586,21 @@ pub struct TuiSettings {
     pub theme_id: Option<String>,
     /// Notification channels (`notify`, camelCase keys). Absent ⇒ defaults.
     pub notify: Option<NotifyConfig>,
+    /// Offer a skill recommendation before sending a message (`skillRecommend`).
+    /// On by default, like the desktop toggle (PRD v1.6 §3); `/skill-recommend
+    /// off` opts out.
+    pub skill_recommend: Option<bool>,
 }
 
 impl TuiSettings {
     /// `bellOnComplete` with the default of `true` when absent.
     pub fn bell_enabled(&self) -> bool {
         self.bell_on_complete.unwrap_or(true)
+    }
+
+    /// `skillRecommend` with the default of `true` when absent.
+    pub fn skill_recommend_enabled(&self) -> bool {
+        self.skill_recommend.unwrap_or(true)
     }
 
     /// The effective notification config for the app loop.
@@ -618,6 +648,9 @@ impl TuiSettings {
                 obj.insert("notify".into(), value);
             }
         }
+        if let Some(recommend) = self.skill_recommend {
+            obj.insert("skillRecommend".into(), Value::Bool(recommend));
+        }
         Value::Object(obj)
     }
 
@@ -648,6 +681,55 @@ impl TuiSettings {
             notify: v
                 .get("notify")
                 .and_then(|value| serde_json::from_value::<NotifyConfig>(value.clone()).ok()),
+            skill_recommend: v.get("skillRecommend").and_then(Value::as_bool),
+        }
+    }
+}
+
+/// True when the draft already names a skill (`/name`), i.e. the user picked
+/// one themselves — the same rule as the desktop composer.
+fn draft_picks_skill(draft: &str) -> bool {
+    draft
+        .split_whitespace()
+        .any(|token| token.len() > 1 && token.starts_with('/'))
+}
+
+/// Skill-recommendation state for the composer.
+///
+/// The client owns the trigger rules (PRD v1.6 §3, §7), so the TUI keeps its
+/// own small state machine: a draft that is being asked about, or a
+/// recommendation waiting for the user to decide. While either is active the
+/// draft is held in the input box un-sent, and `a` / `Esc` decide (PRD §6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillRecoState {
+    /// Nothing in flight; submissions behave normally.
+    Idle,
+    /// The agent is being asked about `draft`.
+    Pending { draft: String },
+    /// A recommendation is on screen; the draft waits for the user.
+    Suggested {
+        draft: String,
+        skill: String,
+        summary: String,
+    },
+}
+
+impl SkillRecoState {
+    /// The line shown above the input, or `None` when there is nothing to show.
+    fn prompt_line(&self) -> Option<String> {
+        match self {
+            SkillRecoState::Idle => None,
+            SkillRecoState::Pending { .. } => Some("Looking for a skill that fits…".to_string()),
+            SkillRecoState::Suggested { skill, summary, .. } => {
+                let detail = if summary.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("  {}", summary.trim())
+                };
+                Some(format!(
+                    "Recommended skill  /{skill}{detail}    [a] install & use    [Esc] send without it"
+                ))
+            }
         }
     }
 }
@@ -747,6 +829,13 @@ struct OverlayEntry {
     pre_focus: FocusTarget,
     hidden: bool,
     focus_order: u64,
+}
+
+/// A `switch_session` request: the session it started from and the one it
+/// asked for (see `App::latest_session_switch`).
+struct SessionSwitchRequest {
+    from: String,
+    target: String,
 }
 
 /// Stored pending approval (the TS keeps it for reference; the visible
@@ -1247,6 +1336,13 @@ pub struct App<T: TerminalIo> {
     /// that draft still refers to. Caching the text alone would turn a restored
     /// `[Image #1]` into a marker with nothing behind it.
     session_input_cache: HashMap<String, (String, PendingDraft)>,
+    /// The newest `switch_session` request the app has issued — kept after its
+    /// result is applied, so a *late* result from an older request is still
+    /// recognisable. Two picks can overlap (the sessions menu stays open until
+    /// the first result lands) and the agent has no notion of a "current"
+    /// session: whichever RPC lands last wins on the wire, so results are
+    /// matched against this instead of being applied in arrival order.
+    latest_session_switch: Option<SessionSwitchRequest>,
     state: AppState,
     running: bool,
     cli_options: CliOptions,
@@ -1332,6 +1428,14 @@ pub struct App<T: TerminalIo> {
     /// row in the panel, but `U` has no row, and two installers writing the
     /// same package directory at once is not something to discover by accident.
     skills_op_running: bool,
+    /// Skill recommendation for the draft being submitted. Whether the feature
+    /// is on comes from `self.tui_settings.skill_recommend_enabled()`.
+    skill_reco: SkillRecoState,
+    /// Set while a held draft is being re-submitted from the recommendation
+    /// flow, so the intercept stands down for exactly one pass.
+    skill_reco_send_through: bool,
+    /// The TUI's own daily budget (`~/.future/tui/skill_reco.json`).
+    skill_reco_path: PathBuf,
     /// `/worktree` — the `git` plumbing. Every call spawns a process, so the
     /// app runs all of them on the blocking pool; the runner is injectable
     /// ([`git_for_host`]) so no unit test needs the real git.
@@ -1361,6 +1465,8 @@ impl<T: TerminalIo> App<T> {
         cli_options: &CliOptions,
         tui_settings_path: PathBuf,
     ) -> Self {
+        // Derived before the path is moved into the struct below.
+        let skill_reco_path = crate::skill_reco::path_for(&tui_settings_path);
         let terminal_width = terminal.columns() as usize;
         let mut chat = ChatArea::new(terminal_width, None);
         let mut footer = Footer::new(terminal_width);
@@ -1413,8 +1519,10 @@ impl<T: TerminalIo> App<T> {
             connection_lost: false,
             tui_settings: TuiSettings::default(),
             tui_settings_path,
+            skill_reco_path,
             slash_commands: Vec::new(),
             session_input_cache: HashMap::new(),
+            latest_session_switch: None,
             state: AppState::default(),
             running: false,
             cli_options: cli_options.clone(),
@@ -1460,6 +1568,8 @@ impl<T: TerminalIo> App<T> {
             skills_cli: skills_cli_for_host(),
             skills_upgrade_armed: None,
             skills_op_running: false,
+            skill_reco: SkillRecoState::Idle,
+            skill_reco_send_through: false,
             git_cli: git_for_host(),
             history: HistoryWriter::new(),
             scrollback_pending: false,
@@ -1473,6 +1583,13 @@ impl<T: TerminalIo> App<T> {
     fn setup(&mut self) {
         // Slash commands for autocomplete (with model/session arg flags).
         self.slash_commands = vec![
+            SlashCommand {
+                value: "/skill-recommend".into(),
+                label: "/skill-recommend".into(),
+                description: "offer a fitting skill before sending (on|off)".into(),
+                takes_model_arg: false,
+                takes_session_arg: false,
+            },
             SlashCommand {
                 value: "/cwd".into(),
                 label: "/cwd".into(),
@@ -2219,20 +2336,71 @@ impl<T: TerminalIo> App<T> {
                 (Err(err), _) => self.add_system_message(format!("Failed to get status: {err}")),
             },
             UiCmd::SessionSwitched {
+                target,
+                switched,
                 result,
                 state,
                 messages,
                 label,
             } => {
+                match &self.latest_session_switch {
+                    Some(latest) if latest.target != target => {
+                        // Superseded by a newer pick: this transcript belongs
+                        // to a session the app is not showing any more. Its
+                        // RPC may still have re-pointed the client here (the
+                        // last switch to land wins), so put the client back on
+                        // the target that won — but leave the menu alone: the
+                        // user is still picking in it.
+                        self.realign_client_to_latest_switch();
+                        return;
+                    }
+                    Some(latest)
+                        if self.state.session_id != latest.from
+                            && self.state.session_id != target =>
+                    {
+                        // Another session lifecycle flow (`/new`, a fork) took
+                        // over while this one was in flight. The user is
+                        // somewhere else now, and applying this transcript
+                        // would drag the client back to a session they left.
+                        return;
+                    }
+                    _ => {}
+                }
                 if let Err(err) = result {
                     self.add_system_message(format!("Failed to switch session: {err}"));
+                } else if !switched {
+                    // The agent declined: the client still addresses the old
+                    // session, so what is on screen is still the truth.
+                    self.add_system_message(format!("Session switch declined: {label}"));
                 } else {
                     if let Some(s) = state {
                         self.apply_refresh_state(s);
                     }
+                    // `get_state` is a separate call and can fail on its own;
+                    // the switch itself already happened, so the app identity
+                    // has to follow the target either way — otherwise the
+                    // drafts, refreshes and event filtering below stay keyed
+                    // to the session we just left.
+                    self.adopt_session_identity(&target);
                     self.restore_session_input();
-                    self.apply_messages(messages);
-                    self.add_system_message(format!("Switched to session: {label}"));
+                    match messages {
+                        Ok(messages) => {
+                            self.apply_messages(Ok(messages));
+                            self.add_system_message(format!("Switched to session: {label}"));
+                        }
+                        Err(err) => {
+                            // The switch did happen, so the previous session's
+                            // conversation must come off the screen even
+                            // though the new one could not be loaded — it
+                            // would otherwise read as this session's history
+                            // while a prompt typed here goes to `target`.
+                            self.chat.clear_messages();
+                            self.add_system_message(format!(
+                                "Switched to session: {label} — its transcript could not be \
+                                 loaded ({err})."
+                            ));
+                        }
+                    }
                 }
                 self.hide_overlay();
             }
@@ -2675,6 +2843,23 @@ impl<T: TerminalIo> App<T> {
                     self.request_skills_rescan();
                 }
                 self.request_render(false);
+            }
+            UiCmd::SkillRecoSuggested { draft, suggestion } => {
+                self.apply_skill_reco_suggestion(draft, suggestion);
+            }
+            UiCmd::SkillRecoInstalled {
+                draft,
+                skill,
+                installed,
+            } => {
+                if !installed {
+                    // The card stays up so the user can retry or send without
+                    // it; the draft is untouched (PRD v1.6 §6.2).
+                    self.add_system_message(SKILLS_RECO_INSTALL_FAILED.to_string());
+                    self.request_render(false);
+                } else {
+                    self.use_recommended_skill(&draft, &skill);
+                }
             }
             UiCmd::SkillsDetailRequested => {
                 let width = (self.terminal.columns() as usize).max(1);
@@ -3208,11 +3393,19 @@ impl<T: TerminalIo> App<T> {
     // ─── Agent event handling ──────────────────────────────────────────
 
     pub fn handle_agent_event(&mut self, event: &AgentEvent) {
-        if event.r#type.starts_with("compaction_")
-            && event
-                .session_id
-                .as_ref()
-                .is_some_and(|id| id != &self.state.session_id)
+        // Every broadcast event is stamped with the session that produced it.
+        // The stream resubscribes when the session changes, but a frame already
+        // in flight from the session just left can still land here — a
+        // `text_chunk` from it would append to the last assistant bubble of the
+        // *new* transcript and an `agent_end` would overwrite it, which reads
+        // as the previous conversation bleeding into this one. The client's
+        // current session id is what the next prompt addresses, so it is the
+        // reference (the app's own `state.session_id` can lag a switch by a
+        // refresh). Unstamped events have no session to compare.
+        if event
+            .session_id
+            .as_deref()
+            .is_some_and(|id| id != self.client.get_current_session_id())
         {
             return;
         }
@@ -3745,6 +3938,13 @@ impl<T: TerminalIo> App<T> {
 
         // Escape — close autocomplete or overlay or clear editor.
         if key == Key::ESCAPE {
+            // A shown recommendation owns the first escape: it means "send the
+            // draft without the skill", not "clear the draft" (which would
+            // discard the very thing the card is holding).
+            if matches!(self.skill_reco, SkillRecoState::Suggested { .. }) {
+                self.send_held_draft();
+                return;
+            }
             if self.autocomplete.is_visible() {
                 self.autocomplete.hide();
                 self.request_render(false);
@@ -3795,6 +3995,18 @@ impl<T: TerminalIo> App<T> {
                 self.apply_autocomplete_selection();
                 return;
             }
+        }
+
+        // A shown recommendation takes `a` (install and use). Checked before
+        // the keybinding manager so it cannot be shadowed by a binding, and
+        // after overlays/escape so a panel in front still wins.
+        if matches!(&self.skill_reco, SkillRecoState::Suggested { .. })
+            && key.eq_ignore_ascii_case("a")
+            && !self.autocomplete.is_visible()
+            && self.overlay_stack.is_empty()
+        {
+            self.accept_skill_recommendation();
+            return;
         }
 
         // Dispatch through keybinding manager (ctrl shortcuts, shift+tab, ...).
@@ -4500,6 +4712,11 @@ const SKILLS_LOADING: &str = "Loading installable skills…";
 /// the panel in front of it (its own confirmation could not be shown either).
 const SKILLS_NO_UPGRADES: &str = "No installed skill has a newer version to upgrade.";
 
+/// Shown when installing a recommended skill fails. The card stays up so the
+/// user can retry or send without the skill (PRD v1.6 §6.2).
+const SKILLS_RECO_INSTALL_FAILED: &str =
+    "Could not install the recommended skill — press Esc to send without it, or a to retry.";
+
 /// Row the `/worktree` panel shows while `git worktree list` is in flight (and
 /// again on a reload). Both git calls are processes, so the panel is open — and
 /// actionable through its create row — before its list exists.
@@ -4706,6 +4923,198 @@ impl<T: TerminalIo> App<T> {
 
     // ─── Submit / slash commands ───────────────────────────────────────
 
+    /// Whether `draft` is a message the recommender should be asked about.
+    ///
+    /// Every gate mirrors the desktop client's (PRD v1.6 §3): the feature on,
+    /// a real message rather than a slash command, the length window, no skill
+    /// already picked in the draft, the day's budget unspent, and this message
+    /// not already asked about. The candidate set must be loaded, because
+    /// asking with no candidates would recommend from nothing.
+    fn recommendation_gates_pass(&self, draft: &str) -> bool {
+        let trimmed = draft.trim();
+        if !self.tui_settings.skill_recommend_enabled() {
+            return false;
+        }
+        // A slash command is a local action, not a message to recommend for.
+        if trimmed.starts_with('/') {
+            return false;
+        }
+        // Length window, in the units the PRD states them: 30 UTF-8 bytes is
+        // 10 汉字 or about 30 ASCII characters.
+        if trimmed.len() < crate::skill_reco::MIN_QUERY_BYTES
+            || trimmed.chars().count() > crate::skill_reco::MAX_QUERY_CHARS
+        {
+            return false;
+        }
+        // The user already chose a skill for this message.
+        if draft_picks_skill(trimmed) {
+            return false;
+        }
+        let day = crate::skill_reco::load_at(&self.skill_reco_path);
+        if day.exhausted() || day.already_evaluated(&crate::skill_reco::message_hash(trimmed)) {
+            return false;
+        }
+        !self.skill_reco_candidates().is_empty()
+    }
+
+    /// The uninstalled skills offered to the recommender: the catalogue minus
+    /// what the agent already loads. `None` when the catalogue has not been
+    /// fetched yet (the panel fetches it), in which case there is nothing to
+    /// recommend from and the message is sent normally.
+    fn skill_reco_candidates(&self) -> Vec<(String, String)> {
+        let Some(catalogue) = self.skills_catalogue.as_ref() else {
+            return Vec::new();
+        };
+        let installed: Vec<&String> = self.state.skills.iter().collect();
+        catalogue
+            .entries
+            .iter()
+            .filter(|entry| !installed.iter().any(|name| **name == entry.id))
+            .map(|entry| {
+                let summary = entry
+                    .summary
+                    .clone()
+                    .or_else(|| entry.summary_zh.clone())
+                    .unwrap_or_default();
+                (entry.id.clone(), summary)
+            })
+            .take(crate::skill_reco::MAX_CANDIDATES)
+            .collect()
+    }
+
+    /// Ask the agent about `draft`, holding it in the input box.
+    ///
+    /// Returns true when the submission is held (the answer arrives as
+    /// [`UiCmd::SkillRecoSuggested`]); false lets `handle_submit` continue.
+    fn maybe_recommend_skill(&mut self, draft: &str) -> bool {
+        // The held draft is re-submitted through this same path; stand down for
+        // that one pass so the send is not intercepted again.
+        if self.skill_reco_send_through {
+            self.skill_reco_send_through = false;
+            return false;
+        }
+        if !matches!(self.skill_reco, SkillRecoState::Idle) {
+            return false;
+        }
+        if !self.recommendation_gates_pass(draft) {
+            return false;
+        }
+        let candidates = self.skill_reco_candidates();
+        self.skill_reco = SkillRecoState::Pending {
+            draft: draft.to_string(),
+        };
+        self.request_render(false);
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        let query = draft.to_string();
+        tokio::spawn(async move {
+            let suggestion = client.suggest_skill(&query, &candidates).await;
+            let _ = tx.send(UiCmd::SkillRecoSuggested {
+                draft: query,
+                suggestion,
+            });
+        });
+        true
+    }
+
+    /// Send the held draft, unchanged, through the normal submission path.
+    ///
+    /// `handle_submit` is re-entered so the send goes through exactly one code
+    /// path (paste expansion, the size cap, attachment handling); the
+    /// send-through flag keeps the intercept out of the way for that pass.
+    fn send_held_draft(&mut self) {
+        let draft = match &self.skill_reco {
+            SkillRecoState::Pending { draft } | SkillRecoState::Suggested { draft, .. } => {
+                draft.clone()
+            }
+            SkillRecoState::Idle => return,
+        };
+        self.skill_reco = SkillRecoState::Idle;
+        self.skill_reco_send_through = true;
+        self.request_render(false);
+        self.handle_submit(&draft);
+    }
+
+    /// `a` on a shown recommendation: install it, then append `/skill` to the
+    /// draft and send that.
+    fn accept_skill_recommendation(&mut self) {
+        let SkillRecoState::Suggested { draft, skill, .. } = self.skill_reco.clone() else {
+            return;
+        };
+        let Some(cli) = self.skills_cli.clone() else {
+            self.add_system_message(SKILLS_NO_BINARY.to_string());
+            return;
+        };
+        let version = self.install_version_for(&skill);
+        self.add_system_message(skill_op_start_message(&SkillOp::Install {
+            id: skill.clone(),
+            version: version.clone(),
+        }));
+        self.request_render(false);
+        let tx = self.op_tx.clone();
+        let skill_for_task = skill.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = cli.run(&SkillOp::Install {
+                id: skill_for_task.clone(),
+                version,
+            });
+            let _ = tx.send(UiCmd::SkillRecoInstalled {
+                draft,
+                skill: skill_for_task,
+                installed: outcome.ok,
+            });
+        });
+    }
+
+    /// Apply the agent's answer to a held draft.
+    fn apply_skill_reco_suggestion(&mut self, draft: String, suggestion: Option<(String, String)>) {
+        // Only the draft that asked may consume the answer.
+        if !matches!(&self.skill_reco, SkillRecoState::Pending { draft: held } if held == &draft) {
+            return;
+        }
+        let Some((skill, summary)) = suggestion else {
+            // No recommendation: send it. This is the common path, and the
+            // reason the call is best-effort.
+            self.send_held_draft();
+            return;
+        };
+        // Re-read the day: the budget may have moved while the call was in
+        // flight, and a skill shown in the meantime must not be shown twice.
+        let day = crate::skill_reco::load_at(&self.skill_reco_path);
+        if day.exhausted() || day.already_recommended(&skill) {
+            self.send_held_draft();
+            return;
+        }
+        // Showing the card spends the budget: it counts when displayed,
+        // whatever the user then does with it (PRD v1.6 §7).
+        crate::skill_reco::record_at(
+            &self.skill_reco_path,
+            &skill,
+            &crate::skill_reco::message_hash(&draft),
+        );
+        self.skill_reco = SkillRecoState::Suggested {
+            draft,
+            skill,
+            summary,
+        };
+        self.request_render(false);
+    }
+
+    /// Append `/skill` to the held draft and send it, after a successful
+    /// install.
+    fn use_recommended_skill(&mut self, draft: &str, skill: &str) {
+        let separator = if draft.ends_with(' ') || draft.is_empty() {
+            ""
+        } else {
+            " "
+        };
+        let composed = format!("{draft}{separator}/{skill} ");
+        self.skill_reco = SkillRecoState::Idle;
+        self.skill_reco_send_through = true;
+        self.input.set_value(&composed, None);
+        self.handle_submit(&composed);
+    }
+
     fn handle_submit(&mut self, value: &str) {
         // A pending `/provider-key` capture owns the next submission: the text
         // is the API key (a blank submission clears the stored key), never a
@@ -4759,6 +5168,13 @@ impl<T: TerminalIo> App<T> {
         // still refers to *before* the box is emptied (an edit drops the
         // attachments whose markers left the draft), and the pending state goes
         // back with the draft on any guard that puts it back.
+        // Skill recommendation (PRD v1.6 §6.1): hold the draft while the agent
+        // is asked whether a skill fits it. Placed before the draft is consumed
+        // below, because holding it means leaving it in the input box.
+        if self.maybe_recommend_skill(value) {
+            return;
+        }
+
         let pending = self.input.take_pending();
         self.input.set_value("", None);
         self.request_render(false);
@@ -4802,6 +5218,7 @@ impl<T: TerminalIo> App<T> {
                     self.select_theme(arg.trim());
                 }
                 "theme" => self.show_theme_menu(),
+                "skill-recommend" => self.set_skill_recommend(&arg),
                 "providers" => self.show_providers(),
                 "skills" => self.show_skills(),
                 "tools" => {
@@ -6582,6 +6999,44 @@ impl<T: TerminalIo> App<T> {
     }
 
     /// Spawn `upsert_provider` and report the outcome.
+    /// `/skill-recommend [on|off]` — the TUI's own toggle, the counterpart of
+    /// the desktop Settings switch. Bare form reports the current state.
+    fn set_skill_recommend(&mut self, arg: &str) {
+        match arg.trim().to_lowercase().as_str() {
+            "on" | "true" => {
+                self.tui_settings.skill_recommend = Some(true);
+                self.save_tui_settings();
+                self.add_system_message(
+                    "Skill recommendation on: a fitting skill may be offered before a message is sent."
+                        .to_string(),
+                );
+            }
+            "off" | "false" => {
+                self.tui_settings.skill_recommend = Some(false);
+                self.save_tui_settings();
+                // Anything held belongs to the feature being switched off.
+                self.skill_reco = SkillRecoState::Idle;
+                self.add_system_message("Skill recommendation off.".to_string());
+            }
+            "" => {
+                let state = if self.tui_settings.skill_recommend_enabled() {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.add_system_message(format!(
+                    "Skill recommendation is {state}. Use /skill-recommend on|off."
+                ));
+            }
+            other => {
+                self.add_system_message(format!(
+                    "Unknown /skill-recommend argument '{other}' — use on or off."
+                ));
+            }
+        }
+        self.request_render(false);
+    }
+
     fn submit_provider(&mut self, input: ProviderInput) {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
@@ -7314,15 +7769,31 @@ impl<T: TerminalIo> App<T> {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         let sid = session_id.to_string();
+        // Record the request *before* the RPC: from here on an older request
+        // still in flight is superseded, and its result must not be applied.
+        self.latest_session_switch = Some(SessionSwitchRequest {
+            from: self.state.session_id.clone(),
+            target: sid.clone(),
+        });
         tokio::spawn(async move {
-            let result = client.switch_session(&sid).await.map(|_| ());
+            let outcome = client.switch_session(&sid).await;
+            // `switch_session` binds the client to the target unless the agent
+            // declines (`cancelled`); the client is the authority on what a
+            // later prompt will address.
+            let switched = outcome.as_ref().is_ok_and(|v| {
+                !v.get("cancelled").and_then(Value::as_bool).unwrap_or(false)
+                    && client.get_current_session_id() == sid
+            });
+            let result = outcome.map(|_| ());
             let mut state = None;
             let mut messages = Ok(Value::Null);
-            if result.is_ok() {
+            if switched {
                 state = client.get_state().await.ok();
                 messages = client.get_messages().await;
             }
             let _ = tx.send(UiCmd::SessionSwitched {
+                target: sid,
+                switched,
                 result,
                 state,
                 messages,
@@ -7854,6 +8325,14 @@ impl<T: TerminalIo> App<T> {
         self.state.total_cost = s.usage.cost_cny;
         self.state.explicit_session = s.explicit_session;
         self.state.auto_compaction_enabled = s.auto_compaction_enabled;
+        // The name is part of the identity shown in the window title, so it
+        // follows the snapshot: without this a switch would leave the previous
+        // session's name in the title (and a rename made elsewhere would never
+        // show up here).
+        if self.state.session_name != s.session_name {
+            self.state.session_name = s.session_name.clone();
+            self.update_terminal_title();
+        }
         // The agent's own level wins (an unknown/absent value keeps the last
         // known one, which the picker mirrors).
         if let Some(level) = s
@@ -7889,6 +8368,45 @@ impl<T: TerminalIo> App<T> {
         // confusing during transient reconnects.
         if self.state.model.is_empty() || self.state.model == "(no model)" {
             self.state.model = "(not connected)".into();
+        }
+    }
+
+    /// Move the app's session identity to `target`, without a `get_state`
+    /// snapshot to carry it: everything keyed to `state.session_id` (drafts,
+    /// the refresh reply guard, event filtering) must name the session the
+    /// client addresses, and a failed `get_state` must not leave it behind.
+    /// A real change also bumps the compaction revision, exactly as
+    /// [`Self::apply_refresh_state`] does for a session change — a compaction
+    /// fence from the session we left must not keep gating sends here.
+    fn adopt_session_identity(&mut self, target: &str) {
+        if self.state.session_id != target {
+            self.state.compaction_requested = false;
+            self.state.compaction_revision += 1;
+            self.state.session_id = target.to_string();
+        }
+        if self.client.get_current_session_id() != target {
+            self.client.set_current_session_id(target);
+            self.client.connect_events();
+        }
+    }
+
+    /// A superseded switch's RPC may have left the client addressing the older
+    /// target (the last `switch_session` to land wins on the wire). Point it
+    /// back at the switch the app is actually showing, so a prompt cannot be
+    /// sent to a session the user is not looking at. Only once that newer
+    /// switch has been applied: until then its own RPC is what binds the client,
+    /// and pointing it at a target whose switch may still fail would address a
+    /// session the app never showed.
+    fn realign_client_to_latest_switch(&mut self) {
+        let Some(latest) = self.latest_session_switch.as_ref() else {
+            return;
+        };
+        if self.state.session_id != latest.target {
+            return;
+        }
+        if self.client.get_current_session_id() != latest.target {
+            self.client.set_current_session_id(&latest.target);
+            self.client.connect_events();
         }
     }
 
@@ -8503,7 +9021,16 @@ impl<T: TerminalIo> App<T> {
         // before the input renders (same frame, no flicker).
         self.input
             .set_image_support(self.current_model_image_support());
-        let editor_lines = self.input.render(w);
+        let mut editor_lines = self.input.render(w);
+        // The recommendation prompt sits directly above the input box and is
+        // counted as editor height, so the chat viewport shrinks by exactly the
+        // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
+        if let Some(line) = self.skill_reco.prompt_line() {
+            editor_lines.insert(
+                0,
+                crate::theme::fg(self.theme.accent as u8, &fit_overlay_row(&line, w)),
+            );
+        }
         let editor_height = editor_lines.len();
 
         // Set chat viewport based on remaining space.
@@ -8878,6 +9405,18 @@ mod tests {
         fn set_exit_signal_callback(&mut self, _cb: Option<Box<dyn FnMut() + Send + 'static>>) {}
     }
 
+    /// A settings path in its own temp directory, so the app's derived state
+    /// files (the skill-recommendation budget lives beside settings) are private
+    /// to one test. A shared path would couple tests through the daily budget.
+    ///
+    /// The directory is created here because several tests seed the settings
+    /// file by hand before the app loads it.
+    fn test_settings_path() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tui-test-{}", random_id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("settings.json")
+    }
+
     fn make_app(cols: u16, rows: u16) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
         let (op_tx, op_rx) = mpsc::unbounded_channel();
         let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
@@ -8892,7 +9431,7 @@ mod tests {
             Arc::new(client),
             op_tx,
             &CliOptions::default(),
-            std::env::temp_dir().join("tui-test-settings.json"),
+            test_settings_path(),
         );
         (app, op_rx)
     }
@@ -9477,6 +10016,7 @@ mod tests {
             bell_on_complete: None,
             theme_id: None,
             notify: None,
+            skill_recommend: None,
         };
         let json = serde_json::to_string(&settings.to_json()).unwrap();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -9499,6 +10039,7 @@ mod tests {
             bell_on_complete: None,
             theme_id: None,
             notify: None,
+            skill_recommend: None,
         };
         let json = serde_json::to_string_pretty(&settings.to_json()).unwrap();
         let model_pos = json.find("defaultModel").unwrap();
@@ -11113,6 +11654,8 @@ mod tests {
 
         // SessionSwitched err.
         app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: false,
             result: Err("nope".into()),
             state: None,
             messages: Ok(Value::Null),
@@ -11121,6 +11664,8 @@ mod tests {
         assert!(last_system(&app).contains("Failed to switch session"));
         // ok with state+messages.
         app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
             result: Ok(()),
             state: Some(sample_state()),
             messages: Ok(json_parse(
@@ -11278,6 +11823,388 @@ mod tests {
         assert!(app.autocomplete.is_visible());
         app.handle_cmd(UiCmd::AcItems(vec![]));
         assert!(!app.autocomplete.is_visible());
+    }
+
+    /// A switch whose transcript fetch failed must not leave the previous
+    /// session's conversation on screen: the agent-side switch already
+    /// happened, so those messages would read as this session's history while
+    /// a prompt typed into the box goes to the new one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_replaces_the_transcript_even_when_loading_it_fails() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.chat.add_message(ChatMessage::new(
+            "old-1".into(),
+            ChatRole::User,
+            "previous-session-question",
+        ));
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Err("boom".into()),
+            label: "target".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("previous-session-question")),
+            "old transcript survived a failed load: {texts:?}"
+        );
+        // The failure is named instead of silently showing an empty session.
+        let report = last_system(&app);
+        assert!(report.contains("Switched to session: target"), "{report}");
+        assert!(report.contains("could not be loaded"), "{report}");
+    }
+
+    /// `get_state` is a second call and can fail on its own. The session
+    /// identity still has to move with the switch — otherwise the drafts,
+    /// refreshes and event filtering stay keyed to the session just left (and
+    /// its saved draft gets restored into the new session's input box).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_without_state_still_adopts_the_target() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.input.set_value("old draft", None);
+        app.save_session_input();
+        app.state.session_id = "target".into();
+        app.input.set_value("target draft", None);
+        app.save_session_input();
+        app.state.session_id = "old".into();
+        app.input.set_value("", None);
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: None,
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            label: "target".into(),
+        });
+        assert_eq!(app.state.session_id, "target");
+        assert_eq!(app.client.get_current_session_id(), "target");
+        assert_eq!(app.input.get_value(), "target draft");
+    }
+
+    /// The new transcript opens at its tail: keeping the previous session's
+    /// scroll offset would show the middle of the conversation the user just
+    /// switched to (and, with `auto_scroll` off, never follow its output).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_re_anchors_the_chat_view() {
+        let (mut app, _rx) = make_app(100, 12);
+        app.state.session_id = "old".into();
+        for i in 0..80 {
+            app.chat.add_message(ChatMessage::new(
+                format!("old-{i}"),
+                ChatRole::User,
+                &format!("old line {i}"),
+            ));
+        }
+        app.chat.set_viewport_height(8);
+        let _ = app.chat.render(100);
+        app.chat.scroll_up(30);
+        assert!(!app.chat.is_at_bottom());
+
+        let new_messages: Vec<String> = (0..60)
+            .map(|i| format!(r#"{{"id":"n{i}","role":"user","content":"new line {i}"}}"#))
+            .collect();
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(&format!(
+                r#"{{"messages":[{}]}}"#,
+                new_messages.join(",")
+            ))),
+            label: "target".into(),
+        });
+        let _ = app.chat.render(100);
+        assert!(
+            app.chat.is_at_bottom(),
+            "the new session kept the previous scroll offset"
+        );
+    }
+
+    /// Two picks can overlap (the menu stays open until the first result
+    /// lands). The older flow's transcript must not replace the one the user
+    /// actually asked for last, and the client — which the older RPC may have
+    /// re-pointed at its own target — has to follow the winning switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn superseded_session_switch_result_is_dropped() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        // Both picks are in flight; the newest one is "second".
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "second".into(),
+        });
+        // The first flow's RPC landed last and left the client on "first".
+        app.client.set_current_session_id("first");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "first".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
+            )),
+            label: "first".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("first-session-question")),
+            "a superseded switch replaced the transcript: {texts:?}"
+        );
+        assert!(texts.iter().all(|t| !t.contains("Switched to session")));
+        assert_eq!(
+            app.state.session_id, "old",
+            "identity moved on a stale pick"
+        );
+
+        // The winning result then lands and is applied — which is also what
+        // puts the client back on the target the user asked for last.
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "second".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"s1","role":"user","blocks":[{"kind":"text","text":"second-session-question"}]}]}"#,
+            )),
+            label: "second".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("second-session-question")));
+        assert!(texts.iter().all(|t| !t.contains("first-session-question")));
+        assert_eq!(app.state.session_id, "second");
+        assert_eq!(app.client.get_current_session_id(), "second");
+        assert_eq!(
+            app.latest_session_switch
+                .as_ref()
+                .map(|s| s.target.as_str()),
+            Some("second")
+        );
+    }
+
+    /// The mirror ordering: the winner's RPC landed first, so its result is
+    /// applied before the older request's RPC lands and re-points the client.
+    /// The late result must neither replace the transcript nor leave the client
+    /// on a session the app is not showing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_older_switch_result_cannot_take_over() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "second".into();
+        app.client.set_current_session_id("second");
+        app.chat.add_message(ChatMessage::new(
+            "s1".into(),
+            ChatRole::User,
+            "second-session-question",
+        ));
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "second".into(),
+        });
+        // The older request's RPC landed last.
+        app.client.set_current_session_id("first");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "first".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
+            )),
+            label: "first".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("second-session-question")));
+        assert!(!texts.iter().any(|t| t.contains("first-session-question")));
+        assert_eq!(app.state.session_id, "second");
+        assert_eq!(
+            app.client.get_current_session_id(),
+            "second",
+            "the late result left the client on the wrong session"
+        );
+    }
+
+    /// A declined switch (`cancelled`) changes nothing on the wire: the
+    /// transcript on screen is still the current session's and must stay.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declined_session_switch_keeps_the_transcript() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.chat.add_message(ChatMessage::new(
+            "old-1".into(),
+            ChatRole::User,
+            "current-session-question",
+        ));
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: false,
+            result: Ok(()),
+            state: None,
+            messages: Ok(Value::Null),
+            label: "target".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("current-session-question")));
+        assert!(last_system(&app).contains("Session switch declined: target"));
+        assert_eq!(app.state.session_id, "old");
+    }
+
+    /// A frame already in flight from the session we just left must not touch
+    /// the new transcript: its `text_chunk` would append to the last assistant
+    /// bubble of this one, and `agent_end` would overwrite it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn events_from_the_previous_session_are_ignored_after_a_switch() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "target".into();
+        app.client.set_current_session_id("target");
+        app.chat.add_message(ChatMessage::new(
+            "a1".into(),
+            ChatRole::Assistant,
+            "new session answer",
+        ));
+
+        let mut stale = make_event("text_chunk", r#"{"text":" old session text"}"#);
+        stale.session_id = Some("previous".into());
+        app.handle_agent_event(&stale);
+        assert!(!app
+            .chat
+            .plain_messages()
+            .iter()
+            .any(|(_, c)| c.contains("old session text")));
+
+        // `agent_end` carries the whole reply and would replace the bubble.
+        let mut stale_end = make_event(
+            "agent_end",
+            r#"{"text":"old session reply","state":"completed"}"#,
+        );
+        stale_end.session_id = Some("previous".into());
+        app.handle_agent_event(&stale_end);
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("new session answer")));
+        assert!(!texts.iter().any(|t| t.contains("old session reply")));
+
+        // The current session's own events still land.
+        let mut own = make_event("text_chunk", r#"{"text":" more"}"#);
+        own.session_id = Some("target".into());
+        app.handle_agent_event(&own);
+        assert!(app
+            .chat
+            .plain_messages()
+            .iter()
+            .any(|(_, c)| c.contains("new session answer more")));
+    }
+
+    /// `/new` (or a fork) while a pick is in flight: the user is in a fresh
+    /// session now, so the late transcript must not drag the app back to the
+    /// session they left — the client would follow it and the next prompt
+    /// would land there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switch_result_is_dropped_when_another_session_took_over() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "picked".into(),
+        });
+        // `/new` completed first: identity and client moved to the new session.
+        let mut new_state = sample_state();
+        new_state.session_id = "fresh".into();
+        app.handle_cmd(UiCmd::NewSessionDone {
+            result: Ok(json_parse(r#"{"sessionId":"fresh"}"#)),
+            state: Some(new_state),
+        });
+        assert_eq!(app.state.session_id, "fresh");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "picked".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"p1","role":"user","blocks":[{"kind":"text","text":"picked-session-question"}]}]}"#,
+            )),
+            label: "picked".into(),
+        });
+        assert_eq!(
+            app.state.session_id, "fresh",
+            "a late pick hijacked the new session"
+        );
+        assert_eq!(
+            app.client.get_current_session_id(),
+            "fresh",
+            "the client was dragged back to the abandoned pick"
+        );
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(!texts.iter().any(|t| t.contains("picked-session-question")));
+    }
+
+    /// The window title names the session: switching must not leave the
+    /// previous session's name there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_replaces_the_name_in_the_window_title() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.state.session_name = Some("previous name".into());
+        app.state.cwd = "/tmp/project".into();
+        app.state.model = "openai/gpt-4o".into();
+
+        let mut state = sample_state();
+        state.session_name = Some("target name".into());
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(state),
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            label: "target".into(),
+        });
+        assert_eq!(app.state.session_name.as_deref(), Some("target name"));
+        let writes = terminal_writes(&app);
+        assert!(writes.contains("target name"), "{writes:?}");
+        assert!(!writes.contains("previous name"), "{writes:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -12292,7 +13219,7 @@ mod tests {
             Arc::new(client),
             op_tx,
             cli_options,
-            std::env::temp_dir().join(format!("tui-test-settings-{}.json", random_id())),
+            test_settings_path(),
         );
         (app, op_rx)
     }
@@ -14377,6 +15304,292 @@ mod tests {
         crate::skills_cli::parse_catalogue(SKILLS_CATALOGUE_JSON).expect("the fixture parses")
     }
 
+    // ─── Skill recommendation (PRD "技能推荐") ───────────────────────────────
+
+    /// A draft long enough to pass the minimum-length gate (well over 30 bytes).
+    const RECO_DRAFT: &str = "帮我查一下这个基因在人群里的频率并找出引用来源";
+
+    /// An app with a catalogue but a dead client, so the *gates* can be tested
+    /// without a network. `make_app_at` derives a per-test budget path, so these
+    /// tests cannot spend each other's daily budget.
+    fn reco_app() -> App<FakeTerminal> {
+        let (mut app, _rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        // `App::new` derives the budget from the settings file's *directory*,
+        // which every test shares (they all sit in the temp dir). Give each test
+        // its own file so one test's spent budget cannot leak into another's.
+        app.skill_reco_path =
+            std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
+        app
+    }
+
+    #[tokio::test]
+    async fn recommendation_gates_reject_everything_but_a_real_message() {
+        // The happy path: toggle on (default), a long message, a catalogue, no
+        // skill picked, budget unspent.
+        let app = reco_app();
+        assert!(app.recommendation_gates_pass(RECO_DRAFT));
+
+        // The toggle is the user's opt-out.
+        let mut off = reco_app();
+        off.tui_settings.skill_recommend = Some(false);
+        assert!(!off.recommendation_gates_pass(RECO_DRAFT));
+
+        // Slash commands are local actions, not messages.
+        assert!(!app.recommendation_gates_pass("/skills"));
+
+        // The length window, in UTF-8 bytes: 9 汉字 is 27 bytes (too short),
+        // 10 is exactly 30 (allowed).
+        let short = reco_app();
+        assert_eq!("单细胞测序如何分析".len(), 27, "9 汉字 is 27 bytes");
+        assert!(!short.recommendation_gates_pass("单细胞测序如何分析"));
+        assert_eq!("单细胞测序如何分析流".len(), 30, "10 汉字 is 30 bytes");
+        assert!(short.recommendation_gates_pass("单细胞测序如何分析流"));
+
+        // Over-long drafts are sent unrecommended rather than truncated.
+        let long = "字".repeat(crate::skill_reco::MAX_QUERY_CHARS + 1);
+        assert!(!app.recommendation_gates_pass(&long));
+
+        // The user already picked a skill for this message.
+        assert!(!app.recommendation_gates_pass("帮我查一下 /alpha 这个基因"));
+
+        // Nothing to recommend from: the catalogue has not been fetched.
+        let mut empty = reco_app();
+        empty.skills_catalogue = None;
+        assert!(!empty.recommendation_gates_pass(RECO_DRAFT));
+
+        // Every catalogue entry is installed, so the candidate set is empty.
+        let mut all_installed = reco_app();
+        all_installed.state.skills = vec!["alpha".to_string(), "beta".to_string()];
+        assert!(!all_installed.recommendation_gates_pass(RECO_DRAFT));
+    }
+
+    #[tokio::test]
+    async fn installed_skills_are_excluded_from_the_candidates() {
+        let mut app = reco_app();
+        let all = app.skill_reco_candidates();
+        assert_eq!(
+            all.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "an empty installed set offers the whole catalogue"
+        );
+        // `summary` carries the entry's description, which is what the agent
+        // shows the model.
+        assert_eq!(all[0].1, "does alpha things");
+
+        app.state.skills = vec!["alpha".to_string()];
+        let remaining = app.skill_reco_candidates();
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"],
+            "an installed skill is never offered"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_budget_stops_the_question_and_the_message_still_sends() {
+        let app = reco_app();
+        // Three recommendations already shown today.
+        for skill in ["alpha", "beta", "gamma"] {
+            crate::skill_reco::record_at(&app.skill_reco_path, skill, "some-other-message");
+        }
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+
+        // And a message already asked about is not asked about twice, even with
+        // budget left.
+        let app = reco_app();
+        let hash = crate::skill_reco::message_hash(RECO_DRAFT);
+        crate::skill_reco::record_at(&app.skill_reco_path, "alpha", &hash);
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+        assert!(
+            app.recommendation_gates_pass("a completely different question about something else"),
+            "only the message that was already asked about is skipped"
+        );
+    }
+
+    #[test]
+    fn the_prompt_line_names_the_skill_and_both_keys() {
+        assert_eq!(SkillRecoState::Idle.prompt_line(), None);
+        assert!(SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string()
+        }
+        .prompt_line()
+        .unwrap()
+        .contains("Looking"));
+
+        let line = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        }
+        .prompt_line()
+        .unwrap();
+        assert!(
+            line.contains("/alpha"),
+            "the command must be visible: {line}"
+        );
+        assert!(line.contains("does alpha things"));
+        assert!(
+            line.contains("[a]"),
+            "the accept key must be offered: {line}"
+        );
+        assert!(
+            line.contains("Esc"),
+            "the dismiss key must be offered: {line}"
+        );
+    }
+
+    /// The agent declining is the common case and must send the draft, not hold
+    /// it. A dead client answers nothing, which exercises the same path.
+    #[tokio::test]
+    async fn a_declined_recommendation_sends_the_held_draft() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.apply_skill_reco_suggestion(RECO_DRAFT.to_string(), None);
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the hold must be released so the draft can go out"
+        );
+    }
+
+    /// A recommendation spends the budget when it is *shown*, so the card is
+    /// recorded before the user does anything with it.
+    #[tokio::test]
+    async fn showing_a_recommendation_spends_the_budget_once() {
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.apply_skill_reco_suggestion(
+            RECO_DRAFT.to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert!(matches!(
+            app.skill_reco,
+            SkillRecoState::Suggested { ref skill, .. } if skill == "alpha"
+        ));
+        let day = crate::skill_reco::load_at(&app.skill_reco_path);
+        assert_eq!(day.count(), 1);
+        assert!(day.already_recommended("alpha"));
+        assert!(day.already_evaluated(&crate::skill_reco::message_hash(RECO_DRAFT)));
+
+        // The same skill twice in a day is skipped rather than re-shown (and
+        // never swapped for a different skill).
+        let mut again = reco_app();
+        crate::skill_reco::record_at(&again.skill_reco_path, "alpha", "unrelated");
+        again.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        again.apply_skill_reco_suggestion(
+            RECO_DRAFT.to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert_eq!(again.skill_reco, SkillRecoState::Idle);
+        assert_eq!(
+            crate::skill_reco::load_at(&again.skill_reco_path).count(),
+            1,
+            "a skipped duplicate must not spend a second slot"
+        );
+    }
+
+    /// An answer for a draft that is no longer held must not resurrect a card:
+    /// the user may have sent it, or typed something else, while the call was in
+    /// flight.
+    #[tokio::test]
+    async fn a_late_answer_for_a_stale_draft_is_ignored() {
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: "the draft that asked".to_string(),
+        };
+        app.apply_skill_reco_suggestion(
+            "a different draft".to_string(),
+            Some(("alpha".to_string(), "does alpha things".to_string())),
+        );
+        assert!(matches!(app.skill_reco, SkillRecoState::Pending { .. }));
+        assert_eq!(crate::skill_reco::load_at(&app.skill_reco_path).count(), 0);
+    }
+
+    /// Escape on a card sends the original draft, never the skill.
+    #[tokio::test]
+    async fn dismissing_sends_the_draft_without_the_skill() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        };
+        app.send_held_draft();
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app.chat.last_message().expect("the draft was sent");
+        assert_eq!(last.content, RECO_DRAFT);
+        assert!(
+            !last.content.contains("/alpha"),
+            "dismissing must not add the skill: {}",
+            last.content
+        );
+    }
+
+    /// Accepting appends the slash command (after a single separating space) and
+    /// sends that.
+    #[tokio::test]
+    async fn accepting_appends_the_slash_command_and_sends() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.use_recommended_skill(RECO_DRAFT, "alpha");
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app
+            .chat
+            .last_message()
+            .expect("the composed draft was sent");
+        assert_eq!(last.content, format!("{RECO_DRAFT} /alpha "));
+    }
+
+    #[tokio::test]
+    async fn the_slash_command_toggles_and_persists() {
+        let mut app = reco_app();
+        assert!(
+            app.tui_settings.skill_recommend_enabled(),
+            "recommendation is on by default (PRD v1.6 §3)"
+        );
+        app.set_skill_recommend("off");
+        assert!(!app.tui_settings.skill_recommend_enabled());
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+
+        // Persisted: a settings round-trip keeps the opt-out.
+        let json = app.tui_settings.to_json();
+        assert_eq!(
+            json.get("skillRecommend").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(!TuiSettings::from_json(&json).skill_recommend_enabled());
+
+        app.set_skill_recommend("on");
+        assert!(app.tui_settings.skill_recommend_enabled());
+        // A bare form reports rather than changes.
+        app.set_skill_recommend("");
+        assert!(app.tui_settings.skill_recommend_enabled());
+    }
+
+    /// `draft_picks_skill` decides whether the user already chose a skill. A
+    /// bare `/` (or a lone slash-word) must not be mistaken for one.
+    #[test]
+    fn picks_skill_detects_a_slash_token_anywhere_in_the_draft() {
+        assert!(draft_picks_skill("/alpha"));
+        assert!(draft_picks_skill("帮我查一下 /alpha"));
+        assert!(draft_picks_skill("leading text /alpha trailing"));
+        assert!(!draft_picks_skill("帮我查一下这个基因"));
+        assert!(!draft_picks_skill("/"), "a bare slash is not a skill");
+        assert!(!draft_picks_skill("a / b"));
+    }
+
     /// A test app talking to a live mock agent, plus that agent's request log —
     /// the shape the skill-operation tests need (a *dead* client's failing
     /// `get_commands` would race the panel's status row assertions).
@@ -15846,7 +17059,7 @@ mod tests {
             .append_tool_delta("t1", "one\ntwo\nthree\nfour\nfive\nsix\n");
         app.chat.finish_tool("t1", None);
         let collapsed = app.chat.render_all(100).len();
-        assert_eq!(collapsed, 1 + 4 + 1 + 1, "row + 4 lines + marker + blank");
+        assert_eq!(collapsed, 1 + 1, "row + blank");
         app.handle_key_action(KeyAction::ToggleToolOutput);
         assert!(app.chat.tool_output_expanded());
         let expanded = app.chat.render_all(100).len();
@@ -17414,6 +18627,8 @@ mod tests {
               {"id":"m2","role":"tool","blocks":[{"kind":"tool_result","toolCallId":"c1","text":"tool out","isError":false}]}
             ]}"#,
         )));
+        // The body is only in the transcript once it is asked for (`ctrl+g`).
+        app.chat.set_tool_output_expanded(true);
         let text = crate::utils::strip_ansi_codes(&app.chat.render_all(100).join("\n"));
         assert!(text.contains("tool out"), "{text}");
         assert!(

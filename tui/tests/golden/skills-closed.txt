@@ -10,13 +10,8 @@
 
 
 [48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
-[49m  [1m[38;5;245m     --- a/src/greeting.rs[0m
-  [1m[38;5;245m     +++ b/src/greeting.rs[0m
-  [38;5;39m     @@ -1,4 +1,5 @@[39m
-  [38;5;252m   1  pub fn greeting() -> &'static str {[39m
-[38;5;245m  … 4 more lines · ctrl+g to expand[39m
 
- Hello from the mock agent!
+[49m Hello from the mock agent!
 
  This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
 
@@ -32,5 +27,10 @@
  [38;5;245mAuto compaction: off[39m
  [38;5;245mStreaming: no[39m
  [38;5;245mContext: 48000 / 128000 (37.5%)[39m
+ [38;5;245m  file: /mock/session.jsonl[39m
+ [38;5;245m  messages: 139[39m
+ [38;5;245m  user/assistant: 42/40[39m
+ [38;5;245m  tool calls/results: 57/57[39m
+ [38;5;245m  tokens in/out: 812000/12000[39m
 > [7m [0m
 [38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m

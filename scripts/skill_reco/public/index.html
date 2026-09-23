@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>技能推荐 · TypeSafe Jev</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <span class="dot" id="backend-dot"></span>
+        <h1>技能推荐</h1>
+        <span class="sub">输入问题的过程中，实时推荐 3 个技能 · <code>POST /v1/systemone</code></span>
+      </div>
+      <div class="status" id="status">加载中…</div>
+    </header>
+
+    <div class="banner" id="banner" hidden></div>
+
+    <main>
+      <section class="panel input-panel">
+        <label for="query">用户问题</label>
+        <textarea id="query" rows="5" spellcheck="false" placeholder="例如：把这份季度报告做成一版路演用的 PPT，要能直接导出 PDF"></textarea>
+        <div class="examples" id="examples"></div>
+
+        <div class="controls">
+          <button id="verify-now" class="ghost">立即推荐 (⌘↵)</button>
+        </div>
+
+        <div class="meta" id="meta">—</div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="verdict" id="verdict">
+          <span class="verdict-icon">💤</span>
+          <div>
+            <div class="verdict-title">等待输入…</div>
+            <div class="verdict-sub" id="verdict-sub">至少输入 6 个字符开始推荐</div>
+          </div>
+        </div>
+
+        <div class="cards" id="cards"></div>
+
+        <div class="gate" id="gate"></div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="candidates">候选</button>
+          <button class="tab" data-tab="all">全部排名</button>
+          <button class="tab" data-tab="debug">调用详情</button>
+        </div>
+        <div class="tab-body" id="tab-candidates">
+          <div class="hint">复核阶段把三个候选的完整描述和 SKILL.md 开头重新读一遍（同一个请求里问 3 道 noul），由 fit 阈值决定推荐还是全拒。</div>
+        </div>
+        <div class="tab-body" id="tab-all" hidden>
+          <div class="hint">stage 1 的一次 Choice 就给出了全部技能的概率分布。</div>
+          <div id="all-list" class="all-list"></div>
+        </div>
+        <div class="tab-body" id="tab-debug" hidden>
+          <pre id="debug-pre">—</pre>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

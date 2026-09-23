@@ -16,7 +16,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 /**
  * Wires a recommendation prop whose `onEvaluate` resolves to `card`.
  *
- * `skillRecommendation` is present on every new-conversation composer, so the
+ * `skillRecommendation` is present on every composer that can recommend, so the
  * no-card path is the common case and must still send.
  */
 function recommendationProps(
@@ -25,7 +25,6 @@ function recommendationProps(
 ): SkillRecommendationProp {
   return {
     card,
-    pending: false,
     onEvaluate: evaluate,
     onInstall: vi.fn(async () => true),
     onDismiss: vi.fn(),
@@ -106,7 +105,7 @@ it("holds the draft and shows the card when a skill is recommended", async () =>
     await submit(host);
     // Nothing is sent while the card is up, and the draft survives.
     expect(onSend).not.toHaveBeenCalled();
-    expect(host.textContent).toContain("/future-web");
+    expect(host.textContent).toContain("future-web");
     expect(host.querySelector<HTMLElement>("[role=textbox]")!.textContent).toContain("search the web");
   }
   finally {
@@ -134,7 +133,7 @@ it("does not ask the recommender twice for the same draft", async () => {
   }
 });
 
-it("installs, appends the slash command and sends on install", async () => {
+it("installs, appends the slash command and sends on 安装并使用", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const onSend = vi.fn();
