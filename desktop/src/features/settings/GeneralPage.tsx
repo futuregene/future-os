@@ -13,8 +13,6 @@ export function GeneralPage({
   onChangeApprovalTier,
   autoUpgradeSkills,
   onToggleAutoUpgradeSkills,
-  skillRecommend,
-  onToggleSkillRecommend,
   bellOnComplete,
   onToggleBellOnComplete,
   autoTitleFirstTurn,
@@ -24,8 +22,6 @@ export function GeneralPage({
   onChangeApprovalTier: (value: ApprovalTier) => void;
   autoUpgradeSkills: boolean;
   onToggleAutoUpgradeSkills: (value: boolean) => void;
-  skillRecommend: boolean;
-  onToggleSkillRecommend: (value: boolean) => void;
   bellOnComplete: boolean;
   onToggleBellOnComplete: (value: boolean) => void;
   autoTitleFirstTurn: boolean;
@@ -96,12 +92,6 @@ export function GeneralPage({
           description={t("autoUpgradeSkills.description")}
         >
           <Switch checked={autoUpgradeSkills} label={t("autoUpgradeSkills.title")} onChange={onToggleAutoUpgradeSkills} />
-        </SettingsRow>
-        <SettingsRow
-          title={t("skillRecommend.title")}
-          description={t("skillRecommend.description")}
-        >
-          <Switch checked={skillRecommend} label={t("skillRecommend.title")} onChange={onToggleSkillRecommend} />
         </SettingsRow>
         <SettingsRow
           title={t("autoTitleFirstTurn.title")}

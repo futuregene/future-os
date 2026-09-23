@@ -41,6 +41,10 @@ pub struct AppSettings {
     pub community_edition: bool,
     /// Recommend at most one uninstalled skill on the first message of a new
     /// conversation (via the agent's Jev recommender). Off by default.
+    ///
+    /// Not surfaced in Settings yet — the General-page toggle was pulled while
+    /// the feature is evaluated. The stored value is still honoured when set
+    /// (e.g. directly in the settings DB); no UI writes it.
     pub skill_recommend: bool,
 }
 
