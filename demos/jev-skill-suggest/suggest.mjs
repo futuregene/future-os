@@ -94,6 +94,18 @@ export const NONE_OF_THESE = "none_of_these";
 export const NONE_GATE_THRESHOLD = Number(process.env.NONE_GATE_THRESHOLD ?? 0.15);
 
 /**
+ * The Choice question, byte-identical to the agent's `build_request`
+ * (`agent/src/skill_reco/mod.rs`). Keep the two in step: this demo stands in for
+ * what ships, so a wording change on one side alone makes the demo lie. The last
+ * sentence is load-bearing — removing it collapsed refusal from 97% to 86% in the
+ * evaluation (bench/REPORT.md).
+ */
+export const INSTRUCTIONS =
+  "The request in `request` needs a skill from `criteria`. Which one, or does none of them help? " +
+  "Pick the closest match if any is plausible, otherwise choose none_of_these. " +
+  "Choosing it is a normal answer here, not a fallback.";
+
+/**
  * Bump this whenever the stage-1 request shape changes (the chunk questions, the none option, the
  * chunk size). `bench/predict-jev.mjs` stores both revisions with every answer and refuses to
  * resume from a cache produced by different ones.
@@ -211,13 +223,8 @@ export class Suggester {
       criteria[NONE_OF_THESE] = "No skill in this list would help with the request";
       questions[`chunk_${index}`] = {
         type: "choice",
-        instructions: {
-          question:
-            "The request in \`request\` needs a skill from \`criteria\`. Which one, or does none of them help?",
-          how_to_judge:
-            `Pick the closest match if any is plausible, otherwise choose "${NONE_OF_THESE}". ` +
-            "Choosing it is a normal answer here, not a fallback.",
-        },
+        // A string, like the agent sends — not `{question, how_to_judge}`.
+        instructions: INSTRUCTIONS,
         criteria,
       };
     });
@@ -305,12 +312,13 @@ export class Suggester {
       questions: {
         best_of_all: {
           type: "choice",
-          instructions: {
-            question: "Of \`criteria\`, which single skill would help most with the request in \`request\`?",
-            how_to_judge:
-              `Choose "${NONE_OF_THESE}" if none of them really does what the request needs. Rank by how ` +
-              "well each skill's own description covers the request.",
-          },
+          // The agent has no equivalent of this step: it clamps at 254 candidates
+          // and never merges chunks. Same shape as `INSTRUCTIONS` so the two
+          // readings of `instructions` stay one convention.
+          instructions:
+            "Of `criteria`, which single skill would help most with the request in `request`? " +
+            `Choose "${NONE_OF_THESE}" if none of them really does what the request needs. ` +
+            "Rank by how well each skill's own description covers the request.",
           criteria,
         },
       },

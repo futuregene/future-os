@@ -184,7 +184,7 @@ demos/jev-skill-suggest/
 ├── roster.mjs        从 skills/builtin + skills/third-party 读 SKILL.md，拼出技能目录
 ├── suggest.mjs       一次 Choice + 一个门控阈值（Jev 与本地回退共用同一套判定）
 │                     模块里只有服务路径：被移除的那次调用已移到 bench/second-call.mjs
-├── jev.mjs           TypeSafe System One HTTP 客户端（Bearer + 429/529 退避重试）
+├── jev.mjs           System One HTTP 客户端（凭据取自 Future 账号；429/529 退避重试）
 ├── localRank.mjs     key 不可用时的 BM25 字面回退（明确标注，不是 Jev）
 ├── probe.mjs         命令行：验证 key + 跑一遍完整流程
 ├── public/           前端页面（无构建、无依赖）
@@ -196,3 +196,41 @@ demos/jev-skill-suggest/
 
 `bench/` 里每一步都按题目 id 缓存，重跑只补缺失的题；缓存带配置指纹，改了阈值或请求形状
 会自动重跑，不会把旧答案当新结果。
+
+## 与生产代码的关系
+
+产品的推荐功能在 agent 里用 Rust 实现（`agent/src/skill_reco/mod.rs`），三端（桌面 / TUI / 移动）
+都调它。这个 demo 是**另一份实现**（JS），所以必须说清两边各自负责什么。
+
+**实验脚本必须留在 JS —— 这是设计，不是偷懒。** `bench/` 里那 37 个脚本存在的意义，就是**去改
+生产特意固定下来的东西**：提示词措辞（宽松 vs 严格）、载荷形态（描述 220 vs 256、带不带中文）、
+分块大小、门控阈值、选项集合。如果它们跑生产代码，就一个旋钮都没有——那么现在的这些常量
+（0.15 / 254 / 220）**根本推导不出来**。它们是造出生产的工厂，不是产品本身。
+
+**服务路径（`suggest.mjs` + `jev.mjs`）与生产对齐，并有一个守卫盯着。** 两边今天一致：
+
+| 项 | demo | 生产 | |
+|---|---|---|---|
+| 端点 | `{账号 base_url}/v1/systemone` | 同 | 一致 |
+| 凭据 | `auth.json` 的 `future` 项 | 同 | 一致 |
+| 模型 | `jev` | 同 | 一致 |
+| 门控阈值 | 0.15 | 0.15 | 一致 |
+| 候选上限 / 描述长度 | 254 / 220 | 254 / 220 | 一致 |
+| none 选项文案 | 逐字相同 | 逐字相同 | 一致 |
+| `instructions` | 逐字相同的字符串 | 同 | 一致 |
+
+最后一项曾经**不一致**：demo 发的是对象 `{question, how_to_judge}`，生产发的是单个字符串。网关两种
+都接受，所以不会报错——但也意味着 demo 不是生产的忠实替身，两边可以静默漂移。现在 demo 用
+`suggest.mjs` 导出的 `INSTRUCTIONS`，与生产的字面量逐字相同，并由一个跨语言守卫盯着：
+
+```bash
+# 断言 demo 的 instructions 与 agent 源码里的字面量完全相同
+AGENT_SKILL_RECO=/path/to/agent/src/skill_reco/mod.rs node bench/check-instructions.mjs
+# 漂移时退出码 1，并报出第一个不同的字符位置
+```
+
+**关于"能不能直接用生产代码"**：服务路径可以，但代价是 demo 会失去它最有用的部分——
+`suggest_skill` 只返回**最终那一个技能**，不返回 top-3、概率和门控值（那些只在 agent 日志里）。
+demo 的界面正是靠这些数字说明"为什么推荐它"。所以要把 demo 换成直接调 agent，就得同时给 RPC 加上
+这些诊断字段（附加字段、不破坏兼容），否则界面只剩一行结论。**当前取舍：保留 JS 服务路径（能看排序
+与门控），并用上面的守卫保证请求与生产逐字一致。**
