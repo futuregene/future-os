@@ -33,7 +33,7 @@ checksum_apple_module_build_inputs() {
     done
 }
 
-RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-26-5"
+RUNTIME="com.apple.CoreSimulator.SimRuntime.iOS-27-0"
 DEVICE_TYPE="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 DEVICE_NAME="iPhone 17 Pro"
 BUNDLE_ID="cn.futureos.mobile"
@@ -109,6 +109,17 @@ if ! command -v xcrun >/dev/null 2>&1 || ! xcode-select -p >/dev/null 2>&1; then
   exit 1
 fi
 
+XCODE_DEVELOPER_DIR="$(xcode-select -p)"
+SIMULATOR_APP="$XCODE_DEVELOPER_DIR/Applications/Simulator.app"
+# Xcode 27 replaces the standalone Simulator app with Device Hub.
+DEVICE_HUB_APP="$(dirname "$XCODE_DEVELOPER_DIR")/Applications/DeviceHub.app"
+if [[ ! -d "$SIMULATOR_APP" && ! -d "$DEVICE_HUB_APP" ]]; then
+  echo "Neither Simulator.app nor DeviceHub.app was found in the active Xcode:"
+  echo "  $SIMULATOR_APP"
+  echo "  $DEVICE_HUB_APP"
+  exit 1
+fi
+
 if ! xcrun simctl list runtimes | grep -q "$RUNTIME"; then
   echo "iOS simulator runtime $RUNTIME is not installed."
   echo "Install it with:  xcodebuild -downloadPlatform iOS"
@@ -137,6 +148,16 @@ sim_ready() {
   xcrun simctl bootstatus "${DEVICE_NAME}" -b >/dev/null 2>&1
 }
 
+open_simulator_ui() {
+  if [[ -d "$SIMULATOR_APP" ]]; then
+    open "$SIMULATOR_APP"
+  else
+    # Device Hub accepts this URL to present the selected simulator's live,
+    # interactive device screen.
+    open -a "$DEVICE_HUB_APP" "devices://manage/select?id=$DEVICE_UDID"
+  fi
+}
+
 DEVICE_UDID="$(xcrun simctl list devices | grep -E "^ *${DEVICE_NAME} \(" | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
 if [[ -z "$DEVICE_UDID" ]]; then
   echo "Creating simulator $DEVICE_NAME..."
@@ -155,7 +176,6 @@ else
     else
       echo "Booting simulator $DEVICE_NAME..."
       xcrun simctl boot "$DEVICE_UDID" 2>/dev/null || true
-      open -a Simulator
     fi
   fi
 
@@ -176,6 +196,10 @@ else
     exit 1
   fi
 fi
+
+# Device Hub replaces Simulator.app in Xcode 27. Open it even when the device
+# was already booted by an earlier failed or interrupted launch.
+open_simulator_ui
 
 # `xcodebuild` stores a SQLite database in the persistent DerivedData cache.
 # Serializing native work prevents a second terminal from failing with
