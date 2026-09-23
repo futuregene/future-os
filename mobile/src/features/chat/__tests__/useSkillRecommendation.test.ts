@@ -34,8 +34,8 @@ function remote(overrides: Record<string, unknown> = {}) {
   return {
     suggestSkill: jest.fn(async () => null),
     listAvailableSkills: jest.fn(async () => [
-      { id: "future-web", description: "search the web", latestVersion: "1.0" },
-      { id: "future-paper", description: "find papers", latestVersion: "2.0" },
+      { id: "future-web", description: "search the web", descriptionZh: "搜索公开网页", latestVersion: "1.0" },
+      { id: "future-paper", description: "find papers", descriptionZh: "检索文献", latestVersion: "2.0" },
     ]),
     listInstalledSkills: jest.fn(async () => [{ id: "future-paper" }]),
     installSkill: jest.fn(async () => undefined),
@@ -43,9 +43,9 @@ function remote(overrides: Record<string, unknown> = {}) {
   } as unknown as ReturnType<typeof useRemote>;
 }
 
-function mount(api: { current: SkillRecommendationApi | null }, enabled = true, online = true) {
+function mount(api: { current: SkillRecommendationApi | null }, enabled = true, online = true, language = "en") {
   function Harness() {
-    api.current = useSkillRecommendation(enabled, online);
+    api.current = useSkillRecommendation(enabled, online, language);
     const [, force] = useState(0);
     (api as { rerender?: () => void }).rerender = () => force(value => value + 1);
     return null;
@@ -139,6 +139,39 @@ describe("showing a recommendation", () => {
       const stored = JSON.parse(store.get(STORAGE_KEY) as string);
       expect(stored.skills).toEqual(["future-web"]);
       expect(stored.messages).toEqual([messageHash(DRAFT)]);
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
+
+  it("shows the catalogue's Chinese description in a Chinese UI", async () => {
+    remoteMock.mockReturnValue(
+      remote({ suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search the web" })) }),
+    );
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api, true, true, "zh");
+    try {
+      expect(await evaluate(api, DRAFT)).toBe(true);
+      expect(api.current!.suggestion?.skill.description).toBe("搜索公开网页");
+      // The desktop is still asked in English: the routing payload is the one
+      // the evaluation was tuned on, whatever the UI language is.
+      expect(remoteMock()!.suggestSkill).toHaveBeenCalledWith(DRAFT, [
+        { name: "future-web", description: "search the web" },
+      ]);
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
+
+  it("keeps the English description in an English UI", async () => {
+    remoteMock.mockReturnValue(
+      remote({ suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search the web" })) }),
+    );
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      expect(await evaluate(api, DRAFT)).toBe(true);
+      expect(api.current!.suggestion?.skill.description).toBe("search the web");
     } finally {
       act(() => tree.unmount());
     }
