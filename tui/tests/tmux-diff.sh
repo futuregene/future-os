@@ -557,7 +557,13 @@ send_lit "hello"
 step typed
 
 tmux send-keys -t "$RUST_PANE" Enter
-step_when reply "ctrl+g to expand"
+# The sentinel is the reply's own last paragraph: the tool body no longer
+# carries an expand hint to wait for (see the assertion below).
+step_when reply "deterministic reply"
+# A call is one row while collapsed — the call itself, with the diff's `+N -M`
+# badge on it. No preview and no hint: the body is what ctrl+g is for. Only a
+# *failed* call keeps its body, so the reason is readable without a key.
+expect_pane_lacks reply "ctrl+g to expand" "a collapsed tool call shows no output body"
 
 # ctrl+g expands the tool-result body (the unified diff, with its line-number
 # gutter), and collapses it again so the screens below are recorded against

@@ -1,8 +1,8 @@
-  [38;5;25m     @@ -1,4 +1,5 @@[39m
-  [38;5;252m   1  pub fn greeting() -> &'static str {[39m
-[38;5;245m  … 4 more lines · ctrl+g to expand[39m
 
- Hello from the mock agent!
+
+[48;5;194m [1m[38;5;30medit[0m[48;5;194m [38;5;25msrc/greeting.rs[39m [38;5;28m+2[39m [38;5;160m-1[39m
+
+[49m Hello from the mock agent!
 
  This is a [1mdeterministic[0m reply with [38;5;30mcode[39m and a [4m[38;5;25m]8;;https://example.com\link[0m]8;;\.
 

@@ -19,7 +19,8 @@ use crate::utils::{
     TruncateOptions,
 };
 
-/// Tool-output body rows shown while collapsed (`ctrl+g` expands).
+/// Body rows a *failed* call shows while collapsed — the only body a collapsed
+/// entry renders at all; `ctrl+g` expands every body to the hard cap below.
 const COLLAPSED_TOOL_OUTPUT_ROWS: usize = 4;
 /// Hard cap for an expanded tool-output body — a `cat` of a huge file must not
 /// make the diff renderer walk megabytes on every frame.
@@ -408,7 +409,8 @@ pub struct ChatArea {
     md: MarkdownRenderer,
     md_thinking: MarkdownRenderer,
     theme: Theme,
-    /// `ctrl+g`: show full tool-output bodies instead of the collapsed preview.
+    /// `ctrl+g`: render each tool call's body beneath its row. Collapsed, a call
+    /// is one row (a failure keeps its body — see `render_tool_message`).
     tool_output_expanded: bool,
     on_change: Option<Box<dyn FnMut()>>,
     message_line_ranges: Vec<(usize, i64)>,
@@ -1316,6 +1318,14 @@ impl ChatArea {
             text: apply_background_to_line(&line, self.width, bg_color),
             dim: status == ToolStatus::Complete,
         });
+
+        // A call is one row — the call itself. The body is what `ctrl+g` (and
+        // `/tool-output`) is for, so a transcript of twenty calls is twenty
+        // rows rather than twenty previews. A *failure* is the exception: its
+        // reason is not something the user should have to know a key to read.
+        if !self.tool_output_expanded && status != ToolStatus::Error {
+            return;
+        }
 
         let (rows, hidden) = body.rows(
             self.width,
@@ -2243,6 +2253,17 @@ mod tests {
         render_trimmed(chat)
     }
 
+    /// The same, in the state `ctrl+g` puts the transcript in — the body visible.
+    fn expanded_tool_lines(
+        chat: &mut ChatArea,
+        tool: &str,
+        args: &str,
+        output: &str,
+    ) -> Vec<String> {
+        chat.set_tool_output_expanded(true);
+        tool_lines(chat, tool, args, output)
+    }
+
     /// `render_all` with the blank separator rows dropped.
     fn render_trimmed(chat: &mut ChatArea) -> Vec<String> {
         let mut lines = chat.render_all(W);
@@ -2257,18 +2278,25 @@ mod tests {
     }
 
     #[test]
-    fn tool_output_body_is_rendered_under_the_tool_row() {
+    fn a_tool_call_is_one_row_until_its_body_is_asked_for() {
         let mut chat = new_chat();
         let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, "alpha\nbeta\n");
-        assert_eq!(lines.len(), 3, "row + 2 output lines: {lines:?}");
+        assert_eq!(lines.len(), 1, "the call is the whole entry: {lines:?}");
         assert!(strip(&lines[0]).contains("$ ls"));
-        assert!(strip(&lines[1]).contains("alpha"));
-        assert!(strip(&lines[2]).contains("beta"));
+        assert!(!lines.iter().any(|l| strip(l).contains("alpha")));
+
+        chat.set_tool_output_expanded(true);
+        let expanded = render_trimmed(&mut chat);
+        assert_eq!(expanded.len(), 3, "row + 2 output lines: {expanded:?}");
+        assert!(strip(&expanded[1]).contains("alpha"));
+        assert!(strip(&expanded[2]).contains("beta"));
     }
+
     #[test]
     fn tool_output_rows_keep_the_exact_width_and_indent() {
         let mut chat = new_chat();
-        let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &"x".repeat(200));
+        let lines =
+            expanded_tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &"x".repeat(200));
         assert_eq!(visible_width_of(&lines[0]), W);
         assert!(strip(&lines[1]).starts_with("  x"));
         assert!(
@@ -2278,19 +2306,16 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_tool_output_is_truncated_with_an_expand_hint() {
+    fn a_collapsed_tool_call_shows_no_preview_and_no_hint() {
         let mut chat = new_chat();
         let output: String = (0..12)
             .map(|i| format!("line {i}\n"))
             .collect::<Vec<_>>()
             .join("");
         let lines = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
-        // row + COLLAPSED_TOOL_OUTPUT_ROWS + marker
-        assert_eq!(lines.len(), 1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
-        assert!(strip(&lines[1]).contains("line 0"));
-        let marker = strip(lines.last().unwrap());
-        assert!(marker.contains("8 more lines"), "{marker:?}");
-        assert!(marker.contains("ctrl+g to expand"), "{marker:?}");
+        assert_eq!(lines.len(), 1, "row only: {lines:?}");
+        assert!(!lines.iter().any(|l| strip(l).contains("line 0")));
+        assert!(!lines.iter().any(|l| strip(l).contains("more lines")));
         assert!(!chat.tool_output_expanded());
     }
 
@@ -2301,7 +2326,8 @@ mod tests {
             .map(|i| format!("line {i}\n"))
             .collect::<Vec<_>>()
             .join("");
-        tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
+        let collapsed = tool_lines(&mut chat, "shell", r#"{"command":"ls"}"#, &output);
+        assert_eq!(collapsed.len(), 1, "row only: {collapsed:?}");
         assert!(chat.toggle_tool_output_expanded());
         let lines = render_trimmed(&mut chat);
         assert_eq!(lines.len(), 13, "row + 12 output lines");
@@ -2309,10 +2335,7 @@ mod tests {
         assert!(!lines.iter().any(|l| strip(l).contains("more lines")));
         // Toggling back collapses again.
         assert!(!chat.toggle_tool_output_expanded());
-        assert_eq!(
-            render_trimmed(&mut chat).len(),
-            1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1
-        );
+        assert_eq!(render_trimmed(&mut chat).len(), 1);
         // Setting the same value is a no-op.
         chat.set_tool_output_expanded(false);
         assert!(!chat.tool_output_expanded());
@@ -2322,23 +2345,27 @@ mod tests {
     fn a_unified_diff_body_is_parsed_and_summarised() {
         let mut chat = new_chat();
         let lines = tool_lines(&mut chat, "edit", r#"{"path":"src/a.rs"}"#, diff_output());
-        // The tool row carries the +N -M badge.
+        // The tool row carries the +N -M badge; the body itself waits for ctrl+g.
+        assert_eq!(lines.len(), 1, "row only: {lines:?}");
         let row = strip(&lines[0]);
         assert!(row.contains("+2 -1"), "{row:?}");
-        // Collapsed: file headers, hunk header and the first context line.
-        let body: Vec<String> = lines[1..lines.len() - 1].iter().map(|l| strip(l)).collect();
-        assert!(body[0].contains("--- a/src/a.rs"), "{body:?}");
-        assert!(body[1].contains("+++ b/src/a.rs"), "{body:?}");
-        assert!(body[2].contains("@@ -1,3 +1,4 @@"), "{body:?}");
-        assert!(
-            strip(lines.last().unwrap()).contains("ctrl+g to expand"),
-            "{lines:?}"
-        );
 
         // Expanded: every add/remove row is rendered and coloured.
         chat.set_tool_output_expanded(true);
         let expanded = render_trimmed(&mut chat);
         let body: Vec<String> = expanded.iter().map(|l| strip(l)).collect();
+        assert!(
+            body.iter().any(|l| l.contains("--- a/src/a.rs")),
+            "{body:?}"
+        );
+        assert!(
+            body.iter().any(|l| l.contains("+++ b/src/a.rs")),
+            "{body:?}"
+        );
+        assert!(
+            body.iter().any(|l| l.contains("@@ -1,3 +1,4 @@")),
+            "{body:?}"
+        );
         assert!(body.iter().any(|l| l.contains("+added")), "{body:?}");
         assert!(body.iter().any(|l| l.contains("+also added")), "{body:?}");
         assert!(body.iter().any(|l| l.contains("-removed")), "{body:?}");
@@ -2359,14 +2386,7 @@ mod tests {
             diff.push_str(&format!("-old {i}\n+new {i}\n"));
         }
         let lines = tool_lines(&mut chat, "write", r#"{"path":"f"}"#, &diff);
-        assert_eq!(
-            lines.len(),
-            1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1,
-            "collapsed diff: {lines:?}"
-        );
-        let marker = strip(lines.last().unwrap());
-        assert!(marker.contains("ctrl+g to expand"), "{marker:?}");
-        assert!(marker.contains("more lines"), "{marker:?}");
+        assert_eq!(lines.len(), 1, "collapsed diff is one row: {lines:?}");
         // Expanded shows the whole (123-line) diff — no marker left.
         chat.set_tool_output_expanded(true);
         let expanded = render_trimmed(&mut chat);
@@ -2395,9 +2415,26 @@ mod tests {
         chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
         chat.append_tool_delta("c1", "boom\n");
         chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
+        // A failure keeps its body while collapsed: the reason a call failed is
+        // the one thing the one-row rule must not hide.
         let lines = render_trimmed(&mut chat);
+        assert_eq!(lines.len(), 2, "row + the error body: {lines:?}");
         assert!(lines[1].contains(&format!("\x1b[38;5;{}m", DARK_THEME.error)));
         assert!(lines[0].contains(&format!("\x1b[48;5;{}m", DARK_THEME.tool_error_bg)));
+    }
+
+    #[test]
+    fn a_long_error_body_is_still_truncated_with_its_hint() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_tool_start("c1", "shell", Some(r#"{"command":"false"}"#.into()));
+        chat.append_tool_delta("c1", &"line\n".repeat(12));
+        chat.messages.last_mut().unwrap().tool_status = Some(ToolStatus::Error);
+        let lines = render_trimmed(&mut chat);
+        assert_eq!(lines.len(), 1 + COLLAPSED_TOOL_OUTPUT_ROWS + 1, "{lines:?}");
+        let marker = strip(lines.last().unwrap());
+        assert!(marker.contains("8 more lines"), "{marker:?}");
+        assert!(marker.contains("ctrl+g to expand"), "{marker:?}");
     }
 
     #[test]
@@ -2406,6 +2443,7 @@ mod tests {
         chat.render(W);
         chat.add_tool_start("c9", "read", None);
         chat.finish_tool("c9", Some("from tool_end\n"));
+        chat.set_tool_output_expanded(true);
         let lines = render_trimmed(&mut chat);
         assert!(strip(&lines[1]).contains("from tool_end"));
         // A streamed body wins over the tool_end text.
@@ -2414,6 +2452,7 @@ mod tests {
         chat.add_tool_start("c9", "read", None);
         chat.append_tool_delta("c9", "streamed\n");
         chat.finish_tool("c9", Some("late\n"));
+        chat.set_tool_output_expanded(true);
         let lines = render_trimmed(&mut chat);
         assert!(strip(&lines[1]).contains("streamed"));
         assert!(!lines.iter().any(|l| strip(l).contains("late")));
@@ -2424,7 +2463,7 @@ mod tests {
     #[test]
     fn tool_output_ansi_is_stripped_but_the_layout_survives() {
         let mut chat = new_chat();
-        let lines = tool_lines(
+        let lines = expanded_tool_lines(
             &mut chat,
             "shell",
             r#"{"command":"ls --color"}"#,
@@ -2561,6 +2600,7 @@ mod tests {
         chat2.add_tool_start("c1", "shell", Some(r#"{"command":"ls"}"#.into()));
         chat2.append_tool_delta("c1", "out\n");
         chat2.set_theme(light);
+        chat2.set_tool_output_expanded(true);
         let lines = render_trimmed(&mut chat2);
         assert!(lines[1].contains("\x1b[38;5;10m"), "{:?}", lines[1]);
     }

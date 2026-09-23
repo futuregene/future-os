@@ -10,19 +10,14 @@
 
 
 [48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
-[49m  [1m[38;5;245m     --- a/src/greeting.rs[0m
-  [1m[38;5;245m     +++ b/src/greeting.rs[0m
-  [38;5;39m     @@ -1,4 +1,5 @@[39m
+
+[49m Hello from the mock agent!
+
   [1m[38;5;252mProviders[0m
   [1m[38;5;255mBuilt-in[0m[38;5;240m | [38;5;245mCustom[39m
   [38;5;255m[48;5;38m› key 900 models Future  https://api.future-os.dev/v1[39m                       [49m
   [38;5;252m  no key 12 models OpenAI  https://api.openai.com/v1[39m
   [38;5;245menter open · e edit · k key · d delete · a add · s sync · r reload · / sear…[39m
- This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
-
- [38;5;245mModel: Mock Model (`mock-model`)[39m
- [38;5;245mProvider: future[39m
- [38;5;245mImage support: yes[39m
  [38;5;245mContext window: 128K[39m
  [38;5;245mSession: mock-session-1[39m
  [38;5;245mCWD: /mock[39m
@@ -32,5 +27,10 @@
  [38;5;245mAuto compaction: off[39m
  [38;5;245mStreaming: no[39m
  [38;5;245mContext: 48000 / 128000 (37.5%)[39m
+ [38;5;245m  file: /mock/session.jsonl[39m
+ [38;5;245m  messages: 139[39m
+ [38;5;245m  user/assistant: 42/40[39m
+ [38;5;245m  tool calls/results: 57/57[39m
+ [38;5;245m  tokens in/out: 812000/12000[39m
 >
 [38;5;245m/mock  [38;5;252mmock-model[38;5;245m                      [38;5;241mΣ[38;5;71m↑812k ↓12k R780k W12k[38;5;245m  [38;5;71m¥8.420[38;5;245m  [38;5;71m48k[38;5;245m/128k[39m
