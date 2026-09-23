@@ -365,9 +365,9 @@ fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
         return None;
     }
     let code = status.pairing_code.as_ref()?;
-    if !status
+    if status
         .pairing_code_expires_at
-        .is_some_and(|expiry| expiry > unix_seconds())
+        .is_none_or(|expiry| expiry <= unix_seconds())
     {
         return None;
     }
