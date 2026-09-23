@@ -18,6 +18,7 @@
 - [[Phone remote access|Remote]]
 - [[Feishu Integration|Feishu]]
 - [[DingTalk Integration|DingTalk]]
+- Other channels: [Channel providers](../../guide/channels-providers.md)
 
 **Help**
 - [[FAQ]]

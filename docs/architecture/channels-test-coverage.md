@@ -84,10 +84,15 @@ by the named test.
 ## Lines outside this scope
 
 The Feishu and DingTalk bridges (`channels/src/feishu/`, `channels/src/dingtalk/`)
-and the agent gRPC client (`channels/src/grpc_client.rs`) carry 25 further
-uncovered lines. They predate the channel framework and are not part of it; they
-are listed here only so the crate-wide number is not mistaken for framework
-debt.
+and the agent gRPC client (`channels/src/grpc_client.rs`) carry **25 or 26**
+further uncovered lines — the count moves by one on its own, for a reason worth
+knowing. `feishu/feishu_ws.rs:254` is the `warn!` inside the pong send, and its
+test tolerates both orderings of a race on purpose ("either the pong-send warn
+fires and the read errors, or the read errors first"); the line is executed only
+when the send wins. A measurement of 47 and one of 48 can therefore both be
+right, and a single line appearing there is not evidence that a change added it.
+They predate the channel framework and are not part of it; they are listed here
+only so the crate-wide number is not mistaken for framework debt.
 
 ## Keeping the guard testable
 

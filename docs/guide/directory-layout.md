@@ -22,8 +22,9 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── logs/agent.log         # agent log (when logging is enabled)
 ├── agent-app/                 # legacy credential dir (auth.json) read for back-compat
 ├── channels/
-│   ├── config.json            # Feishu / DingTalk bridge config (see channels-config.md)
-│   └── feishu/                # Feishu bridge data (session file, received files)
+│   ├── config.json            # every channel's config (see channels-config.md)
+│   ├── <channel>/             # per-channel data: session file, downloaded files
+│   └── feishu/                # the Feishu bridge's data (session file, received files)
 ├── tui/                       # the terminal UI (future-tui)
 │   ├── settings.json          # defaultModel, defaultThinkingLevel, … (see tui.md)
 │   ├── keybindings.json       # optional keybinding overrides
@@ -140,12 +141,17 @@ an explicit hard-deny exception for CLI-based skills; see [SECURITY](../../SECUR
 
 ## `~/.future/channels/` — channel bridges
 
-Owned by `future-channel` (the Feishu / DingTalk bridge). `config.json`
-holds the `agent`, `feishu` and `dingtalk` blocks — see
+Owned by `future-channel`. Every channel — the framework ones listed in
+[Channel providers](channels-providers.md) and the two self-bridged ones — is
+configured in the same `config.json`: an `agent` block, one `providers.<id>`
+block per channel, and the legacy top-level `feishu` / `dingtalk` blocks. See
 [channels-config.md](channels-config.md) for the full schema and defaults.
 If the file is missing, the bridge writes a default template and exits,
-asking you to edit it and restart. `feishu/` is the Feishu bridge's data
-directory (session file and received files/images).
+asking you to edit it and restart.
+
+`<channel>/` holds whatever that channel persists: its conversation-to-session
+file, and any attachments it downloaded. `feishu/` is the Feishu bridge's
+directory, which also keeps the files it received from the platform.
 
 ## `~/.future/tui/` — terminal UI
 

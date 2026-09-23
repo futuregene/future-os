@@ -7,6 +7,7 @@
 //! signature, folding long text into platform-sized pieces — so it lives here
 //! instead of being re-derived per provider.
 
+pub mod cipher;
 pub mod http;
 pub mod signature;
 pub mod text;
