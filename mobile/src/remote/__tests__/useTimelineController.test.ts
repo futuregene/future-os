@@ -612,6 +612,127 @@ describe("useTimelineController", () => {
   });
 
   describe("loadHistory", () => {
+    test("a byte-trimmed gap page re-bridges in place without losing history", async () => {
+      jest.useFakeTimers();
+      try {
+      // The desktop bridge sheds whole oldest exchanges to fit its reply
+      // budget, advancing nextOffset past the dropped rows and setting
+      // hasMore. A refresh hitting that shape must re-read the range
+      // untrimmed and bridge the gap in the same pass — never fail the
+      // refresh and strand the visible older history.
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      // One ordinal per entry, so a page [start, before) is flush by
+      // construction (start + entries.length === before).
+      const journal: ReturnType<typeof userEntry>[] = [];
+      const push = (entry: ReturnType<typeof userEntry>) => {
+        journal.push(entry);
+      };
+      for (const [q, a, run] of [
+        ["earlier question", "earlier answer", "run-old"],
+        ["middle question", "middle answer", "run-mid"],
+        ["gap question", "gap answer", "run-gap"],
+        ["latest question", "latest answer", "run-new"],
+      ] as const) {
+        push(userEntry(`u-${run}`, q));
+        push(assistantEntry(`a-${run}`, a, run));
+      }
+      const page = (before: number, trim: boolean) => {
+        // The bridge pages by user exchanges (limit 3), not raw rows.
+        let start = before;
+        let users = 0;
+        while (start > 0 && users < 3) {
+          start -= 1;
+          if (journal[start]?.role === "user") users += 1;
+        }
+        const slice = journal.slice(start, before);
+        // Simulate the byte budget: the newest page always pays it, and a
+        // mid-history page pays it once it is "large" (all three exchanges,
+        // like the post-send refresh gap).
+        const paysBudget = trim && users > 1 &&
+          (before === journal.length || (before === 6 && users >= 3));
+        if (!paysBudget) {
+          return {
+            entries: slice,
+            hasMore: start > 0,
+            nextOffset: start,
+          };
+        }
+        // The byte-budget trim: shed whole oldest exchanges, keep the newest
+        // user exchange, advance the cursor, always hasMore.
+        const newestUser = slice.reduce(
+          (acc, entry, index) => (entry.role === "user" ? index : acc),
+          0,
+        );
+        const kept = slice.slice(newestUser);
+        return {
+          entries: kept,
+          hasMore: true,
+          nextOffset: before - kept.length,
+        };
+      };
+      let entryCall = 0;
+      request.mockImplementation(async (command: {
+        type: string;
+        before?: number;
+        untrimmed?: boolean;
+      }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        entryCall += 1;
+        const before = Math.min(command.before ?? journal.length, journal.length);
+        // The first two entry reads (the open tail and the explicit
+        // loadOlder pull) answer complete pages; from the post-send refresh
+        // on, the bridge's byte budget trims backward pages unless the
+        // reader opts out.
+        const trim = entryCall > 2 && command.untrimmed !== true;
+        const result = page(before, trim);
+        return { data: result };
+      });
+      render();
+      await establish();
+      await act(async () => {
+        await result.current.loadOlderTimeline();
+      });
+      await flush();
+      const initial = result.current.timeline.items
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
+      expect(initial[0]).toBe("earlier question");
+      expect(initial).toContain("latest question");
+
+      // The refresh (e.g. after sending) hits the trimmed gap page, re-reads
+      // it untrimmed, and bridges the hole in the same pass — the committed
+      // conversation grows in place, never collapsing to the tail. Simulate
+      // the appended exchange that makes the refresh's tail move past the
+      // paged window.
+      push(userEntry("u-run-new2", "follow-up question"));
+      push(assistantEntry("a-run-new2", "follow-up answer", "run-new2"));
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      expect(
+        result.current.timeline.items
+          .filter((i) => i.kind === "message")
+          .map((i) => (i.kind === "message" ? i.text : "")),
+      ).toEqual([
+        "earlier question",
+        "earlier answer",
+        "middle question",
+        "middle answer",
+        "gap question",
+        "gap answer",
+        "latest question",
+        "latest answer",
+        "follow-up question",
+        "follow-up answer",
+      ]);
+      expect(result.current.timelineSyncStatus).toBe("idle");
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
     test("returns an empty timeline when the client is absent", async () => {
       render();
       const engine = result.current.syncEngineRef.current!;

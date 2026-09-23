@@ -478,6 +478,9 @@ export interface RpcResponse<T = unknown> {
 
 export interface RemoteCommand {
   chunkedRead?: boolean;
+  /** Opt out of the desktop bridge's backward-page byte-budget trim (the
+   * gap-fill integrity check needs a page flush with the requested cursor). */
+  untrimmed?: boolean;
   /** Cold run bootstrap from a resumable semantic snapshot, when supported. */
   preferSnapshot?: boolean;
   /** Client capabilities declared on `secure_ready` (additive, opt-in). */
