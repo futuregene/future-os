@@ -831,6 +831,11 @@ impl ChatArea {
     pub fn clear_messages(&mut self) {
         self.messages = Vec::new();
         self.rerender();
+        // The old transcript is gone, so its scroll position is meaningless:
+        // a cleared chat follows the tail again. Without this a session switch
+        // opens the new conversation at the previous one's offset (and keeps
+        // `auto_scroll` off, so the new session never follows its own output).
+        self.set_auto_scroll(true);
     }
 
     pub fn scroll_up(&mut self, lines: usize) -> bool {

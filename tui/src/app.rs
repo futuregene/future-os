@@ -330,6 +330,14 @@ pub enum UiCmd {
     /// past the message-length cap).
     InputNotice(String),
     SessionSwitched {
+        /// The session the flow asked for. A result whose target is not the
+        /// newest request was superseded by another pick (see
+        /// `App::latest_session_switch`) and must not be applied.
+        target: String,
+        /// False when the agent declined the switch (it never does today, but
+        /// the wire contract has the field): nothing changed on the wire, so
+        /// the transcript on screen is still the current session's.
+        switched: bool,
         result: Result<(), String>,
         state: Option<RpcSessionState>,
         messages: Result<Value, String>,
@@ -747,6 +755,13 @@ struct OverlayEntry {
     pre_focus: FocusTarget,
     hidden: bool,
     focus_order: u64,
+}
+
+/// A `switch_session` request: the session it started from and the one it
+/// asked for (see `App::latest_session_switch`).
+struct SessionSwitchRequest {
+    from: String,
+    target: String,
 }
 
 /// Stored pending approval (the TS keeps it for reference; the visible
@@ -1247,6 +1262,13 @@ pub struct App<T: TerminalIo> {
     /// that draft still refers to. Caching the text alone would turn a restored
     /// `[Image #1]` into a marker with nothing behind it.
     session_input_cache: HashMap<String, (String, PendingDraft)>,
+    /// The newest `switch_session` request the app has issued — kept after its
+    /// result is applied, so a *late* result from an older request is still
+    /// recognisable. Two picks can overlap (the sessions menu stays open until
+    /// the first result lands) and the agent has no notion of a "current"
+    /// session: whichever RPC lands last wins on the wire, so results are
+    /// matched against this instead of being applied in arrival order.
+    latest_session_switch: Option<SessionSwitchRequest>,
     state: AppState,
     running: bool,
     cli_options: CliOptions,
@@ -1415,6 +1437,7 @@ impl<T: TerminalIo> App<T> {
             tui_settings_path,
             slash_commands: Vec::new(),
             session_input_cache: HashMap::new(),
+            latest_session_switch: None,
             state: AppState::default(),
             running: false,
             cli_options: cli_options.clone(),
@@ -2219,20 +2242,71 @@ impl<T: TerminalIo> App<T> {
                 (Err(err), _) => self.add_system_message(format!("Failed to get status: {err}")),
             },
             UiCmd::SessionSwitched {
+                target,
+                switched,
                 result,
                 state,
                 messages,
                 label,
             } => {
+                match &self.latest_session_switch {
+                    Some(latest) if latest.target != target => {
+                        // Superseded by a newer pick: this transcript belongs
+                        // to a session the app is not showing any more. Its
+                        // RPC may still have re-pointed the client here (the
+                        // last switch to land wins), so put the client back on
+                        // the target that won — but leave the menu alone: the
+                        // user is still picking in it.
+                        self.realign_client_to_latest_switch();
+                        return;
+                    }
+                    Some(latest)
+                        if self.state.session_id != latest.from
+                            && self.state.session_id != target =>
+                    {
+                        // Another session lifecycle flow (`/new`, a fork) took
+                        // over while this one was in flight. The user is
+                        // somewhere else now, and applying this transcript
+                        // would drag the client back to a session they left.
+                        return;
+                    }
+                    _ => {}
+                }
                 if let Err(err) = result {
                     self.add_system_message(format!("Failed to switch session: {err}"));
+                } else if !switched {
+                    // The agent declined: the client still addresses the old
+                    // session, so what is on screen is still the truth.
+                    self.add_system_message(format!("Session switch declined: {label}"));
                 } else {
                     if let Some(s) = state {
                         self.apply_refresh_state(s);
                     }
+                    // `get_state` is a separate call and can fail on its own;
+                    // the switch itself already happened, so the app identity
+                    // has to follow the target either way — otherwise the
+                    // drafts, refreshes and event filtering below stay keyed
+                    // to the session we just left.
+                    self.adopt_session_identity(&target);
                     self.restore_session_input();
-                    self.apply_messages(messages);
-                    self.add_system_message(format!("Switched to session: {label}"));
+                    match messages {
+                        Ok(messages) => {
+                            self.apply_messages(Ok(messages));
+                            self.add_system_message(format!("Switched to session: {label}"));
+                        }
+                        Err(err) => {
+                            // The switch did happen, so the previous session's
+                            // conversation must come off the screen even
+                            // though the new one could not be loaded — it
+                            // would otherwise read as this session's history
+                            // while a prompt typed here goes to `target`.
+                            self.chat.clear_messages();
+                            self.add_system_message(format!(
+                                "Switched to session: {label} — its transcript could not be \
+                                 loaded ({err})."
+                            ));
+                        }
+                    }
                 }
                 self.hide_overlay();
             }
@@ -3208,11 +3282,19 @@ impl<T: TerminalIo> App<T> {
     // ─── Agent event handling ──────────────────────────────────────────
 
     pub fn handle_agent_event(&mut self, event: &AgentEvent) {
-        if event.r#type.starts_with("compaction_")
-            && event
-                .session_id
-                .as_ref()
-                .is_some_and(|id| id != &self.state.session_id)
+        // Every broadcast event is stamped with the session that produced it.
+        // The stream resubscribes when the session changes, but a frame already
+        // in flight from the session just left can still land here — a
+        // `text_chunk` from it would append to the last assistant bubble of the
+        // *new* transcript and an `agent_end` would overwrite it, which reads
+        // as the previous conversation bleeding into this one. The client's
+        // current session id is what the next prompt addresses, so it is the
+        // reference (the app's own `state.session_id` can lag a switch by a
+        // refresh). Unstamped events have no session to compare.
+        if event
+            .session_id
+            .as_deref()
+            .is_some_and(|id| id != self.client.get_current_session_id())
         {
             return;
         }
@@ -7314,15 +7396,31 @@ impl<T: TerminalIo> App<T> {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         let sid = session_id.to_string();
+        // Record the request *before* the RPC: from here on an older request
+        // still in flight is superseded, and its result must not be applied.
+        self.latest_session_switch = Some(SessionSwitchRequest {
+            from: self.state.session_id.clone(),
+            target: sid.clone(),
+        });
         tokio::spawn(async move {
-            let result = client.switch_session(&sid).await.map(|_| ());
+            let outcome = client.switch_session(&sid).await;
+            // `switch_session` binds the client to the target unless the agent
+            // declines (`cancelled`); the client is the authority on what a
+            // later prompt will address.
+            let switched = outcome.as_ref().is_ok_and(|v| {
+                !v.get("cancelled").and_then(Value::as_bool).unwrap_or(false)
+                    && client.get_current_session_id() == sid
+            });
+            let result = outcome.map(|_| ());
             let mut state = None;
             let mut messages = Ok(Value::Null);
-            if result.is_ok() {
+            if switched {
                 state = client.get_state().await.ok();
                 messages = client.get_messages().await;
             }
             let _ = tx.send(UiCmd::SessionSwitched {
+                target: sid,
+                switched,
                 result,
                 state,
                 messages,
@@ -7854,6 +7952,14 @@ impl<T: TerminalIo> App<T> {
         self.state.total_cost = s.usage.cost_cny;
         self.state.explicit_session = s.explicit_session;
         self.state.auto_compaction_enabled = s.auto_compaction_enabled;
+        // The name is part of the identity shown in the window title, so it
+        // follows the snapshot: without this a switch would leave the previous
+        // session's name in the title (and a rename made elsewhere would never
+        // show up here).
+        if self.state.session_name != s.session_name {
+            self.state.session_name = s.session_name.clone();
+            self.update_terminal_title();
+        }
         // The agent's own level wins (an unknown/absent value keeps the last
         // known one, which the picker mirrors).
         if let Some(level) = s
@@ -7889,6 +7995,45 @@ impl<T: TerminalIo> App<T> {
         // confusing during transient reconnects.
         if self.state.model.is_empty() || self.state.model == "(no model)" {
             self.state.model = "(not connected)".into();
+        }
+    }
+
+    /// Move the app's session identity to `target`, without a `get_state`
+    /// snapshot to carry it: everything keyed to `state.session_id` (drafts,
+    /// the refresh reply guard, event filtering) must name the session the
+    /// client addresses, and a failed `get_state` must not leave it behind.
+    /// A real change also bumps the compaction revision, exactly as
+    /// [`Self::apply_refresh_state`] does for a session change — a compaction
+    /// fence from the session we left must not keep gating sends here.
+    fn adopt_session_identity(&mut self, target: &str) {
+        if self.state.session_id != target {
+            self.state.compaction_requested = false;
+            self.state.compaction_revision += 1;
+            self.state.session_id = target.to_string();
+        }
+        if self.client.get_current_session_id() != target {
+            self.client.set_current_session_id(target);
+            self.client.connect_events();
+        }
+    }
+
+    /// A superseded switch's RPC may have left the client addressing the older
+    /// target (the last `switch_session` to land wins on the wire). Point it
+    /// back at the switch the app is actually showing, so a prompt cannot be
+    /// sent to a session the user is not looking at. Only once that newer
+    /// switch has been applied: until then its own RPC is what binds the client,
+    /// and pointing it at a target whose switch may still fail would address a
+    /// session the app never showed.
+    fn realign_client_to_latest_switch(&mut self) {
+        let Some(latest) = self.latest_session_switch.as_ref() else {
+            return;
+        };
+        if self.state.session_id != latest.target {
+            return;
+        }
+        if self.client.get_current_session_id() != latest.target {
+            self.client.set_current_session_id(&latest.target);
+            self.client.connect_events();
         }
     }
 
@@ -11113,6 +11258,8 @@ mod tests {
 
         // SessionSwitched err.
         app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: false,
             result: Err("nope".into()),
             state: None,
             messages: Ok(Value::Null),
@@ -11121,6 +11268,8 @@ mod tests {
         assert!(last_system(&app).contains("Failed to switch session"));
         // ok with state+messages.
         app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
             result: Ok(()),
             state: Some(sample_state()),
             messages: Ok(json_parse(
@@ -11278,6 +11427,388 @@ mod tests {
         assert!(app.autocomplete.is_visible());
         app.handle_cmd(UiCmd::AcItems(vec![]));
         assert!(!app.autocomplete.is_visible());
+    }
+
+    /// A switch whose transcript fetch failed must not leave the previous
+    /// session's conversation on screen: the agent-side switch already
+    /// happened, so those messages would read as this session's history while
+    /// a prompt typed into the box goes to the new one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_replaces_the_transcript_even_when_loading_it_fails() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.chat.add_message(ChatMessage::new(
+            "old-1".into(),
+            ChatRole::User,
+            "previous-session-question",
+        ));
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Err("boom".into()),
+            label: "target".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.contains("previous-session-question")),
+            "old transcript survived a failed load: {texts:?}"
+        );
+        // The failure is named instead of silently showing an empty session.
+        let report = last_system(&app);
+        assert!(report.contains("Switched to session: target"), "{report}");
+        assert!(report.contains("could not be loaded"), "{report}");
+    }
+
+    /// `get_state` is a second call and can fail on its own. The session
+    /// identity still has to move with the switch — otherwise the drafts,
+    /// refreshes and event filtering stay keyed to the session just left (and
+    /// its saved draft gets restored into the new session's input box).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_without_state_still_adopts_the_target() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.input.set_value("old draft", None);
+        app.save_session_input();
+        app.state.session_id = "target".into();
+        app.input.set_value("target draft", None);
+        app.save_session_input();
+        app.state.session_id = "old".into();
+        app.input.set_value("", None);
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: None,
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            label: "target".into(),
+        });
+        assert_eq!(app.state.session_id, "target");
+        assert_eq!(app.client.get_current_session_id(), "target");
+        assert_eq!(app.input.get_value(), "target draft");
+    }
+
+    /// The new transcript opens at its tail: keeping the previous session's
+    /// scroll offset would show the middle of the conversation the user just
+    /// switched to (and, with `auto_scroll` off, never follow its output).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_re_anchors_the_chat_view() {
+        let (mut app, _rx) = make_app(100, 12);
+        app.state.session_id = "old".into();
+        for i in 0..80 {
+            app.chat.add_message(ChatMessage::new(
+                format!("old-{i}"),
+                ChatRole::User,
+                &format!("old line {i}"),
+            ));
+        }
+        app.chat.set_viewport_height(8);
+        let _ = app.chat.render(100);
+        app.chat.scroll_up(30);
+        assert!(!app.chat.is_at_bottom());
+
+        let new_messages: Vec<String> = (0..60)
+            .map(|i| format!(r#"{{"id":"n{i}","role":"user","content":"new line {i}"}}"#))
+            .collect();
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(&format!(
+                r#"{{"messages":[{}]}}"#,
+                new_messages.join(",")
+            ))),
+            label: "target".into(),
+        });
+        let _ = app.chat.render(100);
+        assert!(
+            app.chat.is_at_bottom(),
+            "the new session kept the previous scroll offset"
+        );
+    }
+
+    /// Two picks can overlap (the menu stays open until the first result
+    /// lands). The older flow's transcript must not replace the one the user
+    /// actually asked for last, and the client — which the older RPC may have
+    /// re-pointed at its own target — has to follow the winning switch.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn superseded_session_switch_result_is_dropped() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        // Both picks are in flight; the newest one is "second".
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "second".into(),
+        });
+        // The first flow's RPC landed last and left the client on "first".
+        app.client.set_current_session_id("first");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "first".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
+            )),
+            label: "first".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(
+            !texts.iter().any(|t| t.contains("first-session-question")),
+            "a superseded switch replaced the transcript: {texts:?}"
+        );
+        assert!(texts.iter().all(|t| !t.contains("Switched to session")));
+        assert_eq!(
+            app.state.session_id, "old",
+            "identity moved on a stale pick"
+        );
+
+        // The winning result then lands and is applied — which is also what
+        // puts the client back on the target the user asked for last.
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "second".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"s1","role":"user","blocks":[{"kind":"text","text":"second-session-question"}]}]}"#,
+            )),
+            label: "second".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("second-session-question")));
+        assert!(texts.iter().all(|t| !t.contains("first-session-question")));
+        assert_eq!(app.state.session_id, "second");
+        assert_eq!(app.client.get_current_session_id(), "second");
+        assert_eq!(
+            app.latest_session_switch
+                .as_ref()
+                .map(|s| s.target.as_str()),
+            Some("second")
+        );
+    }
+
+    /// The mirror ordering: the winner's RPC landed first, so its result is
+    /// applied before the older request's RPC lands and re-points the client.
+    /// The late result must neither replace the transcript nor leave the client
+    /// on a session the app is not showing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_late_older_switch_result_cannot_take_over() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "second".into();
+        app.client.set_current_session_id("second");
+        app.chat.add_message(ChatMessage::new(
+            "s1".into(),
+            ChatRole::User,
+            "second-session-question",
+        ));
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "second".into(),
+        });
+        // The older request's RPC landed last.
+        app.client.set_current_session_id("first");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "first".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"f1","role":"user","blocks":[{"kind":"text","text":"first-session-question"}]}]}"#,
+            )),
+            label: "first".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("second-session-question")));
+        assert!(!texts.iter().any(|t| t.contains("first-session-question")));
+        assert_eq!(app.state.session_id, "second");
+        assert_eq!(
+            app.client.get_current_session_id(),
+            "second",
+            "the late result left the client on the wrong session"
+        );
+    }
+
+    /// A declined switch (`cancelled`) changes nothing on the wire: the
+    /// transcript on screen is still the current session's and must stay.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declined_session_switch_keeps_the_transcript() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.chat.add_message(ChatMessage::new(
+            "old-1".into(),
+            ChatRole::User,
+            "current-session-question",
+        ));
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: false,
+            result: Ok(()),
+            state: None,
+            messages: Ok(Value::Null),
+            label: "target".into(),
+        });
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("current-session-question")));
+        assert!(last_system(&app).contains("Session switch declined: target"));
+        assert_eq!(app.state.session_id, "old");
+    }
+
+    /// A frame already in flight from the session we just left must not touch
+    /// the new transcript: its `text_chunk` would append to the last assistant
+    /// bubble of this one, and `agent_end` would overwrite it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn events_from_the_previous_session_are_ignored_after_a_switch() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "target".into();
+        app.client.set_current_session_id("target");
+        app.chat.add_message(ChatMessage::new(
+            "a1".into(),
+            ChatRole::Assistant,
+            "new session answer",
+        ));
+
+        let mut stale = make_event("text_chunk", r#"{"text":" old session text"}"#);
+        stale.session_id = Some("previous".into());
+        app.handle_agent_event(&stale);
+        assert!(!app
+            .chat
+            .plain_messages()
+            .iter()
+            .any(|(_, c)| c.contains("old session text")));
+
+        // `agent_end` carries the whole reply and would replace the bubble.
+        let mut stale_end = make_event(
+            "agent_end",
+            r#"{"text":"old session reply","state":"completed"}"#,
+        );
+        stale_end.session_id = Some("previous".into());
+        app.handle_agent_event(&stale_end);
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("new session answer")));
+        assert!(!texts.iter().any(|t| t.contains("old session reply")));
+
+        // The current session's own events still land.
+        let mut own = make_event("text_chunk", r#"{"text":" more"}"#);
+        own.session_id = Some("target".into());
+        app.handle_agent_event(&own);
+        assert!(app
+            .chat
+            .plain_messages()
+            .iter()
+            .any(|(_, c)| c.contains("new session answer more")));
+    }
+
+    /// `/new` (or a fork) while a pick is in flight: the user is in a fresh
+    /// session now, so the late transcript must not drag the app back to the
+    /// session they left — the client would follow it and the next prompt
+    /// would land there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switch_result_is_dropped_when_another_session_took_over() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "old".into(),
+            target: "picked".into(),
+        });
+        // `/new` completed first: identity and client moved to the new session.
+        let mut new_state = sample_state();
+        new_state.session_id = "fresh".into();
+        app.handle_cmd(UiCmd::NewSessionDone {
+            result: Ok(json_parse(r#"{"sessionId":"fresh"}"#)),
+            state: Some(new_state),
+        });
+        assert_eq!(app.state.session_id, "fresh");
+
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "picked".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(sample_state()),
+            messages: Ok(json_parse(
+                r#"{"messages":[{"id":"p1","role":"user","blocks":[{"kind":"text","text":"picked-session-question"}]}]}"#,
+            )),
+            label: "picked".into(),
+        });
+        assert_eq!(
+            app.state.session_id, "fresh",
+            "a late pick hijacked the new session"
+        );
+        assert_eq!(
+            app.client.get_current_session_id(),
+            "fresh",
+            "the client was dragged back to the abandoned pick"
+        );
+        let texts: Vec<String> = app
+            .chat
+            .plain_messages()
+            .iter()
+            .map(|(_, c)| c.clone())
+            .collect();
+        assert!(!texts.iter().any(|t| t.contains("picked-session-question")));
+    }
+
+    /// The window title names the session: switching must not leave the
+    /// previous session's name there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_switch_replaces_the_name_in_the_window_title() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "old".into();
+        app.state.session_name = Some("previous name".into());
+        app.state.cwd = "/tmp/project".into();
+        app.state.model = "openai/gpt-4o".into();
+
+        let mut state = sample_state();
+        state.session_name = Some("target name".into());
+        app.handle_cmd(UiCmd::SessionSwitched {
+            target: "target".into(),
+            switched: true,
+            result: Ok(()),
+            state: Some(state),
+            messages: Ok(json_parse(r#"{"messages":[]}"#)),
+            label: "target".into(),
+        });
+        assert_eq!(app.state.session_name.as_deref(), Some("target name"));
+        let writes = terminal_writes(&app);
+        assert!(writes.contains("target name"), "{writes:?}");
+        assert!(!writes.contains("previous name"), "{writes:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
