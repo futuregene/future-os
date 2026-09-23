@@ -135,7 +135,12 @@ pub(super) async fn check_and_reanimate_run(
 /// leaving it stranded as `running` or guessing `failed`.
 ///
 /// The Agent is reachable (RunGone is a response, not a connect failure), so
-/// `get_state` answers with `activeRun` / `interruptedRun` / `requestedRun`:
+/// `get_state` answers with `queuedRuns` / `activeRun` / `interruptedRun` /
+/// `requestedRun`:
+/// - queued (`queuedRuns` contains the id): the Agent accepted the prompt but
+///   it still sits behind an older run — alive, not yet attachable (no
+///   execution epoch). The session observer projects it from the journal once
+///   it starts; the row stays non-terminal;
 /// - still active (attach raced a `start_run`): leave running, let the live path
 ///   converge — do not mark failed;
 /// - a durable terminal marker (`requestedRun`): mirror its exact state;
@@ -148,6 +153,7 @@ pub(super) async fn reconcile_run_gone(
     local_run_id: &str,
     canonical_run_id: &str,
     session_id: &str,
+    thread_id: &str,
     reason: &str,
 ) -> Result<(), String> {
     let mut client = connect_agent()
@@ -166,6 +172,19 @@ pub(super) async fn reconcile_run_gone(
     } else {
         serde_json::Value::Null
     };
+
+    // A RunGone on attach is not proof the run is gone: the Agent may have
+    // accepted the prompt but QUEUED it behind an older run (a queued run
+    // has no execution epoch to attach to yet). Confirm queued BEFORE any
+    // terminal/orphan settling — the run is alive and the session observer
+    // will project it from the journal once it starts.
+    if queued_run_ids(&state_value).any(|run_id| run_id == canonical_run_id) {
+        eprintln!(
+            "FutureOS run {local_run_id} is queued on the Agent; observer projects it on start ({reason})"
+        );
+        observer::ensure_observer_for_thread(session_id, thread_id)?;
+        return Ok(());
+    }
 
     let active = state_value
         .get("activeRun")
@@ -310,6 +329,11 @@ pub(super) fn plan_active_run_reconciliation(
     if is_streaming && active_run_id == Some(canonical_run_id) {
         return ActiveRunAction::Attach;
     }
+    if queued_run_ids(state).any(|run_id| run_id == canonical_run_id) {
+        // Queued behind an older run: no execution epoch to attach to yet, but
+        // the Agent owns the run — never orphan-settle it.
+        return ActiveRunAction::Skip;
+    }
     if let Some(terminal) = state.get("requestedRun").filter(|value| value.is_object()) {
         return ActiveRunAction::SettleTerminal {
             agent_state: terminal
@@ -334,6 +358,18 @@ pub(super) fn plan_active_run_reconciliation(
         return ActiveRunAction::SettleOrphaned;
     }
     ActiveRunAction::Skip
+}
+
+/// Ids of runs the Agent has accepted but not yet started (the session's
+/// `queuedRuns` list). A run on this list is alive: it has no execution epoch
+/// to attach to yet, but it must never be settled as gone or orphaned.
+fn queued_run_ids(state: &serde_json::Value) -> impl Iterator<Item = &str> {
+    state
+        .get("queuedRuns")
+        .and_then(|runs| runs.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|run| run.get("runId").and_then(|id| id.as_str()))
 }
 
 /// Reconcile one non-terminal run row against the Agent's authoritative state.

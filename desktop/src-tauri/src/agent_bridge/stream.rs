@@ -498,6 +498,7 @@ pub(super) fn termination_error(kind: Option<&str>) -> &'static str {
         Some("model_response_error") => "[MODEL_RESPONSE_ERROR] invalid model response",
         Some("model_paused") => "[MODEL_PAUSED] provider paused generation",
         Some("provider_cancelled") => "[PROVIDER_CANCELLED] provider cancelled generation",
+        Some("run_queued") => "[RUN_QUEUED] run accepted and queued behind an older run",
         _ => "[RESPONSE_UNCONFIRMED] response ended without confirmed completion",
     }
 }

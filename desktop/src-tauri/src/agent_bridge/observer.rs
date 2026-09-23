@@ -886,15 +886,29 @@ async fn handle_event(
 
     // Session-level event (no run scope): validate its independent session
     // cursor before forwarding. A hole forces re-attach and journal replay.
+    //
+    // One exception: a prompt accepted while another run was active starts
+    // QUEUED, and its durable `user_message` is broadcast with an empty run
+    // id until the run actually starts. The pipeline pre-persists that entry
+    // into the run's event log; a bare hole-check here would reject idx 0
+    // whenever the session cursor already advanced past it, so treat a
+    // user-message head as cursor-agnostic and re-anchor the session cursor.
+    let is_queued_user_entry = event_type == "user_message";
     if run_id.is_empty() {
         if event.session_idx >= 0 {
-            if event.session_idx <= state.session_cursor {
-                return true;
+            if is_queued_user_entry {
+                if event.session_idx > state.session_cursor {
+                    state.session_cursor = event.session_idx;
+                }
+            } else {
+                if event.session_idx <= state.session_cursor {
+                    return true;
+                }
+                if event.session_idx != state.session_cursor.saturating_add(1) {
+                    return false;
+                }
+                state.session_cursor = event.session_idx;
             }
-            if event.session_idx != state.session_cursor.saturating_add(1) {
-                return false;
-            }
-            state.session_cursor = event.session_idx;
         }
         let event_data = future_rpc::decode::event_data_json(&event);
         #[cfg(feature = "gui")]
@@ -1530,6 +1544,32 @@ mod tests {
             .await
         );
         assert_eq!(state.session_cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn queued_user_entry_reanchors_a_stale_session_cursor() {
+        let shared = Arc::new(ObserverShared::new("thread-order"));
+        // The session cursor has advanced (e.g. config events from a newer
+        // prompt) past the queued run's user entry, which the Agent accepted
+        // earlier but only broadcast now, with an empty run id.
+        let mut state = ObserverState {
+            session_cursor: 5,
+            ..Default::default()
+        };
+        assert!(
+            handle_event(
+                "sess-order",
+                &shared,
+                &mut state,
+                session_event("user_message", 0)
+            )
+            .await,
+            "a queued user entry must not be rejected as a hole"
+        );
+        assert_eq!(
+            state.session_cursor, 5,
+            "the stale idx must not rewind the session cursor"
+        );
     }
 
     #[tokio::test]

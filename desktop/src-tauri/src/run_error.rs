@@ -22,6 +22,12 @@ pub(crate) fn classify_run_error(error: &str) -> &'static str {
     if lower.starts_with("[provider_cancelled]") {
         return "model_failed";
     }
+    // A queued run is alive on the Agent (accepted, waiting behind an older
+    // run) — it is not a failure, and it must never be misread as a user
+    // abort just because its phrasing contains "interrupted".
+    if lower.starts_with("[run_queued]") {
+        return "run_queued";
+    }
 
     // User-initiated abort wins over every other category, including timeouts
     // that may be reported as a side effect of cancellation.
