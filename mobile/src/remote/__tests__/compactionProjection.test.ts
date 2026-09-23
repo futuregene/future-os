@@ -120,12 +120,43 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
   test("automatic mid-turn compaction remains inside the active reply", async () => {
     const after = await apply(emptyTimeline(), [event("agent_start", "live", 0),
       event("compaction_started", "live", 1, { operation_id: "auto", phase: "mid_turn" }),
-      event("compaction_committed", "live", 2, { operation_id: "auto", checkpoint_id: "auto", phase: "mid_turn" }),
+      event("compaction_committed", "live", 2, { operation_id: "auto", checkpoint_id: "auto", phase: "mid_turn", tokens_before: 120_000, tokens_after: 18_000 }),
       event("text_chunk", "live", 3, { text: "continued" }),
     ]);
     expect(after.items).toHaveLength(1);
-    expect(after.items[0]).toMatchObject({ streaming: true, segments: [{ kind: "compaction" }, { kind: "text", text: "continued" }] });
+    expect(after.items[0]).toMatchObject({ streaming: true, segments: [{ kind: "compaction", tokensBefore: 120_000, tokensAfter: 18_000 }, { kind: "text", text: "continued" }] });
     expect(after.streaming).toBe(true);
+  });
+
+  test("a committed divider reports both token counts", async () => {
+    // `tokens_before` is what the turn was about to send, `tokens_after` the
+    // agent's estimate for the next one — the client renders them as a pair.
+    const after = await apply(emptyTimeline(), [
+      compact("compaction_started", "one", "old", 0),
+      event("compaction_committed", "old", 1, {
+        operation_id: "one",
+        checkpoint_id: "cp-one",
+        trigger: "manual",
+        phase: "standalone",
+        tokens_before: 190_000,
+        tokens_after: 20_000,
+      }),
+    ]);
+    expect(after.items).toMatchObject([
+      { id: "m_cp-one", segments: [{ kind: "compaction", status: "completed", tokensBefore: 190_000, tokensAfter: 20_000 }] },
+    ]);
+  });
+
+  test("a legacy compaction_end from a released journal keeps its before-only count", async () => {
+    const after = await apply(emptyTimeline(), [
+      event("agent_start", "old", 0),
+      event("compaction_end", "old", 1, { tokens_before: 190_000, aborted: false }),
+    ]);
+    const divider = after.items.flatMap(item =>
+      item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : []);
+    expect(divider).toHaveLength(1);
+    expect(divider[0]).toMatchObject({ tokensBefore: 190_000 });
+    expect(divider[0]).not.toHaveProperty("tokensAfter");
   });
 
   test("a checkpoint that opened the turn is drawn once, not also from durable history", async () => {

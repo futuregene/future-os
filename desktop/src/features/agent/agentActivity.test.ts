@@ -59,13 +59,17 @@ describe("buildAssistantRunProjection segments", () => {
     const projection = buildAssistantRunProjection(
       events([
         ["compaction_start", { reason: "auto" }],
-        ["compaction_end", { tokens_before: 190000, summary: "…", aborted: false, reason: "auto" }],
+        ["compaction_end", { tokens_before: 190000, tokens_after: 21000, summary: "…", aborted: false, reason: "auto" }],
         ["text_chunk", { text: "Continuing." }],
       ]),
     );
 
     expect(projection.segments.map(s => s.kind)).toEqual(["compaction", "text"]);
-    expect(projection.segments[0]).toMatchObject({ kind: "compaction", tokensBefore: 190000 });
+    expect(projection.segments[0]).toMatchObject({
+      kind: "compaction",
+      tokensBefore: 190000,
+      tokensAfter: 21000,
+    });
     // The marker must not leak into the copyable/rendered answer text.
     expect(projection.content).toBe("Continuing.");
   });
@@ -85,11 +89,18 @@ describe("buildAssistantRunProjection segments", () => {
     const completed = buildAssistantRunProjection(
       events([
         ["compaction_started", { operation_id: "cmp-1", trigger: "automatic", phase: "pre_turn" }],
-        ["compaction_committed", { operation_id: "cmp-1", checkpoint_id: "cp-1", tokens_before: 42_000 }],
+        ["compaction_committed", { operation_id: "cmp-1", checkpoint_id: "cp-1", tokens_before: 42_000, tokens_after: 9_000 }],
       ]),
     );
     expect(completed.segments).toEqual([
-      { id: "cp-1", kind: "compaction", checkpointId: "cp-1", tokensBefore: 42_000, trigger: "automatic" },
+      {
+        id: "cp-1",
+        kind: "compaction",
+        checkpointId: "cp-1",
+        tokensBefore: 42_000,
+        tokensAfter: 9_000,
+        trigger: "automatic",
+      },
     ]);
 
     const failed = buildAssistantRunProjection(

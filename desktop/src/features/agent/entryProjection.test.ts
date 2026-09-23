@@ -604,6 +604,7 @@ describe("entriesToMessages", () => {
             kind: "compaction",
             checkpointId: "cp-1",
             tokensBefore: 190_000,
+            tokensAfter: 20_000,
             trigger: "manual",
           },
         ],

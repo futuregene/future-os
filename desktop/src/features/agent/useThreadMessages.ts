@@ -608,6 +608,10 @@ export function useThreadMessages({
           = typeof detail.payload.tokens_before === "number"
             ? detail.payload.tokens_before
             : undefined;
+        const tokensAfter
+          = typeof detail.payload.tokens_after === "number"
+            ? detail.payload.tokens_after
+            : undefined;
         const error
           = typeof detail.payload.error === "string"
             ? detail.payload.error
@@ -628,6 +632,9 @@ export function useThreadMessages({
             kind: "compaction" as const,
             ...(tokensBefore != null && tokensBefore > 0
               ? { tokensBefore }
+              : {}),
+            ...(tokensAfter != null && tokensAfter > 0
+              ? { tokensAfter }
               : {}),
             ...(trigger ? { trigger } : {}),
             ...(status !== "completed" ? { status } : {}),

@@ -190,6 +190,7 @@ describe("entry reducer", () => {
           id: "seg_cp-history_compaction",
           kind: "compaction",
           tokensBefore: 190_000,
+          tokensAfter: 20_000,
           trigger: "manual",
         },
       ],

@@ -400,6 +400,12 @@ export type TimelineSegment =
       /** Durable checkpoint this divider renders — see the shared model. */
       checkpointId?: string;
       tokensBefore?: number;
+      /**
+       * The agent's estimate of the prompt input tokens the next turn starts
+       * from once the summary replaces the covered history (shared model's
+       * `tokensAfter`). Absent when the agent reported no committed checkpoint.
+       */
+      tokensAfter?: number;
       trigger?: string;
       status?: "running" | "completed" | "failed";
       error?: string;

@@ -116,6 +116,7 @@ function MessageBlockImpl({
           <CompactionDivider
             error={segments[0]!.error}
             status={segments[0]!.status}
+            tokensAfter={segments[0]!.tokensAfter}
             tokensBefore={segments[0]!.tokensBefore}
             trigger={segments[0]!.trigger}
           />
@@ -204,6 +205,7 @@ function MessageBlockImpl({
                           error={segment.error}
                           key={segment.id}
                           status={segment.status}
+                          tokensAfter={segment.tokensAfter}
                           tokensBefore={segment.tokensBefore}
                           trigger={segment.trigger}
                         />
@@ -397,28 +399,47 @@ function StatusDivider({ label, pulsing = false, title, warning = false }: {
 /** Inline divider marking where the agent auto-compacted the conversation. */
 function CompactionDivider({
   tokensBefore,
+  tokensAfter,
   status = "completed",
   error,
   trigger,
 }: {
   tokensBefore?: number;
+  tokensAfter?: number;
   status?: "running" | "completed" | "failed";
   error?: string;
   trigger?: string;
 }) {
   const { t, i18n } = useTranslation("agent");
   const manual = trigger === "manual";
+  // Both counts come from the committed checkpoint: `tokensBefore` is what the
+  // turn was about to send, `tokensAfter` the agent's estimate of the next
+  // turn's prompt. They are only meaningful as a pair — a lone `tokensBefore`
+  // (released journal, legacy row) keeps the older label.
+  const delta = tokensBefore && tokensBefore > 0 && tokensAfter && tokensAfter > 0
+    ? {
+        before: formatNumber(tokensBefore, i18n.language),
+        after: formatNumber(tokensAfter, i18n.language),
+      }
+    : null;
   const label = status === "running"
     ? manual ? t("message.manuallyCompacting") : t("message.compacting")
     : status === "failed"
       ? manual ? t("message.manualCompactionFailed") : t("message.compactionFailed")
-      : manual
-        ? t("message.manuallyCompacted")
-        : tokensBefore && tokensBefore > 0
-          ? t("message.compactedTokens", {
-              formattedCount: formatNumber(tokensBefore, i18n.language),
-            })
-          : t("message.compacted");
+      : delta
+        ? t(
+            manual
+              ? "message.manuallyCompactedTokensDelta"
+              : "message.compactedTokensDelta",
+            delta,
+          )
+        : manual
+          ? t("message.manuallyCompacted")
+          : tokensBefore && tokensBefore > 0
+            ? t("message.compactedTokens", {
+                formattedCount: formatNumber(tokensBefore, i18n.language),
+              })
+            : t("message.compacted");
   return (
     <StatusDivider
       label={label}
