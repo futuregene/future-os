@@ -38,15 +38,18 @@ fn envelope(message: &str, corp_id: &str) -> Vec<u8> {
 
 /// An encrypted callback body, the way the platform sends one.
 fn encrypted(message: &str) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .encode(cipher::encrypt(&key(), &envelope(message, CORP_ID)))
+    encrypted_with(&key(), message, CORP_ID)
 }
 
 fn encrypted_for(message: &str, corp_id: &str) -> String {
+    encrypted_with(&key(), message, corp_id)
+}
+
+/// The base64 ciphertext for a message, under an arbitrary key.
+fn encrypted_with(key: &AesKey, message: &str, corp_id: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
-        .encode(cipher::encrypt(&key(), &envelope(message, corp_id)))
+        .encode(cipher::encrypt(key, &envelope(message, corp_id)))
 }
 
 /// The outer callback envelope, which carries the ciphertext.
@@ -448,16 +451,23 @@ fn a_ciphertext_that_is_not_base64_is_rejected() {
 
 #[test]
 fn a_callback_encrypted_with_another_key_is_rejected() {
+    // A *fixed* plaintext, not the live fixture. A wrong key is caught either by
+    // the padding check or — when the final byte happens to look like valid
+    // padding — by the envelope's own length check, and which one it is depends
+    // on the bytes. Taking the timestamp from the clock made the ciphertext
+    // change every second, which turned this into a coin flip that passed
+    // locally and failed on CI; the bytes have to be pinned for it to be a test.
     let other = AesKey::parse("WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo").expect("parse");
-    use base64::Engine;
-    let payload = base64::engine::general_purpose::STANDARD.encode(cipher::encrypt(
+    let payload = encrypted_with(
         &other,
-        &envelope(&text_message("M", "hi"), CORP_ID),
-    ));
-    let error = decrypt_callback(&key(), &payload, CORP_ID).expect_err("wrong key");
+        &message_with("MSG-1", "hello", "1700000000"),
+        CORP_ID,
+    );
+    let error = decrypt_callback(&key(), &payload, CORP_ID).expect_err("another key");
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("padding") || error.to_string().contains("plaintext"),
-        "{error}"
+        message.contains("padding") || message.contains("declares") || message.contains("UTF-8"),
+        "a wrong key must be reported as damage rather than accepted: {message}"
     );
 }
 
