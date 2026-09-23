@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import i18n from "../../i18n";
 import {
   listAvailableSkills,
   listInstalledSkills,
@@ -14,6 +15,7 @@ import {
   MAX_QUERY_CHARS,
   messageHash,
   MIN_QUERY_BYTES,
+  shownDescription,
   useSkillRecommendation,
 } from "./useSkillRecommendation";
 
@@ -49,8 +51,8 @@ function baseOptions(overrides: Partial<Parameters<typeof useSkillRecommendation
   };
 }
 
-function catalogueEntry(id: string) {
-  return { id, name: id, description: `${id} description`, nameZh: "", descriptionZh: "", category: "", categoryZh: "", latestVersion: "1.0" };
+function catalogueEntry(id: string, descriptionZh = "") {
+  return { id, name: id, description: `${id} description`, nameZh: "", descriptionZh, category: "", categoryZh: "", latestVersion: "1.0" };
 }
 
 beforeEach(() => {
@@ -67,8 +69,13 @@ beforeEach(() => {
   record.mockResolvedValue(undefined);
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.clearAllMocks();
+  // The setup file pins English; a test that switches languages puts it back so
+  // the other tests in this file keep reading the English wording.
+  await act(async () => {
+    await i18n.changeLanguage("en");
+  });
 });
 
 async function renderActive(options = baseOptions()) {
@@ -224,4 +231,48 @@ it("hashes messages stably and distinctly", () => {
   expect(messageHash("hello")).not.toBe(messageHash("hello!"));
   expect(messageHash("单细胞测序")).not.toBe(messageHash("single cell"));
   expect(messageHash("")).toHaveLength(16);
+});
+
+it("shows the catalogue's Chinese description in a Chinese UI", async () => {
+  available.mockResolvedValue([
+    catalogueEntry("future-web", "搜索公开网页并核实信息"),
+  ] as never);
+  suggest.mockResolvedValue({ name: "future-web", description: "search the web" });
+  const hook = await renderActive();
+  await act(async () => {
+    await i18n.changeLanguage("zh");
+  });
+  const reco = await act(() => hook.current.evaluate(LONG_ENOUGH));
+  expect(reco?.description).toBe("搜索公开网页并核实信息");
+  expect(hook.current.state.recommendation?.description).toBe("搜索公开网页并核实信息");
+});
+
+/**
+ * The recommender's own payload is *not* localized: it stays the English text
+ * the evaluation was tuned on, whatever the UI language is.
+ */
+it("still asks the recommender in English under a Chinese UI", async () => {
+  available.mockResolvedValue([
+    catalogueEntry("future-web", "搜索公开网页并核实信息"),
+  ] as never);
+  suggest.mockResolvedValue({ name: "future-web", description: "search the web" });
+  const hook = await renderActive();
+  await act(async () => {
+    await i18n.changeLanguage("zh");
+  });
+  await act(() => hook.current.evaluate(LONG_ENOUGH));
+  expect(suggest).toHaveBeenCalledWith(LONG_ENOUGH, [
+    { name: "future-web", description: "future-web description" },
+  ]);
+});
+
+it("shows the English description when there is no Chinese one (or the UI is English)", () => {
+  const card = { name: "future-web", description: "search the web" };
+  const zh = new Map([["future-web", "搜索公开网页"]]);
+  expect(shownDescription(card, "zh", zh)).toBe("搜索公开网页");
+  // An empty or whitespace-only Chinese line is the same as a missing one.
+  expect(shownDescription(card, "zh", new Map([["future-web", "   "]]))).toBe(card.description);
+  expect(shownDescription(card, "zh", new Map())).toBe(card.description);
+  // An English UI ignores whatever the catalogue carries.
+  expect(shownDescription(card, "en", zh)).toBe("search the web");
 });

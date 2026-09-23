@@ -609,7 +609,7 @@
             "wait": 2500
           },
           {
-            "eval": "const text = document.body.innerText; if (!text.includes('推荐技能')) throw new Error('recommendation card did not render'); if (!text.includes('安装并使用')) throw new Error('card is missing its install action');"
+            "eval": "const text = document.body.innerText; if (!text.includes('推荐技能')) throw new Error('recommendation card did not render'); if (!text.includes('安装并使用')) throw new Error('card is missing its install action'); if (!text.includes('把报告做成一整套幻灯片')) throw new Error('card description is not the Chinese one under ?lang=zh');"
           },
           {
             "shot": "d-skill-reco-card.png"

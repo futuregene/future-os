@@ -54,6 +54,27 @@ export function draftPicksSkill(draft: string): boolean {
   return draft.split(/\s+/).some(token => token.length > 1 && token.startsWith("/"));
 }
 
+/**
+ * The text the card shows for a recommendation.
+ *
+ * The candidate sent to the recommender is always the catalogue's English
+ * description — the payload the 100-question evaluation was tuned on
+ * (`docs/internals/skill_reco/evaluation.md`) — so the card follows the UI
+ * language here instead, falling back to the English text the desktop echoed
+ * whenever the catalogue carries no Chinese line for that skill.
+ */
+export function shownDescription(
+  card: SkillCandidate,
+  language: string,
+  zhById: Map<string, string>,
+): string {
+  // Matches `SkillPicker`: Mobile's language tags are `zh`/`en`.
+  if (!language.startsWith("zh"))
+    return card.description;
+  const zh = zhById.get(card.name);
+  return zh && zh.trim().length > 0 ? zh : card.description;
+}
+
 /** UTF-8 length without `TextEncoder` (absent in the RN runtime). */
 export function utf8Length(text: string): number {
   let length = 0;
@@ -89,6 +110,7 @@ export interface SkillRecommendationApi {
 export function useSkillRecommendation(
   enabled: boolean,
   desktopOnline: boolean,
+  language: string,
 ): SkillRecommendationApi {
   const remote = useRemote();
   const [suggestion, setSuggestion] = useState<PendingSuggestion | null>(null);
@@ -96,6 +118,9 @@ export function useSkillRecommendation(
   // `evaluate` below rather than a ref, so each evaluation sees the current
   // value without writing a ref during render.
   const inFlightRef = useRef(false);
+  // The catalogue's Chinese descriptions, keyed by skill id, for the card's
+  // text (see `shownDescription`) — filled by the candidate read below.
+  const zhDescriptionsRef = useRef<Map<string, string>>(new Map());
 
   /** The uninstalled skills: the desktop's catalogue minus its installed set. */
   const candidateList = useCallback(async (): Promise<SkillCandidate[]> => {
@@ -104,6 +129,9 @@ export function useSkillRecommendation(
       remote.listInstalledSkills().catch(() => []),
     ]);
     const installedIds = new Set(installed.map(skill => skill.id));
+    zhDescriptionsRef.current = new Map(
+      catalogue.map(entry => [entry.id, entry.descriptionZh ?? ""]),
+    );
     return catalogue
       .filter(entry => !installedIds.has(entry.id))
       .map(entry => ({ name: entry.id, description: entry.description }))
@@ -144,7 +172,10 @@ export function useSkillRecommendation(
       // is displayed, whatever the user then does.
       await recordShown(answer.name, hash);
       setSuggestion({
-        skill: { name: answer.name, description: answer.description },
+        skill: {
+          name: answer.name,
+          description: shownDescription(answer, language, zhDescriptionsRef.current),
+        },
         draft: trimmed,
       });
       return true;
@@ -155,7 +186,7 @@ export function useSkillRecommendation(
     } finally {
       inFlightRef.current = false;
     }
-  }, [candidateList, desktopOnline, enabled, remote]);
+  }, [candidateList, desktopOnline, enabled, language, remote]);
 
   const installAndUse = useCallback(async (): Promise<string | null> => {
     const pending = suggestion;
