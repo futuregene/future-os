@@ -15,6 +15,9 @@ module.exports = {
   // roots already restrict discovery to mobile. Avoid expanding <rootDir>
   // into a glob: Windows paths containing /.claude/ become mixed separators.
   testMatch: ["**/src/**/__tests__/**/*.test.ts"],
+  // AsyncStorage is a native module, so importing it in Node throws until it is
+  // replaced; the setup file installs the package's mock. See jest.setup.js.
+  setupFiles: ["<rootDir>/jest.setup.js"],
   // Unified/Remark and their syntax-tree utilities are ESM-only. Metro handles
   // them directly; Jest needs Babel to transform the dependency chain. Keep the
   // preset's two explicit plugin exclusions, but do not skip package sources.

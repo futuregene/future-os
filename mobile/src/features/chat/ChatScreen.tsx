@@ -32,6 +32,8 @@ import { useChatScroll } from "./useChatScroll";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
 import { useSendMessage } from "./useSendMessage";
+import { useSkillRecommendation } from "./useSkillRecommendation";
+import { useDesktopResource } from "../settings/useDesktopResource";
 import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
@@ -41,7 +43,7 @@ import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
 import { SessionUsageSheet } from "./components/SessionUsageSheet";
 import { NativeFileActionSheet } from "./components/NativeFileActionSheet";
-import { COMPOSER_FADE_CLEARANCE } from "./utils";
+import { COMPOSER_FADE_CLEARANCE, showToast } from "./utils";
 import { newestFirst } from "./timelineListModel";
 
 const SYNC_NOTICE_MIN_MS = 750;
@@ -254,11 +256,64 @@ export function ChatScreen() {
     transcriptItems.length,
   );
   const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
+
+  // Skill recommendation (PRD v1.6): the desktop's toggle decides whether the
+  // phone asks at all. The evaluator holds the draft while it asks, so `send`
+  // below cannot race it.
+  const [installingSkill, setInstallingSkill] = useState(false);
+  const desktopSettings = useDesktopResource(
+    remote.getDesktopSettings,
+    remote.desktopSettingsRevision,
+    remote.desktopOnline,
+  );
+  const skillRecommendation = useSkillRecommendation(
+    desktopSettings.data?.skillRecommend ?? true,
+    remote.desktopOnline,
+  );
+  const { suggestion: skillSuggestion } = skillRecommendation;
   const sendFromComposer = useCallback(async () => {
     if (!message.trim() && attachments.length === 0) return;
+    // A suggestion on screen owns the draft: the message goes out only when the
+    // user installs the skill or dismisses the card.
+    if (skillSuggestion) {
+      showToast(t("chat.skillSuggestionPending"));
+      return;
+    }
+    // Ask before sending, and hold the draft if there is a suggestion. Every
+    // other outcome (no match, timeout, error) falls through to a normal send.
+    if (await skillRecommendation.evaluate(message)) return;
     scrollToLatest();
     await send();
-  }, [attachments, message, scrollToLatest, send]);
+  }, [attachments.length, message, scrollToLatest, send, skillRecommendation, skillSuggestion, t]);
+
+  //「安装并使用」: install, then send the held draft with the skill appended.
+  const installSuggestedSkill = useCallback(async () => {
+    if (installingSkill) return;
+    setInstallingSkill(true);
+    try {
+      const composed = await skillRecommendation.installAndUse();
+      if (composed === null) {
+        // A failed install keeps the card up so the user can retry or send
+        // without the skill (PRD v1.6 §6.2).
+        showToast(t("chat.skillInstallFailed"));
+        return;
+      }
+      setMessage(composed);
+      scrollToLatest();
+      // Send the composed text explicitly: `message` still holds the draft.
+      await send(composed);
+    }
+    finally {
+      setInstallingSkill(false);
+    }
+  }, [installingSkill, scrollToLatest, send, setMessage, skillRecommendation, t]);
+
+  //「忽略并发送」: send what the user typed, unchanged.
+  const dismissSuggestedSkill = useCallback(() => {
+    skillRecommendation.dismiss();
+    scrollToLatest();
+    void send();
+  }, [scrollToLatest, send, skillRecommendation]);
   const {
     showLoadOlderHint,
     pagingActive,
@@ -596,6 +651,10 @@ export function ChatScreen() {
                 setSelector={setSelector}
                 onCompactContext={compactContext.compact}
                 compactionPending={compactContext.pending}
+                skillSuggestion={skillRecommendation.suggestion}
+                skillInstalling={installingSkill}
+                onInstallSkill={installSuggestedSkill}
+                onDismissSkill={dismissSuggestedSkill}
               />
               </PausedTimeline>
             </View>
