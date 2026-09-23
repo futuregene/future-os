@@ -6,12 +6,12 @@
 //! daily budget, "user already picked a skill") lives in the calling client;
 //! this module only performs the Jev call and the refusal gate.
 //!
-//! **Endpoint**: FutureOS hosts Jev at `{future_base_url}/v1/systemone`
-//! (`https://future-os.cn/api` + `/v1/systemone`), billed at the provider's
-//! cost, and authenticated with the *Future provider* credential from
-//! `auth.json` — so a separately configured key is no longer needed. The
-//! gateway's request shape differs from TypeSafe's public API (see
-//! [`build_request`]).
+//! **Endpoint**: Jev is served through the Future account's own gateway,
+//! `{future_base_url}/v1/systemone` (`https://future-os.cn/api` +
+//! `/v1/systemone`), authenticated with the Future provider credential in
+//! `auth.json` and billed to that account. There is no separate Jev
+//! credential. The gateway's request shape differs from TypeSafe's public API
+//! (see [`build_request`]).
 //!
 //! Design constraints carried over from the offline evaluation
 //! (`demos/jev-skill-suggest/bench/REPORT.md`):
@@ -45,14 +45,6 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// chars (the measured knee: shorter loses answers, longer buys nothing).
 const DESC_CHARS: usize = 220;
 
-/// Overrides for the endpoint, credential and model. Unset means "use the
-/// Future provider's own credential and base URL", which is the shipped path;
-/// they exist so a development build can point at another gateway (all three
-/// must speak the gateway's request shape).
-const KEY_ENV: &str = "FUTURE_SKILL_RECO_JEV_KEY";
-const URL_ENV: &str = "FUTURE_SKILL_RECO_JEV_URL";
-const MODEL_ENV: &str = "FUTURE_SKILL_RECO_JEV_MODEL";
-
 const NONE_OPTION: &str = "none_of_these";
 
 /// Where a call goes and what authenticates it.
@@ -63,30 +55,23 @@ struct Endpoint {
     model: String,
 }
 
-/// Resolve the endpoint: the Future provider's credential and base URL, with
-/// environment overrides for development.
+/// Resolve the endpoint from the Future account: its credential authenticates
+/// the call and its base URL hosts the gateway. Jev is served by the Future
+/// provider and nowhere else, so there is deliberately no separate credential
+/// to configure.
 ///
-/// `None` means the feature is unavailable (no credential), which the caller
+/// `None` means the feature is unavailable (not signed in), which the caller
 /// treats the same as "no recommendation" — the feature is off, not broken.
 fn endpoint() -> Option<Endpoint> {
     let auth = crate::auth::AuthStore::load();
-    let key = std::env::var(KEY_ENV)
-        .ok()
-        .filter(|key| !key.trim().is_empty())
-        .or_else(|| auth.get(FUTURE_PROVIDER))?;
-    let base = std::env::var(URL_ENV)
-        .ok()
-        .filter(|url| !url.trim().is_empty())
-        .or_else(|| auth.base_url(FUTURE_PROVIDER))
+    let key = auth.get(FUTURE_PROVIDER)?;
+    let base = auth
+        .base_url(FUTURE_PROVIDER)
         .unwrap_or_else(|| DEFAULT_FUTURE_BASE.to_string());
-    let model = std::env::var(MODEL_ENV)
-        .ok()
-        .filter(|model| !model.trim().is_empty())
-        .unwrap_or_else(|| JEV_MODEL.to_string());
     Some(Endpoint {
         url: systemone_url(&base),
         key,
-        model,
+        model: JEV_MODEL.to_string(),
     })
 }
 
@@ -340,8 +325,7 @@ fn log_outcome(outcome: &Outcome, attempt: Attempt, query: &str, elapsed: std::t
     let served_by = attempt.served_by.as_deref().unwrap_or("-");
     match outcome {
         Outcome::NoKey => tracing::debug!(
-            "skill reco: no Future account credential (and no {} override); recommendation is off",
-            KEY_ENV
+            "skill reco: not signed in (no Future account credential); recommendation is off"
         ),
         Outcome::NoInput {
             query_bytes,
@@ -841,64 +825,68 @@ mod tests {
         assert!(suggest_skill("q", &[]).is_none());
     }
 
-    /// Clear the endpoint overrides. They are process-global, so a test that
-    /// sets one must clear it before it ends.
-    fn clear_endpoint_env() {
-        for key in [KEY_ENV, URL_ENV, MODEL_ENV] {
-            std::env::remove_var(key);
-        }
-    }
-
-    /// With no credential anywhere the feature is simply off — and the check
-    /// must not depend on the developer's own `auth.json`, so these run against
-    /// an isolated home rather than the real one.
+    /// With no credential the feature is simply off. This must not depend on the
+    /// developer's own `auth.json`, so it runs against an isolated home.
     #[test]
     fn without_a_credential_the_feature_is_off() {
         let home = crate::test_support::TestHome::new();
-        clear_endpoint_env();
         assert!(
             endpoint().is_none(),
-            "a fresh home has no Future provider credential"
+            "a fresh home has no Future account credential"
         );
         assert!(suggest_skill("q", &[cand("a")]).is_none());
         drop(home);
     }
 
-    /// The shipped path authenticates with the Future provider's own credential:
-    /// no separately configured key. The environment still overrides each part,
-    /// so a development build can point at another gateway.
+    /// A call goes to the Future account's gateway, authenticated by that
+    /// account's credential — Jev has no separate key to configure. The base URL
+    /// follows the provider entry, with the documented origin as the fallback.
     #[test]
-    fn the_endpoint_comes_from_the_future_provider_and_the_env_wins() {
+    fn the_endpoint_is_the_future_accounts_gateway() {
+        // The provider's own base URL.
         let home = crate::test_support::TestHome::new();
-        clear_endpoint_env();
-        assert!(endpoint().is_none(), "no credential yet");
-
-        // An entry of the shape a logged-in install writes.
-        let auth_dir = home.path().join(".future/agent");
-        std::fs::create_dir_all(&auth_dir).expect("auth dir");
-        std::fs::write(
-            auth_dir.join("auth.json"),
-            r#"{"future":{"type":"api_key","key":"provider-key","base_url":"https://future-os.cn/api"}}"#,
-        )
-        .expect("write auth");
-
-        let resolved = endpoint().expect("the provider credential is used");
-        assert_eq!(resolved.key, "provider-key");
+        write_auth(home.path(), "acct-key", Some("https://future-os.cn/api"));
+        let resolved = endpoint().expect("the account credential is used");
+        assert_eq!(resolved.key, "acct-key");
         assert_eq!(resolved.url, "https://future-os.cn/api/v1/systemone");
         assert_eq!(resolved.model, "jev");
+        drop(home);
 
-        std::env::set_var(KEY_ENV, "env-key");
-        std::env::set_var(URL_ENV, "https://staging.example.com/gw");
-        std::env::set_var(MODEL_ENV, "jev-preview");
-        let overridden = endpoint().expect("resolves");
-        assert_eq!(overridden.key, "env-key");
+        // No base URL configured: the account is still usable, at the default
+        // origin. A custom gateway (staging, self-hosted) keeps its own path.
+        let home = crate::test_support::TestHome::new();
+        write_auth(home.path(), "acct-key", None);
         assert_eq!(
-            overridden.url,
+            endpoint().expect("resolves").url,
+            "https://future-os.cn/api/v1/systemone"
+        );
+        drop(home);
+
+        let home = crate::test_support::TestHome::new();
+        write_auth(
+            home.path(),
+            "acct-key",
+            Some("https://staging.example.com/gw"),
+        );
+        assert_eq!(
+            endpoint().expect("resolves").url,
             "https://staging.example.com/gw/v1/systemone"
         );
-        assert_eq!(overridden.model, "jev-preview");
-
-        clear_endpoint_env();
         drop(home);
+    }
+
+    /// Write the `auth.json` a signed-in install has, under an isolated home.
+    fn write_auth(home: &std::path::Path, key: &str, base_url: Option<&str>) {
+        let dir = home.join(".future/agent");
+        std::fs::create_dir_all(&dir).expect("auth dir");
+        let base = match base_url {
+            Some(url) => format!(r#","base_url":"{url}""#),
+            None => String::new(),
+        };
+        std::fs::write(
+            dir.join("auth.json"),
+            format!(r#"{{"future":{{"type":"api_key","key":"{key}"{base}}}}}"#),
+        )
+        .expect("write auth");
     }
 }
