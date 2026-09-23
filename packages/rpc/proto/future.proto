@@ -238,6 +238,13 @@ message RpcCommand {
   // A models.json `providers` entry (plus optional auth.json key). Read when
   // type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
   ProviderUpsert provider_config = 171;
+
+  // ── suggest_skill ──────────────────────────────────────────────────────
+  // The user's first-turn text. Read when type == "suggest_skill".
+  string suggest_query = 180;
+  // UNINSTALLED skill candidates offered to Jev (caller computes catalog −
+  // installed). The agent never sees installed skills.
+  repeated SkillCandidate suggest_candidates = 181;
 }
 
 // ── Attachment ───────────────────────────────────────────────────────────────
@@ -451,6 +458,7 @@ message ResponsePayload {
     SessionEventsSinceResponse get_session_events_since = 14;
     SessionStatsResponse get_session_stats = 15;
     RuntimeMetricsResponse get_runtime_metrics = 16;
+    SuggestSkillResult suggest_skill = 17;
   }
 }
 
@@ -570,6 +578,21 @@ message RefreshSkillsResult {
   uint64 skills_count = 1;
   repeated string skills = 2;
   bool refreshed = 3;
+}
+
+// suggest_skill: one skill candidate offered to Jev as a Choice option.
+// Field names mirror the wire JSON spelling (snake_case).
+message SkillCandidate {
+  // Unique skill id (= SKILL.md `name` = install dir name).
+  string name = 1;
+  // Short description shown to Jev (truncated by the caller).
+  string description = 2;
+}
+
+// suggest_skill response. `skill` is the single recommendation, or absent
+// when the gate refused, the request timed out/failed, or no key was set.
+message SuggestSkillResult {
+  SkillCandidate skill = 1;
 }
 
 // get_session_events_since response.

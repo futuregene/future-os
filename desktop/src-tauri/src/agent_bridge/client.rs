@@ -525,6 +525,8 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         include_builtin_providers: false,
         auth_update: None,
         provider_config: None,
+        suggest_query: String::new(),
+        suggest_candidates: vec![],
     }
 }
 

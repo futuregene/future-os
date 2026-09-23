@@ -85,6 +85,53 @@ pub async fn refresh_skills() {
     }
 }
 
+/// One skill the recommendation engine may offer (catalog − installed, computed
+/// by the caller) and, on success, the single recommendation returned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCandidate {
+    pub name: String,
+    pub description: String,
+}
+
+/// Ask the agent's Jev recommender for at most one skill matching `query`.
+/// Returns `None` on refusal, timeout, error, or when the feature is
+/// unavailable server-side — recommendation is best-effort, so every failure
+/// collapses to "no recommendation" and the caller submits normally.
+pub async fn suggest_skill(
+    query: &str,
+    candidates: Vec<SkillCandidate>,
+) -> Result<Option<SkillCandidate>, crate::AppError> {
+    #[derive(Deserialize)]
+    struct SuggestResponse {
+        #[serde(default)]
+        skill: Option<SkillCandidate>,
+    }
+
+    let mut command = base_command("suggest_skill", String::new());
+    command.suggest_query = query.to_string();
+    command.suggest_candidates = candidates
+        .into_iter()
+        .map(|c| crate::agent_proto::SkillCandidate {
+            name: c.name,
+            description: c.description,
+        })
+        .collect();
+
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(command)
+        .await
+        .map_err(|error| format!("Unable to request a skill suggestion: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the skill suggestion.")?;
+
+    let parsed =
+        serde_json::from_value::<SuggestResponse>(future_rpc::decode::response_data(&response))
+            .map_err(|error| format!("Future Agent returned an invalid suggestion: {error}"))?;
+    Ok(parsed.skill)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{mock_agent, Reply, TestHome};

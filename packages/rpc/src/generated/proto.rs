@@ -166,6 +166,14 @@ pub struct RpcCommand {
     /// type == "upsert_provider" or "delete_provider" (the latter uses only `id`).
     #[prost(message, optional, tag = "171")]
     pub provider_config: ::core::option::Option<ProviderUpsert>,
+    /// ── suggest_skill ──────────────────────────────────────────────────────
+    /// The user's first-turn text. Read when type == "suggest_skill".
+    #[prost(string, tag = "180")]
+    pub suggest_query: ::prost::alloc::string::String,
+    /// UNINSTALLED skill candidates offered to Jev (caller computes catalog −
+    /// installed). The agent never sees installed skills.
+    #[prost(message, repeated, tag = "181")]
+    pub suggest_candidates: ::prost::alloc::vec::Vec<SkillCandidate>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Attachment {
@@ -354,7 +362,7 @@ pub struct RpcResponse {
 pub struct ResponsePayload {
     #[prost(
         oneof = "response_payload::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
     )]
     pub kind: ::core::option::Option<response_payload::Kind>,
 }
@@ -394,6 +402,8 @@ pub mod response_payload {
         GetSessionStats(super::SessionStatsResponse),
         #[prost(message, tag = "16")]
         GetRuntimeMetrics(super::RuntimeMetricsResponse),
+        #[prost(message, tag = "17")]
+        SuggestSkill(super::SuggestSkillResult),
     }
 }
 /// list_sessions response wrapper.
@@ -565,6 +575,24 @@ pub struct RefreshSkillsResult {
     pub skills: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(bool, tag = "3")]
     pub refreshed: bool,
+}
+/// suggest_skill: one skill candidate offered to Jev as a Choice option.
+/// Field names mirror the wire JSON spelling (snake_case).
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SkillCandidate {
+    /// Unique skill id (= SKILL.md `name` = install dir name).
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Short description shown to Jev (truncated by the caller).
+    #[prost(string, tag = "2")]
+    pub description: ::prost::alloc::string::String,
+}
+/// suggest_skill response. `skill` is the single recommendation, or absent
+/// when the gate refused, the request timed out/failed, or no key was set.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SuggestSkillResult {
+    #[prost(message, optional, tag = "1")]
+    pub skill: ::core::option::Option<SkillCandidate>,
 }
 /// get_session_events_since response.
 #[derive(Clone, PartialEq, ::prost::Message)]

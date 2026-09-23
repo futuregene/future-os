@@ -69,6 +69,27 @@ export function refreshSkills(): Promise<void> {
   return invokeCommand<void>("refresh_skills");
 }
 
+/** One skill candidate offered to the recommender, and the recommendation shape. */
+export interface SkillCandidate {
+  name: string;
+  description: string;
+}
+
+/**
+ * Recommend at most one uninstalled skill for the user's first-turn text via
+ * the agent's Jev recommender. The caller decides when to invoke (new session,
+ * first message, length cap, login/balance) and supplies the candidate set
+ * (catalogue − installed). Returns null on refusal, timeout, error, or when the
+ * feature is unavailable server-side — recommendation is best-effort, so every
+ * failure collapses to "no recommendation" and the caller submits normally.
+ */
+export function suggestSkill(
+  query: string,
+  candidates: SkillCandidate[],
+): Promise<SkillCandidate | null> {
+  return invokeCommand<SkillCandidate | null>("suggest_skill", { query, candidates });
+}
+
 /** Force-run the built-in skill bootstrap (installs platform skills via CLI). */
 export function bootstrapBuiltinSkills(): Promise<void> {
   return invokeCommand<void>("bootstrap_builtin_skills");

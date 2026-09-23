@@ -39,6 +39,9 @@ pub struct AppSettings {
     /// Use the community-edition UI: Future is configured like another
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
+    /// Recommend at most one uninstalled skill on the first message of a new
+    /// conversation (via the agent's Jev recommender). Off by default.
+    pub skill_recommend: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -55,6 +58,7 @@ pub struct UpdateAppSettingsInput {
     pub auto_title_first_turn: Option<bool>,
     pub title_language: Option<String>,
     pub community_edition: Option<bool>,
+    pub skill_recommend: Option<bool>,
 }
 
 const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -69,6 +73,7 @@ const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
 const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
 const KEY_TITLE_LANGUAGE: &str = "title_language";
 const KEY_COMMUNITY_EDITION: &str = "community_edition";
+const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
 const KEY_DEVICE_ID: &str = "device_id";
 
 /// Atomically install the Desktop-wide device identity. The caller supplies a
@@ -182,6 +187,10 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
         let value = if community_edition { "true" } else { "false" };
         write_value(&tx, KEY_COMMUNITY_EDITION, value, now)?;
     }
+    if let Some(skill_recommend) = input.skill_recommend {
+        let value = if skill_recommend { "true" } else { "false" };
+        write_value(&tx, KEY_SKILL_RECOMMEND, value, now)?;
+    }
 
     let settings = read_app_settings(&tx)?;
     tx.commit()?;
@@ -236,6 +245,9 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
     let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
         .map(|value| value == "true")
         .unwrap_or(false);
+    let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
+        .map(|value| value == "true")
+        .unwrap_or(false); // Off by default — recommendation is opt-in.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -247,6 +259,7 @@ fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> 
         auto_title_first_turn,
         title_language,
         community_edition,
+        skill_recommend,
     })
 }
 
@@ -297,6 +310,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: Some(true),
+            skill_recommend: None,
         }
     }
 
@@ -392,6 +406,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: None,
+            skill_recommend: None,
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "off");
@@ -502,6 +517,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: None,
+            skill_recommend: None,
         })
         .expect("noop update");
         assert_eq!(settings.approval_tier, "off", "defaults survive a noop");
@@ -522,6 +538,7 @@ mod tests {
             auto_title_first_turn: None,
             title_language: None,
             community_edition: None,
+            skill_recommend: None,
         })
         .expect("update");
         assert!(!updated.skill_guide_dismissed);
