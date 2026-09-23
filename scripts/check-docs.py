@@ -114,8 +114,9 @@ PAIR_BY_OTHER_RULE = ("docs/wiki/", "docs/dist/")
 # Each entry is the path of the existing file (relative to the repo root,
 # POSIX separators). Adding a pair without removing the entry is an error.
 BILINGUAL_PENDING = {
-    # All pending bilingual pairs have landed; keep the set empty so any
-    # future scope registers its pending entries here explicitly.
+    # The auto-approval design is intentionally being reviewed in Chinese
+    # before its English translation is produced.
+    "docs/internals/desktop/AUTO_APPROVAL.zh-CN.md",
 }
 
 
