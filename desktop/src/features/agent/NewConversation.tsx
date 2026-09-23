@@ -301,7 +301,6 @@ export function NewConversation({
               disabled={catalogLoading}
               skillRecommendation={{
                 card: recommendation.state.recommendation,
-                pending: recommendation.state.pending,
                 onEvaluate: recommendation.evaluate,
                 onInstall: installRecommended,
                 onDismiss: recommendation.dismiss,

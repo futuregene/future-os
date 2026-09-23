@@ -39,8 +39,6 @@ const RECOMMEND_TIMEOUT_MS = 1500;
 export interface SkillRecommendationState {
   /** The recommendation currently shown as a card, or null. */
   recommendation: SkillCandidate | null;
-  /** True while a recommend round-trip is in flight (submit is held). */
-  pending: boolean;
 }
 
 export interface SkillRecommendationControls {
@@ -114,7 +112,6 @@ export function useSkillRecommendation({
   balance,
 }: Options): SkillRecommendationControls {
   const [recommendation, setRecommendation] = useState<SkillCandidate | null>(null);
-  const [pending, setPending] = useState(false);
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   // Live mirror so evaluate() reads the latest gate values regardless of render
   // timing; a stale closure would otherwise reuse the first render's
@@ -185,7 +182,6 @@ export function useSkillRecommendation({
       return null;
 
     inFlightRef.current = true;
-    setPending(true);
     try {
       const result = await Promise.race([
         suggestSkill(trimmed, candidatesRef.current).catch(() => null),
@@ -214,11 +210,10 @@ export function useSkillRecommendation({
     }
     finally {
       inFlightRef.current = false;
-      setPending(false);
     }
   }, []);
 
   const dismiss = useCallback(() => setRecommendation(null), []);
 
-  return { state: { recommendation, pending }, evaluate, dismiss, candidates };
+  return { state: { recommendation }, evaluate, dismiss, candidates };
 }

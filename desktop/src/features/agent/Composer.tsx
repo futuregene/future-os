@@ -63,8 +63,6 @@ export interface SkillRecommendationCard {
 export interface SkillRecommendationProp {
   /** The card to show, or null. */
   card: SkillRecommendationCard | null;
-  /** True while a recommend round-trip is holding submission. */
-  pending: boolean;
   /**
    * Evaluate the draft for a recommendation. Resolve with the card to show
    * (submission is held), or null to submit normally. Never rejects.
@@ -753,14 +751,6 @@ function ComposerImpl({
                   {t("composer.skillRecommend.dismissAndSend")}
                 </button>
               </div>
-            </div>
-          )
-        : null}
-      {skillRecommendation?.pending
-        ? (
-            <div className="mb-2 flex items-center gap-2 rounded-md border border-line bg-surface-raised px-3 py-2 text-xs text-ink-muted">
-              <Loader2 className="size-3.5 animate-spin" />
-              {t("composer.skillRecommend.checking")}
             </div>
           )
         : null}

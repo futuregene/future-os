@@ -25,7 +25,6 @@ function recommendationProps(
 ): SkillRecommendationProp {
   return {
     card,
-    pending: false,
     onEvaluate: evaluate,
     onInstall: vi.fn(async () => true),
     onDismiss: vi.fn(),

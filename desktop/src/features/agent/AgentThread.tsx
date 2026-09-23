@@ -630,7 +630,6 @@ export function AgentThread({
               draftKey={thread?.id}
               skillRecommendation={{
                 card: recommendation.state.recommendation,
-                pending: recommendation.state.pending,
                 onEvaluate: recommendation.evaluate,
                 onInstall: installRecommended,
                 onDismiss: recommendation.dismiss,
