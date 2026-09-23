@@ -1,7 +1,6 @@
 [38;5;245m┌──────────────────────────────────────────────────────────────────────────────┐
 │[39m  [1m[38;5;252mfuture-tui[0m  [38;5;245mTerminal UI Help[39m                                                [38;5;245m│
 ├──────────────────────────────────────────────────────────────────────────────┤
-│[39m  [38;5;245m/editor                 edit the draft in $VISUAL/$EDITOR[39m                   [38;5;245m│
 │[39m  [38;5;245m/export                 export the session to an HTML file[39m                  [38;5;245m│
 │[39m  [38;5;245m/fork                   fork the current session[39m                            [38;5;245m│
 │[39m  [38;5;245m/help                   show all commands and shortcuts[39m                     [38;5;245m│
@@ -21,6 +20,7 @@
 │[39m  [38;5;245m/scoped-models          configure model enable/disable list[39m                 [38;5;245m│
 │[39m  [38;5;245m/sessions               browse and switch sessions[39m                          [38;5;245m│
 │[39m  [38;5;245m/shell <cmd>            run a shell command via the agent[39m                   [38;5;245m│
+│[39m  [38;5;245m/skill-recommend        offer a fitting skill before sending (on|off)[39m       [38;5;245m│
 │[39m  [38;5;245m/skills                 browse, insert and install skills[39m                   [38;5;245m│
 │[39m  [38;5;245m/snapshot               diagnostic snapshot of the current run[39m              [38;5;245m│
 │[39m  [38;5;245m/status                 session state, token usage, cost[39m                    [38;5;245m│
@@ -32,5 +32,5 @@
 │[39m  [38;5;245m/transcript             full transcript with search and copy[39m                [38;5;245m│
 │[39m  [38;5;245m/tree                   session tree with fork/clone hierarchy[39m              [38;5;245m│
 │[39m  [38;5;245m/usage                  tokens, cost and context usage[39m                      [38;5;245m│
-│[39m  [38;5;245m  ↑ 26 above · ↑↓ scroll[39m                                                    [38;5;245m│
+│[39m  [38;5;245m  ↑ 27 above · ↑↓ scroll[39m                                                    [38;5;245m│
 └──────────────────────────────────────────────────────────────────────────────┘
