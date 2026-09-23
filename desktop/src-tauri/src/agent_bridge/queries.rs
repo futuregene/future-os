@@ -180,9 +180,9 @@ pub(crate) async fn get_run_snapshot(
         || projection["runId"] != run_id
         || cursor.is_none_or(|cursor| cursor < 0)
         || data["watermark"].as_i64() != cursor
-        || !projection["events"]
+        || projection["events"]
             .as_array()
-            .is_some_and(|events| !events.is_empty())
+            .is_none_or(|events| events.is_empty())
     {
         return Err("get_run_snapshot returned an invalid projection".into());
     }

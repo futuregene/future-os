@@ -1,6 +1,59 @@
 use super::reconciliation::reconcile_run_gone;
 use super::*;
 
+/// Persist the user entry for a prompt the Agent accepted but queued behind an
+/// older run (attach refused with RunGone). The acceptance ordering is
+/// durable: session config events, then the user entry, then `run_started` —
+/// so the first `run_id`-bound entry is the user entry, and no terminal marker
+/// can precede it.
+///
+/// Durable writes replay on the next import, so on the next launch the entry
+/// flows through the same replay path as the original GUI writer; this call
+/// only patches the current session.
+async fn persist_queued_user_entry(session_id: &str, run_id: &str) -> Result<(), String> {
+    let mut client = connect_agent().await.map_err(|e| format!("connect: {e}"))?;
+    let entries = fetch_all_session_entries_with_client(&mut client, session_id)
+        .await
+        .map_err(|e| format!("get_session_entries: {e}"))?;
+    let Some(entry) = entries
+        .into_iter()
+        .find(|entry| entry.run_id.as_deref() == Some(run_id))
+    else {
+        // The Agent accepted the prompt (RunGone is a response, and queued
+        // runs persist their user entry before the ack), so an empty result
+        // is a failed session read, not evidence of a missing entry — leave
+        // the journal as the source of truth rather than persisting a stub.
+        return Err(format!(
+            "queued run {run_id} accepted by the Agent but its user entry was not found"
+        ));
+    };
+    // Durable entries live in the Agent journal — the run-event log needs the
+    // entry's identity + text at idx 0 so a reload shows the queued prompt.
+    persist::persist_run_event(
+        Some(run_id),
+        "user_message",
+        &serde_json::json!({
+            "entry_id": entry.id,
+            "run_id": run_id,
+            "text": entry_text(&entry),
+        })
+        .to_string(),
+        0,
+    );
+    Ok(())
+}
+
+/// The user-visible text of a queued prompt's durable entry: first text
+/// block, else the whole JSON (attachments-only entries have no text block).
+fn entry_text(entry: &future_rpc::payloads::SessionEntryPayload) -> String {
+    entry
+        .blocks
+        .iter()
+        .find_map(|block| block.text.as_deref())
+        .map(str::to_string)
+        .unwrap_or_else(|| serde_json::to_string(entry).unwrap_or_default())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPromptResponse {
@@ -84,6 +137,10 @@ pub(crate) async fn agent_prompt_with_acceptance(
         Ok(response) if response.complete => {
             mark_run_completed_if_active(request.run_id.as_deref());
         }
+        // A queued run is alive on the Agent: `agent_prompt_inner` already
+        // settled the row to `running` and the session observer owns its
+        // projection from here — do not rewrite the row as failed.
+        Ok(response) if response.termination_kind.as_deref() == Some("run_queued") => {}
         Ok(response) => {
             let error = stream::termination_error(response.termination_kind.as_deref());
             mark_run_failed_if_active(request.run_id.as_deref(), error);
@@ -302,19 +359,48 @@ pub(super) async fn agent_prompt_inner(
             })
         }
         Err(stream::CollectError::RunGone(reason)) => {
-            // The Agent accepted the prompt (ack) but no longer has the run by
-            // attach time — a restart or rollover in the ack→attach window. The
-            // run is gone, so an abort would be a no-op; reconcile the local row
-            // from the journal instead and surface an error (we have no streamed
-            // content to show). local == canonical for a GUI-originated prompt.
-            if let Err(reconcile_error) =
-                reconcile_run_gone(&canonical_run_id, &canonical_run_id, &session_id, &reason).await
+            // The Agent accepted the prompt (ack) but the attach was refused —
+            // either the run is genuinely gone, or it was accepted QUEUED
+            // behind an older run (a queued run has no execution epoch to
+            // attach to). Reconcile against the Agent's authoritative state:
+            // it settles a truly-gone run from the journal, and for a queued
+            // run it leaves the row running and hands the projection to the
+            // session observer.
+            if let Err(reconcile_error) = reconcile_run_gone(
+                &canonical_run_id,
+                &canonical_run_id,
+                &session_id,
+                &thread_id,
+                &reason,
+            )
+            .await
             {
                 return Err(format!(
                     "Future Agent run ended before the stream attached: {reason}; \
                      terminal reconciliation failed: {reconcile_error}"
                 )
                 .into());
+            }
+            let still_running = crate::store::get_run(&canonical_run_id)
+                .ok()
+                .flatten()
+                .map(|run| !matches!(run.status.as_str(), "completed" | "failed" | "cancelled"))
+                .unwrap_or(false);
+            if still_running {
+                // Queued: persist its user entry (durable on the Agent since
+                // acceptance) so the reload path sees the prompt, then let the
+                // observer resume the stream when the run starts. The prompt's
+                // own stream ends here — NOT as a failure of the run.
+                if let Err(error) = persist_queued_user_entry(&session_id, &canonical_run_id).await
+                {
+                    eprintln!("FutureOS queued user-entry persistence failed: {error}");
+                }
+                return Ok(AgentPromptResponse {
+                    content: String::new(),
+                    complete: false,
+                    termination_kind: Some("run_queued".to_string()),
+                    session_id,
+                });
             }
             Err(format!("Future Agent run ended before the stream attached: {reason}").into())
         }

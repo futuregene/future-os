@@ -86,6 +86,23 @@ mod watchdog_tests {
         );
         assert_eq!(action, ActiveRunAction::SettleOrphaned);
     }
+
+    #[test]
+    fn skips_a_run_the_agent_has_queued() {
+        let action = plan_active_run_reconciliation(
+            &state(
+                r#"{"isStreaming": true, "activeRun": {"runId": "run-0"},
+                   "queuedRuns": [{"runId": "run-1", "queuePosition": 1}]}"#,
+            ),
+            "run-1",
+            WATCHDOG_ORPHAN_SECS,
+        );
+        assert_eq!(
+            action,
+            ActiveRunAction::Skip,
+            "a queued run is alive — never orphan-settle it"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1671,6 +1688,65 @@ mod pipeline_tests {
     }
 
     #[tokio::test]
+    async fn agent_prompt_queued_run_attaches_later_and_stays_running() {
+        let fixture = pipeline_fixture("pipe-queued", "t");
+        let (message, thread_id, run_id) = prompt_args(&fixture);
+        fixture
+            .mock
+            .push_data("new_session", serde_json::json!({"sessionId": "sess-pq"}));
+        // The Agent accepted the prompt but queued it behind an older run:
+        // attach fails with RunGone (a queued run has no execution epoch).
+        fixture.mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "run is not the active run",
+        ));
+        fixture.mock.push_run_state(
+            &run_id,
+            serde_json::json!({"queuedRuns": [{"runId": run_id, "queuePosition": 1}]}),
+        );
+        // The queued run's user entry is already durable on the Agent; the
+        // pre-persistence replay fetches it through the typed entries page.
+        fixture.mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({
+                "entries": [{
+                    "id": "e-queued",
+                    "kind": "user",
+                    "role": "user",
+                    "createdAtMs": 1000,
+                    "runId": run_id,
+                    "blocks": [{"kind": "text", "text": "hello from the test"}]
+                }]
+            }),
+        );
+
+        let response = agent_prompt(
+            message,
+            None,
+            thread_id,
+            None,
+            Some(run_id.clone()),
+            None,
+            None,
+        )
+        .await
+        .expect("queued prompt is not a failure");
+
+        assert!(!response.complete, "a queued prompt ends its own stream");
+        assert_eq!(response.termination_kind.as_deref(), Some("run_queued"));
+        let run = crate::store::get_run(&run_id).expect("run").expect("some");
+        assert_eq!(
+            run.status, "running",
+            "a queued run is alive — the observer settles it on start/finish"
+        );
+        assert!(
+            run.error_message.is_none(),
+            "no failure recorded: {:?}",
+            run.error_message
+        );
+    }
+
+    #[tokio::test]
     async fn agent_prompt_run_gone_with_a_failed_reconcile_reports_both() {
         let fixture = pipeline_fixture("pipe-rungone-fail", "t");
         let (message, thread_id, run_id) = prompt_args(&fixture);
@@ -2129,7 +2205,7 @@ mod pipeline_tests {
         // Still active agent-side (attach raced start_run) → left running.
         let run = seed_run(&thread.id);
         mock.push_run_state(&run.id, serde_json::json!({"activeRun": {"runId": run.id}}));
-        reconcile_run_gone(&run.id, &run.id, "sess-rgp", "test")
+        reconcile_run_gone(&run.id, &run.id, "sess-rgp", &thread.id, "test")
             .await
             .expect("still active");
         assert_eq!(
@@ -2146,7 +2222,7 @@ mod pipeline_tests {
             &run2.id,
             serde_json::json!({"interruptedRun": {"runId": run2.id}}),
         );
-        reconcile_run_gone(&run2.id, &run2.id, "sess-rgp", "test")
+        reconcile_run_gone(&run2.id, &run2.id, "sess-rgp", &thread.id, "test")
             .await
             .expect("interrupted");
         let record = crate::store::get_run(&run2.id).expect("run").expect("some");
@@ -2156,7 +2232,7 @@ mod pipeline_tests {
         // No marker at all → settled failed.
         let run3 = seed_run(&thread.id);
         mock.push_run_state(&run3.id, serde_json::json!({}));
-        reconcile_run_gone(&run3.id, &run3.id, "sess-rgp", "vanished")
+        reconcile_run_gone(&run3.id, &run3.id, "sess-rgp", &thread.id, "vanished")
             .await
             .expect("failed");
         let record = crate::store::get_run(&run3.id).expect("run").expect("some");
@@ -2177,7 +2253,7 @@ mod pipeline_tests {
             &format!("get_state#{}", run4.id),
             Reply::Reject("gone".to_string()),
         );
-        reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", "gone")
+        reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", &thread.id, "gone")
             .await
             .expect("failed");
         assert_eq!(
@@ -2191,7 +2267,7 @@ mod pipeline_tests {
         // Connect failure → Err.
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
-        let error = reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", "test")
+        let error = reconcile_run_gone(&run4.id, &run4.id, "sess-rgp", &thread.id, "test")
             .await
             .expect_err("connect");
         std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
