@@ -183,6 +183,9 @@ function ComposerImpl({
   // so the follow-up submitValue() isn't blocked by the still-mounted card
   // (the parent's setState that clears it hasn't re-rendered yet).
   const cardHandledRef = useRef(false);
+  // The draft text already sent to the recommender, so one draft is asked about
+  // at most once (a repeat would spend a second call for the same message).
+  const evaluatedDraftRef = useRef<string | null>(null);
   // True while the recommended skill is installing (disables the card buttons).
   const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
@@ -368,20 +371,25 @@ function ComposerImpl({
       return;
     }
 
-    // First-turn skill recommendation: hold submission while we ask the
-    // recommender. A returned card keeps the draft unsubmitted until the user
-    // installs or dismisses it; anything else (timeout, no match, error)
-    // falls through to a normal send. The card's own actions call the real
-    // send path directly, so this intercept runs at most once per draft.
-    if (skillRecommendation && !skillRecommendation.card) {
+    // Skill recommendation: hold the draft while we ask the recommender. A
+    // returned card keeps the draft unsubmitted until the user installs or
+    // dismisses it; anything else (timeout, no match, error) falls through to a
+    // normal send.
+    const reco = skillRecommendation;
+    if (reco && !reco.card && !cardHandledRef.current
+      && evaluatedDraftRef.current !== trimmed) {
+      // Ask once per draft: `evaluatedDraftRef` records that this text has been
+      // asked about, so the fall-through below cannot re-enter this branch and
+      // spend a second call for the same message.
+      evaluatedDraftRef.current = trimmed;
       recommendPendingRef.current = true;
-      skillRecommendation
+      reco
         .onEvaluate(trimmed)
         .then((card) => {
           if (!card)
-            submitValue();
+            sendNow();
         })
-        .catch(() => submitValue())
+        .catch(() => sendNow())
         .finally(() => {
           recommendPendingRef.current = false;
         });
@@ -389,9 +397,22 @@ function ComposerImpl({
     }
     // A card is on screen and not yet acted on: ignore bare submits until the
     // user picks an action (install/dismiss call the real send path directly).
-    if (skillRecommendation?.card && !cardHandledRef.current)
+    if (reco?.card && !cardHandledRef.current)
       return;
 
+    sendNow();
+  }
+
+  /**
+   * The real send path, reached only once no recommendation is holding the
+   * draft. Kept separate from `submitValue` so the intercept can fall through to
+   * it without re-running the evaluation — calling `submitValue` recursively
+   * would both re-enter the intercept and be refused by the in-flight guard
+   * (`recommendPendingRef`, still set while the promise chain is resolving),
+   * silently swallowing the send.
+   */
+  function sendNow() {
+    const trimmed = (editorRef.current?.getContent() ?? "").trim();
     const submittedText = editorRef.current?.getContent() ?? "";
     const submittedDraftKey = draftKeyRef.current;
     const submittedAttachments = attachments;
