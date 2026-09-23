@@ -193,6 +193,23 @@ pub struct RefreshSkillsPayload {
     pub refreshed: bool,
 }
 
+// ── suggest_skill ────────────────────────────────────────────────────────────
+
+/// One skill candidate (also the single recommendation shape) — snake_case
+/// on the wire to mirror the catalog/install id vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillCandidatePayload {
+    pub name: String,
+    pub description: String,
+}
+
+/// suggest_skill payload. `skill` is the single recommendation, or `null`
+/// when the gate refused, the call timed out/failed, or no key was set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestSkillPayload {
+    pub skill: Option<SkillCandidatePayload>,
+}
+
 // ── compact ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1063,6 +1063,7 @@ mod gui {
                 list_installed_skills,
                 list_available_skills,
                 get_skill_guide,
+                suggest_skill,
                 install_skill,
                 uninstall_skill,
                 refresh_skills,

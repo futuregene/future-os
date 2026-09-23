@@ -94,9 +94,11 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
         }
         Kind::GetSessionEventsSince(response) => {
             serde_json::to_value(session_events_since_from_proto(response)).ok()
-        } // Exhaustive on purpose: a new oneof member fails the build here
-          // until it gets a decoder (or an explicit `=> None` to keep the JSON
-          // `data` fallback).
+        }
+        Kind::SuggestSkill(result) => serde_json::to_value(suggest_skill_from_proto(result)).ok(),
+        // Exhaustive on purpose: a new oneof member fails the build here
+        // until it gets a decoder (or an explicit `=> None` to keep the JSON
+        // `data` fallback).
     }
 }
 
@@ -704,6 +706,22 @@ fn refresh_skills_from_proto(
         skills_count: result.skills_count as usize,
         skills: result.skills.clone(),
         refreshed: result.refreshed,
+    }
+}
+
+// ── suggest_skill ────────────────────────────────────────────────────────────
+
+fn suggest_skill_from_proto(
+    result: &proto::SuggestSkillResult,
+) -> crate::payloads_ext::SuggestSkillPayload {
+    crate::payloads_ext::SuggestSkillPayload {
+        skill: result
+            .skill
+            .as_ref()
+            .map(|c| crate::payloads_ext::SkillCandidatePayload {
+                name: c.name.clone(),
+                description: c.description.clone(),
+            }),
     }
 }
 

@@ -520,3 +520,24 @@ pub(crate) fn cmd_refresh_skills(state: &AppState, id: &str) -> String {
         }),
     )
 }
+
+/// `suggest_skill`: recommend at most one UNINSTALLED skill for the user's
+/// first-turn text via Jev. The caller decides when to invoke (new session,
+/// first message, length cap, login/balance) and supplies the candidate set
+/// (catalog − installed); this handler only performs the Jev call and the
+/// refusal gate. `skill` is null on refusal, timeout, error, or missing key —
+/// recommendation is best-effort, so every failure collapses to "no
+/// recommendation" and the client submits normally.
+pub(crate) fn cmd_suggest_skill(id: &str, cmd: &RpcCommand) -> String {
+    let skill = crate::skill_reco::suggest_skill(&cmd.suggest_query, &cmd.suggest_candidates);
+    RpcResponse::ok(
+        id,
+        "suggest_skill",
+        serde_json::json!({
+            "skill": skill.map(|c| serde_json::json!({
+                "name": c.name,
+                "description": c.description,
+            })),
+        }),
+    )
+}

@@ -131,6 +131,14 @@ pub struct RpcCommand {
     pub auth_update: Option<crate::config::providers::AuthMutation>,
     #[serde(skip)]
     pub provider_config: Option<crate::config::providers::ProviderUpsertSpec>,
+
+    // suggest_skill — the user's first-turn text plus the UNINSTALLED skill
+    // candidates the caller offers to Jev. Populated from the proto fields by
+    // the gRPC layer; the agent never sees installed skills.
+    #[serde(skip)]
+    pub suggest_query: String,
+    #[serde(skip)]
+    pub suggest_candidates: Vec<crate::skill_reco::SkillCandidate>,
 }
 
 // ─── RPC Response (stdout) ───────────────────────────────────────────────

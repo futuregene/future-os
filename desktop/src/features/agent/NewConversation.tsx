@@ -11,10 +11,11 @@ import {
   FolderOpen,
   MessageSquare,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
+import { installSkill, listAvailableSkills, refreshSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -24,6 +25,7 @@ import { SkillGuideBanner } from "../skills/SkillGuideBanner";
 import { fetchCoachPrompt } from "../skills/skillGuidePrompt";
 import { Composer } from "./Composer";
 import { WorkspaceModal } from "./NewConversationWorkspaceForm";
+import { useSkillRecommendation } from "./useSkillRecommendation";
 import { useWorkspaceForm } from "./useWorkspaceForm";
 
 export type ConversationMode = "workspace" | "chat";
@@ -65,6 +67,12 @@ interface NewConversationProps {
   skillGuideDismissed: boolean;
   onDismissSkillGuide: () => void;
   workspaces: StoredWorkspace[];
+  /** First-turn skill recommendation toggle (appSettings.skillRecommend). */
+  skillRecommend: boolean;
+  /** Future session status; recommendation requires an authenticated session. */
+  futureSessionStatus: string;
+  /** Future balance in credits; recommendation requires a positive balance. */
+  futureBalance: number | null;
 }
 
 export function NewConversation({
@@ -86,6 +94,9 @@ export function NewConversation({
   skillGuideDismissed,
   onDismissSkillGuide,
   workspaces,
+  skillRecommend,
+  futureSessionStatus,
+  futureBalance,
 }: NewConversationProps) {
   const { t } = useTranslation("agent");
   const workspaceOptions = useMemo(
@@ -206,6 +217,34 @@ export function NewConversation({
     emitFutureEvent("skill-guide-dismissed", undefined);
   }
 
+  // First-turn skill recommendation: the client owns all trigger rules; the
+  // agent only answers suggest_skill.
+  const recommendation = useSkillRecommendation({
+    enabled: skillRecommend,
+    sessionStatus: futureSessionStatus,
+    balance: futureBalance,
+  });
+
+  // Install the recommended skill (catalogue latest version), then let the
+  // composer append `/name` and send. Resolve false to leave the card up.
+  const installRecommendedSkill = useCallback(async (card: { name: string; description: string }) => {
+    const candidate = recommendation.candidates.find(c => c.name === card.name);
+    try {
+      // The catalogue id equals the skill name; install its latest version.
+      const catalogue = await listAvailableSkills();
+      const entry = catalogue.find(e => e.id === card.name);
+      const version = entry?.latestVersion ?? candidate?.name ?? "";
+      if (!version)
+        return false;
+      await installSkill(card.name, version);
+      await refreshSkills();
+      return true;
+    }
+    catch {
+      return false;
+    }
+  }, [recommendation.candidates]);
+
   function handleSend({ attachments, content }: ComposerSendPayload) {
     if (catalogLoading)
       return;
@@ -273,6 +312,13 @@ export function NewConversation({
               onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
               disabled={catalogLoading}
+              skillRecommendation={{
+                card: recommendation.state.recommendation,
+                pending: recommendation.state.pending,
+                onEvaluate: recommendation.evaluate,
+                onInstall: installRecommendedSkill,
+                onDismiss: recommendation.dismiss,
+              }}
               placeholder={t("newConversation.placeholder")}
               workspaceId={mode === "workspace" ? activeWorkspace?.id : null}
               draftKey="new"
