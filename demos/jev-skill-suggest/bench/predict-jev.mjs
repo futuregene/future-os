@@ -9,7 +9,7 @@
 //             comparison in REPORT §2.2.5 (the probe is data, not an answer: it costs tokens that
 //             the serving path does not spend, which is why score.mjs prices `answer`, not this).
 //
-//   TYPESAFE_API_KEY=... node predict-jev.mjs
+//   FUTURE_API_KEY=... node predict-jev.mjs
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -24,7 +24,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
 const questions = readJson(QUESTIONS_FILE).questions;
 
-const suggester = new Suggester(roster, { apiKey: process.env.TYPESAFE_API_KEY, model: process.env.TYPESAFE_MODEL });
+const suggester = new Suggester(roster, { apiKey: process.env.FUTURE_API_KEY, model: process.env.FUTURE_MODEL });
 const status = await suggester.checkAuth();
 if (suggester.mode !== "typesafe") throw new Error(`needs a working key: ${status.note}`);
 console.log(`jev: ${status.note} · none-gate ${NONE_GATE_THRESHOLD} · fits ${FITS_THRESHOLD}`);

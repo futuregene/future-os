@@ -105,16 +105,16 @@ async function loadStatus() {
   gateThreshold = status.gateThreshold;
   chunkSize = status.thresholds?.chunkSize ?? chunkSize;
 
-  $("backend-dot").className = `dot ${status.mode === "typesafe" ? "live" : "local"}`;
+  $("backend-dot").className = `dot ${status.mode === "gateway" ? "live" : "local"}`;
   $("status").textContent =
-    `${status.mode === "typesafe" ? "Jev 在线" : "本地回退"} · ${status.model || "bm25"} · ` +
+    `${status.mode === "gateway" ? "Jev 在线" : "本地回退"} · ${status.model || "bm25"} · ` +
     `${status.roster.total} 个技能 (builtin ${status.roster.builtin} + third-party ${status.roster.thirdParty})`;
 
   const banner = $("banner");
-  if (status.mode === "typesafe") banner.hidden = true;
+  if (status.mode === "gateway") banner.hidden = true;
   else {
     banner.hidden = false;
-    banner.textContent = `⚠️ 未走 Jev：${status.note}\n当前显示的是本地 BM25 启发式排序，只是为了让界面能点。把可用的 TYPESAFE_API_KEY 给 server 重启即会自动切回 Jev（同一个 UI、同样的单次 Choice 判定）。`;
+    banner.textContent = `⚠️ 未走 Jev：${status.note}\n当前显示的是本地 BM25 启发式排序，只是为了让界面能点。把可用的 FUTURE_API_KEY 给 server 重启即会自动切回 Jev（同一个 UI、同样的单次 Choice 判定）。`;
   }
   renderIdle();
 }
@@ -141,7 +141,7 @@ function renderIdle() {
 
 function renderVerdict(payload) {
   const top = payload.top?.[0];
-  const local = payload.backend !== "typesafe";
+  const local = payload.backend !== "gateway";
   const icon = h("span", { class: "verdict-icon" });
   let title;
   let sub;
@@ -249,7 +249,7 @@ function renderGate(payload) {
     ),
   );
 
-  if (payload.backend !== "typesafe") {
+  if (payload.backend !== "gateway") {
     gateEl.append(h("div", { class: "gate-item" }, h("span", { text: "以上是本地回退值，不是 Jev 的输出" })));
   }
 }

@@ -18,9 +18,9 @@ git fetch origin feat/skill-reco-demo && git checkout feat/skill-reco-demo
 # 2) 初始化 skills 子模块 —— 141 个技能目录来自它
 git submodule update --init skills
 
-# 3) 启动（key 从环境变量传，见下）
+# 3) 启动 —— 凭据自动取自 Future 账号（~/.future/agent/auth.json），无需任何参数
 cd demos/jev-skill-suggest
-TYPESAFE_API_KEY=你的key node server.mjs            # 默认 http://127.0.0.1:8791
+node server.mjs                                   # 默认 http://127.0.0.1:8791
 ```
 
 启动日志里必须出现这一行，否则第 2 步没生效（界面会是空的）：
@@ -29,25 +29,27 @@ TYPESAFE_API_KEY=你的key node server.mjs            # 默认 http://127.0.0.1:
 roster: 141 skills (builtin 15 + third-party 126) from .../skills
 ```
 
-**API key 只从环境变量读，仓库里不存任何 key。** 需要一个 TypeSafe API key
-（在 console.typesafe.ai 申请）。
+**凭据就是 Future 账号本身的 key，没有单独的 Jev key。** 推荐走平台网关
+`{future_base_url}/v1/systemone`（当前 `https://future-os.cn/api`），鉴权用「已登录的 Future
+账号」——也就是说**登录过就有，不用配**。
 
-关于这个 key：
+关于凭据：
 
-- **不要写进任何文件**。所有入口（`server.mjs`、`probe.mjs`、`bench/*.mjs`）都只读
-  `process.env.TYPESAFE_API_KEY`，没有任何硬编码或默认值；仓库里也**没有** `.env`、
-  没有 key 的示例值。请用 shell 环境变量、或你自己的密钥管理方式注入。
-- **浏览器侧看不到它**。页面只与本地服务通信，key 始终留在 `server.mjs` 这个进程里，
-  请求由服务端转发给 TypeSafe。
+- **默认从 `~/.future/agent/auth.json` 的 `future` 项读**（和 agent、桌面端、TUI 用的是同一份），
+  可用 `FUTURE_API_KEY` 覆盖成一把临时 key。仓库里**没有** `.env`、也没有 key 的示例值。
+- **浏览器侧看不到它**。页面只与本地服务通信，凭据始终留在 `server.mjs` 这个进程里，
+  请求由服务端转发给网关。
+- **别把 key 贴进 issue / 日志 / 截图**。`probe.mjs` 打印时只显示掩码
+  （头 4 位 + 长度 + 来源），方便确认当前用的是哪一把。
 - **`.gitignore` 已挡住运行产物**：`runs/` 是评测过程的逐题缓存（含接口返回内容），不进仓库。
-- **别把 key 贴进 issue / 日志 / 截图**。`probe.mjs` 打印 key 时只显示掩码形式
-  （头 4 位 + 长度），方便确认当前用的是哪一个。
 
-没有 key 也能把界面点起来：不设 `TYPESAFE_API_KEY` 时服务会退回**本地 BM25 启发式排序**
-（页面会显著标注"本地回退"，那不是 Jev 的结果），只用来看 UI 和接口形状。
+没有凭据也能把界面点起来：既没有 `auth.json` 里的 `future` 项、也没有 `FUTURE_API_KEY`
+时，服务会退回**本地 BM25 启发式排序**（页面会显著标注"本地回退"，那不是 Jev 的结果），
+只用来看 UI 和接口形状。
 
 其他参数（都有同名环境变量）：`--port` / `PORT`、`--skills` / `SKILLS_ROOT`、
-`TYPESAFE_BASE_URL`、`TYPESAFE_MODEL`（默认 `jev-latest`）、`LOCAL_ONLY=1`（强制本地回退）、
+`FUTURE_BASE_URL` / `FUTURE_MODEL`（默认跟随账号的 `base_url`，模型为 `jev`）、
+`LOCAL_ONLY=1`（强制本地回退）、
 `NONE_GATE_THRESHOLD=0.15`、`CHUNK_SIZE=254`、`SHORTLIST=3`、
 `MIN_QUERY_CHARS=6`。
 
@@ -58,8 +60,8 @@ roster: 141 skills (builtin 15 + third-party 126) from .../skills
 命令行自检（同样从环境变量取 key）：
 
 ```bash
-TYPESAFE_API_KEY=你的key node probe.mjs                        # 验证 key + 跑一遍完整流程
-TYPESAFE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
+FUTURE_API_KEY=你的key node probe.mjs                        # 验证 key + 跑一遍完整流程
+FUTURE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
 ```
 
 浏览器里：输入 ≥ 6 个字符开始推荐；停顿后自动跑第二次调用（也可 ⌘/Ctrl+Enter 立即触发）。

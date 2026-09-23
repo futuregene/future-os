@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Compares stage-1 strategies for ranking a 141-skill roster.
 //
-//   TYPESAFE_API_KEY=... node bench.mjs                # all strategies, all queries
-//   TYPESAFE_API_KEY=... node bench.mjs noul           # one strategy
+//   FUTURE_API_KEY=... node bench.mjs                # all strategies, all queries
+//   FUTURE_API_KEY=... node bench.mjs noul           # one strategy
 //
 // Strategies:
 //   choice  one Choice over the whole roster (what the demo shipped first)
@@ -19,7 +19,7 @@ import { JevClient } from "./jev.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "skills"));
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 
 const QUERIES = [
   { text: "把这份季度报告做成一版路演用的 PPT，要能直接导出 PDF", expect: ["future-slides"] },

@@ -6,7 +6,7 @@
 // gate applied, and the token counts. The first pass stored only pre-gated answers, which made an
 // offline threshold sweep impossible.
 //
-//   TYPESAFE_API_KEY=... node stage1-chunked-raw.mjs <chunkSize>
+//   FUTURE_API_KEY=... node stage1-chunked-raw.mjs <chunkSize>
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -20,7 +20,7 @@ const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..",
 const questions = readJson(QUESTIONS_FILE).questions;
 
 const CHUNK = Number(process.argv[2] ?? 30);
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 
 const NONE = "none_of_these";
 const chunks = [];
@@ -115,7 +115,7 @@ for (const question of questions) {
       skills: finalTop3.map((name) => roster.byName.get(name)),
       byName: new Map(finalTop3.map((name) => [name, roster.byName.get(name)])),
     };
-    const suggester = new Suggester(subRoster, { apiKey: process.env.TYPESAFE_API_KEY });
+    const suggester = new Suggester(subRoster, { apiKey: process.env.FUTURE_API_KEY });
     const probe = await verifySecondCall(suggester, question.text, finalTop3.map((name) => ({ name })));
     stage2Answer = probe?.winner ?? null;
     stage2Fit = probe?.best_fit ?? null;

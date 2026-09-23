@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Local web demo: skill recommendation while you type.
 //
-//   TYPESAFE_API_KEY=jev_... node server.mjs [--port 8787]
+//   FUTURE_API_KEY=jev_... node server.mjs [--port 8787]
 //
 // The API key stays in this process; the browser never sees it.
 import { createServer } from "node:http";
@@ -26,9 +26,9 @@ const PUBLIC_DIR = path.join(here, "public");
 
 const roster = loadRoster(SKILLS_ROOT);
 const suggester = new Suggester(roster, {
-  apiKey: process.env.TYPESAFE_API_KEY,
-  baseUrl: process.env.TYPESAFE_BASE_URL,
-  model: process.env.TYPESAFE_MODEL,
+  apiKey: process.env.FUTURE_API_KEY,
+  baseUrl: process.env.FUTURE_BASE_URL,
+  model: process.env.FUTURE_MODEL,
   insecureLocalOnly: process.env.LOCAL_ONLY === "1",
 });
 
@@ -117,7 +117,7 @@ const server = createServer(async (req, res) => {
         gate: rank.gate,
         gate_passes: gatePasses,
         gate_threshold: NONE_GATE_THRESHOLD,
-        mode: `${rank.backend === "typesafe" ? "one call" : "local fallback"}`,
+        mode: `${rank.backend === "gateway" ? "one call" : "local fallback"}`,
         verdict,
         top: rank.top,
         ranked: rank.ranked.slice(0, Number(body.limit ?? 12)),
@@ -141,5 +141,7 @@ server.listen(PORT, "127.0.0.1", async () => {
   console.log(`skill-reco demo  →  http://127.0.0.1:${PORT}`);
   console.log(`roster: ${roster.skills.length} skills (builtin ${roster.builtinCount} + third-party ${roster.thirdPartyCount}) from ${SKILLS_ROOT}`);
   console.log(`backend: ${status.mode}  ·  ${status.note}`);
-  if (status.mode === "typesafe") console.log(`endpoint: POST ${status.baseUrl}/v1/systemone  ·  model ${status.model}`);
+  if (status.mode === "gateway")
+    console.log(`credential: Future account (auth.json / FUTURE_API_KEY)
+endpoint:   POST ${status.baseUrl}/v1/systemone  ·  model ${status.model}`);
 });

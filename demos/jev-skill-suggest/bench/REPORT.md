@@ -905,7 +905,7 @@ node build-dataset.mjs                      # 生成 65 道不含技能名的题
 node check-dataset.mjs                      # 独立复查：题目里不许出现技能名
 node ground-truth.mjs                       # kimi-k3 产生参照答案
 node gold-stability.mjs gold-v1 gold-v1-b   # 参照答案自身的抖动（需跑两遍 ground-truth）
-node predict-jev.mjs                        # Jev 的答案 + 对被移除那次调用的探测（需 TYPESAFE_API_KEY）
+node predict-jev.mjs                        # Jev 的答案 + 对被移除那次调用的探测（需 FUTURE_API_KEY）
 node predict-embed.mjs                      # omlx embedding
 node predict-llm.mjs                        # deepseek-flash
 node stage1-ranking.mjs                     # 只看路由：top-1/3/5、拒答质量、成本

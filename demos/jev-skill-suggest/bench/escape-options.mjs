@@ -23,7 +23,7 @@
 // the shipped option set as the control in every request. bench/ctx-limit.mjs is why four tables in
 // one request is safe.
 //
-//   TYPESAFE_API_KEY=... node bench/escape-options.mjs
+//   FUTURE_API_KEY=... node bench/escape-options.mjs
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,9 +89,9 @@ const INSTRUCTIONS = {
 
 const cache = cacheFor("escape-options");
 const wanted = Object.entries(VARIANTS);
-const token = process.env.TYPESAFE_API_KEY ?? "";
+const token = process.env.FUTURE_API_KEY ?? "";
 if (!token) {
-  console.error("TYPESAFE_API_KEY is not set");
+  console.error("FUTURE_API_KEY is not set");
   process.exit(2);
 }
 const client = new JevClient({ apiKey: token });

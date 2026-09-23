@@ -112,16 +112,18 @@ const round = (value) => (typeof value === "number" ? Number(value.toFixed(4)) :
 export class Suggester {
   constructor(roster, { apiKey, baseUrl, model, insecureLocalOnly = false } = {}) {
     this.roster = roster;
-    this.apiKey = apiKey || "";
-    this.client = new JevClient({ apiKey: this.apiKey, baseUrl, model });
+    this.client = new JevClient({ apiKey, baseUrl, model });
+    // The client resolves the credential (explicit key, else the Future account),
+    // so the mode follows it rather than a key this object never received.
+    this.apiKey = this.client.apiKey;
     const vocab = buildVocab(roster);
     this.index = buildLocalIndex(roster, { vocab });
     this.deepIndex = buildLocalIndex(roster, { vocab, excerptWeight: 5 });
-    this.mode = this.apiKey && !insecureLocalOnly ? "typesafe" : "local";
+    this.mode = this.apiKey && !insecureLocalOnly ? "gateway" : "local";
     this.authChecked = false;
     this.note = this.apiKey
-      ? "尚未验证 key"
-      : "未提供 TYPESAFE_API_KEY，使用本地启发式排名（非 Jev）";
+      ? "尚未验证凭据"
+      : "未找到 Future 账号凭据（auth.json 的 future 项 / FUTURE_API_KEY），使用本地启发式排名（非 Jev）";
   }
 
   status() {
@@ -154,8 +156,14 @@ export class Suggester {
     try {
       const { data } = await this.client.listModels();
       const models = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : data?.models;
-      this.mode = "typesafe";
-      this.note = `key 有效；可用模型：${(models || []).map((m) => m?.id || m?.name || m).filter(Boolean).join(", ") || "—"}`;
+      const listed = (models || []).map((m) => m?.id || m?.name || m).filter(Boolean);
+      this.mode = "gateway";
+      // `/v1/models` validates the credential but only lists the gateway's chat
+      // models — `jev` is reachable on `/v1/systemone` and does not appear here,
+      // so the note must not read as "these are the models you can ask".
+      this.note =
+        `账号凭据有效（网关列出 ${listed.length} 个对话模型）；推荐使用 ${this.client.model}` +
+        `（该模型不在 /v1/models 列表中，仅 /v1/systemone 提供）`;
     } catch (error) {
       this.mode = "local";
       this.note = `Jev API 不可用（${error.status || "网络"}）：${error.body?.detail?.message || error.message} → 已回退本地启发式排名`;
@@ -169,7 +177,7 @@ export class Suggester {
   }
 
   async rank(query) {
-    if (this.mode === "typesafe") {
+    if (this.mode === "gateway") {
       try {
         return await this.#rankTypesafe(query);
       } catch (error) {
@@ -352,7 +360,7 @@ export class Suggester {
     };
 
     return {
-      backend: "typesafe",
+      backend: "gateway",
       model: route.model || this.client.model,
       ms: (route.firstMs ?? 0) + (route.secondMs ?? 0),
       attempts: 1,

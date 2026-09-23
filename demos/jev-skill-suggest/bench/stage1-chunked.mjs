@@ -15,7 +15,7 @@
 //
 // Stage 2 is identical in all three and works off whatever top-3 stage 1 produced.
 //
-//   TYPESAFE_API_KEY=... node stage1-chunked.mjs [chunkSize]
+//   FUTURE_API_KEY=... node stage1-chunked.mjs [chunkSize]
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -34,7 +34,7 @@ const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
 
 const CHUNK = Number(process.argv[2] ?? 18);
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 await client.listModels();
 
 const NONE = "none_of_these";
@@ -150,7 +150,7 @@ for (const question of questions) {
       skills: top3.map((name) => roster.byName.get(name)),
       byName: new Map(top3.map((name) => [name, roster.byName.get(name)])),
     };
-    const suggester = new Suggester(subRoster, { apiKey: process.env.TYPESAFE_API_KEY });
+    const suggester = new Suggester(subRoster, { apiKey: process.env.FUTURE_API_KEY });
     const probe = await verifySecondCall(suggester, question.text, top3.map((name) => ({ name })));
     return { answer: probe?.winner ?? null, tokens: probe?.usage?.input_tokens ?? 0, bestFit: probe?.best_fit ?? null };
   };

@@ -11,7 +11,7 @@
 // position against the standalone recording of the identical single-question request
 // (runs/stage1-confidence). If position matters, the last positions disagree more.
 //
-//   TYPESAFE_API_KEY=... node bench/ctx-limit.mjs [maxTables] [nQuestions]
+//   FUTURE_API_KEY=... node bench/ctx-limit.mjs [maxTables] [nQuestions]
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,9 +27,9 @@ const questions = readJson(QUESTIONS_FILE).questions;
 const maxTables = Number(process.argv[2] ?? 6);
 const nQuestions = Number(process.argv[3] ?? 6);
 
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 if (!client.apiKey) {
-  console.error("TYPESAFE_API_KEY is not set");
+  console.error("FUTURE_API_KEY is not set");
   process.exit(2);
 }
 

@@ -12,7 +12,7 @@
 // by probability, and the ungated stage-2 answer over those three. Everything needed to evaluate any
 // threshold offline.
 //
-//   TYPESAFE_API_KEY=... node stage1-onechunk.mjs
+//   FUTURE_API_KEY=... node stage1-onechunk.mjs
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -24,7 +24,7 @@ import { loadRoster } from "../roster.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
 const questions = readJson(QUESTIONS_FILE).questions;
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 
 const criteria = {};
 for (const skill of roster.skills) criteria[skill.name] = skill.indexLine;
@@ -66,7 +66,7 @@ for (const question of questions) {
       skills: top3.map((name) => roster.byName.get(name)),
       byName: new Map(top3.map((name) => [name, roster.byName.get(name)])),
     };
-    const suggester = new Suggester(subRoster, { apiKey: process.env.TYPESAFE_API_KEY });
+    const suggester = new Suggester(subRoster, { apiKey: process.env.FUTURE_API_KEY });
     const probe = await verifySecondCall(suggester, question.text, top3.map((name) => ({ name })));
     stage2Answer = probe?.winner ?? null;
     stage2Tokens = probe?.usage?.input_tokens ?? 0;

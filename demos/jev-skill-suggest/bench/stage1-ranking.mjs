@@ -25,7 +25,7 @@ import { loadRoster } from "../roster.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
 const pipeline = new Map(cacheFor("jev").all().map((row) => [row.id, row]));

@@ -6,7 +6,7 @@
 // table at a time and reading `usage.input_tokens` — one variant per request, so the request's
 // whole input count belongs to that variant (no need to subtract anything).
 //
-//   TYPESAFE_API_KEY=... node bench/desc-cost.mjs [lengths...]
+//   FUTURE_API_KEY=... node bench/desc-cost.mjs [lengths...]
 //
 // Only a few questions are needed: the table size does not depend on the question, so the marginal
 // cost is the same for all of them and the spread across questions is pure noise.
@@ -24,9 +24,9 @@ const questions = readJson(QUESTIONS_FILE).questions.slice(0, 5);
 const argLengths = process.argv.slice(2).map(Number).filter(Boolean);
 const lengths = argLengths.length ? argLengths : [110, 220, 256, 0]; // 0 = full description
 
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 if (!client.apiKey) {
-  console.error("TYPESAFE_API_KEY is not set");
+  console.error("FUTURE_API_KEY is not set");
   process.exit(2);
 }
 

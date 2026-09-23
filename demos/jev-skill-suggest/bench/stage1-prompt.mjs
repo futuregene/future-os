@@ -15,7 +15,7 @@
 // Variants are grouped into batches small enough to stay well inside Jev's context window, since
 // each Choice carries its own full copy of the 141-option table.
 //
-//   TYPESAFE_API_KEY=... node stage1-prompt.mjs [--batch A|B|all]
+//   FUTURE_API_KEY=... node stage1-prompt.mjs [--batch A|B|all]
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,7 @@ import { NONE_GATE_THRESHOLD, NONE_OF_THESE } from "../suggest.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
 const questions = readJson(QUESTIONS_FILE).questions;
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 
 const readAll = (dir) =>
   fs

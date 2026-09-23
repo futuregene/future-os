@@ -12,8 +12,8 @@
 // same session, so run-to-run noise (stage 1 flips a near-tie now and then) is shared and the
 // comparison is like for like.
 //
-//   TYPESAFE_API_KEY=... node stage1-compact.mjs          # 20-question pilot
-//   TYPESAFE_API_KEY=... node stage1-compact.mjs --full   # all 100 questions
+//   FUTURE_API_KEY=... node stage1-compact.mjs          # 20-question pilot
+//   FUTURE_API_KEY=... node stage1-compact.mjs --full   # all 100 questions
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -25,7 +25,7 @@ const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..",
 const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
 
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 await client.listModels();
 
 const QUESTION = "Would the skill in `skill` materially help with the request in `request`?";
@@ -188,7 +188,7 @@ if (process.argv.includes("--ladder")) {
       // Stage 2 over this variant's own shortlist, using the shipped question builder.
       const suggester = new stage2.Suggester(
         { ...roster, byName: new Map(top.map((entry) => [entry.name, roster.byName.get(entry.name)])) },
-        { apiKey: process.env.TYPESAFE_API_KEY },
+        { apiKey: process.env.FUTURE_API_KEY },
       );
       const probe = await verifySecondCall(suggester, question.text, top);
       ladderCache.put(`${question.id}__${variant}`, {

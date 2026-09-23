@@ -1,13 +1,20 @@
-// Thin HTTP client for TypeSafe's System One endpoint (the Jev API).
+// Thin HTTP client for the System One endpoint (the Jev API), as served by the
+// Future account's gateway.
 //
-//   POST https://api.typesafe.ai/v1/systemone
-//   Authorization: Bearer <key>
+//   POST https://future-os.cn/api/v1/systemone
+//   Authorization: Bearer <the account key from ~/.future/agent/auth.json>
 //   { state, model, questions: { id: NoulQuestion | ChoiceQuestion | ScoreQuestion } }
 //
-// Docs: https://docs.typesafe.ai/api
+// The gateway speaks TypeSafe's question types but not its request shape: the
+// question goes in `instructions` and `criteria` *is* the option map.
+//
+// Upstream docs: https://docs.typesafe.ai/api
+import fs from "node:fs";
+import path from "node:path";
+
 export class JevError extends Error {
   constructor(status, body, path = "/v1/systemone") {
-    super(`TypeSafe ${status} on ${path}: ${typeof body === "string" ? body : JSON.stringify(body)}`);
+    super(`System One gateway ${status} on ${path}: ${typeof body === "string" ? body : JSON.stringify(body)}`);
     this.name = "JevError";
     this.status = status;
     this.body = body;
@@ -16,19 +23,50 @@ export class JevError extends Error {
 
 const RETRYABLE = new Set([429, 500, 502, 503, 529]);
 
+/** The gateway's origin when the account has no `base_url` of its own. */
+const DEFAULT_FUTURE_BASE = "https://future-os.cn/api";
+/** The model id the gateway resolves to a Jev build. */
+const DEFAULT_JEV_MODEL = "jev";
+
+/**
+ * The Future account's `auth.json` entry, or null when it cannot be read.
+ *
+ * The demo authenticates the same way the agent does — with the account's own
+ * credential — so there is no separate Jev key to configure. `FUTURE_API_KEY`
+ * overrides it for a throwaway key.
+ */
+function futureAccount() {
+  if (process.env.FUTURE_API_KEY) {
+    return { key: process.env.FUTURE_API_KEY, base: process.env.FUTURE_BASE_URL };
+  }
+  const home = process.env.HOME || process.env.USERPROFILE;
+  if (!home) return null;
+  const candidates = [
+    path.join(home, ".future", "agent", "auth.json"),
+    path.join(home, ".future", "agent-app", "auth.json"),
+  ];
+  for (const file of candidates) {
+    try {
+      const entry = JSON.parse(fs.readFileSync(file, "utf8"))?.future;
+      if (entry?.key) return { key: entry.key, base: entry.base_url };
+    } catch {
+      // Missing or unreadable: try the next location.
+    }
+  }
+  return null;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class JevClient {
-  constructor({
-    apiKey,
-    baseUrl = process.env.TYPESAFE_BASE_URL || "https://api.typesafe.ai",
-    model = process.env.TYPESAFE_MODEL || "jev-latest",
-    timeoutMs = 90_000,
-    maxRetries = 2,
-  } = {}) {
-    this.apiKey = apiKey;
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.model = model;
+  constructor({ apiKey, baseUrl, model, timeoutMs = 90_000, maxRetries = 2 } = {}) {
+    // `||`, not `??`: callers signal "not configured" with an empty string, and
+    // `??` would let that empty value win instead of reaching the account.
+    const account = apiKey ? null : futureAccount();
+    this.apiKey = apiKey || account?.key || "";
+    // The account's own base URL wins; the documented origin is the fallback.
+    this.baseUrl = (baseUrl || account?.base || DEFAULT_FUTURE_BASE).replace(/\/+$/, "");
+    this.model = model || process.env.FUTURE_MODEL || DEFAULT_JEV_MODEL;
     this.timeoutMs = timeoutMs;
     this.maxRetries = maxRetries;
   }

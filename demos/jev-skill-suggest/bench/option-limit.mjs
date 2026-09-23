@@ -6,7 +6,7 @@
 // measured rather than asserted — and the answer decides whether CHUNK_SIZE may be 255 (255 skills
 // + one none option = 256 options) or must stay 254.
 //
-//   TYPESAFE_API_KEY=... node bench/option-limit.mjs
+//   FUTURE_API_KEY=... node bench/option-limit.mjs
 //
 // Costs one tiny request per size (a few hundred tokens each; the option text is a stub, not a
 // real description — only the COUNT is being measured).
@@ -15,9 +15,9 @@ import { JevClient } from "../jev.mjs";
 const sizes = process.argv.slice(2).map(Number).filter(Boolean);
 const tested = sizes.length ? sizes : [254, 255, 256, 257];
 
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 if (!client.apiKey) {
-  console.error("TYPESAFE_API_KEY is not set");
+  console.error("FUTURE_API_KEY is not set");
   process.exit(2);
 }
 

@@ -13,7 +13,7 @@
 // Stage 2 is identical in all three (its three candidates come from stage 1's ranking), so any
 // difference is stage 1's. Tokens are whatever the API reports in `usage`.
 //
-//   TYPESAFE_API_KEY=... node stage1-choice.mjs
+//   FUTURE_API_KEY=... node stage1-choice.mjs
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { QUESTIONS_FILE, cacheFor, readJson } from "./common.mjs";
@@ -30,7 +30,7 @@ const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..",
 const questions = readJson(QUESTIONS_FILE).questions;
 const gold = new Map(cacheFor("gold-v1").all().map((row) => [row.id, row]));
 
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 await client.listModels();
 
 const QUESTION = "Would the skill in `skill` materially help with the request in `request`?";
@@ -146,7 +146,7 @@ for (const [key, variant] of Object.entries(VARIANTS)) {
       skills: top3.map((entry) => roster.byName.get(entry.name)),
       byName: new Map(top3.map((entry) => [entry.name, roster.byName.get(entry.name)])),
     };
-    const suggester = new Suggester(subRoster, { apiKey: process.env.TYPESAFE_API_KEY });
+    const suggester = new Suggester(subRoster, { apiKey: process.env.FUTURE_API_KEY });
     const probe = gatePasses ? await verifySecondCall(suggester, question.text, top3) : null;
 
     cache.put(`${question.id}__${key}`, {

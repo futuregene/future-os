@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Smoke-test the Jev API and the recommender without the browser.
 //
-//   TYPESAFE_API_KEY=jev_... node probe.mjs                 # key check + one query
-//   TYPESAFE_API_KEY=... node probe.mjs "把报告做成PPT"      # custom query
+//   FUTURE_API_KEY=jev_... node probe.mjs                 # key check + one query
+//   FUTURE_API_KEY=... node probe.mjs "把报告做成PPT"      # custom query
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRoster } from "./roster.mjs";
@@ -14,20 +14,26 @@ const query = process.argv[2] ?? "把这份季度报告做成一版路演用的 
 
 const roster = loadRoster(skillsRoot);
 const suggester = new Suggester(roster, {
-  apiKey: process.env.TYPESAFE_API_KEY,
-  baseUrl: process.env.TYPESAFE_BASE_URL,
-  model: process.env.TYPESAFE_MODEL,
+  apiKey: process.env.FUTURE_API_KEY,
+  baseUrl: process.env.FUTURE_BASE_URL,
+  model: process.env.FUTURE_MODEL,
   insecureLocalOnly: process.env.LOCAL_ONLY === "1",
 });
 
-const key = process.env.TYPESAFE_API_KEY;
-// Masked on purpose: enough to tell two keys apart in a shell history, not enough to reuse.
-console.log(`key: ${key ? `${key.slice(0, 4)}… (len ${key.length})` : "(missing)"}`);
 const status = await suggester.checkAuth();
+// Report the credential the client resolved, not just the environment: the
+// normal path is the Future account in auth.json, and printing "missing" for it
+// would describe a state the call is not in. Masked on purpose: enough to tell
+// two keys apart in a shell history, not enough to reuse.
+const key = suggester.apiKey;
+const source = process.env.FUTURE_API_KEY ? "FUTURE_API_KEY" : "auth.json (future)";
+console.log(
+  `credential: ${key ? `${key.slice(0, 4)}… (len ${key.length}) from ${source}` : "(none — local fallback)"}`,
+);
 console.log(`backend: ${status.mode}\nnote: ${status.note}`);
 console.log(`roster: ${roster.skills.length} skills (builtin ${roster.builtinCount} + third-party ${roster.thirdPartyCount})\n`);
 
-if (status.mode === "typesafe") {
+if (status.mode === "gateway") {
   const { data } = await suggester.client.listModels();
   console.log("GET /v1/models →", JSON.stringify(data).slice(0, 400), "\n");
 }

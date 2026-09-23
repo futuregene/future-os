@@ -20,7 +20,7 @@ import { NONE_OF_THESE } from "../suggest.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const roster = loadRoster(process.env.SKILLS_ROOT ?? path.join(here, "..", "..", "..", "skills"));
 const questions = readJson(QUESTIONS_FILE).questions;
-const client = new JevClient({ apiKey: process.env.TYPESAFE_API_KEY });
+const client = new JevClient({ apiKey: process.env.FUTURE_API_KEY });
 
 const readAll = (dir) =>
   fs
