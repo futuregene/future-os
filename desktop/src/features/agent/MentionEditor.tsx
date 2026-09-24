@@ -605,9 +605,21 @@ export function MentionEditor({
             />
           )
         : null}
+      {/* The empty-state hint, sized to the whole editor box on purpose:
+          `inset-0` plus the editor's own padding, so the text still sits where
+          a typed first line would, but mounting it — which always follows a
+          clear — dirties every pixel of the box, and the repaint that follows
+          wipes anything the clear itself left painted. WKWebView on macOS 26
+          drops the editor's own invalidation for removed text: after a send the
+          DOM was empty and this hint was up, yet the last line stayed on screen
+          (same family as MessageBlock's will-change note). Two things keep that
+          repair working — do not shrink this back to the text's own width
+          (`left-2 top-1`), and do not give the editor a compositor layer of its
+          own (`will-change`/`translateZ`): the hint can only erase the
+          editor's stale pixels while both paint into the same layer. */}
       {empty
         ? (
-            <div className="pointer-events-none absolute left-2 top-1 select-none text-sm leading-5 text-ink-muted">
+            <div className="pointer-events-none absolute inset-0 select-none px-2 py-1 text-sm leading-5 text-ink-muted">
               {placeholder}
             </div>
           )
