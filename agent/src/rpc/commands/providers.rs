@@ -1,6 +1,7 @@
 //! Sessionless provider / auth / model-registry command handlers.
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse};
+use future_rpc::payloads_ext::{SkillCandidatePayload, SuggestSkillPayload};
 
 /// Serializes provider snapshots with config mutations through the registry
 /// refresh. The lower config lock protects file RMWs; this command-level lock
@@ -530,14 +531,25 @@ pub(crate) fn cmd_refresh_skills(state: &AppState, id: &str) -> String {
 /// collapses to "no recommendation" and the client submits normally.
 pub(crate) fn cmd_suggest_skill(id: &str, cmd: &RpcCommand) -> String {
     let skill = crate::skill_reco::suggest_skill(&cmd.suggest_query, &cmd.suggest_candidates);
-    RpcResponse::ok(
-        id,
-        "suggest_skill",
-        serde_json::json!({
-            "skill": skill.map(|c| serde_json::json!({
-                "name": c.name,
-                "description": c.description,
-            })),
+    // Serialize the shared payload type rather than hand-written JSON. The field
+    // name is the whole wire contract here: `future_rpc::encode` reads this JSON
+    // back into the same struct, and a mismatch makes it return `None`, which
+    // means no typed payload, which the desktop turns into "no recommendation"
+    // via its `.catch(() => null)`. The agent would still log a successful
+    // recommendation, so that drift would look like the feature quietly not
+    // working.
+    //
+    // Building the type makes the field name the compiler's business on both
+    // sides instead of a string that only matches by convention.
+    let payload = SuggestSkillPayload {
+        skill: skill.map(|candidate| SkillCandidatePayload {
+            name: candidate.name,
+            description: candidate.description,
         }),
-    )
+    };
+    match serde_json::to_value(payload) {
+        Ok(value) => RpcResponse::ok(id, "suggest_skill", value),
+        // Unreachable for this shape (two strings), but a handler must answer.
+        Err(error) => RpcResponse::build_fail(id, "suggest_skill", &error.to_string()),
+    }
 }

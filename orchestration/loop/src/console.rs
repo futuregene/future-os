@@ -29,12 +29,28 @@ use anyhow::{bail, Result};
 
 /// Materialize the project-local active-state projection for one goal:
 /// `<cwd>/.future/loop/goals/<id>/ACTIVE_GOAL_STATE.md`.
-fn sync_compat(store: &Store, goal_id: &str) -> Result<()> {
+///
+/// Best-effort, and deliberately so. Every caller has already committed its real
+/// change to the ledger before this runs, and the file is a regenerable
+/// projection of that ledger — the next mutation rewrites it. Propagating a
+/// failure here reported a committed operation as failed, and the natural
+/// response (retry) then hit "another agent holds a live lease" for a todo that
+/// this very process had claimed.
+///
+/// A warning keeps it from being silent without making it fatal. `cmd_lease` and
+/// `cmd_backfill` already ignored the result; this makes that the rule instead of
+/// a per-call choice.
+fn sync_compat(store: &Store, goal_id: &str) {
+    if let Err(error) = try_sync_compat(store, goal_id) {
+        println!("   ⚠ could not refresh ACTIVE_GOAL_STATE.md (best-effort): {error:#}");
+    }
+}
+
+fn try_sync_compat(store: &Store, goal_id: &str) -> Result<()> {
     let Some(goal) = store.replay(goal_id)? else {
         return Ok(());
     };
-    crate::compat::write_active_state(&store.goal_dir(goal_id), &goal)?;
-    Ok(())
+    crate::compat::write_active_state(&store.goal_dir(goal_id), &goal)
 }
 
 /// Recompute and persist the active-state Next Action line. Every todo /
@@ -1661,7 +1677,7 @@ async fn cmd_goal(store: &mut Store, args: &[String]) -> Result<()> {
     })?;
     store.set_next_action(&goal_id, &onboarding.text)?;
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("goal {} created ✔ (root {})", goal_id, root_dir());
     Ok(())
 }
@@ -1692,7 +1708,7 @@ async fn cmd_goal_cancel(store: &mut Store, args: &[String]) -> Result<()> {
     // Cancelled goals never run — surface that as the Next Action.
     let next_action = "goal cancelled — automation stopped, state retained";
     store.set_next_action(&goal_id, next_action)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     // Default-detached runs are real processes: stopping automation means
     // stopping them (ledger signal + gRPC abort of in-flight turns), not just
     // flipping the goal status a running client would only see at its next
@@ -2116,7 +2132,7 @@ fn todo_add(store: &mut Store, args: &[String]) -> Result<()> {
         ts: now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("todo {id} added to {goal_id} ✔");
     // O4: pure reminder after a successful add; no semantic change.
     if wants_verify_hint {
@@ -2192,7 +2208,7 @@ fn todo_claim(store: &mut Store, args: &[String]) -> Result<()> {
     }
     let expires = now + lease_secs;
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("todo {todo_id} claimed by {agent} until epoch {expires} ✔");
     Ok(())
 }
@@ -2650,7 +2666,7 @@ fn todo_complete(store: &mut Store, args: &[String]) -> Result<()> {
         }
     }
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("todo {todo_id} → done (no_follow_up={no_follow_up}) ✔");
     Ok(())
 }
@@ -2702,7 +2718,7 @@ fn cmd_gate(store: &mut Store, args: &[String]) -> Result<()> {
         t.note = note.or(t.note.take());
     }
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("gate {todo_id} resolved ✔ (decision recorded, flows into blocked todos' packets)");
     Ok(())
 }
@@ -5725,7 +5741,7 @@ fn cmd_backfill(store: &mut Store, args: &[String]) -> Result<()> {
         )?;
         appended += 1;
     }
-    let _ = sync_compat(store, &goal_id);
+    sync_compat(store, &goal_id);
     println!(
         "backfill {goal_id}: {} todos → {} events appended (producer={}, privacy={}) ✔",
         outcome.todo_count,
@@ -5904,7 +5920,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                 bail!("todo already has an active lease held by another agent");
             }
             let expires = now + crate::work_items::task_lease::normalize_ttl(lease_secs)?;
-            let _ = sync_compat(store, &goal_id);
+            sync_compat(store, &goal_id);
             println!(
                 "todo {todo_id} lease acquired by {agent} until {expires} {}✔",
                 if outcome.stolen {
@@ -5927,7 +5943,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                 lease_expires_at: expires,
                 ts: now,
             })?;
-            let _ = sync_compat(store, &goal_id);
+            sync_compat(store, &goal_id);
             println!("todo {todo_id} lease renewed by {agent} until {expires} ✔");
         }
         "release" => {
@@ -5943,7 +5959,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                     ts: now,
                 })?;
             }
-            let _ = sync_compat(store, &goal_id);
+            sync_compat(store, &goal_id);
             println!("todo {todo_id} lease released by {agent} ✔");
         }
         "expire" => {
@@ -5958,7 +5974,7 @@ fn cmd_lease(store: &mut Store, args: &[String]) -> Result<()> {
                     ts: now,
                 })?;
             }
-            let _ = sync_compat(store, &goal_id);
+            sync_compat(store, &goal_id);
             println!("todo {todo_id} lease expiry recorded ✔");
         }
         _ => bail!("lease subcommand must be claim|renew|release|expire|status"),
@@ -6780,7 +6796,7 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
                 println!("  ↦ released todo {todo_id} (no live worker held it)");
             }
             refresh_next_action(store, &goal_id)?;
-            sync_compat(store, &goal_id)?;
+            sync_compat(store, &goal_id);
         }
         return Ok(());
     }
@@ -6816,7 +6832,7 @@ async fn cmd_worker_stop(store: &mut Store, args: &[String]) -> Result<()> {
         println!("  ↦ released todo {todo_id} (its worker was stopped)");
     }
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     Ok(())
 }
 
@@ -6996,7 +7012,7 @@ async fn stop_goal_workers(
         println!("  ↦ released todo {todo_id} (its worker was stopped)");
     }
     refresh_next_action(store, goal_id)?;
-    sync_compat(store, goal_id)?;
+    sync_compat(store, goal_id);
     Ok(targets.len())
 }
 
@@ -8601,7 +8617,7 @@ fn todo_archive(store: &mut Store, args: &[String]) -> Result<()> {
         })
         .ok();
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("todo {todo_id} archived ✔");
     Ok(())
 }
@@ -8640,7 +8656,7 @@ async fn todo_supersede(store: &mut Store, args: &[String]) -> Result<()> {
         ts: crate::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     // If a detached run is executing THIS todo, stop it: its in-flight turn is
     // now wasted work, and a late writeback must not fight the supersede
     // (replay also guards: a late TodoCompleted never resurrects a superseded
@@ -8797,7 +8813,7 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
         ts: crate::state::now_epoch(),
     })?;
     refresh_next_action(store, &goal_id)?;
-    sync_compat(store, &goal_id)?;
+    sync_compat(store, &goal_id);
     println!("todo {todo_id} updated ✔");
     Ok(())
 }
@@ -9446,7 +9462,7 @@ mod coverage_tests {
         let mut store = Store::open(&root).unwrap();
         // sync_compat on a goal with no ledger → Ok no-op; refresh_next_action
         // on the same → not-found error.
-        sync_compat(&store, "goal_ghost").unwrap();
+        sync_compat(&store, "goal_ghost");
         assert!(refresh_next_action(&store, "goal_ghost").is_err());
         // And the write path for a real goal (produces ACTIVE_GOAL_STATE.md).
         let goal = Goal::new("gs", "sync goal", "/tmp");
@@ -9458,7 +9474,7 @@ mod coverage_tests {
             })
             .unwrap();
         refresh_next_action(&store, "gs").unwrap();
-        sync_compat(&store, "gs").unwrap();
+        sync_compat(&store, "gs");
         assert!(store.goal_dir("gs").join("ACTIVE_GOAL_STATE.md").exists());
     }
 }
