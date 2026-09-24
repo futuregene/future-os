@@ -12,6 +12,11 @@ if (-not $MakeNsis) {
 }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('futureos-preflight-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $root
+# Isolate the user-scoped Agent lock from a developer's real FutureOS data.
+$previousHome = $env:HOME
+$previousFutureHome = $env:FUTURE_HOME
+$env:HOME = $root
+$env:FUTURE_HOME = $null
 $processes = [Collections.Generic.List[Diagnostics.Process]]::new()
 $preflight = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\desktop\src-tauri\windows\installer-preflight.ps1'))
 $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -139,6 +144,20 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'future.exe')).Hash $newFixtureHash 'Fresh install writes new Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'futureos.exe')).Hash $newFixtureHash 'Fresh install writes new desktop'
 
+    Write-Host 'Testing the user-scoped Agent lock independently of EXE paths...'
+    $state = Join-Path $root '.future\agent'
+    $null = New-Item -ItemType Directory -Force -Path $state
+    $lockFile = [IO.FileStream]::new((Join-Path $state 'agent-instance.lock'),
+        [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    try {
+        $lockFile.Lock(0, 1)
+        Assert-Equal (Invoke-Preflight $fresh) 32 'Occupied Agent lock blocks install without metadata'
+    } finally {
+        $lockFile.Unlock(0, 1)
+        $lockFile.Dispose()
+    }
+    Assert-Equal (Invoke-Preflight $fresh) 0 'Released Agent lock permits install'
+
     Write-Host 'Testing process detection, silent and passive modes...'
     # Space, apostrophe and Unicode paths; no command-string interpolation.
     $target = New-Install ("Program Files user's " + [char]0x672A + [char]0x6765)
@@ -201,6 +220,22 @@ try {
     Assert-Equal $otherAgent.HasExited $false 'Other installation untouched'
     Assert-Equal (Test-Path (Join-Path $target 'future-agent.exe')) $false 'Legacy Agent removed before install'
 
+    Write-Host 'Testing an Agent in another installation holding the shared lock...'
+    $ownerReady = Join-Path $other 'lock-owner.ready'
+    $state = Join-Path $root '.future\agent'
+    $lockedAgent = Start-Process -FilePath (Join-Path $other 'future.exe') -ArgumentList "--hold-agent-lock `"$ownerReady`" `"$state`"" -PassThru
+    $processes.Add($lockedAgent)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $ownerReady)) {
+        if ($lockedAgent.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'Lock owner did not start' }
+        Start-Sleep -Milliseconds 50
+    }
+    $repair = New-Install 'cross-directory Agent repair'
+    Assert-Equal (Invoke-Preflight $repair) 32 'Shared Agent lock blocks a different directory'
+    Assert-Equal (Wait-Exit (Start-Installer $repair '/S /UPDATE')) 0 'Verified Agent owner closed by update'
+    Assert-Equal $lockedAgent.HasExited $true 'Verified external Agent exited'
+    Assert-Equal $otherAgent.HasExited $false 'Unrelated process in other installation survives'
+
     Write-Host 'Testing external lock and retry...'
     $locked = New-Install 'external lock'
     $handle = [IO.File]::Open((Join-Path $locked 'future.exe'), 'Open', 'Read', 'Read')
@@ -222,6 +257,7 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'future-agent.exe')).Hash $fixtureHash 'Failed upgrade restores legacy Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $rollback 'future-desktop.exe')).Hash $fixtureHash 'Failed upgrade restores legacy desktop'
     Assert-Equal (Test-Path (Join-Path $rollback 'installed.marker')) $false 'Failed upgrade does not report completion'
+    Assert-Equal (Invoke-Preflight $rollback) 0 'Failed upgrade releases Agent lock lease'
 
     Write-Host 'Testing failed post-install health check rollback...'
     $unloadable = New-Install 'rollback after health check'
@@ -310,5 +346,7 @@ try {
         if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
         $p.Dispose()
     }
+    $env:HOME = $previousHome
+    $env:FUTURE_HOME = $previousFutureHome
     Remove-Item -LiteralPath $root -Recurse -Force
 }

@@ -32,6 +32,21 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    let metadata_path = home.path().join(".future/agent/agent-instance.json");
+    while !metadata_path.exists() {
+        assert!(
+            first.try_wait().expect("poll first agent").is_none(),
+            "first agent exited before publishing instance metadata"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first agent did not publish instance metadata"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let identity: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+    assert_eq!(identity["pid"], first.id());
 
     let second = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
@@ -60,6 +75,10 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
 
     first.kill().expect("force-stop first agent");
     first.wait().expect("reap first agent");
+    assert!(
+        metadata_path.exists(),
+        "a force kill may leave stale metadata"
+    );
     let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
         .env("HOME", home.path())
@@ -70,6 +89,10 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         replacement.status.success(),
         "replacement agent could not acquire released lock: {}",
         String::from_utf8_lossy(&replacement.stderr)
+    );
+    assert!(
+        !metadata_path.exists(),
+        "the replacement must remove its own metadata on normal exit"
     );
 }
 
