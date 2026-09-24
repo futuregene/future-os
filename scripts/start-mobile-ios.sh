@@ -131,10 +131,11 @@ echo "Mode: $MODE"
 
 # ── dependencies ────────────────────────────────────────────────────────────
 
-if [[ ! -d "$MOBILE_DIR/node_modules" ]]; then
-  echo "Installing mobile dependencies..."
-  (cd "$MOBILE_DIR" && npm ci)
-fi
+# npm workspaces hoist Expo to the repository root.  Do not treat the
+# workspace-local node_modules directory as an installation sentinel: it can
+# exist without mobile's Expo SDK.  The shared helper checks both freshness and
+# SDK resolution from mobile/package.json.
+node "$ROOT_DIR/scripts/npm-install-if-needed.mjs"
 
 
 # ── simulator ────────────────────────────────────────────────────────────────
