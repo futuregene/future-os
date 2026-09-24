@@ -100,6 +100,7 @@ it("projects the same rich nodes as static parsing for whole-document and split 
     "Read [docs][id].\n\n[id]: https://example.com",
     "# Title\n\nParagraph\n\n```ts\nconst x = 1;\n```",
     "\\[\nx^2 + y^2\n\\]",
+    "**https://x.com/a**（说明）见 https://y.com/b。下一句",
   ]) {
     const blocks = projectStreamingMarkdown(text, false);
     expect(blocks.map(block => block.content).join("")).toBe(text);

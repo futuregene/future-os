@@ -127,6 +127,33 @@ describe("MarkdownText layout and fidelity", () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
   });
 
+  test("a bold URL keeps the punctuation and the code span after it out of the link", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("**https://github.com/huichen/futureos-wechat-articles**（PRIVATE，`huichen` 账号下）");
+      const links = root.findAll(node =>
+        typeof node.props.onPress === "function" && StyleSheet.flatten(node.props.style)?.textDecorationLine === "underline");
+      expect(links.length).toBeGreaterThan(0);
+      // The composite and host node of one link: both paint exactly the URL.
+      expect(links.every(node => paintedText(node) === "https://github.com/huichen/futureos-wechat-articles")).toBe(true);
+      act(() => links[0]!.props.onPress());
+      // Tapping opened `…articles**（PRIVATE，`huichen`` before: the target ran
+      // on to the end of the sentence.
+      expect(open).toHaveBeenCalledWith("https://github.com/huichen/futureos-wechat-articles");
+      let bold = false;
+      for (let parent = links[0]!.parent; parent; parent = parent.parent) {
+        if (StyleSheet.flatten(parent.props?.style)?.fontWeight === "700") bold = true;
+      }
+      expect(bold).toBe(true);
+      // Only the URL is a link and only the URL is blue: the sentence's own
+      // punctuation, code span and text are outside both.
+      const output = JSON.stringify(renderer.toJSON());
+      expect(output).not.toContain("**");
+      expect(output).toContain("（PRIVATE，");
+      expect(output).toContain("账号下）");
+    } finally { open.mockRestore(); }
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");
