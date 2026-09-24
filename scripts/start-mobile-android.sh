@@ -105,10 +105,9 @@ echo "Mode: $MODE"
 
 # ── dependencies ────────────────────────────────────────────────────────────
 
-if [[ ! -d "$MOBILE_DIR/node_modules" ]]; then
-  echo "Installing mobile dependencies..."
-  (cd "$MOBILE_DIR" && npm ci)
-fi
+# npm workspaces hoist Expo to the repository root; use the shared resolver
+# check rather than a possibly stale workspace-local node_modules directory.
+node "$ROOT_DIR/scripts/npm-install-if-needed.mjs"
 
 
 # ── SDK image & tools ────────────────────────────────────────────────────────

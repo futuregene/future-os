@@ -86,6 +86,10 @@ const config: ExpoConfig = {
         },
         ios: {
           deploymentTarget: "16.4",
+          // Xcode 27 / iOS 27 rejects the legacy UIApplication-only lifecycle
+          // at launch. Expo SDK 57 can opt into its backported scene delegate
+          // until the project moves to SDK 58, where scenes are the default.
+          enableSceneSupport: true,
         },
       },
     ],

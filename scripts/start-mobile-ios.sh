@@ -131,17 +131,17 @@ echo "Mode: $MODE"
 
 # ── dependencies ────────────────────────────────────────────────────────────
 
-if [[ ! -d "$MOBILE_DIR/node_modules" ]]; then
-  echo "Installing mobile dependencies..."
-  (cd "$MOBILE_DIR" && npm ci)
-fi
+# npm workspaces hoist Expo to the repository root.  Do not treat the
+# workspace-local node_modules directory as an installation sentinel: it can
+# exist without mobile's Expo SDK.  The shared helper checks both freshness and
+# SDK resolution from mobile/package.json.
+node "$ROOT_DIR/scripts/npm-install-if-needed.mjs"
 
 
 # ── simulator ────────────────────────────────────────────────────────────────
 
 sim_running() {
-  xcrun simctl list devices | grep -qE "^ *${DEVICE_NAME} \(" && \
-    xcrun simctl list devices | grep -E "^ *${DEVICE_NAME} \(" | grep -q "Booted"
+  xcrun simctl list devices | grep -F "($DEVICE_UDID)" | grep -q "Booted"
 }
 
 sim_ready() {
@@ -158,7 +158,20 @@ open_simulator_ui() {
   fi
 }
 
-DEVICE_UDID="$(xcrun simctl list devices | grep -E "^ *${DEVICE_NAME} \(" | grep -oE '[0-9A-F-]{36}' | head -1 || true)"
+# Device names are shared by multiple runtimes.  Selecting by name alone can
+# silently boot (and test) an older iOS version despite the runtime printed
+# above.  The JSON inventory is keyed by runtime identifier, so query that
+# exact bucket before deciding whether a simulator must be created.
+DEVICE_UDID="$(xcrun simctl list devices --json | node -e '
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", chunk => { input += chunk; });
+  process.stdin.on("end", () => {
+    const devices = JSON.parse(input).devices[process.argv[1]] ?? [];
+    const device = devices.find(candidate => candidate.name === process.argv[2] && candidate.isAvailable);
+    process.stdout.write(device?.udid ?? "");
+  });
+' "$RUNTIME" "$DEVICE_NAME")"
 if [[ -z "$DEVICE_UDID" ]]; then
   echo "Creating simulator $DEVICE_NAME..."
   DEVICE_UDID="$(xcrun simctl create "$DEVICE_NAME" "$DEVICE_TYPE" "$RUNTIME")"
@@ -208,9 +221,28 @@ acquire_native_lock
 
 # ── prebuild ─────────────────────────────────────────────────────────────────
 
-if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]]; then
+# Native projects are generated and ignored.  Keep a content stamp for the
+# config/plugin inputs that define them, so an iOS lifecycle or config-plugin
+# change cannot be skipped merely because an old ios/ directory remains.
+checksum_prebuild_inputs() {
+  {
+    shasum -a 256 "$MOBILE_DIR/app.config.ts"
+    shasum -a 256 "$MOBILE_DIR/package.json"
+    shasum -a 256 "$ROOT_DIR/package-lock.json"
+    find "$MOBILE_DIR/plugins" -type f -print | LC_ALL=C sort | while IFS= read -r plugin_file; do
+      shasum -a 256 "$plugin_file"
+    done
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+PREBUILD_STAMP="$MOBILE_DIR/ios/.futureos-prebuild.sha256"
+PREBUILD_INPUT_HASH="$(checksum_prebuild_inputs)"
+INSTALLED_PREBUILD_HASH="$(cat "$PREBUILD_STAMP" 2>/dev/null || true)"
+if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]] || \
+  [[ "$PREBUILD_INPUT_HASH" != "$INSTALLED_PREBUILD_HASH" ]]; then
   echo "Running expo prebuild..."
-  (cd "$MOBILE_DIR" && npx expo prebuild --platform ios)
+  (cd "$MOBILE_DIR" && npx expo prebuild --clean --platform ios)
+  printf '%s\n' "$PREBUILD_INPUT_HASH" > "$PREBUILD_STAMP"
 fi
 
 # Keep Pods intact between runs. Synchronize only when the dependency manifests
