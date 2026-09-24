@@ -29,6 +29,7 @@ import { useFileDownload } from "./useFileDownload";
 import { useMarkdownImageLoader } from "./useMarkdownImageLoader";
 import { MarkdownImageLoaderContext } from "../../components/MarkdownImage";
 import { useChatScroll } from "./useChatScroll";
+import { useQuestionNav } from "./useQuestionNav";
 import { useTimelinePaging } from "./useTimelinePaging";
 import { useCompactContext } from "./useCompactContext";
 import { useSendMessage } from "./useSendMessage";
@@ -38,6 +39,7 @@ import { ChatTopBar } from "./components/ChatTopBar";
 import { SessionFilesPanel } from "./components/SessionFilesPanel";
 import { ComposerDock } from "./components/ComposerDock";
 import { FloatingTimelineButton } from "./components/FloatingTimelineButton";
+import { QuestionNavControl } from "./components/QuestionNavControl";
 import { ModelSelectorSheet } from "./components/ModelSelectorSheet";
 import { DownloadProgressModal } from "./components/DownloadProgressModal";
 import { PreviewModal } from "./components/PreviewModal";
@@ -256,6 +258,14 @@ export function ChatScreen() {
     transcriptItems.length,
   );
   const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
+  // Jumping between questions is offered by the same reading state that offers
+  // "back to latest": neither is useful while the tail is on screen.
+  const questionNav = useQuestionNav({
+    sessionId: remote.selectedSessionId,
+    items: invertedTranscriptItems,
+    listRef,
+    atLatest,
+  });
 
   // Skill recommendation (PRD v1.6): the desktop's toggle decides whether the
   // phone asks at all. The evaluator holds the draft while it asks, so `send`
@@ -335,6 +345,17 @@ export function ChatScreen() {
     onScroll,
   );
 
+  // The list keeps one scroll handler: paging owns fetching more history, the
+  // question control owns the reading position.
+  const questionScroll = questionNav.onScroll;
+  const onChatScroll = useCallback(
+    (event: Parameters<typeof onPagedScroll>[0]) => {
+      onPagedScroll(event);
+      questionScroll(event);
+    },
+    [onPagedScroll, questionScroll],
+  );
+
   // Keep FlatList row callbacks referentially stable while still dispatching
   // through the newest controller closures. Remote context changes on every
   // streaming commit; passing those closures directly would defeat memoized
@@ -373,7 +394,10 @@ export function ChatScreen() {
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem }) => (
-      <View onLayout={onRowLayout}>
+      <View
+        onLayout={onRowLayout}
+        style={item.id === questionNav.landedId ? styles.landedRow : undefined}
+      >
         <TimelineCard
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
@@ -391,6 +415,7 @@ export function ChatScreen() {
       handleTimelineRetry,
       latestAssistantId,
       onRowLayout,
+      questionNav.landedId,
     ],
   );
 
@@ -579,7 +604,8 @@ export function ChatScreen() {
                   }}
                   onMomentumScrollBegin={onMomentumScrollBegin}
                   onMomentumScrollEnd={onMomentumScrollEnd}
-                  onScroll={onPagedScroll}
+                  onScroll={onChatScroll}
+                  onScrollToIndexFailed={questionNav.onScrollToIndexFailed}
                   onScrollEndDrag={onScrollEndDrag}
                   ref={listRef}
                   renderItem={renderTimelineItem}
@@ -587,9 +613,24 @@ export function ChatScreen() {
                   scrollIndicatorInsets={{ bottom: 0 }}
                   style={styles.timelineList}
                   updateCellsBatchingPeriod={32}
+                  viewabilityConfigCallbackPairs={
+                    questionNav.viewabilityConfigCallbackPairs
+                  }
                   windowSize={7}
                   ItemSeparatorComponent={TimelineItemGap}
                 />
+
+                {questionNav.visible && (
+                  <QuestionNavControl
+                    hasNext={questionNav.next !== null}
+                    hasPrevious={questionNav.previous !== null}
+                    nextLabel={t("chat.nextQuestion")}
+                    onNext={questionNav.goToNext}
+                    onPrevious={questionNav.goToPrevious}
+                    previousLabel={t("chat.previousQuestion")}
+                    style={styles.questionNav}
+                  />
+                )}
 
                 {showLoadOlderHint && (
                   <FloatingTimelineButton
@@ -805,6 +846,17 @@ const styles = StyleSheet.create({
   retryLabel: { color: colors.surface, fontSize: 14, fontWeight: "600" },
   itemGap: { height: spacing.md },
   timelineViewport: { flex: 1 },
+  // The question control sits above the composer's edge, clear of the message
+  // column and of the load-older/sync notices that own the viewport's top.
+  questionNav: { right: layout.gutter, bottom: spacing.lg },
+  // A jump marks where it landed. The row band cancels its own inset so the
+  // messages do not shift while it is up.
+  landedRow: {
+    marginHorizontal: -spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.accentSoft,
+  },
   loadOlder: { top: spacing.sm },
   syncNoticeBelowHistory: { top: spacing.sm + layout.touchTarget + spacing.sm },
   transferTrack: {

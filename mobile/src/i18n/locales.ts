@@ -340,6 +340,8 @@ export const resources = {
         truncated:
           "The beginning of this run is no longer available in the live buffer.",
         backToLatest: "Back to latest",
+        previousQuestion: "Previous question",
+        nextQuestion: "Next question",
         runStopped: "Stopped",
         responseInterrupted: "The response was interrupted before it finished.",
         responseIncomplete: "Response not completed",
@@ -1006,6 +1008,8 @@ export const resources = {
         save: "保存",
         truncated: "本轮开头已超出实时缓冲，无法回放。",
         backToLatest: "回到最新",
+        previousQuestion: "上一个提问",
+        nextQuestion: "下一个提问",
         runStopped: "已停止",
         responseInterrupted: "回复在完成前被中断。",
         responseIncomplete: "本次回复未完成",
