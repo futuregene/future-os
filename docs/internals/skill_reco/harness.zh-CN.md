@@ -202,6 +202,18 @@ AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
   node bench/check-parity.mjs                               # 本目录与 agent 的机制逐项一致
 ```
 
+**还有一个手动的 gRPC 端到端检查**（不进 CI：要 grpcurl、真实凭据和活网关，会花钱）：
+
+```bash
+future agent --home /tmp/reco-test --verbose --log-file    # 隔离实例，不碰你在用的 agent
+python3 suggest-skill-tests.py              # 43 项、5 个套件；≈33 次调用 ≈¥0.04
+python3 suggest-skill-tests.py --only A,B,D # 不花钱的三个套件（不发网络）
+python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
+```
+
+单测覆盖决策逻辑，这一套覆盖**线**：客户端解析的 typed payload、每种失败都塌成"没有推荐"、
+以及常量蕴含的边界（254 候选上限、CJK、超长输入）。
+
 两个都会在发现问题时退出码非 0，并且——这一点同样重要——**在"什么都没测到"时也报错**
 （读不到文档、读不到 agent 源码），而不是打印一个通过。`check-doc-refs.mjs` 写完当天就抓出两个
 引用已删脚本的悬空引用，`check-parity.mjs` 的默认路径也曾经少算一层、只有在显式传
