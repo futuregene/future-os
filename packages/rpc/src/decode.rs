@@ -78,6 +78,9 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
         Kind::Prompt(ack) => serde_json::to_value(prompt_ack_from_proto(ack)).ok(),
         Kind::ListModels(response) => serde_json::to_value(list_models_from_proto(response)).ok(),
         Kind::GetAgentInfo(info) => serde_json::to_value(agent_info_from_proto(info)).ok(),
+        Kind::GetAgentReadiness(info) => {
+            serde_json::to_value(agent_readiness_from_proto(info)).ok()
+        }
         Kind::GetCommands(response) => serde_json::to_value(commands_from_proto(response)).ok(),
         Kind::Compact(result) => serde_json::to_value(compact_from_proto(result)).ok(),
         Kind::Shell(result) => serde_json::to_value(shell_from_proto(result)).ok(),
@@ -642,6 +645,15 @@ fn agent_info_from_proto(info: &proto::AgentInfo) -> crate::payloads_ext::AgentI
         version: info.version.clone(),
         agent_instance_id: info.agent_instance_id.clone(),
         skills_count: info.skills_count as usize,
+    }
+}
+
+fn agent_readiness_from_proto(
+    info: &proto::AgentReadiness,
+) -> crate::payloads_ext::AgentReadinessPayload {
+    crate::payloads_ext::AgentReadinessPayload {
+        version: info.version.clone(),
+        agent_instance_id: info.agent_instance_id.clone(),
     }
 }
 

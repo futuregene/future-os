@@ -39,6 +39,7 @@ fn sessionless_commands_do_not_require_session_id() {
     // don't belong in a swept table.
     let sessionless = [
         "get_agent_info",
+        "get_agent_readiness",
         "list_models",
         "list_providers",
         "list_sessions",
@@ -95,6 +96,7 @@ fn typed_payload_encodes_real_read_command_envelopes() {
     // Sessionless commands.
     for cmd_type in [
         "get_agent_info",
+        "get_agent_readiness",
         "list_models",
         "get_commands",
         "refresh_skills",

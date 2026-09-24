@@ -26,7 +26,7 @@ mod tests;
 pub(crate) use self::test_support::get_state_payload;
 
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
-pub(crate) use self::client::get_agent_info;
+pub(crate) use self::client::get_agent_readiness;
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
     connect_agent, delete_session_command, get_available_models_command, get_run_state_command,

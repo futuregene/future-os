@@ -27,6 +27,7 @@ pub fn response_payload(command: &str, data: &Value) -> Option<proto::ResponsePa
         "prompt" => prompt(data).map(Kind::Prompt),
         "list_models" => list_models(data).map(Kind::ListModels),
         "get_agent_info" => get_agent_info(data).map(Kind::GetAgentInfo),
+        "get_agent_readiness" => get_agent_readiness(data).map(Kind::GetAgentReadiness),
         "get_commands" => get_commands(data).map(Kind::GetCommands),
         "compact" => compact(data).map(Kind::Compact),
         "shell" => shell(data).map(Kind::Shell),
@@ -583,6 +584,15 @@ fn get_agent_info(data: &Value) -> Option<proto::AgentInfo> {
         version: payload.version,
         agent_instance_id: payload.agent_instance_id,
         skills_count: payload.skills_count as u64,
+    })
+}
+
+fn get_agent_readiness(data: &Value) -> Option<proto::AgentReadiness> {
+    let payload: crate::payloads_ext::AgentReadinessPayload =
+        serde_json::from_value(data.clone()).ok()?;
+    Some(proto::AgentReadiness {
+        version: payload.version,
+        agent_instance_id: payload.agent_instance_id,
     })
 }
 

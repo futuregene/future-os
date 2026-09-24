@@ -415,6 +415,10 @@ fn default_answer(
             "agentInstanceId": "mock-agent",
             "skillsCount": 0,
         })),
+        "get_agent_readiness" => ok(json!({
+            "version": crate::build_info::VERSION,
+            "agentInstanceId": "mock-agent",
+        })),
         "list_streaming_sessions" => ok(json!({ "sessions": [] })),
         "probe_sandbox" => ok(json!({
             "available": cfg!(target_os = "macos"),

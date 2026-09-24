@@ -464,6 +464,7 @@ message ResponsePayload {
     SessionStatsResponse get_session_stats = 15;
     RuntimeMetricsResponse get_runtime_metrics = 16;
     SuggestSkillResult suggest_skill = 17;
+    AgentReadiness get_agent_readiness = 18;
   }
 }
 
@@ -532,6 +533,13 @@ message AgentInfo {
   string version = 1;
   string agent_instance_id = 2;
   uint64 skills_count = 3;
+}
+
+// Lightweight business-RPC handshake for Desktop startup and login. Skill
+// discovery belongs to get_agent_info / the dedicated skill commands.
+message AgentReadiness {
+  string version = 1;
+  string agent_instance_id = 2;
 }
 
 // get_commands response.

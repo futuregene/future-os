@@ -48,6 +48,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     if cmd_type == "get_agent_info" {
         return providers::get_agent_info_response(state, id);
     }
+    if cmd_type == "get_agent_readiness" {
+        return providers::get_agent_readiness_response(state, id);
+    }
     if cmd_type == "list_models" {
         return providers::list_models_response(
             id,

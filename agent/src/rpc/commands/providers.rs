@@ -113,6 +113,19 @@ pub(crate) fn get_agent_info_response(state: &AppState, id: &str) -> String {
     )
 }
 
+/// A business-RPC readiness check that cannot wait on skill discovery. Login
+/// and process supervision only need the running Agent's identity and version.
+pub(crate) fn get_agent_readiness_response(state: &AppState, id: &str) -> String {
+    RpcResponse::ok(
+        id,
+        "get_agent_readiness",
+        serde_json::json!({
+            "version": crate::utils::VERSION,
+            "agentInstanceId": state.agent_instance_id,
+        }),
+    )
+}
+
 pub(crate) fn list_models_response(
     id: &str,
     registry: &crate::models::Registry,

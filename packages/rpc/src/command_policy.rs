@@ -73,6 +73,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "fork",
     "generate_session_title",
     "get_agent_info",
+    "get_agent_readiness",
     "get_commands",
     "get_events_since",
     "get_run_snapshot",
@@ -151,6 +152,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::AsyncAck,
         ),
         "get_agent_info"
+        | "get_agent_readiness"
         | "get_commands"
         | "get_last_assistant_text"
         | "get_runtime_metrics"

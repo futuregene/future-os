@@ -368,7 +368,7 @@ pub struct RpcResponse {
 pub struct ResponsePayload {
     #[prost(
         oneof = "response_payload::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub kind: ::core::option::Option<response_payload::Kind>,
 }
@@ -410,6 +410,8 @@ pub mod response_payload {
         GetRuntimeMetrics(super::RuntimeMetricsResponse),
         #[prost(message, tag = "17")]
         SuggestSkill(super::SuggestSkillResult),
+        #[prost(message, tag = "18")]
+        GetAgentReadiness(super::AgentReadiness),
     }
 }
 /// list_sessions response wrapper.
@@ -511,6 +513,15 @@ pub struct AgentInfo {
     pub agent_instance_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub skills_count: u64,
+}
+/// Lightweight business-RPC handshake for Desktop startup and login. Skill
+/// discovery belongs to get_agent_info / the dedicated skill commands.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentReadiness {
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub agent_instance_id: ::prost::alloc::string::String,
 }
 /// get_commands response.
 #[derive(Clone, PartialEq, ::prost::Message)]

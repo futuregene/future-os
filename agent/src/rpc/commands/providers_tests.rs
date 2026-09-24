@@ -195,6 +195,29 @@ fn get_agent_info_returns_version() {
 }
 
 #[test]
+fn readiness_does_not_wait_for_skill_discovery() {
+    let state = make_app_state();
+    let refresh_lock = crate::skills::hold_refresh_lock_for_test();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        sender
+            .send(handle_command_internal(
+                &state,
+                make_cmd("get_agent_readiness"),
+            ))
+            .unwrap();
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(2));
+    drop(refresh_lock);
+    worker.join().unwrap();
+    let response = parse_response(&result.expect("readiness blocked on skills refresh"));
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["version"], crate::utils::VERSION);
+    assert_eq!(response["data"]["agentInstanceId"], "agent-test-instance");
+    assert!(response["data"].get("skillsCount").is_none());
+}
+
+#[test]
 fn refresh_skills_returns_skill_list() {
     let state = make_app_state();
     let cmd = make_cmd("refresh_skills");
