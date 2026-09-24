@@ -22,6 +22,10 @@ use std::{
 };
 
 static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
+/// Refused handshakes. Any peer holding the pair's NATS JWT can attempt one, so
+/// this goes through the same quota mechanism as every other bridge fault
+/// rather than printing once per frame.
+static HANDSHAKE_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
 
 const REMOTE_JSON_GZIP_THRESHOLD_BYTES: usize = 32 * 1024;
 const REMOTE_JSON_GZIP_ENV: &str = "FUTURE_REMOTE_JSON_GZIP";
@@ -297,12 +301,20 @@ pub(super) async fn command_loop_with_ready(
                         },
                         None => process(),
                     };
+                    // A refused handshake is the one pairing failure that used to
+                    // leave no trace anywhere: the phone only reports that the
+                    // desktop would not authenticate, and the reason never left
+                    // this function. Log it, and send it to the phone (which has
+                    // the console a user can actually be asked to read).
+                    if let Err(error) = &result {
+                        if let Some(line) = HANDSHAKE_EPISODE.record("handshake_refused", error) {
+                            eprintln!("{line}");
+                        }
+                    }
                     if let Some(reply) = msg.reply {
                         let body = match result {
                             Ok(data) => json!({ "success": true, "data": data }),
-                            Err(_) => {
-                                json!({ "success": false, "error": "remote_secure_channel_invalid" })
-                            }
+                            Err(error) => json!({ "success": false, "error": error.to_string() }),
                         };
                         let _ = client
                             .publish(reply, serde_json::to_vec(&body).expect("JSON value").into())
@@ -576,14 +588,36 @@ async fn handle_pair_handshake(
     // the bridge (active=false gates every command) — only a well-formed
     // handshake from a party that holds the pair's identity may suspend the
     // current session while it re-authenticates.
-    let valid = cmd.protocol_version == HANDSHAKE_PROTOCOL_VERSION
-        && cmd.pair_id == state.creds.pair_id
-        && cmd.expected_desktop_id == state.creds.desktop_id
-        && cmd.expected_desktop_public_key == desktop_public_key
-        && cmd.device_id.starts_with("dev_")
-        && cmd.client_public_key.starts_with('U')
-        && (16..=256).contains(&cmd.client_nonce.len());
-    if !valid {
+    //
+    // Each field is checked by name so a refusal says *which* one disagreed. A
+    // client holding a QR for an identity this bridge no longer serves fails
+    // the two `expected_desktop_*` checks, and that is the only place either
+    // side can see it: the client just reports that the desktop would not
+    // authenticate, and the desktop used to report nothing at all.
+    let invalid: Option<&str> = if cmd.protocol_version != HANDSHAKE_PROTOCOL_VERSION {
+        Some("protocol_version")
+    } else if cmd.pair_id != state.creds.pair_id {
+        Some("pair_id")
+    } else if cmd.expected_desktop_id != state.creds.desktop_id {
+        Some("desktop_id")
+    } else if cmd.expected_desktop_public_key != desktop_public_key {
+        Some("desktop_public_key")
+    } else if !cmd.device_id.starts_with("dev_") {
+        Some("device_id")
+    } else if !cmd.client_public_key.starts_with('U') {
+        Some("client_public_key")
+    } else if !(16..=256).contains(&cmd.client_nonce.len()) {
+        Some("client_nonce")
+    } else {
+        None
+    };
+    if let Some(field) = invalid {
+        if let Some(line) = HANDSHAKE_EPISODE.record(
+            "pairing_identity_mismatch",
+            format!("{field} does not match this bridge's pairing"),
+        ) {
+            eprintln!("{line}");
+        }
         reply(
             client,
             msg,

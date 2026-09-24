@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { CameraView } from "expo-camera";
-import { BackHandler, Modal, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { BackHandler, Modal, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { PairingScreen } from "../PairingScreen";
@@ -78,6 +78,39 @@ test("manual entry submits from the keyboard without adding another confirmation
   await act(async () => tree.root.findByType(TextInput).props.onSubmitEditing());
   expect(mockPair).toHaveBeenCalledWith("valid-code");
   expect(onPaired).toHaveBeenCalledTimes(1);
+});
+
+// The desktop folds every handshake failure into one opaque reply, so the phone
+// is the only place a user (or a support log) can be told what to actually do.
+// These three outcomes need three different actions, and used to share one
+// "update both apps" message.
+test("a pairing failure names the action the user can take", async () => {
+  const toast = () => tree.root.findAllByType(Text).map(node => node.props.children).join("|");
+  const pairFailing = async (error: Error) => {
+    mockPair.mockRejectedValueOnce(error);
+    act(() => button("pairing.manual").props.onPress());
+    act(() => tree.root.findByType(TextInput).props.onChangeText("some-code"));
+    await act(async () => tree.root.findByType(TextInput).props.onSubmitEditing());
+    return toast();
+  };
+
+  // The desktop never answered: a network problem, not a version problem.
+  expect(await pairFailing(new Error("desktop_handshake_failed: TIMEOUT"))).toContain(
+    "pairing.network",
+  );
+  // The desktop refused the handshake — the code is spent, used, or describes an
+  // identity the bridge no longer serves. Recovery is a fresh code.
+  expect(
+    await pairFailing(
+      new Error(
+        "desktop_handshake_failed: pairing_signature_invalid:remote_secure_channel_invalid (invitation_expired)",
+      ),
+    ),
+  ).toContain("pairing.invalid");
+  // The confirmation did not verify: only this one means the builds disagree.
+  expect(await pairFailing(new Error("desktop_handshake_failed: pairing_confirmation_mismatch"))).toContain(
+    "pairing.verification",
+  );
 });
 
 test("permission instructions can grow instead of being clipped inside a square camera frame", () => {

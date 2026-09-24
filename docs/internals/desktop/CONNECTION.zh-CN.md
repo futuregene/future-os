@@ -297,10 +297,10 @@ stateDiagram-v2
 | 服务授权失败（`service_authorization`） | `AU001` |
 | 凭证过期或连接认证异常（`credential_expired`、`credential_connect`） | `AU002` |
 | 配对或凭证已撤销（`revoked`、`credential_revoked`） | `PA001` |
-| 配对码无效或已过期 | `PA002` |
+| 配对码无效、已过期，或握手被桌面端拒绝（桥当前服务的身份不是该二维码对应的身份） | `PA002` |
 | 配对领取地址不受信任（手机按二维码选择可信正式/测试平台，不按 APK 版本限制环境） | `PA003` |
 | 配对接口使用不安全的传输 | `PA004` |
-| Desktop 身份验证失败 | `PA005` |
+| Desktop 身份验证失败（两端构建无法完成加密握手） | `PA005` |
 | 未知配对故障 | `PA999` |
 | 协议错误（`protocol`） | `PT001` |
 | 连接恢复预算耗尽（`generation_unhealthy`） | `RT001` |

@@ -50,10 +50,27 @@ function pairingErrorMessage(error: unknown, t: TFunction): string {
     return t("pairing.invalid");
   }
   if (message === "nats_ws_not_tls") return t("pairing.secureEndpoint");
-  if (/handshake|signature|confirmation_mismatch/i.test(message)) {
+  // Time is checked before identity: the handshake is wrapped as
+  // `desktop_handshake_failed: ...`, so every "the desktop never answered"
+  // failure also contains the word "handshake". Matching identity first told a
+  // user whose desktop was simply unreachable to update both apps, which is
+  // both wrong and unactionable.
+  if (/time-?out|timed out|nats_connect|no responders/i.test(message)) {
+    return t("pairing.network");
+  }
+  // The desktop refused to complete this pairing. Whatever the reason — the
+  // code was already used or has expired, the bridge is serving a different
+  // identity, the challenge went stale — the only action available to the user
+  // is a freshly issued code, so this must not read as "update both apps".
+  if (/pairing_signature_invalid|pairing_identity_mismatch|pairing_challenge_expired/i.test(message)) {
+    return t("pairing.invalid");
+  }
+  // A confirmation that does not decrypt, or a desktop whose confirmed feature
+  // set lacks e2ee_v2, means the two builds do not speak the same protocol.
+  if (/confirmation_mismatch|handshake|signature/i.test(message)) {
     return t("pairing.verification");
   }
-  if (/network|unreachable|load failed|fetch failed|econn|time-?out|nats_connect/i.test(message)) {
+  if (/network|unreachable|load failed|fetch failed|econn|nats_connect/i.test(message)) {
     return t("pairing.network");
   }
   if (/HTTP\s*(429|5\d\d)|server|service unavailable/i.test(message)) {
