@@ -5374,10 +5374,18 @@ impl<T: TerminalIo> App<T> {
         if self.maybe_recommend_skill(value) {
             return;
         }
-        // A second Enter, or Enter on the shown card, is the TUI's "send button
-        // while it is disabled": it does nothing rather than racing the answer
-        // (the card's own `a` / `Esc` re-enter here with the state already back
-        // to Idle, so they still reach the send path).
+        // With a card on screen Enter means what the card's second action means:
+        // send the draft without the skill (desktop/mobile keep their send
+        // button live for this and send too). Doing nothing here read as a dead
+        // send key. The card's own `a` / `Esc` re-enter this same path with the
+        // state already back to Idle.
+        if matches!(self.skill_reco, SkillRecoState::Suggested { .. }) {
+            self.send_held_draft();
+            return;
+        }
+        // While the agent is being asked, a second Enter is the TUI's "send
+        // button while it is disabled": it does nothing rather than racing the
+        // answer that the held draft belongs to.
         if !matches!(self.skill_reco, SkillRecoState::Idle) {
             return;
         }
@@ -16856,6 +16864,30 @@ mod tests {
         assert!(
             !last.content.contains("/alpha"),
             "dismissing must not add the skill: {}",
+            last.content
+        );
+    }
+
+    /// Enter with the card up is the same decision as its `Esc`: send the draft
+    /// without the skill. A silent no-op read as a dead send key (the desktop
+    /// and mobile send buttons stay live here and send).
+    #[tokio::test]
+    async fn enter_on_a_shown_card_sends_the_draft_without_the_skill() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        };
+        app.handle_submit(RECO_DRAFT);
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app.chat.last_message().expect("the draft was sent");
+        assert_eq!(last.content, RECO_DRAFT);
+        assert!(
+            !last.content.contains("/alpha"),
+            "sending without the skill must not append it: {}",
             last.content
         );
     }
