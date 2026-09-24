@@ -282,12 +282,20 @@ export function ChatScreen() {
     i18n.language,
   );
   const { suggestion: skillSuggestion } = skillRecommendation;
+  //「忽略并发送」: send what the user typed, unchanged. Also the path a plain
+  // send takes while the card is up — the send button stays live there, so
+  // swallowing the press (or only toasting) reads as a dead button.
+  const dismissSuggestedSkill = useCallback(() => {
+    skillRecommendation.dismiss();
+    scrollToLatest();
+    void send();
+  }, [scrollToLatest, send, skillRecommendation]);
   const sendFromComposer = useCallback(async () => {
     if (!message.trim() && attachments.length === 0) return;
-    // A suggestion on screen owns the draft: the message goes out only when the
-    // user installs the skill or dismisses the card.
+    // A suggestion on screen holds the draft: pressing send is the second half
+    // of the card's "send without it" pair, so it dismisses and sends.
     if (skillSuggestion) {
-      showToast(t("chat.skillSuggestionPending"));
+      dismissSuggestedSkill();
       return;
     }
     // Ask before sending, and hold the draft if there is a suggestion. Every
@@ -295,7 +303,7 @@ export function ChatScreen() {
     if (await skillRecommendation.evaluate(message)) return;
     scrollToLatest();
     await send();
-  }, [attachments.length, message, scrollToLatest, send, skillRecommendation, skillSuggestion, t]);
+  }, [attachments.length, dismissSuggestedSkill, message, scrollToLatest, send, skillRecommendation, skillSuggestion]);
 
   //「安装并使用」: install, then send the held draft with the skill appended.
   const installSuggestedSkill = useCallback(async () => {
@@ -319,12 +327,6 @@ export function ChatScreen() {
     }
   }, [installingSkill, scrollToLatest, send, setMessage, skillRecommendation, t]);
 
-  //「忽略并发送」: send what the user typed, unchanged.
-  const dismissSuggestedSkill = useCallback(() => {
-    skillRecommendation.dismiss();
-    scrollToLatest();
-    void send();
-  }, [scrollToLatest, send, skillRecommendation]);
   const {
     showLoadOlderHint,
     pagingActive,

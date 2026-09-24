@@ -11,6 +11,8 @@ import { SessionFilesPanel } from "../components/SessionFilesPanel";
 import { SessionUsageSheet } from "../components/SessionUsageSheet";
 import { RenameModal } from "../components/RenameModal";
 import { ChatScreen } from "../ChatScreen";
+import { ComposerDock } from "../components/ComposerDock";
+import type { PendingSuggestion } from "../useSkillRecommendation";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
 import type { TimelineSyncStatus } from "../../../remote/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace } from "../../../remote/types";
@@ -65,15 +67,35 @@ jest.mock("../../../components/TimelineCard", () => ({
 jest.mock("../../../components/ErrorBanner", () => ({
   ErrorBanner: "ErrorBanner",
 }));
+// Mutable so a test can supply a draft, a live send and a skill suggestion;
+// the hooks are read at render time, after this module has initialised.
+const mockDraft: { message: string; attachments: unknown[] } = { message: "", attachments: [] };
 jest.mock("../useComposerDraft", () => ({
-  useComposerDraft: () => ({ message: "", attachments: [] }),
+  useComposerDraft: () => mockDraft,
 }));
 jest.mock("../useAttachmentPicker", () => ({
   useAttachmentPicker: () => ({}),
 }));
 const mockFileDownload: { preview: unknown; activeDownload: unknown } = { preview: null, activeDownload: null };
 jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
-jest.mock("../useSendMessage", () => ({ useSendMessage: () => ({}) }));
+const mockSendApi: { send: jest.Mock } = { send: jest.fn() };
+jest.mock("../useSendMessage", () => ({ useSendMessage: () => mockSendApi }));
+const mockSkillReco: {
+  suggestion: PendingSuggestion | null;
+  evaluating: boolean;
+  evaluate: jest.Mock;
+  installAndUse: jest.Mock;
+  dismiss: jest.Mock;
+} = {
+  suggestion: null,
+  evaluating: false,
+  evaluate: jest.fn(async () => false),
+  installAndUse: jest.fn(async () => null),
+  dismiss: jest.fn(),
+};
+jest.mock("../useSkillRecommendation", () => ({
+  useSkillRecommendation: () => mockSkillReco,
+}));
 jest.mock("../components/SessionUsageSheet", () => ({
   SessionUsageSheet: "SessionUsageSheet",
 }));
@@ -119,6 +141,10 @@ beforeEach(() => {
   mockRemote.workspaces = [];
   mockRemote.sessionUsage = null;
   mockRemote.loadOlderTimeline.mockReset().mockResolvedValue([]);
+  mockDraft.message = "";
+  mockDraft.attachments = [];
+  mockSkillReco.suggestion = null;
+  mockSkillReco.evaluating = false;
   act(() => {
     tree = create(createElement(ChatScreen));
   });
@@ -347,4 +373,21 @@ test("an external loading flag does not create an extra prompt without a collisi
   mockRemote.loadingOlderTimeline = true;
   act(() => tree.update(createElement(ChatScreen)));
   expect(tree.root.findAllByType(FloatingTimelineButton)).toHaveLength(0);
+});
+
+// The card holds the draft, but the send button stays live: pressing it is the
+// same as the card's "send without it" — dismiss the suggestion, send as typed.
+// Swallowing the press (or only toasting) read as a dead send button.
+test("a plain send with a skill card up dismisses it and sends the draft", () => {
+  mockDraft.message = "please search the web for this";
+  mockSkillReco.suggestion = {
+    skill: { name: "future-web", description: "search the web" },
+    draft: mockDraft.message,
+  };
+  act(() => tree.update(createElement(ChatScreen)));
+
+  act(() => tree.root.findByType(ComposerDock).props.send());
+
+  expect(mockSkillReco.dismiss).toHaveBeenCalledTimes(1);
+  expect(mockSendApi.send).toHaveBeenCalledTimes(1);
 });

@@ -59,7 +59,9 @@ export interface SkillRecommendationCard {
 /**
  * Optional skill-recommendation wiring (new-conversation first turn only).
  * When present, submit is first routed through `onEvaluate`; a returned card
- * holds submission until the user installs or dismisses it.
+ * holds the draft until the user installs the skill, presses the card's
+ * "send without it" button, or sends again (a plain send counts as the
+ * latter).
  */
 export interface SkillRecommendationProp {
   /** The card to show, or null. */
@@ -377,14 +379,19 @@ function ComposerImpl({
     }
 
     // Skill recommendation: hold the draft while we ask the recommender. A
-    // returned card keeps the draft unsubmitted until the user installs or
-    // dismisses it; anything else (timeout, no match, error) sends normally.
+    // returned card keeps the draft unsubmitted until the user acts on it
+    // (install, dismiss, or send again); anything else (timeout, no match,
+    // error) sends normally.
     const reco = skillRecommendation;
     if (reco) {
-      // A card is on screen and not yet acted on: the user decides. The card's
-      // own actions send through `sendNow` directly.
-      if (reco.card && !cardHandledRef.current)
+      // A card is on screen and not yet acted on: a plain send means "send
+      // without it" — the same thing the card's secondary button does. The
+      // send button stays live here (only the recommender wait disables it),
+      // so returning silently would read as a broken button.
+      if (reco.card && !cardHandledRef.current) {
+        dismissRecommendedSkill();
         return;
+      }
       // Ask once per draft. `evaluatedDraftRef` records that this draft has been
       // asked, so the fall-through below cannot re-enter this branch and spend a
       // second call for the same message.
