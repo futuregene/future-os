@@ -123,11 +123,10 @@ mod tests {
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
             data: HashMap::from([(
-                "get_agent_info".to_string(),
+                "get_agent_readiness".to_string(),
                 serde_json::json!({
                     "version": crate::build_info::VERSION,
                     "agentInstanceId": "matching-agent",
-                    "skillsCount": 0,
                 })
                 .to_string(),
             )]),
@@ -137,8 +136,19 @@ mod tests {
 
         script_mock_agent(MockScript {
             data: HashMap::from([(
-                "get_agent_info".to_string(),
-                r#"{"version":"older","agentInstanceId":"old-agent","skillsCount":0}"#.to_string(),
+                "get_agent_readiness".to_string(),
+                r#"{"version":"older","agentInstanceId":"old-agent"}"#.to_string(),
+            )]),
+            ..Default::default()
+        });
+        assert_eq!(
+            crate::agent_supervisor::agent_status().await.phase,
+            "incompatible"
+        );
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_agent_readiness".to_string(),
+                "unknown command: get_agent_readiness".to_string(),
             )]),
             ..Default::default()
         });

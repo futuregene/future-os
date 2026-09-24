@@ -134,6 +134,14 @@ impl RunClient {
             .await
     }
 
+    /// Check that an Agent can handle a command without triggering skill
+    /// discovery. This works with older Agents as well as current builds.
+    pub async fn probe_agent(&self) -> Result<(), String> {
+        self.execute_command("list_streaming_sessions", RpcCommand::default(), None, 5)
+            .await
+            .map(|_| ())
+    }
+
     /// `listModels()` — `list_models` → `{models, defaultModel}`.
     pub async fn list_models(&self) -> Result<Value, String> {
         self.execute_command("list_models", RpcCommand::default(), None, 5)
@@ -1394,6 +1402,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(empty, json!({}));
+    }
+
+    #[tokio::test]
+    async fn agent_probe_does_not_request_skill_count() {
+        let agent = MockAgent::default();
+        let addr = spawn_mock(agent.clone()).await;
+        let client = RunClient::new(&addr);
+
+        client.probe_agent().await.expect("agent probe");
+        assert_eq!(agent.seen_of("list_streaming_sessions").len(), 1);
+        assert!(agent.seen_of("get_agent_info").is_empty());
     }
 
     #[tokio::test]

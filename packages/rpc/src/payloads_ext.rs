@@ -139,6 +139,14 @@ pub struct AgentInfoPayload {
     pub skills_count: usize,
 }
 
+/// Process identity returned by the skill-independent readiness handshake.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReadinessPayload {
+    pub version: String,
+    pub agent_instance_id: String,
+}
+
 // ── get_commands ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

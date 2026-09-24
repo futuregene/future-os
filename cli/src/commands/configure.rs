@@ -426,7 +426,7 @@ async fn save_custom_provider(input: &CustomProviderInput) -> Result<(), String>
     #[cfg(not(test))]
     {
         let client = RunClient::new(&grpc_addr());
-        if client.get_agent_info().await.is_ok() {
+        if client.probe_agent().await.is_ok() {
             return client
                 .upsert_provider(provider_rpc(input))
                 .await

@@ -459,6 +459,17 @@ fn get_agent_info_wire_parity() {
 }
 
 #[test]
+fn get_agent_readiness_wire_parity() {
+    assert_command_parity(
+        "get_agent_readiness",
+        json!({
+            "version": "1.0.5",
+            "agentInstanceId": "agent-1"
+        }),
+    );
+}
+
+#[test]
 fn get_commands_wire_parity() {
     assert_command_parity(
         "get_commands",

@@ -255,7 +255,7 @@ pub async fn logout(out: &Output) -> Result<(), String> {
     #[cfg(not(test))]
     {
         let client = RunClient::new(&grpc_addr());
-        if client.get_agent_info().await.is_ok() {
+        if client.probe_agent().await.is_ok() {
             return logout_via_agent(&client, out).await;
         }
     }
@@ -461,7 +461,7 @@ async fn save_auth(
     out: &Output,
 ) -> Result<(), String> {
     let client = RunClient::new(&grpc_addr());
-    if client.get_agent_info().await.is_ok() {
+    if client.probe_agent().await.is_ok() {
         return client
             .set_auth(future_rpc::proto::AuthUpdate {
                 provider: FUTURE_AUTH_PROVIDER.to_string(),

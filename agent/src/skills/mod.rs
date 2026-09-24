@@ -114,6 +114,11 @@ static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>>
 /// Serialises cache refreshes so only one thread does the I/O work.
 static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(crate) fn hold_refresh_lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    REFRESH_LOCK.lock().unwrap()
+}
+
 /// Returns a cached skills list, refreshing when older than
 /// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
 /// slow path serialises file I/O with a dedicated refresh mutex so multiple

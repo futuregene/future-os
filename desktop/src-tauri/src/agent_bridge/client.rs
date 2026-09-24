@@ -11,12 +11,6 @@ use tonic::transport::Channel;
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AgentInfo {
-    pub version: String,
-}
-
 /// Desktop client wrapper that applies the shared per-command deadline while
 /// leaving streaming RPCs on the underlying client deadline-free.
 #[derive(Clone, Debug)]
@@ -181,18 +175,31 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
     )))
 }
 
-/// Complete a real command round-trip and return the running Agent's build
-/// identity. A transport connection alone is not readiness: during startup the
-/// local endpoint may exist before the command service can answer requests.
-pub(crate) async fn get_agent_info() -> Result<AgentInfo, crate::AppError> {
+/// Complete a business command round-trip without touching skill discovery.
+/// A transport connection alone is not readiness: during startup the local
+/// endpoint may exist before the command service can answer requests.
+pub(crate) async fn get_agent_readiness(
+) -> Result<Option<future_rpc::payloads_ext::AgentReadinessPayload>, crate::AppError> {
     let mut client = connect_agent().await?;
     let response = client
-        .execute_command(base_command("get_agent_info", String::new()))
+        .execute_command(base_command("get_agent_readiness", String::new()))
         .await
         .map_err(|status| map_rpc_error("Unable to read Future Agent status", status))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent did not report its build information")?;
-    serde_json::from_value(future_rpc::decode::response_data(&response)).map_err(Into::into)
+        .into_inner();
+    // An older Agent cannot implement this handshake. Report it as an
+    // incompatible build without invoking its skill-scanning get_agent_info.
+    if !response.success && response.error == "unknown command: get_agent_readiness" {
+        return Ok(None);
+    }
+    let response = response.ok_or_rpc_error("Future Agent did not report its build information")?;
+    let info: future_rpc::payloads_ext::AgentReadinessPayload =
+        serde_json::from_value(future_rpc::decode::response_data(&response))?;
+    if info.version.is_empty() || info.agent_instance_id.is_empty() {
+        return Err(crate::AppError::Message(
+            "Future Agent returned an incomplete readiness response".to_string(),
+        ));
+    }
+    Ok(Some(info))
 }
 
 /// One-shot reachability check run when the shared channel is first
