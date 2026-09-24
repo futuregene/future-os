@@ -87,101 +87,133 @@ pub fn write_active_state(goal_dir: &Path, goal: &Goal) -> Result<()> {
 // ── ACTIVE_GOAL_STATE.md.lock (liveness-checked sidecar lock) ─────────────
 //
 // The active-state markdown has a LoopX-compatible sidecar lock. Acquiring
-// writes OUR pid into the lock file; on conflict we read the holder's pid
-// and probe liveness (`kill -0`): a live holder is waited for up to
+// writes OUR pid into the lock file; on conflict we read the holder's pid and
+// probe liveness (`kill -0`): a live holder is waited for up to
 // [`LIVE_HOLDER_WAIT`] (it holds the lock only for one projection write) and
-// then reported as a hard error; a dead holder or an empty lock older than
-// [`EMPTY_LOCK_STALE_AFTER`] is a zombie we clear and take over (O2: lock
-// liveness self-heal).
+// then reported as a hard error, while a dead holder is cleared and taken over
+// at once. An EMPTY lock is waited for [`EMPTY_LOCK_WAIT`] and then taken over
+// too — see that constant for why a long wait there is wrong rather than safe.
 
-/// How old an EMPTY (no pid) lock file must be before it counts as a zombie
-/// and is taken over. A fresh empty lock is either a writer that has not
-/// finished writing its pid yet, or one that crashed mid-acquire —
-/// conservative: refuse takeover until it ages out.
-pub const EMPTY_LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
+/// The sidecar lock inside a goal's state directory.
+const ACTIVE_STATE_LOCK: &str = "ACTIVE_GOAL_STATE.md.lock";
 
-/// Acquire the `ACTIVE_GOAL_STATE.md.lock` sidecar for `goal_dir`, writing
-/// this process's pid into the file. On success the caller owns the lock and
-/// MUST release it with [`release_active_state_lock`]; on failure a live
-/// holder that outlasted [`LIVE_HOLDER_WAIT`], or a fresh empty lock, is
-/// reported with a descriptive error.
-pub fn acquire_active_state_lock(goal_dir: &Path) -> Result<PathBuf> {
-    acquire_active_state_lock_with(goal_dir, EMPTY_LOCK_STALE_AFTER)
-}
-
-/// Testable variant: `empty_stale_after` overrides the empty-lock staleness
-/// threshold.
-fn acquire_active_state_lock_with(goal_dir: &Path, empty_stale_after: Duration) -> Result<PathBuf> {
-    fs::create_dir_all(goal_dir)?;
-    let lock_path = goal_dir.join("ACTIVE_GOAL_STATE.md.lock");
-    // Bounded retry: takeover clears the file, but another process may win
-    // the create race; re-check a few times.
-    for _ in 0..4 {
-        if lock_path.exists() {
-            probe_and_takeover(&lock_path, empty_stale_after)?;
-        }
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(mut f) => {
-                use std::io::Write;
-                writeln!(f, "{}", std::process::id()).context("write pid into lock")?;
-                return Ok(lock_path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).context("create ACTIVE_GOAL_STATE.md.lock"),
-        }
-    }
-    bail!("could not acquire ACTIVE_GOAL_STATE.md.lock (contended)")
-}
+/// How long an EMPTY (no pid) lock is left alone before it is taken over.
+///
+/// `create_new` publishes the file and the pid is written immediately after, so
+/// an empty lock means one of exactly two things: another process sits between
+/// those two syscalls (microseconds), or a process died there. A short wait
+/// separates them; a long one does not, and it is not free. This used to be a
+/// ten-minute refusal, during which every command that refreshes the projection
+/// failed — while its ledger change had already been committed — and reported
+/// the operation as failed.
+///
+/// Taking over a live-but-slow writer is harmless by construction: the file this
+/// lock guards is a regenerable projection of the ledger, so the worst case is
+/// that it gets written twice with the same content. The ledger's own advisory
+/// lock (see the store) is the real concurrency guard.
+const EMPTY_LOCK_WAIT: Duration = Duration::from_millis(250);
 
 /// How long to wait for a live holder to release the lock before reporting it
 /// as held. The lock covers one projection write, so this only ever waits for
 /// a concurrent writer to finish.
 const LIVE_HOLDER_WAIT: Duration = Duration::from_millis(500);
 
-/// Poll interval while waiting for a live holder.
+/// Poll interval while waiting on a holder or an empty lock.
 const LIVE_HOLDER_POLL: Duration = Duration::from_millis(5);
 
-/// Check an existing lock file: a live pid holder is waited for up to
-/// [`LIVE_HOLDER_WAIT`] and then reported as held; a dead holder or an empty
-/// lock past `empty_stale_after` is removed (zombie takeover). A fresh empty
-/// lock is refused.
-fn probe_and_takeover(lock_path: &Path, empty_stale_after: Duration) -> Result<()> {
-    let deadline = std::time::Instant::now() + LIVE_HOLDER_WAIT;
-    loop {
-        let raw = match fs::read_to_string(lock_path) {
-            Ok(raw) => raw,
-            // Released between the caller's existence check and this read.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => String::new(),
-        };
-        match raw.trim().parse::<u32>() {
-            Ok(pid) if pid_alive(pid) => {
+/// Bound on the acquire loop, so a pathological remove/create interleaving
+/// cannot spin forever. Reaching it means heavy contention, not a stuck lock.
+const MAX_LOCK_ATTEMPTS: usize = 512;
+
+/// What a lock file says about its holder.
+enum LockState {
+    /// Gone — released between our create attempt and this read.
+    Released,
+    /// Held by a process that is still alive.
+    Live(u32),
+    /// Held by a pid that no longer exists.
+    Dead,
+    /// Empty or unreadable: a writer mid-acquire, or one that died there.
+    Empty,
+}
+
+/// Acquire the `ACTIVE_GOAL_STATE.md.lock` sidecar for `goal_dir`, writing this
+/// process's pid into the file. On success the caller owns the lock and MUST
+/// release it with [`release_active_state_lock`]; on failure — a live holder
+/// that outlasted [`LIVE_HOLDER_WAIT`], or sustained contention — the error says
+/// which.
+pub fn acquire_active_state_lock(goal_dir: &Path) -> Result<PathBuf> {
+    acquire_active_state_lock_with(goal_dir, EMPTY_LOCK_WAIT)
+}
+
+/// Testable variant: `empty_wait` overrides [`EMPTY_LOCK_WAIT`].
+fn acquire_active_state_lock_with(goal_dir: &Path, empty_wait: Duration) -> Result<PathBuf> {
+    fs::create_dir_all(goal_dir)?;
+    let lock_path = goal_dir.join(ACTIVE_STATE_LOCK);
+    // Both deadlines start when the state is first observed, not when the call
+    // begins, so a wait for an earlier holder does not eat the later one's budget.
+    let mut live_deadline: Option<std::time::Instant> = None;
+    let mut empty_deadline: Option<std::time::Instant> = None;
+    for _ in 0..MAX_LOCK_ATTEMPTS {
+        // Publishing the pid is what makes us the holder; `create_new` is the
+        // atomic part. The file is briefly visible without a pid — a reader has
+        // to tolerate that instead of waiting for it to age out.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                writeln!(file, "{}", std::process::id()).context("write pid into lock")?;
+                return Ok(lock_path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error).context(format!("create {ACTIVE_STATE_LOCK}")),
+        }
+        match classify_lock(&lock_path) {
+            LockState::Released => continue,
+            LockState::Live(pid) => {
+                let deadline = *live_deadline
+                    .get_or_insert_with(|| std::time::Instant::now() + LIVE_HOLDER_WAIT);
                 if std::time::Instant::now() >= deadline {
-                    bail!("ACTIVE_GOAL_STATE.md.lock held by pid {pid}")
+                    bail!("{ACTIVE_STATE_LOCK} held by pid {pid}");
                 }
                 std::thread::sleep(LIVE_HOLDER_POLL);
             }
-            Ok(_) => return remove_lock_file(lock_path).context("remove dead-holder lock"),
-            Err(_) => {
-                // Empty / garbage content: stale only past the age threshold.
-                let mtime = fs::metadata(lock_path).and_then(|m| m.modified()).ok();
-                let stale =
-                    mtime.is_some_and(|t| t.elapsed().is_ok_and(|el| el > empty_stale_after));
-                return if stale {
-                    remove_lock_file(lock_path).context("remove stale empty lock")
+            LockState::Dead => {
+                remove_lock_file(&lock_path).context("remove dead-holder lock")?;
+            }
+            LockState::Empty => {
+                let deadline =
+                    *empty_deadline.get_or_insert_with(|| std::time::Instant::now() + empty_wait);
+                if std::time::Instant::now() >= deadline {
+                    // Still no pid after the grace period: the writer that created
+                    // it is gone, not slow.
+                    remove_lock_file(&lock_path).context("remove abandoned lock")?;
                 } else {
-                    bail!(
-                        "ACTIVE_GOAL_STATE.md.lock exists without a pid and is not stale (mtime {:?}); \
-                         refusing takeover until it ages past {empty_stale_after:?}",
-                        mtime
-                    )
-                };
+                    std::thread::sleep(LIVE_HOLDER_POLL);
+                }
             }
         }
+    }
+    bail!("could not acquire {ACTIVE_STATE_LOCK} (contended)")
+}
+
+/// Read the lock file and say what it means. Classification is a pure read; the
+/// waiting happens in the acquire loop.
+fn classify_lock(lock_path: &Path) -> LockState {
+    let raw = match fs::read_to_string(lock_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LockState::Released,
+        // Unreadable for any other reason: treat like empty, so a permissions
+        // oddity cannot wedge the projection forever.
+        Err(_) => String::new(),
+    };
+    match raw.trim().parse::<u32>() {
+        Ok(pid) if pid_alive(pid) => LockState::Live(pid),
+        Ok(_) => LockState::Dead,
+        Err(_) => LockState::Empty,
     }
 }
 
@@ -562,27 +594,90 @@ mod tests {
         assert!(!lock_path(dir.path()).exists());
     }
 
+    /// An empty lock is a writer between `create_new` and its pid write, or one
+    /// that died in between. Both resolve by waiting briefly and then taking
+    /// over — never by refusing for ten minutes while the ledger change that
+    /// triggered the write sits already committed.
     #[test]
-    fn stale_empty_lock_is_taken_over() {
+    fn an_abandoned_empty_lock_is_taken_over_after_the_grace_period() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(lock_path(dir.path()), "").unwrap();
-        // Threshold zero: any empty lock counts as stale.
-        let lock = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap();
+        let started = std::time::Instant::now();
+        let lock = acquire_active_state_lock(dir.path()).unwrap();
+        // The real constant, not a test override: the point is that the wait is
+        // short in production.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?} — the ten-minute refusal is back",
+            started.elapsed()
+        );
         let content = std::fs::read_to_string(&lock).unwrap();
         assert_eq!(content.trim(), std::process::id().to_string());
         release_active_state_lock(&lock);
         assert!(!lock_path(dir.path()).exists());
     }
 
+    /// The mid-acquire window itself: a writer that has created the file but not
+    /// yet written its pid must not cost the loser anything. With a zero grace
+    /// period the takeover is immediate; the test asserts the acquire *succeeds*
+    /// either way, which is what the field failure got wrong.
     #[test]
-    fn fresh_empty_lock_is_refused() {
+    fn a_fresh_empty_lock_does_not_block_the_next_writer() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(lock_path(dir.path()), "").unwrap();
-        let err =
-            acquire_active_state_lock_with(dir.path(), Duration::from_secs(3600)).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("not stale"), "unexpected error: {msg}");
-        assert!(lock_path(dir.path()).exists());
+        let lock = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&lock).unwrap().trim(),
+            std::process::id().to_string()
+        );
+        release_active_state_lock(&lock);
+    }
+
+    /// Garbage content (not a pid, not empty) is classified like an empty lock:
+    /// waited for, then taken over. It must never wedge the projection.
+    #[test]
+    fn an_unreadable_lock_is_taken_over_rather_than_wedging() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(lock_path(dir.path()), "not-a-pid\n").unwrap();
+        let lock = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&lock).unwrap().trim(),
+            std::process::id().to_string()
+        );
+        release_active_state_lock(&lock);
+    }
+
+    /// The regression this fix exists for. `todo claim` from four workers at once
+    /// failed on CI with "exists without a pid and is not stale … refusing
+    /// takeover until it ages past 600s" — one loser landed in the window between
+    /// the winner's create and its pid write. Threads reproduce the same window
+    /// inside one process, so every acquirer must succeed.
+    #[test]
+    fn concurrent_acquires_all_succeed() {
+        use std::sync::{Arc, Barrier};
+
+        let rounds = 150;
+        let workers = 4;
+        for _ in 0..rounds {
+            let dir = Arc::new(tempfile::tempdir().unwrap());
+            let barrier = Arc::new(Barrier::new(workers));
+            let mut handles = Vec::new();
+            for _ in 0..workers {
+                let dir = Arc::clone(&dir);
+                let barrier = Arc::clone(&barrier);
+                handles.push(std::thread::spawn(move || {
+                    // Start together, so the create/write interleaving is real.
+                    barrier.wait();
+                    let lock = acquire_active_state_lock(dir.path()).unwrap();
+                    let held = std::fs::read_to_string(&lock).unwrap();
+                    assert_eq!(held.trim(), std::process::id().to_string());
+                    release_active_state_lock(&lock);
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        }
     }
 
     #[test]
