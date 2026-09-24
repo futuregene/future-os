@@ -160,7 +160,7 @@ fn parse_skill(skill_md: &Path) -> Result<Skill> {
     let description = extract_description(&content);
     let name_zh = extract_frontmatter_field(&content, "name_zh");
     let description_zh = extract_frontmatter_field(&content, "description_zh");
-    let version = extract_frontmatter_field(&content, "version");
+    let version = extract_package_version(&content);
     // Normalize to forward slashes so the path survives transport through
     // the system prompt without backslash escape-sequence corruption
     // (e.g. \f, \a interpreted by the model on non-Windows hosts).
@@ -256,6 +256,68 @@ fn extract_yaml_value(line: &str, key: &str) -> Option<String> {
 
 fn extract_description(content: &str) -> String {
     extract_frontmatter_field(content, "description").unwrap_or_default()
+}
+
+/// Returns the declared package version, preferring the top-level field.
+///
+/// Some third-party skills put their version in `metadata.version`. That is a
+/// compatibility fallback only: a valid top-level `version` remains
+/// authoritative, including when it does not match the requested version.
+pub(super) fn extract_package_version(content: &str) -> Option<String> {
+    extract_frontmatter_field(content, "version")
+        .filter(|version| valid_package_version(version))
+        .or_else(|| {
+            extract_metadata_version(content).filter(|version| valid_package_version(version))
+        })
+}
+
+fn valid_package_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.contains("..")
+        && !value.ends_with('.')
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+fn extract_metadata_version(content: &str) -> Option<String> {
+    let frontmatter = frontmatter(content)?;
+    let lines: Vec<&str> = frontmatter.lines().collect();
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let metadata = match extract_yaml_value(line.trim(), "metadata") {
+            Some(metadata) => metadata,
+            None => continue,
+        };
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&metadata) {
+            return value
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+        }
+
+        if metadata.is_empty() {
+            let metadata_indent = leading_spaces(line);
+            for nested in &lines[index + 1..] {
+                if nested.trim().is_empty() {
+                    continue;
+                }
+                if leading_spaces(nested) <= metadata_indent {
+                    break;
+                }
+                if let Some(version) = extract_yaml_value(nested.trim(), "version") {
+                    return Some(version);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
