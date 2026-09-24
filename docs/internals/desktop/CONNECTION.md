@@ -802,10 +802,10 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | Service authorization failure (`service_authorization`) | `AU001` |
 | Credential expired or connection auth anomaly (`credential_expired`, `credential_connect`) | `AU002` |
 | Pairing or credential revoked (`revoked`, `credential_revoked`) | `PA001` |
-| Pairing code invalid or expired | `PA002` |
+| Pairing code invalid or expired, or the handshake was refused (the bridge serves a different identity than the code it displays) | `PA002` |
 | Pairing claim address untrusted (the phone picks the trusted production/test platform from the QR code; the environment is not limited by the APK version) | `PA003` |
 | Pairing interface used an insecure transport | `PA004` |
-| Desktop identity verification failed | `PA005` |
+| Desktop identity verification failed (the two builds cannot complete the handshake) | `PA005` |
 | Unknown pairing fault | `PA999` |
 | Protocol error (`protocol`) | `PT001` |
 | Connection recovery budget exhausted (`generation_unhealthy`) | `RT001` |

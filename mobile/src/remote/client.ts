@@ -1263,7 +1263,16 @@ export class RemoteClient {
     const exchange = async (body: Record<string, unknown>) => {
       const response = await connection.request(`p.${this.credentials.pairId}.cmd.handshake`, encoder.encode(JSON.stringify(body)), { timeout: 10_000 });
       const parsed = decodeRemoteJson<RpcResponse<{ message?: string; id?: string; confirmation?: string }>>(response.data);
-      if (!parsed.success) throw new Error("pairing_signature_invalid");
+      // Keep the desktop's own refusal detail appended to the stable
+      // `pairing_signature_invalid` token (which the credential classifier and
+      // the connection presentation both match on): `invitation_already_used`,
+      // `invitation_expired`, `peer_mismatch`, ... It is the only statement of
+      // *why* a code the phone holds was turned down, and discarding it left
+      // both the user and the phone console with nothing to act on.
+      if (!parsed.success) {
+        const detail = (parsed.error ?? "unknown").trim() || "unknown";
+        throw new Error(`pairing_signature_invalid:${detail}`);
+      }
       return parsed.data;
     };
     const run = async (secret?: string): Promise<HandshakeConfirmation> => {

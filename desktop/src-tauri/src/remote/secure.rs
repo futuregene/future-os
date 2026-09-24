@@ -43,6 +43,20 @@ impl PairingIdentity {
 fn error(_: impl std::fmt::Display) -> crate::AppError {
     crate::AppError::Message("remote_secure_channel_invalid".into())
 }
+
+/// Wire error for a refused handshake, kept byte-stable for clients: every one
+/// of them branches on `success: false`, not on this string.
+pub(super) const REFUSED: &str = "remote_secure_channel_invalid";
+
+/// A refusal that carries *why*. The reply still says `success: false` with
+/// [`REFUSED`] as its prefix, and the reason rides along after it for the
+/// desktop's log and the phone's console. Without it a QR the bridge can no
+/// longer authenticate (`invitation`, `peer`, a PSK mismatch) is
+/// indistinguishable from a network fault, which is exactly how a pairing that
+/// could never succeed used to present: no code, no log, on either side.
+fn refused(reason: &str) -> crate::AppError {
+    crate::AppError::Message(format!("{REFUSED} ({reason})"))
+}
 fn decode(value: &str) -> Result<Vec<u8>, crate::AppError> {
     if value.len() > 12_000 {
         return Err(error("length"));
@@ -206,13 +220,14 @@ impl Transport {
     /// An untrusted candidate never replaces the current authenticated channel.
     pub fn handshake(&self, payload: &[u8], bridge: &str) -> Result<Value, crate::AppError> {
         if payload.len() > 16_384 {
-            return Err(error("length"));
+            return Err(refused("oversized"));
         }
-        let request: HandshakeRequest = serde_json::from_slice(payload).map_err(error)?;
+        let request: HandshakeRequest =
+            serde_json::from_slice(payload).map_err(|_| refused("malformed"))?;
         let mut server = self
             .server
             .as_ref()
-            .ok_or_else(|| error("disabled"))?
+            .ok_or_else(|| refused("disabled"))?
             .lock()
             .unwrap();
         server
@@ -225,33 +240,40 @@ impl Transport {
             .creds
             .secure
             .as_ref()
-            .ok_or_else(|| error("identity"))?
+            .ok_or_else(|| refused("identity"))?
             .clone();
         let prologue =
             future_remote_crypto::prologue(&server.creds.pair_id, &server.creds.desktop_id)
-                .map_err(error)?;
-        let input = decode(&request.message)?;
+                .map_err(|_| refused("prologue"))?;
+        let input = decode(&request.message).map_err(|_| refused("message"))?;
         match request.kind.as_str() {
             "secure_open" => {
                 if server.pending.len() + server.candidates.len() >= 16 {
-                    return Err(error("busy"));
+                    return Err(refused("busy"));
                 }
                 let pairing = request.pairing;
                 let psk = if pairing {
-                    if identity.peer_public_key.is_some()
-                        || super::unix_timestamp() >= identity.expires_at.max(0) as u64
-                    {
-                        return Err(error("invitation"));
+                    if identity.peer_public_key.is_some() {
+                        // The phone is re-offering a `pairing=true` opening for a
+                        // pair that already pinned a key. Only a fresh invitation
+                        // can pair again.
+                        return Err(refused("invitation_already_used"));
                     }
-                    Some(key(identity
-                        .secret
-                        .as_deref()
-                        .ok_or_else(|| error("secret"))?)?)
+                    if super::unix_timestamp() >= identity.expires_at.max(0) as u64 {
+                        return Err(refused("invitation_expired"));
+                    }
+                    Some(
+                        key(identity
+                            .secret
+                            .as_deref()
+                            .ok_or_else(|| refused("secret"))?)
+                        .map_err(|_| refused("secret"))?,
+                    )
                 } else {
                     None
                 };
                 if !pairing && identity.peer_public_key.is_none() {
-                    return Err(error("peer"));
+                    return Err(refused("peer_unknown"));
                 }
                 let mut noise = Handshake::new(
                     if pairing {
@@ -260,25 +282,31 @@ impl Transport {
                         Pattern::Reconnect
                     },
                     false,
-                    &key(&identity.private_key)?,
+                    &key(&identity.private_key).map_err(|_| refused("private_key"))?,
                     None,
                     psk.as_ref(),
                     &prologue,
                 )
-                .map_err(error)?;
-                if !noise.read(&input).map_err(error)?.is_empty() {
-                    return Err(error("payload"));
+                .map_err(|_| refused("pattern"))?;
+                if !noise
+                    .read(&input)
+                    .map_err(|_| refused("open_undecryptable"))?
+                    .is_empty()
+                {
+                    return Err(refused("open_payload"));
                 }
                 if !pairing
-                    && noise.remote_public_key().map_err(error)?
+                    && noise.remote_public_key().map_err(|_| refused("peer"))?
                         != key(identity
                             .peer_public_key
                             .as_deref()
-                            .ok_or_else(|| error("peer"))?)?
+                            .ok_or_else(|| refused("peer_unknown"))?)
+                        .map_err(|_| refused("peer"))?
                 {
-                    return Err(error("peer"));
+                    // The peer proved a key other than the one this pair pinned.
+                    return Err(refused("peer_mismatch"));
                 }
-                let response = noise.write(b"").map_err(error)?;
+                let response = noise.write(b"").map_err(|_| refused("open_response"))?;
                 if pairing {
                     let mut token = [0; 16];
                     rand::rngs::OsRng.fill_bytes(&mut token);
@@ -292,8 +320,11 @@ impl Transport {
                     );
                     Ok(json!({ "message": URL_SAFE_NO_PAD.encode(response), "id": id }))
                 } else {
-                    let channel = Arc::new(Mutex::new(noise.finish().map_err(error)?));
-                    let confirmation = confirmation(&server.creds.pair_id, bridge, &channel)?;
+                    let channel = Arc::new(Mutex::new(
+                        noise.finish().map_err(|_| refused("open_finish"))?,
+                    ));
+                    let confirmation = confirmation(&server.creds.pair_id, bridge, &channel)
+                        .map_err(|_| refused("confirmation"))?;
                     server.candidates.push(Candidate {
                         channel,
                         created: Instant::now(),
@@ -307,26 +338,39 @@ impl Transport {
                 let mut pending = server
                     .pending
                     .remove(&request.id)
-                    .ok_or_else(|| error("expired"))?;
-                if identity.peer_public_key.is_some()
-                    || super::unix_timestamp() >= identity.expires_at.max(0) as u64
+                    .ok_or_else(|| refused("challenge_expired"))?;
+                if identity.peer_public_key.is_some() {
+                    return Err(refused("invitation_already_used"));
+                }
+                if super::unix_timestamp() >= identity.expires_at.max(0) as u64 {
+                    return Err(refused("invitation_expired"));
+                }
+                if !pending
+                    .noise
+                    .read(&input)
+                    .map_err(|_| refused("finish_undecryptable"))?
+                    .is_empty()
                 {
-                    return Err(error("invitation"));
+                    return Err(refused("finish_payload"));
                 }
-                if !pending.noise.read(&input).map_err(error)?.is_empty() {
-                    return Err(error("payload"));
-                }
-                let peer =
-                    URL_SAFE_NO_PAD.encode(pending.noise.remote_public_key().map_err(error)?);
-                let channel = Arc::new(Mutex::new(pending.noise.finish().map_err(error)?));
+                let peer = URL_SAFE_NO_PAD.encode(
+                    pending
+                        .noise
+                        .remote_public_key()
+                        .map_err(|_| refused("peer"))?,
+                );
+                let channel = Arc::new(Mutex::new(
+                    pending.noise.finish().map_err(|_| refused("finish"))?,
+                ));
                 let mut creds = server.creds.clone();
-                let identity = creds.secure.as_mut().ok_or_else(|| error("identity"))?;
+                let identity = creds.secure.as_mut().ok_or_else(|| refused("identity"))?;
                 identity.peer_public_key = Some(peer);
                 identity.secret = None;
                 // Persist binding before accepting any command. A lost response
                 // can recover through IK using the phone's already stored key.
-                super::pairing::save_creds(&creds)?;
-                let confirmation = confirmation(&creds.pair_id, bridge, &channel)?;
+                super::pairing::save_creds(&creds).map_err(|_| refused("save_creds"))?;
+                let confirmation = confirmation(&creds.pair_id, bridge, &channel)
+                    .map_err(|_| refused("confirmation"))?;
                 server.creds = creds;
                 server.pending.clear();
                 server.candidates.push(Candidate {
@@ -335,7 +379,11 @@ impl Transport {
                 });
                 Ok(json!({ "confirmation": confirmation }))
             }
-            _ => Err(error("type")),
+            other => Err(refused(if other.is_empty() {
+                "missing_type"
+            } else {
+                "unknown_type"
+            })),
         }
     }
 }
@@ -489,6 +537,52 @@ mod tests {
         transport.activate(&reply)?;
         Ok(channel)
     }
+    /// A refusal must say *why*, and must keep the byte-stable prefix clients
+    /// branch on. Distinguishing `invitation_expired` from a PSK mismatch turned
+    /// an undiagnosable "pairing just fails" into a log line.
+    #[test]
+    fn a_refused_handshake_names_the_reason() {
+        let _home = HomeGuard::new("secure-refusal-reason");
+        init_store();
+        let creds = creds();
+        let transport = Transport::new(&creds);
+        let refusal = |payload: &str| {
+            transport
+                .handshake(payload.as_bytes(), "bridge_secure")
+                .unwrap_err()
+                .to_string()
+        };
+        // A QR whose PSK is not this identity's: the phone and the desktop hold
+        // different invitations.
+        assert_eq!(
+            refusal(r#"{"type":"secure_open","pairing":true,"message":"AAAA"}"#),
+            format!("{REFUSED} (open_undecryptable)")
+        );
+        assert_eq!(
+            refusal(r#"{"type":"nonsense","message":"AAAA"}"#),
+            format!("{REFUSED} (unknown_type)")
+        );
+        assert_eq!(refusal("not json"), format!("{REFUSED} (malformed)"));
+        assert_eq!(
+            refusal(r#"{"type":"secure_finish","id":"missing","message":"AAAA"}"#),
+            format!("{REFUSED} (challenge_expired)")
+        );
+        // An expired invitation is reported as expired, not as a bad signature.
+        let mut expired = creds.clone();
+        expired.secure.as_mut().unwrap().expires_at = now_secs() - 1;
+        let transport = Transport::new(&expired);
+        assert_eq!(
+            transport
+                .handshake(
+                    br#"{"type":"secure_open","pairing":true,"message":"AAAA"}"#,
+                    "bridge_secure"
+                )
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (invitation_expired)")
+        );
+    }
+
     #[test]
     fn readiness_is_an_authenticated_commit_and_stop_invalidates_candidates() {
         let _home = HomeGuard::new("secure-readiness");
@@ -543,6 +637,14 @@ mod tests {
             .secret
             .is_none());
         assert!(connect(&transport, &creds, &private, true).is_err());
+        // The refusal names the reason: this is the only place a pairing that
+        // can never succeed becomes visible, since the phone only learns that
+        // the desktop would not authenticate it.
+        assert!(connect(&transport, &creds, &private, true)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string()
+            .ends_with("(invitation_already_used)"));
         let wire = channel.seal("command", b"approval").unwrap();
         assert!(transport.open("another-command", &wire).is_err());
         let (plain, reply) = transport.open("command", &wire).unwrap();

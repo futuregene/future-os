@@ -147,15 +147,61 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     pub(in crate::remote) drop_counters: Arc<DropCounters>,
     pub(in crate::remote) next_generation_id: Arc<AtomicU64>,
     pub(in crate::remote) handshake: Arc<Mutex<Option<commands::HandshakeState>>>,
+    /// The invitation this runtime serves. See [`InvitationKey`].
+    invitation: Option<InvitationKey>,
+}
+
+/// Identity of the invitation a runtime serves: the two public keys the phone
+/// authenticates a pairing against — the desktop NKey the QR names as
+/// `desktopKey`, and the secure identity it carries as `secureKey`.
+///
+/// A credential *refresh* keeps both (same NKey seed, same secure identity), so
+/// a refreshed JWT must keep its runtime. A re-minted invitation never does: it
+/// generates a fresh NKey pair and a fresh secure identity. Reusing a runtime
+/// across that boundary leaves the QR on screen describing keys the bridge
+/// cannot prove — the phone scans it and every attempt fails, silently, with no
+/// way out but stopping the bridge.
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::remote) struct InvitationKey {
+    desktop_public_key: String,
+    secure_public_key: String,
+}
+
+impl InvitationKey {
+    /// `None` when the NKey seed cannot be read at all — the bridge can then
+    /// serve no invitation, so a cached runtime must never be reused for it.
+    fn of(creds: &pairing::PairingCreds) -> Option<Self> {
+        Some(Self {
+            desktop_public_key: pairing::public_key(creds).ok()?,
+            secure_public_key: creds
+                .secure
+                .as_ref()
+                .map(|identity| identity.public_key.clone())
+                .unwrap_or_default(),
+        })
+    }
 }
 
 pub(in crate::remote) fn shared_runtime(
-    pair_id: &str,
+    creds: &pairing::PairingCreds,
     pairing_confirmed: bool,
     rotate_epoch: bool,
 ) -> BridgeRuntimeShared {
+    let pair_id = creds.pair_id.as_str();
+    let invitation = InvitationKey::of(creds);
     let mut guard = SUPERVISOR.bridge_shared.lock().unwrap();
-    if let Some(shared) = guard.as_mut().filter(|shared| shared.pair_id == pair_id) {
+    // Reuse only while the runtime still serves the very invitation these
+    // credentials describe. Single-flight replies and pairing confirmation are
+    // meant to survive a credential generation swap; they must not survive a
+    // new invitation, whose identity nothing on screen or on the phone agrees
+    // with.
+    let reusable = guard.as_ref().is_some_and(|shared| {
+        shared.pair_id == pair_id
+            && invitation.is_some()
+            && shared.invitation.as_ref() == invitation.as_ref()
+    });
+    if reusable {
+        let shared = guard.as_mut().expect("checked above");
         if rotate_epoch {
             shared.bridge_instance_id =
                 format!("bridge_{}", nkeys::KeyPair::new_user().public_key());
@@ -174,6 +220,7 @@ pub(in crate::remote) fn shared_runtime(
         coalesce_events: Arc::new(AtomicBool::new(false)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),
+        invitation,
     };
     *guard = Some(shared.clone());
     shared
