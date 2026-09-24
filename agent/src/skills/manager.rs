@@ -389,6 +389,9 @@ impl SkillManager {
         let mut file = File::create(candidate.join(RECEIPT)).context("create skill receipt")?;
         serde_json::to_writer(&mut file, &receipt)?;
         file.sync_all().context("sync skill receipt")?;
+        // Windows cannot rename the candidate directory while this child file
+        // is still open without delete sharing.
+        drop(file);
 
         let app = self.app_dir();
         fs::create_dir_all(&app).context("create installed skills directory")?;
