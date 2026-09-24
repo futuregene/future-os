@@ -16,6 +16,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── sessions/              # retained legacy JSONL migration sources
 │   ├── run-events/            # retained legacy event migration sources
 │   ├── agent-instance.lock    # per-user agent singleton lock
+│   ├── agent-instance.json    # readable process identity for installer diagnostics
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
@@ -70,6 +71,9 @@ vars:
   home (`FUTURE_HOME` / `future agent --home`, see
   [Running several isolated instances](#running-several-isolated-instances-future_home));
   changing only the TCP port does not bypass the lock.
+- `agent-instance.json` — readable process identity for installer diagnostics
+  (PID, executable path, FutureOS home and, on Windows, process creation time).
+  It may remain after a crash; the operating-system lock is authoritative.
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.

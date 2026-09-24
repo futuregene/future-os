@@ -11,11 +11,77 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use clap::Parser;
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 type AgentInstanceGuard = fd_lock::RwLockWriteGuard<'static, File>;
+
+/// The lock is authoritative. This separate, readable file only helps the
+/// installer identify the process that currently owns it.
+struct AgentInstanceMetadata(PathBuf);
+
+impl Drop for AgentInstanceMetadata {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Future Agent: could not remove instance metadata: {error}");
+            }
+        }
+    }
+}
+
+fn write_agent_instance_metadata(lock_path: &Path) -> Result<AgentInstanceMetadata> {
+    let path = lock_path.with_file_name("agent-instance.json");
+    let executable = std::env::current_exe().context("resolve Agent executable")?;
+    let metadata = serde_json::json!({
+        "pid": std::process::id(),
+        "executable": executable.to_string_lossy(),
+        "futureHome": crate::utils::future_home().to_string_lossy(),
+    });
+    #[cfg(windows)]
+    {
+        let mut metadata = metadata;
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+        let mut created = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exited = created;
+        let mut kernel = created;
+        let mut user = created;
+        if unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("read Agent process creation time");
+        }
+        metadata["startTimeFiletime"] = serde_json::json!(
+            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+        );
+        return write_agent_instance_metadata_file(path, metadata);
+    }
+    #[cfg(not(windows))]
+    write_agent_instance_metadata_file(path, metadata)
+}
+
+fn write_agent_instance_metadata_file(
+    path: PathBuf,
+    metadata: serde_json::Value,
+) -> Result<AgentInstanceMetadata> {
+    // The lock stays held until after this guard is dropped. A crash may leave
+    // stale metadata, so readers must always validate the lock and process.
+    std::fs::write(&path, serde_json::to_vec(&metadata)?)
+        .with_context(|| format!("write Agent instance metadata {}", path.display()))?;
+    Ok(AgentInstanceMetadata(path))
+}
 
 struct CleanupGuard<F: FnOnce()>(Option<F>);
 
@@ -49,15 +115,15 @@ fn acquire_agent_instance_lock_at(path: &Path) -> Result<AgentInstanceGuard> {
         .create(true)
         .read(true)
         .write(true)
-        // Do not truncate until after the exclusive lock is held; a rejected
-        // second process must not erase the running Agent's diagnostic PID.
+        // Never alter the lock file before taking the lock; a rejected second
+        // process must leave the running Agent's state untouched.
         .truncate(false)
         .open(path)?;
     // The lock object must outlive its write guard. This function runs once per
     // server process, so retaining the tiny allocation until process exit is
     // intentional; the OS releases the file lock even after a crash/force-kill.
     let lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
-    let mut guard = lock.try_write().map_err(|error| {
+    let guard = lock.try_write().map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             anyhow::anyhow!(
                 "Future Agent is already running for this user (lock: {})",
@@ -67,10 +133,9 @@ fn acquire_agent_instance_lock_at(path: &Path) -> Result<AgentInstanceGuard> {
             anyhow::Error::from(error)
         }
     })?;
-    guard.seek(SeekFrom::Start(0))?;
+    // Older builds wrote a PID here. Keep the lock path and byte-range locking
+    // compatible while moving process identity into agent-instance.json.
     guard.set_len(0)?;
-    writeln!(guard, "{}", std::process::id())?;
-    guard.flush()?;
     Ok(guard)
 }
 
@@ -320,6 +385,15 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         anyhow::bail!("--migration-source requires --migrate-sessions or --retry-session-import");
     }
     let _instance_guard = acquire_agent_instance_lock()?;
+    let _instance_metadata = match write_agent_instance_metadata(
+        &crate::utils::default_config_dir().join("agent-instance.lock"),
+    ) {
+        Ok(metadata) => Some(metadata),
+        Err(error) => {
+            eprintln!("Future Agent: could not publish instance metadata: {error:#}");
+            None
+        }
+    };
     if cli.migrate_sessions || cli.retry_session_import.is_some() {
         let manager = Manager::new(
             cli.migration_source
@@ -953,6 +1027,28 @@ mod tests {
         assert!(error.to_string().contains("already running"));
         drop(first);
         let _next = acquire_agent_instance_lock_at(&path).expect("lock released on exit");
+    }
+
+    #[test]
+    fn agent_instance_metadata_is_separate_and_removed_before_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("agent-instance.lock");
+        let lock = acquire_agent_instance_lock_at(&lock_path).unwrap();
+        let metadata = write_agent_instance_metadata(&lock_path).unwrap();
+        let path = dir.path().join("agent-instance.json");
+        assert_eq!(std::fs::metadata(&lock_path).unwrap().len(), 0);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["pid"], std::process::id());
+        assert_eq!(
+            value["executable"],
+            std::env::current_exe().unwrap().to_string_lossy().as_ref()
+        );
+        assert!(acquire_agent_instance_lock_at(&lock_path).is_err());
+        drop(metadata);
+        assert!(!path.exists());
+        drop(lock);
+        assert!(acquire_agent_instance_lock_at(&lock_path).is_ok());
     }
 
     #[test]

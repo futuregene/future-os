@@ -15,6 +15,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── sessions/              # 保留的旧 JSONL 迁移来源
 │   ├── run-events/            # 保留的旧事件迁移来源
 │   ├── agent-instance.lock    # 每用户 Agent 单例锁
+│   ├── agent-instance.json    # 安装器可读取的进程身份信息
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
 │   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
 │   ├── images/                # CLI 图片工具输出目录
@@ -60,6 +61,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 - `agent-instance.lock` — 当前 FutureOS home 的单例锁。测试应隔离 HOME（Windows 同时
   隔离 USERPROFILE），或用 `FUTURE_HOME` / `future agent --home` 把 Agent 指向另一个
   FutureOS home（见[多实例运行](#多实例运行future_home)）；仅更换 TCP 端口无法绕过单例锁。
+- `agent-instance.json` — 记录 PID、可执行文件路径、FutureOS home，以及 Windows
+  上的进程创建时间，供安装器核对进程身份。异常退出后文件可能残留；以操作系统锁为准。
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是
   `~/.agents/skills/`（`AGENTS_SKILLS_DIR`）。技能是含 `SKILL.md` +
   YAML frontmatter 的普通目录。
