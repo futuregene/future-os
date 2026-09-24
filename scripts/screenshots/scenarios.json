@@ -887,6 +887,33 @@
           { "shot": "m-qn-nav.png" }
         ]
       },
+      "qn-merged": {
+        "_comment": "B 合并到一处：把「回到最新」并进右缘那组圆钮。三块面板只差注入：合并前（示意）/ 合并后常态 / 合并后落到最后一个提问。数值读数（同列、44px、间距 8px、右缘 16px、离输入框）由 eval 打出来，不靠肉眼。",
+        "variantsTitle": "B · 合并到一处：右缘一组三枚圆钮（「回到最新」并入其中）",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "variants": [
+          { "label": "① 合并前（示意）：右缘两枚钮 + 输入框上方胶囊 —— 真机上两处悬浮件", "inject": "injects/qn-nav-b-merged-before.js" },
+          { "label": "② 合并后 · 读历史中：三枚同列，↑ ↓ 到底 都可用", "inject": "injects/qn-nav-b-merged.js" },
+          { "label": "③ 合并后 · 落到最后一个提问：↓ 置灰，到底 仍可用", "inject": "injects/qn-nav-b-merged-lastq.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -600] },
+          { "wait": 800 },
+          { "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');" },
+          { "inject": "{variantInject}" },
+          { "wait": 3600 },
+          { "eval": "if (window.__mergedLastQuestion === false) throw new Error('the walk to the last question had not finished when the shot was taken');" },
+          { "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; const r = stack.getBoundingClientRect(); const buttons = [...stack.children].map(el => { const b = el.getBoundingClientRect(); if (Math.round(b.width) !== 44 || Math.round(b.height) !== 44) throw new Error(`a button is ${Math.round(b.width)}x${Math.round(b.height)}, expected 44x44`); return { label: (el.getAttribute('aria-label') || '回到最新').slice(0, 4), x: Math.round(b.left), right: Math.round(b.right), w: Math.round(b.width), disabled: el.getAttribute('aria-disabled') === 'true' }; }); const input = document.querySelector('textarea'); return { count: buttons.length, rightInset: Math.round(window.innerWidth - r.right), stack: { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) }, viewport: { w: window.innerWidth, h: window.innerHeight }, composerTop: input ? Math.round(input.getBoundingClientRect().top) : null, gapToComposer: Math.round((input ? input.getBoundingClientRect().top : 0) - r.bottom), buttons }; })()" },
+          { "shot": "m-qn-merged.png" }
+        ]
+      },
       "qn-jump-states": {
         "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。'how it is aligned' 的数值断言在 qn-align-check，这里只出画面。",
         "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
