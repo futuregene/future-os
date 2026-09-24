@@ -12,11 +12,13 @@ import {
 import { renderHook } from "../../test/renderHook";
 import {
   DAILY_RECOMMENDATION_LIMIT,
+  dailyRecommendationLimit,
   MAX_QUERY_CHARS,
   messageHash,
   MIN_QUERY_BYTES,
   RECOMMEND_TIMEOUT_MS,
   shownDescription,
+  TEST_DAILY_RECOMMENDATION_LIMIT,
   useSkillRecommendation,
 } from "./useSkillRecommendation";
 
@@ -32,6 +34,11 @@ vi.mock("../../integrations/skills/skillsClient", () => ({
   suggestSkill: vi.fn(),
   skillRecoToday: vi.fn(),
   recordSkillReco: vi.fn(),
+}));
+
+let buildInfo: { isRelease: boolean } | null = { isRelease: true };
+vi.mock("../../integrations/tauri/useBuildInfo", () => ({
+  useBuildInfo: () => ({ data: buildInfo }),
 }));
 
 const available = vi.mocked(listAvailableSkills);
@@ -57,6 +64,7 @@ function catalogueEntry(id: string, descriptionZh = "") {
 }
 
 beforeEach(() => {
+  buildInfo = { isRelease: true };
   available.mockResolvedValue([
     catalogueEntry("future-web"),
     catalogueEntry("future-paper"),
@@ -207,6 +215,18 @@ it("stops calling the recommender once the daily budget is spent", async () => {
 
 it("still calls the recommender below the daily budget", async () => {
   today.mockResolvedValue({ count: DAILY_RECOMMENDATION_LIMIT - 1, skillIds: ["future-paper"], messageHashes: [] });
+  suggest.mockResolvedValue({ name: "future-web", description: "web" });
+  const hook = await renderActive();
+  expect((await act(() => hook.current.evaluate(LONG_ENOUGH)))?.name).toBe("future-web");
+});
+
+it("uses a 1000-card budget in test builds while releases stay at three", async () => {
+  expect(dailyRecommendationLimit(true)).toBe(DAILY_RECOMMENDATION_LIMIT);
+  expect(dailyRecommendationLimit(null)).toBe(DAILY_RECOMMENDATION_LIMIT);
+  expect(dailyRecommendationLimit(false)).toBe(TEST_DAILY_RECOMMENDATION_LIMIT);
+
+  buildInfo = { isRelease: false };
+  today.mockResolvedValue({ count: DAILY_RECOMMENDATION_LIMIT, skillIds: [], messageHashes: [] });
   suggest.mockResolvedValue({ name: "future-web", description: "web" });
   const hook = await renderActive();
   expect((await act(() => hook.current.evaluate(LONG_ENOUGH)))?.name).toBe("future-web");

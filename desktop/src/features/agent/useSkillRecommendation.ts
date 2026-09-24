@@ -7,6 +7,7 @@ import {
   skillRecoToday,
   suggestSkill,
 } from "../../integrations/skills/skillsClient";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 
 /**
  * Skill recommendation for any user message (not just a conversation's first).
@@ -34,8 +35,19 @@ import {
 export const MIN_QUERY_BYTES = 30;
 /** Don't recommend for very long drafts (also keeps the Jev prompt small). */
 export const MAX_QUERY_CHARS = 2000;
-/** Recommendations shown per user per local day; a spent budget stops the calls. */
+/** Recommendations shown per user per local day in a formal release build. */
 export const DAILY_RECOMMENDATION_LIMIT = 3;
+/** Generous test-build budget, so manual/repeated verification is not throttled. */
+export const TEST_DAILY_RECOMMENDATION_LIMIT = 1000;
+
+/**
+ * Formal releases are the production boundary. All non-release builds are test
+ * builds and use the larger budget; until build identity arrives, fail closed
+ * to the production limit so the UI never briefly over-recommends.
+ */
+export function dailyRecommendationLimit(isRelease: boolean | null | undefined): number {
+  return isRelease === false ? TEST_DAILY_RECOMMENDATION_LIMIT : DAILY_RECOMMENDATION_LIMIT;
+}
 /**
  * Hard budget for the whole recommend round-trip.
  *
@@ -147,6 +159,7 @@ export function useSkillRecommendation({
   balance,
 }: Options): SkillRecommendationControls {
   const { i18n } = useTranslation();
+  const build = useBuildInfo();
   const [recommendation, setRecommendation] = useState<SkillCandidate | null>(null);
   const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
   // Live mirror so evaluate() reads the latest gate values regardless of render
@@ -157,6 +170,8 @@ export function useSkillRecommendation({
   const candidatesRef = useRef(candidates);
   candidatesRef.current = candidates;
   const inFlightRef = useRef(false);
+  const dailyLimitRef = useRef(dailyRecommendationLimit(build.data?.isRelease));
+  dailyLimitRef.current = dailyRecommendationLimit(build.data?.isRelease);
   // The catalogue's Chinese descriptions, keyed by skill id, and the current
   // language — both read through refs because `evaluate` is created once and
   // must see the latest values (same reason as `gateRef` above).
@@ -220,7 +235,7 @@ export function useSkillRecommendation({
     // spent part of the budget since.
     const today = await readToday();
     // A spent budget stops the calls entirely — no call, no card.
-    if (today.count >= DAILY_RECOMMENDATION_LIMIT)
+    if (today.count >= dailyLimitRef.current)
       return null;
     const hash = messageHash(trimmed);
     if (today.messageHashes.includes(hash))
